@@ -443,6 +443,10 @@ def _review(st, ticket, round_no, question) -> dict:
     options = [
         _option("retry", "Ponów poprawki", "Autor dostanie kolejną rundę poprawek, a recenzent sprawdzi je znowu.",
                 RESOLVE_REVIEW, {"choice": "retry"}, recommended=True),
+        # Przywrócone po K-35 (04.11): usługa przyjmuje „accept”, a okno decyzji nie miało tej opcji. Dla uwag, które
+        # są środowiskowe albo drobne — ticket trafia na gałąź karty mimo werdyktu recenzenta.
+        _option("accept", "Scal mimo uwag", "Ticket trafi na gałąź karty mimo uwag recenzenta; użyj, gdy uwagi dotyczą "
+                "środowiska albo są drobne.", RESOLVE_REVIEW, {"choice": "accept"}),
         _option("reject", "Odrzuć ticket", "Ticket nie trafi na gałąź karty; jego gałąź zostaje do wglądu.",
                 RESOLVE_REVIEW, {"choice": "reject"}),
     ]
