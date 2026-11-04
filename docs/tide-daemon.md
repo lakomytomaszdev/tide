@@ -1876,6 +1876,78 @@ qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
 /usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
 
+## Pudełko karty: profil środowiska
+
+Moduł `tide_daemon/box/profile.py` (PT-165, karta K-38) opisuje środowisko pudełka: schemat `tide-box: 1`,
+klasyfikację ryzyka, scalanie profilu projektu z profilem karty, hash przepisu oraz zapis i odczyt w Tablicy.
+Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta własny podzbiór
+(`box/yamlmini.py`: mapy i listy blokowe oraz w nawiasach, cudzysłowy, komentarze), bez biblioteki.
+
+### Schemat `tide-box: 1`
+
+| Klucz | Typ | Uwagi |
+| --- | --- | --- |
+| `tide-box` | `1` | wymagany |
+| `project` | napis | nazwa projektu (`[a-z0-9._-]`) |
+| `type` | `container` \| `vm` | `vm` tylko przechodzi walidację, budowa odmawia (#4) |
+| `base` | napis | obraz bazowy, np. `images:ubuntu/24.04` |
+| `stacks` | lista | nazwy szablonów (lista szablonów należy do #30) |
+| `node.version`, `dotnet.sdk` | napis/liczba, lista dla `dotnet.sdk` | |
+| `apt`, `setup`, `verify` | listy napisów | |
+| `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6 także z osadzonym IPv4 — mapowanym, zgodnym wstecznie i NAT64, `localhost`, nazwy jednoetykietowe oraz sufiksy `.local`, `.lan`, `.internal`, `.home.arpa`, `.localdomain`, `.intranet`, `.corp`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
+| `network.host-ollama` | bool | |
+| `network.full`, `network.full-consent` | bool | tylko profil karty; `full: true` wymaga `full-consent: true` |
+| `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
+| `docker.enabled` / `docker.images` | bool / lista | |
+| `resources.cpu/memory/disk` | liczba / `24GiB` / `60GB` | domyślnie 8 / 24GiB / 60GB |
+| `packs`, `accepted_red` | listy | tylko profil karty |
+| `box` | `per-project` \| `per-card` | domyślnie `per-project` |
+| `notes` | napis | |
+
+Nieznany klucz na dowolnym poziomie, zły typ, `packs`/`accepted_red`/`network.full`/adres wewnętrzny w profilu
+projektu oraz `type` spoza `container|vm` to `ProfileError` (lista wszystkich problemów).
+
+### Klasy ryzyka
+
+`classify(item, known)`; `known` to słownik domena → klasa z szablonów stosów (#30).
+
+- **czerwone**: `network.full`, `packs` (`pack:<nazwa>`), adresy `192.168.*`, `10.*`, `172.16–31.*`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`,
+  `*.localdomain`, `*.intranet`, `*.corp`, nazwy jednoetykietowe, `*.firma.example`, `localhost`, loopback, link-local (`169.254.*`), `100.64/10`, prywatne IPv6 i inne zapisy
+  tych adresów, symbole `*.<jedna etykieta>` (np. `*.com`), zdalne repozytoria (`github.com`, `*.github.com`, host z etykietą `gitlab`),
+- **żółte**: `host-ollama`, domeny oznaczone jako żółte w szablonach, domeny spoza szablonów bez cech czerwonych,
+- **zielone**: domeny oznaczone jako zielone w szablonach, `box: per-card`.
+
+Czerwone reguły są sprawdzane przed `known`, więc szablon nie może „odczerwienić” pozycji (może ją najwyżej
+zaostrzyć wpisem `red`).
+
+### Scalanie
+
+`merge(project, card)` → `MergeResult(profile, dropped_red, project_red)`. Listy sumowane bez duplikatów (najpierw projekt; także `ports.env`),
+skalary i pola map z karty wygrywają (w tym `box`); wyjątek: `ports.pool` to zakres `[od, do]` i karta go zastępuje.
+Pozycje domenowe w `accepted_red` i klucze `known` są normalizowane jak domeny (małe litery, bez końcowej kropki). Czerwone pozycje karty trafiają do wyniku tylko, gdy
+`accepted_red` karty je wymienia; pozostałe lądują w `dropped_red`. `accepted_red` z pozycją, której nie ma w
+profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu projektu (np. `github.com`) przechodzą, ale trafiają do `project_red`, żeby pakiet zgód (#9) je pokazał. `project` w profilu musi zgadzać się ze slugiem (`save_project`/`load_project`). Profil projektu nigdy nie zawiera `network.full` ani adresów wewnętrznych.
+
+### Hash przepisu
+
+`recipe_hash(profile, templates_version, agents_version)` = SHA-256 znormalizowanych kluczy (po wypełnieniu
+wartości domyślnych, niezależnie od kolejności kluczy i białych znaków YAML) wraz z wersją szablonów i agentów.
+Wchodzą: `type`, `base`, `stacks` (kolejność), `node`, `dotnet` (wersje SDK jako zbiór), `apt` (jako zbiór), `setup` (kolejność),
+`docker.enabled`, `docker.images` (jako zbiór). Nie wchodzą: `resources`, `ports`, `network.*`, `verify`, `packs`,
+`box`, `notes`, `project` — limity i politykę czyta się przy starcie albo po budowie. Lista: `HASH_KEYS` i
+`NON_HASH_KEYS`, test pilnuje, że razem pokrywają cały schemat. `recipe_stamp(...)` dodatkowo zwraca skróty
+kluczy; budowa zapisuje go przy migawce, a `diff(profile, stamp, templates_version, agents_version)` zwraca listę
+kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `agents`…) — źródło stanu „do przebudowy”.
+
+### Zapis
+
+Katalog Tablicy: `$TIDE_BOARD_DIR` (domyślnie `~/DevWorkspace/tide-board`). Profil projektu:
+`projects/<slug>/box.yaml`, profil karty: `projects/<slug>/cards/<id karty>/box.yaml`. Zapis jest atomowy (plik
+tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; nazwy ścieżek są ograniczone do
+`[a-z0-9._-]`. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
+(walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
+nie trafia do repozytoriów projektów (CLAUDE.md firma).
+
 ## Modele lokalne
 
 Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych: teraz Ollama na tym komputerze (`http://127.0.0.1:11434`), później Mac Studio w sieci — zmianą adresu w ustawieniach, bez zmian w kodzie (plan `docs/agents/plans/2026-10-27-local-models.md`, PT-14). Usługa odczytuje stan serwerów i wystawia go przez D-Bus; przez wywołanie modelu (`tide_daemon.models.chat`) idą „Na daily” i opisy kart w trybie `"summary": "local"` (PT-15, sekcje „Raport poranny” i „Koordynacja”), zawsze przez wspólną kolejkę (PT-16, „Kolejka” niżej).
