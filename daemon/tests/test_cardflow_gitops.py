@@ -236,6 +236,27 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
         self.assertEqual(git(self.card, "status", "--porcelain"), "")
 
+    def test_merge_keeps_unrelated_local_changes_and_blocks_on_touched_files(self):
+        # 04.11, K-43: główny katalog BO z niezacommitowaną pracą w innych plikach blokował scalenie karty.
+        self.ticket_commit()
+        self.write(self.card, "base.txt", "praca użytkownika\n")
+        with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
+                mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
+            merged = self.merge()
+            self.assertFalse(merged["already"])
+            with open(os.path.join(self.card, "base.txt"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "praca użytkownika\n")
+            with open(os.path.join(self.card, "ticket.txt"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "ticket\n")
+            self.assertEqual(git(self.card, "status", "--porcelain"), "M base.txt")
+            self.write(self.ticket, "ticket.txt", "druga wersja\n")
+            git(self.ticket, "commit", "-qam", "second")
+            self.write(self.card, "ticket.txt", "lokalna zmiana\n")
+            before = git(self.repo, "rev-parse", "card/test")
+            with self.assertRaisesRegex(gitops.FlowGitError, "lokalne zmiany w scalanych plikach: ticket.txt"):
+                self.merge()
+        self.assertEqual(git(self.repo, "rev-parse", "card/test"), before)
+
     def test_retry_repairs_stale_worktree_after_ref_advanced(self):
         self.ticket_commit()
         with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
@@ -244,11 +265,11 @@ class MergeTest(unittest.TestCase):
             parent = git(self.repo, "rev-parse", merged["commit"] + "^1")
             git(self.card, "read-tree", "-m", "-u", merged["commit"], parent)
             self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
-            self.write(self.card, "base.txt", "local edit\n")
+            self.write(self.card, "ticket.txt", "local edit\n")
             with self.assertRaisesRegex(gitops.FlowGitError, "lokalne zmiany"):
                 self.merge()
             self.assertEqual(git(self.repo, "rev-parse", "card/test"), merged["commit"])
-            self.write(self.card, "base.txt", "base\n")
+            os.remove(os.path.join(self.card, "ticket.txt"))
             retry = self.merge()
         self.assertEqual(retry, {"commit": merged["commit"], "already": True})
         with open(os.path.join(self.card, "ticket.txt"), encoding="utf-8") as fh:
