@@ -272,21 +272,28 @@ table_loaded() {  # 0 — jest, 1 — brak, 2 — nie da się sprawdzić (bez ro
     [[ $out == *"Operation not permitted"* ]] && return 2
     return 1
 }
+check_rules() {  # nft -c przed jakąkolwiek zmianą; bez roota w podglądzie — pominięte z uwagą
+    local check
+    command -v nft >/dev/null || return 0
+    if ! check=$(nft -c -f "$1" 2>&1); then
+        if [[ $dry -eq 1 && $check == *"Operation not permitted"* ]]; then
+            echo "        (nft -c wymaga roota — składnię sprawdzi instalacja z sudo)"
+        else
+            echo "nft -c odrzucił reguły — przerywam, nic nie zmieniono:" >&2
+            echo "$check" | sed 's/^/  /' >&2
+            exit 1
+        fi
+    fi
+}
 if [[ -z "$address" ]]; then
+    # Adresu mostka jeszcze nie ma (świeży host): składnię sprawdzamy z adresem zastępczym, żeby błąd
+    # wyszedł przed apt i preseedem, nie dopiero w kroku 6. Właściwy plik powstaje po preseedzie.
+    bash "$files" rules 10.0.0.1 "$port" >"$work/tide-box.check.nft"
+    check_rules "$work/tide-box.check.nft"
     plan 6 nftables 1 "tabela inet tide-box w ${NFT_FILE#$root}: proxy <adres $BRIDGE po preseed>:$port, DHCP, reszta DROP"
 else
     bash "$files" rules "$address" "$port" >"$work/tide-box.nft"
-    if command -v nft >/dev/null; then
-        if ! check=$(nft -c -f "$work/tide-box.nft" 2>&1); then
-            if [[ $dry -eq 1 && $check == *"Operation not permitted"* ]]; then
-                echo "        (nft -c wymaga roota — składnię sprawdzi instalacja z sudo)"
-            else
-                echo "nft -c odrzucił reguły — przerywam, nic nie zmieniono:" >&2
-                echo "$check" | sed 's/^/  /' >&2
-                exit 1
-            fi
-        fi
-    fi
+    check_rules "$work/tide-box.nft"
     loaded=0
     table_loaded || loaded=$?
     if [[ $loaded -eq 0 ]] && cmp -s "$work/tide-box.nft" "$NFT_FILE"; then

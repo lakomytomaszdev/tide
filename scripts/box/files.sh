@@ -73,6 +73,10 @@ EOF
         # Jak nftables.service: przed network-pre.target, więc reguły są w jądrze, zanim wstanie sieć
         # i Incus. Nie używamy nftables.service ani /etc/nftables.conf — ten zaczyna od „flush ruleset”
         # i skasowałby reguły Dockera i Incusa.
+        # ExecReload wczytuje plik ponownie (jedna transakcja) bez ruszania Incusa: reload nie propaguje
+        # się przez Requires= z drop-inu, a stop i restart tak (gaszą Incusa razem z pudełkami).
+        # Bez ExecStop: zatrzymanie jednostki nie zdejmuje reguł (tabelę usuwa jawnie uninstall.sh), więc
+        # gdy incusd zostanie zabity po przekroczeniu czasu zatrzymania, a pudełka zostaną, filtr zostaje.
         cat <<EOF
 # Tide — pudełko karty (scripts/box/install.sh, PT-166): statyczne reguły nftables dla mostka Incusa.
 [Unit]
@@ -86,7 +90,7 @@ Conflicts=shutdown.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f $NFT_FILE
-ExecStop=/usr/sbin/nft delete table inet tide-box
+ExecReload=/usr/sbin/nft -f $NFT_FILE
 
 [Install]
 WantedBy=sysinit.target

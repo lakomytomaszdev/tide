@@ -2162,15 +2162,22 @@ Kroki — każdy najpierw sprawdza stan, więc drugie uruchomienie nic nie zmien
 5. **Projekt ograniczony** `user-<uid>` — ten, którego używa `incus-user`; skrypt zakłada go sam, zanim zrobi to
    `incus-user` (ten mógłby dać projektowi własny mostek bez naszych reguł): `restricted=true`,
    `restricted.containers.nesting=allow` (Docker w pudełku), `restricted.devices.disk=allow` tylko pod katalogiem
-   domowym (`restricted.devices.disk.paths`), `restricted.idmap.uid/gid` użytkownika (uid 1000 w pudełku = 1000
-   na hoście), `restricted.networks.access=incusbr0`; własny profil `default` jak wyżej; `incus-user.socket`
+   domowym (`restricted.devices.disk.paths`), `restricted.idmap.uid/gid` użytkownika (tylko pozwala instancji ustawić `raw.idmap`
+   z tym uid/gid — mapowanie zakłada dopiero pudełko, PT-169), `restricted.networks.access=incusbr0`; własny profil `default` jak wyżej; `incus-user.socket`
    włączony. `--project-mode admin` (grupa `incus-admin` = root hosta) skrypt przyjmuje tylko po próbie P-5
    z PT-164 i z wierszem `tryb-admin` w `docs/box-decisions.md`.
 6. **nftables**: plik `/etc/tide-box/tide-box.nft` (treść: `scripts/box/files.sh rules <adres mostka> <port>`)
    sprawdzony `nft -c`, potem wczytany `nft -f`.
 7. **Trwałość**: jednostka `tide-box-nft.service` wczytuje plik przy starcie (przed `network-pre.target`
    i Incusem); drop-in `/etc/systemd/system/incus.service.d/tide-box.conf` daje `incus.service` `Requires=` na nią
-   — bez reguł Incus nie wstaje, a zatrzymanie jednostki zatrzymuje Incusa. Nie używamy `nftables.service`:
+   — bez reguł Incus nie wstaje. **`systemctl stop` i `systemctl restart tide-box-nft` zatrzymują (restart:
+   zatrzymują i uruchamiają ponownie) Incusa razem ze wszystkimi pudełkami i sesjami `incus exec`** —
+   `Requires=` propaguje stop i restart; przy stop to zamierzone (pudełka gasną przed Incusem). Ponowne
+   wczytanie reguł bez ruszania Incusa: `systemctl reload tide-box-nft` (`ExecReload=nft -f …`; reload nie
+   przechodzi przez `Requires=`) albo wprost `sudo nft -f /etc/tide-box/tide-box.nft`. Jednostka nie ma
+   `ExecStop`: jej zatrzymanie nie zdejmuje reguł (tabelę usuwa jawnie `uninstall.sh`), więc filtr zostaje
+   w jądrze także wtedy, gdy incusd zostanie zabity po przekroczeniu czasu zatrzymania, a pudełka przeżyją.
+   Nie używamy `nftables.service`:
    `/etc/nftables.conf` zaczyna od `flush ruleset` i skasowałby reguły Dockera i Incusa.
 
 Na koniec skrypt wypisuje raport: nowe pakiety z symulacji, `incus list`, `incus project show user-<uid>`
@@ -2195,8 +2202,10 @@ Tabela `inet tide-box` ma dwa nazwane łańcuchy bazowe:
 **Konwencja `tide-proto` dla prób.** Prototypy (PT-164, PT-178) mogą na czas próby wstawić własne reguły
 `accept` przed regułami drop: `nft insert rule inet tide-box forward iifname "incusbr0" … accept comment
 "tide-proto"` (albo w łańcuchu `input`), a po próbie usunąć je po uchwytach (`nft -a list chain inet tide-box
-forward`, `nft delete rule inet tide-box forward handle <n>`). Ponowne wczytanie pliku (`systemctl restart
-tide-box-nft`) też je usuwa. Usługa takich reguł nie zakłada.
+forward`, `nft delete rule inet tide-box forward handle <n>`). Ponowne wczytanie pliku (`sudo systemctl reload
+tide-box-nft` albo `sudo nft -f /etc/tide-box/tide-box.nft`) też je usuwa i nie dotyka pudełek. **Nie
+`systemctl restart tide-box-nft`** — restart przez `Requires=` zatrzymuje Incusa ze wszystkimi kontenerami próby.
+Usługa takich reguł nie zakłada.
 
 **Odinstalowanie** (`make box-uninstall`, `scripts/box/uninstall.sh`, z `--dry-run` bez sudo) cofa kroki
 w odwrotnej kolejności według pliku stanu: jednostka i drop-in, tabela `inet tide-box` i `/etc/tide-box`,

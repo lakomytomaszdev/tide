@@ -6,7 +6,7 @@
 #
 # Kroki w odwrotnej kolejności niż instalacja:
 #  1. trwałość: wyłącza i usuwa tide-box-nft.service i drop-in incus.service (zatrzymanie jednostki
-#     zatrzymuje też Incusa — Requires=).
+#     zatrzymuje też Incusa — Requires=; tabela zostaje w jądrze do kroku 2, jednostka nie ma ExecStop).
 #  2. nftables: usuwa tabelę inet tide-box i /etc/tide-box.
 #  3. Incus: incus admin shutdown (zatrzymuje pudełka), zatrzymuje jednostki incus*, odmontowuje
 #     /var/lib/incus, odłącza pętlę puli, usuwa mostek incusbr0 i tabelę inet incus.
@@ -189,7 +189,9 @@ if planned nftables; then
 fi
 
 if planned incus; then
-    if command -v incus >/dev/null; then
+    # Po kroku 1 incusd zwykle już nie działa (Requires=); wywołanie incus obudziłoby go przez
+    # incus.socket tylko po to, żeby go zaraz wyłączyć.
+    if command -v incus >/dev/null && systemctl is-active --quiet incus.service; then
         incus admin shutdown || echo "incus admin shutdown nie przeszło — zatrzymuję jednostki." >&2
     fi
     for u in incus-startup.service incus-user.socket incus-user.service incus.socket incus.service; do

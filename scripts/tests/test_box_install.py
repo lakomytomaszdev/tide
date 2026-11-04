@@ -101,7 +101,9 @@ class RulesTest(unittest.TestCase):
     def test_unit_loads_the_rules_before_the_network_and_incus(self):
         unit = files_sh("unit").stdout
         self.assertIn("ExecStart=/usr/sbin/nft -f /etc/tide-box/tide-box.nft", unit)
-        self.assertIn("ExecStop=/usr/sbin/nft delete table inet tide-box", unit)
+        self.assertIn("ExecReload=/usr/sbin/nft -f /etc/tide-box/tide-box.nft", unit)
+        # Zatrzymanie jednostki nie zdejmuje filtra (tabelę usuwa uninstall.sh jawnie).
+        self.assertNotIn("ExecStop", unit)
         self.assertRegex(unit, r"Before=network-pre\.target incus\.service")
         self.assertNotIn("flush ruleset", unit)
         dropin = files_sh("dropin").stdout
@@ -246,6 +248,13 @@ class InstallDryRunTest(FakeHost):
         result = self.run_script("install.sh")
         self.assertEqual(result.returncode, 1)
         self.assertIn("libc6", result.stderr)
+
+    def test_fresh_host_checks_rule_syntax_with_a_placeholder_address_before_any_change(self):
+        self.state["nft_check_rc"] = 1
+        result = self.run_script("install.sh")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("nft -c odrzucił reguły", result.stderr)
+        self.assertTrue(any(c.startswith("nft -c -f") for c in self.calls()), self.calls())
 
     def test_refuses_to_take_over_incus_installed_by_someone_else(self):
         self.state["installed"] = True
