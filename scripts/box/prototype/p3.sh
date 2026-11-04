@@ -81,36 +81,50 @@ result "P-3 claude czas-host" "$(median "${host_times[@]}") s (${host_times[*]})
 # --- Codex ----------------------------------------------------------------------------------------
 if in_box_user sh -c 'command -v codex' >/dev/null 2>&1 && [[ -f $CODEX_AUTH ]]; then
     step "Codex: atrapa ~/.codex/auth.json w pudełku"
-    python3 - <<'EOF' | box_write "$BOX_HOME/.codex/auth.json" ubuntu:ubuntu
-import base64, datetime, json
+    # Tokeny w atrapie są bezwartościowe; z pliku hosta przechodzą tylko identyfikator konta i rodzaj planu (nie
+    # poświadczenia) — przebieg 3: z wymyślonym kontem Codex odrzucał „selected workspace missing from routing
+    # discovery”, bo lista kont (przez proxy, prawdziwa) nie zawierała konta z atrapy. Skrypt ich nie wypisuje.
+    python3 - "$CODEX_AUTH" <<'EOF' | box_write "$BOX_HOME/.codex/auth.json" ubuntu:ubuntu
+import base64, datetime, json, sys
+host = json.load(open(sys.argv[1], encoding="utf-8")).get("tokens", {})
+def claims_of(jwt):
+    try:
+        part = jwt.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except Exception:
+        return {}
+auth = claims_of(host.get("id_token", "")).get("https://api.openai.com/auth", {})
+account = host.get("account_id") or auth.get("chatgpt_account_id") or "tide-box-dummy"
+plan = auth.get("chatgpt_plan_type") or "plus"
 def b64(obj):
     return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
 claims = {"email": "box@tide.invalid", "exp": 4102444800,
-          "https://api.openai.com/auth": {"chatgpt_plan_type": "plus", "chatgpt_account_id": "tide-box-dummy"}}
+          "https://api.openai.com/auth": {"chatgpt_plan_type": plan, "chatgpt_account_id": account}}
 jwt = f'{b64({"alg": "none", "typ": "JWT"})}.{b64(claims)}.atrapa'
 now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 print(json.dumps({"OPENAI_API_KEY": None, "tokens": {"id_token": jwt, "access_token": jwt,
-      "refresh_token": "tide-box-dummy", "account_id": "tide-box-dummy"}, "last_refresh": now}))
+      "refresh_token": "tide-box-dummy", "account_id": account}, "last_refresh": now}))
 EOF
     in_box chmod 600 "$BOX_HOME/.codex/auth.json"
     run in_box_user codex --version || true
     codex_ok=""
-    for variant in chatgpt_base_url chatgpt_base_url+OPENAI_BASE_URL; do
+    for variant in "${CODEX_VARIANTS[@]}"; do
         step "Codex wariant $variant"
-        extra=()
-        [[ $variant == *OPENAI_BASE_URL ]] && extra=(--env "OPENAI_BASE_URL=$BASE/chatgpt/backend-api/codex")
+        codex_args "$BASE" "$variant"
         mark_a=$(lines "$PROXY_ACCESS"); mark_d=$(lines "$PROXY_DENY")
         rc=0
         box_env
         run timeout 180 incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME" --env "HOME=$BOX_HOME" \
-            "${BOX_ENV[@]}" "${extra[@]}" -- codex exec --skip-git-repo-check \
-            -c "chatgpt_base_url=\"$BASE/chatgpt/backend-api/\"" 'Reply with the single word: hi' </dev/null || rc=$?
+            "${BOX_ENV[@]}" "${CODEX_ENV[@]}" -- codex exec --skip-git-repo-check \
+            "${CODEX_CFG[@]}" 'Reply with the single word: hi' </dev/null || rc=$?
         echo "-- żądania przez proxy:"; since "$PROXY_ACCESS" "$mark_a" | cut -f3- | sort | uniq -c
         echo "-- odmowy CONNECT:"; since "$PROXY_DENY" "$mark_d" | cut -f2,3 | sort | uniq -c
         codes=$(since "$PROXY_ACCESS" "$mark_a" | awk -F'\t' '$4 ~ /^\/chatgpt/ {print $4" "$5}' | sort | uniq -c | tr -s ' ' | tr '\n' ';')
         result "P-3 codex $variant" "kod $rc; /chatgpt: ${codes:-brak żądań}"
         [[ $rc -eq 0 && -z $codex_ok ]] && codex_ok=$variant
     done
+    # Wariant, który przeszedł, bierze p2.sh do `codex exec --sandbox workspace-write`.
+    mkdir -p "$PROTO_STATE"; echo "${codex_ok:-provider}" >"$PROTO_STATE/codex-variant"
     if [[ -n $codex_ok ]]; then
         result "P-3 codex" "działa w wariancie $codex_ok"
     else

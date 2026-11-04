@@ -132,6 +132,25 @@ box_write() {
         cat >"$1" && chown "$2" "$1"' sh "$1" "${2:-root:root}"
 }
 
+# --- Codex przez proxy wstrzykujące (P-3, P-2) -----------------------------------------------------------
+# codex_args <base> <wariant> — ustawia CODEX_ENV (argumenty --env dla incus exec) i CODEX_CFG (argumenty -c).
+#   base-url  — chatgpt_base_url na proxy,
+#   openai    — jak base-url + OPENAI_BASE_URL (adres modelu w trybie ChatGPT),
+#   provider  — własny dostawca modelu z base_url na proxy i requires_openai_auth (logowanie ChatGPT).
+# Przebieg 3 (2026-11-04T1354): w wariantach base-url i openai wywołanie modelu szło przez CONNECT prosto do
+# chatgpt.com (odmowa), nie przez base URL.
+CODEX_VARIANTS=(base-url openai provider)
+codex_args() {
+    local base=$1 variant=$2
+    CODEX_ENV=()
+    CODEX_CFG=(-c "chatgpt_base_url=\"$base/chatgpt/backend-api/\"")
+    case $variant in
+        openai) CODEX_ENV=(--env "OPENAI_BASE_URL=$base/chatgpt/backend-api/codex") ;;
+        provider) CODEX_CFG+=(-c 'model_provider="tide"'
+            -c "model_providers.tide={ name = \"tide\", base_url = \"$base/chatgpt/backend-api/codex\", wire_api = \"responses\", requires_openai_auth = true }") ;;
+    esac
+}
+
 # Pudełko prób z konfiguracją proxy z karty: /etc/environment, apt, drop-in dockerd.
 box_ensure() {
     if box_exists; then

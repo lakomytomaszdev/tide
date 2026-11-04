@@ -46,6 +46,20 @@ run in_box_user sh -c 'echo "etykieta AppArmor: $(cat /proc/self/attr/current)";
 box_pid=$(incus info "$PROTO_BOX" 2>/dev/null | awk '/^PID:/ {print $2}')
 echo "host: profil AppArmor procesu init pudełka (pid ${box_pid:-?}): $(cat "/proc/${box_pid:-0}/attr/current" 2>/dev/null || echo nieczytelny)"
 run in_box_user sh -c 'command -v bwrap socat; bwrap --version' || true
+# Wariant A ma być pudełkiem z obrazu: profil bwrap z poprzedniego wariantu B zdejmujemy z jądra i z /etc.
+run in_box sh -c 'f=/etc/apparmor.d/bwrap-userns-restrict; if [ -f "$f" ]; then apparmor_parser -R "$f"; rm -f "$f"; echo "zdjęto profil bwrap z wariantu B"; fi' || true
+
+# Codex 0.166: `codex sandbox linux …` potraktował „linux” jako polecenie (przebieg 3: „Failed to execvp linux”),
+# więc próba bierze formę z pomocy: `codex sandbox linux` tylko, gdy taka podkomenda istnieje.
+if in_box_user sh -c 'codex sandbox --help 2>&1 | grep -Eq "^[[:space:]]+linux"' 2>/dev/null; then
+    CODEX_SANDBOX=(codex sandbox linux --full-auto)
+else
+    CODEX_SANDBOX=(codex sandbox --full-auto)
+fi
+echo "forma piaskownicy Codexa: ${CODEX_SANDBOX[*]}"
+run in_box_user codex sandbox --help || true
+CODEX_VARIANT=$(cat "$PROTO_STATE/codex-variant" 2>/dev/null || echo provider)
+echo "wariant Codexa z P-3: $CODEX_VARIANT"
 
 # suite <wariant> — cały zestaw prób; wyniki jako „WYNIK P-2 <wariant> …”.
 suite() {
@@ -61,9 +75,11 @@ suite() {
     in_box_user sh -c 'rm -rf ~/p2-work ~/p2-outside-*; mkdir -p ~/p2-work ~/.claude && echo p2-marker-not-a-secret > ~/.claude/p2-marker'
 
     if in_box_user sh -c 'command -v codex' >/dev/null 2>&1; then
-        step "[$v] codex sandbox linux --full-auto (bez modelu)"
-        run in_box_user sh -c 'cd ~/p2-work && codex sandbox linux --full-auto -- sh -c \
-            "echo ok > ./codex-inside; echo zle > ~/p2-outside-codex; cat ~/.claude/p2-marker"' || cs_rc=$?
+        step "[$v] ${CODEX_SANDBOX[*]} (bez modelu)"
+        box_env
+        run incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME/p2-work" --env "HOME=$BOX_HOME" \
+            "${BOX_ENV[@]}" -- "${CODEX_SANDBOX[@]}" -- sh -c \
+            "echo ok > ./codex-inside; echo zle > $BOX_HOME/p2-outside-codex; cat $BOX_HOME/.claude/p2-marker" || cs_rc=$?
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-inside && echo tak || echo nie')
         outside=$(in_box_user sh -c 'test -f ~/p2-outside-codex && echo tak || echo nie')
         result "P-2 $v codex-sandbox" "kod $cs_rc; zapis w katalogu roboczym: $inside; zapis poza nim: $outside"
@@ -107,11 +123,12 @@ EOF
     fi
 
     if [[ -f $CODEX_AUTH ]] && in_box_user sh -c 'test -f ~/.codex/auth.json' 2>/dev/null; then
-        step "[$v] codex exec --sandbox workspace-write (model przez $BASE/chatgpt)"
+        step "[$v] codex exec --sandbox workspace-write (model przez $BASE/chatgpt, wariant $CODEX_VARIANT)"
+        codex_args "$BASE" "$CODEX_VARIANT"
         box_env
         run timeout 300 incus exec "$PROTO_BOX" --user 1000 --group 1000 --cwd "$BOX_HOME/p2-work" --env "HOME=$BOX_HOME" \
-            "${BOX_ENV[@]}" --env "OPENAI_BASE_URL=$BASE/chatgpt/backend-api/codex" -- codex exec --skip-git-repo-check \
-            --sandbox workspace-write -c "chatgpt_base_url=\"$BASE/chatgpt/backend-api/\"" \
+            "${BOX_ENV[@]}" "${CODEX_ENV[@]}" -- codex exec --skip-git-repo-check \
+            --sandbox workspace-write "${CODEX_CFG[@]}" \
             'Run these two shell commands and report their exit codes: `echo ok > ./codex-model-inside` and `echo bad > ~/p2-outside-codex-model`' \
             </dev/null || cx_rc=$?
         inside=$(in_box_user sh -c 'test -f ~/p2-work/codex-model-inside && echo tak || echo nie')

@@ -11,7 +11,9 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 status=0
 # P6_ONLY=klient,… — powtórka tylko części P-6 (np. playwright,noproxy), reszta pudełka z poprzedniego przebiegu.
-for trial in p7 p6 p3 p2; do
+# TRIALS="p3 p2" — tylko wybrane próby (kolejność jak podana; p2 korzysta z wariantu Codexa z p3).
+for trial in ${TRIALS:-p7 p6 p3 p2}; do
+    [[ $trial =~ ^p[2367]$ ]] || { echo "TRIALS: nieznana próba $trial (p2, p3, p6, p7)" >&2; exit 2; }
     echo "######## $trial"
     args=()
     [[ $trial == p6 && -n ${P6_ONLY:-} ]] && args=(--only "$P6_ONLY")

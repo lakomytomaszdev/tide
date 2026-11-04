@@ -12,32 +12,35 @@ sieć tylko przez nftables z PT-166 (z mostka wolno wyłącznie do `<adres mostk
 domen z listy (wariant awaryjny apt) i trasy wstrzykujące `/anthropic`, `/chatgpt` (K3). Sprzątanie:
 `scripts/box/prototype/cleanup.sh`.
 
-Przebiegi: 1 — 2026-11-04 12:33 (P-6 padło na źródłach apt); 2 — 13:07 (pełny P-6 bez Playwright i NO_PROXY, P-3
-Claude, P-2 wariant A); 3 — po poprawkach z przebiegu 2 (Playwright na Node 18, NO_PROXY, Codex, P-2 wariant B).
+Przebiegi (2026-11-04): 1 — 12:33 (P-6 padło na źródłach apt); 2 — 13:07 (pełny P-6 bez Playwright i NO_PROXY,
+P-3 Claude, P-2 wariant A); 3 — 13:51 (`P6_ONLY=playwright,noproxy`: Playwright, NO_PROXY, P-3 Codex, P-2 warianty A
+i B); 4 — `TRIALS="p3 p2"`: Codex z własnym dostawcą modelu i prawdziwym identyfikatorem konta, forma
+`codex sandbox` z pomocy.
 
 ## Tabela prób
 
 | Próba | Pytanie | Skrypt | Wynik | Dziennik |
 | --- | --- | --- | --- | --- |
-| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | **wariant A (pudełko z obrazu): NIE działa** ani bwrap, ani piaskownica Codexa. Goły `bwrap --unshare-all` → `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`; `unshare --user --map-root-user` → `write failed /proc/self/uid_map: Operation not permitted`. Jądro: `apparmor="DENIED" operation="capable" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns"` (setpcap, net_admin, sys_admin) — ograniczenie hosta działa też w przestrzeni AppArmor pudełka (profil init: `incus-user-1000_tide-proto-net_…//&:…:unconfined`). `claude -p` z `sandbox.enabled=true`, `failIfUnavailable` odmawia startu: „sandbox required but unavailable … Ubuntu's AppArmor restriction on user namespaces stops bubblewrap”. Codex 0.166 `codex sandbox linux` też używa bwrap — ten sam błąd. **Wariant B** (profil `bwrap` z `userns,` wczytany w pudełku) — przebieg 3 | `p2-2026-11-04T132223.log` |
-| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | **Claude Code: K3 możliwe** — `ANTHROPIC_BASE_URL=http://<mostek>:18080/anthropic CLAUDE_CODE_OAUTH_TOKEN=<atrapa> claude -p 'hi'` 3/3 kod 0, proxy: 3× `INJECT POST /anthropic/v1/messages` → **200**, w pudełku tylko atrapa. Odświeżenie OAuth: 0 żądań (ani base URL, ani CONNECT) — pudełko nie odświeża, token odświeża host, proxy czyta plik przy każdym żądaniu. Poza base URL Claude Code próbuje `CONNECT api.anthropic.com:443` (18× w 3 uruchomieniach, odmowa, bez wpływu na wynik). **Codex: bez odpowiedzi** — błąd skryptu: `~/.codex` utworzony jako root → `failed to initialize in-process app-server client: Permission denied (os error 13)` przed jakimkolwiek żądaniem do `/chatgpt` (jedyne: `CONNECT ab.chatgpt.com`, odmowa); poprawione, przebieg 3 | `p3-2026-11-04T132151.log` |
-| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | **CONNECT bez DNS działa** dla apt (po przepisaniu na `https://`), npm, NuGet, pip, `docker pull`, instalatora Claude Code i `npm i -g @openai/codex` (tabela niżej). **Playwright**: `npm i playwright` przez proxy OK, ale Playwright 1.64 wymaga Node ≥ 20, a Ubuntu 24.04 ma 18.19 — pobieranie przeglądarki nie ruszyło; przebieg 3 z `playwright@1.49.1`. **Node `fetch`** (18.19) nie używa proxy wcale (`ConnectTimeoutError`, 0 wpisów w proxy; `NODE_USE_ENV_PROXY=1` działa dopiero od Node 24) — bezpośrednie połączenie blokuje nftables. **NO_PROXY** — przebieg 3 (w przebiegu 2 próba przerwana błędem skryptu: `pkill -f` zabił własną powłokę) | `p6-2026-11-04T130727.log`, przebieg 1: `p6-2026-11-04T123348.log` |
-| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | **działa**: `incus 6.0.0-1ubuntu0.3` z noble-security/universe, `incus image list images: ubuntu/24.04` kod 0, `incus launch images:ubuntu/24.04` kod 0 w 1–2 s (Ubuntu 24.04.5 LTS) w projekcie `user-1000`, dwa przebiegi. Zabbly niepotrzebne (decyzja `incus-z-ubuntu`) | `p7-2026-11-04T130723.log`, `p7-2026-11-04T123343.log` |
+| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | **bwrap (Claude Code): działa po wczytaniu profilu AppArmor w pudełku (wariant B); z gołego obrazu (A) nie.** A: `bwrap --unshare-all` → `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`, jądro: `apparmor="DENIED" operation="capable" namespace="root//incus-user-1000_tide-proto-net_<var-lib-incus>" profile="unprivileged_userns"` (setpcap, net_admin) — ograniczenie hosta obowiązuje w przestrzeni AppArmor pudełka; `claude -p` z `failIfUnavailable` odmawia startu („Ubuntu's AppArmor restriction on user namespaces stops bubblewrap here”). B: profil `profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }` (ten sam co na hoście, `scripts/sandbox/check.py profile`) wczytany przez `apparmor_parser -r` **wewnątrz** pudełka (root pudełka, host bez zmian) → goły bwrap `bwrap-ok`; `claude -p` z `sandbox.enabled=true` kod 0: odczyt `~/.claude/p2-marker` → `No such file or directory` (denyRead maskuje katalog), zapis w katalogu roboczym tak, poza nim `Read-only file system`. `unshare --user` bez profilu nadal odmowa — ograniczenie zostaje dla reszty procesów. Decyzja `bwrap-profil-w-pudelku`. **Codex (bwrap/landlock): wynik w przebiegu 4** — 0.166 też używa bwrap (A: ten sam błąd); w B próba bez modelu padła na składni (`codex sandbox linux` → „Failed to execvp linux”), nie na piaskownicy | `p2-2026-11-04T135550.log`, `p2-2026-11-04T132223.log` |
+| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | **Claude Code: K3 możliwe** — `ANTHROPIC_BASE_URL=http://<mostek>:18080/anthropic CLAUDE_CODE_OAUTH_TOKEN=<atrapa> claude -p 'hi'` 6/6 kod 0 w dwóch przebiegach, proxy `INJECT POST /anthropic/v1/messages` → **200**, w pudełku tylko atrapa. Odświeżenie OAuth: 0 żądań przez proxy (ani base URL, ani CONNECT) — pudełko nie odświeża, token odświeża host, proxy czyta plik przy każdym żądaniu. Poza base URL Claude Code próbuje `CONNECT api.anthropic.com:443` (odmowa, bez wpływu). **Codex (przebieg 3): wstrzyknięcie działa dla `chatgpt_base_url`** (`wham/accounts/check`, `ps/plugins/*`, `ps/mcp`, `analytics-events` → 200/204), ale **wywołanie modelu nie idzie przez base URL**: w wariancie `chatgpt_base_url` i `+OPENAI_BASE_URL` Codex łączy się przez CONNECT prosto z `chatgpt.com:443` (20× odmowa na wariant) i kończy „selected workspace missing from routing discovery” (atrapa miała wymyślony identyfikator konta). Przebieg 4: własny dostawca (`model_providers.tide`, `base_url` na proxy, `requires_openai_auth = true`) i identyfikator konta hosta w atrapie | `p3-2026-11-04T135419.log`, `p3-2026-11-04T132151.log` |
+| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | **działa**: apt (źródła przepisane na `https://`, decyzja `apt-przez-https`), npm, NuGet, pip, `docker pull`, Playwright (`playwright@1.49.1`), instalator Claude Code i `npm i -g @openai/codex` przechodzą przez CONNECT bez DNS z listą z dziennika odmów. **NO_PROXY honorują wszyscy badani** (curl, Node `fetch`, dotnet `HttpClient`, Playwright/Chromium) dla `localhost` i `127.0.0.1`: serwer w pudełku dostał żądanie, proxy 0 wpisów. Wyjątki: **Node `fetch`** (18.19) nie używa proxy wcale — ruch na zewnątrz pada (`ConnectTimeoutError`, połączenie bezpośrednie blokuje nftables); **Playwright ≥ 1.50 wymaga Node ≥ 20** (Ubuntu 24.04 ma 18.19) — obraz bazowy potrzebuje nowszego Node (#16/#29) | `p6-2026-11-04T135145.log`, `p6-2026-11-04T130727.log`, przebieg 1: `p6-2026-11-04T123348.log` |
+| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | **działa**: `incus 6.0.0-1ubuntu0.3` z noble-security/universe, `incus image list images: ubuntu/24.04` kod 0, `incus launch images:ubuntu/24.04` kod 0 w 1–2 s (Ubuntu 24.04.5 LTS) w projekcie `user-1000`, trzy przebiegi. Zabbly niepotrzebne (decyzja `incus-z-ubuntu`) | `p7-2026-11-04T135140.log`, `p7-2026-11-04T130723.log`, `p7-2026-11-04T123343.log` |
 
-### Pomiar `claude -p 'hi'` (P-3, przebieg 2, trzy powtórzenia)
+### Pomiar `claude -p 'hi'` (P-3, trzy powtórzenia na przebieg)
 
-| Gdzie | Czasy [s] | Mediana [s] |
-| --- | --- | --- |
-| pudełko, przez proxy wstrzykujące | 4,26 · 5,73 · 3,52 | **4,26** |
-| host | 6,93 · 4,42 · 5,65 | **5,65** |
+| Gdzie | Przebieg 2 [s] | Przebieg 3 [s] | Mediana z 6 [s] |
+| --- | --- | --- | --- |
+| pudełko, przez proxy wstrzykujące | 4,26 · 5,73 · 3,52 (mediana 4,26) | 5,81 · 5,45 · 12,18 (mediana 5,81) | **5,59** |
+| host | 6,93 · 4,42 · 5,65 (mediana 5,65) | 4,32 · 4,08 · 5,09 (mediana 4,32) | **4,76** |
 
-Narzutu proxy nie widać — rozrzut między powtórzeniami (±1,5 s) jest większy niż różnica. Host uruchamia pełną
-konfigurację użytkownika (CLAUDE.md, wtyczki), pudełko gołe `claude` — stąd host bywa wolniejszy.
+Narzut proxy mieści się w rozrzucie: mediany przebiegów zamieniają się kolejnością (2: pudełko szybsze o 1,4 s, 3:
+wolniejsze o 1,5 s), a pojedyncze uruchomienie 12,18 s to odstający wynik (opóźnienie API, nie proxy — żądanie przez
+proxy to jeden POST). Różnica median z sześciu prób: ~0,8 s.
 
 ## Domeny z dziennika odmów
 
 Źródło dla szablonów stosów (#16/PT-192, #29, #30/PT-193). Runda 1 każdego klienta biegnie z pustą listą; kolejne
-dokładają domeny z odmów, aż klient przejdzie (przebieg 2, `docs/box-prototype/p6-2026-11-04T130727/domains-*.txt`).
+dokładają domeny z odmów, aż klient przejdzie (`docs/box-prototype/p6-*/domains-*.txt`).
 
 | Klient | Polecenie | Pusta lista | Domeny potrzebne | Rundy |
 | --- | --- | --- | --- | --- |
@@ -47,21 +50,22 @@ dokładają domeny z odmów, aż klient przejdzie (przebieg 2, `docs/box-prototy
 | NuGet / dotnet | `dotnet restore` | kod 1 | `api.nuget.org`, `crl3.digicert.com`, `ocsp.digicert.com` (sprawdzanie unieważnienia certyfikatów podpisu paczek) | 3 |
 | pip | `pip download requests==2.32.3` | kod 1 | `pypi.org`, `files.pythonhosted.org` | 3 |
 | docker pull | `docker pull hello-world` (dockerd z drop-inem proxy) | kod 1 | `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com` | 4 |
-| Playwright | `npm i playwright && npx playwright install chromium` | kod 1 | `registry.npmjs.org`; domeny pobierania przeglądarki — przebieg 3 | — |
+| Playwright | `npm i playwright@1.49.1 && npx playwright install chromium` | kod 1 | `registry.npmjs.org`, `playwright.azureedge.net`, `playwright-akamai.azureedge.net`, `playwright-verizon.azureedge.net`, `playwright.download.prss.microsoft.com` (lustra pobierania przeglądarki, próbowane po kolei) | 4 |
 | instalator Claude Code | `curl -fsSL https://claude.ai/install.sh \| bash -s 2.1.317` | kod 22 | `claude.ai`, `downloads.claude.ai`; `api.anthropic.com` po instalacji (`claude --version`), niepotrzebne do instalacji | 4 |
 | Codex | `npm i -g @openai/codex` (0.166.0) | kod 1 | `registry.npmjs.org` | 2 |
-| Claude Code (praca, P-3) | `claude -p` przez base URL | — | żadnej przez CONNECT; odmowy `api.anthropic.com` bez wpływu | — |
-| Codex (praca, P-3) | `codex exec` | — | odmowa `ab.chatgpt.com` (telemetria); reszta — przebieg 3 | — |
+| Claude Code (praca, P-3) | `claude -p` przez base URL | — | żadnej przez CONNECT; odmowy `api.anthropic.com` bez wpływu na wynik | — |
+| Codex (praca, P-3) | `codex exec` | — | `chatgpt.com` (wywołanie modelu poza base URL — z K3 domena ma **nie** być na liście, bo idzie z atrapą), `sdmntprcentralus.oaiusercontent.com`, `sdmntprsouthcentralus.oaiusercontent.com` (pliki/wtyczki), `ab.chatgpt.com` (telemetria) — odmowy | — |
 
 ## NO_PROXY per klient
 
-`NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,<adres mostka>`; serwer HTTP w pudełku na pętli
-zwrotnej. „Tak” = serwer dostał żądanie, a dziennik proxy nie ma wpisu.
+`NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,<adres mostka>`; serwer HTTP w pudełku
+(`python3 -m http.server 8765 --bind ::`) na pętli zwrotnej. „Tak” = serwer dostał żądanie, a dziennik proxy nie ma
+wpisu (przebieg 3, `docs/box-prototype/p6-2026-11-04T135145.log`).
 
 | Klient | Przez CONNECT | `localhost` bez proxy | `127.0.0.1` bez proxy | Obejście |
 | --- | --- | --- | --- | --- |
-| curl | tak (instalator Claude Code) | przebieg 3 | przebieg 3 | |
-| Node `fetch` (18.19) | **nie** — ignoruje `HTTP(S)_PROXY` | przebieg 3 (bez proxy z definicji) | przebieg 3 | dla ruchu na zewnątrz: Node ≥ 24 z `NODE_USE_ENV_PROXY=1` albo `undici` `EnvHttpProxyAgent` w kodzie |
-| dotnet `HttpClient` | tak (NuGet) | przebieg 3 | przebieg 3 | |
-| Playwright (Chromium) | — | przebieg 3 | przebieg 3 | |
-| apt, npm, pip, dockerd, Codex npm | tak | nie dotyczy (bez żądań do localhost) | | |
+| curl | tak (instalator Claude Code) | tak | tak | — |
+| Node `fetch` (18.19) | **nie** — ignoruje `HTTP(S)_PROXY` | tak (nie używa proxy wcale) | tak | ruch na zewnątrz: Node ≥ 24 z `NODE_USE_ENV_PROXY=1` albo `undici` `EnvHttpProxyAgent` w kodzie; Node 18 z `NODE_USE_ENV_PROXY=1` — bez zmian (`ConnectTimeoutError`) |
+| dotnet `HttpClient` | tak (NuGet) | tak | tak | — |
+| Playwright (Chromium 1.49.1) | tak (pobranie przeglądarki) | tak | tak | — |
+| apt, npm, pip, dockerd, instalator Codexa | tak | nie dotyczy (bez żądań do localhost) | | — |
