@@ -2382,6 +2382,89 @@ zapisuje pakiety (`dpkg-query -W`), łącza (`ip -o link`: nazwa i typ), `nft li
 `getent group`, `/etc/subuid` i `/etc/subgid`, istnienie pliku puli i katalogów Incusa oraz jednostki `incus*`,
 `lxcfs*`, `tide-box*`. Migawka przed `make box-install` i po `make box-uninstall` musi być identyczna.
 
+### Proxy wyjściowe (PT-168)
+
+`tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`
+tylko `<adres mostka>:<box.proxy-port>`, pudełko nie ma DNS ani NAT. Proxy działa w usłudze, we własnym wątku
+z pętlą asyncio, i nigdy nie zmienia nftables ani nie woła `sudo` (test przeszukuje kod usługi).
+
+**Start.** Ustawienia w sekcji `box` pliku `$XDG_CONFIG_HOME/tide/cardflow.json` (`box/settings.py`):
+
+```json
+{"box": {"enabled": true, "proxy-port": 18080, "bridge": "incusbr0"}}
+```
+
+Proxy startuje razem z usługą tylko przy `enabled: true` (domyślnie wyłączone; zła wartość — wyłączone), gdy jest
+polecenie `incus` i mostek ma adres (`incus network get incusbr0 ipv4.address`; z projektu ograniczonego
+`incus-user` to polecenie bywa niedostępne — na tym komputerze zawsze — wtedy zapasem jest adres interfejsu
+`ip -j -4 addr show dev incusbr0`, ten sam, który wpuszczają reguły nftables). Zapas jest słabszy niż odczyt
+z Incusa: sprawdza tylko, że interfejs o nazwie z `box.bridge` jest mostkiem w jądrze (`ip -j -d link show`,
+`linkinfo.info_kind == "bridge"`), więc `"bridge": "wlan0"` czy `eth0` daje odmowę startu, ale inny mostek
+wskazany w ustawieniach wprost (np. `virbr0`) przejdzie — wtedy jego goście dostają 403 na wszystko (brak polityki).
+Sprawdzenie, że profil Incusa podłącza pudełka do tego mostka (`incus profile show default`), odłożone: nie wiemy,
+czy `incus-user` je widzi. Słucha **wyłącznie** na tym
+adresie: `0.0.0.0`, `::`, pętla zwrotna i adres inny niż mostka → odmowa startu. Każda przeszkoda (brak Incusa,
+brak mostka, zły adres, zajęty port) to wpis w dzienniku usługi, a usługa działa dalej jak bez pudełka.
+`--no-box` wyłącza proxy niezależnie od ustawień. `proxy-port` musi być równy `BOX_PROXY_PORT` z `make box-install`.
+
+**Polityka per pudełko, kluczowana adresem IP.** `set_box_policy(ip, domains, ollama, denied_log_path, *,
+full=False, box="")` ustawia (albo zastępuje) politykę pudełka o adresie `ip`; działa od następnego połączenia,
+bez restartu proxy (otwarte tunele nie są przerywane). Woła ją krok w pudełku (PT-181) przy starcie kroku
+i builder (PT-167) przed pierwszym `incus exec` budowy; `box.proxy.running()` zwraca proxy uruchomione z usługą
+(po `stop()` — `None`).
+Nieznany adres = brak polityki = każde żądanie 403 (wpis tylko w dzienniku usługi). Klucz IP jest bezpieczny
+**wyłącznie dlatego**, że builder ustawia na NIC każdego pudełka `security.mac_filtering`, `ipv4_filtering`
+i `ipv6_filtering` (Incus odrzuca pakiety z cudzym adresem źródłowym) — proxy nie umie tego sprawdzić samo;
+„podszycie pod IP innego pudełka” jest na czerwonej liście PT-191.
+
+Listę składa `compose_policy(project, cards)`: domeny modeli (`MODEL_DOMAINS`: `api.anthropic.com`,
+`statsig.anthropic.com`, `api.openai.com`, `chatgpt.com`, `auth.openai.com` — dokłada usługa, nie profil)
++ `templates.build_domains` profilu projektu (`base`, szablony wg `stacks`, `network.domains` — ta sama funkcja co
+w builderze) + profile aktywnych kart scalone z profilem projektu przez `profile.merge` (czerwone pozycje karty
+tylko z `accepted_red`). Usługa sama nigdy nie dokłada `github.com`, `gitlab.*`, adresów wewnętrznych ani
+`*.firma.example` (test). `network.full` karty bez `network.full-consent: true` jest pomijane z wpisem w dzienniku
+usługi; z jawną zgodą i `accepted_red: [network.full]` daje `full=True`: każda poprawna nazwa i goły adres
+**publiczny**. Pełna sieć nie otwiera sieci lokalnej ani adresu hosta na mostku — to osobna czerwona klasa: cel
+spoza listy jest zawsze traktowany jako publiczny, więc `CONNECT 10.173.184.1:443`, `10.20.3.10:443`
+czy `nas.lan:443` (rozwiązane do sieci lokalnej) dostają 403, chyba że ten cel jest osobno na liście. `host-ollama: true` w profilu projektu albo karty daje `ollama=True`.
+
+**CONNECT bez MITM.** Tylko port 443; dopasowanie dokładne albo `*.domena` (tylko poddomeny:
+`*.npmjs.org` nie pasuje do `npmjs.org`, `npmjs.org.attacker.com` ani `evil-npmjs.org`). Nazwy są porównywane
+małymi literami i bez jednej kropki końcowej; nazwa z liczbową albo szesnastkową ostatnią etykietą (`10.1`,
+`3232235786`) nie jest nazwą. Goły adres IP przechodzi tylko wtedy, gdy jest dosłownie na liście. Nazwę rozwiązuje
+proxy i łączy się z adresem, który właśnie sprawdziło: pętla zwrotna, link-local, nieokreślony i multicast — nigdy;
+adres prywatny i 100.64/10 — tylko dla celu, który jest na liście pudełka i który profil uznaje za wewnętrzny
+(przyjęta czerwona pozycja karty, `BoxPolicy.internal`), więc nazwa publiczna wskazująca nagle do sieci lokalnej
+nie przechodzi (403 z rodzajem `ADDRESS`). Po `200 Connection established` proxy tylko
+przepisuje bajty w obie strony.
+
+**Zwykłe HTTP.** Do obcej domeny (`GET http://…`) — zawsze 403. Wariantu „zwykłe HTTP do domen z listy”
+(`box.proxy-plain-http`) nie ma: apt idzie przez HTTPS (decyzja `apt-przez-https`, `docs/box-decisions.md`).
+
+**Ollama hosta przez proxy.** Żądanie w formie względnej (`GET /api/tags`, czyli `http://<mostek>:<port>/api/tags`
+z pudełka) albo bezwzględnej na adres samego proxy idzie na `127.0.0.1:11434` — tylko dla pudełka z `ollama=True`
+i tylko ścieżki `/`, `/api/…`, `/v1/…` (reszta 404; miejsce na trasy PT-175). Proxy ustawia `Host:
+127.0.0.1:11434` i `Connection: close`, wyrzuca nagłówki „hop-by-hop”, a odpowiedź przekazuje bajt w bajt bez
+buforowania (strumień `/api/generate` dociera fragmentami). Inny cel niż `127.0.0.1:11434` nie jest możliwy —
+proxy nie jest przekaźnikiem HTTP. `ollama=False` → 403 i wiersz `host-ollama`. Zmian nftables w czasie pracy nie ma.
+`models/boxconfig.for_box(data, mostek, port)` robi z `models.json` hosta wersję dla pudełka: punkty Ollamy hosta
+(`127.0.0.1`/`localhost`/`[::1]` na 11434) → `http://<mostek>:<port proxy>`; inne punkty, dostawcy i `tokenFile`
+nie trafiają do pudełka, a role przypięte do pominiętego punktu znikają (obowiązuje rola domyślna).
+
+**Dziennik odmów.** Odmowa to 403 i wiersz TSV w `denied_log_path` (plik 0600) — w kroku karty
+`proxy-denied.log` w katalogu bieżącego kroku, przy budowie ścieżka od buildera (zdarzenie `box.build` w dzienniku
+Tablicy):
+
+```
+2026-11-04T15:02:11+01:00	tide-proto	10.173.184.23	example.com	443	CONNECT
+```
+
+Pola: czas, pudełko (nazwa z `box`, inaczej adres), adres IP pudełka, domena, port, rodzaj (`CONNECT` — cel spoza
+listy, `ADDRESS` — cel z listy rozwiązany na adres niedozwolony: pętla, link-local, sieć lokalna dla celu
+publicznego; dopisanie domeny tu nie pomoże, `HTTP`, `OLLAMA` z domeną `host-ollama`). Tylko nazwa hosta z celu żądania — nigdy ścieżka, parametry, nagłówki ani treść;
+znaki sterujące zamieniane na `?`. Zamianę odmowy w wynik kroku (`denied` z `command: "network: <domena>"`) robi
+PT-181, nie proxy.
+
 ## Uruchamianie
 
 ```bash
