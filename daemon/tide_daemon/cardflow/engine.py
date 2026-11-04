@@ -2118,6 +2118,13 @@ class FlowEngine(PlanEditing):
             if st.plan_approved is not None:
                 self._plan_next(card, st)
             return
+        waiting_card = (st.step_decisions.get(st.last_step) or {}).get("waitCard")
+        if result in ("question", "error") and waiting_card:
+            if self._card_done(waiting_card):
+                text = (st.step_decisions[st.last_step].get("answer") or
+                        f"Karta {waiting_card}, na którą czekał ten krok, jest domknięta — jej wynik jest na jej gałęzi; kontynuuj.")
+                self._resume_step(card, st, step, {"choice": "answer" if result == "question" else "retry", "answer": text})
+            return
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
             if decision:
@@ -2549,7 +2556,8 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
+                                                            "card"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2575,8 +2583,8 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
-        valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
+        valid = {"question": ("answer", "wait-card"), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
+                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject", "wait-card"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
@@ -2631,6 +2639,13 @@ class FlowEngine(PlanEditing):
                     raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
+        if choice == "wait-card":
+            # „Czeka na kartę” (04.11, K-41/KAMP-13 czekał na K-43 jako „błąd kroku” w Czeka na mnie): krok stoi bez
+            # decyzji użytkownika, a gdy wskazana karta się domknie, Tide wznawia go sam z podaną instrukcją.
+            target = str(request.get("card") or "").strip().upper()
+            if not re.fullmatch(r"K-\d+", target) or target == card or not self.journal.read(target):
+                raise FlowError("bad-card", "podaj kartę z przepływem, na którą krok ma czekać (np. K-43)")
+            extra = {"waitCard": target}
         if choice == "allow" and "allow" in request:
             extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
         if choice == "deny" and instead:
@@ -2638,7 +2653,7 @@ class FlowEngine(PlanEditing):
         if request.get("auto"):
             extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry", "wait-card") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
@@ -4070,6 +4085,14 @@ class FlowEngine(PlanEditing):
             except OSError:
                 continue
         return moved
+
+    def _card_done(self, card: str) -> bool:
+        """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""
+        try:
+            other = fold(self.journal.read(card))
+        except Exception:
+            return False
+        return bool(other.card_finished or other.closed)
 
     def _extra_repos(self, card: str) -> tuple:
         """Repozytoria dodatkowych projektów karty — do odczytu gitem w poleceniach poza piaskownicą."""
