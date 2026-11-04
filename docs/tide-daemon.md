@@ -1825,14 +1825,53 @@ zgody, uruchomienia poza piaskownicą, scalenia, push ani odrzucenia ticketu.
 ### Kontekst
 
 Kartka (`brief`) zaczyna się od „Jesteś opiekunem karty <K-…> w Tide.” i zawiera: przesłankę z `BRIEF_SECTIONS`
-według wyzwalacza (zamaskowaną `faults.mask`), listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
+według wyzwalacza (zamaskowaną `faults.mask`), listę plików kontekstu, listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
 („Plik wyniku: …/out/result.json”). Krok opiekuna pracuje w worktree kroku problemu (tylko do odczytu) i ma osobny
 katalog `<worktree>.caretaker-<krok>.step`.
 
-#### Opis problemu z decyzji (PT-143, do #11)
+#### Opis problemu z decyzji (PT-143)
 
 Sekcja `error`: krok, wykonawca, próba, „co się stało” i „dlaczego” z decyzji błędu, powód zakończenia kroku i czyja
-wina według dziennika kroku — bez dziennika kroku i bez innych plików.
+wina według dziennika kroku. Dziennik kroku i pozostałe pliki są w katalogu kontekstu (niżej).
+
+#### Katalog `in/context/` (PT-153)
+
+Przy starcie kroku opiekuna (w parze „zamiar → wynik” `step-start`, po przyjęciu przez `_admit`, więc nie przy każdym
+obrocie pętli w kolejce do dostawcy) Tide buduje `<krok>/in/context/` modułem
+`daemon/tide_daemon/cardflow/caretakerctx.py` (`build(problem, st, events, …)`; `collect` — to samo w pamięci, dla
+rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględną ścieżką i opisem każdego pliku
+(„(przycięty do limitu)” przy przyciętych). Pliki wspólne dla każdego wyzwalacza:
+
+- `history.md` — historia karty po ludzku (`history.build`, od najstarszego wpisu, z próbami kroków),
+- `journal.jsonl` — ostatnie 200 zdarzeń dziennika karty (JSON Lines, od najstarszego),
+- `plan/plan.md`, `plan/source.md`, `plan/tickets/<id>.md` z katalogu karty w tablicy (bez planu — `plan/README.md`
+  z dopiskiem) i `steps/<krok problemu>/prompt.txt` — kartka kroku problemu,
+- dla każdego kroku problemu (łańcuch `parentStep` problemu i wszystkie kroki jego ticketu): `steps/<krok>/note.md`,
+  `review.md`, `handoff.md`, `result.json` (z katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
+  ostatnie 300 zdarzeń `out/step.log` po ludzku (`faults.excerpt(…, limit=300)`, jak wycinek PT-125),
+- `attempts.md` — próby kroków problemu (wykonawca, wynik, powód, czyja wina, decyzja) i poprzednie działania
+  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md` i `result.json` kroku
+  opiekuna) — bez bieżącego kroku,
+- `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
+  „Przepływ karty” z `AGENTS.md`) — migawki z worktree kroku opiekuna; brak pliku daje dopisek „(pominięto: …)”.
+
+**Rejestr źródeł.** `caretakerctx.SOURCES` — wyzwalacz → lista `Source(name, build)`; `"*"` — źródła każdego
+problemu. Problem dostaje `"*"` i źródła wszystkich swoich wyzwalaczy (`triggers[]`). `build(ctx)` zwraca
+`File(path, title, text=…)` albo `File(path, title, items=[…], head=…, trim=n)` (zdarzenia od najstarszego,
+przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. Kolejne tickety dopisują własne wpisy
+(np. błędy sprawdzania formatu planu) bez edycji wspólnych źródeł; wyjątek w źródle daje `errors/<źródło>.md`
+zamiast przerwania startu.
+
+**Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
+rozmiaru, a w `journal.jsonl` każda wartość tekstowa razem z nazwą pola (`nazwa=wartość`), więc `{"token": …}` traci
+wartość, a linie pozostają poprawnym JSON-em. Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`),
+worktree kroku opiekuna oraz worktree i katalogi kroków problemu z dziennika; ścieżka po `realpath` musi leżeć
+w `realpath` korzenia, a plik jest otwierany z `O_NOFOLLOW` i musi być zwykłym plikiem — dowiązanie w worktree
+(także katalog-dowiązanie do `$HOME`) daje dopisek „(pominięto: dowiązanie symboliczne / plik spoza katalogu karty
+i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000` bajtów): przycinane są najpierw
+najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii, z pierwszą linią „(przycięto N
+najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło, końcówki największych plików
+z dopiskiem „… (koniec pliku przycięty …)”. Katalog kontekstu jest budowany od nowa przy każdym starcie.
 
 ### Ustawienia
 

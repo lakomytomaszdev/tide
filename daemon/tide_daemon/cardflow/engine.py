@@ -47,6 +47,7 @@ from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import caretaker
+from . import caretakerctx
 from . import handoff
 from .decisions import clean_options
 from . import execution
@@ -1425,7 +1426,9 @@ class FlowEngine(PlanEditing):
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
-                attempt=0, resume_session="") -> dict:
+                attempt=0, resume_session="", make_prompt=None) -> dict:
+        """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
+        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
         self._admit(card.id, selected, ticket, kind, step_id)
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
@@ -1434,7 +1437,7 @@ class FlowEngine(PlanEditing):
                                f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "conflict", "close", caretaker.KIND) else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
-        prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
+        prompt = "" if make_prompt else prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
@@ -1454,6 +1457,8 @@ class FlowEngine(PlanEditing):
 
         def launch() -> dict:
             nonlocal prompt
+            if make_prompt:
+                prompt = make_prompt(step_dir)
             from ..board.commands import claude_tools
             from ..tasks import dotnet
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
@@ -3606,11 +3611,23 @@ class FlowEngine(PlanEditing):
             branch = target.get("branch") or (info["cardBranch"] if card_level else info["branch"])
             if not worktree:
                 raise FlowError("no-worktree", "brak katalogu roboczego karty dla opiekuna")
-            out = worktree + f".{caretaker.KIND}-{name}.step/out"
-            prompt = caretaker.brief(self._caretaker_problem(st, run), st, card=card, out_dir=out, worktree=worktree)
+            problem = self._caretaker_problem(st, run)
+
+            def make_prompt(step_dir: str) -> str:
+                # Kontekst (PT-153) powstaje przy samym starcie, ze stanu dziennika z tej chwili.
+                events = self.journal.read(card)
+                now = fold(events)
+                context_dir = os.path.join(step_dir, "in", caretakerctx.CONTEXT_DIR)
+                files = caretakerctx.build(problem, now, events, card=card, worktree=worktree,
+                                           context_dir=context_dir,
+                                           card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)),
+                                           step=name)
+                return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
+                                       worktree=worktree, context=files, context_dir=context_dir)
+
             self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"]},
                          {"branch": branch, "worktree": worktree}, name, [],
-                         kind=caretaker.KIND, prompt_text=prompt)
+                         kind=caretaker.KIND, make_prompt=make_prompt)
         except FlowDeferred:
             return              # czeka na miejsce u dostawcy; `caretaker.started` zostaje, start w kolejnym przebiegu
         except FlowError as exc:

@@ -269,8 +269,9 @@ def mask(text: str, env: dict | None = None) -> str:
     return text
 
 
-def excerpt(lines: list[str], env: dict | None = None) -> str:
-    """Wycinek dziennika kroku do karty: ostatnie zdarzenia po ludzku (typ i tekst), sekrety zamaskowane."""
+def excerpt(lines: list[str], env: dict | None = None, limit: int = EXCERPT_LINES) -> str:
+    """Wycinek dziennika kroku do karty: ostatnie `limit` zdarzeń po ludzku (typ i tekst), sekrety zamaskowane.
+    Kontekst opiekuna (PT-153) bierze tak samo ostatnie 300 zdarzeń."""
     picked = []
     for line in lines:
         event = _json(line)
@@ -279,7 +280,7 @@ def excerpt(lines: list[str], env: dict | None = None) -> str:
             # najpierw maskowanie, potem skracanie — obcięty w pół token nie przeszedłby przez wzorce
             text = mask(text, env)
             picked.append(text if len(text) <= EXCERPT_LINE_CHARS else text[:EXCERPT_LINE_CHARS - 1] + "…")
-    return "\n".join(picked[-EXCERPT_LINES:]).replace("```", "'''")
+    return "\n".join(picked[-limit:]).replace("```", "'''")
 
 
 def _event_text(event: dict) -> str:
