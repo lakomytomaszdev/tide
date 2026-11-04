@@ -13,7 +13,7 @@ from unittest import mock
 from tide_daemon.cardflow import caretaker, caretakerctx
 
 from .privatebus import wait_until
-from .test_cardflow import FlowInProcess, git
+from .test_cardflow import FlowInProcess
 from .test_cardflow_caretaker import Journal
 
 TOKEN = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
@@ -56,11 +56,12 @@ class Tree:
                 event.update(worktree=self.worktree, stepDir=self.step_dir)
         return j
 
-    def collect(self, j, problem=None, step="", env=ENV):
+    def collect(self, j, problem=None, step="", env=ENV, tide_docs=""):
         problem = problem or caretaker.problems(j.st)[0]
         return {f.path: f.render() for f in caretakerctx.collect(problem, j.st, j.events, card="K-1",
                                                                  card_dir=self.card_dir,
-                                                                 worktree=self.worktree, step=step, env=env)}
+                                                                 worktree=self.worktree, step=step, env=env,
+                                                                 tide_docs=tide_docs)}
 
 
 class MaskingTest(unittest.TestCase):
@@ -88,6 +89,39 @@ class MaskingTest(unittest.TestCase):
         self.assertEqual(events[-1]["token"], "•••")
         self.assertIn("GITHUB_TOKEN=•••", next(e for e in events if e["type"] == "step.finished"
                                                and e["step"] == "K-1-PT-7-2")["reason"])
+
+    def test_secret_fields_lose_whole_value_with_spaces_and_numbers(self):
+        tree = Tree(self)
+        j = tree.journal()
+        j.add("step.note", step="K-1-PT-7-2", password="correct horse battery staple",
+              detail={"apiKey": 123456789, "pin": 42, "count": 7}, secret=["raz dwa", 3.5])
+        files = tree.collect(j)
+        text = files["journal.jsonl"]
+        for part in ("horse", "battery", "staple", "123456789", "raz dwa"):
+            self.assertNotIn(part, text)
+        event = json.loads(text.splitlines()[-1])
+        self.assertEqual(event["password"], "•••")
+        self.assertEqual(event["detail"]["apiKey"], "•••")
+        self.assertEqual(event["secret"], ["•••", "•••"])
+        self.assertEqual(event["detail"]["count"], 7)               # zwykłe pole liczbowe zostaje
+
+    def test_number_equal_to_a_secret_env_value_is_masked(self):
+        tree = Tree(self)
+        j = tree.journal()
+        j.add("step.note", step="K-1-PT-7-2", code=987654321)
+        files = tree.collect(j, env={**ENV, "TIDE_DB_PASSWORD": "987654321"})
+        self.assertNotIn("987654321", files["journal.jsonl"])
+
+    def test_token_cut_by_the_log_tail_boundary_does_not_leak(self):
+        tree = Tree(self)
+        j = tree.journal()
+        secret_tail = "a" * 19
+        tree.write(os.path.join(tree.step_dir, "out", "step.log"),
+                   "GITHUB_TOKEN=ghp_" + "a" * 36 + "\n" + "z" * (caretakerctx.LOG_TAIL_BYTES - 20) + "\n"
+                   + "ostatnia linia\n")
+        log = tree.collect(j)["steps/K-1-PT-7-2/step-log.md"]
+        self.assertNotIn(secret_tail, log)
+        self.assertIn("ostatnia linia", log)
 
 
 class LimitTest(unittest.TestCase):
@@ -128,6 +162,28 @@ class LimitTest(unittest.TestCase):
         self.assertLessEqual(caretakerctx.total_bytes(files), caretakerctx.MAX_BYTES)
         self.assertTrue(any(f.cut for f in files))
 
+    def test_many_files_stay_under_the_hard_limit_with_one_note(self):
+        files = [caretakerctx.File(f"plan/tickets/t-{i:05d}.md", "kartka", text="k" * 1000) for i in range(6000)]
+        caretakerctx._fit(files)
+        self.assertLessEqual(caretakerctx.total_bytes(files), caretakerctx.MAX_BYTES)
+        self.assertGreater(caretakerctx.total_bytes(files), caretakerctx.MAX_BYTES * 9 // 10)
+        notes = [f for f in files if f.path == caretakerctx.DROPPED_PATH]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("pominięto", notes[0].text)
+        self.assertFalse(any(f.text == caretakerctx.CUT_NOTE.format(kb=400) for f in files))
+
+    def test_many_files_through_collect_and_build_stay_under_the_limit(self):
+        tree = Tree(self)
+        j = tree.journal()
+        for i in range(600):
+            tree.write(os.path.join(tree.card_dir, "plan", "tickets", f"pt-{i:04d}.md"), "t" * 1000)
+        context = os.path.join(tree.step_dir, "in", "context")
+        caretakerctx.build(caretaker.problems(j.st)[0], j.st, j.events, card="K-1", card_dir=tree.card_dir,
+                           worktree=tree.worktree, context_dir=context, env=ENV, tide_docs="")
+        size = sum(os.path.getsize(os.path.join(folder, name))
+                   for folder, _, names in os.walk(context) for name in names)
+        self.assertLessEqual(size, caretakerctx.MAX_BYTES)
+
 
 class OutsideTest(unittest.TestCase):
     def test_symlinks_and_files_outside_the_card_and_worktree_are_skipped(self):
@@ -164,7 +220,36 @@ class OutsideTest(unittest.TestCase):
         j = tree.journal()
         self.assertEqual(set(caretakerctx.roots_for(caretaker.problems(j.st)[0], j.st, card_dir=tree.card_dir,
                                                     worktree=tree.worktree)),
-                         {os.path.realpath(p) for p in (tree.card_dir, tree.worktree, tree.step_dir)})
+                         {caretakerctx._root(p) for p in (tree.card_dir, tree.worktree, tree.step_dir)})
+
+    def test_step_dir_replaced_by_a_symlink_is_not_a_root(self):
+        """Cały katalog kroku z dziennika podmieniony na dowiązanie do katalogu spoza karty (np. `$HOME`)."""
+        tree = Tree(self)
+        fake = os.path.join(tree.home, "fake-step")
+        tree.write(os.path.join(fake, "out", "step.log"), LEAK + "\n")
+        tree.write(os.path.join(fake, "out", "plan-review.json"), json.dumps({"x": LEAK}))
+        tree.write(os.path.join(fake, "in", "prompt.txt"), LEAK + "\n")
+        shutil.rmtree(tree.step_dir)
+        os.symlink(fake, tree.step_dir)
+        j = tree.journal()
+        roots = caretakerctx.roots_for(caretaker.problems(j.st)[0], j.st, card_dir=tree.card_dir,
+                                       worktree=tree.worktree)
+        self.assertNotIn(os.path.normpath(tree.step_dir), {root.path for root in roots})
+        self.assertNotIn(os.path.realpath(fake), {root.path for root in roots})
+        files = tree.collect(j)
+        for path, text in files.items():
+            self.assertNotIn(LEAK, text, path)
+        self.assertIn("spoza katalogu karty i worktree", files["steps/K-1-PT-7-2/step-log.md"])
+
+    def test_worktree_replaced_by_a_symlink_is_not_read(self):
+        tree = Tree(self)
+        tree.write(os.path.join(tree.home, "repo", "AGENTS.md"), f"## Przepływ karty\n\n{LEAK}\n")
+        shutil.rmtree(tree.worktree)
+        os.symlink(os.path.join(tree.home, "repo"), tree.worktree)
+        j = tree.journal()
+        files = tree.collect(j)
+        for path, text in files.items():
+            self.assertNotIn(LEAK, text, path)
 
 
 class AttemptsTest(unittest.TestCase):
@@ -226,21 +311,55 @@ class RegistryTest(unittest.TestCase):
 
 
 AGENTS_MD = "# Projekt\n\n## Zasady\n\nZasada.\n\n## Przepływ karty\n\nKROK-W-TLE-ZASADA\n\n## Inne\n\nNIE-TA-SEKCJA\n"
+TIDE_DOCS = (("docs/agent-plan-standard.md", "# Standard\n\nSTANDARD-PLANU-MIGAWKA\n"),
+             ("docs/sandbox-and-permissions.md", "# Piaskownica\n\nPIASKOWNICA-MIGAWKA\n"),
+             ("AGENTS.md", AGENTS_MD))
+
+
+class TideDocsTest(unittest.TestCase):
+    def test_project_without_tide_docs_gets_the_snapshots_of_the_running_tide(self):
+        tree = Tree(self)
+        docs = os.path.join(tree.base, "tide", "daemon", "tide-docs")
+        for rel, text in TIDE_DOCS:
+            tree.write(os.path.join(docs, rel), text)
+        j = tree.journal()
+        files = tree.collect(j, tide_docs=docs)
+        self.assertIn("STANDARD-PLANU-MIGAWKA", files["docs/agent-plan-standard.md"])
+        self.assertIn("PIASKOWNICA-MIGAWKA", files["docs/sandbox-and-permissions.md"])
+        self.assertIn("KROK-W-TLE-ZASADA", files["docs/AGENTS-przeplyw-karty.md"])
+        self.assertNotIn("NIE-TA-SEKCJA", files["docs/AGENTS-przeplyw-karty.md"])
+        for text in files.values():
+            self.assertNotIn("(pominięto: brak pliku)", text)
+
+    def test_tide_docs_dir_is_not_a_root_for_other_sources(self):
+        tree = Tree(self)
+        docs = os.path.join(tree.base, "tide-docs")
+        tree.write(os.path.join(docs, "docs", "agent-plan-standard.md"), "# Standard\n")
+        tree.write(os.path.join(docs, "inne.md"), LEAK)
+        seen = {}
+
+        def probe(ctx):
+            seen["text"] = ctx.read_text(os.path.join(docs, "inne.md"))
+            return []
+
+        j = tree.journal()
+        with mock.patch.dict(caretakerctx.SOURCES, {"error": [caretakerctx.Source("probe", probe)]}):
+            tree.collect(j, tide_docs=docs)
+        self.assertIsNone(seen["text"])
+
+    def test_default_docs_dir_is_the_tide_repository_when_running_from_source(self):
+        base = caretakerctx.tide_docs_dir()
+        self.assertTrue(base)
+        with open(os.path.join(base, "docs", "agent-plan-standard.md"), encoding="utf-8") as fh:
+            self.assertIn("Standard planu", fh.readline())
 
 
 class ContextFlowTest(FlowInProcess):
-    """Przebieg przez FlowEngine z atrapą `claude`: błąd kroku ticketu → krok opiekuna z kontekstem."""
-
-    def setUp(self):
-        super().setUp()
-        for rel, text in (("docs/agent-plan-standard.md", "# Standard\n\nSTANDARD-PLANU-MIGAWKA\n"),
-                          ("docs/sandbox-and-permissions.md", "# Piaskownica\n\nPIASKOWNICA-MIGAWKA\n"),
-                          ("AGENTS.md", AGENTS_MD)):
-            Tree.write(os.path.join(self.repo, rel), text)
-        git(self.repo, "add", "-A")
-        git(self.repo, "commit", "-q", "-m", "docs")
+    """Przebieg przez FlowEngine z atrapą `claude`: błąd kroku ticketu → krok opiekuna z kontekstem. Repozytorium
+    projektu nie ma dokumentów Tide — migawki pochodzą z dokumentów działającej usługi (tu: repozytorium Tide)."""
 
     def test_context_files_brief_paths_and_masking(self):
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "docs", "agent-plan-standard.md")))
         secrets = f"GITHUB_TOKEN={TOKEN} export TIDE_FAKE_SECRET_TOKEN={ENV_SECRET} password: {PAIR_SECRET} "
         card_id = self.card(description="Eksport.\n\nATRAPA: blad-opiekun\n"
                                         f"ATRAPA-POWOD: test pada {secrets}ATRAPA-OPIEKUN: escalate")
@@ -264,10 +383,11 @@ class ContextFlowTest(FlowInProcess):
                 self.assertNotIn(secret, texts[rel], rel)
         self.assertLessEqual(sum(len(t.encode("utf-8")) for t in texts.values()), caretakerctx.MAX_BYTES)
         self.assertIn("Test pada: test pada", texts[f"steps/{target}/step-log.md"])
-        self.assertIn("STANDARD-PLANU-MIGAWKA", texts["docs/agent-plan-standard.md"])
-        self.assertIn("PIASKOWNICA-MIGAWKA", texts["docs/sandbox-and-permissions.md"])
-        self.assertIn("KROK-W-TLE-ZASADA", texts["docs/AGENTS-przeplyw-karty.md"])
-        self.assertNotIn("NIE-TA-SEKCJA", texts["docs/AGENTS-przeplyw-karty.md"])
+        self.assertIn("# Standard planu pracy agentów (Tide)", texts["docs/agent-plan-standard.md"])
+        self.assertIn("# Piaskownica, uprawnienia", texts["docs/sandbox-and-permissions.md"])
+        self.assertTrue(texts["docs/AGENTS-przeplyw-karty.md"].startswith("## Przepływ karty\n"))
+        for rel in ("docs/agent-plan-standard.md", "docs/sandbox-and-permissions.md", "docs/AGENTS-przeplyw-karty.md"):
+            self.assertNotIn("(pominięto:", texts[rel][:200], rel)
         self.assertIn("Zlecenie: karta wystartowała", texts["history.md"])
         for line in texts["journal.jsonl"].splitlines():
             json.loads(line)

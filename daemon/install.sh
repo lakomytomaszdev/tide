@@ -18,6 +18,10 @@ mkdir -p "$dest" "$(dirname "$unit")" "$(dirname "$activation")"
 tar -C "$src" --exclude=__pycache__ -cf - tide-daemon.py tide_daemon | tar -C "$dest" -xf -
 # Kolory stanów (np. karta Konsole z czekającym agentem) z palety, bo kopia działa bez repozytorium.
 cp "$src/../theme/palette/mist.json" "$dest/palette.json"
+# Migawki dokumentów Tide do kontekstu opiekuna karty (PT-153) — karty innych projektów nie mają ich w worktree.
+mkdir -p "$dest/tide-docs/docs"
+cp "$src/../docs/agent-plan-standard.md" "$src/../docs/sandbox-and-permissions.md" "$dest/tide-docs/docs/"
+cp "$src/../AGENTS.md" "$dest/tide-docs/AGENTS.md"
 
 cat > "$unit" <<EOF
 [Unit]

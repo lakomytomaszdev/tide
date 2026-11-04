@@ -1853,7 +1853,11 @@ rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględ
   opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md` i `result.json` kroku
   opiekuna) — bez bieżącego kroku,
 - `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
-  „Przepływ karty” z `AGENTS.md`) — migawki z worktree kroku opiekuna; brak pliku daje dopisek „(pominięto: …)”.
+  „Przepływ karty” z `AGENTS.md`) — migawki dokumentów działającej usługi Tide: `tide-docs/` obok pakietu
+  (`daemon/install.sh` kopiuje tam te trzy pliki) albo repozytorium Tide przy uruchomieniu ze źródeł
+  (`caretakerctx.tide_docs_dir()`), więc dostają je też karty innych projektów; dopiero bez nich — z worktree kroku
+  opiekuna, a bez pliku i tam — dopisek „(pominięto: …)”. Katalog dokumentów jest osobnym korzeniem tylko dla tych
+  stałych nazw (inne źródła nie czytają z niego przez `ctx.read_text`).
 
 **Rejestr źródeł.** `caretakerctx.SOURCES` — wyzwalacz → lista `Source(name, build)`; `"*"` — źródła każdego
 problemu. Problem dostaje `"*"` i źródła wszystkich swoich wyzwalaczy (`triggers[]`). `build(ctx)` zwraca
@@ -1863,15 +1867,23 @@ przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. K
 zamiast przerwania startu.
 
 **Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
-rozmiaru, a w `journal.jsonl` każda wartość tekstowa razem z nazwą pola (`nazwa=wartość`), więc `{"token": …}` traci
-wartość, a linie pozostają poprawnym JSON-em. Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`),
-worktree kroku opiekuna oraz worktree i katalogi kroków problemu z dziennika; ścieżka po `realpath` musi leżeć
-w `realpath` korzenia, a plik jest otwierany z `O_NOFOLLOW` i musi być zwykłym plikiem — dowiązanie w worktree
-(także katalog-dowiązanie do `$HOME`) daje dopisek „(pominięto: dowiązanie symboliczne / plik spoza katalogu karty
-i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000` bajtów): przycinane są najpierw
-najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii, z pierwszą linią „(przycięto N
-najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło, końcówki największych plików
-z dopiskiem „… (koniec pliku przycięty …)”. Katalog kontekstu jest budowany od nowa przy każdym starcie.
+rozmiaru, a w `journal.jsonl` każda wartość osobno (linie pozostają poprawnym JSON-em): pole, które `faults.mask`
+uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
+i liczbę; pozostałe napisy przechodzą przez `faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
+sekretnej zmiennej środowiska) staje się `•••`. Końcówka `out/step.log` czytana od środka pliku zaczyna się od
+pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
+maskowaniem. Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
+i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
+dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany
+z tożsamością (`st_dev`, `st_ino`) z chwili sprawdzenia, a każdy składnik ścieżki — względem poprzedniego (`dir_fd`)
+z `O_NOFOLLOW`; plik musi być zwykłym plikiem. Dowiązanie na dowolnym poziomie daje dopisek „(pominięto: dowiązanie
+symboliczne / plik spoza katalogu karty i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000`
+bajtów): przycinane są najpierw najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii,
+z pierwszą linią „(przycięto N najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło,
+końcówki największych plików z dopiskiem „… (koniec pliku przycięty …)”, a plik, z którego zostałby sam dopisek,
+wypada w całości — zamiast nich jeden `przycieto.md` („(pominięto N plików kontekstu w całości …)”), na który
+budżet jest zarezerwowany z góry, więc limit obowiązuje przy dowolnej liczbie plików. Katalog kontekstu jest budowany
+od nowa przy każdym starcie.
 
 ### Ustawienia
 

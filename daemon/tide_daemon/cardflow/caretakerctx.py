@@ -13,13 +13,17 @@ przy limicie) z nagłówkiem `head`. Źródło czyta pliki wyłącznie przez `ct
 
 Granice bezpieczeństwa:
 - maskowanie wyłącznie `faults.mask` — każdy tekst i każde zdarzenie przed liczeniem rozmiaru (w JSON — każda wartość
-  tekstowa razem z nazwą pola, więc `{"token": "…"}` też traci wartość, a plik pozostaje poprawnym JSON-em),
+  osobno; pole, które `faults.mask` uznaje za sekretne na próbce `nazwa=x`, traci całą wartość, też liczbową, a plik
+  pozostaje poprawnym JSON-em); końcówka `step.log` zaczyna się od pełnej linii (urwany sekret nie omija wzorców),
 - tylko pliki z katalogu karty w tablicy (`flow/<K-…>/`), worktree kroku opiekuna oraz worktree i katalogów kroków
-  problemu z dziennika; ścieżka po `realpath` musi leżeć w `realpath` swojego korzenia, sam plik nie może być
-  dowiązaniem (`O_NOFOLLOW`) — dowiązanie w worktree do `$HOME` daje dopisek „pominięto”, nie treść,
+  problemu z dziennika; korzeń nie może być dowiązaniem (`lstat`, tożsamość `st_dev`/`st_ino` sprawdzana przy
+  otwarciu), a każdy składnik ścieżki poniżej korzenia jest otwierany względem poprzedniego z `O_NOFOLLOW` —
+  dowiązanie (pliku, katalogu albo całego katalogu kroku) daje dopisek „pominięto”, nie treść; migawki dokumentów
+  Tide pochodzą z dokumentów działającej usługi (`tide-docs/` obok pakietu albo repozytorium Tide) — osobny korzeń
+  tylko dla stałych nazw w `_docs`,
 - twardy limit `MAX_BYTES` (400 kB) na całość: najpierw przycinane są najstarsze zdarzenia (dziennik, potem
-  dzienniki kroków, potem historia) z dopiskiem o przycięciu, na końcu — gdyby nadal brakowało miejsca — końcówki
-  największych plików.
+  dzienniki kroków, potem historia) z dopiskiem o przycięciu, potem końcówki największych plików, a pliki, z których
+  zostałby sam dopisek, wypadają w całości (jeden zbiorczy `przycieto.md` z zarezerwowanym miejscem).
 """
 from __future__ import annotations
 
@@ -42,11 +46,16 @@ LOG_TAIL_BYTES = faults.LOG_TAIL_BYTES
 CONTEXT_DIR = "context"
 TRIM_NOTE = "(przycięto {n} najstarszych zdarzeń — limit kontekstu opiekuna {kb} kB)"
 CUT_NOTE = "\n… (koniec pliku przycięty — limit kontekstu opiekuna {kb} kB)\n"
+DROPPED_PATH = "przycieto.md"
+DROPPED_NOTE = "(pominięto {n} plików kontekstu w całości — limit kontekstu opiekuna {kb} kB)\n"
 SKIPPED = "(pominięto: {why})"
 DOCS = (("docs/agent-plan-standard.md", "docs/agent-plan-standard.md", "standard planu i kontrakt kroku (migawka)"),
         ("docs/sandbox-and-permissions.md", "docs/sandbox-and-permissions.md",
          "piaskownica i uprawnienia kroków (migawka)"))
 AGENTS_SECTION = "Przepływ karty"
+# Katalog nad pakietem `tide_daemon`: `daemon/` w repozytorium albo `$XDG_DATA_HOME/tide/daemon` po instalacji.
+_PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+TIDE_DOCS_DIRS = (os.path.join(_PACKAGE_PARENT, "tide-docs"), os.path.dirname(_PACKAGE_PARENT))
 
 
 # --- pliki i źródła ------------------------------------------------------------------------------
@@ -90,6 +99,7 @@ class Ctx:
     roots: tuple = ()
     step: str = ""          # bieżący krok opiekuna (bez niego w „poprzednich działaniach”)
     events: list = field(default_factory=list)      # surowe zdarzenia dziennika karty (`Journal.read`)
+    tide_docs: str = ""     # katalog dokumentów Tide działającej usługi (`tide_docs_dir`)
 
     # Kroki problemu: łańcuch `parentStep` problemu i (gdy problem ma ticket) wszystkie kroki tego ticketu.
     def steps(self) -> list[str]:
@@ -118,10 +128,10 @@ class Ctx:
             info = os.lstat(path)
         except OSError:
             return "brak pliku"
+        if _link_below(path, self.roots):
+            return "plik spoza katalogu karty i worktree"
         if stat.S_ISLNK(info.st_mode):
             return "dowiązanie symboliczne"
-        if not _inside_roots(path, self.roots):
-            return "plik spoza katalogu karty i worktree"
         return "plik nie jest zwykłym plikiem" if not stat.S_ISREG(info.st_mode) else "nie da się odczytać pliku"
 
 
@@ -260,16 +270,36 @@ def _attempts(ctx: Ctx) -> list[File]:
                  text="\n".join(lines) + "\n")]
 
 
+def tide_docs_dir() -> str:
+    """Katalog z dokumentami Tide działającej usługi: `tide-docs/` obok pakietu (kopia z `install.sh`) albo
+    repozytorium Tide przy uruchomieniu ze źródeł; "" — brak."""
+    for base in TIDE_DOCS_DIRS:
+        if os.path.isfile(os.path.join(base, DOCS[0][0])):
+            return base
+    return ""
+
+
+def _doc_text(ctx: Ctx, rel: str) -> tuple[str | None, str]:
+    """Treść dokumentu Tide i ścieżka do dopisku: najpierw dokumenty działającej usługi (`ctx.tide_docs`, tylko
+    stałe nazwy z `DOCS` i `AGENTS.md`, osobny korzeń niedostępny innym źródłom), potem worktree kroku opiekuna."""
+    if ctx.tide_docs:
+        root = _root(ctx.tide_docs)
+        if root is not None:
+            data = _read(os.path.join(root.path, rel), (root,), limit=FILE_READ_MAX, tail=False)
+            if data is not None:
+                return data.decode("utf-8", errors="replace"), ""
+    path = os.path.join(ctx.worktree, rel)
+    return ctx.read_text(path), path
+
+
 def _docs(ctx: Ctx) -> list[File]:
-    """Migawki dokumentów Tide z worktree kroku opiekuna; brak albo dowiązanie — dopisek bez treści."""
+    """Migawki dokumentów Tide (`_doc_text`); brak albo dowiązanie — dopisek bez treści."""
     out = []
     for rel, target, title in DOCS:
-        path = os.path.join(ctx.worktree, rel)
-        text = ctx.read_text(path)
+        text, path = _doc_text(ctx, rel)
         out.append(File(target, title, text=text if text is not None else
                         f"# {rel}\n\n" + SKIPPED.format(why=ctx.why_not(path)) + "\n"))
-    path = os.path.join(ctx.worktree, "AGENTS.md")
-    text = ctx.read_text(path)
+    text, path = _doc_text(ctx, "AGENTS.md")
     section = _section(text, AGENTS_SECTION) if text is not None else None
     if section is None:
         section = f"## {AGENTS_SECTION}\n\n" + SKIPPED.format(
@@ -304,15 +334,18 @@ def roots_for(problem: dict, st, *, card_dir: str, worktree: str) -> tuple:
     for name in ctx.steps():
         step = st.steps.get(name) or {}
         roots += [step.get("worktree") or "", step.get("stepDir") or ""]
-    return tuple(dict.fromkeys(os.path.realpath(r) for r in roots if r and os.path.isabs(r)))
+    # Korzeń będący dowiązaniem (np. katalog kroku podmieniony na dowiązanie do `$HOME`) odpada w `_root`.
+    return tuple(dict.fromkeys(root for root in map(_root, roots) if root is not None))
 
 
 def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktree: str, step: str = "",
-            env: dict | None = None) -> list[File]:
+            env: dict | None = None, tide_docs: str | None = None) -> list[File]:
     """Pliki kontekstu w pamięci: zamaskowane i przycięte do `MAX_BYTES`. `st` — `fold(events)`, `events` — surowe
-    zdarzenia dziennika karty, `step` — bieżący krok opiekuna."""
+    zdarzenia dziennika karty, `step` — bieżący krok opiekuna, `tide_docs` — katalog dokumentów Tide (None —
+    `tide_docs_dir()`)."""
     ctx = Ctx(problem, st, card, card_dir, worktree, env,
-              roots_for(problem, st, card_dir=card_dir, worktree=worktree), step, list(events))
+              roots_for(problem, st, card_dir=card_dir, worktree=worktree), step, list(events),
+              tide_docs_dir() if tide_docs is None else tide_docs)
     files: list[File] = []
     seen = set()
     for source in sources_for(problem):
@@ -340,9 +373,10 @@ def collect(problem: dict, st, events: list, *, card: str, card_dir: str, worktr
 
 
 def build(problem: dict, st, events: list, *, card: str, card_dir: str, worktree: str, context_dir: str,
-          step: str = "", env: dict | None = None) -> list[dict]:
+          step: str = "", env: dict | None = None, tide_docs: str | None = None) -> list[dict]:
     """Zapisuje kontekst w `context_dir` (wcześniejsza zawartość jest usuwana) i zwraca `[{path, title, trimmed}]`."""
-    files = collect(problem, st, events, card=card, card_dir=card_dir, worktree=worktree, step=step, env=env)
+    files = collect(problem, st, events, card=card, card_dir=card_dir, worktree=worktree, step=step, env=env,
+                    tide_docs=tide_docs)
     if os.path.islink(context_dir):
         os.unlink(context_dir)
     shutil.rmtree(context_dir, ignore_errors=True)
@@ -377,43 +411,142 @@ def _fit(files: list[File]) -> None:
             item.items = item.items[dropped:]
             item.trimmed += dropped
             excess -= before - len(item.render().encode("utf-8"))
+    if excess <= 0:
+        return
+    # Końcówki największych plików; plik, z którego nie zostałoby nic poza dopiskiem, wypada w całości. Na zbiorczy
+    # dopisek o usuniętych plikach budżet jest zarezerwowany z góry, więc i z nim całość mieści się w `MAX_BYTES`.
+    excess += len(DROPPED_NOTE.format(n=len(files), kb=MAX_BYTES // 1000).encode("utf-8"))
+    note = CUT_NOTE.format(kb=MAX_BYTES // 1000)
+    dropped = []
     for item in sorted(files, key=lambda f: -len(f.render().encode("utf-8"))):
         if excess <= 0:
             break
         data = item.render().encode("utf-8")
-        note = CUT_NOTE.format(kb=MAX_BYTES // 1000)
-        keep = max(0, len(data) - excess - len(note.encode("utf-8")))
+        keep = len(data) - excess - len(note.encode("utf-8"))
+        if keep <= 0:
+            dropped.append(item)
+            excess -= len(data)
+            continue
         text = data[:keep].decode("utf-8", errors="ignore") + note
         item.text, item.items, item.head, item.trimmed, item.cut = text, [], "", 0, True
         excess -= len(data) - len(text.encode("utf-8"))
+    if dropped:
+        gone = {id(item) for item in dropped}
+        files[:] = [item for item in files if id(item) not in gone]
+        files.append(File(DROPPED_PATH, "dopisek o plikach usuniętych przez limit kontekstu",
+                          text=DROPPED_NOTE.format(n=len(dropped), kb=MAX_BYTES // 1000), cut=True))
 
 
 # --- odczyt w granicach korzeni ------------------------------------------------------------------
 
-def _inside_roots(path: str, roots: tuple) -> bool:
+@dataclass(frozen=True)
+class Root:
+    """Korzeń odczytu: ścieżka (bezwzględna, znormalizowana, bez rozwijania dowiązań) i tożsamość katalogu z chwili
+    sprawdzenia (`st_dev`, `st_ino`)."""
+    path: str
+    dev: int
+    ino: int
+
+
+def _root(path: str) -> Root | None:
+    """Korzeń tylko wtedy, gdy sama ścieżka jest katalogiem, a nie dowiązaniem (`lstat`): dowiązanie zastępujące
+    katalog kroku albo worktree nie legalizuje swojego celu."""
     if not path or not os.path.isabs(path):
-        return False
-    real = os.path.realpath(path)
-    return any(real == root or real.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
+        return None
+    path = os.path.normpath(path)
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    return Root(path, info.st_dev, info.st_ino)
+
+
+def _root_of(path: str, roots: tuple) -> tuple[Root, list[str]] | None:
+    """Najbliższy korzeń, pod którym ścieżka leży leksykalnie, i składniki ścieżki poniżej niego."""
+    if not path or not os.path.isabs(path):
+        return None
+    path = os.path.normpath(path)
+    best = None
+    for root in roots:
+        if path == root.path or path.startswith(root.path.rstrip(os.sep) + os.sep):
+            if best is None or len(root.path) > len(best.path):
+                best = root
+    if best is None:
+        return None
+    rel = os.path.relpath(path, best.path)
+    parts = [] if rel == "." else rel.split(os.sep)
+    return None if ".." in parts else (best, parts)
+
+
+def _inside_roots(path: str, roots: tuple) -> bool:
+    return _root_of(path, roots) is not None
+
+
+def _open(path: str, roots: tuple, *, directory: bool = False) -> int | None:
+    """Deskryptor ścieżki z korzeni: korzeń otwierany bez podążania za dowiązaniem i porównywany z tożsamością
+    z chwili sprawdzenia, potem każdy składnik względem poprzedniego (`dir_fd`) z `O_NOFOLLOW` — dowiązanie na
+    dowolnym poziomie (także podmienione w trakcie) kończy odczyt. None — brak, dowiązanie albo plik spoza korzeni."""
+    found = _root_of(path, roots)
+    if found is None:
+        return None
+    root, parts = found
+    base = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(root.path, base | os.O_DIRECTORY)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != (root.dev, root.ino):
+            os.close(fd)
+            return None
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            flags = base | (os.O_DIRECTORY if directory or not last else getattr(os, "O_NONBLOCK", 0))
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def _link_below(path: str, roots: tuple) -> bool:
+    """Czy któryś katalog między korzeniem a plikiem jest dowiązaniem (do dopisku „spoza”)."""
+    found = _root_of(path, roots)
+    if found is None:
+        return True
+    root, parts = found
+    current = root.path
+    for part in parts[:-1]:
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return True
+    return False
 
 
 def _read(path: str, roots: tuple, *, limit: int, tail: bool) -> bytes | None:
-    """Zwykły plik w korzeniach kontekstu: bez dowiązania na żadnym poziomie poniżej korzenia (`realpath` w korzeniu)
-    i bez dowiązania na końcu (`O_NOFOLLOW`); po otwarciu jeszcze raz — czy to zwykły plik."""
-    if not _inside_roots(path, roots):
-        return None
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
+    """Zwykły plik w korzeniach kontekstu (`_open`: bez dowiązania na żadnym poziomie). Przy końcówce (`tail`)
+    odczyt zaczynający się w środku pliku odrzuca pierwszą, urwaną linię — sekret przecięty granicą odczytu
+    straciłby nazwę zmiennej albo prefiks tokenu i nie przeszedłby przez wzorce `faults.mask`."""
+    fd = _open(path, roots)
+    if fd is None:
         return None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            if tail:
-                fh.seek(max(0, info.st_size - limit))
-            return fh.read(limit)
+            start = max(0, info.st_size - limit) if tail else 0
+            fh.seek(start)
+            data = fh.read(limit)
+        if tail and start > 0:
+            cut = data.find(b"\n")
+            data = data[cut + 1:] if cut >= 0 else b""
+        return data
     except OSError:
         return None
     finally:
@@ -421,30 +554,40 @@ def _read(path: str, roots: tuple, *, limit: int, tail: bool) -> bytes | None:
 
 
 def _listdir(folder: str, roots: tuple) -> list[str]:
-    if not _inside_roots(folder, roots) or os.path.islink(folder):
+    fd = _open(folder, roots, directory=True)
+    if fd is None:
         return []
     try:
-        return sorted(os.listdir(folder))
+        return sorted(os.listdir(fd))
     except OSError:
         return []
+    finally:
+        os.close(fd)
 
 
 # --- pomocnicze ----------------------------------------------------------------------------------
 
+def _secret_field(key: str, env: dict | None) -> bool:
+    """Czy pole o tej nazwie jest sekretne — rozstrzyga `faults.mask` na próbce `nazwa=x` (bez drugiej listy nazw)."""
+    probe = f"{key}=x"
+    return bool(key) and faults.mask(probe, env) != probe
+
+
 def _mask_json(value, key: str = "", env: dict | None = None):
-    """Zdarzenie dziennika z zamaskowanymi wartościami tekstowymi (`faults.mask` z nazwą pola jako `nazwa=wartość`,
-    więc pole o sekretnej nazwie traci wartość); struktura JSON zostaje poprawna."""
+    """Zdarzenie dziennika z zamaskowanymi wartościami; struktura JSON zostaje poprawna. Pole o sekretnej nazwie
+    (`_secret_field`) traci całą wartość — napis ze spacjami i liczbę też; pozostałe napisy i liczby przechodzą przez
+    `faults.mask` (zmieniona liczba — np. wartość sekretnej zmiennej środowiska — staje się `•••`)."""
     if isinstance(value, dict):
         return {k: _mask_json(v, str(k), env) for k, v in value.items()}
     if isinstance(value, list):
         return [_mask_json(v, key, env) for v in value]
-    if not isinstance(value, str):
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return value
-    if key:
-        paired = faults.mask(f"{key}={value}", env)
-        if paired.startswith(f"{key}="):
-            return paired[len(key) + 1:]
-    return faults.mask(value, env)
+    if value != "" and _secret_field(key, env):
+        return faults.MASK
+    if isinstance(value, str):
+        return faults.mask(value, env)
+    return value if faults.mask(str(value), env) == str(value) else faults.MASK
 
 
 def _section(text: str, title: str) -> str | None:
