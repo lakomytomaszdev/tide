@@ -1,0 +1,18 @@
+# Usługa pudełka: bez tego nie zbudujemy obrazu bazowego. Domeny instalatorów agentów dopisuje #16.
+stack: base
+description: Obraz bazowy pudełka (Ubuntu, Node, git)
+apt: [git, build-essential, curl, ca-certificates, xvfb]
+domains:
+  - name: archive.ubuntu.com
+    risk: green
+    note: pakiety apt
+  - name: security.ubuntu.com
+    risk: green
+    note: poprawki bezpieczeństwa apt
+  - name: nodejs.org
+    risk: green
+    note: dystrybucja Node
+  - name: registry.npmjs.org
+    risk: green
+    note: rejestr npm (instalatory agentów)
+images: []

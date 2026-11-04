@@ -1,0 +1,34 @@
+stack: dotnet
+description: SDK .NET i NuGet
+apt: []
+domains:
+  - name: api.nuget.org
+    risk: green
+    registry: true
+    note: indeks NuGet
+  - name: globalcdn.nuget.org
+    risk: green
+    registry: true
+    note: pakiety NuGet
+  - name: nuget.org
+    risk: green
+    note: strona i indeks NuGet
+  - name: dotnetcli.azureedge.net
+    risk: green
+    note: instalator SDK
+  - name: builds.dotnet.microsoft.com
+    risk: green
+    note: instalator SDK
+  - name: dot.net
+    risk: green
+    note: skrypt dotnet-install
+  - name: packages.microsoft.com
+    risk: green
+    note: repozytorium pakietów Microsoft
+  - name: mcr.microsoft.com
+    risk: green
+    note: obrazy Microsoft Container Registry
+  - name: "*.data.mcr.microsoft.com"
+    risk: green
+    note: warstwy obrazów MCR
+images: []

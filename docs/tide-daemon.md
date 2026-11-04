@@ -1747,6 +1747,40 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+### Wykrywanie stosu i szablony stosów (PT-193, pudełko karty)
+
+`tasks/stack.py` → `detect(worktree)` zwraca `StackReport`: same fakty, bez decyzji. Moduł wyłącznie czyta pliki
+(nie uruchamia `npm`, `dotnet` ani `make`, nie używa sieci) i jest deterministyczny: katalogi przeglądane
+alfabetycznie (bez `node_modules`, `bin`, `obj`, `.git`…), listy bez powtórzeń w stałej kolejności. Raport:
+
+- `stacks` — nazwy szablonów w stałej kolejności `node`, `playwright`, `dotnet`, `docker`, `python-qt`; `[]`, gdy
+  projekt nie ma wzorca;
+- `node` (`package.json`, `.nvmrc`/`engines`, `angular.json`, `karma.conf.js`, `playwright.config.*` ze zmiennymi `*PORT`),
+  `dotnet` (`*.sln`, `*.csproj`: TFM, `Directory.Packages.props`: Testcontainers i `Microsoft.Playwright`, `global.json`),
+  `python` (`Makefile`, `mk/*.mk`, `pyproject.toml`, `requirements.txt`: cele `test`/`lint`, Qt offscreen),
+  `docker` (`docker-compose*.yml`), `testcontainers_images` (literały `"<obraz>:<tag>"` w `*.cs`/`*.ts` plików
+  używających Testcontainers), `ci` (`.gitlab-ci.yml`, `.github/workflows`: obrazy, polecenia; deploy z `rsync`/`ssh`
+  jest ignorowany), `nuget_sources` i `internal_addresses` (rejestry z `NuGet.Config`/`nuget*.config`; adres
+  wewnętrzny = prywatny IP, nazwa bez kropki albo sufiks `.local`/`.lan`/`.internal`/`.corp`/`.biz`).
+
+`propose_profile(report, project)` buduje z raportu słownik w kształcie `tide-box: 1` (walidację schematem robi
+konsument, nie ten moduł) oraz listę `items` (pozycje do pakietu zgód: `kind`, `value`, `risk`, `enabled`, `description`).
+Niezmienniki: nigdy `network.full`; pozycja czerwona nigdy nie jest włączona; adres wewnętrzny z `NuGet.Config` to
+wyłączona pozycja czerwona z opisem (nie trafia do `network.domains`); obraz Testcontainers/compose trafia do
+`docker.images`; `stacks: []` daje propozycję pustą z polem `question` (pytanie do okna planu, nie do kroków).
+
+**Szablony stosów** to dane YAML w `tide_daemon/box/stacks/<stos>.yaml` (`base`, `node`, `playwright`, `dotnet`,
+`docker`, `python-qt`), nie kod powłoki. Każdy ma `domains` (`name`, `risk`: `green`/`yellow`/`red`, `note`, opcjonalnie
+`registry: true` dla rejestrów paczek), `apt` i `images` (szablon `docker` niesie Ryuk z przypiętą wersją i opisem
+ryzyka K1 w `image_notes`). Szablony nie zawierają `github.com`, `gitlab.*` ani adresów wewnętrznych. Projekt nie
+używa biblioteki YAML, więc `box/templates.py` czyta podzbiór (skalary, listy, listy map). Funkcje:
+
+- `build_domains(profile)` — suma domen `base` + szablonów z `stacks` + `network.domains`, bez powtórzeń (dla budowy
+  pudełka i proxy); nieznany stos → `ValueError`. Podobnie `build_apt(profile)` i `build_images(profile)`;
+- `known_domains()` — słownik domena → klasa ryzyka (przy rozbieżności wygrywa groźniejsza), dla `classify`;
+- `registry_domains(stack)` — domeny z `registry: true`; z nich składa się `tasks/node.REGISTRY_DOMAINS` i
+  `tasks/dotnet.REGISTRY_DOMAINS` (wartości jak przed zmianą).
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.
