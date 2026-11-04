@@ -16,10 +16,10 @@ domen z listy (wariant awaryjny apt) i trasy wstrzykujące `/anthropic`, `/chatg
 
 | Próba | Pytanie | Skrypt | Wynik | Dziennik |
 | --- | --- | --- | --- | --- |
-| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | do uruchomienia | — |
-| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | do uruchomienia | — |
-| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | do uruchomienia | — |
-| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | do uruchomienia | — |
+| P-2 | bwrap (Claude Code) i landlock (Codex) w kontenerze przy `apparmor_restrict_unprivileged_userns=1` | `p2.sh` | czeka na Incusa (`make box-install`), potem próba | — |
+| P-3 | Claude Code (OAuth) przez `ANTHROPIC_BASE_URL` i Codex przez `chatgpt_base_url` na proxy wstrzykujące (K3) | `p3.sh` | czeka na Incusa (`make box-install`), potem próba | — |
+| P-6 | klienci przez CONNECT bez DNS, `NO_PROXY` dla localhost | `p6.sh` | czeka na Incusa (`make box-install`), potem próba | — |
+| P-7 | Incus 6.0 z Ubuntu universe: `images:` i `images:ubuntu/24.04` | `p7.sh` | czeka na Incusa (`make box-install`), potem próba | — |
 
 ## Domeny z dziennika odmów
 
