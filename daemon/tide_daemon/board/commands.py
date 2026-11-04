@@ -222,8 +222,11 @@ def outside_argv(command: str, roots=()) -> list[str] | None:
         at = 1
     while at < len(parts) and "=" in parts[at]:
         name, value = parts[at].split("=", 1)
-        project_path = name == "PYTHONPATH" and roots and value and all(
-            part.startswith("/") and _inside_roots(part, roots) for part in value.split(":"))
+        # Ścieżka względna liczy się od worktree (pierwszy z `roots`) — tam startuje polecenie (K-41/KAMP-23: `core/src`).
+        project_path = name == "PYTHONPATH" and roots and roots[0] and value and all(
+            part and "../" not in part and part != ".." and
+            _inside_roots(part if part.startswith("/") else os.path.join(roots[0], part), roots)
+            for part in value.split(":"))
         if not OUTSIDE_ENV_NAME.fullmatch(name) or (name in OUTSIDE_ENV_DENIED and not project_path) \
                 or name.startswith(("LD_", "DYLD_")) or len(value) > 500:
             return None

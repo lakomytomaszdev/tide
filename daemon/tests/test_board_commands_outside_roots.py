@@ -44,3 +44,13 @@ class OutsideScriptTest(unittest.TestCase):
         self.assertIsNone(outside_argv("bash /etc/evil.sh", ROOTS))
         self.assertIsNone(outside_argv("bash ../../evil.sh", ROOTS))
         self.assertIsNone(outside_argv("bash core/tests/extract.sh"))
+
+
+class OutsideRelativePythonPathTest(unittest.TestCase):
+    def test_relative_pythonpath_counts_from_the_worktree(self):
+        # 04.11, KAMP-23: `env PYTHONPATH=core/src …` było odrzucane, choć polecenie startuje w worktree.
+        command = f"env PYTHONPATH=core/src {REPO}/core/.venv/bin/python -m pytest -q -c overlays/pytest.ini overlays/tests"
+        self.assertIsNotNone(outside_argv(command, ROOTS))
+        self.assertEqual(outside_risky(command, ROOTS), "")
+        self.assertIsNone(outside_argv("env PYTHONPATH=../../x python3 -m pytest", ROOTS))
+        self.assertIsNone(outside_argv("env PYTHONPATH=core/src python3 -m pytest", ("", REPO)))
