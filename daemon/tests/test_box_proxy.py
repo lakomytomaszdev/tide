@@ -467,6 +467,20 @@ fi
 echo "Error: Network not found" >&2; exit 1
 """
 
+# Atrapa `ip` (zapas, gdy incus-user nie widzi sieci): JSON z $TIDE_FAKE_IP_JSON albo „Device does not exist”.
+FAKE_IP = """#!/bin/bash
+echo "ip $*" >> "$TIDE_FAKE_LOG"
+if [[ "$*" == "-j -4 addr show dev incusbr0" && -n "$TIDE_FAKE_IP_JSON" ]]; then
+    echo "$TIDE_FAKE_IP_JSON"; exit 0
+fi
+echo 'Device "incusbr0" does not exist.' >&2; exit 1
+"""
+
+
+def ip_json(address):
+    return json.dumps([{"ifname": "incusbr0", "addr_info": [
+        {"family": "inet", "local": address, "prefixlen": 24, "scope": "global"}]}])
+
 
 class FakeService:
     started = []
@@ -488,17 +502,18 @@ class StartTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.bin = os.path.join(self.tmp, "bin")
         os.makedirs(self.bin)
-        path = os.path.join(self.bin, "incus")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(FAKE_INCUS)
-        os.chmod(path, 0o755)
+        for name, body in (("incus", FAKE_INCUS), ("ip", FAKE_IP)):
+            path = os.path.join(self.bin, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.chmod(path, 0o755)
         self.calls = os.path.join(self.tmp, "calls.log")
         self.logs = []
         FakeService.started = []
 
-    def start(self, bridge, settings=None, **kw):
+    def start(self, bridge, settings=None, ip=None, **kw):
         env = {"PATH": self.bin + os.pathsep + "/usr/bin:/bin", "TIDE_FAKE_LOG": self.calls,
-               "TIDE_FAKE_BRIDGE": bridge or ""}
+               "TIDE_FAKE_BRIDGE": bridge or "", "TIDE_FAKE_IP_JSON": ip_json(ip) if ip else ""}
         settings = settings or bs.BoxSettings(enabled=True)
         return bx.start_service(settings, run=partial(subprocess.run, env=env),
                                 which=lambda name: shutil.which(name, path=self.bin), log=self.logs.append,
@@ -517,6 +532,19 @@ class StartTests(unittest.TestCase):
         self.assertEqual(FakeService.started, [("10.173.184.1", 18555)])
         self.assertEqual(self.incus_calls(), ["incus network get incusbr0 ipv4.address"])
         self.assertIs(bx.running(), service)
+
+    def test_falls_back_to_interface_address_when_incus_user_cannot_read_network(self):
+        service = self.start(None, ip="10.173.184.1")
+        self.assertEqual(FakeService.started, [("10.173.184.1", bs.DEFAULT_PORT)])
+        self.assertIsInstance(service, FakeService)
+        self.assertEqual(self.incus_calls(), ["incus network get incusbr0 ipv4.address",
+                                              "ip -j -4 addr show dev incusbr0"])
+        self.assertTrue(any("Network not found" in line for line in self.logs))
+
+    def test_fallback_address_is_checked_too(self):
+        with self.assertRaises(bx.ProxyError):
+            self.start(None, ip="127.0.0.1")
+        self.assertEqual(FakeService.started, [])
 
     def test_refuses_loopback_unspecified_and_other_address(self):
         for bridge in ("127.0.0.1/8", "0.0.0.0/0"):

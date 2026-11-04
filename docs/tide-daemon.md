@@ -2393,7 +2393,9 @@ z pętlą asyncio, i nigdy nie zmienia nftables ani nie woła `sudo` (test przes
 ```
 
 Proxy startuje razem z usługą tylko przy `enabled: true` (domyślnie wyłączone; zła wartość — wyłączone), gdy jest
-polecenie `incus` i mostek ma adres (`incus network get incusbr0 ipv4.address`). Słucha **wyłącznie** na tym
+polecenie `incus` i mostek ma adres (`incus network get incusbr0 ipv4.address`; z projektu ograniczonego
+`incus-user` to polecenie bywa niedostępne, wtedy zapasem jest adres interfejsu `ip -j -4 addr show dev incusbr0`
+— ten sam, który wpuszczają reguły nftables). Słucha **wyłącznie** na tym
 adresie: `0.0.0.0`, `::`, pętla zwrotna i adres inny niż mostka → odmowa startu. Każda przeszkoda (brak Incusa,
 brak mostka, zły adres, zajęty port) to wpis w dzienniku usługi, a usługa działa dalej jak bez pudełka.
 `--no-box` wyłącza proxy niezależnie od ustawień. `proxy-port` musi być równy `BOX_PROXY_PORT` z `make box-install`.

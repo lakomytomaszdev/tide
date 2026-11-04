@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -251,20 +252,46 @@ def append_denied(path: str, box: str, ip: str, host: str, port, kind: str) -> N
 
 # ------------------------------------------------------------ adres mostka
 
-def bridge_address(bridge: str = "incusbr0", run=subprocess.run) -> str | None:
-    """Adres IPv4 mostka Incusa z `incus network get <mostek> ipv4.address` (bez maski); `None`, gdy brak."""
+def _run(run, argv):
     try:
-        done = run(["incus", "network", "get", bridge, "ipv4.address"], capture_output=True, text=True,
-                   timeout=10, stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return None
+        done = run(argv, capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, type(exc).__name__
     if done.returncode != 0:
+        lines = (done.stderr or "").strip().splitlines()
+        return None, _clean(lines[-1] if lines else f"kod {done.returncode}", 160)
+    return done.stdout or "", ""
+
+
+def bridge_address(bridge: str = "incusbr0", run=subprocess.run, log=None) -> str | None:
+    """Adres IPv4 mostka Incusa (bez maski); `None`, gdy brak.
+
+    Najpierw `incus network get <mostek> ipv4.address`. Z projektu ograniczonego (`incus-user`) to polecenie bywa
+    niedostępne (próba ręczna PT-168), więc zapasem jest adres interfejsu w jądrze: `ip -j -4 addr show dev
+    <mostek>` — to ten sam adres, który nftables z PT-166 wpuszczają jako cel z mostka."""
+    out, why = _run(run, ["incus", "network", "get", bridge, "ipv4.address"])
+    if out is not None:
+        try:
+            return str(ipaddress.ip_interface(out.strip()).ip)
+        except ValueError:
+            why = f"nieczytelny adres {_clean(out.strip(), 60)!r}"
+    if log is not None:
+        log(f"incus network get {bridge} ipv4.address: {why} — czytam adres interfejsu")
+    out, why = _run(run, ["ip", "-j", "-4", "addr", "show", "dev", bridge])
+    if out is None:
+        if log is not None:
+            log(f"ip addr show dev {bridge}: {why}")
         return None
-    text = (done.stdout or "").strip()
     try:
-        return str(ipaddress.ip_interface(text).ip)
-    except ValueError:
-        return None
+        for link in json.loads(out or "[]"):
+            for info in link.get("addr_info") or []:
+                if info.get("family") == "inet" and info.get("scope", "global") == "global":
+                    ip = ipaddress.ip_address(info.get("local", ""))
+                    if ip.version == 4:
+                        return str(ip)
+    except (ValueError, AttributeError, TypeError):
+        pass
+    return None
 
 
 def check_listen(listen: str, bridge: str | None) -> str:
@@ -553,7 +580,7 @@ def start_service(settings, *, listen: str | None = None, run=subprocess.run, wh
     if which("incus") is None:
         log("box.enabled, ale nie ma polecenia incus — proxy pudełka nie startuje")
         return None
-    bridge = bridge_address(settings.bridge, run)
+    bridge = bridge_address(settings.bridge, run, log)
     if bridge is None:
         log(f"box.enabled, ale mostek {settings.bridge} nie istnieje albo nie ma adresu IPv4 — proxy nie startuje")
         return None
