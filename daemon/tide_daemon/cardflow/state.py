@@ -87,7 +87,10 @@ class FlowState:
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
-    flow_error: str = ""
+    # Błędy Tide (PT-147): etap → {event, persisted, repeated}. Teksty pamiętamy w obrębie etapu,
+    # od `card.started`; równoległe tickety mają niezależne problemy i limity działań opiekuna.
+    flow_errors: dict = field(default_factory=dict)
+    flow_error_texts: set = field(default_factory=set)
     last_seq: int = 0
     # Opiekun karty (PT-143): kroki `caretaker` nie są krokami ticketów — osobno od `steps`, żeby żaden wyzwalacz,
     # „ostatni krok ticketu” ani decyzja ich nie widziały (bez rekursji). Ich `step.finished` trafia do `finished`.
@@ -101,6 +104,16 @@ class FlowState:
     # Strażnik kroku opiekuna (PT-158): ostatni stan bazowy `caretaker.guard` i powody wykrytych po drodze zmian.
     caretaker_guards: dict = field(default_factory=dict)      # krok opiekuna → ostatnie caretaker.guard
     caretaker_wrote: dict = field(default_factory=dict)       # krok opiekuna → [powód zmiany]
+
+    @property
+    def flow_error_event(self) -> dict:
+        """Ostatni otwarty błąd do dzisiejszego znacznika karty; opiekun czyta błędy według etapu."""
+        return max((item["event"] for item in self.flow_errors.values()),
+                   key=lambda e: int(e.get("seq") or 0), default={})
+
+    @property
+    def flow_error(self) -> str:
+        return self.flow_error_event.get("error") or ""
 
     def running(self) -> list[dict]:
         return [s for name, s in self.steps.items() if name not in self.finished] + \
@@ -183,7 +196,7 @@ def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
-        if kind != "card.stalled":
+        if kind != "card.stalled" and not _bookkeeping(st, e):
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
         if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
@@ -222,6 +235,8 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaking = {}
             st.caretaker_escalations = {}
             st.caretaker_limits = {}
+            st.flow_errors = {}
+            st.flow_error_texts = set()
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
@@ -257,6 +272,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "result":
             st.results[(e.get("action"), e.get("key"))] = e
             st.tracker_retries.pop((e.get('action'), e.get('key')), None)
+            if e.get("action") == "plan-commit" and e.get("ok"):
+                st.flow_errors.pop("plan-commit", None)
         elif kind == "card.inputs":
             st.inputs = e
         elif kind == "step.waiting":
@@ -279,7 +296,13 @@ def fold(events: list[dict]) -> FlowState:
             if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
                 st.last_step = e.get("step") or ""
             st.moved_to = ""
-            st.flow_error = ""
+            # Start kroku rozwiązuje błąd jego etapu, nie błędy równoległych ticketów.
+            st.flow_errors.pop("advance", None)
+            if e.get("ticket"):
+                st.flow_errors.pop(f"advance:{e['ticket']}", None)
+                st.flow_errors.pop("plan-next", None)
+            if e.get("kind") == "close":
+                st.flow_errors.pop("close", None)
         elif kind == "step.entered" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
@@ -379,7 +402,20 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "reviewer.reassigned":
             st.reviewer_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
-            st.flow_error = e.get("error") or ""
+            stage, error = e.get("stage") or "advance", e.get("error") or ""
+            st.flow_errors[stage] = {"event": e, "persisted": False,
+                                     "repeated": (stage, error) in st.flow_error_texts}
+            st.flow_error_texts.add((stage, error))
+        elif kind == "flow.error-persisted":
+            item = st.flow_errors.get(e.get("stage") or "advance")
+            if item and e.get("error") == item["event"].get("error"):
+                item["persisted"] = True
+        elif kind == "flow.error-cleared":
+            # Stary zapis bez etapu dotyczył jedynego bieżącego błędu.
+            stage = e.get("stage") or st.flow_error_event.get("stage") or "advance"
+            item = st.flow_errors.get(stage)
+            if item and e.get("error") == item["event"].get("error"):
+                st.flow_errors.pop(stage, None)
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.resumed":
@@ -408,7 +444,9 @@ def fold(events: list[dict]) -> FlowState:
                 st.imported_done.add(e.get("ticket"))
             elif e.get("state") == "odrzucone":
                 st.rejected.add(e.get("ticket"))
-        if st.plan_approved is not None and (kind in (
+        # Praca opiekuna nie zmienia planu ticketów: nowy klucz commita dawałby pozorną aktywność
+        # w kolejnym przebiegu i unieważniał własny problem `stalled:card` (PT-147, review 3).
+        if st.plan_approved is not None and not _bookkeeping(st, e) and (kind in (
                 "plan.approved", "plan.ticket-edited", "plan.revision-approved", "ticket.assigned",
                 "step.started", "step.finished", "step.waiting", "review.verdict",
                 "review.question", "review.decision", "ticket.rejected", "ticket.imported") or
@@ -416,6 +454,24 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_change_seq = int(e.get("seq") or 0)
             st.plan_change_ts = e.get("ts") or ""
     return st
+
+
+# PT-147: zdarzenia, które nie są pracą karty — nie przesuwają `last_activity_ts` i nie zdejmują „stoi”.
+BOOKKEEPING = ("flow.error-persisted", "stage.retry")
+
+
+def _bookkeeping(st: FlowState, e: dict) -> bool:
+    """Zdarzenie opiekuna karty (`caretaker.*`, krok i czekanie rodzaju `caretaker`, para `step-start` jego kroku,
+    para `caretaker-action`), znacznik utrzymującego się błędu Tide i zapis ponowienia etapu. Bez tego praca opiekuna nad kartą, która stoi, sama zdejmowałaby „stoi”, a problem
+    `stalled:card` znikałby, zanim opiekun skończy (PT-147). Skutki akcji opiekuna (np. `step.started` po
+    ponowieniu etapu) są zwykłą pracą."""
+    kind = e.get("type") or ""
+    if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") == "caretaker":
+        return True
+    if kind in ("intent", "result"):
+        return e.get("action") == "caretaker-action" or (
+            e.get("action") == "step-start" and e.get("key") in st.caretaker_runs)
+    return bool(e.get("step")) and e.get("step") in st.caretaker_runs
 
 
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
@@ -625,6 +681,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                                     for (ticket, kind), item in st.waiting.items()]})
     from .caretaker import view as caretaker_view
     out["flow"]["caretaker"] = caretaker_view(st)
+    # PT-147: opiekun pracuje nad kartą, która stoi (albo ma błąd Tide) — znacznik opiekuna zamiast „stoi”.
+    caring = out["flow"]["caretaker"]["working"] if not attention else []
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -699,6 +757,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             result["nextStep"] = "wybierz model do review planu"
             return result
         if st.stalled_since:
+            if caring:
+                return _fill(out, "progress", caring[0]["label"])
             return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
@@ -753,6 +813,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
     if st.stalled_since:
+        if caring:
+            return _fill(out, "progress", caring[0]["label"])
         return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:
         return _fill(out, 'backlog' if st.paused else 'progress',
@@ -775,8 +837,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
     if st.waiting and not st.running() and not attention:
         return _fill(out, "progress", f"{ident} · {next(reversed(st.waiting.values()))['reason']}")
-    caring = out["flow"]["caretaker"]["working"]
-    if caring and not attention:
+    if caring:
         # Opiekun sprawdza problem (PT-143): decyzja jest ukryta, karta „W toku” bez powiadomienia.
         return _fill(out, "progress", caring[0]["label"])
     if st.running() and not attention:

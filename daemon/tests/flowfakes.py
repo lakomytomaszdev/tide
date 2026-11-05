@@ -9,6 +9,7 @@
   „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
   `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-150: `retry` — ponowienie „Kroku problemu”
   z instrukcją, `retry-obcy` — ponowienie kroku spoza problemu, `retry-powoli` — 6 s pracy, potem `retry`;
+  PT-147: `akcja-<nazwa>-powoli` — 6 s pracy, potem `akcja-<nazwa>`;
   PT-158: `pisze-sledzony`, `pisze-nowy`,
   `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
   poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
@@ -61,6 +62,9 @@ if prompt.startswith("Jesteś opiekunem karty"):
     if care == "retry-powoli":      # PT-150: kilka sekund pracy (decyzja użytkownika w tym czasie), potem retry
         time.sleep(6)
         care = "retry"
+    if care.endswith("-powoli"):    # PT-147: `akcja-<nazwa>-powoli` — kilka sekund pracy, potem ta akcja
+        time.sleep(6)
+        care = care[:-len("-powoli")]
     # PT-158: opiekun, który pisze poza `out` (zmienia plik śledzony, dodaje nieśledzony, robi commit), a potem
     # zapisuje poprawny wynik `escalate` — strażnik ma go odrzucić przed odczytem wyniku.
     tree = re.search(r"Worktree kroku \(wyłącznie do odczytu\): (\S+)", prompt).group(1)

@@ -101,12 +101,17 @@ class LightPlanningTest(FlowInProcess):
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
 
-    def test_planner_crash_is_retried_once_then_waits_for_user(self):
+    def test_planner_crash_is_retried_once_then_caretaker_hands_it_to_user(self):
         card = self.card(description="ATRAPA: plan-error")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
+        # PT-148: po drugim takim samym błędzie planowania opiekun oddaje decyzję użytkownikowi.
+        self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=20), self.events(card))
         shown = self.wait_column(card, "waiting")
         self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "error")
-        self.assertEqual(len(self.of(card, "step.started")), 2)
+        steps = self.of(card, "step.started")
+        self.assertEqual([s["kind"] for s in steps], ["planning", "planning", "caretaker"])
+        self.assertEqual([s["attempt"] for s in steps if s["kind"] == "planning"], [0, 1])
+        self.assertEqual([s["trigger"] for s in self.of(card, "caretaker.started")], ["repeat"])
         self.assertEqual(len(self.of(card, "step.retry")), 1)
         self.assertEqual(self.of(card, "plan.proposed"), [])
 

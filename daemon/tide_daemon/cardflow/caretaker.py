@@ -9,7 +9,8 @@ Publiczny interfejs (silnik i widoki wołają tylko te funkcje):
 - `owned(st, id)` — jedyne liczenie działań opiekuna przy problemie (od ostatniego zamknięcia; bez `stale`),
 - `stale(st, run, events)` — czy działanie opiekuna jest nieaktualne (PT-150; jedna reguła dla problemów z decyzją
   i bez niej),
-- `problem_steps(problem, st)` — kroki, które opiekun może ponowić akcją `retry` (PT-150),
+- `problem_steps(problem, st)` — kroki, które opiekun może ponowić akcją `retry` (PT-150); etap karty ponawia
+  `retry-stage` (PT-147, przy `flow-error` i `stalled`),
 - `repeat_of(st, krok)`, `takes_over(st, krok, kolumna)`, `handed_repeat(st, krok)` — ten sam powód drugi raz
   (PT-148): silnik pyta `takes_over` przed automatycznym ponowieniem i automatyczną odmową łańcucha,
 - `brief(problem, st, ...)` — kartka kroku opiekuna (pierwsza linia „Jesteś opiekunem karty …”),
@@ -40,6 +41,10 @@ Zdarzenia dziennika:
   innej niż oddanie decyzji (PT-150). Zamiarem jest para `intent`/`result` akcji `caretaker-action` z kluczem kroku
   opiekuna (`FlowEngine._act`): zapisany wynik → po restarcie akcja nie wykonuje się drugi raz. `stale: true`
   (`error: "stale"`) — akcja nieaktualna, nic nie wykonano i działanie nie liczy się do limitu.
+- PT-147: `flow.error-persisted` (`{error, stage, step, ticket, since}`, zapis silnika — błąd Tide utrzymał się
+  w kolejnym przebiegu), `stage.retry` (`{problem, stage, ticket, caretaker, caretakerStep}` — przebieg etapu akcji
+  `retry-stage`) i `flow.error-cleared` (`{error, stage, caretaker?, caretakerStep?}` — etap już nie ma błędu,
+  w zwykłym przebiegu albo po ponowieniu).
 
 Bez rekursji: krok `caretaker` nie trafia do `st.steps`, więc żaden wyzwalacz go nie widzi (i wyzwalacz `error`
 sprawdza to jeszcze raz wprost).
@@ -69,6 +74,9 @@ QUESTION, OTHER_RESULT, NOT_STARTED, STOPPED = ("caretaker-question", "caretaker
 WROTE = "caretaker-wrote"
 # PT-150: akcja nieaktualna (nie liczy się do limitu), `retry` na krok spoza problemu (liczy się), wyczerpany limit.
 STALE, NOT_PROBLEM_STEP, LIMIT = "stale", "not-problem-step", "caretaker-limit"
+# PT-147: ponowiony etap znowu padł, niczego nie zmienił albo ponowienie przerwał restart (liczą się do limitu).
+STAGE_FAILED, STAGE_NO_CHANGE, STAGE_INTERRUPTED = "stage-failed", "stage-no-change", "stage-interrupted"
+STAGE_RETRY = "stage.retry"
 # Kroki opiekuna na problem, udane i nieudane (`caretakerActionLimit`; ustawialną wartość dokłada #9).
 ACTION_LIMIT = 3
 STEP_MAX = 200
@@ -108,6 +116,10 @@ def _retry(port, problem: dict, params: dict) -> dict:
     return port.retry(problem, params)
 
 
+def _retry_stage(port, problem: dict, params: dict) -> dict:
+    return port.retry_stage(problem, params)
+
+
 ACTIONS: dict[str, Action] = {
     "escalate": Action(
         kinds=("*",),
@@ -130,9 +142,16 @@ ACTIONS: dict[str, Action] = {
         },
         apply=_retry,
         description="ponów krok problemu z instrukcją dla wznowionego kroku"),
+    # PT-147: ponowienie etapu karty od razu, raz (bez parametrów) — przy błędzie Tide i karcie, która stoi. Liczy
+    # się do limitu działań jak każde działanie; etap, który znowu pada albo niczego nie zmienia, to nieudane działanie.
+    "retry-stage": Action(
+        kinds=("flow-error", "stalled"),
+        apply=_retry_stage,
+        description="ponów etap karty od razu, jeden raz (Tide sam powtarza go w każdym przebiegu — użyj, gdy "
+                    "przyczyna błędu albo zastoju już minęła albo była chwilowa)"),
 }
 
-HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku"}
+HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku", "retry-stage": "ponowienie etapu"}
 
 
 # --- wyzwalacze ----------------------------------------------------------------------------------
@@ -280,7 +299,46 @@ def _repeat_trigger(st) -> list[dict]:
     return found
 
 
-TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger]
+def _flow_error_trigger(st) -> list[dict]:
+    """Wyzwalacz 4 (PT-147): błąd Tide (`flow.error`), który się utrzymał — ten sam tekst w kolejnym przebiegu co
+    najmniej 10 s po pierwszym (`flow.error-persisted`, zapisuje silnik) albo powtórzony z tym samym tekstem po
+    zniknięciu. Obserwacje i powtórzenia dotyczą tego samego etapu. Jednorazowy błąd, który już nie wystąpił, nie jest
+    problemem. Bez kroku-sprawcy i bez decyzji: id `flow-error:<etap>` (etap z `flow.error`)."""
+    found = []
+    for stage, item in st.flow_errors.items():
+        event = item["event"]
+        ticket = event.get("ticket") or ""
+        if event.get("error") and (item["persisted"] or item["repeated"]) and ticket not in st.rejected:
+            found.append({"trigger": "flow-error", "stage": stage, "ticket": ticket})
+    return found
+
+
+def _without_caretaker(st):
+    """Stan karty bez pracy opiekuna (jego kroków, czekania na slot i par „zamiar → wynik”) — do sprawdzenia, czy
+    karta nadal stoi bez nazwanego powodu, także gdy opiekun już nad nią pracuje."""
+    from dataclasses import replace
+
+    def own(key) -> bool:
+        return key[0] == "caretaker-action" or (key[0] == "step-start" and key[1] in st.caretaker_runs)
+
+    return replace(st, caretakers={}, intents={k: v for k, v in st.intents.items() if not own(k)},
+                   waiting={k: v for k, v in st.waiting.items() if k[1] != KIND})
+
+
+def _stalled_trigger(st) -> list[dict]:
+    """Wyzwalacz 5 (PT-147): karta stoi (`card.stalled` — 3 minuty bez kroku, akcji i nazwanego powodu czekania)
+    i nadal nie ma nazwanego powodu (limit, slot, wstrzymanie, decyzja, plan…) ani pracującego kroku poza opiekunem.
+    Karta, która stoi z powodu błędu Tide będącego już problemem `flow-error`, nie daje drugiego problemu.
+    Id `stalled:card`."""
+    if not st.stalled_since or _flow_error_trigger(st):
+        return []
+    from .state import guard_reason
+    if guard_reason(_without_caretaker(st)) != "":
+        return []
+    return [{"trigger": "stalled", "stage": "card"}]
+
+
+TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger, _flow_error_trigger, _stalled_trigger]
 
 
 def _error_section(problem: dict, st) -> str:
@@ -361,10 +419,73 @@ def _with_detail(detail):
     return lambda problem, st: "\n\n".join(part for part in (_error_section(problem, st), detail(problem, st)) if part)
 
 
-BRIEF_SECTIONS = {"error": _error_section, "repeat": _with_detail(_repeat_detail),
-                  NO_PROGRESS: _with_detail(_noprogress_detail)}
 # Dopiski do przesłanki, gdy wyzwalacz dołączył do problemu otwartego przez inny (`problem["triggers"]`).
 BRIEF_DETAILS = {"repeat": _repeat_detail, NO_PROGRESS: _noprogress_detail}
+
+
+RECENT_EVENTS = 15
+
+
+def _recent_and_open(st) -> list[str]:
+    """Wspólna część kartki błędu Tide i zastoju (PT-147): ostatnie zdarzenia karty (bez pracy opiekuna) i otwarte
+    pary „zamiar → wynik” (zamiar bez wyniku blokuje kolejny etap)."""
+    from .state import _bookkeeping
+    lines = ["", f"Ostatnie zdarzenia karty (najwyżej {RECENT_EVENTS}, od najstarszego):"]
+    recent = [item for item in st.timeline if not _bookkeeping(st, item)][-RECENT_EVENTS:]
+    for item in recent:
+        parts = [str(item.get(key)) for key in ("type", "step", "ticket", "kind", "result", "reason", "action", "key")
+                 if item.get(key) not in (None, "")]
+        lines.append(f"- {item.get('ts') or '?'} " + " ".join(parts))
+    if not recent:
+        lines.append("- (brak)")
+    opened = [i for i in st.open_intents(include_background=True)
+              if i.get("action") != "caretaker-action" and not (
+                  i.get("action") == "step-start" and i.get("key") in st.caretaker_runs)]
+    lines += ["", "Otwarte pary „zamiar → wynik” (zamiar bez zapisanego wyniku):"]
+    lines += [f"- {i.get('action')} {i.get('key')} (od {i.get('ts') or '?'})" for i in opened] or ["- (brak)"]
+    return lines
+
+
+def _flow_error_section(problem: dict, st) -> str:
+    """Przesłanka błędu Tide (PT-147): tekst błędu, etap, krok i ticket, przy którym wystąpił, podpowiedź Tide,
+    ostatnie zdarzenia i otwarte pary. Pełny dziennik karty jest w kontekście (`journal.jsonl`)."""
+    from .state import flow_error_hint
+    item = st.flow_errors.get(problem.get("stage")) or {}
+    event = item.get("event") or {}
+    error = event.get("error") or ""
+    how = "utrzymał się w kolejnym przebiegu" if item.get("persisted") else "powtórzył się z tym samym tekstem"
+    lines = ["## Problem: błąd Tide (`flow.error`)", "",
+             f"Tekst błędu: {error or '(brak)'}",
+             f"Etap: {problem.get('stage') or event.get('stage') or '?'}"
+             + (f", krok {event['step']}" if event.get("step") else "")
+             + (f", ticket {event['ticket']}" if event.get("ticket") else "") + f"; błąd {how}.",
+             f"Podpowiedź Tide dla użytkownika: {flow_error_hint(error)}",
+             "Tide ponawia ten etap sam w każdym przebiegu; `retry-stage` ponawia go od razu, raz. Jeśli przyczyna "
+             "wymaga ruchu użytkownika (pliki w worktree, brak gałęzi, za duże zmiany), oddaj decyzję (`escalate`) "
+             "z diagnozą i rekomendacją."]
+    return "\n".join(lines + _recent_and_open(st))
+
+
+def _stalled_section(problem: dict, st) -> str:
+    """Przesłanka zastoju karty (PT-147): od kiedy karta stoi, ostatni krok, ostatnie zdarzenia i otwarte pary."""
+    last = st.steps.get(st.last_step) or {}
+    done = st.finished.get(st.last_step) or {}
+    lines = ["## Problem: karta stoi", "",
+             f"Karta stoi od {st.stalled_since or '?'}: od 3 minut nie ma pracującego kroku, zaczętej akcji ani "
+             "nazwanego powodu czekania (limit, slot dostawcy, wstrzymanie, decyzja użytkownika, plan).",
+             f"Ostatni krok: {st.last_step or '(brak)'}"
+             + (f" ({step_name(last.get('kind'), last.get('ticket'))}, wynik {done.get('result') or 'brak'})"
+                if last else ""),
+             f"Ostatni błąd Tide: {st.flow_error or '(brak)'}",
+             "`retry-stage` uruchamia od razu, raz, kolejny etap karty (to, co Tide robi w każdym przebiegu). Jeśli "
+             "karta stoi z powodu luki w przepływie albo potrzebuje ruchu użytkownika, oddaj decyzję (`escalate`) "
+             "z diagnozą i rekomendacją."]
+    return "\n".join(lines + _recent_and_open(st))
+
+
+BRIEF_SECTIONS = {"error": _error_section, "repeat": _with_detail(_repeat_detail),
+                  NO_PROGRESS: _with_detail(_noprogress_detail),
+                  "flow-error": _flow_error_section, "stalled": _stalled_section}
 
 
 # --- problemy i liczenie działań -----------------------------------------------------------------
@@ -504,7 +625,8 @@ def stale(st, run: dict, events: list) -> str:
       `caretaker` albo problem ma inną decyzję (albo go nie ma),
     - bez decyzji: `problems()` nie zwraca już problemu albo po `watermark` jest zdarzenie spoza opiekuna — w łańcuchu
       problemu `step.started`, `step.retry` albo `step.decision`, w całej karcie wstrzymanie, przeniesienie karty,
-      `plan.returned` albo `plan.edited`. Zdarzenia opiekuna (`caretaker.*`, krok `caretaker`, zapisy jego akcji)
+      `plan.returned` albo `plan.edited`; dla `flow-error` także rozwiązanie jego etapu (`flow.error-cleared`
+      albo udany wynik `plan-commit`), nawet jeśli błąd potem wrócił. Zdarzenia opiekuna (jego kroki i akcje)
       nie czynią działania nieaktualnym."""
     ident = run.get("problem") or ""
     found = next((p for p in problems(st) if p["id"] == ident), None)
@@ -518,10 +640,14 @@ def stale(st, run: dict, events: list) -> str:
             return "decyzja problemu już nie czeka"
         return ""
     watermark = int(run.get("watermark") or 0)
+    stage = ident.split(":", 1)[1] if ident.startswith("flow-error:") else ""
     for event in events:
         if int(event.get("seq") or 0) <= watermark or _own_event(event):
             continue
         kind = event.get("type")
+        if stage and ((kind == "flow.error-cleared" and event.get("stage") == stage) or
+                      (kind == "result" and event.get("ok") and event.get("action") == stage == "plan-commit")):
+            return f"po starcie opiekuna: {kind}"
         if kind in CARD_WIDE or (kind in IN_CHAIN and _in_problem(st, run, event)):
             return f"po starcie opiekuna: {kind}"
     return "problem już nie występuje" if found is None else ""
@@ -875,6 +1001,8 @@ def history_text(event: dict) -> str:
         reason = _text((event.get("params") or {}).get("reason"))
         return f"Opiekun: ponowił {event.get('label') or event.get('retried') or 'krok'} z instrukcją" + \
             (f" — {reason}" if reason else "")
+    if kind == ACTION and action == "retry-stage" and event.get("ok"):
+        return f"Opiekun: ponowił etap {event.get('label') or event.get('retried') or 'karty'}"
     if kind == ESCALATED and not event.get("failed"):
         summary = _text(event.get("summary"))
         return f"Opiekun: {HISTORY_LABELS.get('escalate')}" + (f" — {summary}" if summary else "")
