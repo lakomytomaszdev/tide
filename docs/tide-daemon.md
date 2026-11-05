@@ -2701,6 +2701,9 @@ Pierwsza prawdziwa budowa i pomiary (budowa ≤ 15 min, reset ≤ 60 s, Docker z
 scripts/box/stacks-trial.sh` poza piaskownicą — profile próbne python-qt (`plasma-tide`) i dotnet + docker
 (`tide-stacks-test`), chwilowe `restricted.snapshots=allow` w projekcie (cofane na końcu), log
 `docs/box-prototype/pt192-<czas>.log`; pudełka i profile próbne są usuwane po próbie.
+Skrypt zwraca kod 1 po nieudanej budowie, kontroli, resecie, przekroczeniu progu czasu albo błędzie
+sprzątania. Gdy usunięcie pudełka się nie powiedzie, zachowuje jego profil próbny do ponowienia sprzątania.
+Pomiary mają kropkę dziesiętną niezależnie od ustawień języka hosta.
 
 ### Proxy wyjściowe (PT-168)
 

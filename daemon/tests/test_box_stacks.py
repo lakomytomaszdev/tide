@@ -595,6 +595,73 @@ class StackBuildTest(unittest.TestCase):
 class TrialScriptTest(unittest.TestCase):
     TRIAL = os.path.join(ROOT, "scripts", "box", "stacks-trial.sh")
 
+    def run_trial(self, failure=""):
+        # Cały skrypt próby, ale bez hostowego Incusa, Tablicy i instalowania pakietów.
+        # Atrapy zwracają też prawidłowe dane kontroli po budowie, aby kod zakończenia
+        # zależał od wskazanego błędu, a nie od przypadkowego braku wyniku innej kontroli.
+        with tempfile.TemporaryDirectory() as folder:
+            trial = os.path.join(folder, "scripts", "box", "stacks-trial.sh")
+            os.makedirs(os.path.dirname(trial))
+            shutil.copyfile(self.TRIAL, trial)
+            body = r'''
+git() { :; }
+sleep() { :; }
+date() {
+    case "$1" in
+        +%Y-%m-%dT%H%M%S) echo stamp ;;
+        +%s.%N) echo 100.0 ;;
+        *) echo trial ;;
+    esac
+}
+python3() {
+    if [[ $1 == -c ]]; then echo localhost; return; fi
+    case "$3" in
+        approve) [[ $FAIL_STAGE != approve ]] ;;
+        build) [[ $FAIL_STAGE != build ]] ;;
+        reset) [[ $FAIL_STAGE != reset ]] ;;
+        destroy) [[ $FAIL_STAGE != cleanup ]] ;;
+        status)
+            if [[ $FAIL_STAGE == warning && $4 == tide-stacks-test ]]; then
+                echo 'stan: zbudowane z ostrzeżeniem'
+            else
+                printf 'stan: clean\nhash: abc123\nfiltrowanie NIC: tak\n'
+            fi ;;
+    esac
+}
+incus() {
+    case "$1" in
+        image) echo tide-base ;;
+        project) echo allow ;;
+        exec)
+            if [[ $* == *claude* && $FAIL_STAGE == check ]]; then return 7; fi
+            if [[ $* == *'/root/pt192-poza-home'* && $* == *'test -e'* ]]; then return 1; fi
+            if [[ $* == *'cat /home/agent/pt192-marker'* ]]; then echo pt192-stamp; fi
+            if [[ $* == *'systemctl show docker'* ]]; then
+                echo 'Environment=HTTP_PROXY=http://proxy HTTPS_PROXY=http://proxy NO_PROXY=localhost'
+            fi ;;
+    esac
+    return 0
+}
+export -f git sleep date python3 incus
+bash "$TRIAL"
+'''
+            env = {**os.environ, "TRIAL": trial, "FAIL_STAGE": failure,
+                   "XDG_STATE_HOME": os.path.join(folder, "state"),
+                   "TIDE_BOARD_DIR": os.path.join(folder, "board")}
+            return subprocess.run(["bash", "-c", body], env=env, capture_output=True, text=True, timeout=20)
+
+    def test_trial_success_exits_zero(self):
+        proc = self.run_trial()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn(": fail", proc.stdout)
+
+    def test_trial_failure_cannot_be_hidden_by_successful_cleanup(self):
+        for stage in ("approve", "build", "check", "reset", "warning", "cleanup"):
+            with self.subTest(stage=stage):
+                proc = self.run_trial(stage)
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(": fail", proc.stdout)
+
     def test_trial_profiles_pass_the_schema_and_use_the_stacks(self):
         text = read(self.TRIAL)
         profiles = dict(re.findall(r'profile_file ([a-z-]+) "(tide-box: 1\n.*?)"\)', text, re.S))

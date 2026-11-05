@@ -26,6 +26,7 @@ BUILD_LIMIT=900
 RESET_LIMIT=60
 SNAP_OLD=""
 SNAP_CHANGED=0
+FAILURES=0
 CREATED=()       # sluga z profilem założonym przez próbę (do usunięcia na końcu)
 
 mkdir -p "$OUT"
@@ -34,11 +35,17 @@ exec > >(tee -a "$LOG") 2>&1
 tide() { python3 "$ROOT/daemon/tide.py" box "$@" </dev/null; }
 in_box() { incus exec --project "$PROJECT" "$@" </dev/null; }
 section() { printf '\n===== %s =====\n' "$*"; }
-result() { printf 'WYNIK %s: %s — %s\n' "$1" "$2" "$3"; }
+result() {
+    printf 'WYNIK %s: %s — %s\n' "$1" "$2" "$3"
+    if [[ $2 == fail || $2 == over ]]; then
+        FAILURES=$((FAILURES + 1))
+    fi
+}
 now() { date +%s.%N; }
-since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+since() { LC_ALL=C awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 
 cleanup() {
+    local code=$?
     section "sprzątanie"
     local slug
     for slug in "${CREATED[@]}"; do
@@ -46,19 +53,32 @@ cleanup() {
             echo "KEEP_BOXES=1: pudełko i profil $slug zostają"
             continue
         fi
-        tide destroy "$slug" --yes
-        rm -f "$BOARD/projects/$slug/box.yaml"
+        if ! tide destroy "$slug" --yes; then
+            result "cleanup-$slug" fail "nie usunięto pudełka — profil próbny zostaje do ponowienia sprzątania"
+            continue
+        fi
+        if ! rm -f "$BOARD/projects/$slug/box.yaml"; then
+            result "cleanup-profile-$slug" fail "nie usunięto profilu próbnego"
+            continue
+        fi
         echo "profil próbny $slug usunięty ($BOARD/projects/$slug/box.yaml); dziennik pudełka zostaje w Tablicy"
     done
     if (( SNAP_CHANGED )); then
         if [[ -n $SNAP_OLD ]]; then
-            sudo incus project set "$PROJECT" "restricted.snapshots=$SNAP_OLD"
+            sudo incus project set "$PROJECT" "restricted.snapshots=$SNAP_OLD" \
+                || result cleanup-snapshots fail "nie cofnięto restricted.snapshots"
         else
-            sudo incus project unset "$PROJECT" restricted.snapshots
+            sudo incus project unset "$PROJECT" restricted.snapshots \
+                || result cleanup-snapshots fail "nie cofnięto restricted.snapshots"
         fi
         echo "restricted.snapshots cofnięte: $(incus project get "$PROJECT" restricted.snapshots </dev/null)"
     fi
     echo "log: $LOG"
+    if (( FAILURES > 0 )); then
+        echo "nieudane sprawdzenia: $FAILURES"
+        code=1
+    fi
+    exit "$code"
 }
 trap cleanup EXIT
 
@@ -70,10 +90,13 @@ profile_file() {  # profile_file <slug> <treść> — plik tymczasowy z profilem
 
 approve() {  # approve <slug> <plik>
     if [[ -e $BOARD/projects/$1/box.yaml ]]; then
-        echo "BŁĄD: $1 ma już profil w Tablicy ($BOARD/projects/$1/box.yaml) — próba go nie nadpisze" >&2
+        result "approve-$1" fail "$1 ma już profil w Tablicy ($BOARD/projects/$1/box.yaml) — próba go nie nadpisze"
         return 1
     fi
-    tide approve "$1" --file "$2" || return 1
+    if ! tide approve "$1" --file "$2"; then
+        result "approve-$1" fail "nie zatwierdzono profilu próbnego"
+        return 1
+    fi
     CREATED+=("$1")
 }
 
@@ -155,10 +178,10 @@ if approve plasma-tide "$A" && build plasma-tide; then
     check qt-env in_box plasma-tide -- grep -x 'QT_QPA_PLATFORM="offscreen"' /etc/environment
 
     section "A: reset z plikiem w /home/agent"
-    in_box plasma-tide --user 1000 --group 1000 -- sh -c "echo pt192-$STAMP > /home/agent/pt192-marker"
-    in_box plasma-tide -- touch /root/pt192-poza-home
+    check reset-marker-home in_box plasma-tide --user 1000 --group 1000 -- sh -c "echo pt192-$STAMP > /home/agent/pt192-marker"
+    check reset-marker-rootfs in_box plasma-tide -- touch /root/pt192-poza-home
     start=$(now)
-    tide reset plasma-tide
+    tide reset plasma-tide || result reset-command fail "tide box reset zakończył się błędem"
     took=$(since "$start")
     awk -v t="$took" -v l="$RESET_LIMIT" 'BEGIN { exit !(t <= l) }' \
         && result reset-plasma-tide ok "$took s (próg $RESET_LIMIT s)" || result reset-plasma-tide over "$took s > $RESET_LIMIT s"
@@ -189,7 +212,10 @@ verify:
   - docker info")
 cat "$B"
 if approve tide-stacks-test "$B" && build tide-stacks-test; then
-    tide status tide-stacks-test
+    status=$(tide status tide-stacks-test)
+    echo "$status"
+    [[ $status == *"stan: clean"* ]] && result status-tide-stacks-test ok "stan clean" \
+        || result status-tide-stacks-test fail "stan inny niż clean (verify?)"
     env_line=$(in_box tide-stacks-test -- systemctl show docker -p Environment)
     echo "$env_line"
     no_proxy=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from tide_daemon.box import netenv; print(netenv.BOX_NO_PROXY)' "$ROOT/daemon")
