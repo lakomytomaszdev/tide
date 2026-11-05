@@ -675,8 +675,8 @@ class FlowEngine(PlanEditing):
                 found = execution.resolve(candidate, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError("unknown-reviewer" if exc.code == "unknown-executor" else exc.code, str(exc)) from None
-            if found.name == selected.name or found.model.lower() == selected.model.lower():
-                raise FlowError("bad-reviewer", "recenzent musi mieć inny model niż autor")
+            if found.name == selected.name or not flow_plans.independent_reviewer(selected, found):
+                raise FlowError("bad-reviewer", "recenzent musi mieć inny model albo inną siłę myślenia niż autor")
             if selected.local != found.local:
                 raise FlowError("bad-reviewer-provider", "praca lokalna wymaga lokalnego recenzenta")
             if preferred == "mixed" and found.provider == selected.provider:
