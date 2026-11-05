@@ -22,6 +22,10 @@ if [ "${TIDE_STEP_CLEAN:-}" != 1 ]; then
 fi
 step=$TIDE_STEP
 unset TIDE_STEP_CLEAN
+# Po `env -i` jawnie (ta sama wartość co BOX_PATH w runner.py) — domyślna ścieżka powłoki nie jest pewna;
+# in/env może ją potem nadpisać.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 envfile="$step/in/env"
 
 if [ ! -f "$envfile" ] || [ -L "$envfile" ]; then

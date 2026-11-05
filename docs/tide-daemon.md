@@ -2666,7 +2666,17 @@ incus exec <pudełko> --project <p> -T --user 1000 --group 1000 --cwd <worktree>
 Krok jest usługą użytkownika `agent`, a nie scope — decyzja `krok-jako-usluga-user` (P-9): proces w scope ginie
 razem z klientem `incus exec`, czyli z restartem usługi Tide; usługa przeżywa, a klient z `--wait` kończy się kodem
 jednostki. Nic z `in/env` nie trafia do argv ani do `--env` `incus exec`; klient `incus` dostaje tylko `HOME`,
-`PATH`, `LANG`, `USER`, `XDG_*` usługi. Wyjście klienta: `out/box-exec.log`.
+`PATH`, `LANG`, `USER`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `INCUS_DIR` i `INCUS_CONF` usługi (oraz haki testowe
+`TIDE_FAKE*`/`TIDE_INCUS_BIN` atrapy). Wyjście klienta: `out/box-exec.log`.
+
+**Zapis do katalogu kroku.** `<repo>-worktrees` jest w pudełku rw, więc katalog kroku, `in`, `out` i każdy plik mogą
+być w chwili startu dowiązaniem podłożonym z pudełka (agent, Codex, root pudełka). Runner nie woła
+`Background.prepare()`: `StepDir` otwiera każdy składnik od `<repo>-worktrees` w dół przez `dir_fd` z `O_NOFOLLOW`
+(katalogi zakłada `mkdir` bez podążania), pliki kroku (`settings.json`, `gitconfig`, `ignore`, `prompt.txt`) otwiera
+z `O_NOFOLLOW|O_NONBLOCK` i przed obcięciem sprawdza `fstat`: zwykły plik, jedno dowiązanie, właściciel — usługa;
+`out/box-exec.log` tak samo, dopisywany; `in/env` i `in/local-token` zakłada świeże (`unlink` + `O_EXCL`) przez ten
+sam łańcuch; `in/exit-code` usuwa przez `dir_fd`. Dowiązanie, katalog, FIFO albo twarde dowiązanie w drodze →
+odmowa kroku, cel nietknięty. Sam `lstat` przed zapisem nie wystarczy (wyścig z procesem w pudełku).
 
 **`in/env` i `tide-step`.** `start` zapisuje `<krok>/in/env` (świeży plik `O_EXCL|O_NOFOLLOW`, 0600, właściciel —
 usługa; stary plik albo dowiązanie najpierw usuwa) w wierszach `KLUCZ=wartość` (nowa linia w wartości → odmowa):
@@ -2680,7 +2690,8 @@ czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku).
 
 Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh; obraz bazowy #16 instaluje je jako
 `/usr/local/bin/tide-step`): czyści środowisko, sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
-użytkownik — inaczej kod 125), eksportuje wiersze bez `eval`, przechodzi do `TIDE_CWD`, zakłada
+użytkownik — inaczej kod 125; `PATH` = `BOX_PATH` ustawiane jawnie przed pierwszym poleceniem), eksportuje wiersze
+bez `eval`, przechodzi do `TIDE_CWD`, zakłada
 `CLAUDE_CODE_TMPDIR` w `/tmp` pudełka, uruchamia agenta z `in/prompt.txt` na stdin i wyjściem dopisywanym do
 `out/step.log`, zapisuje kod atomowo w `in/exit-code` (jak `EXIT_WRAPPER` hosta; SIGTERM przeczekuje) i kończy się nim.
 
@@ -2710,7 +2721,9 @@ nie w kolejności `device add` — nakładki leżą nad `.git`, bo ich ścieżki
 agent jej nie włączy; błąd odczytu → odmowa kroku). Wyłączona (stan plasma-tide): żadnych nakładek `tide-wtcfg-*` —
 nowy worktree ticketu nie wymaga zatrzymania pudełka, kroki projektu startują równolegle. Włączona: nakładka na każdy
 istniejący plik, a dla worktree kroku usługa najpierw zakłada pusty `config.worktree` (wskaźnik `<worktree>/.git`
-musi prowadzić bezpośrednio do `.git/worktrees/<nazwa>`; dowiązanie albo katalog zamiast pliku → odmowa). Nakładka
+musi prowadzić bezpośrednio do `.git/worktrees/<nazwa>`; dowiązanie albo katalog zamiast pliku → odmowa; plik
+zakładany przez `dir_fd` z `O_NOFOLLOW` od `<repo>/.git`, bo `.git/worktrees/<nazwa>` może zostać podmienione
+na dowiązanie po sprawdzeniu `realpath`). Nakładka
 chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
 krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
 `core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
@@ -2719,13 +2732,17 @@ krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego wor
 Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
 `raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
 dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dodania i startuje z powrotem — a gdy według
-dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Po takim restarcie runner czeka (najwyżej
+dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Z tej listy runner wyklucza własny `step_id`, więc
+silnik (#18, PT-181) musi zapisać `box.use` (`state.mark_in_use`) **przed** `runner.start` każdego kroku — inaczej
+biegnący krok drugiego worktree, którego wpisu jeszcze nie ma, zginąłby przy zatrzymaniu pudełka. Po takim restarcie runner czeka (najwyżej
 `box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
 bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
 menedżera krok jest odmówiony. Worktree albo katalog kroku spoza `<repo>-worktrees` → odmowa. Zatrzymane pudełko →
 odmowa z czytelnym błędem (start pudełka należy do #18). Błąd `incus` przy montowaniu → `StepError`. Źródło
 równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
-poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Kopia karty dostaje urządzenia
+poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Źródło w repozytorium albo
+w `<repo>-worktrees`, którego `realpath` różni się od ścieżki (składnik-dowiązanie, np. `.git/hooks` → `~/.ssh`
+podłożone przez rw `.git`) → odmowa, bo Incus dostaje literalne `source`. Kopia karty dostaje urządzenia
 we własnej konfiguracji, pudełko projektu zostaje bez zmian.
 
 **Ustawienia agentów w pudełku.** Claude Code: plik `<krok>/in/settings.json` (katalog kroku — ustawienia hosta bez

@@ -43,6 +43,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -168,19 +169,163 @@ def _device_name(kind: str, extra: str = "") -> str:
     return name
 
 
-def _write_secret(path: str, text: str) -> None:
-    """Plik 0600 właściciela usługi; stary (albo dowiązanie podłożone przez agenta) jest najpierw usuwany."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        os.write(fd, text.encode("utf-8"))
-    finally:
-        os.close(fd)
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _open_dir(name: str, parent: int, *, create: bool = False, mode: int = 0o755) -> int:
+    """Katalog `name` w `parent` (dir_fd) bez podążania za dowiązaniem; dowiązanie albo plik → OSError."""
+    if create:
+        try:
+            os.mkdir(name, mode, dir_fd=parent)
+        except FileExistsError:
+            pass
+    return os.open(name, _DIR_FLAGS, dir_fd=parent)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
+class StepDir:
+    """Zapis usługi do katalogu kroku leżącego w `<repo>-worktrees` — katalogu montowanym w pudełku rw.
+
+    Pudełko może w każdej chwili podmienić `<krok>`, `in`, `out` albo plik na dowiązanie (także w wyścigu ze
+    sprawdzeniem `lstat`), więc każdy składnik od `<repo>-worktrees` w dół otwiera się przez `dir_fd` z `O_NOFOLLOW`,
+    a plik sprawdza się `fstat` na otwartym deskryptorze (wzór `gitops._write_plan_file`). Sam `<repo>-worktrees`
+    jest punktem montowania w pudełku i jego ścieżki pudełko nie zmieni. Dowiązanie, katalog w miejscu pliku, FIFO
+    albo twarde dowiązanie → StepError, cel nietknięty."""
+
+    def __init__(self, root: str, step_dir: str):
+        self.root = os.path.realpath(root)
+        self.path = os.path.normpath(step_dir)
+        parent = os.path.realpath(os.path.dirname(self.path))
+        if not _within(parent, self.root):
+            raise agentcmd.StepError(f"katalog kroku w pudełku musi leżeć w {self.root}: {step_dir}")
+        self._parts = [p for p in os.path.relpath(parent, self.root).split(os.sep) if p not in ("", ".")]
+        self._parts.append(os.path.basename(self.path))
+        if any(p in ("", ".", "..") for p in self._parts):
+            raise agentcmd.StepError(f"niepoprawny katalog kroku: {step_dir}")
+
+    def _rel(self, path: str) -> list:
+        path = os.path.normpath(path)
+        if not _within(path, self.path) or path == self.path:
+            raise agentcmd.StepError(f"ścieżka {path} leży poza katalogiem kroku {self.path}")
+        return os.path.relpath(path, self.path).split(os.sep)
+
+    def _walk(self, parts: list, *, create: bool = True) -> int:
+        """Deskryptor katalogu `<krok>/<parts…>` (zakładanego po drodze, gdy `create`)."""
+        fd = os.open(self.root, _DIR_FLAGS)
+        try:
+            for part in self._parts + list(parts):
+                child = _open_dir(part, fd, create=create)
+                os.close(fd)
+                fd = child
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _guard(self, what: str, fn):
+        try:
+            return fn()
+        except agentcmd.StepError:
+            raise
+        except OSError as exc:
+            raise agentcmd.StepError(f"{what} w katalogu kroku odmówione (dowiązanie albo nie zwykły plik/katalog): "
+                                     f"{exc}") from exc
+
+    def mkdir(self, path: str) -> None:
+        self._guard(path, lambda: os.close(self._walk(self._rel(path))))
+
+    def write(self, path: str, text: str) -> None:
+        """Zwykły plik (0644): istniejący musi być zwykłym plikiem z jednym dowiązaniem; obcinany po sprawdzeniu."""
+        parts = self._rel(path)
+
+        def run():
+            folder = self._walk(parts[:-1])
+            try:
+                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             0o644, dir_fd=folder)
+            finally:
+                os.close(folder)
+            try:
+                self._check_regular(fd, path)
+                os.ftruncate(fd, 0)
+                _write_all(fd, text.encode("utf-8"))
+            finally:
+                os.close(fd)
+        self._guard(path, run)
+
+    def write_secret(self, path: str, text: str) -> None:
+        """Plik 0600 właściciela usługi; stary (albo dowiązanie podłożone przez agenta) jest najpierw usuwany."""
+        parts = self._rel(path)
+
+        def run():
+            folder = self._walk(parts[:-1])
+            try:
+                try:
+                    os.unlink(parts[-1], dir_fd=folder)
+                except FileNotFoundError:
+                    pass
+                fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                             dir_fd=folder)
+            finally:
+                os.close(folder)
+            try:
+                os.fchmod(fd, 0o600)
+                _write_all(fd, text.encode("utf-8"))
+            finally:
+                os.close(fd)
+        self._guard(path, run)
+
+    def unlink(self, path: str) -> None:
+        parts = self._rel(path)
+
+        def run():
+            folder = self._walk(parts[:-1])
+            try:
+                os.unlink(parts[-1], dir_fd=folder)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(folder)
+        self._guard(path, run)
+
+    def open_append(self, path: str):
+        """Plik dopisywany (dziennik klienta `incus exec`) jako obiekt pliku binarnego."""
+        parts = self._rel(path)
+
+        def run():
+            folder = self._walk(parts[:-1])
+            try:
+                fd = os.open(parts[-1], os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+                             | os.O_CLOEXEC, 0o644, dir_fd=folder)
+            finally:
+                os.close(folder)
+            try:
+                self._check_regular(fd, path)
+                os.set_blocking(fd, True)
+            except BaseException:
+                os.close(fd)
+                raise
+            return os.fdopen(fd, "ab")
+        return self._guard(path, run)
+
+    @staticmethod
+    def _check_regular(fd: int, path: str) -> None:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.getuid():
+            raise agentcmd.StepError(f"{path} nie jest zwykłym plikiem usługi — krok w pudełku odmówiony")
+
+    def prepare(self, bg: agentcmd.Background) -> None:
+        """`Background.prepare` przez deskryptory: katalogi, pliki kroku i `in/prompt.txt`."""
+        for folder in bg.dirs:
+            self.mkdir(folder)
+        for path, text in bg.files.items():
+            self.write(path, text)
+        self.write(bg.prompt_file, bg.stdin)
 
 
 def env_file_text(env: dict) -> str:
@@ -352,12 +497,37 @@ class BoxRunner:
         admin = os.path.realpath(os.path.join(worktree, line[len("gitdir:"):].strip()))
         if os.path.dirname(admin) != os.path.realpath(os.path.join(git, "worktrees")) or not os.path.isdir(admin):
             raise agentcmd.StepError(f"wskaźnik {pointer} nie prowadzi do {git}/worktrees/<nazwa>")
-        cfg = os.path.join(admin, "config.worktree")
-        if os.path.lexists(cfg):
-            if os.path.islink(cfg) or not os.path.isfile(cfg):
-                raise agentcmd.StepError(f"{cfg} nie jest zwykłym plikiem — krok w pudełku odmówiony")
-            return cfg
-        os.close(os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
+        name = os.path.basename(admin)
+        cfg = os.path.join(git, "worktrees", name, "config.worktree")
+        # `.git` jest rw w pudełku: między `realpath` a zapisem `.git/worktrees` albo `<nazwa>` może stać się
+        # dowiązaniem — dalej tylko przez dir_fd z O_NOFOLLOW (sam `<repo>/.git` leży w głównym worktree, poza pudełkiem).
+        try:
+            top = os.open(git, _DIR_FLAGS)
+            try:
+                wts = _open_dir("worktrees", top)
+            finally:
+                os.close(top)
+            try:
+                folder = _open_dir(name, wts)
+            finally:
+                os.close(wts)
+            try:
+                try:
+                    fd = os.open("config.worktree", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o644, dir_fd=folder)
+                except FileExistsError:
+                    fd = os.open("config.worktree", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                 dir_fd=folder)
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise agentcmd.StepError(f"{cfg} nie jest zwykłym plikiem — krok w pudełku odmówiony")
+                finally:
+                    os.close(fd)
+            finally:
+                os.close(folder)
+        except OSError as exc:
+            raise agentcmd.StepError(f"{cfg}: dowiązanie albo nie zwykły plik — krok w pudełku odmówiony ({exc})"
+                                     ) from exc
         return cfg
 
     def _check_sources(self, devices: list, repo: str) -> None:
@@ -365,6 +535,11 @@ class BoxRunner:
         home = os.path.realpath(self.host_env.get("HOME") or os.path.expanduser("~"))
         for dev in devices:
             src = os.path.realpath(dev.source)
+            norm = os.path.normpath(dev.source)
+            if (_within(norm, repo) or _within(norm, worktrees_root(repo))) and src != norm:
+                # Incus dostaje literalne `source`: składnik-dowiązanie (np. `.git/hooks` → `~/.ssh`, podłożony
+                # z pudełka przez rw `.git`) przeszedłby sprawdzenie po `realpath`, a zamontował cel.
+                raise agentcmd.StepError(f"montowanie {dev.source} prowadzi przez dowiązanie do {src}")
             if _within(repo, src) or _within(home, src):
                 raise agentcmd.StepError(f"montowanie {src} odsłoniłoby główny worktree albo katalog domowy")
             if _within(src, repo) and not _within(src, os.path.join(repo, ".git")):
@@ -466,7 +641,9 @@ class BoxRunner:
               ) -> Started:
         bg = self._background(step)
         self.ensure_devices(step)
-        bg.prepare()
+        # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
+        fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
+        fs.prepare(bg)
         if before_start is not None:
             before_start(bg)
         env = dict(bg.env)
@@ -475,22 +652,18 @@ class BoxRunner:
         for name, path in bg.secret_env.items():
             env[name] = launch.read_token(path)
         if step.tool == "claude" and step.local is not None and step.local.token_file:
-            _write_secret(os.path.join(bg.step_dir, "in", LOCAL_TOKEN_FILE), launch.read_token(step.local.token_file))
+            fs.write_secret(os.path.join(bg.step_dir, "in", LOCAL_TOKEN_FILE), launch.read_token(step.local.token_file))
         if self.step_env is not None:
             env.update(self.step_env(step) or {})
-        _write_secret(os.path.join(bg.step_dir, "in", ENV_FILE), env_file_text(env))
+        fs.write_secret(os.path.join(bg.step_dir, "in", ENV_FILE), env_file_text(env))
         for path in (bg.exit_file, bg.exit_file + ".tmp"):
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+            fs.unlink(path)
         if step.tool == "claude" and not self.sandbox and not self._risk_logged and self.journal is not None:
             self.journal("box.risk", {"risk": "K1", "box": self.box, "step": step.step_id,
                                       "text": "ryzyko K1: piaskownica Claude Code w pudełku wyłączona (P-2) — "
                                               "kod w pudełku czyta to, co agent"})
             self._risk_logged = True
-        os.makedirs(os.path.dirname(bg.log_file), exist_ok=True)
-        with open(os.path.join(bg.step_dir, "out", EXEC_LOG), "ab") as log:
+        with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
             proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                env=self._client_env(), start_new_session=True)
         return Started(bg, proc)

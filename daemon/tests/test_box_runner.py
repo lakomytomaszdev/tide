@@ -148,6 +148,68 @@ class ArgvTest(BoxRunnerCase):
         with open(target, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "nie ruszać\n")
 
+    # Review rundy 2, MAJOR-1: katalog kroku jest rw w pudełku — zapis usługi nie idzie za dowiązaniem.
+
+    def victim(self, name="victim", text="nie ruszać\n"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def assert_refused(self, step=None):
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().start(step or self.step())
+        self.assertEqual(self.popen_calls, [])
+
+    def test_in_dir_symlink_is_refused_and_target_dir_untouched(self):
+        target = os.path.join(self.tmp, "victim-dir")
+        os.makedirs(target)
+        os.makedirs(self.step_dir)
+        os.symlink(target, os.path.join(self.step_dir, "in"))
+        self.assert_refused()
+        self.assertEqual(os.listdir(target), [])
+
+    def test_step_dir_symlink_is_refused(self):
+        # Cel w `<repo>-worktrees` (przechodzi sprawdzenie `realpath` w devices_for) — odmawia dopiero StepDir.
+        target = os.path.join(self.wt_root, "other.step")
+        os.makedirs(target)
+        os.symlink(target, self.step_dir)
+        self.assert_refused()
+        self.assertEqual(os.listdir(target), [])
+
+    def test_prompt_symlink_is_refused_and_target_untouched(self):
+        target = self.victim()
+        os.makedirs(os.path.join(self.step_dir, "in"))
+        os.symlink(target, os.path.join(self.step_dir, "in", "prompt.txt"))
+        self.assert_refused()
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "nie ruszać\n")
+
+    def test_prompt_hardlink_is_refused_and_target_untouched(self):
+        target = self.victim()
+        os.makedirs(os.path.join(self.step_dir, "in"))
+        os.link(target, os.path.join(self.step_dir, "in", "settings.json"))
+        self.assert_refused()
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "nie ruszać\n")
+
+    def test_exec_log_symlink_is_refused_and_target_untouched(self):
+        target = self.victim()
+        os.makedirs(os.path.join(self.step_dir, "out"))
+        os.symlink(target, os.path.join(self.step_dir, "out", br.EXEC_LOG))
+        self.assert_refused()
+        with open(target, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "nie ruszać\n")
+
+    def test_existing_regular_files_are_rewritten(self):
+        self.runner().start(self.step())
+        with open(os.path.join(self.step_dir, "in", "prompt.txt"), "w", encoding="utf-8") as fh:
+            fh.write("stara treść, dłuższa niż nowy prompt\n")
+        self.runner().start(self.step(step_id="s2"))
+        with open(os.path.join(self.step_dir, "in", "prompt.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "Zrób ticket")
+        self.assertEqual(len(self.popen_calls), 2)
+
     def test_newline_in_a_value_is_refused(self):
         with self.assertRaises(agentcmd.StepError):
             self.runner(step_env=lambda s: {"X": "a\nB=b"}).start(self.step())
@@ -293,6 +355,29 @@ class DevicesTest(BoxRunnerCase):
         with self.assertRaises(agentcmd.StepError):
             self.runner().start(self.step())
         self.assertEqual(self.popen_calls, [])
+
+    def test_with_extension_admin_dir_swapped_for_symlink_after_realpath_is_refused(self):
+        """Review rundy 2: `.git/worktrees/<wt>` podmienione na dowiązanie po sprawdzeniu `realpath` (wyścig
+        symulowany `realpath` bez rozwijania) — plik nie powstaje w celu dowiązania."""
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        admin = os.path.join(self.repo, ".git", "worktrees", "pt-1")
+        target = os.path.join(self.tmp, "victim-admin")
+        os.rename(admin, target)
+        os.symlink(target, admin)
+        with mock.patch("os.path.realpath", os.path.abspath):
+            with self.assertRaises(agentcmd.StepError):
+                br.BoxRunner._ensure_worktree_config(os.path.join(self.repo, ".git"), self.worktree)
+        self.assertFalse(os.path.exists(os.path.join(target, "config.worktree")))
+
+    def test_symlinked_hooks_dir_is_refused_as_a_mount_source(self):
+        """Review rundy 2, NIT-1: Incus dostaje literalne `source`, więc składnik-dowiązanie jest odrzucany."""
+        hooks = os.path.join(self.repo, ".git", "hooks")
+        shutil.rmtree(hooks)
+        target = os.path.join(self.tmp, "victim-hooks")
+        os.makedirs(target)
+        os.symlink(target, hooks)
+        with self.assertRaisesRegex(agentcmd.StepError, "dowiązanie"):
+            self.runner().devices_for(self.step())
 
     def test_with_extension_pointer_outside_git_worktrees_is_refused(self):
         gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
