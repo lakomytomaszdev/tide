@@ -42,8 +42,19 @@ class Scripted(module.Backend):
     def __init__(self, snapshot):
         super().__init__(None, snapshot)
         self.replies = []
+        self.branch_replies = []
+        self.branch_calls = []
 
     def _write(self, tag, member, args):
+        if member == "ListCardBranches":
+            # Odczyty nie zużywają scenariuszy zapisów istniejących testów formularza.
+            self.branch_calls.append([member, *args])
+            reply = self.branch_replies.pop(0) if self.branch_replies else {
+                "ok": True, "branches": [{"ref": "refs/heads/master", "name": "master", "kind": "local",
+                                           "remote": "", "commit": "a" * 40, "selectable": True, "reason": ""}],
+                "mainRef": "refs/heads/master", "recentBases": [], "recentTargets": [], "warnings": [], "hasMore": False}
+            QTimer.singleShot(10, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            return
         self._calls.append([member, *args])
         self.callsChanged.emit()
         reply = self.replies.pop(0) if self.replies else {"ok": True, "id": args[0] if member != "CreateCard" else "K-99",

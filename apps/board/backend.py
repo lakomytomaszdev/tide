@@ -67,7 +67,7 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
-          "StartCard", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
+          "StartCard", "ListCardBranches", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
           "EditCardPlan", "MergeCardToMain", "SetCardFlowSettings", "ReportStepFault")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
@@ -404,6 +404,10 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def startTask(self, tag: str, request: str) -> None:
         self._write(tag, "Start", [request])
+
+    @pyqtSlot(str, str, str)
+    def listCardBranches(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "ListCardBranches", [card_id, request])
 
     @pyqtSlot(str, str, str)
     def startCard(self, tag: str, card_id: str, request: str) -> None:

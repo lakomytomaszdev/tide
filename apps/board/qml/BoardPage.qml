@@ -100,6 +100,7 @@ Rectangle {
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
     signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
+    signal branchesRequested(string tag, string cardId, string request)
     signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
@@ -616,6 +617,10 @@ Rectangle {
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
+        if (tag.indexOf("branches:") === 0) {
+            launchDialog.basePicker.receive(tag, reply)
+            return
+        }
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
         // Rzadkie ustawienia z pełnej karty (PT-134): widoczny skutek albo powód odmowy usługi. Błąd przeniesienia
@@ -1757,6 +1762,11 @@ Rectangle {
         onRemoveImageRequested: path => page.removeImageRequested(path)
         onFilesDropped: urls => page.filesDropped(urls)
         onModelsRequested: page.modelsRequested()
+        onBranchesRequested: text => {
+            const tag = page.nextTag("branches:" + page.launchCardId)
+            launchDialog.basePicker.pendingTag = tag
+            page.branchesRequested(tag, page.launchCardId, JSON.stringify({purpose: "base", text: text, limit: 50}))
+        }
         onLaunchRequested: (choice, description, changed) => page.startLaunch(choice, description, changed)
         onCancelRequested: page.cancelLaunch()
         onMoveOnlyRequested: page.closeLaunch()

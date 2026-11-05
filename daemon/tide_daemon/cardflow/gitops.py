@@ -176,6 +176,28 @@ class FlowGit:
             out["canMerge"] = not out["reason"]
             return out
 
+    def list_branches(self, repo: str, text: str, limit: int) -> dict:
+        """Cały lokalny zbiór przed filtrem i limitem; bez operacji sieciowych."""
+        with lock_for(repo):
+            main = self.main_branch(repo)
+            main_ref = f"refs/heads/{main}" if main else ""
+            listed = self.run(repo, "for-each-ref", "--sort=refname",
+                              "--format=%(refname)%00%(objectname)", "refs/heads/")
+            if not listed.ok:
+                raise FlowGitError("nie można odczytać lokalnych gałęzi")
+            branches = []
+            for line in listed.out.splitlines():
+                ref, commit = line.split("\0", 1)
+                name = ref[len("refs/heads/"):]
+                if text.casefold() not in name.casefold():
+                    continue
+                branches.append({"ref": ref, "name": name, "kind": "local", "remote": "",
+                                 "commit": commit, "selectable": True, "reason": ""})
+            branches.sort(key=lambda b: b["ref"] != main_ref)
+            return {"branches": branches[:limit], "mainRef": main_ref,
+                    "recentBases": [], "recentTargets": [], "hasMore": len(branches) > limit,
+                    "warnings": [] if main_ref else ["Brak nazwanej gałęzi głównej — wybierz lokalną bazę."]}
+
     def resolve_base(self, repo: str, ref=None, expected=None) -> dict:
         """Lokalna baza startu; wywołujący trzyma lock_for aż do zapisu card.started."""
         if ref is not None and (not isinstance(ref, str) or not ref.startswith("refs/heads/")):

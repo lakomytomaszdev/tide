@@ -712,6 +712,10 @@ function startCardRequest(state, images) {
     if (state.entry === "planning") request.mode = state.mode
     if (state.entry === "plan") request.planPath = state.planPath
     if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
+    if (state.entry === "now") {
+        if (state.baseRef) { request.baseRef = state.baseRef; request.baseCommit = state.baseCommit }
+        if (state.cardBranch) request.cardBranch = state.cardBranch
+    }
     if (state.preferredProvider) request.preferredProvider = state.preferredProvider
     // Projekty zlecenia (K-33 #4): tylko Planowanie; Od razu i Mam plan są jednoprojektowe (P7).
     if (state.entry === "planning") request.projects = (state.projects || []).slice()

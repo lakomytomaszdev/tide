@@ -1,5 +1,6 @@
 """PT-194: baza przez rzeczywiste /Board na prywatnej magistrali."""
 import os
+import json
 
 from .test_cardflow_dbus import FlowCase, git
 
@@ -14,7 +15,18 @@ class StartBaseDbusTest(FlowCase):
         commit = git(self.repo, "rev-parse", "HEAD", env=self.git_env).strip()
         git(self.repo, "checkout", "-q", "master", env=self.git_env)
         card = self.card(description="ATRAPA: pytanie")
-        reply = self.start(card, baseRef="refs/heads/feature/base", baseCommit=commit)
+        for index in range(120):
+            git(self.repo, "branch", f"aaa/branch-{index:03}", env=self.git_env)
+        first = self.call("ListCardBranches", card, json.dumps({"purpose": "base"}))
+        self.assertTrue(first["ok"], first)
+        self.assertEqual(len(first["branches"]), 50)
+        self.assertTrue(first["hasMore"])
+        self.assertNotIn("refs/heads/feature/base", [b["ref"] for b in first["branches"]])
+        listed = self.call("ListCardBranches", card, json.dumps({"purpose": "base", "text": "feature/base"}))
+        self.assertTrue(listed["ok"], listed)
+        picked = listed["branches"][0]
+        self.assertEqual((picked["ref"], picked["commit"]), ("refs/heads/feature/base", commit))
+        reply = self.start(card, baseRef=picked["ref"], baseCommit=picked["commit"], cardBranch="card/manual-base")
         self.assertTrue(reply["ok"], reply)
         self.assertEqual(git(reply["cardWorktree"], "rev-parse", "HEAD", env=self.git_env).strip(), commit)
         with open(os.path.join(reply["worktree"], "feature.txt"), encoding="utf-8") as fh:

@@ -89,7 +89,7 @@ HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode",
-                  "projects", "baseRef", "baseCommit")
+                  "projects", "baseRef", "baseCommit", "cardBranch")
 # Zatwierdzenie planu z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); do tego czasu odmowa.
 GROUP_APPROVAL = "zatwierdzanie grupy kart — w następnej wersji"
 
@@ -549,6 +549,8 @@ class FlowEngine(PlanEditing):
     # --- zlecenie --------------------------------------------------------------------------------
 
     def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
+        if request.get("entry") != "now" and any(k in request for k in ("baseRef", "baseCommit", "cardBranch")):
+            raise FlowError("bad-request", "wybór bazy i nazwy gałęzi karty działa obecnie tylko w wejściu Od razu")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
@@ -635,8 +637,17 @@ class FlowEngine(PlanEditing):
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
         slug = slug_from_prompt(card.title, words=4, length=32)
         previous_branch = ticket_of(st)["cardBranch"]
-        card_branch = previous_branch or f"card/{card.id.lower()}-{slug}"
+        chosen_branch = request.get("cardBranch")
+        if chosen_branch is not None and (not isinstance(chosen_branch, str) or not chosen_branch
+                or chosen_branch.startswith("-") or chosen_branch == "HEAD"
+                or not self.git.run(project.repo, "check-ref-format", f"refs/heads/{chosen_branch}").ok):
+            raise FlowError("bad-request", "niepoprawna nazwa nowej gałęzi karty")
+        if previous_branch and chosen_branch and chosen_branch != previous_branch:
+            raise FlowError("branch-mismatch", "karta ma już inną gałąź — nie można zmienić jej nazwy przy starcie")
+        card_branch = previous_branch or chosen_branch or f"card/{card.id.lower()}-{slug}"
         with lock_for(project.repo):
+            if chosen_branch and not previous_branch and not _resume and self.git.sha(project.repo, f"refs/heads/{chosen_branch}"):
+                raise FlowError("branch-exists", "gałąź o tej nazwie już istnieje — podaj nazwę nowej gałęzi karty")
             # Kolejne zlecenie bez wyboru bazy dziedziczy dziennik, nie dzisiejszą główną.
             # Legacy unknown może kontynuować pracę na istniejącej gałęzi karty, bez zgadywania bazy.
             if _resume or (previous_branch and request.get("baseRef") is None):
@@ -4303,6 +4314,25 @@ class FlowEngine(PlanEditing):
             note = AUTO_DENY_LONG.format(limit=MAX_COMMAND) if len(command) > MAX_COMMAND else AUTO_DENY_NOTE
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
                             answer=note, command=command, executor="", auto=True)
+
+    def list_card_branches(self, card_id: str, request: dict) -> dict:
+        if set(request) - {"purpose", "text", "limit"}:
+            raise FlowError("bad-request", "lista przyjmuje tylko purpose, text i limit")
+        if request.get("purpose") not in ("base", "merge"):
+            raise FlowError("bad-request", "purpose musi być base albo merge")
+        text, limit = request.get("text", ""), request.get("limit", 50)
+        if not isinstance(text, str) or type(limit) is not int or not 1 <= limit <= 100:
+            raise FlowError("bad-request", "tekst musi być napisem, limit liczbą od 1 do 100")
+        try:
+            _, project = self._project(card_id)
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
+            raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
+        try:
+            return {"ok": True, **self.git.list_branches(project.repo, text, limit)}
+        except FlowGitError as exc:
+            raise FlowError("branches", str(exc)) from None
 
     def preview_card_merge(self, card_id: str, request: dict) -> dict:
         """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""

@@ -81,6 +81,16 @@ class PackageTest(unittest.TestCase):
 
 
 class LogicTest(unittest.TestCase):
+    def test_exact_base_only_for_now(self):
+        state = {"entry": "now", "executor": "Sonnet", "baseRef": "refs/heads/feature/a/b",
+                 "baseCommit": "b" * 40, "cardBranch": "card/custom"}
+        reply = self.js(f"startCardRequest({json.dumps(state)}, [])")
+        for key in ("baseRef", "baseCommit", "cardBranch"):
+            self.assertEqual(reply[key], state[key])
+        for entry in ("planning", "plan", "spec"):
+            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry))}, [])")
+            self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
+
     @classmethod
     def setUpClass(cls):
         from PyQt6.QtCore import QCoreApplication
@@ -1769,7 +1779,9 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
                          {"entry": "now", "executor": "Opus", "reviewer": "Sonnet",
-                          "preferredProvider": "anthropic", "check": "manual", "images": []})
+                          "preferredProvider": "anthropic", "check": "manual", "images": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/" + next(c["branchSlug"] for c in self.data["cards"] if c["id"] == "K-15")})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")

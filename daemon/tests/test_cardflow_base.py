@@ -10,7 +10,7 @@ from tide_daemon.cardflow.engine import FlowDeferred
 from tide_daemon.cardflow.state import fold, base_of, derived
 
 
-class StartBaseTest(FlowInProcess):
+class StartBaseSetup(FlowInProcess):
     def make_flow(self):
         from tide_daemon.cardflow_monitor import CardFlowMonitor
         # Publiczne wywołania działają normalnie; zegar nie uruchamia wykonania ticketu w tym teście.
@@ -41,6 +41,8 @@ class StartBaseTest(FlowInProcess):
             self.assertEqual(shown[key], expected[key])
         return shown
 
+
+class StartBaseTest(StartBaseSetup):
     def test_feature_content_pinned_sha_restart_and_projection_retry(self):
         commit = self.feature()
         card = self.card()

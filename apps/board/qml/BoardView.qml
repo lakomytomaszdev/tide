@@ -99,6 +99,7 @@ Item {
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
         onFlowRequested: (tag, id, request) => view.backend.startCard(tag, id, request)
+        onBranchesRequested: (tag, id, request) => { if (view.backend) view.backend.listCardBranches(tag, id, request) }
         onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)

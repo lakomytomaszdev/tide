@@ -868,7 +868,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie `{entry: "planning", mode: "light"|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `ListCardBranches(s id, s request)` | `→ s` | lokalne gałęzie repozytorium projektu karty: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
@@ -1619,6 +1620,17 @@ wraz z wykonawcą.
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+
+**Lista lokalnych baz (PT-209).** `ListCardBranches` zwraca wyłącznie `refs/heads/` z rekordami
+`{ref, name, kind: "local", remote: "", commit, selectable, reason}`. `name` zachowuje pełną nazwę,
+`commit` jest pełnym SHA, `reason` zawiera powód ewentualnej odmowy. Filtr `text` dopasowuje dowolny
+fragment bez rozróżniania wielkości liter. `mainRef` jest pełnym refem według wspólnej polityki
+głównej lub pustym napisem z ostrzeżeniem. Główna jest pierwsza, jeśli pasuje do filtra.
+`recentBases` i `recentTargets` są obecnie puste. `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
+Okno startu pozwala wybrać bazę tylko w „Od razu”, wysyła pełny ref i SHA z wyniku listy oraz osobną
+nazwę nowej gałęzi karty `cardBranch`. Niepoprawna lub zajęta nazwa jest odrzucana. Brak pola zachowuje
+automatyczną nazwę starszych klientów. Pozostałe wejścia jawnie odmawiają przyjęcia pól wyboru bazy
+i gałęzi do czasu ich obsługi; formularz pokazuje wyjaśnienie i nieaktywny wybór.
 
 **Baza startu „Od razu” (PT-194).** Żądanie może zawierać `baseRef` (wyłącznie pełny lokalny
 `refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy

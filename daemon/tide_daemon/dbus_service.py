@@ -138,6 +138,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
+- ListCardBranches(s id, s json) -> s  lokalne gałęzie projektu karty: purpose=base|merge, text, limit (1–100).
+  Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
 - StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
                              worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
@@ -471,6 +473,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="choice" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ListCardBranches">
+    <arg direction="in" type="s" name="id"/>
+    <arg direction="in" type="s" name="request"/>
+    <arg direction="out" type="s" name="reply"/>
   </method>
   <method name="StartCard">
     <arg name="id" type="s" direction="in"/>
@@ -943,6 +950,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.YouTrackIssues", flush=True)
 
         self.monitor.youtrack_issues(refresh, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ListCardBranches(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.list_card_branches(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)
