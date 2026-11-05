@@ -2371,16 +2371,28 @@ gałęzi głównej.
 PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
 z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
 `targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
-i odcisk lokalnej pracy. Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+i początkowe drzewo materializacji (`materializationBaseTree`). Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
 dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
 `main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
 i `projected`. Wynik zawiera pola potrzebne przyszłemu ogólnemu zakończeniu scalenia;
 obecnie nadal powstają pojedyncze `card.main-merged` i `card.finished`.
 
 Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
-na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Obcy ref, indeks albo nowe
-lokalne zmiany powodują `main-merge.waiting` i „Czeka na mnie”, bez cofania plików i bez drugiego
-scalenia. Po usunięciu przyczyny wznowienie używa tego samego ID. Wcześniejsze niezwiązane
-zmiany niezapisane w indeksie pozostają obsługiwane (K-43); staged nie otrzymuje nowego algorytmu.
+na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Zmiana nazwanej głównej,
+obcy ref, indeks albo kolizje lokalnej pracy w scalanych ścieżkach powodują `main-merge.waiting`
+i „Czeka na mnie”, bez cofania plików i bez drugiego scalenia. Pliki ignorowane są sprawdzane pod
+kątem kolizji nazw, bez odczytywania i hashowania ich treści. Niezwiązane edycje i artefakty nie blokują
+recovery. Gdy ref wskazuje `resultCommit`, git jest zakończony: recovery sprawdza SHA i drzewo wyniku,
+a następnie dokańcza wynik oraz projekcję niezależnie od dalszej pracy w indeksie, checkoutcie i źródle.
+
+Oczekiwanie nie zatrzymuje synchronizacji ruchów użytkownika, poprawki planu ani pozostałych kroków karty.
+Po usunięciu przyczyny wznowienie używa tego samego ID. „Do poprawy”, zwrot planu, nowe domknięcie lub ręczne zakończenie
+po zamiarze pozwala zapisać `main-merge.abandoned`, jeśli ref nadal wskazuje `targetCommitBefore`
+i nie zapisano sukcesu. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
+i nie pozwala dalej wznawiać starego zamiaru. Kolejne domknięcie wymaga nowego jawnego scalenia.
+W tym samym zleceniu nowa operacja może przejąć dokładny indeks porzuconej materializacji przy tym samym
+celu i niezmienionym refie; kontrola lokalnych kolizji nadal obejmuje stare i nowe scalane ścieżki.
+Obcy ref pozostaje jawnym oczekiwaniem, nigdy zgodą na porzucenie lub nadpisanie.
+Niezwiązane zmiany niezapisane w indeksie pozostają obsługiwane (K-43); obce staged nadal są odmawiane.
 Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
 przygotowaniem; wspólna własność nowych zasobów należy do PT-206.

@@ -1857,7 +1857,9 @@ class FlowEngine(PlanEditing):
             merged = st.results.get(("merge", ticket)) or {}
             if ticket and not merged.get("ok") and ticket not in st.imported_done and ticket not in st.rejected:
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
-        self.journal.append(card, "card.finished", column=column)
+        operation_id = (st.main_merged or {}).get("operationId")
+        self.journal.append(card, "card.finished", column=column,
+                            **({"operationId": operation_id} if operation_id else {}))
         return True
 
     # --- co chwilę -------------------------------------------------------------------------------
@@ -1930,9 +1932,6 @@ class FlowEngine(PlanEditing):
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
-        # Tylko zapisany zamiar jest zgodą na recovery; tick nigdy nie zaczyna nowego scalenia.
-        if self._recover_main_merge(card):
-            return
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
         self._recover_console_openings(card, st)
@@ -1948,6 +1947,10 @@ class FlowEngine(PlanEditing):
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
                 st = fold(self.journal.read(card))
+        # Ruch użytkownika wygrywa z recovery. Oczekiwanie scalenia nie zatrzymuje reszty karty.
+        # Tylko zapisany zamiar jest zgodą na recovery; tick nigdy nie zaczyna nowego scalenia.
+        self._recover_main_merge(card)
+        st = fold(self.journal.read(card))
         blocking_tracker_error = any(e.get('action') != 'youtrack-note' for e in st.tracker_failures())
         try:
             if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
@@ -4341,6 +4344,7 @@ class FlowEngine(PlanEditing):
 
     def _main_merge_intent(self, st: FlowState) -> dict | None:
         return next((i for i in reversed(list(st.intents.values())) if i.get("action") == "main-merge" and
+                     i.get("key") not in st.abandoned_main_merges and
                      i.get("requestSeq") == (st.started or {}).get("seq")), None)
 
     def _recover_main_merge(self, card: str) -> bool:
@@ -4351,14 +4355,33 @@ class FlowEngine(PlanEditing):
             return False
         try:
             with lock_for(intent["repo"]):
+                if self._abandon_main_merge(card, intent):
+                    return False
                 self._resume_main_merge(card, intent)
         except FlowError:
             pass  # Jawne oczekiwanie jest już w dzienniku; brak pętli nowych zamiarów.
         return True
 
+    def _abandon_main_merge(self, card: str, intent: dict) -> bool:
+        """Decyzja użytkownika zamyka nieprzesunięty zamiar, nigdy nie cofa plików ani indeksu."""
+        st = fold(self.journal.read(card))
+        returned = any(e["seq"] > intent["seq"] and (e["type"] in ("plan.returned", "card.closed") or
+                       (e["type"] == "card.moved" and e.get("to") in ("todo", "done", "archived")))
+                       for e in self.journal.read(card))
+        if (returned and intent["resultCommit"] != intent["targetCommitBefore"] and
+                self.git.sha(intent["repo"], intent["targetRef"]) == intent["targetCommitBefore"] and
+                ("main-merge", intent["key"]) not in st.results):
+            self.journal.append(card, "main-merge.abandoned", key=intent["key"],
+                                reason="decyzja użytkownika przed przesunięciem refu celu")
+            return True
+        return False
+
     def _merge_card_to_main_locked(self, card: str, repo: str) -> dict:
         st = fold(self.journal.read(card))
         intent = self._main_merge_intent(st)
+        if intent and self._abandon_main_merge(card, intent):
+            st = fold(self.journal.read(card))
+            intent = None
         if intent:
             already = bool(st.main_merged)
             self._resume_main_merge(card, intent)
@@ -4390,7 +4413,11 @@ class FlowEngine(PlanEditing):
             try:
                 tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
                 prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
-                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}")
+                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}",
+                    abandoned=next((i for i in reversed(list(st.intents.values()))
+                                    if i.get("action") == "main-merge" and i["key"] in st.abandoned_main_merges and
+                                    i.get("requestSeq") == (st.started or {}).get("seq") and
+                                    i.get("targetRef") == f"refs/heads/{main}"), None))
             except FlowGitError as exc:
                 raise FlowError("main-merge", str(exc)) from None
             ident = uuid.uuid4().hex
@@ -4416,17 +4443,30 @@ class FlowEngine(PlanEditing):
 
         try:
             st = fold(self.journal.read(card))
+            if intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
+                raise FlowGitError("gałąź główna zmieniła się po przygotowaniu operacji — scalenie czeka")
             if st.card_finished and st.main_merged and st.main_merged.get("operationId") == key:
                 checkpoint("projected")
                 return
-            if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
-                    (st.started or {}).get("seq") != intent["requestSeq"]):
-                raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
             checkpoint("prepared")
             branch = intent["sourceRef"][len("refs/heads/"):]
-            self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
-            worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
-            result = worktree.execute(intent, checkpoint)
+            current = self.git.sha(intent["repo"], intent["targetRef"])
+            if current == intent["resultCommit"]:
+                tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{current}^{{tree}}")
+                if not tree.ok or tree.out.strip() != intent["resultTree"]:
+                    raise FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
+                # Ref dowodzi zakończenia gita także po awarii przed checkpointem. Źródło, worktree
+                # i indeks mogą już zawierać dalszą pracę użytkownika — projekcja ich nie dotyka.
+                checkpoint("materialized")
+                checkpoint("ref-moved")
+                result = MergeWorktree.result(intent)
+            else:
+                if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
+                        (st.started or {}).get("seq") != intent["requestSeq"]):
+                    raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
+                self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
+                worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
+                result = worktree.execute(intent, checkpoint)
             if st.merge_waiting:
                 self.journal.append(card, "main-merge.resumed", key=key)
             if ("main-merge", key) not in st.results:
@@ -4446,6 +4486,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("main-merge", str(exc)) from None
 
     def _project_main_merge(self, card: str, st: FlowState, *, operation_id: str = "") -> None:
+        # Recovery zapisuje wynik gita, ale nie odwraca późniejszego ręcznego zakończenia w Archiwum.
+        if st.card_finished and st.moved_to == "archived":
+            return
         try:
             item = self.store.load().cards.get(card_num(card))
             if item is None:

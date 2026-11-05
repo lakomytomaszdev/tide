@@ -69,6 +69,7 @@ class DurableMergeTest(FlowInProcess):
     def seed(self):
         journal = self.flow.engine.journal
         journal.append(self.card_id, "card.started", entry="now", executor="Sonnet", repo=self.repo,
+                       column="todo",
                        baseRef="refs/heads/" + self.target, baseBranch=self.target,
                        baseCommit=self.before, baseVersion=1)
         journal.append(self.card_id, "result", action="card-branch", key="card", ok=True,
@@ -123,6 +124,7 @@ class DurableMergeTest(FlowInProcess):
                          [intent["resultCommit"]])
         self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(next(e for e in events if e["type"] == "card.finished")["operationId"], intent["key"])
         self.assertEqual({e["stage"] for e in events if e["type"] == "main-merge.checkpoint"},
                          {"prepared", "materialized", "ref-moved", "result-saved", "projected"})
         self.assertEqual(Path(intent["targetWorktree"], "result.txt").read_text(), "wynik karty\n")
@@ -230,7 +232,7 @@ class DurableMergeTest(FlowInProcess):
         self.flow.engine.tick()
         self.assert_success()
 
-    def test_foreign_work_after_column_write_before_finished_is_visible_as_waiting(self):
+    def test_foreign_work_after_column_write_before_finished_allows_projection(self):
         original = self.store.move_card
 
         def move(*args, **kwargs):
@@ -239,11 +241,10 @@ class DurableMergeTest(FlowInProcess):
 
         with mock.patch.object(self.store, "move_card", move), self.assertRaises(PowerLoss):
             self.flow.engine.merge_card_to_main(self.card_id)
-        intent = self.intent()
         self.write(self.repo, "local.txt", "nowa praca po zmianie kolumny\n")
         self.restart_stopped()
         self.flow.engine.tick()
-        self.assert_waiting(intent)
+        self.assert_success()
         self.assertEqual(Path(self.repo, "local.txt").read_text(), "nowa praca po zmianie kolumny\n")
 
     def test_foreign_ref_after_materialization_waits_without_rollback_or_second_id(self):
@@ -283,16 +284,184 @@ class DurableMergeTest(FlowInProcess):
         self.assertEqual(Path(self.repo, "result.txt").read_text(), "cudza praca po awarii\n")
         self.assertEqual(Path(self.repo, "untracked.txt").read_text(), "nowa praca\n")
 
-    def test_new_unrelated_untracked_content_after_ref_move_also_waits(self):
+    def test_new_unrelated_untracked_content_after_ref_move_allows_projection(self):
         self.write(self.repo, "notes.txt", "wcześniejsza notatka\n")
         self.crash_after("main-merge.checkpoint", stage="ref-moved")
-        intent = self.intent()
         self.write(self.repo, "notes.txt", "nowa treść tej samej notatki\n")
         self.restart_stopped()
         self.flow.engine.tick()
-        self.assert_waiting(intent)
-        self.assertEqual(self.sha(self.target), intent["resultCommit"])
+        self.assert_success()
         self.assertEqual(Path(self.repo, "notes.txt").read_text(), "nowa treść tej samej notatki\n")
+
+    def test_unrelated_work_and_ignored_artifacts_before_materialization_are_preserved(self):
+        Path(self.repo, ".git", "info", "exclude").write_text("build/\n", encoding="utf-8")
+        Path(self.repo, "build").mkdir()
+        self.write(self.repo, "build/cache", "stary artefakt\n")
+        self.crash_after("intent", action="main-merge")
+        self.write(self.repo, "build/cache", "nowy artefakt\n")
+        self.write(self.repo, "local.txt", "niezwiązana edycja\n")
+        self.write(self.repo, "notes.txt", "nowa notatka\n")
+        self.restart_stopped()
+        with mock.patch.object(gitops.StepGit, "run", autospec=True, side_effect=gitops.StepGit.run) as calls:
+            self.assertTrue(self.merge()["ok"])
+        self.assertFalse(any(c.args[1:3] == ("hash-object", "--no-filters") for c in calls.call_args_list))
+        self.assert_success()
+        self.assertEqual(Path(self.repo, "build/cache").read_text(), "nowy artefakt\n")
+        self.assertEqual(Path(self.repo, "local.txt").read_text(), "niezwiązana edycja\n")
+        self.assertEqual(Path(self.repo, "notes.txt").read_text(), "nowa notatka\n")
+
+    def test_ref_moved_projects_despite_dirty_source_and_target_index(self):
+        self.crash_after("main-merge.checkpoint", stage="ref-moved")
+        self.write(self.source_tree, "measurement.txt", "pomiar\n")
+        self.write(self.source_tree, "result.txt", "późniejsza praca źródła\n")
+        self.write(self.repo, "result.txt", "nowa praca staged\n")
+        git(self.repo, "add", "result.txt")
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        self.assertTrue(self.merge()["ok"])
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(self.sha(self.target), self.intent()["resultCommit"])
+        self.assertEqual(git(self.repo, "write-tree"), index)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "nowa praca staged\n")
+        self.assertEqual(Path(self.source_tree, "result.txt").read_text(), "późniejsza praca źródła\n")
+
+    def test_changed_main_branch_waits_instead_of_resuming_the_old_target(self):
+        self.crash_after("intent", action="main-merge")
+        git(self.repo, "branch", "other-main", self.before)
+        git(self.repo, "config", "tide.mainBranch", "other-main")
+        self.restart_stopped()
+        self.assertFalse(self.merge()["ok"])
+        self.assert_waiting(self.intent())
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(self.sha("other-main"), self.before)
+
+    def test_waiting_merge_does_not_skip_manual_finish_or_other_tick_work(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        self.write(self.source_tree, "later.txt", "nowa praca\n")
+        self.commit(self.source_tree, "later source")
+        self.restart_stopped()
+        engine = self.flow.engine
+        with mock.patch.object(engine, "_advance_user_revision") as advance:
+            engine.tick()
+        advance.assert_called_once()
+        self.store.move_card(self.card_id, "archived", -1, from_column="waiting")
+        engine.tick()
+        st = fold(engine.journal.read(self.card_id))
+        self.assertTrue(st.card_finished)
+        self.assertEqual(st.moved_to, "archived")
+        self.assertEqual(self.sha(self.target), self.before)
+
+    def test_ref_moved_recovery_preserves_manual_archive_and_one_finish(self):
+        self.crash_after("main-merge.checkpoint", stage="ref-moved")
+        self.store.move_card(self.card_id, "archived", -1, from_column="review")
+        self.restart_stopped()
+        self.flow.engine.tick()
+        self.assertEqual(self.store.load().cards[1].column, "archived")
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(self.sha(self.target), self.intent()["resultCommit"])
+
+    def test_return_after_materialization_abandons_intent_and_merges_new_close_once(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        abandoned = self.intent()
+        self.write(self.source_tree, "later.txt", "poprawka\n")
+        self.source_commit = self.commit(self.source_tree, "revision")
+        self.restart_stopped()
+        self.assertFalse(self.merge()["ok"])
+        self.store.move_card(self.card_id, "todo", -1, from_column="waiting")
+        self.flow.engine.tick()
+        st = fold(self.flow.engine.journal.read(self.card_id))
+        self.assertFalse(st.busy_reason())
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertEqual(len([e for e in events if e["type"] == "main-merge.abandoned"]), 1)
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(git(self.repo, "write-tree").strip(), abandoned["resultTree"])
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
+        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Po poprawkach")
+        self.crash_after("intent", action="main-merge")
+        self.restart_stopped()
+        self.assertTrue(self.merge()["ok"])
+        events = self.flow.engine.journal.read(self.card_id)
+        intents = [e for e in events if e["type"] == "intent" and e.get("action") == "main-merge"]
+        self.assertEqual(len(intents), 2)
+        self.assertNotEqual(intents[1]["key"], abandoned["key"])
+        self.assertEqual(self.sha(self.target), intents[1]["resultCommit"])
+        self.assertEqual(len(git(self.repo, "rev-list", "--merges", self.before + ".." + self.target).splitlines()), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "result" and e.get("action") == "main-merge"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(Path(self.repo, "later.txt").read_text(), "poprawka\n")
+        self.assertTrue(self.merge()["already"])
+
+    def test_returned_plan_abandons_intent_before_new_close_even_without_a_tick(self):
+        self.crash_after("intent", action="main-merge")
+        old = self.intent()
+        journal = self.flow.engine.journal
+        journal.append(self.card_id, "plan.returned", pending=True, feedback="poprawka")
+        self.write(self.source_tree, "later.txt", "poprawka planu\n")
+        self.commit(self.source_tree, "plan revision")
+        journal.append(self.card_id, "plan.revision-discarded")
+        journal.append(self.card_id, "card.closed", summary="Nowe domknięcie")
+        self.restart_stopped()
+        self.assertTrue(self.merge()["ok"])
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertEqual([e["key"] for e in events if e["type"] == "main-merge.abandoned"], [old["key"]])
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(Path(self.repo, "later.txt").read_text(), "poprawka planu\n")
+
+    def test_abandoned_materialization_never_adopts_foreign_staged_work(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        self.flow.engine.moved(self.card_id, "todo", "waiting", "revision")
+        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Nowe domknięcie")
+        self.write(self.repo, "local.txt", "obca praca staged\n")
+        git(self.repo, "add", "local.txt")
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        reply = self.merge()
+        self.assertFalse(reply["ok"])
+        self.assertIn("staged", reply["message"])
+        self.assertEqual(git(self.repo, "write-tree"), index)
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(Path(self.repo, "local.txt").read_text(), "obca praca staged\n")
+
+    def test_new_close_keeps_local_edits_in_paths_removed_by_the_revision(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        Path(self.source_tree, "result.txt").unlink()
+        self.write(self.source_tree, "later.txt", "zamiast starego wyniku\n")
+        self.commit(self.source_tree, "replace old result")
+        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Nowe domknięcie")
+        self.write(self.repo, "result.txt", "lokalna praca w starym wyniku\n")
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        self.assertFalse(self.merge()["ok"])
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(git(self.repo, "write-tree"), index)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "lokalna praca w starym wyniku\n")
+
+    def test_ignored_collision_appearing_after_intent_is_preserved(self):
+        self.crash_after("intent", action="main-merge")
+        Path(self.repo, ".git", "info", "exclude").write_text("result.txt\n", encoding="utf-8")
+        self.write(self.repo, "result.txt", "nowa ignorowana praca\n")
+        self.restart_stopped()
+        self.assertFalse(self.merge()["ok"])
+        self.assert_waiting(self.intent())
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "nowa ignorowana praca\n")
+
+    def test_return_to_revision_with_foreign_target_ref_never_abandons_or_overwrites(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        intent = self.intent()
+        external = git(self.repo, "commit-tree", self.before + "^{tree}", "-p", self.before, "-m", "external").strip()
+        git(self.repo, "update-ref", intent["targetRef"], external, self.before)
+        self.flow.engine.moved(self.card_id, "todo", "waiting", "revision")
+        self.restart_stopped()
+        self.flow.engine.tick()
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertFalse(any(e["type"] == "main-merge.abandoned" for e in events))
+        self.assertFalse(self.merge()["ok"])
+        self.assertEqual(self.sha(self.target), external)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
 
     def test_new_staged_work_after_intent_waits_without_changing_index(self):
         self.crash_after("intent", action="main-merge")

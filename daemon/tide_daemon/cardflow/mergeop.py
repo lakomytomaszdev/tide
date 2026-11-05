@@ -1,14 +1,12 @@
 """Przypięte przygotowanie i wykonanie scalenia. Dziennik i blokadę repozytorium prowadzi silnik.
 
 Obiekty próbnego drzewa powstają jak w podglądzie. Zamiar zawiera treść i SHA przyszłego commita,
-zanim zapiszemy ten commit, indeks, pliki lub ref. Recovery akceptuje tylko zapisane drzewa i lokalną
-pracę sprzed zamiaru; nie próbuje zgadywać, czy obce zmiany wolno nadpisać.
+zanim zapiszemy ten commit, indeks, pliki lub ref. Recovery chroni lokalną pracę w scalanych ścieżkach;
+po przesunięciu refu pozostaje wyłącznie zapis wyniku i projekcji.
 """
 from __future__ import annotations
 
-import hashlib
 import os
-import stat
 
 from . import gitops
 
@@ -49,33 +47,6 @@ class MergeWorktree:
     def index(self):
         return self.checked(self.runner.run("write-tree")).strip()
 
-    def local_state(self):
-        """Odcisk pracy względem indeksu: ten sam przed i po poprawnej materializacji.
-
-        Uwzględnia również treść plików nieśledzonych i ignorowanych, a nie tylko ich nazwy. Hashowanie
-        bez filtrów odbywa się w StepGit, nie zapisuje obiektów i nie uruchamia kodu repozytorium.
-        """
-        patch = self.checked(self.runner.run("diff", "--no-ext-diff", "--no-textconv", "--binary", "--no-color",
-                                             "--ignore-submodules=none", "--"))
-        names = self.checked(self.runner.run("ls-files", "--others", "-z")).split("\0")
-        pending = [n.rstrip("/") for n in names if n]
-        hashes, entries, regular = [], [], []
-        while pending:
-            name = pending.pop()
-            path = os.path.join(self.path, name)
-            mode = os.lstat(path).st_mode
-            entries.append((name, str(mode), os.readlink(path) if stat.S_ISLNK(mode) else ""))
-            if stat.S_ISDIR(mode):
-                # Git zwraca nieśledzone zagnieżdżone repo jako jeden katalog z końcowym ukośnikiem.
-                pending.extend(os.path.join(name, child) for child in os.listdir(path))
-            elif stat.S_ISREG(mode):
-                regular.append(name)
-        regular.sort()
-        for start in range(0, len(regular), 100):
-            hashes.append(self.checked(self.runner.run("hash-object", "--no-filters", "--", *regular[start:start + 100])))
-        metadata = "\0".join(value for entry in sorted(entries) for value in entry)
-        return hashlib.sha256((patch + "\0" + metadata + "\0" + "".join(hashes)).encode()).hexdigest()
-
     def clean_files(self, before, after):
         dirty = set(self.checked(self.runner.run("diff-files", "--name-only", "-z", "--")).split("\0")) - {""}
         changed = set(self.checked(self.git.run(self.repo, "diff-tree", "-r", "--name-only", "-z", "--no-renames",
@@ -91,7 +62,7 @@ class MergeWorktree:
         if collisions:
             raise gitops.FlowGitError("nieśledzone lub ignorowane pliki kolidują ze scaleniem: " + ", ".join(collisions[:5]))
 
-    def prepare(self, source_ref: str, source: str, message: str) -> dict:
+    def prepare(self, source_ref: str, source: str, message: str, *, abandoned: dict | None = None) -> dict:
         before = self.git.sha(self.repo, self.ref)
         if not before or not source:
             raise gitops.FlowGitError("brak gałęzi głównej albo gałęzi karty")
@@ -99,10 +70,16 @@ class MergeWorktree:
         if prepared["reason"]:
             raise gitops.FlowGitError(prepared["message"])
         tree = prepared["resultTree"]
-        if self.index() != self.tree(before):
+        index, old_tree = self.index(), self.tree(before)
+        # Porzucona materializacja jest własną pracą tej operacji, wyłącznie przy dokładnie zgodnym
+        # indeksie i nieprzesuniętym refie. Nowy zamiar zapisze ją jako punkt wyjścia, bez cofania plików.
+        inherited = (abandoned and abandoned["targetRef"] == self.ref and
+                     abandoned["targetCommitBefore"] == before and index == abandoned["resultTree"])
+        if index != old_tree and not inherited:
             raise gitops.FlowGitError("indeks worktree karty nie odpowiada gałęzi — lokalne zmiany staged")
         self.clean_files(before, tree)
-        self.checked(self.runner.run("read-tree", "-n", "-m", "-u", before, tree))
+        self.clean_files(index, tree)
+        self.checked(self.runner.run("read-tree", "-n", "-m", "-u", index, tree))
         already = self.git.run(self.repo, "merge-base", "--is-ancestor", source, before).ok
         body, commit = "", before
         if not already:
@@ -118,31 +95,43 @@ class MergeWorktree:
         return {"targetRef": self.ref, "targetBranch": self.branch, "targetWorktree": self.path,
                 "sourceRef": source_ref, "sourceCommit": source, "targetCommitBefore": before,
                 "resultCommit": commit, "resultTree": tree, "commitBody": body, "already": already,
-                "localState": self.local_state(), "message": message}
+                "materializationBaseTree": index, "message": message}
+
+    @staticmethod
+    def result(op: dict) -> dict:
+        return {key: op[key] for key in ("targetRef", "targetBranch", "sourceCommit", "targetCommitBefore",
+                                        "resultCommit", "baseVersion", "operationId", "already")}
 
     def execute(self, op: dict, checkpoint) -> dict:
         before, commit = op["targetCommitBefore"], op["resultCommit"]
         current = self.git.sha(self.repo, self.ref)
         if current not in (before, commit):
             raise gitops.FlowGitError("gałąź celu zmieniła się poza zapisaną operacją — scalenie czeka")
+        if current == commit:
+            if self.tree(commit) != op["resultTree"]:
+                raise gitops.FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
+            checkpoint("materialized")
+            checkpoint("ref-moved")
+            return self.result(op)
         if self.git.sha(self.repo, op["sourceRef"]) != op["sourceCommit"]:
             raise gitops.FlowGitError("gałąź karty zmieniła się po przygotowaniu operacji — scalenie czeka")
-        old_tree, index = self.tree(before), self.index()
+        old_tree, index = op.get("materializationBaseTree") or self.tree(before), self.index()
         if index not in (old_tree, op["resultTree"]):
             raise gitops.FlowGitError("obcy indeks celu — scalenie czeka bez nadpisywania")
-        if self.local_state() != op["localState"]:
-            raise gitops.FlowGitError("nowe lokalne zmiany w worktree celu — scalenie czeka bez nadpisywania")
+        self.clean_files(before, op["resultTree"])
+        self.clean_files(old_tree, op["resultTree"])
         if op["commitBody"]:
             made = self.checked(self.git.run(self.repo, "hash-object", "-t", "commit", "-w", "--stdin",
                                               input_text=op["commitBody"])).strip()
             if made != commit or self.tree(commit) != op["resultTree"]:
                 raise gitops.FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
         if index != op["resultTree"]:
-            self.clean_files(before, commit)
             # read-tree odmawia również przy kolizji z nieśledzonym plikiem; bez resetu i bez sprzątania.
-            self.checked(self.runner.run("read-tree", "-m", "-u", before, commit))
-        if self.index() != op["resultTree"] or self.local_state() != op["localState"]:
+            self.checked(self.runner.run("read-tree", "-m", "-u", old_tree, commit))
+        if self.index() != op["resultTree"]:
             raise gitops.FlowGitError("pliki lub indeks zmieniły się podczas materializacji — scalenie czeka")
+        self.clean_files(before, op["resultTree"])
+        self.clean_files(old_tree, op["resultTree"])
         checkpoint("materialized")
         if current != commit:
             moved = self.git.run(self.repo, "update-ref", "-m", op["message"], self.ref, commit, current)
@@ -151,5 +140,4 @@ class MergeWorktree:
         if self.git.sha(self.repo, self.ref) != commit:
             raise gitops.FlowGitError("gałąź celu zmieniła się poza zapisaną operacją — scalenie czeka")
         checkpoint("ref-moved")
-        return {key: op[key] for key in ("targetRef", "targetBranch", "sourceCommit", "targetCommitBefore",
-                                        "resultCommit", "baseVersion", "operationId", "already")}
+        return self.result(op)
