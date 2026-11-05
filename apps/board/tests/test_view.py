@@ -1898,6 +1898,42 @@ out["call"] = calls()[-1]
         self.assertEqual(json.loads(out["call"][1]),
                          {"limitTransfer": {"mode": "auto", "executor": "Codex standard"}})
 
+    def test_caretaker_settings_are_shown_and_saved_from_manage_page(self):
+        """PT-151: przełącznik „Opiekun karty”, wykonawca (z „Domyślny”), limit działań i minuty czekania — jeden
+        zapis SetCardFlowSettings z czterema kluczami; wartości z GetCardFlowSettings po otwarciu strony."""
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["flowSettings"] = {"ok": True, "limitTransfer": {"mode": "ask", "executor": ""},
+                                "limitThresholdPercent": 10, "caretakerEnabled": True, "caretakerExecutor": "Opus",
+                                "caretakerActionLimit": 4, "caretakerDecisionMinutes": 25}
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(50)
+out["initial"] = [obj("caretakerEnabled").property("checked"), obj("caretakerExecutor").property("currentText"),
+                  obj("caretakerActionLimit").property("value"), obj("caretakerDecisionMinutes").property("value"),
+                  obj("caretakerSave").property("enabled")]
+out["options"] = js(FIND + "(page.managePage, 'caretakerExecutor').model.map(o => o.value)")
+click(at(FIND + "(page.managePage, 'caretakerEnabled')"))
+js("page.managePage.caretakerExecutor = ''; page.managePage.caretakerActionLimit = 1; "
+   "page.managePage.caretakerDecisionMinutes = 1440")
+out["shown"] = [obj("caretakerExecutor").property("currentIndex"), obj("caretakerActionLimit").property("value")]
+click(at(FIND + "(page.managePage, 'caretakerSave')"))
+out["call"] = calls()[-1]
+out["busy"] = obj("caretakerSave").property("enabled")
+js("page.managePage.handleReply('caretaker-settings:9', {ok: false, error: 'bad-executor', message: 'nieznany wykonawca opiekuna'})")
+out["saveError"] = [obj("caretakerError").property("visible"), obj("caretakerError").property("text")]
+""", data=data)
+        self.assertEqual(out["initial"], [True, "Opus · anthropic", 4, 25, False])
+        self.assertEqual(out["options"], ["", "Haiku", "Sonnet", "Opus", "Codex standard", "Lokalny"])
+        self.assertEqual(out["shown"], [0, 1])
+        self.assertEqual(out["call"][0], "SetCardFlowSettings")
+        self.assertEqual(json.loads(out["call"][1]),
+                         {"caretakerEnabled": False, "caretakerExecutor": "", "caretakerActionLimit": 1,
+                          "caretakerDecisionMinutes": 1440})
+        self.assertFalse(out["busy"])
+        self.assertTrue(out["saveError"][0])
+        self.assertIn("nieznany wykonawca opiekuna", out["saveError"][1])
+
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))
         data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]

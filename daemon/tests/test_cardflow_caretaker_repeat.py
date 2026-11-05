@@ -393,6 +393,20 @@ class EngineJournalTest(unittest.TestCase):
         self.add("card.paused")
         self.assertEqual(self.advance().call_count, 1, "wstrzymana karta: dzisiejsze ponowienie")
 
+    def test_disabled_caretaker_keeps_the_automatic_retry_after_a_repeated_failure(self):
+        self.after_user_retry("no-result")
+        self.engine.set_flow_settings({"caretakerEnabled": False})
+        self.assertEqual(self.advance().call_count, 1, "wyłączony opiekun: dzisiejsze ponowienie")
+        self.engine._caretake("K-1", self._last())
+        self.assertFalse([e for e in self.journal.read("K-1") if e["type"] == caretaker.STARTED])
+
+    def test_local_caretaker_replaces_the_automatic_retry_despite_a_cloud_setting(self):
+        self.add("card.started", entry="now", executor="Lokalny", provider="local",
+                 preferredProvider="local", column="todo")
+        self.after_user_retry("no-result")
+        self.engine.set_flow_settings({"caretakerExecutor": "Opus"})
+        self.assertEqual(self.advance().call_count, 0, "lokalny opiekun przejmuje powtarzający się błąd")
+
     def test_the_second_automatic_denial_is_replaced_by_the_caretaker(self):
         step = {"ticket": "PT-7", "kind": "ticket"}
         for n, parent in ((1, ""), (2, "K-1-PT-7-1")):

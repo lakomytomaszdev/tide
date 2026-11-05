@@ -383,7 +383,7 @@ class ActionOnJournalTest(EngineOnJournal):
 
     def test_unicode_findings_reconcile_closes_intent_and_reaches_the_action_limit(self):
         run = self.run_event
-        limit = self.engine._caretaker_limit()
+        limit = self.engine._caretaker_setup(fold(self.journal.read("K-1")))["limit"]
         for n in range(1, limit + 1):
             st = fold(self.journal.read("K-1"))
             parsed = caretaker.parse_result(

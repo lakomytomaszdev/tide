@@ -287,6 +287,8 @@ class StageObservationTest(unittest.TestCase):
     def setUp(self):
         self.j = Journal()
         self.engine = FlowEngine.__new__(FlowEngine)
+        self.engine._settings_data = mock.Mock(return_value={})
+        self.engine.models_config = self.engine.catalog = None
         self.engine.journal = SimpleNamespace(read=lambda card: self.j.events,
                                              append=lambda card, kind, **fields: self.j.add(kind, **fields))
         self.engine.clock = mock.Mock(return_value=100.0)

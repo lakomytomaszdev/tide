@@ -376,11 +376,21 @@ class FlowEngine(PlanEditing):
                  and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, **caretaker.settings_of(data)}
 
     def set_flow_settings(self, request: dict) -> dict:
-        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent", "providerSlots"}:
+        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", *caretaker.SETTINGS_DEFAULTS}
+        if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
+        # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
+        care = {key: request[key] for key in caretaker.SETTINGS_DEFAULTS if key in request}
+        catalog = self._catalog_now() if "caretakerExecutor" in care else None
+        for key, value in care.items():
+            problem = caretaker.setting_problem(key, value, catalog)
+            if problem:
+                raise FlowError(*problem)
+        if "caretakerExecutor" in care:
+            care["caretakerExecutor"] = care["caretakerExecutor"].strip()
         current = self.get_flow_settings()
         transfer = request.get("limitTransfer", current["limitTransfer"])
         if not isinstance(transfer, dict) or set(transfer) - {"mode", "executor"}:
@@ -400,9 +410,14 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
-                    limitThresholdPercent=threshold, providerSlots=dict(slots))
+                    limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
         self._write_settings(data)
         return self.get_flow_settings()
+
+    def _catalog_now(self):
+        """Katalog wykonawców z models.json (albo domyślny); None — silnik bez katalogu."""
+        cfg = self.models_config() if self.models_config else None
+        return cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
 
     def _write_settings(self, data: dict) -> None:
         folder = os.path.dirname(self.settings) or "."
@@ -466,6 +481,8 @@ class FlowEngine(PlanEditing):
 
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
+        if st.started is not None:
+            st.caretaker_setup = self._caretaker_setup(st)
         out = derived(st, card)
         if out:
             self._limit_view(st, out)
@@ -1521,12 +1538,13 @@ class FlowEngine(PlanEditing):
         pending = [name for name in st.caretaker_runs if name not in st.caretakers and
                    name not in st.caretaker_outcomes and name not in st.finished and
                    ("step-start", name) not in st.results]
-        if not pending or caretaker.unavailable(st, self._card_column(card)):
+        if not pending:
             return 0
-        cfg = self.models_config() if self.models_config else None
-        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
-        name = caretaker.executor_name(catalog, st) if catalog is not None else ""
-        found = next((e for e in getattr(catalog, "executors", ()) or () if e.name == name), None)
+        catalog = self._catalog_now()
+        conf = self._caretaker_setup(st, catalog)
+        if caretaker.unavailable(st, self._card_column(card), conf):
+            return 0
+        found = catalog.get(conf["executor"]) if catalog is not None and conf["executor"] else None
         return len(pending) if found is not None and found.provider == selected.provider else 0
 
     def _earlier_waiters(self, card: str, st: FlowState, selected, ticket: str, kind: str) -> int:
@@ -3002,6 +3020,7 @@ class FlowEngine(PlanEditing):
     def _caretaker_takes_over(self, card: str, st: FlowState, name: str) -> bool:
         """Ten sam powód drugi raz (PT-148): opiekun zamiast automatycznego ponowienia albo automatycznej odmowy
         łańcucha. Ocenia `caretaker.takes_over` — bez opiekuna zostaje dzisiejszy automat."""
+        st.caretaker_setup = self._caretaker_setup(st)
         return caretaker.takes_over(st, name, self._card_column(card))
 
     def _caretaker_resume(self, card: str, st: FlowState, step: dict) -> bool:
@@ -3869,7 +3888,7 @@ class FlowEngine(PlanEditing):
     def _caretaker_withheld(self, card: str, st: FlowState) -> set:
         """Kroki bez powiadomienia o decyzji: sprawdza je opiekun albo zaraz zacznie (problem jeszcze nieoddany)."""
         held = set(st.caretaking)
-        if st.started is None or caretaker.unavailable(st, self._card_column(card)):
+        if st.started is None or caretaker.unavailable(st, self._card_column(card), self._caretaker_setup(st)):
             return held
         for problem in caretaker.problems(st):
             if not caretaker.owned(st, problem["id"])["handed"]:
@@ -3891,9 +3910,10 @@ class FlowEngine(PlanEditing):
             elif name not in current.caretakers:
                 self._caretaker_launch(card, current, run)
         st = fold(self.journal.read(card))
-        if caretaker.unavailable(st, self._card_column(card)):
+        conf = self._caretaker_setup(st)
+        if caretaker.unavailable(st, self._card_column(card), conf):
             return
-        limit = self._caretaker_limit()
+        limit = conf["limit"]
         for problem in caretaker.problems(st):
             own = caretaker.owned(st, problem["id"])
             if own["open"] or own["handed"] or any(s.get("ticket") == problem["ticket"] for s in st.running()):
@@ -3918,9 +3938,10 @@ class FlowEngine(PlanEditing):
             self._caretaker_launch(card, fold(self.journal.read(card)), run)
             st = fold(self.journal.read(card))
 
-    def _caretaker_limit(self) -> int:
-        """`caretakerActionLimit` — kroki opiekuna na problem; do #9 stała wartość domyślna."""
-        return caretaker.ACTION_LIMIT
+    def _caretaker_setup(self, st: FlowState, catalog=None) -> dict:
+        """Opiekun przy tej karcie według `cardflow.json` i katalogu wykonawców (`caretaker.setup`, PT-151): jedno
+        miejsce wyboru wykonawcy z regułą „Tylko lokalnie”, wyłącznik i limit działań."""
+        return caretaker.setup(st, self._settings_data(), catalog if catalog is not None else self._catalog_now())
 
     def _caretaker_problem(self, st: FlowState, run: dict) -> dict:
         found = next((p for p in caretaker.problems(st) if p["id"] == run.get("problem")), None)
@@ -3976,7 +3997,15 @@ class FlowEngine(PlanEditing):
             return
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
-        executor = caretaker.executor_name(catalog, st) if catalog is not None else ""
+        conf = self._caretaker_setup(st, catalog)
+        if conf["reason"]:
+            # PT-151: opiekun wyłączony albo karta „Tylko lokalnie” bez wykonawcy lokalnego, zanim krok ruszył
+            # (np. czekał na slot) — bez kroku i bez eskalacji, działanie się nie liczy; decyzja wraca jak dziś
+            # (z dopiskiem przy braku wykonawcy lokalnego).
+            self._caretaker_record(card, run, "", {}, ok=False, error=caretaker.STALE, code=caretaker.STALE,
+                                   stale=True, detail=conf["reason"])
+            return
+        executor = conf["executor"]
         try:
             if not executor:
                 raise FlowError("unknown-executor", "brak wykonawcy opiekuna u preferowanego dostawcy karty")
@@ -3984,6 +4013,10 @@ class FlowEngine(PlanEditing):
                 selected = execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
+            if caretaker.local_only(st) and not selected.local:
+                # PT-151: kontekst karty „Tylko lokalnie” nigdy nie trafia do chmury (druga linia obrony za
+                # `caretaker.executor_name`).
+                raise FlowError("local-only", "wykonawca opiekuna karty „Tylko lokalnie” musi być lokalny")
             item, project = self._project(card)
             info = ticket_of(st, run.get("ticket") or "")
             # Bez kroku i bez ticketu — katalog roboczy i gałąź karty.
@@ -4005,7 +4038,7 @@ class FlowEngine(PlanEditing):
                                            step=name)
                 return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
                                        worktree=worktree, commands=selected.tool == "claude", context=files,
-                                       context_dir=context_dir, limit=self._caretaker_limit())
+                                       context_dir=context_dir, limit=conf["limit"])
 
             self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                          {"branch": branch, "worktree": worktree}, name, [],

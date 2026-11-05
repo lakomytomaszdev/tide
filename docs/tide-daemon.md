@@ -1795,8 +1795,10 @@ samym id. Nieudany start (także „przerwane restartem”) jest nieudanym dzia�
 Akcja opiekuna przerwana między zamiarem a wynikiem `caretaker-action` — „Ponowienie, limit i nieaktualne akcje”.
 
 **Kiedy opiekuna nie ma** (dzisiejsza decyzja bez kroku opiekuna): karta wstrzymana, w Backlogu, Gotowych albo
-Archiwum, błąd `login`, limit dostawcy, wina `user` i karta „Tylko lokalnie” (`preferredProvider: local`; decyzja
-z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”, `flow.caretaker.enabled: false`).
+Archiwum, błąd `login`, limit dostawcy, wina `user`, opiekun wyłączony w ustawieniach (`caretakerEnabled: false`,
+bez dopisku) i karta „Tylko lokalnie” (`preferredProvider: local`) bez wykonawcy lokalnego w katalogu (decyzja
+z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”); w obu ostatnich `flow.caretaker.enabled: false`
+(„Ustawienia” niżej, PT-151).
 
 ### Wyzwalacze
 
@@ -2022,8 +2024,9 @@ kroku opiekuna nie powstaje drugi raz). Akcja nieudana
 przy wykonaniu zwraca z `apply` `{failed, error}`: wynik pary jest zapisany (`ok: true`), a `caretaker.action` ma
 `ok: false`, `code` i `error`.
 
-**Limit** `caretakerActionLimit` (domyślnie 3, `caretaker.ACTION_LIMIT`, `FlowEngine._caretaker_limit`; ustawialną
-wartość dokłada #9) — kroki opiekuna na problem, udane i nieudane, liczone wyłącznie przez `owned()` (`count`).
+**Limit** `caretakerActionLimit` (1–10, domyślnie 3 — `caretaker.ACTION_LIMIT`; wartość z ustawień przez
+`caretaker.setup`, „Ustawienia” niżej, PT-151) — kroki opiekuna na problem, udane i nieudane, liczone wyłącznie
+przez `owned()` (`count`).
 Ponowiony krok, który znowu pada, to ten sam problem (id z korzenia łańcucha), więc kolejny krok opiekuna należy do
 niego. Przy `count ≥ limit` `_caretake` nie uruchamia kolejnego kroku opiekuna, tylko zapisuje `caretaker.escalated`
 z `limit: true`, `failed: true`, `code: caretaker-limit`, `count`, `step` ostatniego działania i streszczeniem prób
@@ -2189,12 +2192,51 @@ od nowa przy każdym starcie.
 
 ### Ustawienia
 
-#### Na stałe (PT-143, do #9)
+#### Wyłącznik, wykonawca, limit działań i minuty czekania (PT-151)
 
-Opiekun jest włączony na stałe, wykonawca to najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym
-— dostawcy wykonawcy karty; domyślnie Opus albo Codex mocny). Piaskownica — „Piaskownica i strażnik” niżej.
-Opiekun czekający na slot dostawcy (`step.waiting` rodzaju `caretaker`) nie daje powiadomienia o limicie — problem
-nadal należy do opiekuna, powiadamia dopiero eskalacja.
+Cztery klucze w `$XDG_CONFIG_HOME/tide/cardflow.json`, czytane i zapisywane istniejącymi `GetCardFlowSettings`
+i `SetCardFlowSettings` (sygnatury bez zmian; zapis zmienia tylko podane klucze, reszta pliku zostaje):
+
+| Klucz | Wartość | Domyślnie |
+| --- | --- | --- |
+| `caretakerEnabled` | `true`/`false` | `true` |
+| `caretakerExecutor` | nazwa wykonawcy z katalogu albo `""` („domyślny”) | `""` |
+| `caretakerActionLimit` | liczba całkowita 1–10 — kroki opiekuna na problem | 3 |
+| `caretakerDecisionMinutes` | liczba całkowita 1–1440 — minuty czekania decyzji, zanim zajmie się nią opiekun (#3) | 10 |
+
+`GetCardFlowSettings` zwraca zawsze wszystkie cztery (wartość złego typu albo spoza zakresu w pliku — domyślna,
+`caretaker.settings_of`). Walidacja jest w usłudze (`caretaker.setting_problem`), przed zapisem całego żądania:
+zły typ albo zakres (np. `caretakerActionLimit` 0, 11 albo `"3"`, `caretakerDecisionMinutes` 0 albo 1441, `true`
+zamiast liczby) → `bad-request`; wykonawca spoza katalogu → `bad-executor`; nieznany klucz → `bad-settings` (jak
+dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają bez zmian.
+
+**Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
+`caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,
+a także rozmowa z opiekunem (#7) i zmiana wykonawcy przez opiekuna (#3)):
+
+- karta „Tylko lokalnie” — wykonawca lokalny z katalogu: `caretakerExecutor`, gdy sam jest lokalny, inaczej
+  pierwszy lokalny w kolejności katalogu; chmurowy `caretakerExecutor` jest pomijany, więc kontekst karty nie
+  wychodzi z komputera. Bez wykonawcy lokalnego opiekun nie startuje, a decyzja ma dopisek „opiekun niedostępny dla
+  pracy tylko lokalnej”,
+- inna karta — `caretakerExecutor`, jeśli jest w katalogu (wykonawca usunięty z katalogu po zapisie — domyślny),
+  inaczej najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym — dostawcy wykonawcy karty; dla
+  Anthropic Opus, dla OpenAI Codex mocny).
+
+`caretaker.setup(st, settings, catalog)` daje `{enabled, executor, reason, note, limit, decisionMinutes}`: `reason`
+— dlaczego opiekun nie ruszy (wyłączony albo brak wykonawcy lokalnego; `caretaker.unavailable` go zwraca), `note` —
+dopisek do decyzji (tylko brak wykonawcy lokalnego). Silnik dokłada wynik do stanu przed widokami
+(`FlowState.caretaker_setup`, nie z dziennika), więc `flow.caretaker.enabled` i dopisek decyzji liczą się z tych
+samych ustawień co start. Opiekun wyłączony albo bez wykonawcy lokalnego, gdy jego krok czekał już na start (np. na
+slot), nie rusza: `caretaker.action` z `stale: true` i powodem w `detail` (bez eskalacji, nie liczy się do limitu),
+decyzja wraca jak dziś. Krok opiekuna, który już pracuje, kończy się normalnie.
+
+**Okno.** Strona „Zarządzaj” (`ManagePage.qml`), sekcja „PRZEPŁYW KARTY · OPIEKUN”: przełącznik „Opiekun karty”,
+wybór wykonawcy („Domyślny — najmocniejszy u dostawcy karty” i cały katalog, także lokalni;
+`board.js caretakerExecutorOptions`), limit działań (1–10) i minuty czekania (1–1440); „Zapisz” wysyła jedno
+`SetCardFlowSettings` z czterema kluczami, a błąd usługi pokazuje się pod sekcją.
+
+Piaskownica — „Piaskownica i strażnik” niżej. Opiekun czekający na slot dostawcy (`step.waiting` rodzaju
+`caretaker`) nie daje powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
 
 ### Piaskownica i strażnik (PT-158)
 
