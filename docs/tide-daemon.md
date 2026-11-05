@@ -2473,7 +2473,7 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 **Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
 
 1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
-   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=… -c limits.memory.swap=false` z profilu
+   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
    (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
    `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
    w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
@@ -2483,7 +2483,9 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
    budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
    `$XDG_STATE_HOME/tide/box/<slug>/build-denied.log`.
-4. Szablony stosów wg `stacks`: `incus file push box/stacks/lib.sh` i `box/stacks/<stos>.sh` do
+4. Kontrola braku swapu: pierwszy `incus exec` sprawdza `/sys/fs/cgroup/memory.swap.max=0`.
+   Brak pliku (wymagane cgroup v2), błąd odczytu albo inna wartość przerywa budowę przed szablonami i migawką.
+   Następnie szablony stosów wg `stacks`: `incus file push box/stacks/lib.sh` i `box/stacks/<stos>.sh` do
    `<slug>/opt/tide/stacks/`, potem `bash /opt/tide/stacks/<stos>.sh` w kolejności `stacks` (niżej, „Szablony stosów
    w pudełku (PT-192)”; brak skryptu albo `lib.sh` = błąd przed `incus`).
 5. `apt-get update` i `apt-get install -y --no-install-recommends` z pakietami szablonów i profilu
@@ -2495,6 +2497,13 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
    klucz w swojej konfiguracji, więc każda kopia z `<slug>/clean` ma ten sam odcisk. (Incus 6.0 nie ustawia
    opisu migawki przy `snapshot create`, dlatego „opis” to klucz `user.*` konfiguracji migawki.)
    `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh` (zapisany jako `builder.STACKS_VERSION`).
+
+**Swap w projekcie ograniczonym (PT-192).** W Incusie 6.0 jawne `limits.memory.swap=false` jest zabronionym
+kluczem niskiego poziomu. Builder pomija ten klucz: przy twardym `limits.memory` Incus ustawia limit swapu na 0
+również dla wartości domyślnej. Kontrola z punktu 4 potwierdza efekt w jądrze; budowa odmawia, jeśli nie może
+go potwierdzić. `restricted.containers.lowlevel` pozostaje zablokowane. Uzasadnienie i źródła:
+decyzja `swap-zero-bez-lowlevel` w `docs/box-decisions.md`. Cykl życia (#19/PT-182) powinien zachować tę samą
+zasadę przy ponownym nakładaniu limitów pamięci.
 
 Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
 `http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY` = `box/netenv.py` `BOX_NO_PROXY`,

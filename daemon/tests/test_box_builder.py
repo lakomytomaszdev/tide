@@ -192,6 +192,33 @@ class FakeIncusTest(BoxCase):
 
 
 class BuildTest(BoxCase):
+    def test_restricted_build_checks_zero_swap_before_stack(self):
+        self.approve()
+        self.builder().build("plasma-tide")
+        argvs = self.incus_calls()
+        init = next(a for a in argvs if a[0] == "init")
+        self.assertFalse(any(a.startswith("limits.memory.swap=") for a in init))
+        execs = [a for a in argvs if a[0] == "exec"]
+        self.assertIn("/sys/fs/cgroup/memory.swap.max", execs[0])
+        log = calls(self.env)
+        first_exec = next(i for i, line in enumerate(log) if line.startswith("incus exec"))
+        policy = next(i for i, line in enumerate(log) if line.startswith("set_box_policy"))
+        stack = next(i for i, line in enumerate(log) if "node.sh HTTPS_PROXY=" in line)
+        self.assertLess(policy, first_exec)
+        self.assertLess(first_exec, stack)
+
+    def test_swap_enabled_or_unreadable_aborts_before_provisioning(self):
+        self.approve()
+        for value in ("max", "1024", "missing", "", "invalid"):
+            with self.subTest(swap=value), mock.patch.dict(os.environ, {"TIDE_FAKE_SWAP_MAX": value}):
+                with self.assertRaisesRegex(bb.BuildError, "swap"):
+                    self.builder().build("plasma-tide")
+                state = self.fake_state()
+                self.assertFalse(state["instances"]["plasma-tide"]["snapshots"])
+                self.assertFalse(state.get("pushed"))
+                self.assertEqual(len(self.policy.cleared), len(self.policy.calls))
+                self.assertNotEqual(bs.journal_state("plasma-tide", "plasma-tide")[0], bs.CLEAN)
+
     def test_build_order_argv_and_proxy_on_every_exec(self):
         self.approve()
         res = self.builder().build("plasma-tide")
@@ -359,7 +386,7 @@ class BuildTest(BoxCase):
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
-                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB", "-c", "limits.memory.swap=false",
+                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
                                 "-c", "security.nesting=true"])
         self.assertIn(["config", "device", "override", "--project", "user-1000", "plasma-tide", "root", "size=25GB"],
                       self.incus_calls())
@@ -368,7 +395,7 @@ class BuildTest(BoxCase):
         self.approve({k: v for k, v in PROFILE.items() if k != "docker"})
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
-        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB", "-c", "limits.memory.swap=false"])
+        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB"])
         self.assertIn("size=60GB", [a for a in self.incus_calls() if "root" in a][0])
 
     def test_vm_is_refused_without_incus(self):

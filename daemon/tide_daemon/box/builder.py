@@ -1,15 +1,16 @@
 """Budowa pudełka projektu z zatwierdzonego profilu, kopia per karta, status, reset, usunięcie i zatwierdzenie.
 
 Kolejność budowy (`build`):
- 1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`,
-    `limits.memory.swap=false` z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
+ 1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
+    z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
     `security.privileged`; rozmiar dysku głównego `resources.disk`; wolumen `<pudełko>-home` na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
     ustawień) — zanim pudełko wystartuje i wyśle pierwszy pakiet,
  3. start, adres IP pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów)` w proxy
     (#5) — przed pierwszym `incus exec`,
- 4. szablony stosów wg `stacks` (`box/stacks/<stos>.sh` z `lib.sh`, kopiowane `incus file push`, #29/PT-192;
+ 4. kontrola braku swapu (`memory.swap.max=0` w cgroup v2), potem szablony stosów wg `stacks`
+    (`box/stacks/<stos>.sh` z `lib.sh`, kopiowane `incus file push`, #29/PT-192;
     lista budowy z punktu 3 zawiera też `build-domains` szablonów),
  5. `apt-get install` (pakiety szablonów i profilu), 6. `setup`, 7. `docker pull` (gdy `docker.enabled`),
  8. `verify` (nieudane → „zbudowane z ostrzeżeniem”), 9. migawka `clean` z odciskiem przepisu.
@@ -41,6 +42,10 @@ SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
 STACKS_LIB = "lib.sh"                    # wspólne funkcje szablonów, wypychane obok `<stos>.sh` (PT-192)
 BUILD_NO_PROXY = netenv.BOX_NO_PROXY     # jedno NO_PROXY dla budowy, obrazu bazowego i kroku (P-6)
+# Incus 6.0 przy twardym limits.memory i pominiętym limits.memory.swap ustawia swap na 0.
+# Jawny klucz swap (także false) jest zabroniony w projekcie ograniczonym. Sprawdzamy efekt w jądrze,
+# zamiast włączać restricted.containers.lowlevel. Brak cgroup v2 albo inny limit przerywa budowę.
+NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/sys/fs/cgroup/memory.swap.max"]
 
 # Zapisana wersja szablonów stosów: `templates_version()` katalogu `box/stacks` (dane `*.yaml` i skrypty `*.sh`).
 # Wchodzi do hasha przepisu jako `templates`. Test (`test_box_stacks.py`) porównuje ją z sumą katalogu, więc każda
@@ -182,7 +187,7 @@ class Builder:
         # 1. kopia obrazu bazowego z limitami z profilu
         steps.append("base")
         res = full["resources"]
-        config = {"limits.cpu": res["cpu"], "limits.memory": res["memory"], "limits.memory.swap": False}
+        config = {"limits.cpu": res["cpu"], "limits.memory": res["memory"]}
         if full["docker"]["enabled"]:
             config["security.nesting"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
@@ -215,6 +220,8 @@ class Builder:
             env["TIDE_NODE_VERSION"] = full["node"]["version"]
         if full.get("dotnet", {}).get("sdk"):
             env["TIDE_DOTNET_SDK"] = " ".join(full["dotnet"]["sdk"])
+        steps.append("swap")
+        self._run(name, NO_SWAP_CHECK, env, "brak potwierdzenia memory.swap.max=0 (wymagane cgroup v2 bez swapu)")
         # 4. szablony stosów (z lib.sh obok)
         if full["stacks"]:
             self.incus.file_push(os.path.join(self.scripts_dir, STACKS_LIB), name, f"{REMOTE_STACKS}/{STACKS_LIB}")

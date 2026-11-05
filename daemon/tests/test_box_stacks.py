@@ -535,7 +535,8 @@ class StackBuildTest(unittest.TestCase):
         pushes = [a for a in argvs if a[:2] == ["file", "push"]]
         targets = [next(x for x in a if x.startswith("plasma-tide/")).split("/", 1)[1] for a in pushes]
         self.assertEqual(targets, ["opt/tide/stacks/lib.sh", *(f"opt/tide/stacks/{s}.sh" for s in profile["stacks"])])
-        self.assertLess(argvs.index(pushes[0]), argvs.index(next(a for a in argvs if a[0] == "exec")))
+        first_stack = next(a for a in argvs if a[0] == "exec" and f"{bb.REMOTE_STACKS}/node.sh" in a)
+        self.assertLess(argvs.index(pushes[0]), argvs.index(first_stack))
         execs = [a for a in argvs if a[0] == "exec"]
         for argv in execs:
             self.assertIn(f"TIDE_BOX_PROXY={PROXY}", argv)
