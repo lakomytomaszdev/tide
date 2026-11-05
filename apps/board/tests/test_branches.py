@@ -5,6 +5,40 @@ from . import test_view as view
 
 
 class BranchPickerTest(view.ProbeCase):
+    def test_all_planning_entries_send_choice_and_reopen_with_persisted_base(self):
+        out = self.probe('''
+out["requests"] = []
+for entry, mode in (("planning", "light"), ("planning", "full"), ("plan", "full")):
+    js("page.openLaunch('K-15', false)")
+    js("page.launchDialog.entry = " + json.dumps(entry) + "; page.launchDialog.mode = " + json.dumps(mode))
+    wait(80)
+    js("page.launchDialog.planPath = '/repo/plan.md'; page.launchDialog.cardBranch = 'card/chosen'")
+    js("page.launchDialog.basePicker.selected = ({ref: 'refs/heads/feature/plan', name: 'feature/plan', commit: '" + 'b' * 40 + "'})")
+    replies.append({"ok": False, "message": "Test odbioru"})
+    js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+    wait(60)
+    out["requests"].append(json.loads(next(c[2] for c in reversed(calls()) if c[0] == 'StartCard')))
+changed = json.loads(js("JSON.stringify(page.snapshot)"))
+c = next(c for c in changed["cards"] if c["id"] == 'K-15')
+c.update(baseRef='refs/heads/feature/deleted', baseBranch='feature/deleted', baseCommit='c' * 40, baseVersion=1)
+c['derived'] = {"flow": {"cardBranch": "card/persisted"}}
+backend.set_snapshot(changed)
+js("page.openLaunch('K-15', false)")
+wait(80)
+out["restored"] = js("[page.launchDialog.basePicker.selected.ref, page.launchDialog.basePicker.selected.commit, page.launchDialog.cardBranch]")
+before = len(backend.branch_calls)
+js("page.launchDialog.basePicker.refresh()")
+wait(40)
+out["noNewLookup"] = before == len(backend.branch_calls)
+''')
+        self.assertEqual([r["entry"] for r in out["requests"]], ["planning", "planning", "import"])
+        for request in out["requests"]:
+            self.assertEqual(request["baseRef"], "refs/heads/feature/plan")
+            self.assertEqual(request["baseCommit"], "b" * 40)
+            self.assertEqual(request["cardBranch"], "card/chosen")
+        self.assertEqual(out["restored"], ["refs/heads/feature/deleted", "c" * 40, "card/persisted"])
+        self.assertTrue(out["noNewLookup"])
+
     def test_search_keyboard_full_names_project_reset_and_service_error(self):
         long_name = "feature/" + "bardzo-dluga-nazwa-" * 18 + "<tag>"
         branches = [{"ref": "refs/heads/master", "name": "master", "commit": "a" * 40, "selectable": True},
@@ -15,6 +49,7 @@ js("page.openLaunch('K-15', false)")
 wait(100)
 backend.branch_replies.append({reply!r})
 js("page.launchDialog.entry = 'now'")
+js("page.launchDialog.basePicker.refresh()")
 wait(100)
 out["initial"] = js("[page.launchDialog.basePicker.mainRef, page.launchDialog.basePicker.selected.ref]")
 engine.rootContext().setContextProperty("searchField", obj("baseSearch"))
@@ -44,7 +79,7 @@ backend.branch_replies.append({{"ok": False, "message": "Usługa nie odpowiada"}
 js("page.launchDialog.basePicker.refresh()")
 wait(60)
 out["failure"] = js("[page.launchDialog.basePicker.message, page.launchDialog.basePicker.ready, page.launchDialog.canStart]")
-js("page.launchDialog.entry = 'plan'")
+js("page.launchDialog.entry = 'spec'")
 out["inactive"] = js("[page.launchDialog.basePicker.active, page.launchDialog.basePicker.selected]")
 ''')
         self.assertEqual(out["initial"], ["refs/heads/master", "refs/heads/master"])

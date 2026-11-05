@@ -151,13 +151,8 @@ class PlanEditing:
 
     def _plan_step(self, card, st, selected, kind, text, findings=""):
         item, project = self._project(card)
-        info = ticket_of(st)
-        branch = info["cardBranch"] or f"card/{card.lower()}-plan"
-        from .gitops import worktree_for
-        worktree = info["cardWorktree"] or worktree_for(project.repo, branch)
-        made = self._act(card, "card-branch", branch,
-                         lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
-                         repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
+        made = self._planning_branch(card, st, project)
+        worktree = made["worktree"]
         generation = (st.plan_revision or {}).get("seq") if kind == "plan-amend" else st.plan_proposed["seq"]
         step_id = f"{card}-{kind}-{generation}"
         out = worktree + f".{kind}-{step_id}.step/out"

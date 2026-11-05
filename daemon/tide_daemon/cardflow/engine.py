@@ -548,9 +548,59 @@ class FlowEngine(PlanEditing):
 
     # --- zlecenie --------------------------------------------------------------------------------
 
+    def _start_base(self, card, project, request, st, *, resume=False):
+        """Jedno rozstrzygnięcie bazy dla wejść karty, przed trwałym zapisem zlecenia."""
+        previous = ticket_of(st)["cardBranch"]
+        chosen = request.get("cardBranch")
+        if chosen is not None and (not isinstance(chosen, str) or not chosen
+                or chosen.startswith("-") or chosen == "HEAD"
+                or not self.git.run(project.repo, "check-ref-format", f"refs/heads/{chosen}").ok):
+            raise FlowError("bad-request", "niepoprawna nazwa nowej gałęzi karty")
+        if previous and chosen and chosen != previous:
+            raise FlowError("branch-mismatch", "karta ma już inną gałąź — nie można zmienić jej nazwy przy starcie")
+        branch = previous or chosen or f"card/{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}"
+        if chosen and not previous and not resume and self.git.sha(project.repo, f"refs/heads/{chosen}"):
+            raise FlowError("branch-exists", "gałąź o tej nazwie już istnieje — podaj nazwę nowej gałęzi karty")
+        # Utrwalony wybór może już nie istnieć albo wskazywać inny commit.
+        if resume or (previous and request.get("baseRef") in (None, base_of(st)["baseRef"])):
+            base = base_of(st)
+            if base["status"] != "known" and (not previous or not self.git.sha(project.repo, f"refs/heads/{previous}")):
+                raise FlowError("no-base", "historyczna baza jest nieznana i nie ma gałęzi karty — "
+                                "przywróć gałąź karty albo rozpocznij nową kartę z wybraną bazą")
+            if not resume and request.get("baseCommit") is not None and (
+                    base["status"] != "known" or request["baseCommit"] != base["baseCommit"]):
+                raise FlowError("base-mismatch", "oczekiwany commit różni się od zapisanej bazy karty")
+        else:
+            try:
+                base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))
+            except FlowGitError as exc:
+                raise FlowError("no-base", str(exc)) from None
+            if previous or self.git.sha(project.repo, f"refs/heads/{branch}"):
+                recorded = base_of(st)
+                if recorded["status"] != "known" or any(
+                        recorded[key] != base[key] for key in ("baseRef", "baseBranch", "baseCommit")):
+                    raise FlowError("base-mismatch", "gałąź karty ma inną lub nieznaną bazę — "
+                                    "zmiana bazy wymaga osobnej korekty karty")
+        return {key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")} | {
+            "baseVersion": 1, "cardBranch": branch, "request": request}
+
+    def _planning_branch(self, card, st, project):
+        """Kontynuacje korzystają z aktualnej karty; tylko stare dzienniki wymagają polityki głównej."""
+        item, _ = self._project(card)
+        branch = (ticket_of(st)["cardBranch"] or st.started.get("cardBranch")
+                  or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}")
+        base = base_of(st)
+        start = (f"refs/heads/{branch}" if self.git.sha(project.repo, f"refs/heads/{branch}") else
+                 base["baseCommit"] if base["status"] == "known" else self.git.main_branch(project.repo))
+        if not start:
+            raise FlowError("no-base", "brak przypiętej bazy albo gałęzi karty")
+        worktree = worktree_for(project.repo, branch)
+        return self._act(card, "card-branch", branch,
+                         lambda: self.git.branch_worktree(project.repo, branch, worktree, start),
+                         repo=project.repo, branch=branch, worktree=worktree, base=start,
+                         baseRef=base["baseRef"], baseBranch=base["baseBranch"])
+
     def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
-        if request.get("entry") != "now" and any(k in request for k in ("baseRef", "baseCommit", "cardBranch")):
-            raise FlowError("bad-request", "wybór bazy i nazwy gałęzi karty działa obecnie tylko w wejściu Od razu")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
@@ -561,7 +611,7 @@ class FlowEngine(PlanEditing):
         if request.get("entry") == "import":
             return self.start_import(card_id, request)
         if request.get("entry") == "plan":
-            return self.propose_plan(card_id, str(request.get("planPath") or ""))
+            return self.propose_plan(card_id, str(request.get("planPath") or ""), request=request)
         if request.get("entry") == "planning" and request.get("mode") in ("full", "light"):
             return self.start_planning(card_id, request)
         if (request.get("entry") or "") != "now":
@@ -636,42 +686,9 @@ class FlowEngine(PlanEditing):
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
         slug = slug_from_prompt(card.title, words=4, length=32)
-        previous_branch = ticket_of(st)["cardBranch"]
-        chosen_branch = request.get("cardBranch")
-        if chosen_branch is not None and (not isinstance(chosen_branch, str) or not chosen_branch
-                or chosen_branch.startswith("-") or chosen_branch == "HEAD"
-                or not self.git.run(project.repo, "check-ref-format", f"refs/heads/{chosen_branch}").ok):
-            raise FlowError("bad-request", "niepoprawna nazwa nowej gałęzi karty")
-        if previous_branch and chosen_branch and chosen_branch != previous_branch:
-            raise FlowError("branch-mismatch", "karta ma już inną gałąź — nie można zmienić jej nazwy przy starcie")
-        card_branch = previous_branch or chosen_branch or f"card/{card.id.lower()}-{slug}"
         with lock_for(project.repo):
-            if chosen_branch and not previous_branch and not _resume and self.git.sha(project.repo, f"refs/heads/{chosen_branch}"):
-                raise FlowError("branch-exists", "gałąź o tej nazwie już istnieje — podaj nazwę nowej gałęzi karty")
-            # Kolejne zlecenie bez wyboru bazy dziedziczy dziennik, nie dzisiejszą główną.
-            # Legacy unknown może kontynuować pracę na istniejącej gałęzi karty, bez zgadywania bazy.
-            if _resume or (previous_branch and request.get("baseRef") is None):
-                base = base_of(st)
-                if base["status"] != "known":
-                    if not previous_branch or not self.git.sha(project.repo, f"refs/heads/{previous_branch}"):
-                        raise FlowError("no-base", "historyczna baza jest nieznana i nie ma gałęzi karty — "
-                                        "przywróć gałąź karty albo rozpocznij nową kartę z wybraną bazą")
-                if not _resume and request.get("baseCommit") is not None and (
-                        base["status"] != "known" or request["baseCommit"] != base["baseCommit"]):
-                    raise FlowError("base-mismatch", "oczekiwany commit różni się od zapisanej bazy karty")
-            else:
-                try:
-                    base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))
-                except FlowGitError as exc:
-                    raise FlowError("no-base", str(exc)) from None
-                # Wynik card-branch jest wspólny dla kolejnych zleceń. Nie wolno zapisać
-                # nowej bazy, gdy ponownie użyjemy gałęzi utworzonej od innej lub nieznanej bazy.
-                if previous_branch or self.git.sha(project.repo, f"refs/heads/{card_branch}"):
-                    recorded = base_of(st)
-                    if (recorded["status"] != "known" or
-                            any(recorded[key] != base[key] for key in ("baseRef", "baseBranch", "baseCommit"))):
-                        raise FlowError("base-mismatch", "gałąź karty ma inną lub nieznaną bazę — "
-                                        "zmiana bazy wymaga osobnej korekty karty")
+            base = self._start_base(card, project, request, st, resume=_resume)
+            card_branch = base["cardBranch"]
             try:
                 if not project.youtrack:
                     reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
@@ -800,13 +817,16 @@ class FlowEngine(PlanEditing):
         loose_text = any(line.strip() and not line.lstrip().startswith("|") for line in body.splitlines())
         complete = (not proposal.errors and b"| Blokery |" in source_bytes and
                     not loose_text and all(row.agent and row.work_class and row.reviewer and row.note for row in source.rows))
+        with lock_for(project.repo):
+            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         self.store.update_card(card_id, {"planPath": path})
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                             column=item.column, moveId=item.move_id, check=check, images=images,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, preferredProvider=request.get("preferredProvider") or selected.provider,
                             prefix=prefix, trackerProject=project.youtrack,
-                            trackerUrl=yt.load_config()["url"] if project.youtrack else "")
+                            trackerUrl=yt.load_config()["url"] if project.youtrack else "", **base)
+        self._project_base(card_id)
         self.journal.write_file(card_id, os.path.join("plan", "source.md"), source_bytes)
         self.journal.append(card_id, "plan.imported", path=path, rows=import_rows,
                             needsCompletion=not complete)
@@ -856,9 +876,8 @@ class FlowEngine(PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", "repozytorium nie ma gałęzi głównej")
+        with lock_for(project.repo):
+            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         if project.youtrack:
             prefix = project.youtrack
         else:
@@ -878,7 +897,8 @@ class FlowEngine(PlanEditing):
                             routeTokenFile=selected.route.token_file if selected.route else "",
                             trackerProject=project.youtrack,
                             trackerUrl=yt.load_config()['url'] if project.youtrack else '',
-                            projects=order)
+                            projects=order, **base)
+        self._project_base(card_id)
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
         low = self._low_limit(selected.provider)
@@ -949,11 +969,8 @@ class FlowEngine(PlanEditing):
 
     def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
         item, project = self._project(card)
-        branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
-        worktree = worktree_for(project.repo, branch)
-        made = self._act(card, "card-branch", branch,
-                         lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
-                         repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
+        made = self._planning_branch(card, st, project)
+        branch, worktree = made["branch"], made["worktree"]
         importing = st.started.get("entry") == "plan"
         kind = "plan-import" if importing else "plan-fix" if round_no else "planning"
         step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
@@ -1417,7 +1434,7 @@ class FlowEngine(PlanEditing):
                     other_state.add(row.ticket)
         return {ident: info for ident, info in todo.items() if ident not in other_state}
 
-    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False) -> dict:
+    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False, request=None) -> dict:
         """Przyjmuje propozycję z pliku; walidacja i migawka nie nadają numerów."""
         try:
             card_id = f"K-{card_num(card_id)}"
@@ -1479,10 +1496,13 @@ class FlowEngine(PlanEditing):
             except reservations.ReservationError as exc:
                 proposal.errors.append(str(exc))
         if not continuation and not import_source:
+            with lock_for(project.repo):
+                base = self._start_base(item, project, request or {}, fold(self.journal.read(card_id)))
             self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                                 check=item.check or "auto", column=item.column, moveId=item.move_id,
                                 trackerProject=project.youtrack,
-                                trackerUrl=yt.load_config()['url'] if project.youtrack else '')
+                                trackerUrl=yt.load_config()['url'] if project.youtrack else '', **base)
+            self._project_base(card_id)
         checked = fold(self.journal.read(card_id)).plan_checked or {}
         if not continuation or checked.get("step") != step or checked.get("errors") != proposal.errors:
             self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
@@ -2321,14 +2341,8 @@ class FlowEngine(PlanEditing):
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         item, project = self._project(card)
-        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej")
-        card_worktree = worktree_for(project.repo, card_branch)
-        made = self._act(card, "card-branch", card_branch,
-                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
-                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
+        made = self._planning_branch(card, st, project)
+        card_branch, card_worktree = made["branch"], made["worktree"]
         card_work = any(s.get("kind") in ("conflict", "close") and
                         (s["step"] not in st.finished or
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and

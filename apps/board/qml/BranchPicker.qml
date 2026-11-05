@@ -10,6 +10,7 @@ ColumnLayout {
     property string contextKey: ""
     property var branches: []
     property var selected: null
+    property var pinned: null
     property string mainRef: ""
     property string pendingTag: ""
     property string message: ""
@@ -21,7 +22,7 @@ ColumnLayout {
     function reset() {
         pendingTag = ""
         branches = []
-        selected = null
+        selected = pinned
         mainRef = ""
         message = ""
         loading = false
@@ -30,7 +31,7 @@ ColumnLayout {
         if (active && contextKey) refresh()
     }
     function refresh() {
-        if (!active || !contextKey) return
+        if (!active || !contextKey || pinned) return
         pendingTag = ""
         loading = true
         message = ""
@@ -39,7 +40,7 @@ ColumnLayout {
         requested(search.text)
     }
     function receive(tag, reply) {
-        if (!active || tag !== pendingTag) return
+        if (!active || pinned || tag !== pendingTag) return
         loading = false
         if (!reply || !reply.ok) {
             branches = []
@@ -63,11 +64,13 @@ ColumnLayout {
     }
     onActiveChanged: reset()
     onContextKeyChanged: reset()
+    onPinnedChanged: reset()
     spacing: 8
     FieldLabel { text: "Gałąź bazowa" }
     Text {
         Layout.fillWidth: true
-        text: "Wybór dotyczy projektu karty. " + (picker.mainRef ? "Główna: " + picker.mainRef.substring(11) : "")
+        text: "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy i odczyt. "
+              + (picker.pinned ? "Baza karty jest utrwalona." : picker.mainRef ? "Główna: " + picker.mainRef.substring(11) : "")
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
         color: Tide.Tokens.textSecondary
@@ -77,7 +80,7 @@ ColumnLayout {
     Text {
         Layout.fillWidth: true
         visible: !picker.active
-        text: "Wybór bazy jest dostępny tylko w Od razu. Mam plan i Planowanie czekają na obsługę przypiętej bazy; Tylko specyfikacja — na obsługę wybranej rewizji."
+        text: "Tylko specyfikacja czeka na obsługę wybranej rewizji."
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Tide.Tokens.textMuted
@@ -86,6 +89,7 @@ ColumnLayout {
     }
     RowLayout {
         Layout.fillWidth: true
+        visible: !picker.pinned
         enabled: picker.active
         LineInput {
             id: search

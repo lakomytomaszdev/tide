@@ -81,15 +81,18 @@ class PackageTest(unittest.TestCase):
 
 
 class LogicTest(unittest.TestCase):
-    def test_exact_base_only_for_now(self):
+    def test_exact_base_for_all_flow_entries(self):
         state = {"entry": "now", "executor": "Sonnet", "baseRef": "refs/heads/feature/a/b",
                  "baseCommit": "b" * 40, "cardBranch": "card/custom"}
         reply = self.js(f"startCardRequest({json.dumps(state)}, [])")
         for key in ("baseRef", "baseCommit", "cardBranch"):
             self.assertEqual(reply[key], state[key])
-        for entry in ("planning", "plan", "spec"):
-            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry))}, [])")
-            self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
+        for entry, mode in (("planning", "light"), ("planning", "full"), ("plan", "")):
+            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry, mode=mode))}, [])")
+            for key in ("baseRef", "baseCommit", "cardBranch"):
+                self.assertEqual(request[key], state[key])
+        request = self.js(f"startCardRequest({json.dumps(dict(state, entry='spec'))}, [])")
+        self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
 
     @classmethod
     def setUpClass(cls):
