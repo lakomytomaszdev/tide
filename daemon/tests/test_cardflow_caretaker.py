@@ -118,7 +118,7 @@ class ProblemIdTest(unittest.TestCase):
         def repeat(st):
             return [{"trigger": "repeat", "step": "K-1-PT-7-2", "ticket": "PT-7", "cause": "exit"}]
 
-        with mock.patch.object(caretaker, "TRIGGERS", [*caretaker.TRIGGERS, repeat]):
+        with mock.patch.object(caretaker, "TRIGGERS", [caretaker._error_trigger, repeat]):
             found = caretaker.problems(j.st)
         self.assertEqual(len(found), 1)
         self.assertEqual((found[0]["id"], found[0]["triggers"]), ("error:K-1-PT-7-1", ["error", "repeat"]))
@@ -285,8 +285,9 @@ class RegistryTest(unittest.TestCase):
                      "reject-ticket"):
             self.assertNotIn(name, caretaker.ACTIONS)
         self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry"})
-        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error"})
-        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS], ["_error_trigger"])
+        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error", "repeat", "no-progress"})     # PT-148
+        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS],
+                         ["_error_trigger", "_repeat_trigger", "_noprogress_trigger"])
 
 
 class ParseResultTest(unittest.TestCase):
