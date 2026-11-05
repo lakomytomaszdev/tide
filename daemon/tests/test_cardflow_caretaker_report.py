@@ -19,10 +19,10 @@ class CaretakerReportTest(fault_tests.FaultReportCase):
         self.flow.stop()
         self.engine = self.flow.engine
 
-    def apply_report(self, card, target, description="Tide nie zapisał wyniku"):
+    def apply_report(self, card, target, description="Tide nie zapisał wyniku", *, apply=True, suffix="-care"):
         st = fold(self.engine.journal.read(card))
         problem = next(p for p in caretaker.problems(st) if p["step"] == target)
-        own = target + "-care"
+        own = target + suffix
         run = self.engine.journal.append(card, caretaker.STARTED, step=own, problem=problem["id"],
                                          target=target, root=problem["root"], trigger=problem["trigger"],
                                          ticket="PT-1", watermark=max(e["seq"] for e in self.engine.journal.read(card)))
@@ -30,8 +30,83 @@ class CaretakerReportTest(fault_tests.FaultReportCase):
                                           "recommendation": "Napraw Tide",
                                           "report": {"description": description}}, problem, st)
         self.assertTrue(outcome["ok"], outcome)
-        self.engine._caretaker_apply(card, fold(self.engine.journal.read(card)), run, {"outcome": outcome})
+        if apply:
+            self.engine._caretaker_apply(card, fold(self.engine.journal.read(card)), run, {"outcome": outcome})
         return run, outcome
+
+    def test_report_recovery_after_card_write_before_journal_marker(self):
+        for scenario in ("create", "append", "archived", "merged"):
+            with self.subTest(scenario=scenario):
+                # Każdy scenariusz zaczyna z pustą listą otwartych zgłoszeń.
+                for saved in self.tide_cards():
+                    self.store.move_card(saved.id, "archived", -1)
+                existing = None
+                if scenario == "append":
+                    card, target = self.failed_card("Wcześniejsze wystąpienie")
+                    self.apply_report(card, target)
+                    existing = self.tide_cards()[-1].id
+                card, target = self.failed_card("Przerwany zapis")
+                run, outcome = self.apply_report(card, target, apply=False)
+                append = self.engine.journal.append
+
+                def interrupt(card, kind, **fields):
+                    if kind == "caretaker.reported":
+                        raise RuntimeError("przerwanie przed znacznikiem dziennika")
+                    return append(card, kind, **fields)
+
+                with mock.patch.object(self.engine.journal, "append", side_effect=interrupt):
+                    with self.assertRaisesRegex(RuntimeError, "przerwanie"):
+                        self.engine._caretaker_apply(card, fold(self.engine.journal.read(card)), run,
+                                                     {"outcome": outcome})
+                saved = self.tide_cards()[-1]
+                if existing:
+                    self.assertEqual(saved.id, existing)
+                self.assertEqual(saved.description.count("### "), 2 if existing else 1)
+                self.assertFalse(any(e["type"] == "caretaker.reported" for e in self.engine.journal.read(card)))
+                if scenario == "archived":
+                    self.store.move_card(saved.id, "archived", -1)
+                elif scenario == "merged":
+                    append(saved.id, "card.main-merged", commit="abc")
+                before = {c.id: c.description for c in self.tide_cards()}
+                # Ponowne zastosowanie odczytuje kartę i dziennik z dysku.
+                for _ in range(2):
+                    self.engine._caretaker_apply(card, fold(self.engine.journal.read(card)), run,
+                                                 {"outcome": outcome})
+                self.assertEqual({c.id: c.description for c in self.tide_cards()}, before)
+                [reported] = [e for e in self.engine.journal.read(card) if e["type"] == "caretaker.reported"]
+                self.assertTrue(reported["ok"])
+                self.assertEqual(reported["reported"], saved.id)
+                self.assertEqual(len([e for e in self.engine.journal.read(card)
+                                      if e["type"] == caretaker.ESCALATED]), 1)
+
+    def test_stalled_signature_matches_preview_and_saved_report(self):
+        card = self.card(title="Zastój karty")
+        _, events = decision_tests.CaretakerDecisionTest().engine("stalled")
+        for event in events:
+            self.engine.journal.append(card, event["type"], **{k: v for k, v in event.items()
+                                       if k not in ("type", "seq", "ts", "v", "card")})
+        request = {"problem": "stalled:card", "choice": "report", "description": "Karta stoi"}
+        preview = self.engine.preview_step_fault(card, request)
+        self.assertEqual(preview["signature"], "flow/tide/stalled")
+        self.assertEqual(self.tide_cards(), [])
+        reply = self.engine.resolve_caretaker(card, request)
+        self.assertEqual(reply["signature"], preview["signature"])
+        [saved] = self.tide_cards()
+        self.assertIn("Podpis błędu: `flow/tide/stalled`", saved.description)
+
+    def test_new_caretaker_step_adds_distinct_occurrence_even_without_excerpt(self):
+        card, target = self.failed_card("Ten sam problem, dwa działania opiekuna")
+        self.apply_report(card, target)
+        # Przekroczenie limitu pełnego opisu uruchamia zapis wystąpienia bez wycinka.
+        with mock.patch("tide_daemon.cardflow.engine.DESCRIPTION_LIMIT_BYTES", 1):
+            run, outcome = self.apply_report(card, target, suffix="-care-2")
+        [saved] = self.tide_cards()
+        self.assertEqual(saved.description.count("### "), 2)
+        self.assertEqual(saved.description.count("Wycinek dziennika kroku"), 1)
+        markers = [line for line in saved.description.splitlines() if line.startswith("<!-- tide-fault-occurrence:")]
+        self.assertEqual(len(set(markers)), 2)
+        self.engine._caretaker_apply(card, fold(self.engine.journal.read(card)), run, {"outcome": outcome})
+        self.assertEqual(self.tide_cards()[0].description, saved.description)
 
     def test_report_masks_secrets_deduplicates_and_never_retries(self):
         reports = []

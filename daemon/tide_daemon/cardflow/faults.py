@@ -18,6 +18,7 @@ kroku po zamaskowaniu sekretów. Podpis błędu (rodzaj kroku + `fault` + przycz
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -485,9 +486,15 @@ def card_title(step_kind: str, fault: str, cause: str, reason_labels: dict | Non
     return title if len(title) <= 200 else title[:199] + "…"
 
 
+def occurrence_marker(ident: str) -> str:
+    """Trwały znacznik wystąpienia bez ujawniania identyfikatora źródłowego."""
+    return f"<!-- tide-fault-occurrence: {hashlib.sha256(ident.encode('utf-8')).hexdigest()} -->" if ident else ""
+
+
 def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, executor: str, attempt: int,
                result: str, reason: str, fault: str, cause: str, description: str, log_excerpt: str,
-               reason_labels: dict | None = None, env: dict | None = None, with_excerpt: bool = True) -> str:
+               reason_labels: dict | None = None, env: dict | None = None, with_excerpt: bool = True,
+               occurrence_id: str = "") -> str:
     """Jedno wystąpienie błędu: kiedy, gdzie, czyja wina, opis użytkownika i wycinek dziennika kroku."""
     where = " ".join(part for part in (kind_label(step_kind), ticket) if part)
     head = f"### {when} · {card} · {where}" + (f" ({executor})" if executor else "")
@@ -503,6 +510,8 @@ def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, 
     if with_excerpt:
         lines += ["", "Wycinek dziennika kroku (sekrety zamaskowane):", "", "```text",
                   log_excerpt or "(dziennik kroku jest pusty albo niedostępny)", "```"]
+    if occurrence_id:
+        lines += ["", occurrence_marker(occurrence_id)]
     return "\n".join(lines) + "\n"
 
 

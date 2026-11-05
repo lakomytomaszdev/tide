@@ -2856,11 +2856,13 @@ class FlowEngine(PlanEditing):
         if not isinstance(value, str) or not 1 <= len(value.strip()) <= faults.DESCRIPTION_LIMIT:
             raise FlowError("bad-request", "opis problemu musi mieć od 1 do 4000 znaków")
 
-    def _save_fault_report(self, card, st, name, description, *, problem=None):
+    def _save_fault_report(self, card, st, name, description, *, problem=None, occurrence_id=""):
         """Wspólny zapis zgłoszenia; wybór karty i zapis pod jedną blokadą, bez ponawiania pracy."""
         try:
             with self.journal.lock:
-                plan = self._fault_plan(card, st, name, description, problem=problem)
+                plan = self._fault_plan(card, st, name, description, problem=problem, occurrence_id=occurrence_id)
+                if plan["action"] == "existing":
+                    return {**plan, "reported": plan["card"]}
                 if plan["action"] == "append":
                     target = self.store.load().cards[card_num(plan["card"])]
                     saved = self.store.update_card(target.id, {
@@ -2872,13 +2874,14 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
         return {**plan, "reported": saved.get("id") or plan["card"]}
 
-    def _fault_plan(self, card: str, st: FlowState, name: str, description: str, *, problem=None) -> dict:
+    def _fault_plan(self, card: str, st: FlowState, name: str, description: str, *, problem=None,
+                    occurrence_id: str = "") -> dict:
         """Co zapisze zgłoszenie: nowa karta albo wystąpienie dopisane do otwartej karty o tym samym podpisie."""
         from .decisions import build_decisions
         step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
         found = faults.of_finished(done)
         if not name and problem:
-            stage = problem.get("stage") or "stalled"
+            stage = "stalled" if problem.get("trigger") == "stalled" else problem.get("stage") or "stalled"
             source = (st.flow_errors.get(stage) or {}).get("event") or {}
             step = {"kind": "flow", "ticket": problem.get("ticket") or ""}
             done = {**source, "result": "error", "reason": source.get("error") or "karta stoi"}
@@ -2899,15 +2902,23 @@ class FlowEngine(PlanEditing):
             executor=step.get("executor") or "", attempt=int(step.get("attempt") or 0),
             result=done.get("result") or "", reason=done.get("reason") or "", fault=found["fault"],
             cause=found["cause"], description=description, log_excerpt=faults.excerpt(lines),
-            reason_labels=REASON_LABELS)
+            reason_labels=REASON_LABELS, occurrence_id=occurrence_id)
+        plan = {"signature": sig, "fault": found["fault"], "project": faults.REPORT_PROJECT,
+                "occurrence": occurrence}
+        # Znacznik jest zapisany razem z wystąpieniem, więc przetrwa przerwanie przed caretaker.reported.
+        # Odzyskanie własnego zapisu obejmuje również karty zarchiwizowane i scalone.
+        marker = faults.occurrence_marker(occurrence_id)
+        if marker:
+            for item in board.cards.values():
+                if item.project == faults.REPORT_PROJECT and marker in item.description.splitlines():
+                    return {**plan, "action": "existing", "card": item.id, "title": item.title,
+                            "description": item.description}
         target = None
         for item in sorted(board.cards.values(), key=lambda c: c.num, reverse=True):
             if item.project == faults.REPORT_PROJECT and item.column != "archived" and \
                     faults.has_signature(item.description, sig) and not self._card_merged(item.id):
                 target = item
                 break
-        plan = {"signature": sig, "fault": found["fault"], "project": faults.REPORT_PROJECT,
-                "occurrence": occurrence}
         if target is not None:
             body = target.description.rstrip("\n") + "\n\n" + occurrence
             if len(body.encode("utf-8")) > DESCRIPTION_LIMIT_BYTES:
@@ -2916,7 +2927,8 @@ class FlowEngine(PlanEditing):
                     ticket=step.get("ticket") or "", executor=step.get("executor") or "",
                     attempt=int(step.get("attempt") or 0), result=done.get("result") or "",
                     reason=done.get("reason") or "", fault=found["fault"], cause=found["cause"],
-                    description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False)
+                    description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False,
+                    occurrence_id=occurrence_id)
                 plan["occurrence"] = occurrence
             return {**plan, "action": "append", "card": target.id, "title": target.title, "description": occurrence}
         decision = next((d for d in build_decisions(st) if (
@@ -4147,7 +4159,8 @@ class FlowEngine(PlanEditing):
                                  (outcome.get("params") or {}).get("summary") or outcome["report"]["description"])
             try:
                 made = self._save_fault_report(card, st, run.get("target") or "",
-                                               outcome["report"]["description"], problem=problem)
+                                               outcome["report"]["description"], problem=problem,
+                                               occurrence_id=json.dumps(["caretaker", card, step]))
                 self.journal.append(card, "caretaker.reported", step=step, target=run.get("target") or "",
                                     problem=run.get("problem") or "", ok=True, reported=made["reported"],
                                     signature=made["signature"], reason=reason)

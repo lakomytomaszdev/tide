@@ -1927,8 +1927,10 @@ Dla problemu bez kroku podpis ma postać `flow/tide/<przyczyna>`: przyczyną jes
 
 Samo `report` nie ponawia kroku ani etapu (A7). Osobny wpis `caretaker.reported` daje historię
 „Opiekun: zgłosił błąd Tide (K-<n>) — <powód>”. Brak projektu daje wpis niepowodzenia
-`no-report-project`; akcja główna nadal się wykonuje. Powtórne zastosowanie zapisanego wyniku
-nie dodaje zgłoszenia drugi raz.
+`no-report-project`; akcja główna nadal się wykonuje. Wystąpienie zawiera trwały znacznik wyliczony
+z karty źródłowej i kroku opiekuna, zapisany razem z treścią zgłoszenia. Powtórne zastosowanie zapisanego
+wyniku nie dodaje zgłoszenia drugi raz, także po przerwaniu przed wpisem `caretaker.reported` oraz po
+archiwizacji lub scaleniu karty zgłoszenia. Nowy krok opiekuna ma osobny identyfikator wystąpienia.
 
 Decyzja `caretaker` udostępnia pole „Zgłoś błąd Tide”. `PreviewStepFault` z `problem`, `description`
 i opcjonalnym `choice` pokazuje kartę bez zapisu. `ResolveCardCaretaker` z
