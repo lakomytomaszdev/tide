@@ -63,7 +63,7 @@ class StepDecisionTest(FlowInProcess):
         decision = self.of(second, "step.decision")[0]
         self.assertEqual((decision["choice"], decision["auto"]), ("run", True))
 
-    def test_remembered_family_and_one_outside_run_per_project(self):
+    def test_remembered_family_and_limited_outside_runs_per_project(self):
         # 03.11, K-31: „pamiętaj” pamiętało dokładne polecenie, a pięć przebiegów e2e szło naraz.
         from tide_daemon.board.commands import outside_allowed, outside_matches, outside_pattern, outside_risky
         self.assertEqual(outside_pattern("E2E_PORT=4311 npm run e2e -- tests/e2e/devices"), "npm run e2e *")
@@ -99,9 +99,14 @@ class StepDecisionTest(FlowInProcess):
                          "Zawsze w projekcie: echo zewnetrzne-ok *")
         self.flow.stop()
         engine = self.flow.engine
-        engine._outside_active = {"K-99-PT-9-1": (card_id, "tide-outside-K-99-PT-9-1")}
+        from tide_daemon.cardflow.engine import OUTSIDE_PER_PROJECT
+        engine._outside_active = {f"K-99-PT-9-{n}": (card_id, f"tide-outside-K-99-PT-9-{n}")
+                                  for n in range(OUTSIDE_PER_PROJECT)}
         with mock.patch.object(engine, "_outside_exit", return_value="/nonexistent/in/exit-code"):
             self.assertTrue(engine._outside_busy(card_id))
+        engine._outside_active = dict(list(engine._outside_active.items())[:OUTSIDE_PER_PROJECT - 1])
+        with mock.patch.object(engine, "_outside_exit", return_value="/nonexistent/in/exit-code"):
+            self.assertFalse(engine._outside_busy(card_id))
         engine._outside_active = {}
         self.assertFalse(engine._outside_busy(card_id))
         # Po restarcie usługi polecenie w toku (outside.started bez zakończenia) nie może wywrócić przebiegu karty.

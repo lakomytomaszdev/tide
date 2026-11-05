@@ -86,8 +86,8 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
-OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
-OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_PER_PROJECT = 2         # polecenia poza piaskownicą naraz w jednym projekcie (05.11: 1 i make test ~25 min dawały godzinne kolejki)
+OUTSIDE_TOTAL = 3               # … i łącznie (testy i budowanie obciążają całą maszynę)
 OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
@@ -675,8 +675,8 @@ class FlowEngine(PlanEditing):
                 found = execution.resolve(candidate, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError("unknown-reviewer" if exc.code == "unknown-executor" else exc.code, str(exc)) from None
-            if found.name == selected.name or found.model.lower() == selected.model.lower():
-                raise FlowError("bad-reviewer", "recenzent musi mieć inny model niż autor")
+            if found.name == selected.name or not flow_plans.independent_reviewer(selected, found):
+                raise FlowError("bad-reviewer", "recenzent musi mieć inny model albo inną siłę myślenia niż autor")
             if selected.local != found.local:
                 raise FlowError("bad-reviewer-provider", "praca lokalna wymaga lokalnego recenzenta")
             if preferred == "mixed" and found.provider == selected.provider:
@@ -4246,9 +4246,16 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
-            if self._outside_busy(card) or self._outside_behind(card, name, decision):
+            if self._outside_busy(card):
+                # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
+                # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
+                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
+            if self._outside_behind(card, name, decision):
+                return None
             self._outside_waiting.pop(name, None)
+            self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
@@ -4518,7 +4525,7 @@ class FlowEngine(PlanEditing):
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
 
-    def _outside_behind(self, card: str, name: str, decision: dict) -> bool:
+    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False) -> bool:
         """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
         projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
         przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
@@ -4535,8 +4542,17 @@ class FlowEngine(PlanEditing):
             if other == name or (other_queued, other) >= (queued, name):
                 continue
             if other_slug == slug or not self._outside_busy(other_card):
+                if not quiet:
+                    self._outside_log(name, f"czeka za starszą zgodą {other}")
                 return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
         return False
+
+    def _outside_log(self, name: str, text: str) -> None:
+        """Jedna linia w dzienniku usługi przy zmianie powodu czekania polecenia poza piaskownicą."""
+        seen = self.__dict__.setdefault("_outside_logged", {})
+        if seen.get(name) != text:
+            seen[name] = text
+            print(f"tide-daemon: kolejka poza piaskownicą: {name}: {text}", flush=True)
 
     def _seed_outside_waiting(self, now: float) -> None:
         """Po restarcie usługi: zgody na polecenia poza piaskownicą, które jeszcze nie ruszyły, z czasem zgody
