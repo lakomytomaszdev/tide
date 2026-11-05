@@ -156,3 +156,74 @@ out["calls"] = calls()
                 self.assertTrue(out["closedAfterProject"])
                 self.assertEqual(out["pendingTag"], "")
                 self.assertEqual(out["calls"], [])
+
+    def test_remote_creation_proposal_custom_name_preview_and_cancel_do_not_confirm(self):
+        out = self.probe(STATE_PY + FIND_PY + r'''
+click(card("K-8"))
+proposal = {"ref": "refs/heads/feature/full/base", "name": "feature/full/base", "kind": "create",
+            "label": "Utwórz lokalną feature/full/base od origin/feature/full/base", "commit": "b" * 40,
+            "selectable": True, "reason": ""}
+main = {"ref": "refs/heads/master", "name": "master", "kind": "local", "commit": "a" * 40,
+        "selectable": True, "reason": ""}
+recent = {**main, "ref": "refs/heads/recent", "name": "recent"}
+backend.branch_replies.append({"ok": True, "branches": [main, recent, proposal], "createTarget": proposal,
+                              "recentTargets": [recent], "defaultTargetRef": "",
+                              "mainRef": main["ref"], "warnings": []})
+click(named("fullMergeMain"))
+assert until(lambda: not obj("mergeBranchPicker").property("loading"))
+engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
+out["label"] = js(FIND + "(targetPicker, 'mergeTargetResult0').children[0].text")
+click(at(FIND + "(targetPicker, 'mergeTargetResult0')"))
+out["selectedProposal"] = js("targetPicker.selected.ref")
+out["before"] = calls()
+click(named("mergeNewTargetName"))
+type_text("alternative/full/target")
+out["typed"] = obj("mergeNewTargetName").property("text")
+out["pickerMessage"] = obj("mergeBranchPicker").property("message")
+out["pickerLoading"] = obj("mergeBranchPicker").property("loading")
+out["ready"] = obj("mergeTargetPreview").property("enabled")
+replies.append({"ok": True, "canMerge": True, "targetRef": "refs/heads/alternative/full/target",
+    "targetBranch": "alternative/full/target", "targetCommit": "b" * 40, "previewToken": "create-token",
+    "targetWorktree": "/tmp/project-worktrees/merge-target-safe", "targetWorktreeExists": False,
+    "targetPreparation": {"createRef": True, "createWorktree": True, "startCommit": "b" * 40,
+                          "remoteRef": "refs/remotes/origin/feature/full/base", "remoteCommit": "b" * 40,
+                          "path": "/tmp/project-worktrees/merge-target-safe"}})
+click(named("mergeTargetPreview"))
+assert until(lambda: not obj("mergePreview").property("busy"))
+out["text"] = obj("mergePreviewText").property("text")
+out["confirm"] = obj("mergePreviewConfirm").property("enabled")
+key(Qt.Key.Key_Escape)
+out["calls"] = calls()
+''', self.closed({"status": "known", "baseRef": "refs/remotes/origin/feature/full/base"}))
+        self.assertIn("Utwórz lokalną feature/full/base od origin/feature/full/base", out["label"])
+        self.assertEqual(out["selectedProposal"], "refs/heads/feature/full/base")
+        self.assertEqual(out["before"], [])
+        self.assertTrue(out["ready"], out)
+        self.assertTrue(out["confirm"])
+        self.assertIn("Commit startu celu: " + "b" * 40, out["text"])
+        self.assertIn("refs/remotes/origin/feature/full/base", out["text"])
+        self.assertIn("Po zgodzie: utwórz własny worktree", out["text"])
+        self.assertEqual(len(out["calls"]), 1)
+        self.assertEqual(out["calls"][0][0], "PreviewCardMerge")
+        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/alternative/full/target"})
+
+    def test_exact_unique_tracker_is_default_but_multiple_trackers_require_choice(self):
+        for unique in (True, False):
+            with self.subTest(unique=unique):
+                body = STATE_PY + "\nunique = " + repr(unique) + r'''
+click(card("K-8"))
+branches = [{"ref": "refs/heads/local/one", "name": "local/one", "kind": "local", "commit": "b" * 40,
+             "selectable": True, "reason": ""},
+            {"ref": "refs/heads/local/two", "name": "local/two", "kind": "local", "commit": "b" * 40,
+             "selectable": True, "reason": ""}]
+backend.branch_replies.append({"ok": True, "branches": branches, "mainRef": "refs/heads/master",
+                              "defaultTargetRef": branches[0]["ref"] if unique else "", "warnings": []})
+click(named("fullMergeMain"))
+assert until(lambda: not obj("mergeBranchPicker").property("loading"))
+out["ready"] = obj("mergeTargetPreview").property("enabled")
+key(Qt.Key.Key_Escape)
+out["calls"] = calls()
+'''
+                out = self.probe(body, self.closed({"status": "known", "baseRef": "refs/remotes/origin/feature/base"}))
+                self.assertEqual(out["ready"], unique)
+                self.assertEqual(out["calls"], [])

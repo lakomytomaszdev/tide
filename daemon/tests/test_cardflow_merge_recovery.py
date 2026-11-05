@@ -123,7 +123,8 @@ class DurableMergeFixture:
         self.assertEqual(len([e for e in events if e["type"] == "card.merged"]), 1)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
         self.assertEqual(next(e for e in events if e["type"] == "card.finished")["operationId"], intent["key"])
-        self.assertEqual({e["stage"] for e in events if e["type"] == "main-merge.checkpoint"},
+        self.assertEqual({e["stage"] for e in events if e["type"] == "main-merge.checkpoint" and
+                          not e["stage"].startswith("target-")},
                          {"prepared", "materialized", "ref-moved", "result-saved", "projected"})
         self.assertEqual(Path(intent["targetWorktree"], "result.txt").read_text(), "wynik karty\n")
         self.assertEqual(self.store.load().cards[int(self.card_id[2:])].column, "done")

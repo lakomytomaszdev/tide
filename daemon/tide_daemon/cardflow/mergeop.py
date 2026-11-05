@@ -16,6 +16,35 @@ from .mergepreview import checkout_snapshot, assess_local
 
 
 class MergeWorktree:
+    @classmethod
+    def prepare_fresh(cls, git, repo, preview, message):
+        """Pełny zamiar na obiektach, zanim utworzymy lokalny ref lub checkout."""
+        before, source, tree = preview["targetCommit"], preview["sourceCommit"], preview["resultTree"]
+        old_tree = cls.checked(git.run(repo, "rev-parse", before + "^{tree}")).strip()
+        already, body, commit = cls.commit_plan(git, repo, before, source, tree, message)
+        return {"targetRef": preview["targetRef"], "targetBranch": preview["targetBranch"],
+                "targetWorktree": preview["targetWorktree"], "sourceRef": preview["sourceRef"],
+                "sourceCommit": source, "targetCommitBefore": before, "resultCommit": commit,
+                "resultTree": tree, "commitBody": body, "already": already,
+                "materializationBaseTree": old_tree, "resultIndexTree": tree, "message": message,
+                "targetPreparation": preview["targetPreparation"]}
+
+    @classmethod
+    def commit_plan(cls, git, repo, before, source, tree, message):
+        already = git.run(repo, "merge-base", "--is-ancestor", source, before).ok
+        body, commit = "", before
+        if not already:
+            identities = []
+            for name in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+                result = git.run(repo, "var", name)
+                if not result.ok:
+                    result = git.run(repo, *gitops.FALLBACK_IDENTITY, "var", name)
+                identities.append(cls.checked(result).strip())
+            body = (f"tree {tree}\nparent {before}\nparent {source}\nauthor {identities[0]}\n"
+                    f"committer {identities[1]}\n\n{message}\n")
+            commit = cls.checked(git.run(repo, "hash-object", "-t", "commit", "--stdin", input_text=body)).strip()
+        return already, body, commit
+
     def __init__(self, flow_git, repo: str, branch: str, path: str):
         self.git, self.repo, self.branch, self.path = flow_git, repo, branch, path
         self.ref = f"refs/heads/{branch}"
@@ -122,18 +151,7 @@ class MergeWorktree:
         self.clean_files(index, result_index)
         with self.private_index() as run:
             self.checked(run("read-tree", "-n", "-m", "-u", index, result_index))
-        already = self.git.run(self.repo, "merge-base", "--is-ancestor", source, before).ok
-        body, commit = "", before
-        if not already:
-            identities = []
-            for name in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
-                result = self.git.run(self.repo, "var", name)
-                if not result.ok:
-                    result = self.git.run(self.repo, *gitops.FALLBACK_IDENTITY, "var", name)
-                identities.append(self.checked(result).strip())
-            body = (f"tree {tree}\nparent {before}\nparent {source}\nauthor {identities[0]}\n"
-                    f"committer {identities[1]}\n\n{message}\n")
-            commit = self.checked(self.git.run(self.repo, "hash-object", "-t", "commit", "--stdin", input_text=body)).strip()
+        already, body, commit = self.commit_plan(self.git, self.repo, before, source, tree, message)
         return {"targetRef": self.ref, "targetBranch": self.branch, "targetWorktree": self.path,
                 "sourceRef": source_ref, "sourceCommit": source, "targetCommitBefore": before,
                 "resultCommit": commit, "resultTree": tree, "commitBody": body, "already": already,
@@ -146,6 +164,8 @@ class MergeWorktree:
 
     def execute(self, op: dict, checkpoint) -> dict:
         before, commit = op["targetCommitBefore"], op["resultCommit"]
+        if self.git.run(self.repo, "symbolic-ref", "--quiet", self.ref).ok:
+            raise gitops.FlowGitError("cel stał się refem symbolicznym — scalenie czeka")
         current = self.git.sha(self.repo, self.ref)
         if current not in (before, commit):
             raise gitops.FlowGitError("gałąź celu zmieniła się poza zapisaną operacją — scalenie czeka")
@@ -177,7 +197,7 @@ class MergeWorktree:
         self.clean_files(old_tree, result_index)
         checkpoint("materialized")
         if current != commit:
-            moved = self.git.run(self.repo, "update-ref", "-m", op["message"], self.ref, commit, current)
+            moved = self.git.run(self.repo, "update-ref", "--no-deref", "-m", op["message"], self.ref, commit, current)
             if not moved.ok:
                 raise gitops.FlowGitError("nie udało się przesunąć zapisanego refu — scalenie czeka bez cofania plików")
         if self.git.sha(self.repo, self.ref) != commit:

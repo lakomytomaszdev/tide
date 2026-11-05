@@ -51,6 +51,13 @@ QQC2.Popup {
                        "Sam podgląd nie jest zgodą. Nie stanowi zgody zamknięcie ani anulowanie.",
                        "Dopiero przycisk „Scal do " + r.targetBranch + "” potwierdza ten podgląd."]
         for (const warning of r.warnings || []) lines.push(warning)
+        if (r.targetPreparation) {
+            const p = r.targetPreparation
+            lines.push("", "Commit startu celu: " + p.startCommit)
+            if (p.createRef) lines.push("Po zgodzie: utwórz " + r.targetRef + " od " + p.remoteRef,
+                                        "SHA remote: " + p.remoteCommit)
+            if (p.createWorktree) lines.push("Po zgodzie: utwórz własny worktree " + p.path)
+        }
         for (const refusal of r.blockedReasons || []) lines.push(refusal.message + " [" + refusal.reason + "]")
         if (r.localCollisions && typeof r.localCollisions === "object") {
             const labels = { staged: "staged (indeks)", unstaged: "unstaged (poza indeksem)", untracked: "untracked (nieśledzone)" }

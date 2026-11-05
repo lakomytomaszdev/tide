@@ -113,7 +113,7 @@ class FlowGit:
                 "reason": "conflict" if tree.code == 1 else "",
                 "message": "Konflikty w drzewie scalenia." if tree.code == 1 else ""}
 
-    def preview_merge(self, repo: str, source_branch: str, target_ref: str | None = None) -> dict:
+    def preview_merge(self, repo: str, source_branch: str, target_ref: str | None = None, *, preparation=None) -> dict:
         """Pełny odczyt celu z tej samej polityki co MergeCardToMain; zapis tylko obiektów próbnego drzewa."""
         with lock_for(repo):
             if target_ref is not None and (not target_ref.startswith("refs/heads/") or
@@ -121,7 +121,8 @@ class FlowGit:
                 raise FlowGitError("cel musi być pełnym lokalnym refem refs/heads/…")
             target_branch = target_ref[len("refs/heads/"):] if target_ref else self.main_branch(repo)
             source_ref, target_ref = f"refs/heads/{source_branch}", f"refs/heads/{target_branch}"
-            source, target = self.sha(repo, source_ref), self.sha(repo, target_ref)
+            source = self.sha(repo, source_ref)
+            target = preparation["startCommit"] if preparation else self.sha(repo, target_ref)
             if not target_branch or not source_branch or not source or not target:
                 raise FlowGitError("brak gałęzi głównej albo gałęzi karty")
             listed = self.run(repo, "worktree", "list", "--porcelain", "-z")
@@ -134,7 +135,8 @@ class FlowGit:
             source_path = next((w.get("worktree", "") for w in worktrees if w.get("branch") == source_ref), "")
             out = {"sourceRef": source_ref, "sourceBranch": source_branch, "sourceCommit": source,
                    "targetRef": target_ref, "targetBranch": target_branch, "targetCommit": target,
-                   "targetWorktree": path or os.path.join(worktrees_dir(repo), f"{target_branch}-main"),
+                   "targetWorktree": path or (preparation["path"] if preparation else
+                                               os.path.join(worktrees_dir(repo), f"{target_branch}-main")),
                    "targetWorktreeExists": bool(path), "commits": [], "commitCount": 0,
                    "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0,
                    "canMerge": False, "readyToMerge": False, "localCollisions": "unassessed",
@@ -191,7 +193,8 @@ class FlowGit:
                 after = {"target": checkout_snapshot(self.run, path),
                          "source": checkout_snapshot(self.run, source_path),
                          "worktrees": self.run(repo, "worktree", "list", "--porcelain", "-z").out}
-                if (after != snapshots or self.sha(repo, source_ref) != source or self.sha(repo, target_ref) != target):
+                if (after != snapshots or self.sha(repo, source_ref) != source or
+                        self.sha(repo, target_ref) != ("" if preparation and preparation["createRef"] else target)):
                     out.update(reason="state-changed", message="Stan gita zmienił się podczas podglądu. Odśwież podgląd.")
                     out.pop("_snapshot", None)
             except OSError as exc:
