@@ -20,6 +20,10 @@ help:
 	@echo "make install               instalacja Tide (najpierw kopia zapasowa)"
 	@echo "make uninstall             usunięcie wszystkiego, co zainstalował Tide"
 	@echo "make test                  testy wszystkich komponentów"
+	@echo "make test JOBS=N           pełny przebieg w N procesach (domyślnie rdzenie minus 2)"
+	@echo "make test-<zestaw>         zestawy: $(TEST_SUITES)"
+	@echo "make test-changed BASE=ref testy zmian względem bazy (domyślnie master)"
+	@echo "make test-benchmark        pomiar dawnych katalogów discover i równoległego make test"
 	@echo "make activity-look-check   czy wygląd pulpitu zgadza się z opisem bieżącej aktywności (tylko odczyt)"
 	@echo "make activity-look-status  przypisania aktywności, wyglądy, dziennik przełączenia, stan kopii silnika"
 	@echo "make check-plans           kontrola numerów ticketów w planach agentów (~/DevWorkspace)"
@@ -44,7 +48,7 @@ pre-install-backup:
 	@bash scripts/backup.sh "install-$$(date +%Y-%m-%d_%H%M%S)"
 
 test:
-	@for dir in $(TEST_DIRS); do /usr/bin/python3 -m unittest discover -s "$$dir" -t . || exit 1; done
+	@/usr/bin/python3 tools/test_runner.py --dirs $(TEST_DIRS) $(TEST_JOB_ARGS) $(TEST_OUTPUT_ARGS)
 
 backup:
 	@bash scripts/backup.sh $(NAME)

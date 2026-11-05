@@ -75,8 +75,13 @@ make install-daemon install-widget-work     # usługa i kafelek Praca (bez kopii
 make install-agent-jump                     # skrót Meta+A: przejście do agenta, który czeka najdłużej
 make install                                # wszystko, najpierw kopia zapasowa
 make test                                   # testy wszystkich komponentów
+make test-changed BASE=master                # testy dobrane do diff gałęzi i zmian roboczych
+make test-cardflow                           # zestaw przepływu karty (także test-daemon, test-board)
 make preview-widgets                        # kafelki na tle docka, popup agentów, kafelek Praca, pasek boczny i popup limitów, kafelek „AI” z modelem lokalnym: build/preview/dock-tiles-*.png, agents-popup.png, work-*.png, sidebar-*.png, limits-popup-*.png, ai-*.png
 ```
+
+Testy biegną równolegle (domyślnie rdzenie minus dwa, `JOBS=N` zmienia limit), zbierając wszystkie
+błędy. Zasady doboru zestawów i logi: [docs/testing.md](docs/testing.md).
 
 Gdy agent zaczyna czekać — prosi o zgodę albo zadaje pytanie — przychodzi powiadomienie „Agent czeka: <projekt>” z przyciskiem „Przejdź” (raz na każde wejście w czekanie). Zwykły koniec tury to „skończył” (w kafelku „gotowe”): bez powiadomienia i bez Meta+A, także w wątkach Codex Desktop prowadzonych przez zaplanowane zadanie („zaplanowane”). Meta+A przenosi do okna sesji, która czeka najdłużej (sesja z Codex Desktop otwiera w aplikacji swój wątek — u podagenta wątek główny — przez `codex://threads/<id>`); gdy nikt nie czeka, nic się nie dzieje. Jeśli Meta+A jest już zajęty (instalator to wypisze), trzeba go zwolnić w Ustawieniach systemowych → Skróty i przypisać akcji „Tide: przejdź do agenta, który czeka najdłużej”.
 
