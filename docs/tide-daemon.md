@@ -2731,6 +2731,10 @@ Skrypt nie próbuje wtedy pobierać dodatkowego `hello-world`.
 gdy próba się nie powiedzie. Wynik końcowy zachowuje błąd dowolnej części; pełne wyjście jest w dzienniku
 polecenia poza piaskownicą.
 
+Potwierdzone wyniki PT-192 na Incusie 6.0.0: python-qt `clean` w 58,8 s, dotnet + docker `clean` w 76,5 s,
+reset z zachowaniem `/home/agent` w 1,5 s; oba dzienniki odmów budowy puste. Pełne `make test` przeszło.
+Hashe, wersje, kontrole proxy i źródła pomiarów: [pierwsza budowa szablonów](box-prototype.md#pierwsza-budowa-szablonów-stosów-pt-192).
+
 ### Proxy wyjściowe (PT-168)
 
 `tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`
