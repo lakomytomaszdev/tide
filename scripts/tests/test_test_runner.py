@@ -26,6 +26,17 @@ class SelectionTest(unittest.TestCase):
             self.assertIsNone(runner.changed_suites(["apps/board/qml/Main.qml", path]))
         self.assertEqual(runner.changed_suites([]), [])
 
+    def test_cardflow_changes_include_direct_tests_outside_cardflow_filename_pattern(self):
+        for source, test in (("basesuggestions.py", "test_base_suggestions.py"),
+                             ("hostingcli.py", "test_hostingcli_real.py")):
+            with self.subTest(source=source):
+                selected = runner.changed_suites(["daemon/tide_daemon/cardflow/" + source])
+                self.assertEqual(selected, ["cardflow"])
+                entries = [entry for name in selected for entry in SUITES[name]]
+                modules = runner.modules_for(entries)
+                self.assertIn("daemon/tests/" + test, modules)
+                self.assertIn("daemon/tests/test_cardflow_fixture.py", modules)
+
     def test_registry_covers_current_make_directories(self):
         dirs = []
         for fragment in (runner.ROOT / "mk").glob("*.mk"):

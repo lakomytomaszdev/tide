@@ -29,7 +29,11 @@ SUITES = {
     "wallpaper": [("theme/wallpaper/tests", "test*.py")],
     "widgets": [("widgets/tests", "test*.py")],
     "worktrees": [("apps/worktrees/tests", "test*.py")],
-    "cardflow": [("daemon/tests", "test_cardflow*.py")],
+    "cardflow": [
+        ("daemon/tests", "test_cardflow*.py"),
+        ("daemon/tests", "test_base_suggestions.py"),
+        ("daemon/tests", "test_hostingcli_real.py"),
+    ],
 }
 
 # Najdłuższy pasujący prefiks wygrywa. Nieznana ścieżka oznacza pełny przebieg.

@@ -5,7 +5,7 @@ raz przed oddaniem ticketu. Powtarzaj pełny przebieg dopiero po zmianach, któr
 albo po błędzie wskazującym na szerszą regresję.
 
 ```sh
-make test-cardflow           # moduły test_cardflow*.py w daemon/tests
+make test-cardflow           # test_cardflow*.py oraz testy basesuggestions i hostingcli
 make test-daemon             # wszystkie testy usługi
 make test-board              # okno Tablicy (apps/board/tests)
 make test-changed BASE=master
@@ -25,6 +25,8 @@ Uwzględnia commity gałęzi, indeks, zmiany niezapisane w commicie i pliki nie�
 Usunięcia i przeniesienia obejmują także starą ścieżkę. Najdłuższy prefiks z mapy wygrywa:
 `daemon/tide_daemon/cardflow/` i `daemon/tests/test_cardflow*` wybierają `cardflow`,
 pozostałe `daemon/` wybiera `daemon`, `apps/board/` wybiera `board` itd.
+Zestaw `cardflow` obejmuje również bezpośrednie testy jego modułów zapisane pod innymi
+nazwami: `test_base_suggestions.py` i `test_hostingcli_real.py` w `daemon/tests`.
 To heurystyka katalogów, więc przy zmianach zależności między komponentami dobierz dodatkowe
 zestawy ręcznie. Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspólny moduł motywów
 lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem bez uruchamiania
