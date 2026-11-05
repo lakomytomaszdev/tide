@@ -224,6 +224,14 @@ def _plan_fix_trigger(st) -> list[dict]:
 TRIGGERS = [_error_trigger, _plan_fix_trigger]
 
 
+def plan_fix_waiting(st) -> list[str]:
+    """Kroki `plan-fix` po drugiej nieudanej poprawie formatu, które czekają na ponowienie (bez decyzji, bez
+    ponowienia i bez następcy) — wspólne dla akcji `retry` opiekuna i ponowienia przez użytkownika (PT-146)."""
+    return [item["step"] for item in _plan_fix_trigger(st) if not item.get("decision")
+            and item["step"] not in st.step_retries
+            and not any(other.get("parentStep") == item["step"] for other in st.steps.values())]
+
+
 def review_items(st) -> list[dict]:
     """Uwagi ostatniego review planu w kolejności zapisu; ich numeracja (od 1) jest wszędzie ta sama: w kartce,
     w pliku kontekstu i w polu `findings` akcji `return-plan`."""

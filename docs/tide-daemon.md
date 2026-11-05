@@ -1865,7 +1865,12 @@ uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły ro
   kroku); po jego wyniku decyzja wraca z `caretaker{summary, recommendation, tried[]}` (`annotate(st, plan, target)`),
 - druga nieudana poprawa formatu planu (`plan-fix`, runda ≥ 2, `plan.checked` z `valid: false`, brak propozycji):
   problem bez decyzji; `retry` opiekuna na kroku `plan-fix` (`problem_steps` dopuszcza krok zakończony `done`, raz)
-  daje kolejny krok poprawy z instrukcją — `_planning_result` wznawia go przez `_caretaker_resume`.
+  daje kolejny krok poprawy z instrukcją — `_planning_result` wznawia go przez `_caretaker_resume`. Gdy opiekun
+  odda problem (`escalate`, nieudany wynik albo limit działań), `build_decisions` pokazuje decyzję `plan-fix-failed`
+  (`decisions._plan_fix_decisions`) z `caretaker{summary, recommendation, tried[]}`, błędami formatu w `technical`
+  i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
+  z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
+  pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
 
 Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3), a lukę
 w zatwierdzonym, działającym planie obsługuje #13. Opiekun nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej

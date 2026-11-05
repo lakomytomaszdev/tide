@@ -48,7 +48,7 @@ from .state import REASON_LABELS, FlowState
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
-         "plan-approval", "plan-revision", "plan-revision-failed", "plan-reviewer", "tracker")
+         "plan-approval", "plan-revision", "plan-revision-failed", "plan-fix-failed", "plan-reviewer", "tracker")
 
 RESOLVE_STEP, RESOLVE_REVIEW = "ResolveCardStep", "ResolveCardReview"
 APPROVE_PLAN, EDIT_PLAN, ENTER_STEP = "ApproveCardPlan", "EditCardPlan", "EnterStep"
@@ -74,6 +74,8 @@ GENERIC = {
                       "Zmieniony plan zastąpi obecny dopiero po Twoim zatwierdzeniu różnicy."),
     "plan-revision-failed": ("Poprawka planu nie przeszła sprawdzenia formatu.",
                              "Tej poprawki nie da się użyć — odeślij plan ponownie albo ją odrzuć."),
+    "plan-fix-failed": ("Poprawki formatu planu nadal nie przechodzą sprawdzenia.",
+                        "Bez poprawnego planu karta nie pójdzie dalej — ponów poprawę z instrukcją."),
     "plan-reviewer": ("Review planu nie może wystartować.",
                       "Bez review plan nie trafi do zatwierdzenia."),
     "tracker": ("Operacja w YouTracku nie powiodła się.",
@@ -105,6 +107,8 @@ def build_decisions(st: FlowState) -> list[dict]:
         if (ticket, round_no) in st.review_decisions or ticket in st.rejected:
             continue
         add(1, question.get("seq"), _review(st, ticket, round_no, question))
+    for made in _plan_fix_decisions(st):
+        add(0, (st.finished.get(made["step"]) or {}).get("seq"), made)
     plan = _plan_decision(st)
     if plan and plan.get("kind") == "plan-revision-failed":
         # PT-146: nieudaną poprawkę planu sprawdza opiekun — decyzja wraca z jego wynikiem (jak decyzja kroku).
@@ -470,6 +474,32 @@ def _review(st, ticket, round_no, question) -> dict:
             "ticket": ticket, "executor": step.get("executor") or "", "kind": "review",
             **_sentences("review", happened, ""), "options": options, "freeText": False, "reply": None,
             "fault": "", "technical": technical}
+
+
+def _plan_fix_decisions(st: FlowState) -> list[dict]:
+    """Druga nieudana poprawa formatu planu (PT-146) nie ma decyzji z samego stanu kroku (`done`, bez propozycji).
+    Decyzja powstaje, gdy opiekun oddał problem (`caretaker.escalated`, także po limicie działań) albo nie działa
+    przy tej karcie; opcja „Ponów z instrukcją” to `ResolveCardStep retry` na kroku `plan-fix`."""
+    found = []
+    for name in caretaker.plan_fix_waiting(st):
+        if caretaker.hidden(st, name):
+            continue
+        step = st.steps.get(name) or {}
+        errors = caretaker.plan_fix_errors(st, {"step": name, "decision": ""})
+        base = {"id": f"step:{name}", "step": name, "stepKind": step.get("kind") or "", "ticket": "",
+                "executor": step.get("executor") or "", "kind": "plan-fix-failed",
+                **_sentences("plan-fix-failed", "", ""),
+                "options": [_option("retry", "Ponów poprawę z instrukcją…",
+                                    "Planujący poprawi plan jeszcze raz z Twoją instrukcją i błędami formatu.",
+                                    RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=True)],
+                "freeText": True, "fault": "model",
+                "reply": {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
+                          "label": "Ponów z instrukcją", "effect": "Ten sam planujący poprawi plan z Twoją instrukcją."},
+                "technical": {**_step_technical(step, st.finished.get(name) or {}), "errors": errors}}
+        made = caretaker.annotate(st, base, name)
+        if "caretaker" in made or caretaker.local_only(st):
+            found.append(made)
+    return found
 
 
 def _plan_decision(st: FlowState) -> dict | None:

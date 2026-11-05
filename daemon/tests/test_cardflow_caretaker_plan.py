@@ -103,6 +103,38 @@ class TriggerTest(unittest.TestCase):
         self.assertEqual(shown[0]["caretaker"]["summary"], "Poprawka łamie format.")
 
 
+class PlanFixDecisionTest(unittest.TestCase):
+    """Druga nieudana poprawa formatu po oddaniu problemu przez opiekuna wraca do użytkownika jako decyzja."""
+
+    def escalate(self, j, **extra):
+        care(j, step="K-1-care-1", problem="plan-fix:K-1-plan-1-2", target="K-1-plan-1-2", decision="")
+        return j.add(caretaker.ESCALATED, problem="plan-fix:K-1-plan-1-2", step="K-1-care-1", target="K-1-plan-1-2",
+                     ticket="", action="escalate", summary="Format nadal błędny.", recommendation="Ponów.",
+                     optionId="retry", failed=False, error="", **{"code": "", **extra})
+
+    def test_no_decision_before_the_caretaker_hands_the_problem_back(self):
+        j = second_failure_journal()
+        self.assertEqual(decisions.build_decisions(j.st), [])
+        care(j, step="K-1-care-1", problem="plan-fix:K-1-plan-1-2", target="K-1-plan-1-2", decision="")
+        self.assertEqual(decisions.build_decisions(j.st), [])
+
+    def test_escalation_gives_a_decision_with_summary_and_a_working_retry(self):
+        j = second_failure_journal()
+        self.escalate(j)
+        shown = decisions.build_decisions(j.st)
+        self.assertEqual([d["kind"] for d in shown], ["plan-fix-failed"])
+        self.assertEqual(shown[0]["caretaker"]["summary"], "Format nadal błędny.")
+        self.assertEqual((shown[0]["happened"], shown[0]["why"]), decisions.GENERIC["plan-fix-failed"])
+        self.assertEqual(shown[0]["technical"]["errors"], ERRORS)
+        option = shown[0]["options"][0]
+        self.assertEqual((option["method"], option["params"]),
+                         ("ResolveCardStep", {"choice": "retry", "step": "K-1-plan-1-2"}))
+        self.assertEqual(shown[0]["reply"]["field"], "answer")
+        self.assertEqual(caretaker.plan_fix_waiting(j.st), ["K-1-plan-1-2"])
+        j.add("step.retry", step="K-1-plan-1-2", ticket="", reason="", user=True, instruction="Popraw wiersz #1.")
+        self.assertEqual(decisions.build_decisions(j.st), [])
+
+
 class ResultTest(unittest.TestCase):
     problem = {"id": PLAN_PROBLEM, "trigger": "plan-fix", "step": "K-1-plan-amend-4", "decision": "x", "options": []}
 
@@ -158,6 +190,17 @@ class BriefAndContextTest(unittest.TestCase):
         self.assertIn("Uwagi użytkownika: popraw.", files["plan-fix/returned-feedback.md"])
         self.assertIn("docs/agent-plan-standard.md", files)
         self.assertIn("1.2", files["docs/agent-plan-standard.md"])
+
+    def test_previous_proposal_is_masked_after_decoding_quoted_and_multiline_secrets(self):
+        j = planning_journal()
+        secrets = ['correct horse battery staple', 'line one\nline two secret']
+        j.st.plan_proposed = {**j.st.plan_proposed,
+                              "specification": f'Opis password: "{secrets[0]}"',
+                              "prefix": f'token: "{secrets[1]}"'}
+        files = self.files(j, caretaker.problems(j.st)[0])
+        text = files["plan-fix/previous-proposal.md"]
+        for secret in (*secrets, "horse battery staple", "line two secret"):
+            self.assertNotIn(secret, text)
 
     def test_second_failure_brief_points_to_retry(self):
         j = second_failure_journal()
@@ -392,6 +435,15 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual([e["problem"] for e in shown["caretaker"]["escalated"]], [problem])
         self.assertTrue(shown["caretaker"]["escalated"][0]["summary"].startswith("Opiekun wykonał 3 z 3"))
         self.assertEqual(self.of(card, "plan.proposed"), [])
+        decision = [d for d in shown["decisions"] if d["kind"] == "plan-fix-failed"]
+        self.assertEqual(len(decision), 1, shown["decisions"])
+        self.assertTrue(decision[0]["caretaker"]["summary"].startswith("Opiekun wykonał 3 z 3"))
+        option = decision[0]["options"][0]
+        before = len([s for s in self.of(card, "step.started") if s["kind"] == "plan-fix"])
+        reply = self.flow.engine.resolve_step(card, {**option["params"], "answer": "Popraw datę na ISO 8601."})
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: len([s for s in self.of(card, "step.started") if s["kind"] == "plan-fix"])
+                                   > before, timeout=60), self.events(card))
 
     def test_unknown_approval_action_fails_without_any_approval(self):
         card = self.card(description="ATRAPA: plan-bad ATRAPA-OPIEKUN: approve-plan")

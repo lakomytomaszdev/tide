@@ -357,7 +357,7 @@ def _plan_fix(ctx: Ctx) -> list[File]:
     proposal = st.plan_proposed
     out.append(File("plan-fix/previous-proposal.md", "poprzednia propozycja planu (z dziennika karty)",
                     text="# Poprzednia propozycja planu\n\n" + (
-                        "```json\n" + json.dumps(proposal, ensure_ascii=False, indent=2, default=str) + "\n```\n"
+                        "```json\n" + json.dumps(faults.mask_json(proposal, env=ctx.env), ensure_ascii=False, indent=2, default=str) + "\n```\n"
                         if proposal else "Plan nie ma jeszcze żadnej propozycji, która przeszła sprawdzenie "
                                          "formatu — patrz plan-fix/failed-plan.md.\n")))
     step = st.steps.get(problem.get("step") or "") or {}
