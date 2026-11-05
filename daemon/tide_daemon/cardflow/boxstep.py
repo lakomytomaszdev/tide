@@ -138,9 +138,14 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         parent = st.steps.get(parent_step) or {}
         if not parent:
             raise BoxError("brak wpisu wznawianego kroku")
-        if parent.get("runner") != RUNNER:
+        forced = parent.get("runner") == RUNNER
+    # Zgoda na środowisko blokuje wykonanie także bez profilu, przy wyłączonych pudełkach i na hoście.
+    # Planowanie nadal może przygotować profil do zatwierdzenia.
+    if (kind in kinds or forced) and boxwait.card_box_wait(st) == boxwait.ENVIRONMENT:
+        raise BoxWaiting(WAIT_ENVIRONMENT)
+    if parent_step:
+        if not forced:
             return None
-        forced = True
     elif kind not in kinds:
         return None          # planowanie i inne rodzaje zostają na hoście (bwrap)
     settings = settings_of(engine)
@@ -156,8 +161,6 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         if forced:
             raise BoxError(f"wznawiany krok biegł w pudełku, a projekt {slug} nie ma już zatwierdzonego profilu")
         return None
-    if boxwait.card_box_wait(st) == boxwait.ENVIRONMENT:
-        raise BoxWaiting(WAIT_ENVIRONMENT)
     builder = builder_of(engine, settings)
     full = bp.with_defaults(profile)
     per_card = full.get("box") == "per-card"
@@ -175,7 +178,7 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         if forced:
             raise BoxWaiting(f"czeka na pudełko ({status.box} nie istnieje)")
         return None          # projekt z profilem, ale bez zbudowanego pudełka — jak dziś
-    _require_compatible(engine, card_id, status)
+    _require_compatible(engine, card_id, builder, status)
     name = status.box
     if per_card and not forced:
         name = bs.card_box_name(slug, card_id)
@@ -184,7 +187,7 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
                 builder.copy_for_card(slug, card_id)        # raz na kartę: kopia z migawki `clean`
         except (bb.BuildError, IncusError, OSError) as exc:
             raise BoxWaiting(f"czeka na pudełko (kopia karty: {exc})") from None
-        _require_compatible(engine, card_id, builder.status(slug, card=card_id, profile=profile))
+        _require_compatible(engine, card_id, builder, builder.status(slug, card=card_id, profile=profile))
     runner = runner_of(engine, settings, slug, card_id, per_card)
     ip = _ready(engine, card_id, builder, runner, settings, name)
     if boxwait.card_box_wait(fold(engine.journal.read(card_id))) in (boxwait.START, boxwait.REBUILD):
@@ -192,14 +195,23 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     return Placement(slug, name, ip, per_card, profile, runner, bool(full["docker"]["enabled"]))
 
 
-def _require_compatible(engine, card_id: str, status: bs.BoxStatus) -> None:
+def _require_compatible(engine, card_id: str, builder, status: bs.BoxStatus) -> None:
     """Brak filtrowania NIC albo hash migawki różny od hasha profilu → `boxWait: rebuild`; krok nie startuje."""
     if status.error:
         raise BoxWaiting(f"czeka na pudełko ({status.error})")
     same = bool(status.profile_hash) and status.recipe_hash == status.profile_hash and not status.diff
-    if status.nic_filtering and same and status.state != bs.FAILED:
-        return
     why = "brak filtrowania NIC" if not status.nic_filtering else "hash przepisu niezgodny"
+    if status.nic_filtering and same and status.state != bs.FAILED:
+        try:
+            clean = next((s for s in builder.incus.snapshot_list(status.box) if s.get("name") == bs.SNAPSHOT), None)
+        except (IncusError, OSError, ValueError) as exc:
+            raise BoxWaiting(f"czeka na pudełko (migawka clean: {exc})") from None
+        # Odcisk live nie dowodzi istnienia ani zgodności punktu odtworzenia.
+        stamp = bs.parse_stamp((clean.get("config") or {}).get(bs.RECIPE_KEY)) if clean is not None else None
+        snapshot_hash = stamp.get("hash", "") if isinstance(stamp, dict) else (stamp or "")
+        if snapshot_hash and snapshot_hash == status.profile_hash:
+            return
+        why = "brak migawki clean" if clean is None else "hash migawki clean niezgodny"
     boxwait.set_box_wait(engine.journal, card_id, boxwait.REBUILD, box=status.box, why=why)
     raise BoxWaiting(WAIT_REBUILD)
 

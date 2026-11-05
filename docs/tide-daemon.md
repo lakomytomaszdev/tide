@@ -2936,16 +2936,18 @@ cichy powrót na hosta).
 Dziedziczona jest także konkretna instancja `box`: zmiana profilu `per-project` ↔ `per-card` nie przenosi
 wznowienia. Brak zapisanej instancji oznacza czekanie, niespójna tożsamość — jawny błąd; silnik nie tworzy kopii
 zastępczej dla utraconego środowiska.
+Syntetyczna próba zakończona `local-unavailable` również zachowuje pola runnera i instancji, więc ponowienie po
+powrocie wykonawcy pozostaje w tym samym pudełku.
 
 **Wybór** (rodzaj z `BOX_STEP_KINDS` albo wznowienie kroku z pudełka), po kolei:
 
 | Stan | Wynik |
 |---|---|
+| `boxWait: environment` | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu, przy wyłączonych pudełkach lub hostowym rodzicu; planowanie pozostaje dostępne |
 | `box.enabled: false` albo projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38) |
-| `boxWait: environment` | krok nie startuje: `step.waiting` „czeka na środowisko” |
 | budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
 | pudełka nie ma (Incus) | `HostRunner` |
-| brak filtrowania NIC albo hash migawki `clean` ≠ hash profilu (`BoxStatus.diff`), albo błąd budowy | `boxWait: rebuild` (zdarzenie `box.wait` z `why`), krok nie startuje: „czeka na pudełko (do przebudowy)”; przebudowę zatwierdza się z planem (PT-172) |
+| brak filtrowania NIC, brak migawki `clean`, niezgodny hash instancji lub migawki, albo błąd budowy | `boxWait: rebuild` (zdarzenie `box.wait` z `why`), krok nie startuje: „czeka na pudełko (do przebudowy)”; silnik sprawdza odcisk `user.tide.recipe` konfiguracji migawki z `incus snapshot list` także dla istniejącej kopii karty; przebudowę zatwierdza się z planem (PT-172) |
 | `box: per-card` | `Builder.copy_for_card` przy pierwszym kroku karty (gdy kopii nie ma), krok w `card_box_name(slug, karta)` |
 | pudełko (albo kopia) zatrzymane | `boxWait: start`, `incus start`, `incus exec <pudełko> -- true` do skutku (najwyżej `box.ip-wait-seconds`), menedżer usług `agent`, adres IPv4; potem `boxWait` czyszczone |
 | gotowe | `BoxRunner` |

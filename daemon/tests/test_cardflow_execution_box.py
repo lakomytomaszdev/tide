@@ -14,7 +14,7 @@ from tide_daemon.box import proxy as bproxy
 from tide_daemon.box import runner as br
 from tide_daemon.box import state as bs
 from tide_daemon.cardflow import boxaccess, boxstep, boxwait, engine as flow_engine
-from tide_daemon.cardflow.engine import BOX_STEP_KINDS, FlowDeferred
+from tide_daemon.cardflow.engine import BOX_STEP_KINDS, FlowDeferred, FlowError
 from tide_daemon.cardflow.state import fold
 from tide_daemon.tasks.runner import HostRunner
 
@@ -97,6 +97,73 @@ class PlacementTest(BoxFlow):
         self.assertEqual(self.waits()[-1]["reason"], boxstep.WAIT_ENVIRONMENT)
         self.assertEqual(self.waits()[-1]["cause"], "box")
         self.assertEqual(fold(self.events_now()).box_wait, boxwait.ENVIRONMENT)
+
+    def test_environment_wait_blocks_without_an_approved_profile(self):
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
+        for kind in BOX_STEP_KINDS:
+            with self.subTest(kind=kind), self.assertRaises(FlowDeferred):
+                self.box_place(kind)
+
+    def test_environment_wait_blocks_when_boxes_are_disabled(self):
+        self.build_box()
+        self.box_enabled = False
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
+        with self.assertRaises(FlowDeferred):
+            self.box_place()
+
+    def test_environment_wait_blocks_resume_of_a_host_execution_step(self):
+        self.engine.journal.append(self.card_id, "step.started", step="host", kind="ticket")
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
+        with self.assertRaises(boxstep.BoxWaiting) as caught:
+            self.place(parent="host")
+        self.assertEqual(caught.exception.reason, boxstep.WAIT_ENVIRONMENT)
+
+    def test_environment_wait_does_not_block_planning_or_its_host_resume(self):
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
+        for kind in PLANNING_KINDS:
+            with self.subTest(kind=kind):
+                self.assertIsNone(self.place(kind))
+                self.engine.journal.append(self.card_id, "step.started", step=kind, kind=kind)
+                self.assertIsNone(self.place(kind, parent=kind))
+
+    def change_snapshot(self, box, transform):
+        path = os.path.join(os.environ["TIDE_FAKE_INCUS_STATE"], "state.json")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        transform(data["instances"][box]["snapshots"])
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def test_missing_clean_snapshot_waits_for_rebuild(self):
+        self.build_box()
+        self.change_snapshot(SLUG, lambda snapshots: snapshots.clear())
+        self.assertEqual(self.incus().snapshot_list(SLUG), [])
+        with self.assertRaises(FlowDeferred):
+            self.box_place()
+        self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
+        self.assertEqual(self.waits()[-1]["reason"], boxstep.WAIT_REBUILD)
+
+    def test_clean_snapshot_stamp_must_match_even_if_live_stamp_matches(self):
+        self.build_box()
+        for stamp in (None, "bad-json", json.dumps(self.builder().stamp({"tide-box": 1, "apt": ["jq"]}))):
+            with self.subTest(stamp=stamp):
+                def change(snapshots):
+                    snapshots[0]["config"][bs.RECIPE_KEY] = stamp
+                self.change_snapshot(SLUG, change)
+                status = self.builder().status(SLUG)
+                self.assertEqual(status.recipe_hash, status.profile_hash)
+                with self.assertRaises(FlowDeferred):
+                    self.box_place()
+                self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
+
+    def test_existing_card_copy_requires_its_own_clean_snapshot(self):
+        self.build_box({"tide-box": 1, "box": "per-card"})
+        original = self.place()
+        self.change_snapshot(original.box, lambda snapshots: snapshots.clear())
+        with self.assertRaises(FlowDeferred):
+            self.box_place()
+        self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
+        self.assertEqual(len(self.incus_calls("copy")), 1)
 
     def test_recipe_hash_mismatch_waits_for_rebuild(self):
         self.build_box(stamp_profile={"tide-box": 1, "apt": ["jq"]})
@@ -588,6 +655,34 @@ class BoxStepInProcessTest(BoxFlow):
         resumed = self.resumed(card_id, first["step"])
         self.assertEqual((resumed.get("runner"), resumed.get("box")), ("box", SLUG))
         self.assertEqual(self.finished(card_id, 2)["result"], "done")
+
+    def test_resume_after_local_unavailable_still_starts_in_the_same_card_box(self):
+        self.build_box({"tide-box": 1, "box": "per-card"})
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        first = self.started(card_id)
+        self.assertEqual(first["box"], bs.card_box_name(SLUG, card_id))
+        self.assertEqual(self.finished(card_id)["result"], "question")
+        self.flow.stop()  # Kolejne próby prowadzimy bez równoległego tick monitora.
+        journal = self.engine.journal
+        st = fold(journal.read(card_id))
+        previous = st.steps[first["step"]]
+        for attempt in (1, 2):
+            with mock.patch.object(self.engine, "_resume_executor",
+                                   side_effect=FlowError("local-unavailable", "model lokalny niedostępny")):
+                self.engine._resume_step(card_id, st, previous, {"choice": "retry"}, attempt=attempt)
+            st = fold(journal.read(card_id))
+            previous = st.steps[st.last_step]
+            self.assertEqual(st.finished[previous["step"]]["reason"], "local-unavailable")
+        self.engine._resume_step(card_id, st, previous, {"choice": "answer", "answer": "ISO 8601"}, attempt=3)
+        resumed = fold(journal.read(card_id)).steps[fold(journal.read(card_id)).last_step]
+        self.assertEqual((resumed.get("runner"), resumed.get("box")), ("box", first["box"]))
+        for field in ("boxSlug", "boxIp", "boxAccess"):
+            self.assertEqual(resumed.get(field), first[field])
+        self.assertIn(resumed["step"], self.engine.procs)
+        self.flow.start()
+        self.assertEqual(self.finished(card_id, 4)["result"], "done")
+        self.assertEqual(len(self.incus_calls("copy")), 1)
 
     def test_resume_of_a_host_step_stays_on_host_after_the_box_appears(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")

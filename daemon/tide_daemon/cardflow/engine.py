@@ -2887,7 +2887,8 @@ class FlowEngine(PlanEditing):
                                 routeTokenFile=step.get("routeTokenFile") or "",
                                 parentStep=step.get("step") or "", attempt=attempt, session=step.get("session") or "",
                                 worktree=step.get("worktree") or "", branch=step.get("branch") or "",
-                                stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "")
+                                stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "",
+                                **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step})
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
                                 kept=[], exit=None)
