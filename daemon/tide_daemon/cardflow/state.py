@@ -691,6 +691,8 @@ def ticket_phase(st: FlowState, ticket: str, latest: dict, waits: list, queued_o
         if decision:
             if decision.get("waitCard"):
                 return "kolejka", "czeka na kartę " + str(decision.get("waitCard"))
+            if decision.get("waitTicket"):
+                return "kolejka", "czeka na " + str(decision.get("waitTicket"))
             return "kolejka", "decyzja podjęta, wznowi się sam"
         if result == "stopped" and done.get("reason") == "interactive-closed":
             return "ty", "Konsola zamknięta: wznów w tle albo w Konsoli"
@@ -708,6 +710,21 @@ def card_waits(st: FlowState) -> dict[str, str]:
             if d.get("waitCard") and name not in resumed and (st.steps.get(name) or {}).get("ticket") not in st.rejected}
 
 
+def ticket_waits(st: FlowState) -> dict[str, str]:
+    """Tickety, których krok czeka na scalenie innego ticketu karty (decyzja „wait-ticket”): ticket → ticket.
+    Cel już scalony albo odrzucony nie jest czekaniem — następny tick wznawia krok."""
+    resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}
+    out = {}
+    for name, d in st.step_decisions.items():
+        target, ticket = d.get("waitTicket"), (st.steps.get(name) or {}).get("ticket") or ""
+        if not target or name in resumed or ticket in st.rejected or name in st.superseded:
+            continue
+        if target in st.rejected or (st.results.get(("merge", target)) or {}).get("ok"):
+            continue
+        out[ticket] = target
+    return out
+
+
 def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
@@ -719,6 +736,8 @@ def guard_reason(st: FlowState) -> str | None:
     waits = card_waits(st)
     if waits:
         return "; ".join(f"{ticket} czeka na kartę {other}" for ticket, other in waits.items())
+    if ticket_waits(st) and not attention_step(st, True):
+        return "; ".join(f"{ticket} czeka na {other}" for ticket, other in ticket_waits(st).items())
     if outside_queued(st):
         # Zgoda dana, a polecenie czeka na wolne miejsce (jedno na projekt) — K-37, 04.11: fałszywy „postój”.
         return "polecenie poza piaskownicą w kolejce"
@@ -1026,7 +1045,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             return _fill(out, "review", f"✓ plan karty: {len(finished_ids)}/{len(rows)} ticketów scalonych — do sprawdzenia")
         if st.paused:
             return _fill(out, "backlog" if column == "backlog" else "progress", "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
-        waits = card_waits(st)
+        waits = {**ticket_waits(st), **card_waits(st)}
         if waits and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " +
                          ", ".join(f"{ticket} czeka na {other}" for ticket, other in waits.items()))

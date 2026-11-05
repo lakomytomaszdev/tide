@@ -195,6 +195,9 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
      najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”),
   {{"result": "denied", "command": "…"}}                        — polecenie wymaga zgody,
   {{"result": "error", "reason": "…"}}                          — nie da się zrobić ticketu.
+  Gdy brakuje pracy innego ticketu tej karty (np. modułu, który robi PT-12) albo innej karty, nie pytaj i nie
+  ponawiaj: dodaj do wyniku `question` albo `error` pole "waitFor": "PT-12" (albo "K-43"). Tide wstrzyma krok bez
+  pytania użytkownika i wznowi go sam po scaleniu tamtego ticketu do gałęzi karty (albo domknięciu karty).
 
 Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 """

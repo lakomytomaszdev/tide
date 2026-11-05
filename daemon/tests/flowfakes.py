@@ -299,6 +299,16 @@ elif word == "zgoda-dluga":
         finish("done")
     else:
         finish("denied", command="git fetch origin " + "x" * 300)
+elif word in ("czeka-na", "czeka-na-blad"):
+    # 06.11: krok potrzebuje pracy innego ticketu karty. `czeka-na` zgłasza `waitFor` w wyniku; `czeka-na-blad` pisze
+    # tylko błąd z nazwą ticketu (jak PT-191) — o czekaniu decyduje użytkownik w oknie.
+    target = re.search(r"ATRAPA-CZEKA: (\S+)", prompt).group(1)
+    if "jest scalony do gałęzi karty" in prompt:
+        finish("done")
+    elif word == "czeka-na":
+        finish("error", reason=f"brak modułu z {target}", waitFor=target)
+    else:
+        finish("error", reason=f"zatwierdzony bloker {target} nadal niespełniony; nie ponawiać przed integracją {target}")
 elif word == "blad-raz":
     finish("done" if "Krok ponowiony automatycznie" in prompt else "error", reason="awaria testowa")
 elif word in ("blad-dwa", "blad-zmien"):
