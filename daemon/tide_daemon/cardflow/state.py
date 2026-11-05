@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
 
+from .baseproposal import pending
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -664,7 +665,6 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                         "mainMerged": bool(st.main_merged),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
-    from .baseproposal import pending
     out["flow"]["baseDecisionPending"] = bool(pending(st))
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]

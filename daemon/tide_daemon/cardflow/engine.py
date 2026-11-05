@@ -3826,7 +3826,9 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="",
                                 command=data.get("command") or "", executor="", auto=True)
-        if merged_tip and not baseproposal.pending(fold(self.journal.read(card))):
+        # Agent konfliktu już scalił w worktree karty. Utrwalamy potwierdzony stan także podczas
+        # decyzji o bazie; blokada nadal odracza sprzątanie i kolejne scalenia w _tick_card/_act.
+        if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
         if verdict is not None:

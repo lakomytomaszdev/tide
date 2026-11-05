@@ -157,6 +157,56 @@ class BaseProposalTest(StartBaseSetup):
             self.assertIn("Sam brak pliku", text)
             self.assertIn("checkout/rebase/reset", text)
 
+    def test_conflict_finished_during_base_decision_is_cleaned_up_after_keep(self):
+        self.feature()
+        card = self.card()
+        reply = self.start(card)
+        self.assertTrue(reply["ok"], reply)
+        engine = self.flow.engine
+        ticket = reply["ticket"]
+        conflict_dir = os.path.join(self.base, "conflict.step")
+        os.makedirs(os.path.join(conflict_dir, "out"))
+        engine.journal.append(card, "intent", action="merge", key=ticket, cardTip=self.master)
+        engine.journal.append(card, "result", action="merge", key=ticket, ok=False, error="konflikt")
+        engine.journal.append(card, "step.started", step="conflict", ticket=ticket, kind="conflict",
+                              stepDir=conflict_dir, worktree=reply["cardWorktree"], reviewTip=self.master)
+        # Pytanie równoległego ticketu pojawia się, gdy rozwiązywanie konfliktu już trwa.
+        engine.journal.append(card, "step.started", step="ask", ticket="PT-2", kind="ticket")
+        engine._finish(card, fold(engine.journal.read(card)).steps["ask"], forced={
+            "result": "question", "question": "Czy zachować bazę?",
+            "baseProposal": {"ref": "refs/heads/feature/start", "evidence": "Sprawdzono historię"}})
+        with open(os.path.join(conflict_dir, "out", "result.json"), "w") as fh:
+            json.dump({"result": "done"}, fh)
+        # Sprawdzenie istniejącego scalenia jest odczytem; samej piaskownicy gita nie testujemy tutaj.
+        with mock.patch.object(engine.git, "merged_tip", return_value=self.master) as merged_tip, \
+                mock.patch.object(engine.git, "remove_worktree") as cleanup, \
+                mock.patch.object(engine.git, "merge") as merge:
+            engine._finish(card, fold(engine.journal.read(card)).steps["conflict"], exit_code=0)
+            engine._tick_card(card, fold(engine.journal.read(card)))
+            merged_tip.assert_called_once_with(self.repo, reply["cardBranch"], reply["branch"],
+                                               reply["cardWorktree"], self.master, self.master)
+            cleanup.assert_not_called()
+            merge.assert_not_called()
+        st = fold(engine.journal.read(card))
+        self.assertTrue(baseproposal.pending(st))
+        self.assertEqual(st.finished["conflict"]["result"], "done")
+        self.assertTrue(st.results[("merge", ticket)]["ok"])
+        self.assertTrue(st.results[("merge", ticket)]["resolved"])
+        self.assertEqual(st.results[("merge", ticket)]["commit"], self.master)
+        self.assertFalse(self.results(card, "cleanup"))
+        self.restart()
+        engine = self.flow.engine
+        self.assertTrue(self.decide(card, choice="answer", baseDecision="keep")["ok"])
+        with mock.patch.object(engine.git, "remove_worktree", return_value={"removed": True}) as cleanup, \
+                mock.patch.object(engine.git, "merge") as merge, \
+                mock.patch.object(engine, "_resume_step"):
+            engine._tick_card(card, fold(engine.journal.read(card)))
+            engine._tick_card(card, fold(engine.journal.read(card)))
+            cleanup.assert_called_once_with(self.repo, reply["branch"], reply["worktree"])
+            merge.assert_not_called()
+        self.assertTrue(self.results(card, "cleanup")[-1]["ok"])
+        self.assertEqual(len([r for r in self.results(card, "merge") if r.get("ok")]), 1)
+
 
 class PromptBaseTest(FlowInProcess):
     def test_ticket_and_light_planning_receive_pinned_context(self):
