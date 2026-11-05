@@ -51,5 +51,17 @@ class OutsideQueueTest(unittest.TestCase):
         self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
         self.assertFalse(eng._outside_behind("K-38", "K-38-PT-1-4", {"ts": ts(70)}))
 
+    def test_consent_waiting_for_a_busy_slot_keeps_its_place(self):
+        # 05.11: przy zajętym miejscu zgody nie trafiały do kolejki, więc po zwolnieniu wskakiwała nowsza.
+        eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"}, busy={"K-37", "K-38"})
+        eng._outside_active = {"K-37-PT-9-1": ("K-37", "unit")}
+        eng._start_outside = lambda *a: self.fail("miejsce zajęte")
+        eng.journal = types.SimpleNamespace(read=lambda card: [])
+        step, done = {"step": "K-38-PT-1-4"}, {"command": "bash trial.sh"}
+        self.assertIsNone(eng._outside_ready("K-38", step, done, {"choice": "run", "ts": "2026-11-05T17:18:00+01:00"}))
+        self.assertIn("K-38-PT-1-4", eng._outside_waiting)
+        eng._outside_busy = lambda card: False
+        self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-5", {"ts": "2026-11-05T17:24:00+01:00"}))
+
 if __name__ == "__main__":
     unittest.main()
