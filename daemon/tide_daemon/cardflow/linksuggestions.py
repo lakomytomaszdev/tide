@@ -1,11 +1,14 @@
 """Małe adaptery PR/MR. Link wybiera endpoint, źródło wybiera wyłącznie lokalny ref."""
 import ipaddress
 import re
+import time
 from urllib.parse import quote, urlsplit
 
-from .hostingcli import HostingError, read_json
+from .hostingcli import HostingError, HostingTimeout, read_json
 
 MAX_LINKS = 4
+ANALYSIS_TIMEOUT = 10
+UNSUPPORTED_LINK = "Nieobsługiwany lub niebezpieczny link. Dozwolone są rozpoznane HTTPS PR/MR."
 _HOST = re.compile(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 _PROJECT = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
 _SHA = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
@@ -93,10 +96,10 @@ def branch_name(value):
     return value
 
 
-def metadata(link, repo):
+def metadata(link, repo, *, deadline=None):
     provider, host, project, number = (link[k] for k in ("provider", "host", "project", "number"))
     if provider == "gh":
-        data = read_json("gh", host, f"repos/{project}/pulls/{number}", repo)
+        data = read_json("gh", host, f"repos/{project}/pulls/{number}", repo, deadline=deadline)
         if data["number"] != number or parse_link(data["html_url"]) != link:
             raise ValueError()
         target, source = data["base"], data["head"]
@@ -110,7 +113,7 @@ def metadata(link, repo):
             raise ValueError()
         source_project, source_branch, source_commit, target_branch = source_id[1].casefold(), source["ref"], source["sha"], target["ref"]
     else:
-        data = read_json("glab", host, f"projects/{quote(project, safe='')}/merge_requests/{number}", repo)
+        data = read_json("glab", host, f"projects/{quote(project, safe='')}/merge_requests/{number}", repo, deadline=deadline)
         if data["iid"] != number or parse_link(data["web_url"]) != link:
             raise ValueError()
         source_id, target_id = data["source_project_id"], data["target_project_id"]
@@ -119,7 +122,7 @@ def metadata(link, repo):
         # Identyfikatory są danymi liczbowymi z API; nigdy URL-em do pobrania.
         identities = {}
         for project_id in dict.fromkeys((target_id, source_id)):
-            item = read_json("glab", host, f"projects/{project_id}", repo)
+            item = read_json("glab", host, f"projects/{project_id}", repo, deadline=deadline)
             identity = repo_identity(item["web_url"])
             if (item["id"] != project_id or identity[0] != host
                     or identity[1] != project_name(item["path_with_namespace"])):
@@ -217,15 +220,17 @@ def candidates_for(meta, provider, branches, remotes):
              if b["commit"] != meta["sourceCommit"] else ""} for b in found]
 
 
-def suggest_links(git, repo, branches, description, text):
-    remotes = remote_config(git, repo)
+def suggest_links(git, repo, branches, description, text, *, remotes=None):
+    deadline = time.monotonic() + ANALYSIS_TIMEOUT
+    if remotes is None:
+        remotes = remote_config(git, repo)
     candidates, warnings, seen = [], [], set()
     for raw in re.findall(r"https?://[^\s<>`\"\[\]]+", description + "\n" + text):
         try:
             link = parse_link(raw.rstrip(".,;)"))
         except ValueError:
-            if "Nieobsługiwany lub niebezpieczny link. Dozwolone są rozpoznane HTTPS PR/MR." not in warnings:
-                warnings.append("Nieobsługiwany lub niebezpieczny link. Dozwolone są rozpoznane HTTPS PR/MR.")
+            if ("/pull/" in raw or "/-/merge_requests/" in raw) and UNSUPPORTED_LINK not in warnings:
+                warnings.append(UNSUPPORTED_LINK)
             continue
         if link["link"] in seen:
             continue
@@ -238,8 +243,13 @@ def suggest_links(git, repo, branches, description, text):
             warnings.append("Link PR/MR nie odpowiada skonfigurowanemu remote projektu. Nie odczytano hostingu.")
             continue
         try:
-            meta = metadata(link, repo)
+            if time.monotonic() >= deadline:
+                raise HostingTimeout("Przekroczono czas analizy linków PR/MR. Wynik może być częściowy.")
+            meta = metadata(link, repo, deadline=deadline)
             candidates.extend(candidates_for(meta, link["provider"], branches, remotes))
+        except HostingTimeout as exc:
+            warnings.append(str(exc) + " Zwrócono dotychczasowy wynik; wybierz bazę ręcznie.")
+            break
         except HostingError as exc:
             warnings.append(str(exc))
         except (ValueError, KeyError, TypeError, AttributeError):

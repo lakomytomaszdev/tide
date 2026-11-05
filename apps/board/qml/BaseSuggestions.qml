@@ -32,6 +32,7 @@ ColumnLayout {
     }
     function refresh(scope) {
         if (!active || !cardId || !project || !repo) return
+        debounce.stop()
         pendingTag = ""
         candidates = []
         message = ""
@@ -74,6 +75,12 @@ ColumnLayout {
         font.pixelSize: 12
     }
     QQC2.Button {
+        objectName: "checkBaseFiles"
+        text: "Sprawdź lokalną historię plików"
+        enabled: !suggestions.loading
+        onClicked: suggestions.refresh("files")
+    }
+    QQC2.Button {
         objectName: "checkBaseLinks"
         text: "Sprawdź linki PR/MR"
         enabled: !suggestions.loading
@@ -102,8 +109,11 @@ ColumnLayout {
                                  + "Źródło: " + modelData.host + "/" + modelData.sourceProject + " · " + modelData.sourceBranch
                                  + "\nSHA API: " + modelData.sourceCommit + "\nSHA lokalny: " + (modelData.localCommit || "brak")
                                  + "\nCel PR/MR: " + modelData.targetBranch + "\n" : "")
-                              + (modelData.evidence || []).map(e => (e.field === "description" ? "Opis" : "Polecenie")
-                                  + ", wiersz " + e.line + ": " + e.text).join("\n")
+                              + (modelData.source === "files" ? "Pozycja " + modelData.rank + " · ścieżki: " + modelData.matchedPaths + "\n" : "")
+                              + (modelData.evidence || []).map(e => modelData.source === "files"
+                                  ? e.path + " · commit " + e.commit + " · " + e.time
+                                  : (e.field === "description" ? "Opis" : "Polecenie")
+                                    + ", wiersz " + e.line + ": " + e.text).join("\n")
                               + (modelData.reason ? "\n" + modelData.reason : "")
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
@@ -147,7 +157,8 @@ ColumnLayout {
     }
     Text {
         Layout.fillWidth: true
-        text: suggestions.loading ? (suggestions.pendingScope === "links" ? "Sprawdzam linki PR/MR…" : "Analizuję tekst…")
+        text: suggestions.loading ? (suggestions.pendingScope === "links" ? "Sprawdzam linki PR/MR…"
+                                    : suggestions.pendingScope === "files" ? "Analizuję lokalną historię plików…" : "Analizuję tekst…")
               : suggestions.message || (suggestions.candidates.length ? "" : "Brak jawnych wskazań znanych gałęzi.")
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere

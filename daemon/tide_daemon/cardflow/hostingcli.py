@@ -26,6 +26,10 @@ class HostingError(Exception):
     pass
 
 
+class HostingTimeout(HostingError):
+    pass
+
+
 class _Gateway(http.server.BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
@@ -126,11 +130,15 @@ def host_gateway(program, host, endpoint):
             thread.join()
 
 
-def read_json(program, host, endpoint, cwd):
+def read_json(program, host, endpoint, cwd, *, deadline=None):
     """Tylko względny, zbudowany przez adapter endpoint. Stderr nigdy nie opuszcza tej funkcji."""
-    deadline = time.monotonic() + TIMEOUT
+    deadline = min(deadline, time.monotonic() + TIMEOUT) if deadline is not None else time.monotonic() + TIMEOUT
+    if deadline <= time.monotonic():
+        raise HostingTimeout("Przekroczono czas analizy linków PR/MR.")
     try:
         with host_gateway(program, host, endpoint) as (guard, proxy):
+            if deadline <= time.monotonic():
+                raise HostingTimeout("Przekroczono czas analizy linków PR/MR.")
             env = dict(os.environ)
             for key in ("GH_DEBUG", "DEBUG", "GLAB_DEBUG", "ALL_PROXY", "all_proxy", "GH_HTTP_UNIX_SOCKET"):
                 env.pop(key, None)
@@ -152,7 +160,7 @@ def read_json(program, host, endpoint, cwd):
                         while streams.get_map():
                             remaining = deadline - time.monotonic()
                             if remaining <= 0:
-                                raise HostingError("Przekroczono czas odczytu metadanych (10 sekund).")
+                                raise HostingTimeout("Przekroczono czas analizy linków PR/MR.")
                             for key, _ in streams.select(min(remaining, 0.1)):
                                 chunk = os.read(key.fileobj.fileno(), 65536)
                                 if not chunk:
@@ -166,7 +174,9 @@ def read_json(program, host, endpoint, cwd):
                         try:
                             proc.wait(timeout=max(0.001, deadline - time.monotonic()))
                         except subprocess.TimeoutExpired:
-                            raise HostingError("Przekroczono czas odczytu metadanych (10 sekund).") from None
+                            raise HostingTimeout("Przekroczono czas analizy linków PR/MR.") from None
+                    if deadline <= time.monotonic():
+                        raise HostingTimeout("Przekroczono czas analizy linków PR/MR.")
                     if guard.failure:
                         raise HostingError(guard.failure)
                     if proc.returncode:

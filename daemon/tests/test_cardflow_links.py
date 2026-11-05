@@ -6,6 +6,7 @@ import os
 import socket
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -38,7 +39,7 @@ class LinkIdentityTest(unittest.TestCase):
             meta = links.metadata(parsed, "/repo")
         self.assertEqual(meta["sourceBranch"], branch)
         self.assertEqual(meta["targetBranch"], "release/target")
-        read.assert_called_once_with("gh", "github.com", "repos/team/proj/pulls/17", "/repo")
+        read.assert_called_once_with("gh", "github.com", "repos/team/proj/pulls/17", "/repo", deadline=None)
         self.assertNotIn(branch, str(read.call_args))
         for field, replacement in (("html_url", "https://evil.example/team/proj/pull/17"), ("number", 18)):
             with patch.object(links, "read_json", return_value={**data, field: replacement}), self.assertRaises(ValueError):
@@ -47,14 +48,14 @@ class LinkIdentityTest(unittest.TestCase):
     def test_gitlab_normalized_subgroups_and_numeric_source_project_lookup(self):
         responses = hostingfakes.gitlab("c" * 40)
         parsed = links.parse_link("https://git.example.org/team/sub/proj/-/merge_requests/17")
-        with patch.object(links, "read_json", side_effect=lambda program, host, endpoint, repo: responses[endpoint]) as read:
+        with patch.object(links, "read_json", side_effect=lambda program, host, endpoint, repo, **kw: responses[endpoint]) as read:
             meta = links.metadata(parsed, "/repo")
         self.assertEqual(meta["sourceProject"], "user/sub/proj")
         self.assertEqual(meta["sourceCommit"], "c" * 40)
         self.assertEqual([c.args[2] for c in read.call_args_list],
                          ["projects/team%2Fsub%2Fproj/merge_requests/17", "projects/1", "projects/2"])
         responses["projects/2"]["web_url"] = "https://evil.example/user/sub/proj"
-        with patch.object(links, "read_json", side_effect=lambda p, h, e, r: responses[e]), self.assertRaises(ValueError):
+        with patch.object(links, "read_json", side_effect=lambda p, h, e, r, **kw: responses[e]), self.assertRaises(ValueError):
             links.metadata(parsed, "/repo")
 
     def test_custom_refspec_negative_and_foreign_ref_collision(self):
@@ -102,6 +103,39 @@ class LinkIdentityTest(unittest.TestCase):
                 f"https://github.com/team/proj/pull/{n}" for n in range(1, 100)))
             self.assertEqual(read.call_count, 4)
             self.assertIn("4 linki", result["warnings"][-1])
+
+
+    def test_all_links_and_gitlab_project_reads_share_deadline_and_keep_partial_result(self):
+        now = [100.0]
+        config = {"gh": {"identity": ("github.com", "team/proj")},
+                  "glab": {"identity": ("git.example.org", "team/sub/proj")}}
+        responses = hostingfakes.gitlab("a" * 40)
+        responses["repos/team/proj/pulls/17"] = hostingfakes.github("a" * 40)
+
+        def read(program, host, endpoint, repo, *, deadline):
+            if now[0] + 4 >= deadline:
+                now[0] = deadline
+                raise cli.HostingTimeout("Przekroczono czas analizy linków PR/MR.")
+            now[0] += 4
+            return responses[endpoint]
+
+        with patch.object(links.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(links, "read_json", side_effect=read) as calls:
+            result = links.suggest_links(None, "/repo", [], "https://github.com/team/proj/pull/17",
+                                         "https://git.example.org/team/sub/proj/-/merge_requests/17\n"
+                                         "https://git.example.org/team/sub/proj/-/merge_requests/18", remotes=config)
+        self.assertEqual([c.args[2] for c in calls.call_args_list],
+                         ["repos/team/proj/pulls/17", "projects/team%2Fsub%2Fproj/merge_requests/17", "projects/1"])
+        self.assertEqual([c.kwargs["deadline"] for c in calls.call_args_list], [110.0] * 3)
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["link"], "https://github.com/team/proj/pull/17")
+        self.assertIn("czas analizy", " ".join(result["warnings"]))
+
+    def test_ordinary_documentation_links_do_not_produce_unsafe_link_warning(self):
+        with patch.object(links, "metadata", return_value=hostingfakes.github("a" * 40)) as read:
+            result = links.suggest_links(None, "/repo", [], "https://docs.example.org/guide", "", remotes={})
+        read.assert_not_called()
+        self.assertNotIn("niebezpieczny", " ".join(result["warnings"]))
 
 
 class GatewayTest(unittest.TestCase):
@@ -171,12 +205,26 @@ class CliReadTest(unittest.TestCase):
             with self.assertRaises(cli.HostingError):
                 cli.read_json("/nonexistent/gh", "github.com", "endpoint", folder)
 
+    def test_remaining_deadline_limits_process_and_expired_deadline_never_starts_cli(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(cli, "host_gateway", self.fake_gateway):
+            hostingfakes.install(folder, {"mode": "timeout"})
+            started = time.monotonic()
+            with self.assertRaises(cli.HostingTimeout):
+                cli.read_json(os.path.join(folder, "gh"), "github.com", "endpoint", folder,
+                              deadline=started + .15)
+            self.assertLess(time.monotonic() - started, 1)
+            with patch.object(cli.subprocess, "Popen") as process, self.assertRaises(cli.HostingTimeout):
+                cli.read_json("gh", "github.com", "endpoint", folder, deadline=started)
+            process.assert_not_called()
+
 
 class GatewayTransportTest(unittest.TestCase):
     def setUp(self):
         try:
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
+            with tempfile.TemporaryDirectory() as folder, socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(os.path.join(folder, "probe.sock"))
         except OSError:
             self.skipTest("piaskownica blokuje lokalne gniazda; test wymaga wykonania poza nią")
 
