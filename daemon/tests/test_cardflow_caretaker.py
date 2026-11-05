@@ -279,14 +279,15 @@ class NoCaretakerTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_only_escalate_and_retry_are_registered(self):
-        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry"})      # `retry` — PT-150
+    def test_only_escalate_retry_and_return_plan_are_registered(self):
+        # `retry` — PT-150, `return-plan` — PT-146 (odesłanie planu, nigdy zatwierdzenie).
+        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry", "return-plan"})
         for name in ("approve-plan", "approve", "allow", "run", "run-always", "outside", "merge", "push", "reject",
                      "reject-ticket"):
             self.assertNotIn(name, caretaker.ACTIONS)
-        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry"})
-        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error"})
-        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS], ["_error_trigger"])
+        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry", "return-plan"})
+        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error", "plan-fix"})
+        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS], ["_error_trigger", "_plan_fix_trigger"])
 
 
 class ParseResultTest(unittest.TestCase):
