@@ -4538,6 +4538,7 @@ class FlowEngine(PlanEditing):
                       process is not False or name in st.outside_started or
                       step.get("mode") == "interactive" and not step.get("consoleClosed"))
             processes.append({"step": name, "unit": unit, "state": unit_state, "active": active,
+                              "previousOrder": name in st.superseded,
                               "processAlive": process, "finished": name in st.finished,
                               "worktree": step.get("worktree") or ""})
         return processes
@@ -4567,7 +4568,7 @@ class FlowEngine(PlanEditing):
                 new = basechange.candidate(self.git, repo, wanted)
                 processes = self._base_change_processes(st)
                 result = basechange.preview(self.git, repo, card, events, st, new, processes)
-                # Powtórny odczyt wykrywa ruch refu, plików lub procesów w trakcie zbierania dowodów.
+                # Kontrolny odczyt używa tylko indeksu/statusu/metadanych, bez hashowania lokalnej treści.
                 after = basechange.preview(self.git, repo, card, events, st,
                                            basechange.candidate(self.git, repo, wanted),
                                            self._base_change_processes(st))

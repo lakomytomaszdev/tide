@@ -52,17 +52,24 @@ QQC2.Popup {
                          : "Odmowa korekty bazy."]
         for (const refusal of r.blockedReasons || []) lines.push(refusal.message + " [" + refusal.reason + "]")
         for (const b of r.branches || []) {
+            if (b.previousOrder) lines.push("", "Poprzednie zlecenie — zachowawcza kontrola zachowanych danych:")
             lines.push("", b.ref + " · " + b.worktree, "Zapisany start: " + b.startRef + " · " + b.startCommit,
                        "Aktualny SHA: " + b.commit)
             for (const c of b.commits || []) lines.push("Commit wkładu: " + c.sha)
             for (const kind of ["staged", "unstaged", "untracked"])
                 for (const entry of b.localChanges && b.localChanges[kind] || [])
                     lines.push(kind + ": " + entry.paths.join(" ← "))
-            for (const path of b.ignored || []) lines.push("Ignorowane (pozostają tutaj): " + path)
+            const ignored = b.ignored || []
+            const shown = ignored.slice(0, 10)
+            const count = b.ignoredCount === undefined ? ignored.length : b.ignoredCount
+            for (const path of shown) lines.push("Ignorowane (pozostają tutaj): " + path)
+            if (count > shown.length)
+                lines.push("… oraz " + (count - shown.length) + " pozostałych ignorowanych ścieżek/katalogów.")
         }
-        for (const p of r.processes || []) lines.push("Proces: " + p.step + " · " + p.unit + " · " + p.state)
+        for (const p of r.processes || [])
+            lines.push((p.previousOrder ? "Proces poprzedniego zlecenia: " : "Proces: ") + p.step + " · " + p.unit + " · " + p.state)
         lines.push("", "Wymagane unieważnienia po przyszłym wykonaniu: " + (r.invalidations || []).join(", "),
-                   "", r.ignoredPolicy, r.scope, "", r.instruction,
+                   "", r.ignoredPolicy, r.localStatePolicy || "", r.scope, "", r.instruction,
                    r.followup && r.followup.message || "", "", r.executionMessage)
         return lines.join("\n")
     }
@@ -89,7 +96,7 @@ QQC2.Popup {
         Tide.TextButton {
             objectName: "baseChangeSelect"
             visible: preview.selecting
-            text: "Pokaż podgląd wybranej bazy"
+            text: "Zgłoś zmianę bazy i pokaż podgląd (karta czeka na decyzję)"
             enabled: preview.selectionReady && !preview.busy
             onClicked: {
                 preview.busy = true

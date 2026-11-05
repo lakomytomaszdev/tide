@@ -33,6 +33,7 @@ click(card("K-8"))
 backend.branch_replies.extend([listing] * 8)
 click(named("fullBaseChange"))
 until(lambda: obj("baseChangeSelect").property("enabled"))
+out["selectionLabel"] = obj("baseChangeSelect").property("text")
 before = js("JSON.stringify(page.snapshot.cards)")
 replies.clear()
 replies.append({"ok": True, "waiting": True, "changed": False, "preview": preview})
@@ -54,9 +55,26 @@ out["same"] = before == js("JSON.stringify(page.snapshot.cards)")
         self.assertTrue(out["same"])
         self.assertFalse(out["confirm"])
         self.assertTrue(out["plain"])
+        self.assertIn("karta czeka na decyzję", out["selectionLabel"])
         for text in ("c" * 40, "cache.bin", "Commit dokumentów", "K-49", "K-50-replay-code", "Zachowaj bazę",
                      "<b>zwykły tekst</b>", "bez opublikowanej karty"):
             self.assertIn(text, out["text"])
+
+    def test_ignored_paths_have_display_limit_and_do_not_hide_refusal_instructions(self):
+        preview = json.loads(json.dumps(PREVIEW))
+        preview["branches"][0].update(ignored=[f"cache-{i:02}/" for i in range(40)], ignoredCount=4000)
+        out = self.probe(STATE_PY + "\npreview = " + repr(preview) + r'''
+click(card("K-8"))
+engine.rootContext().setContextProperty("probeTarget", obj("baseChangePreview"))
+js("probeTarget.show('K-8', " + json.dumps(preview) + ")")
+out["text"] = obj("baseChangeText").property("text")
+''', full_d(self.data))
+        self.assertEqual(out["text"].count("Ignorowane (pozostają tutaj):"), 10)
+        self.assertIn("3990 pozostałych", out["text"])
+        self.assertNotIn("cache-10/", out["text"])
+        self.assertIn("Odmowa korekty", out["text"])
+        self.assertIn("Zachowaj bazę", out["text"])
+        self.assertIn("K-50-replay-code", out["text"])
 
     def test_agent_change_opens_same_preview_and_escape_preserves_question(self):
         events = journal()[:-1]

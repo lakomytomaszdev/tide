@@ -228,9 +228,19 @@ pytania oraz zwraca ten sam podgląd co propozycja agenta. `decisionStep` identy
 `ResolveCardStep` z tym identyfikatorem i `baseDecision: keep` odblokowuje kartę, a `change` jedynie
 otwiera podgląd. Zamknięcie/Esc nie zapisuje odpowiedzi ani nie zatrzymuje procesów.
 
-`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, indeksów, treści danych
-lokalnych (także ignorowanych) i procesów. PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
-wymagać `canChange: true` i równości identyfikatora; każda różnica wymaga świeżej decyzji. Identyfikator
+`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, logicznej zawartości indeksów,
+statusu, metadanych lokalnych danych i procesów. Oba odczyty są lekkie: bez hashowania treści plików.
+Ignorowane katalogi zwijamy przez `ls-files --others --ignored --exclude-standard --directory`;
+odcisk obejmuje ich stat, bez wyliczania wnętrza. Zmiana treści pliku wewnątrz takiego katalogu nie musi
+zmienić identyfikatora. To odcisk kwalifikacji pustej generacji, bez prawa do kopiowania lub kasowania
+lokalnych danych; PT-202 musi zachować stare worktrees wraz z ich zawartością. Limit 4096 odczytów
+metadanych na worktree (także dla nieśledzonych zagnieżdżonych repozytoriów) daje odmowę
+`unknown-local-state` po przekroczeniu. Odpowiedź zawiera najwyżej 20 ignorowanych ścieżek na gałąź,
+`ignoredCount` liczy zwinięte ścieżki/katalogi, a `ignoredTruncated` oznacza skrócenie listy.
+Panel pokazuje najwyżej 10 i liczbę pozostałych. Nie jest to liczba plików w ignorowanych katalogach.
+Dowody, powody odmowy i procesy poprzednich zleceń mają `previousOrder: true`; kontrola pozostaje zachowawcza.
+PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
+wymagać `canChange: true` i równości identyfikatora; każda wykryta różnica wymaga świeżej decyzji. Identyfikator
 sam w sobie nie jest zgodą. `canExecute` pozostaje fałszem do dostarczenia potwierdzenia w PT-213.
 Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
 commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.

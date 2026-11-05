@@ -108,6 +108,81 @@ class BaseChangeTest(StartBaseSetup):
         self.assertFalse(baseproposal.pending(fold(self.events(self.ident))))
         self.assertEqual(fingerprint(self.repo), before)
 
+    def test_large_ignored_trees_are_compact_and_no_file_contents_are_hashed(self):
+        self.ask()
+        excludes = Path(self.base, "excludes")
+        excludes.write_text("bin/\nobj/\nnode_modules/\ncache-*.bin\n")
+        for path in (self.started["cardWorktree"], self.started["worktree"]):
+            git(path, "config", "core.excludesFile", str(excludes))
+            for name in ("bin", "obj", "node_modules"):
+                directory = Path(path, name, "nested")
+                directory.mkdir(parents=True)
+                for i in range(100):
+                    (directory / str(i)).write_bytes(b"artefakt")
+                with (directory / "large.bin").open("wb") as stream:
+                    stream.truncate(256 * 1024 * 1024)
+            for i in range(40):
+                Path(path, f"cache-{i:02}.bin").write_bytes(b"cache")
+        # Publiczna ścieżka wykonuje również drugi odczyt pod blokadą. Żaden z nich
+        # nie może użyć hashowania treści, także dla indeksu i lokalnych zmian.
+        with mock.patch.object(basechange, "file_stamp", create=True,
+                               side_effect=AssertionError("odczyt treści w podglądzie")), \
+                mock.patch("tide_daemon.cardflow.mergepreview.file_stamp",
+                           side_effect=AssertionError("odczyt treści checkoutu")):
+            response = self.call("preview_card_base_change", {"step": "ask"})
+        self.assertTrue(response["canChange"], response)
+        for row in response["branches"]:
+            self.assertEqual(row["ignoredCount"], 43)
+            self.assertLessEqual(len(row["ignored"]), 20)
+            self.assertTrue(row["ignoredTruncated"])
+            self.assertIn("bin/", row["ignored"])
+            self.assertNotIn("nested", str(row["ignored"]))
+        self.assertLess(len(json.dumps(response)), 16000)
+        self.assertIn("metadane", response["localStatePolicy"])
+
+    def test_local_metadata_budget_exhaustion_refuses_without_partial_qualification(self):
+        self.ask()
+        excludes = Path(self.base, "excludes")
+        excludes.write_text("cache-*.bin\n")
+        path = self.started["cardWorktree"]
+        git(path, "config", "core.excludesFile", str(excludes))
+        for i in range(30):
+            Path(path, f"cache-{i}.bin").write_bytes(b"cache")
+        with mock.patch.object(basechange, "MAX_LOCAL_ENTRIES", 20):
+            response = self.preview(step="ask")
+        self.assertFalse(response["canChange"])
+        self.assertFalse(response["canExecute"])
+        self.assertIn("unknown-local-state", {r["reason"] for r in response["blockedReasons"]})
+        self.assertIn("limit odczytu metadanych", str(response["blockedReasons"]))
+        self.assertEqual(response["decisionStep"], "ask")
+
+    def test_ignored_directory_metadata_change_during_second_pass_invalidates_preview(self):
+        path = self.started["cardWorktree"]
+        excludes = Path(self.base, "excludes")
+        excludes.write_text("bin/\n")
+        git(path, "config", "core.excludesFile", str(excludes))
+        directory = Path(path, "bin")
+        directory.mkdir()
+        (directory / "old").write_bytes(b"artefakt")
+        original = basechange.preview
+        calls = 0
+
+        def changing(*args):
+            nonlocal calls
+            result = original(*args)
+            calls += 1
+            if calls == 1:
+                (directory / "new").write_bytes(b"nowy artefakt")
+            return result
+
+        with mock.patch.object(basechange, "preview", side_effect=changing):
+            # Tutaj zewnętrzny zapis jest celową częścią scenariusza, nie mutacją usługi.
+            response = self.call("preview_card_base_change", {"baseRef": "refs/heads/feature/start"})
+        self.assertEqual(calls, 2)
+        self.assertFalse(response["canChange"])
+        self.assertEqual(response["previewId"], "")
+        self.assertIn("state-changed", {r["reason"] for r in response["blockedReasons"]})
+
     def test_commits_documents_code_wip_and_ticket_are_refused_with_sha_and_sketch(self):
         self.ask()
         for path, name, message in ((self.started["cardWorktree"], "docs/agents/plans/plan.md", "docs(plan): plan"),
@@ -128,6 +203,24 @@ class BaseChangeTest(StartBaseSetup):
             response = self.preview(step="ask")
             self.assertFalse(response["followup"]["available"])
             self.assertEqual(response["followup"]["path"], "")
+
+    def test_previous_order_evidence_is_explicitly_marked_and_remains_conservative(self):
+        past = [{"seq": 1, "type": "card.started", "entry": "now"},
+                {"seq": 2, "type": "step.started", "step": "old-step", "kind": "ticket",
+                 "branch": "old/order", "worktree": self.started["cardWorktree"]},
+                {"seq": 3, "type": "step.finished", "step": "old-step", "result": "done"},
+                {"seq": 4, "type": "result", "action": "plan-commit", "ok": True, "commit": "d" * 40}]
+        events = past + [{**e, "seq": e["seq"] + len(past)} for e in self.events(self.ident)]
+        with mock.patch.object(self.flow.engine.journal, "read", return_value=events):
+            response = self.call("preview_card_base_change", {"baseRef": "refs/heads/feature/start"})
+        self.assertFalse(response["canChange"])
+        recorded = next(r for r in response["blockedReasons"] if r["reason"] == "recorded-contribution")
+        self.assertTrue(recorded["previousOrder"])
+        self.assertIn("Poprzednie zlecenie", recorded["message"])
+        branch = next(b for b in response["branches"] if b["branch"] == "old/order")
+        self.assertTrue(branch["previousOrder"])
+        self.assertFalse(response["branches"][0]["previousOrder"])
+        self.assertTrue(next(p for p in response["processes"] if p["step"] == "old-step")["previousOrder"])
 
     def test_local_changes_each_kind_and_token_same_size_edit(self):
         path = self.started["worktree"]
@@ -291,6 +384,8 @@ class FollowupArtifactTest(unittest.TestCase):
             document = repo / source
             self.assertIn("](" + target + ")", document.read_text())
             self.assertEqual((document.parent / target).resolve(), sketch)
-        self.assertIn("../2026-11-05-k-50-flow.md", content)
+        # Szkic działa samodzielnie także w kopii usługi, bez martwego odnośnika do planu.
+        self.assertNotIn("](../", content)
+        self.assertNotIn("2026-11-05-k-50-flow.md", (repo / "daemon/install.sh").read_text())
         self.assertIn('cp "$src/../docs/agents/plans/followups/replay-code.md"',
                       (repo / "daemon/install.sh").read_text())

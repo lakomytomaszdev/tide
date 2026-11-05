@@ -20,7 +20,6 @@ tar -C "$src" --exclude=__pycache__ -cf - tide-daemon.py tide_daemon | tar -C "$
 cp "$src/../theme/palette/mist.json" "$dest/palette.json"
 # Jawny zakres produktu w podglądzie odmowy, z działającym odnośnikiem także poza repozytorium.
 mkdir -p "$dest/docs/agents/plans/followups"
-cp "$src/../docs/agents/plans/2026-11-05-k-50-flow.md" "$dest/docs/agents/plans/"
 cp "$src/../docs/agents/plans/followups/replay-code.md" "$dest/docs/agents/plans/followups/"
 
 cat > "$unit" <<EOF

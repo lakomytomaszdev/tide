@@ -1,6 +1,6 @@
 # K-50-replay-code — korekta bazy z istniejącą pracą
 
-Status: zapisany szkic zakresu następczego, poza v1 [planu K-50](../2026-11-05-k-50-flow.md). Stały klucz przekazania: K-50-replay-code. Bez nadanego numeru K/PT, bez publikacji na Tablicy, bez przydziału i bez zgody na realizację. Tide może utworzyć kartę dopiero po osobnej decyzji użytkownika.
+Status: zapisany szkic zakresu następczego, poza v1 planu K-50. Stały klucz przekazania: K-50-replay-code. Bez nadanego numeru K/PT, bez publikacji na Tablicy, bez przydziału i bez zgody na realizację. Tide może utworzyć kartę dopiero po osobnej decyzji użytkownika.
 
 ## Problem i granica przekazania
 

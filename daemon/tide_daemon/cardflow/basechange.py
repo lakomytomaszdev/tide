@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import baseproposal
 from .gitops import FlowGitError
-from .mergepreview import checkout_snapshot, file_stamp
+from .mergepreview import checkout_snapshot
 from .state import base_of
 
 _RELATIVE_FOLLOWUP = "docs/agents/plans/followups/replay-code.md"
@@ -19,6 +19,12 @@ FOLLOWUP = next((p for p in (Path(__file__).resolve().parents[3] / _RELATIVE_FOL
                 Path(__file__).resolve().parents[3] / _RELATIVE_FOLLOWUP)
 INVALIDATIONS = ["review i domknięcie", "podglądy i zgody na scalenie", "stary kontekst sesji i wznowień",
                  "przypięte cele i mapy generacji"]
+MAX_LOCAL_ENTRIES = 4096
+IGNORED_DISPLAY_LIMIT = 20
+LOCAL_STATE_POLICY = ("Odcisk obejmuje indeks, status i metadane lokalnych danych. "
+                      "Ignorowane katalogi są wykazywane zbiorczo, bez odczytu ich zawartości; "
+                      "zmiana treści pliku wewnątrz nich nie musi zmienić odcisku. "
+                      "Nie uprawnia on do przenoszenia ani usuwania tych danych.")
 
 
 def followup():
@@ -39,31 +45,51 @@ def candidate(git, repo, request):
 
 
 def local_snapshot(git, repo, path):
-    snapshot = checkout_snapshot(git.run, path)
-    if not snapshot.get("exists"):
-        raise OSError("brak worktree")
-    # Obejmujemy także pliki ignorowane oraz tracked z assume-unchanged/skip-worktree.
-    files = git.run(path, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    ignored = git.run(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
-    if not files.ok or not ignored.ok:
-        raise OSError("nie można odczytać lokalnych plików")
-    paths = sorted(set((files.out + ignored.out).split("\0")) - {""})
-    root = os.path.realpath(path)
+    remaining = MAX_LOCAL_ENTRIES
 
-    def local_stamp(rel):
-        full = os.path.join(path, rel)
-        if os.path.commonpath((root, os.path.realpath(os.path.dirname(full)))) != root:
-            raise OSError("plik poza worktree")
-        stamp = file_stamp(full)
-        if stamp and stat.S_ISDIR(stamp[0]):
-            # Zagnieżdżone nieśledzone repozytorium git opisuje jedną ścieżką katalogu.
+    def metadata_stamp(full, *, recursive=True, depth=0):
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 64:
+            raise OSError("przekroczono limit odczytu metadanych lokalnych danych")
+        try:
+            info = os.lstat(full)
+        except FileNotFoundError:
+            return None
+        stamp = [info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino]
+        if stat.S_ISLNK(info.st_mode):
+            stamp.append(os.readlink(full))
+        elif recursive and stat.S_ISDIR(info.st_mode):
+            # Np. nieśledzone repozytorium: tylko metadane, z tym samym limitem.
+            names = []
             with os.scandir(full) as entries:
-                names = sorted(entry.name for entry in entries)
-            return [stamp[0], {name: local_stamp(os.path.join(rel, name)) for name in names}]
+                for entry in entries:
+                    if len(names) >= remaining:
+                        raise OSError("przekroczono limit odczytu metadanych lokalnych danych")
+                    names.append(entry.name)
+            stamp.append({name: metadata_stamp(os.path.join(full, name), depth=depth + 1)
+                          for name in sorted(names)})
         return stamp
 
-    snapshot.update(allFiles={rel: local_stamp(rel) for rel in paths},
-                    ignored=sorted(set(ignored.out.split("\0")) - {""}),
+    snapshot = checkout_snapshot(git.run, path, stamp=metadata_stamp, untracked_files="normal")
+    if not snapshot.get("exists"):
+        raise OSError("brak worktree")
+    # Git zwija całe ignorowane katalogi. Nigdy nie wyliczamy ani nie hashujemy ich wnętrza.
+    ignored = git.run(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
+    if not ignored.ok:
+        raise OSError("nie można odczytać ignorowanych ścieżek")
+    paths = sorted(set(ignored.out.split("\0")) - {""})
+    if len(paths) > remaining:
+        raise OSError("przekroczono limit odczytu metadanych lokalnych danych")
+    root = os.path.realpath(path)
+
+    def ignored_stamp(rel):
+        full = os.path.join(path, rel.rstrip("/"))
+        if os.path.commonpath((root, os.path.realpath(os.path.dirname(full)))) != root:
+            raise OSError("plik poza worktree")
+        return metadata_stamp(full, recursive=False)
+
+    snapshot.update(ignoredMetadata={rel: ignored_stamp(rel) for rel in paths}, ignored=paths,
                     repository=git.repository_key(path))
     if snapshot["repository"] != git.repository_key(repo):
         raise OSError("worktree należy do innego repozytorium")
@@ -72,9 +98,13 @@ def local_snapshot(git, repo, path):
 
 def preview(git, repo, card, events, st, new, processes):
     reasons, branches, snapshots = [], [], {}
+    started_seq = int((st.started or {}).get("seq") or 0)
+    previous_order = False
 
     def block(reason, message, **data):
-        reasons.append({"reason": reason, "message": message, **data})
+        if previous_order:
+            message = "Poprzednie zlecenie (odmowa zachowawcza): " + message
+        reasons.append({"reason": reason, "message": message, "previousOrder": previous_order, **data})
 
     old = base_of(st)
     if old["status"] != "known":
@@ -100,8 +130,9 @@ def preview(git, repo, card, events, st, new, processes):
         if pair not in mapped:
             mapped.add(pair)
             unproven.append({"branch": pair[0], "worktree": pair[1], "ticket": step.get("ticket"),
-                             "action": "unproven-step", "existing": True})
+                             "action": "unproven-step", "existing": True, "seq": step.get("seq")})
     for e in creations + unproven:
+        previous_order = int(e.get("seq") or 0) < started_seq
         branch, path = e.get("branch") or "", e.get("worktree") or ""
         if not branch or not path:
             block("unknown-boundary", "Brak zapisanej gałęzi/worktree w wyniku utworzenia.")
@@ -113,7 +144,8 @@ def preview(git, repo, card, events, st, new, processes):
         start = e.get("base") or ""
         ref = "refs/heads/" + branch
         row = {"branch": branch, "ref": ref, "worktree": path, "ticket": e.get("ticket") or "",
-               "startCommit": start, "startRef": intent.get("base") or "", "commit": "", "commits": []}
+               "startCommit": start, "startRef": intent.get("base") or "", "commit": "", "commits": [],
+               "previousOrder": previous_order}
         branches.append(row)
         valid = (e.get("existing") is False and bool(intent) and
                  re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", start) and
@@ -147,10 +179,13 @@ def preview(git, repo, card, events, st, new, processes):
             if old["status"] == "known" and start != old["baseCommit"]:
                 block("nonempty-start", "Punkt startu gałęzi różni się od przypiętej bazy karty.", branch=branch)
         try:
-            snapshot = local_snapshot(git, repo, path)
-            snapshots[path] = snapshot
+            snapshot = snapshots.get(path)
+            if snapshot is None:
+                snapshot = snapshots[path] = local_snapshot(git, repo, path)
             row["localChanges"] = snapshot["changes"]
-            row["ignored"] = snapshot["ignored"]
+            row["ignored"] = snapshot["ignored"][:IGNORED_DISPLAY_LIMIT]
+            row["ignoredCount"] = len(snapshot["ignored"])
+            row["ignoredTruncated"] = row["ignoredCount"] > len(row["ignored"])
             if snapshot["branch"] != ref or snapshot["head"] != tip:
                 block("changed-ref", "Checkout nie odpowiada zapisanej gałęzi: " + ref, branch=branch)
             if any(snapshot["changes"].values()):
@@ -164,10 +199,12 @@ def preview(git, repo, card, events, st, new, processes):
         except (OSError, FlowGitError) as exc:
             block("unknown-local-state", "Nie można dowieść stanu worktree " + path + ": " + str(exc), branch=branch)
 
+    previous_order = False
     if not any(e.get("action") == "card-branch" for e in creations):
         block("unknown-boundary", "Brak dowiedzionego utworzenia gałęzi karty.")
     # Dziennik może dowodzić pracy również po zewnętrznym cofnięciu/usunięciu refu.
     for e in events:
+        previous_order = int(e.get("seq") or 0) < started_seq
         sha = (e.get("commit") if e.get("type") == "result" and e.get("ok") and
                e.get("action") in ("plan-commit", "merge") else "")
         wip = e.get("wip") or {}
@@ -176,6 +213,7 @@ def preview(git, repo, card, events, st, new, processes):
             block("recorded-contribution", "Dziennik zachowuje commit wkładu " + sha + ".", commit=sha)
         if wip.get("files") and not wip.get("committed"):
             block("local-changes", "Dziennik wskazuje niezapisane pliki WIP.")
+    previous_order = False
     worktrees = git.run(repo, "worktree", "list", "--porcelain")
     if not worktrees.ok:
         block("unknown-map", "Nie można odczytać mapy worktrees.")
@@ -194,6 +232,7 @@ def preview(git, repo, card, events, st, new, processes):
               "gałęzi i bez usuwania katalogów. Nowe zlecenie na poprawnej bazie jest osobne, "
               "bez automatycznego kopiowania pracy.",
               "ignoredPolicy": "Ignorowane dane pozostają w starym worktree; bez przenoszenia i kasowania.",
+              "localStatePolicy": LOCAL_STATE_POLICY,
               "executionMessage": "Potwierdzenie wykonania jest niedostępne do PT-213. "
               "PT-202 dostarczy operację backendu wyłącznie dla pustej generacji."}
     payload = {"events": events, "preview": result, "snapshots": snapshots, "worktrees": worktrees.out}
