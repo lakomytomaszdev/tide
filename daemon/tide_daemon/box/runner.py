@@ -37,6 +37,7 @@ Opis: docs/tide-daemon.md („Krok w pudełku: BoxRunner”).
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import glob
 import json
@@ -233,8 +234,12 @@ class StepDir:
         except agentcmd.StepError:
             raise
         except OSError as exc:
-            raise agentcmd.StepError(f"{what} w katalogu kroku odmówione (dowiązanie albo nie zwykły plik/katalog): "
-                                     f"{exc}") from exc
+            code = errno.errorcode.get(exc.errno, str(exc.errno))
+            if exc.errno in (errno.ELOOP, errno.EISDIR, errno.ENXIO, errno.EEXIST, errno.ENOTDIR):
+                why = f"dowiązanie albo nie zwykły plik/katalog, {code}"
+            else:
+                why = f"błąd systemu plików {code}"
+            raise agentcmd.StepError(f"{what} w katalogu kroku odmówione ({why}): {exc}") from exc
 
     def mkdir(self, path: str) -> None:
         self._guard(path, lambda: os.close(self._walk(self._rel(path))))
@@ -389,12 +394,15 @@ class BoxRunner:
 
     def box_step(self, step: agentcmd.Step) -> agentcmd.Step:
         """Krok przepisany na pudełko: środowisko z `/home/agent`, bez list poleceń w `--allowedTools` (zakazy zostają
-        wskazówkami w prompcie), Codex bez serwerów MCP hosta (`codex mcp list` hosta nie dotyczy pudełka)."""
+        wskazówkami w prompcie), Codex bez serwerów MCP hosta (`codex mcp list` hosta nie dotyczy pudełka).
+        Node (nvm) i Chromium Playwrighta silnik ustawia z katalogu domowego hosta (`node_home`, `chrome_bin`), którego
+        w pudełku nie ma — tu zerowane, żeby `PATH` ani `CHROME_BIN` w `in/env` nie wskazywały hosta; Node i Chromium
+        pochodzą z obrazu pudełka."""
         allowed = tuple(t for t in step.allowed_tools if not str(t).startswith("Bash("))
         if step.tool == "claude" and "Bash" not in allowed:
             allowed += ("Bash",)
         return replace(step, base_env=self.base_env(), allowed_tools=allowed, enforce_command_policy=False,
-                       codex_mcp=() if step.codex_mcp is None else step.codex_mcp)
+                       codex_mcp=() if step.codex_mcp is None else step.codex_mcp, node_home="", chrome_bin="")
 
     def _background(self, step: agentcmd.Step) -> agentcmd.Background:
         bstep = self.box_step(step)

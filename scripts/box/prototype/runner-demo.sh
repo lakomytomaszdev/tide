@@ -7,7 +7,8 @@
 # Sprawdza: `git status` w worktree i odczyt `in/env` z pudełka, brak znacznika z `in/env` w `ps -o args` hosta
 # (procesy pudełka też są widoczne na hoście), odmowę zapisu do `.git/hooks` i `.git/config`, `curl` do serwera
 # w pudełku na 127.0.0.1 bez proxy. Pudełko dostaje urządzenia BoxRunnera (zatrzymanie/start, gdy brakuje
-# nakładek-plików) i plik /opt/tide/tide-step. Log: docs/box-prototype/runner-demo.log (bez wartości z in/env).
+# nakładek-plików) i plik /opt/tide/tide-step. Log: docs/box-prototype/runner-demo.log — bez tokenów z in/env;
+# wypisany jest tylko losowy znacznik TIDE_DEMO_SECRET (nie jest sekretem), potrzebny do sprawdzenia `ps` hosta.
 set -u
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 log="$root/docs/box-prototype/runner-demo.log"

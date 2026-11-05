@@ -2686,7 +2686,9 @@ zmienne gita i martwy D-Bus jak na hoście), sekrety punktu lokalnego (`secret_e
 `TIDE_CWD` i zmienne z `step_env(step)` (porty #8, atrapy K3 #18). Adres proxy: jawny `proxy_base`, inaczej proxy
 uruchomione w tym procesie, inaczej `incus network get <box.bridge> ipv4.address`; brak — krok odmówiony.
 `env(step)` zwraca to samo bez sekretów. Token Claude Code dla punktu lokalnego: kopia 0600 w `in/local-token`
-czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku).
+czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku). Node (nvm) i Chromium Playwrighta pochodzą z obrazu
+pudełka, nie z hosta: `box_step` zeruje `node_home` i `chrome_bin` kroku (silnik ustawia je z `~` hosta), więc `PATH`
+zaczyna się od `BOX_PATH`, a `CHROME_BIN` nie trafia do `in/env` ani `env(step)`.
 
 Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh; obraz bazowy #16 instaluje je jako
 `/usr/local/bin/tide-step`): czyści środowisko, sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący

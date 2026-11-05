@@ -259,6 +259,28 @@ class ProxyEnvTest(BoxRunnerCase):
         self.check(self.env_file())
         self.assertEqual(self.env_file()["TIDE_CWD"], self.worktree)
 
+    def test_host_node_and_chromium_paths_do_not_reach_the_box(self):
+        node_home = os.path.join(self.home, ".nvm", "versions", "node", "v22.1.0")
+        chrome_bin = os.path.join(self.home, ".cache", "ms-playwright", "chromium-1200", "chrome-linux", "chrome")
+        step = self.step(node_home=node_home, chrome_bin=chrome_bin)
+        runner = self.runner()
+        env = runner.env(step)
+        runner.start(step)
+        for name, values in (("env(step)", env), ("in/env", self.env_file())):
+            with self.subTest(name):
+                self.assertNotIn("CHROME_BIN", values)
+                # Katalog domowy hosta może pojawić się tylko jako przedrostek repozytorium albo <repo>-worktrees
+                # (te same ścieżki w pudełku); ~/.nvm, ~/.cache itp. — nigdy.
+                for key, value in values.items():
+                    for piece in value.split(os.pathsep):
+                        if self.home in piece:
+                            self.assertTrue(piece.startswith((self.repo, self.wt_root)),
+                                            f"{key}={value} wskazuje katalog domowy hosta")
+                self.assertNotIn(node_home, values["PATH"])
+                self.assertTrue(values["PATH"].startswith(br.BOX_PATH), values["PATH"])
+        bstep = runner.box_step(step)
+        self.assertEqual((bstep.node_home, bstep.chrome_bin), ("", ""))
+
     def test_proxy_base_from_running_proxy_and_from_bridge(self):
         running = mock.Mock(listen="10.9.9.1", port=18081)
         with mock.patch("tide_daemon.box.proxy.running", return_value=running):
