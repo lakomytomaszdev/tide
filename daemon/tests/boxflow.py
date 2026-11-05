@@ -22,7 +22,7 @@ from tide_daemon.box.incus import Incus
 from tide_daemon.box.settings import BoxSettings
 from tide_daemon.cardflow_monitor import CardFlowMonitor
 
-from .fakebin import FAKE_INCUS
+from .fakebin import BOX_FAKES, BOX_LOG_ONLY, FAKE_INCUS
 from .test_cardflow import FlowInProcess
 
 SLUG = "proj"
@@ -122,10 +122,13 @@ class BoxFlow(FlowInProcess):
         self.box_run = os.path.join(fake, "box-systemd-run")
         self.box_ctl = os.path.join(fake, "box-systemctl")
         consts = f"UNITS = {self.units!r}\nLOG = {self.boxlog!r}\n"
-        for path, body in ((self.box_run, BOX_SYSTEMD_RUN), (self.box_ctl, BOX_SYSTEMCTL)):
-            head, _, rest = body.partition("\n")
+        scripts = [(path, body.replace("\n", "\n" + consts, 1))
+                   for path, body in ((self.box_run, BOX_SYSTEMD_RUN), (self.box_ctl, BOX_SYSTEMCTL))]
+        # Kopia per-card inicjalizuje wolumen przez install; polecenia pudełka muszą pozostać atrapami.
+        scripts.extend((os.path.join(fake, "box", name), BOX_LOG_ONLY) for name in BOX_FAKES)
+        for path, body in scripts:
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(head + "\n" + consts + rest)
+                fh.write(body)
             os.chmod(path, 0o755)
         for path in (self.fake_incus,):
             os.chmod(path, 0o755)

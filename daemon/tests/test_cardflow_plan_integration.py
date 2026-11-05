@@ -162,6 +162,8 @@ class PlanFlowTest(FlowInProcess):
     def test_restart_between_reservation_and_approval_reuses_ids(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        # Kontrolowane przerwanie zapisu nie może ścigać się z automatycznym odzyskiwaniem monitora.
+        self.flow.stop()
         journal = self.flow.engine.journal
         original = journal.append
         interrupted = False

@@ -20,6 +20,7 @@ import hashlib
 import os
 import subprocess
 import time
+from ..gitcommand import git_argv
 
 from . import boardplans, numbering, plan as plan_mod
 
@@ -32,7 +33,7 @@ DECLARATION_FILES = ("CLAUDE.md", "AGENTS.md")
 def run_git(root: str, args: list, stdin: bytes | None = None) -> bytes | None:
     """Wyjście gita albo None przy błędzie (bez repozytorium, brak gita, przekroczony czas)."""
     try:
-        result = subprocess.run(["git", "-C", root, *args], input=stdin, capture_output=True, timeout=TIMEOUT,
+        result = subprocess.run(git_argv("-C", root, *args), input=stdin, capture_output=True, timeout=TIMEOUT,
                                 env=dict(os.environ, **GIT_ENV))
     except (OSError, subprocess.SubprocessError):
         return None

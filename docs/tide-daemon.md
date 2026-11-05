@@ -2979,7 +2979,72 @@ na dowiązanie po sprawdzeniu `realpath`). Nakładka
 chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
 krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
 `core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
-`gitops.HARDENED` (`core.hooksPath=/dev/null`).
+`gitcommand.git_argv` (`core.hooksPath=/dev/null`, `core.fsmonitor=false`).
+
+### Strażnik refów
+
+`box/refguard.py` zapisuje przed uruchomieniem procesu w `BoxRunner.start` pełną migawkę
+`git for-each-ref` oraz kopie i sumy SHA-256 chronionych plików: `.git/hooks/`, `.git/config`,
+`.git/info/` (także `attributes`), `.git/config.worktree` i `.git/worktrees/*/config.worktree`.
+Spis refów uzupełnia odczytem luźnych refów symbolicznych, także z nieistniejącym celem,
+które `for-each-ref` pomija. Pliki blokad refów nie należą do tego spisu.
+Obejmuje nowe i usunięte pliki, tryby plików oraz dowiązania bez odczytywania ich celów.
+Migawki są atomowo zapisywane w `$XDG_STATE_HOME/tide/refguard/<skrót repozytorium>/`
+(domyślnie `~/.local/state/tide/refguard/`), poza montowaniami pudełka. Przeżywają restart usługi.
+
+Start, porównanie i przywracanie używają tej samej blokady repozytorium co `gitops` oraz
+blokady plikowej `flock`; migawka powstaje dopiero po ich uzyskaniu. Dozwolona jest gałąź
+kroku i gałęzie ticketów tej samej karty aktywnych w dowolnym momencie jego trwania.
+Nowy krok dopisuje swoją gałąź do starszych aktywnych migawek. Zgoda pozostaje w starszej
+migawce po zakończeniu sąsiada, więc równoległe końce nie cofają sobie commitów.
+Gałąź pochodzi z przypisania silnika (`Step.branch`), a zgodność `HEAD` z tym przypisaniem
+jest sprawdzana przed przygotowaniem i zapisaniem migawki. Podmieniony `HEAD` nie może
+rozszerzyć zbioru dozwolonych refów; niezgodność odmawia startu.
+Gałęzie innych kart, nowe tagi i pomocnicze gałęzie agenta nie należą do tego zbioru.
+Kroki innych kart w tym repozytorium czekają na zwolnienie strażnika; końcowa kontrola
+w runnerze odmawia startu, jeżeli dwie karty mimo to równocześnie przejdą sprawdzanie.
+Zaufane tworzenie gałęzi, scalenia i sprzątanie worktree przez `gitops` aktualizują w aktywnych migawkach tylko
+konkretny ref/config zmieniony przez usługę i tylko wtedy, gdy wcześniejsza wartość zgadza
+się z migawką. Runner uwzględnia też założenie pustego `config.worktree` nowego kroku.
+Start kolejnego kroku odmawia utrwalenia obcych zmian aktywnego sąsiada jako nowej kopii.
+
+Silnik sprawdza strażnika przy każdym zakończeniu kroku w pudełku, również po zatrzymaniu,
+timeout i błędzie programu. Najpierw odtwarza konfigurację i pliki, następnie przywraca
+obce refy (`git update-ref --no-deref <ref> <nowa> <oczekiwana-stara>`; nowe refy usuwa
+z oczekiwaną wartością). Zmiana po porównaniu powoduje błąd CAS zamiast nadpisania
+nowszej wartości. Przywracanie celów refów symbolicznych używa standardowego `<ref>.lock`
+i ponownego sprawdzenia OID oraz celu pod blokadą. Kontrola sprawdza też `HEAD` worktree
+i wskaźnik `.git`; po naruszeniu `HEAD` ponownie wskazuje gałąź kroku.
+
+Naruszenie zapisuje zdarzenie `refs.guard` z polami `refs`, `files`, `head`, `errors`
+i wymusza wynik `error` z powodem `refs.guard`, niezależnie od wyniku agenta.
+Brak lub uszkodzenie migawki i nieudana naprawa również kończą się błędem.
+Uszkodzony wpis w `worktrees/` lub błąd pojedynczego pliku jest raportowany ze ścieżką;
+pozostałe dostępne pliki, refy, `HEAD` i wskaźnik `.git` są nadal sprawdzane i naprawiane.
+Przy błędzie naprawy migawka pozostaje aktywna, zachowuje kopię i listę naruszeń.
+Zapis `step.finished` nie dezaktywuje migawki z niedokończoną naprawą. Odzyskiwanie
+(`recover_network`, także bez proxy) ponawia taką kontrolę w kolejnych tickach z oryginalnej
+kopii, aż odczyt i naprawa zakończą się bez błędów; kolejne wyniki zapisuje jako `refs.guard`.
+W tym czasie inne karty nadal czekają, a nowy krok tej samej karty nie może przyjąć obcych
+zmian jako punktu przywracania. Anulowanie bez kontroli dotyczy wyłącznie nieudanego startu
+bez wpisu uruchomionego kroku.
+Dopiero pełna kontrola bez błędów utrwala końcowy wynik,
+który pozwala ponowić zakończenie bez ponownego cofania refów.
+
+Tryb `--demo` również wykonuje kontrolę po potwierdzeniu nieaktywnej jednostki i zwraca
+kod 1 po naruszeniu. Przy nieznanym stanie jednostki lub błędzie naprawy zachowuje migawkę
+i wypisuje identyfikator próby. Ponowienie samej kontroli, bez ponownego uruchomienia polecenia:
+`python3 -m tide_daemon.box.runner --demo <slug> --worktree <W> --branch <gałąź>
+[--card K-N] --finish-guard <demo-id>` (te same projekt, worktree i karta).
+Naprawa korzysta z pierwotnej kopii; wykryte wcześniej naruszenie nadal daje kod 1 także
+po skutecznej naprawie. Czysta próba zwalnia strażnika i zachowuje kod klienta Incusa.
+
+`HostRunner` nie zakłada migawek i nie uruchamia kontroli. Każde wywołanie gita usługi,
+w tym `Git`, `FlowGit`, `StepGit`, odczyty koordynacji i runnera, przechodzi przez
+`gitcommand.git_argv`, które dopisuje `-c core.hooksPath=/dev/null -c core.fsmonitor=false`.
+
+Strażnik wykrywa zmiany po kroku; nakładki tylko do odczytu pozostają granicą zapobiegającą
+zapisowi haków i konfiguracji podczas pracy agenta. Testy: `daemon/tests/test_refs_guard.py`.
 
 Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
 `raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
@@ -3015,8 +3080,8 @@ jednostki (`unit_state`) ma trzy wartości jak `stepstop.unit_state`: `active` (
 niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko przy `inactive` — z `unknown` `stepstop`
 nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
 
-**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> [--worktree W]
-[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
+**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W]
+[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>-<losowy-sufiks>.step` z poleceniem zamiast agenta i znacznikiem
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
 

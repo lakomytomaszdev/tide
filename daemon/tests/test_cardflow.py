@@ -10,12 +10,83 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import unittest
 from unittest import mock
+
+from tide_daemon.cardflow_monitor import CardFlowMonitor
 
 from . import flowfakes
 from .privatebus import app, wait_until
 from .test_cardflow_dbus import CLAUDE_MD, git, test_root
+
+
+class _FlowMonitor(CardFlowMonitor):
+    """Monitor testu w tym samym procesie co ręczne operacje na silniku."""
+
+    def stop(self):
+        # Produkcja kończy cały proces. Test zachowuje proces i zaraz dotyka silnika
+        # albo dziennika, więc musi najpierw dokończyć biegnący tick starego monitora.
+        pool = self._pool
+        super().stop()
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+        # Anulowany tick nie dostaje callbacka `after`; ten sam monitor testu może ruszyć ponownie.
+        self._ticking = False
+
+
+class MonitorFixtureTest(unittest.TestCase):
+    def test_restart_after_cancelling_a_queued_tick_polls_again(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        monitor = _FlowMonitor(engine)
+        entered, release = threading.Event(), threading.Event()
+
+        def busy():
+            entered.set()
+            release.wait(2)
+
+        monitor._submit(busy, lambda future: None)
+        self.addCleanup(monitor.stop)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        monitor.tick()  # Tick czeka w kolejce i zostanie anulowany przez stop().
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        monitor.stop()
+        monitor.start()
+        self.assertTrue(wait_until(lambda: engine.tick.call_count == 1, timeout=2),
+                        "anulowany tick nie może zatrzymać odpytywania po ponownym starcie monitora testu")
+
+    def test_stop_settles_inflight_tick_before_manual_engine_operations(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        monitor = _FlowMonitor(engine)
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def tick():
+            entered.set()
+            release.wait(2)
+            finished.set()
+
+        monitor._submit(tick, lambda future: None)
+        pool = monitor._pool
+        self.addCleanup(lambda: app().processEvents())
+        self.addCleanup(lambda: pool.shutdown(wait=True, cancel_futures=True))
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        monitor.stop()
+        self.assertTrue(finished.is_set(), "stary tick nie może modyfikować dziennika po zatrzymaniu monitora testu")
 
 
 class FlowInProcess(unittest.TestCase):
@@ -70,13 +141,12 @@ class FlowInProcess(unittest.TestCase):
 
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
-        from tide_daemon.cardflow_monitor import CardFlowMonitor
         from tide_daemon.models import executors
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
-        flow = CardFlowMonitor(engine, self.board, poll_ms=150)
+        flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         flow.start()
         self.addCleanup(flow.stop)
@@ -587,6 +657,8 @@ class RestartInProcessTest(FlowInProcess):
         self.restart()
         self.assertTrue(flowfakes.alive(pid), "krok przeżył restart usługi")
         self.wait_column(card_id, "review", timeout=40)
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=5), self.events(card_id))
+        self.flow.stop()  # migawka obejmuje również końcowe powiadomienia biegnącego ticka
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
             self.assertEqual(types.count(kind), 1 if kind == "card.started" else 3, types)

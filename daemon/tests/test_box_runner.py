@@ -73,7 +73,7 @@ class BoxRunnerCase(unittest.TestCase):
 
     def step(self, tool="claude", **kw):
         args = dict(tool=tool, binary=tool, prompt="Zrób ticket", worktree=self.worktree, repo=self.repo,
-                    step_dir=self.step_dir, step_id="s1", session_id=SID, codex_mcp=(),
+                    step_dir=self.step_dir, step_id="s1", session_id=SID, codex_mcp=(), branch="feat/pt-1",
                     tmp_root=os.path.join(self.tmp, "tmp"))
         args.update(kw)
         return agentcmd.Step(**args)
@@ -343,14 +343,16 @@ class DevicesTest(BoxRunnerCase):
         cfg = os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree")
         with open(cfg, "w", encoding="utf-8") as fh:
             fh.write("[core]\n")
-        self.runner().start(self.step())
-        self.assertFalse([n for n in self.device_map() if n.startswith("tide-wtcfg")])
-        bs.mark_in_use("proj", "proj", "s1")
+        # Dane obu worktrees powstają przed migawką strażnika (późniejszy obcy config
+        # byłby naruszeniem PT-170 niezależnie od wyłączonej flagi extensions.worktreeConfig).
         other = os.path.join(self.wt_root, "pt-2")
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-2", other)
         with open(os.path.join(self.repo, ".git", "worktrees", "pt-2", "config.worktree"), "w") as fh:
             fh.write("[core]\n")
-        self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2"))
+        self.runner().start(self.step())
+        self.assertFalse([n for n in self.device_map() if n.startswith("tide-wtcfg")])
+        bs.mark_in_use("proj", "proj", "s1")
+        self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2", branch="feat/pt-2"))
         self.assertEqual(len([line for line in calls(self.env) if line.startswith("incus stop")]), 1)
         self.assertEqual(len(self.popen_calls), 2)
 
@@ -484,14 +486,14 @@ class DevicesTest(BoxRunnerCase):
         before = len(self.adds())
         other = os.path.join(self.wt_root, "pt-2")
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-2", other)
-        self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2"))
+        self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2", branch="feat/pt-2"))
         self.assertEqual(len(self.adds()), before)
         self.assertFalse([line for line in calls(self.env) if line.startswith("incus stop")][1:])
 
     def test_parallel_first_steps_add_devices_once(self):
         other = os.path.join(self.wt_root, "pt-2")
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-2", other)
-        steps = [self.step(), self.step(worktree=other, step_dir=other + ".step", step_id="s2")]
+        steps = [self.step(), self.step(worktree=other, step_dir=other + ".step", step_id="s2", branch="feat/pt-2")]
         errors = []
         barrier = threading.Barrier(2)
 
@@ -720,9 +722,11 @@ class DemoArgsTest(unittest.TestCase):
         """Próba ręczna PT-169: `--push-tide-step` po slugu trafiało do polecenia, a krok szukał
         /usr/local/bin/tide-step."""
         args, command = br.demo_args(["tide-proto", "--worktree", "/w", "--push-tide-step", "--card", "K-38",
+                                      "--branch", "ticket/probe",
                                       "--", "/bin/sh", "-c", "echo --worktree"])
         self.assertEqual((args.slug, args.worktree, args.push_tide_step, args.card),
                          ("tide-proto", "/w", True, "K-38"))
+        self.assertEqual(args.branch, "ticket/probe")
         self.assertEqual(command, ["/bin/sh", "-c", "echo --worktree"])
 
     def test_command_is_required_after_double_dash(self):
@@ -730,6 +734,10 @@ class DemoArgsTest(unittest.TestCase):
             for argv in (["tide-proto", "true"], ["tide-proto", "--"]):
                 with self.subTest(argv=argv), self.assertRaises(SystemExit):
                     br.demo_args(argv)
+
+    def test_demo_requires_explicit_expected_branch(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            br.demo_args(["tide-proto", "--", "true"])
 
 
 class TideStepTest(unittest.TestCase):

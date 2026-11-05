@@ -51,7 +51,11 @@ class WorktreeTestCase(unittest.TestCase):
     def git_calls(self) -> list[str]:
         try:
             with open(self.log, encoding="utf-8") as fh:
-                return fh.read().splitlines()
+                lines = fh.read().splitlines()
+            prefix = "-c core.hooksPath=/dev/null -c core.fsmonitor=false "
+            for line in lines:
+                self.assertTrue(line.startswith(prefix), line)
+            return [line[len(prefix):] for line in lines]
         except OSError:
             return []
 

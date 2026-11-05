@@ -5,6 +5,23 @@ tu wiersze; do `docs/decisions.md` przenosi je wyłącznie ticket dokumentów (#
 Etykieta jest stała — skrypty i testy mogą się do niej odwoływać (np. `tryb-admin` odblokowuje
 `--project-mode admin` w `scripts/box/install.sh`).
 
+## PT-170: strażnik refów (2026-11-05)
+
+### AUTO: Inne karty czekają na zwolnienie strażnika tego repozytorium
+
+- **Powód**: D7 dopuszcza gałęzie aktywnych ticketów tej samej karty. Jednoczesne kroki różnych
+  kart w tym samym repozytorium powodowałyby cofanie ich legalnych commitów jako obcych zmian.
+- **Skutek**: `boxstep.place` kolejkuje inną kartę, a `refguard.begin` ponownie sprawdza warunek
+  pod blokadą. Równoległe tickety tej samej karty pozostają dozwolone. Reguła D7 nie jest rozszerzana.
+
+### AUTO: Migawki uwzględniają konkretne operacje gita wykonywane przez usługę
+
+- **Powód**: podczas kroku Tide tworzy gałęzie kolejnych ticketów, zapisuje stan planu na gałęzi
+  karty, scala zakończone tickety i usuwa ich worktrees. Ich zmiany nie pochodzą od agenta.
+- **Skutek**: pod wspólną blokadą `gitops` aktualizuje w migawkach tylko wskazany ref lub
+  `config.worktree` usuwanego worktree, gdy wartość sprzed operacji zgadzała się z migawką.
+  Inne zmiany pozostają naruszeniami; nie poszerzamy zbioru refów dozwolonych agentowi.
+
 | Etykieta | Data | Ticket | Treść | Uzasadnienie |
 | --- | --- | --- | --- | --- |
 | motd-tylko-budowa | 2026-11-05 | PT-192 | **AUTO:** `motd.ubuntu.com` w `base.yaml` jest domeną wyłącznie budowy (`build-domains`), bez dodawania jej do polityki kroków ani słownika domen pracy. `STACKS_VERSION` podbity razem ze zmianą listy. | Próba z 18:38: jedyne odmowy obu udanych budów to po osiem połączeń do tej domeny. Odczyt skryptu Ubuntu `50-motd-news` potwierdził serwis powitalny. Realizuje kryterium wyjaśnienia odmów i dopisania domeny do szablonu; nie zmienia skryptu obrazu bazowego. |

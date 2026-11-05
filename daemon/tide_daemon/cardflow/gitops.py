@@ -20,20 +20,21 @@ import threading
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from ..tasks.agentcmd import StepError, resolve_git_dir
 from ..tasks.stepstop import StepGit, sandbox_available
+from ..gitcommand import HOST_OPTIONS
 
-HARDENED = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null",
+HARDENED = (*HOST_OPTIONS, "-c", "core.attributesFile=/dev/null",
             "-c", "submodule.recurse=false", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false",
             "-c", "gc.auto=0")
 FALLBACK_IDENTITY = ("-c", "user.name=Tide", "-c", "user.email=tide@localhost")
 
-_locks: dict[str, threading.Lock] = {}
+_locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
 
-def lock_for(repo: str) -> threading.Lock:
+def lock_for(repo: str):
     key = os.path.realpath(repo)
     with _locks_guard:
-        return _locks.setdefault(key, threading.Lock())
+        return _locks.setdefault(key, threading.RLock())
 
 
 def _foreign_changes(porcelain: str) -> list[str]:
@@ -64,6 +65,12 @@ class FlowGit:
         self.git = git or Git(timeout=120)
 
     def run(self, cwd: str, *args, timeout=None):
+        # Legalne scalenie i sprzątanie ticketu może wypaść w czasie innego kroku.
+        # Aktualizujemy tylko konkretne ścieżki/refy zmieniane przez tę operację usługi.
+        if args and (args[0] == "update-ref" or args[:2] in (("worktree", "remove"), ("worktree", "add"))):
+            from ..box import refguard
+            with refguard.host_operation(cwd, args):
+                return self.git.run(cwd, *HARDENED, *args, timeout=timeout)
         return self.git.run(cwd, *HARDENED, *args, timeout=timeout)
 
     def main_branch(self, repo: str) -> str:
@@ -220,7 +227,9 @@ class FlowGit:
                 return {"commit": self.sha(repo, branch), "already": True}
             if changed.code != 1:
                 raise FlowGitError("nie można sprawdzić zmian planu w indeksie karty")
-            made = work_git.run("commit", "-m", "docs(plan): update card ticket plan", "--", *files)
+            from ..box import refguard
+            with refguard.host_operation(repo, ("update-ref", f"refs/heads/{branch}")):
+                made = work_git.run("commit", "-m", "docs(plan): update card ticket plan", "--", *files)
             if not made.ok:
                 raise FlowGitError("nie można zapisać planu na gałęzi karty: " + made.err)
             return {"commit": self.sha(repo, branch), "already": False}

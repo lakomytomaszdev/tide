@@ -42,6 +42,7 @@ from .. import codex_homes
 from ..agents.claude import synthetic_user
 from ..agents.jsonl import JsonlTail, read_head
 from ..worktrees.git import MAIN_CANDIDATES, Result
+from ..gitcommand import git_argv
 from .agentcmd import EXIT_CODE_FILE
 
 WIP_MESSAGE = "WIP: step stopped before it finished"
@@ -255,7 +256,7 @@ class StepGit:
 
     def run(self, *args, timeout=120) -> Result:
         try:
-            proc = subprocess.run([*self.sandbox(), "git", *self.opts, *args], capture_output=True, text=True,
+            proc = subprocess.run([*self.sandbox(), *git_argv(*self.opts, *args)], capture_output=True, text=True,
                                   errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired) as exc:

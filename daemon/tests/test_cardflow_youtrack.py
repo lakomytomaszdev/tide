@@ -224,7 +224,7 @@ class YouTrackFlowTest(FlowInProcess):
         self.approve_environment(card)
         # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.
         self.fake.comment_status = 503
-        self.flow = self.make_flow()
+        self.restart()
         self.flow.engine.tracker.clock = lambda: 10**12
         self.wait_column(card, 'review')
         self.assertEqual({s['ticket'] for s in self.of(card, 'step.started') if s['kind'] == 'ticket'},
