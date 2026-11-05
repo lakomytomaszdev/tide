@@ -3,7 +3,9 @@
 Typy zdarzeń (schemat 1, PT-58):
 - `card.started` — zlecenie: entry (now), executor, program, model, check,
 - `intent` / `result` — para „zamiar → wynik” akcji ze skutkami poza dziennikiem: action (reserve, card-branch,
-  ticket-branch, step-start, merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
+  ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
+- `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,
+- `main-merge.abandoned` — porzucenie zamiaru po decyzji użytkownika, bez cofania materializacji,
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
@@ -11,7 +13,8 @@ Typy zdarzeń (schemat 1, PT-58):
   `ticket.rejected` (ticket).
 
 Kolumna (ręczne kolumny wygrywają z dziennikiem):
-- Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono),
+- Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono);
+  wyjątek: scalenie przerwane po zapisie kolumny, przed card.finished, nadal może jawnie czekać na recovery,
 - Backlog — „wstrzymana”, gdy kartę wstrzymano po zleceniu (inaczej bez stanu),
 - Do zrobienia — z dziennika: krok trwa albo scalanie czeka → W toku; pytanie, brak zgody, błąd kroku albo nieudane
   scalenie → Czeka na mnie; ticket na gałęzi karty → Do sprawdzenia. Karta przeniesiona ręcznie do Do zrobienia po
@@ -94,6 +97,8 @@ class FlowState:
     card_finished: bool = False
     closed: dict | None = None
     main_merged: dict | None = None
+    merge_waiting: dict | None = None
+    abandoned_main_merges: set = field(default_factory=set)
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
@@ -112,6 +117,7 @@ class FlowState:
 
     def open_intents(self, *, include_background=False) -> list[dict]:
         return [i for k, i in self.intents.items() if k not in self.results and
+                not (i.get("action") == "main-merge" and i.get("key") in self.abandoned_main_merges) and
                 (include_background or i.get('action') != 'youtrack-note')]
 
     def tracker_failures(self):
@@ -144,6 +150,11 @@ class FlowState:
             return "Konsola kroku tej karty jest jeszcze otwarta"
         if self.merge_pending():
             return "zatwierdzony ticket czeka na scalenie"
+        if not self.card_finished and any(i.get("action") == "main-merge" and
+                                         i.get("key") not in self.abandoned_main_merges and
+                                         i.get("requestSeq") == (self.started or {}).get("seq")
+                                         for i in self.intents.values()):
+            return "scalenie karty jest zaczęte i niedokończone"
         if self.open_intents():
             return "akcja karty jest zaczęta i niedokończona"
         if self.moved_to == "todo":
@@ -209,6 +220,7 @@ def fold(events: list[dict]) -> FlowState:
             st.superseded.update(st.steps)
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
             st.closed = st.main_merged = None
+            st.merge_waiting = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
@@ -395,6 +407,14 @@ def fold(events: list[dict]) -> FlowState:
             st.closed = e
         elif kind == "card.main-merged":
             st.main_merged = e
+        elif kind == "main-merge.waiting":
+            st.merge_waiting = e
+        elif kind == "main-merge.resumed":
+            st.merge_waiting = None
+        elif kind == "main-merge.abandoned":
+            st.abandoned_main_merges.add(e.get("key"))
+            if (st.merge_waiting or {}).get("key") == e.get("key"):
+                st.merge_waiting = None
         elif kind == "card.moved":
             st.store_column = e.get("to") or ""
             st.store_move_id = e.get("moveId") or ""
@@ -631,7 +651,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if st.started is None:
         return None
     column = card.get("column") or "backlog"
-    if column in ("done", "archived"):
+    if column in ("done", "archived") and not (st.merge_waiting and not st.card_finished):
         return None
     from .decisions import build_decisions
     decisions = build_decisions(st)
@@ -687,6 +707,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    if st.merge_waiting:
+        return _fill(out, "waiting", "Scalenie czeka: " + st.merge_waiting["reason"])
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)

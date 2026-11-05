@@ -877,7 +877,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
-| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
+| `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -2469,6 +2469,43 @@ przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowa
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
-Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
+Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
 `card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
 gałęzi głównej.
+
+PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
+z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
+`targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
+i początkowe drzewo materializacji (`materializationBaseTree`). Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
+`main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
+i `projected`. Wynik zawiera pola potrzebne przyszłemu ogólnemu zakończeniu scalenia;
+obecnie nadal powstają pojedyncze `card.main-merged` i `card.finished`.
+
+Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
+na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Nierozstrzygnięte pytanie o bazę
+blokuje zarówno jawne scalenie (także ponowienie), jak i recovery z ticku do decyzji użytkownika.
+Zmiana nazwanej głównej,
+obcy ref, indeks albo kolizje lokalnej pracy w scalanych ścieżkach powodują `main-merge.waiting`
+i „Czeka na mnie”, bez cofania plików i bez drugiego scalenia. Pliki ignorowane są sprawdzane pod
+kątem kolizji nazw, bez odczytywania i hashowania ich treści. Niezwiązane edycje i artefakty nie blokują
+recovery. Gdy ref wskazuje `resultCommit` (albo jego potomka po dalszych commitach użytkownika), git jest
+zakończony: recovery sprawdza SHA i drzewo wyniku, a następnie dokańcza wynik oraz projekcję niezależnie od dalszej
+pracy w indeksie, checkoutcie i źródle oraz od późniejszej zmiany `tide.mainBranch` — polityka gałęzi głównej
+dotyczy tylko wykonania przed przesunięciem refu. Kolizje z plikami nieśledzonymi i ignorowanymi sprawdzamy
+wyłącznie w scalanych ścieżkach i ich rodzicach (pathspec), bez wyliczania całych ignorowanych katalogów.
+
+Oczekiwanie nie zatrzymuje synchronizacji ruchów użytkownika, poprawki planu ani pozostałych kroków karty.
+Po usunięciu przyczyny wznowienie używa tego samego ID. „Do poprawy”, zwrot planu, nowe domknięcie lub ręczne zakończenie
+po zamiarze zapisuje `main-merge.abandoned`, jeśli wynik nie trafił do refu celu i nie zapisano sukcesu —
+także przy obcym refie (np. commit użytkownika na głównej), z materializacją albo bez niej. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
+i nie pozwala dalej wznawiać starego zamiaru. Kolejne domknięcie wymaga nowego jawnego scalenia.
+W tym samym zleceniu nowa operacja może przejąć dokładny indeks porzuconej materializacji przy tym samym
+celu i niezmienionym refie; kontrola lokalnych kolizji nadal obejmuje stare i nowe scalane ścieżki.
+Bez takiej decyzji obcy ref pozostaje jawnym oczekiwaniem; nigdy nie jest zgodą na ponowne wykonanie,
+reset ani nadpisanie. Porzucenie przy obcym refie nie dotyka refu, indeksu ani plików, a materializacja,
+która została w checkoutcie, nie jest dziedziczona (wymaga niezmienionego refu) — nowe scalenie odmówi jak przy
+obcych staged.
+Niezwiązane zmiany niezapisane w indeksie pozostają obsługiwane (K-43); obce staged nadal są odmawiane.
+Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
+przygotowaniem; wspólna własność nowych zasobów należy do PT-206.
