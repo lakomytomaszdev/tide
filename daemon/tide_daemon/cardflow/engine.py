@@ -4409,6 +4409,11 @@ class FlowEngine(PlanEditing):
                             answer=note, command=command, executor="", auto=True)
 
     def suggest_card_base(self, card_id: str, request: dict) -> dict:
+        result = self.prepare_card_base_suggestion(card_id, request)
+        return result() if callable(result) else result
+
+    def prepare_card_base_suggestion(self, card_id: str, request: dict):
+        """Lokalny wynik albo odczyt hostingu pracujący wyłącznie na przygotowanej migawce."""
         from .basesuggestions import suggest_text
         if not isinstance(request, dict) or set(request) - {"text", "revision", "scope"}:
             raise FlowError("bad-request", "analiza przyjmuje text, revision i scope")
@@ -4418,8 +4423,6 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "wymagane: text (do 200000 znaków), nieujemna revision i scope text|files|links")
         card, project = self._project(card_id)
         identity = {"revision": revision, "card": card_id, "project": project.slug, "repo": project.repo}
-        if scope == "links":
-            return {"ok": True, **identity, "candidates": [], "warnings": ["To źródło podpowiedzi nie jest jeszcze obsługiwane."]}
         if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
         if scope == "files":
@@ -4429,7 +4432,28 @@ class FlowEngine(PlanEditing):
             branches = self.git.list_branches(project.repo, "", 2**31, "base")["branches"]
         except FlowGitError as exc:
             raise FlowError("suggestions", str(exc)) from None
-        return {"ok": True, **identity, **suggest_text(branches, card.description, text)}
+        if scope == "links":
+            from .linksuggestions import remote_config, suggest_links
+            try:
+                remotes = remote_config(self.git, project.repo)
+            except Exception as exc:
+                # Wyłącznie typ błędu: repr wyjątku może zawierać URL albo poświadczenia.
+                print(f"tide-daemon: SuggestCardBase: {type(exc).__name__}", flush=True)
+                return {"ok": True, **identity, "candidates": [],
+                        "warnings": ["Nie można sprawdzić linków. Wybierz bazę ręcznie."]}
+            repo, description = project.repo, card.description
+
+            def read_links():
+                try:
+                    suggestions = suggest_links(None, repo, branches, description, text, remotes=remotes)
+                except Exception as exc:
+                    print(f"tide-daemon: SuggestCardBase: {type(exc).__name__}", flush=True)
+                    suggestions = {"candidates": [], "warnings": ["Nie można sprawdzić linków. Wybierz bazę ręcznie."]}
+                return {"ok": True, **identity, **suggestions}
+
+            return read_links
+        suggestions = suggest_text(branches, card.description, text)
+        return {"ok": True, **identity, **suggestions}
 
     def list_card_branches(self, card_id: str, request: dict) -> dict:
         if set(request) - {"purpose", "text", "limit"}:

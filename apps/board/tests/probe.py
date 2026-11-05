@@ -46,6 +46,7 @@ class Scripted(module.Backend):
         self.branch_calls = []
         self.suggestion_replies = []
         self.suggestion_calls = []
+        self.suggestion_delay = 10
 
     def _write(self, tag, member, args):
         if member == "SuggestCardBase":
@@ -58,7 +59,7 @@ class Scripted(module.Backend):
                      "project": project["slug"], "repo": project["repo"], "candidates": [], "warnings": []}
             if self.suggestion_replies:
                 reply.update(self.suggestion_replies.pop(0))
-            QTimer.singleShot(10, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            QTimer.singleShot(self.suggestion_delay, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
             return
         if member == "ListCardBranches":
             # Odczyty nie zużywają scenariuszy zapisów istniejących testów formularza.

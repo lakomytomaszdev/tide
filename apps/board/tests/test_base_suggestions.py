@@ -5,6 +5,32 @@ from . import test_view as view
 
 
 class BaseSuggestionsTest(view.ProbeCase):
+    def test_late_links_reply_preserves_manual_base_and_start_sha(self):
+        candidate = {"ref": "refs/remotes/fork/source", "name": "fork/source", "commit": "b" * 40,
+                     "source": "links", "strength": "explicit", "selectable": True, "evidence": []}
+        out = self.probe(view.FIND_PY + f'''
+js("page.openLaunch('K-15', false); page.launchDialog.entry = 'now'")
+wait(400)
+backend.suggestion_delay = 100
+backend.suggestion_replies.append({dict(candidates=[candidate], warnings=[])!r})
+js(FIND + "(page.launchDialog, 'checkBaseLinks').clicked()")
+out["scope"] = json.loads(backend.suggestion_calls[-1][2])["scope"]
+out["loading"] = js("page.launchDialog.baseSuggestions.loading")
+js("page.launchDialog.basePicker.selected = ({{ref: 'refs/heads/manual', commit: '" + 'c' * 40 + "'}})")
+wait(150)
+out["base"] = js("[page.launchDialog.launchState.baseRef, page.launchDialog.launchState.baseCommit]")
+out["candidates"] = js("page.launchDialog.baseSuggestions.candidates.length")
+replies.append({{"ok": False, "message": "Koniec po żądaniu"}})
+js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+wait(50)
+out["request"] = json.loads(next(c[2] for c in calls() if c[0] == 'StartCard'))
+''')
+        self.assertEqual(out["scope"], "links")
+        self.assertTrue(out["loading"])
+        self.assertEqual(out["base"], ["refs/heads/manual", "c" * 40])
+        self.assertEqual(out["candidates"], 0)
+        self.assertEqual((out["request"]["baseRef"], out["request"]["baseCommit"]), tuple(out["base"]))
+
     def test_files_probe_shows_touch_evidence_and_requires_explicit_use(self):
         candidate = {"ref": "refs/heads/feature/files", "name": "feature/files", "commit": "b" * 40,
                      "source": "files", "strength": "heuristic", "selectable": True, "reason": "",
@@ -36,6 +62,40 @@ out["request"] = json.loads(next(c[2] for c in calls() if c[0] == 'StartCard'))
         self.assertIn("częściowy", out["message"])
         self.assertEqual((out["request"]["baseRef"], out["request"]["baseCommit"]),
                          (candidate["ref"], candidate["commit"]))
+
+    def test_links_are_on_demand_stale_local_choice_and_late_manual_selection(self):
+        candidate = {"ref": "refs/remotes/fork/feature/source", "name": "fork/feature/source", "commit": "b" * 40,
+                     "source": "links", "strength": "explicit", "selectable": True, "reason": "Nieaktualny ref",
+                     "stale": True, "localCommit": "b" * 40, "sourceCommit": "c" * 40, "evidence": [],
+                     "host": "git.example.org", "project": "team/proj", "sourceProject": "user/proj",
+                     "sourceBranch": "feature/source", "targetBranch": "main",
+                     "link": "https://git.example.org/team/proj/-/merge_requests/17"}
+        out = self.probe(view.FIND_PY + f'''
+js("page.openLaunch('K-15', false); page.launchDialog.entry = 'now'")
+wait(400)
+out["autoScopes"] = [json.loads(c[2])["scope"] for c in backend.suggestion_calls]
+backend.suggestion_replies.append({dict(candidates=[candidate], warnings=[])!r})
+js(FIND + "(page.launchDialog, 'checkBaseLinks').clicked()")
+wait(100)
+out["scope"] = json.loads(backend.suggestion_calls[-1][2])["scope"]
+out["before"] = js("page.launchDialog.basePicker.selected.ref")
+out["label"] = js(FIND + "(page.launchDialog, 'useBaseSuggestion0').children[0].text")
+out["evidence"] = js(FIND + "(page.launchDialog, 'baseEvidence0').text")
+js(FIND + "(page.launchDialog, 'useBaseSuggestion0').clicked()")
+out["picked"] = js("[page.launchDialog.launchState.baseRef, page.launchDialog.launchState.baseCommit]")
+replies.append({{"ok": False, "message": "Koniec po żądaniu"}})
+js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+wait(50)
+out["request"] = json.loads(next(c[2] for c in calls() if c[0] == 'StartCard'))
+''')
+        self.assertEqual(set(out["autoScopes"]), {"text"})
+        self.assertEqual(out["scope"], "links")
+        self.assertEqual(out["before"], "refs/heads/master")
+        self.assertEqual(out["label"], "Użyj stanu lokalnego " + candidate["ref"])
+        self.assertIn("SHA API: " + candidate["sourceCommit"], out["evidence"])
+        self.assertIn("SHA lokalny: " + candidate["localCommit"], out["evidence"])
+        self.assertEqual(out["picked"], [candidate["ref"], candidate["commit"]])
+        self.assertEqual((out["request"]["baseRef"], out["request"]["baseCommit"]), tuple(out["picked"]))
 
     def test_explicit_use_full_name_plain_evidence_and_start(self):
         name = "feature/" + "bardzo-dluga-nazwa-" * 18 + "<tag>"

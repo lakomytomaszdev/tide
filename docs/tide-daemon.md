@@ -869,7 +869,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `ListCardBranches(s id, s request)` | `→ s` | lokalne gałęzie repozytorium projektu karty: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
-| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tylko odczyt, obsługuje tekst i lokalną historię plików |
+| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tekst i historia plików lokalnie, linki PR/MR przez CLI; files/links wyłącznie na żądanie |
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
@@ -1684,8 +1684,8 @@ gałęzi `kind`, `remote`). Dla tekstu `source: text`, `strength: explicit`, a `
 nazwa może być przycięta w dowodzie; kandydat zachowuje pełną nazwę i ref. Odpowiedź zawiera najwyżej
 32 kandydatów, po 5 dowodów na ref łącznie z obu pól, i 20 ostrzeżeń o nieznanych nazwach (nazwa do
 256 znaków), poza komunikatem o konflikcie i ograniczeniu listy. Kontekst polecenia obejmuje najwyżej
-80 znaków przed tokenem. Dowody są zwykłym tekstem. Zakres `links` jest zarezerwowany:
-obecnie zwraca pustą listę oraz ostrzeżenie, bez odczytu hostingu.
+80 znaków przed tokenem. Dowody są zwykłym tekstem. Historia plików i linki PR/MR
+mają osobne przyciski i wymagają jawnego żądania użytkownika.
 
 Okno zlecenia analizuje tekst po krótkiej pauzie. Odpowiedź przyjmuje tylko dla bieżącego tagu,
 revision, karty, projektu i repozytorium. Zmiana tekstu, kontekstu lub wyboru unieważnia oczekującą
@@ -1720,6 +1720,48 @@ końcowego nie podwyższa oceny. Identyczna ocena daje identyczny `rank`, także
 kilku gałęzi; kolejność alfabetyczna jest wyłącznie porządkiem prezentacji. Wspólna lista pokazuje
 pozycję, ścieżkę, dotykający commit i czas. Dopiero „Użyj <pełny ref>” zmienia ręczną bazę, a start
 przekazuje wybrany SHA do istniejącego mechanizmu utrwalania bazy.
+
+**Podpowiedzi PR/MR (PT-198).** „Sprawdź linki PR/MR” wysyła `scope: links`; automatyczna analiza tekstu
+nie odpytuje hostingu. Adaptery `gh api` i `glab api` korzystają z istniejącego logowania CLI, bez konfiguracji
+integracji w Tide. Rozpoznają wyłącznie HTTPS `/owner/repo/pull/N` i `/grupa/podgrupa/repo/-/merge_requests/N`
+na hoście i w projekcie zgodnym ze skonfigurowanym remote (SSH/scp/HTTPS oznaczają tę samą tożsamość).
+Userinfo, query, obce projekty/hosty i inne rodzaje URL są odrzucane przed uruchomieniem CLI.
+Aliasy remote przez `url.<base>.insteadOf` nie są rozwijane: np. `gh:team/proj` wymaga remote
+z pełnym adresem SSH/HTTPS, inaczej link dostanie ostrzeżenie o niezgodności z remote.
+Najwyżej 4 różne linki na analizę, wspólny termin 10 sekund dla wszystkich odczytów (także projektów
+źródłowych/docelowych GitLaba) i 1 MiB łącznego stdout/stderr na wywołanie CLI. Po upływie terminu
+wraca dotychczasowy wynik z ostrzeżeniem. Migawka karty, gałęzi i remote powstaje w szeregowym wątku
+przepływu; hosting jest odczytywany w osobnej puli, bez blokad gita i dziennika. Jednocześnie mogą trwać
+dwie analizy hostingu; kolejne dostają błąd zajętości bez kolejki sieciowej. StartCard i tick nie czekają na CLI.
+
+Kandydat `source: links` dodaje `{host, project, sourceProject, sourceBranch, sourceCommit, targetBranch,
+link, localCommit, stale}`. Target nigdy nie jest proponowaną bazą. Źródłowe repozytorium musi mieć
+odpowiedni remote; lokalny ref musi wynikać z jego refspec fetch albo jawnej konfiguracji upstream lokalnej
+gałęzi. Nakładające się mapowania refu z obcych repozytoriów są niejednoznaczne. Sama zgodność nazwy
+lokalnej gałęzi z forkiem nie wystarcza. Brak źródła daje niewybieralną pozycję z `reason`.
+Nie wykonuje się fetch. Rozbieżne SHA API i lokalnego refu są widoczne razem; „Użyj stanu lokalnego
+<pełny ref>” przekazuje lokalny SHA do istniejącego wyboru bazy i `StartCard`.
+
+Bramka `gh` wykonuje jeden ustalony GET HTTPS na wywołanie i odrzuca wszystkie przekierowania.
+CLI używa klucza `http_unix_socket` z tymczasowego `GH_CONFIG_DIR/config.yml`; `hosts.yml` jest wyłącznie
+dowiązaniem do istniejącego pliku konfiguracji użytkownika (bez kopiowania i odczytu sekretów przez Tide).
+Tymczasowy `config.yml` zawiera też `version: "1"`: bez niego gh uruchamia migrację konfiguracji
+i zapisuje `hosts.yml` przez dowiązanie. Gdy `hosts.yml` istnieje, a `config.yml` użytkownika nie ma
+`version: "1"` (magazyn niezmigrowany), Tide nie uruchamia gh i zwraca ostrzeżenie; Tide czyta z
+`config.yml` tylko klucz `version`.
+Nieobsługiwany transport kończy się błędem przez zastępcze proxy bez dostępu do hostingu.
+`glab` dostaje jawne `GLAB_PROXY` wskazujące lokalne proxy TCP oraz `GLAB_API_PROTOCOL=https`
+i `API_PROTOCOL=https`. Proxy przyjmuje tylko `CONNECT` do ustalonego hosta na porcie 443; odrzuca obcy
+host, inny port i zwykły HTTP bez połączenia wychodzącego. Nie odszyfrowuje TLS ani nie widzi tokena.
+Przekierowanie HTTPS na tym samym hoście może być obsłużone przez `glab` wewnątrz tunelu; przekierowanie
+na obcy host lub HTTP zatrzymuje proxy. TLS weryfikuje CLI (wymuszone `skip_tls_verify=false`).
+Transport ma limit 2 MiB na tunel z narzutem TLS, niezależnie od limitu 1 MiB stdout/stderr i terminu analizy.
+Poświadczenia nie są odczytywane przez `auth token`, zapisywane ani zwracane. Wynik zawiera tylko
+dozwolone pola metadanych; stderr i surowy
+JSON CLI nie trafiają do odpowiedzi ani dziennika. Opis i polecenie służą wyłącznie wyodrębnieniu linków,
+nie są wysyłane do hostingu. Brak CLI, logowania, sieci, PR/MR, błędny JSON, limit lub timeout daje ostrzeżenie;
+ręczny lokalny start pozostaje dostępny. Dla hostów z wymaganym zewnętrznym proxy należy wybrać bazę lokalnie;
+adapter nie przejmuje konfiguracji pośrednika ani logowania.
 
 **Baza startu karty (PT-194, PT-211).** Od razu, Mam plan (`entry: import`), propozycja z Konsoli
 (`entry: plan`) i oba istniejące tryby Planowania korzystają z jednego rozstrzygnięcia bazy.

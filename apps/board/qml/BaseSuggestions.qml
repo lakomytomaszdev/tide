@@ -18,7 +18,7 @@ ColumnLayout {
     property var candidates: []
     property string message: ""
     property bool loading: false
-    property string scope: "text"
+    property string pendingScope: "text"
     signal requested(var request)
     signal chosen(var candidate)
 
@@ -30,15 +30,15 @@ ColumnLayout {
         loading = false
         debounce.restart()
     }
-    function refresh(source) {
+    function refresh(scope) {
         if (!active || !cardId || !project || !repo) return
         debounce.stop()
-        scope = source || "text"
         pendingTag = ""
         candidates = []
         message = ""
         loading = true
-        requested({text: text, revision: revision, scope: scope})
+        pendingScope = scope || "text"
+        requested({text: text, revision: revision, scope: pendingScope})
     }
     function receive(tag, reply) {
         if (!active || !pendingTag || tag !== pendingTag) return
@@ -65,12 +65,6 @@ ColumnLayout {
     visible: active
     spacing: 8
     FieldLabel { text: "Podpowiedzi bazy z opisu i polecenia" }
-    QQC2.Button {
-        objectName: "checkBaseFiles"
-        text: "Sprawdź lokalną historię plików"
-        enabled: !suggestions.loading
-        onClicked: suggestions.refresh("files")
-    }
     Text {
         Layout.fillWidth: true
         text: "Podpowiedź nie zmienia bazy. Użyj pełnego refu, a następnie uruchom kartę."
@@ -79,6 +73,18 @@ ColumnLayout {
         color: Tide.Tokens.textSecondary
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 12
+    }
+    QQC2.Button {
+        objectName: "checkBaseFiles"
+        text: "Sprawdź lokalną historię plików"
+        enabled: !suggestions.loading
+        onClicked: suggestions.refresh("files")
+    }
+    QQC2.Button {
+        objectName: "checkBaseLinks"
+        text: "Sprawdź linki PR/MR"
+        enabled: !suggestions.loading
+        onClicked: { debounce.stop(); suggestions.refresh("links") }
     }
     QQC2.ScrollView {
         Layout.fillWidth: true
@@ -99,6 +105,10 @@ ColumnLayout {
                         objectName: "baseEvidence" + index
                         Layout.fillWidth: true
                         text: modelData.source + " · " + modelData.strength + " · " + modelData.commit + "\n"
+                              + (modelData.source === "links" ? modelData.link + "\n"
+                                 + "Źródło: " + modelData.host + "/" + modelData.sourceProject + " · " + modelData.sourceBranch
+                                 + "\nSHA API: " + modelData.sourceCommit + "\nSHA lokalny: " + (modelData.localCommit || "brak")
+                                 + "\nCel PR/MR: " + modelData.targetBranch + "\n" : "")
                               + (modelData.source === "files" ? "Pozycja " + modelData.rank + " · ścieżki: " + modelData.matchedPaths + "\n" : "")
                               + (modelData.evidence || []).map(e => modelData.source === "files"
                                   ? e.path + " · commit " + e.commit + " · " + e.time
@@ -132,7 +142,7 @@ ColumnLayout {
                             anchors.right: parent.right
                             anchors.margins: 8
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Użyj " + modelData.ref
+                            text: (modelData.stale ? "Użyj stanu lokalnego " : "Użyj ") + (modelData.ref || modelData.name)
                             textFormat: Text.PlainText
                             wrapMode: Text.WrapAnywhere
                             color: modelData.selectable ? Tide.Tokens.accent : Tide.Tokens.textMuted
@@ -147,7 +157,8 @@ ColumnLayout {
     }
     Text {
         Layout.fillWidth: true
-        text: suggestions.loading ? (suggestions.scope === "files" ? "Analizuję lokalną historię plików…" : "Analizuję tekst…")
+        text: suggestions.loading ? (suggestions.pendingScope === "links" ? "Sprawdzam linki PR/MR…"
+                                    : suggestions.pendingScope === "files" ? "Analizuję lokalną historię plików…" : "Analizuję tekst…")
               : suggestions.message || (suggestions.candidates.length ? "" : "Brak jawnych wskazań znanych gałęzi.")
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
