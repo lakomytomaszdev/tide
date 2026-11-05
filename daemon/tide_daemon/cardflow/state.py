@@ -93,6 +93,7 @@ class FlowState:
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
     reviewer_overrides: dict = field(default_factory=dict)  # ticket → recenzent po ręcznym transferze
+    author_overrides: dict = field(default_factory=dict)  # ticket → autor kolejnych poprawek po przepięciu
     transfer_requests: dict = field(default_factory=dict)  # krok → trwała intencja przekazania
     inputs: dict = field(default_factory=dict)
     waiting: dict = field(default_factory=dict)
@@ -346,6 +347,11 @@ def fold(events: list[dict]) -> FlowState:
                 st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            if e.get("ticket") and e.get("kind") in ("ticket", "fix"):
+                # Krok autora ruszył — każde inne czekanie autora tego ticketu jest nieaktualne (05.11, K-37/PT-147:
+                # poprawki szły na Codexie, a kafelek dalej pisał „czeka na limit” z wpisu sprzed przepięcia).
+                for other in ("ticket", "fix"):
+                    st.waiting.pop((e.get("ticket"), other), None)
             if e.get("kind") == "plan-review":
                 # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
                 # na zawsze pokazywała „czeka na limit” i chowała decyzję Ponów / Zmień wykonawcę).
@@ -457,6 +463,8 @@ def fold(events: list[dict]) -> FlowState:
             st.assignments[e.get("ticket")] = e
         elif kind == "reviewer.reassigned":
             st.reviewer_overrides[e.get("ticket")] = e
+        elif kind == "author.reassigned":
+            st.author_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
             st.flow_error_action = st.last_failed_action
@@ -977,6 +985,13 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         if waits and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " +
                          ", ".join(f"{ticket} czeka na {other}" for ticket, other in waits.items()))
+        outside = [n for n in st.outside_started] or outside_queued(st)
+        if outside and not st.running() and not attention:
+            # Polecenie poza piaskownicą innego ticketu niż ostatni krok to praca, nie „do sprawdzenia” (04.11, K-46:
+            # kafelek w „Do sprawdzenia” z notką o review KAMP-29, gdy KAMP-35 puszczał testy, a KAMP-33 czekał).
+            tickets = ", ".join(dict.fromkeys(st.steps.get(n, {}).get("ticket") or "" for n in outside))
+            what = "polecenie poza piaskownicą" if st.outside_started else "polecenie poza piaskownicą w kolejce"
+            return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + (f"{tickets}: " if tickets else "") + what)
         if st.waiting and not st.running() and not attention:
             return _fill(out, "progress", out["flow"]["waveLabel"] + " · " + next(reversed(st.waiting.values()))["reason"])
         if st.plan_approved is not None and not st.last_step and not st.open_intents():

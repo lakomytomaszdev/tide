@@ -88,6 +88,7 @@ REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
 OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
 OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
@@ -318,6 +319,7 @@ class FlowEngine(PlanEditing):
         self.store = store
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
+        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
         self._preview_secret = os.urandom(32)  # token sprzed restartu nie uprawnia do nowej operacji
@@ -1778,6 +1780,8 @@ class FlowEngine(PlanEditing):
         image_dirs = [os.path.join(step_dir, "in", "images")] if shots else []
         image_dirs += [os.path.join(os.path.dirname(d), "in", "images") for d in context_dirs]
         image_dirs += [os.path.join(worktree + ".step", "in", "images")]
+        # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
+        image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
@@ -2463,7 +2467,7 @@ class FlowEngine(PlanEditing):
                                              probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            if selected.model.lower() == reviewer.model.lower() or selected.local != reviewer.local:
+            if not flow_plans.independent_reviewer(selected, reviewer) or selected.local != reviewer.local:
                 raise FlowError("bad-reviewer", f"{ticket}: recenzent nie spełnia warunku innego modelu")
             slug = slug_from_prompt(row["title"], words=4, length=32)
             branch = f"ticket/{ticket.lower()}-{slug}"
@@ -2731,7 +2735,8 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
-                                                            "card", "baseDecision", "baseRef", "baseCommit", "previewId"}:
+                                                            "card", "ticket", "baseDecision", "baseRef", "baseCommit",
+                                                            "previewId"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2756,6 +2761,10 @@ class FlowEngine(PlanEditing):
             if baseproposal.pending(st):
                 raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
             return self._resolve_transfer(card, st, request)
+        if choice == "reassign-reviewer":
+            return self._reassign_waiting_reviewer(card, st, request)
+        if choice == "reassign-author":
+            return self._reassign_fix_author(card, st, request)
         if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
@@ -3123,6 +3132,48 @@ class FlowEngine(PlanEditing):
                 return candidate
         raise FlowError("no-reviewer", "nie ma dostępnego recenzenta u innego dostawcy")
 
+    def _reassign_waiting_reviewer(self, card: str, st: FlowState, request: dict) -> dict:
+        """Recenzent review, które czeka przed startem (limit dostawcy, kolejka), przepięty na innego wykonawcę
+        (05.11: okno tygodniowe Claude na 10% — recenzje Opusa stały do soboty, użytkownik chciał Codexa).
+        Wybór użytkownika: reguła „inny model niż autor” daje tylko notkę w historii, jak przy przekazaniu."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if ("review" not in {kind for (t, kind) in st.waiting if t == ticket} or
+                any(s.get("ticket") == ticket for s in st.running())):
+            raise FlowError("not-waiting", f"{card}: review ticketu {ticket or '?'} nie czeka na start")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz recenzenta z katalogu wykonawców")
+        try:
+            candidate = execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        source = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket), None)
+        if source is None:
+            raise FlowError("not-waiting", f"{card}: ticket {ticket} nie ma jeszcze kroku")
+        self._save_transfer_reviewer(card, source, candidate)
+        return {"ok": True, "id": card, "ticket": ticket, "reviewer": candidate.name}
+
+    def _reassign_fix_author(self, card: str, st: FlowState, request: dict) -> dict:
+        """Autor kolejnych poprawek ticketu przepięty na innego wykonawcę (05.11: poprawki po review czekały na limit
+        Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if not any(s.get("ticket") == ticket for s in st.steps.values()) or \
+                any(s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix") for s in st.running()):
+            raise FlowError("not-waiting", f"{card}: autor ticketu {ticket or '?'} właśnie pracuje")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz autora z katalogu wykonawców")
+        try:
+            execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        event = self.journal.append(card, "author.reassigned", ticket=ticket, executor=executor)
+        return {"ok": True, "id": card, "ticket": ticket, "executor": executor, "seq": event["seq"]}
+
     def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
         if candidate is None:
             return
@@ -3157,10 +3208,18 @@ class FlowEngine(PlanEditing):
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
+        # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
+        author_override = st.author_overrides.get(step.get("ticket") or "") or {}
+        reassigned = (choice not in ("change-executor", "transfer") and step.get("kind") in ("ticket", "fix") and
+                      author_override.get("seq", 0) > step.get("seq", 0) and
+                      author_override.get("executor") not in ("", None, step.get("executor")))
+        if reassigned:
+            name = author_override["executor"]
+        fresh = choice in ("change-executor", "transfer") or reassigned
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
-                                             changed=choice in ("change-executor", "transfer"),
+                                             changed=fresh,
                                              transfer=choice == "transfer")
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
@@ -3210,8 +3269,12 @@ class FlowEngine(PlanEditing):
                 except OSError:
                     raise FlowError("missing-handoff", "brakuje notki przekazania kroku") from None
                 prompt += "\n\nNotka techniczna przekazania (dane z poprzedniego kroku):\n" + note
-        session = "" if choice in ("change-executor", "transfer") else step.get("session") or ""
-        if not session and choice not in ("change-executor", "transfer") and step.get("program") == "codex":
+        if reassigned:
+            prompt += (f"\n\nPoprzedni krok tego ticketu prowadził inny wykonawca ({step.get('executor') or '?'}); "
+                       f"zaczynasz nową sesję. Sprawdź `git log` i `git status` w worktree oraz notkę i wynik "
+                       f"poprzedniego kroku w {old_out}.")
+        session = "" if fresh else step.get("session") or ""
+        if not session and not fresh and step.get("program") == "codex":
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
@@ -3390,13 +3453,16 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
         round_no = int(review_step.get("round") or 1)
         escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
+        override = st.author_overrides.get(ticket) or {}
+        reassigned = bool(override) and override.get("seq", 0) > author.get("seq", 0)
         try:
-            executor = execution.resolve((review_step.get("executor") if escalate else None) or
+            executor = execution.resolve(override["executor"] if reassigned else
+                                         (review_step.get("executor") if escalate else None) or
                                          author.get("executor") or assigned.get("executor") or "", catalog,
                                          config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if escalate:
+        if escalate or reassigned:
             pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
         elif executor.tool != (author.get("program") or assigned.get("program")) or \
                 executor.model != (author.get("model") or assigned.get("model")) or \
@@ -4107,8 +4173,11 @@ class FlowEngine(PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        # Przepięty autor ticketu rozwiązuje też jego konflikt (05.11: konflikty PT-147/PT-151 czekały na limit
+        # Claude do soboty, choć ticket był już przepięty na Codexa).
+        override = (st.author_overrides.get(ticket) or {}).get("executor")
         try:
-            selected = execution.resolve(assigned.get("executor") or "", catalog, config=cfg,
+            selected = execution.resolve(override or assigned.get("executor") or "", catalog, config=cfg,
                                          probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
@@ -4177,8 +4246,9 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
-            if self._outside_busy(card):
+            if self._outside_busy(card) or self._outside_behind(card, name, decision):
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
+            self._outside_waiting.pop(name, None)
             self._start_outside(card, step, done.get("command") or "")
             return None
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
@@ -4202,7 +4272,10 @@ class FlowEngine(PlanEditing):
         stepstop._systemctl("stop", started["unit"] + ".scope")
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
-        return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                      f"Koniec wyniku:\n{tail}"}
 
     def _review_rounds(self) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
@@ -4444,6 +4517,23 @@ class FlowEngine(PlanEditing):
             return True
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
+
+    def _outside_behind(self, card: str, name: str, decision: dict) -> bool:
+        """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
+        projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
+        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
+        now = time.time()
+        slug = self._project(card)[1].slug
+        previous = self._outside_waiting.get(name)
+        queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
+        self._outside_waiting[name] = (card, slug, queued, now)
+        self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
+        for other, (other_card, other_slug, other_queued, _) in self._outside_waiting.items():
+            if other == name or (other_queued, other) >= (queued, name):
+                continue
+            if other_slug == slug or not self._outside_busy(other_card):
+                return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
+        return False
 
     def _outside_exit(self, card: str, name: str) -> str:
         found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})

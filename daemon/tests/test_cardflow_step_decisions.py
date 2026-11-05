@@ -44,7 +44,12 @@ class StepDecisionTest(FlowInProcess):
         previous_out = os.path.join(first["stepDir"], "out")
         self.assertIn(previous_out, prompt)
         with open(os.path.join(resumed["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
-            self.assertIn(previous_out, json.load(fh)["sandbox"]["filesystem"]["allowRead"])
+            allowed = json.load(fh)["sandbox"]["filesystem"]["allowRead"]
+        self.assertIn(previous_out, allowed)
+        # 04.11, K-46/KAMP-31: długi wynik obcinany do końcówki — krok dostaje ścieżkę pełnego wyniku i może ją czytać.
+        full_log = os.path.join(first["stepDir"], "outside", "outside.log")
+        self.assertIn(f"Pełny wynik (do odczytu): {full_log}", prompt)
+        self.assertIn(os.path.dirname(full_log), allowed)
 
     def test_remembered_outside_command_runs_without_asking_next_time(self):
         first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -382,6 +387,10 @@ class StepDecisionTest(FlowInProcess):
         # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
         card = self.wait_column(card_id, "waiting")
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
+        # Kolumna „Czeka na mnie” bywa widoczna chwilę przed zapisem ostatniej automatycznej odmowy (test niestabilny).
+        self.assertTrue(wait_until(lambda: len([d for d in self.of(card_id, "step.decision") if d.get("auto")]) >= 3,
+                                   timeout=10))
+        card = self.wait_column(card_id, "waiting")
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
         self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
@@ -514,6 +523,43 @@ class StepDecisionTest(FlowInProcess):
                          [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
                           ("close", "Sonnet")])
+
+    def test_fix_author_can_be_reassigned_to_another_executor(self):
+        # 05.11: poprawki po review czekały na limit Claude — autor kolejnych poprawek przepięty na Codexa.
+        card_id = self.card(description="Test.\n\nATRAPA: review-requests 1")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" for s in self.of(card_id, "step.started")),
+                                   timeout=20), self.events(card_id))
+        ticket = self.of(card_id, "step.started")[0]["ticket"]
+        with self.assertRaises(Exception):
+            self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket, "executor": "Nikt"})
+        done = self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket,
+                                                       "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "fix" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
+        fix = next(s for s in self.of(card_id, "step.started") if s["kind"] == "fix")
+        self.assertEqual(fix["executor"], "Codex standard")
+
+    def test_resume_after_answer_uses_the_reassigned_author_in_a_fresh_session(self):
+        # 05.11, K-38/PT-192: wznowienie rozmowy Opusa czekało na limit Claude do soboty.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        ticket = self.of(card_id, "step.started")[0]["ticket"]
+        self.assertTrue(self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket,
+                                                                "executor": "Codex standard"})["ok"])
+        self.assertTrue(self.decide(card_id, choice="answer", answer="ISO 8601")["ok"])
+        self.assertTrue(wait_until(lambda: len(self.of(card_id, "step.started")) >= 2, timeout=20))
+        first, resumed = self.of(card_id, "step.started")[:2]
+        self.assertEqual(resumed["executor"], "Codex standard")
+        self.assertNotEqual(resumed.get("session") or "", first.get("session") or "")
+        call_path = os.path.join(resumed["stepDir"], "out", "fake-call.json")
+        self.assertTrue(wait_until(lambda: os.path.exists(call_path), timeout=20))
+        with open(call_path, encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertNotIn("--resume", call["argv"])
+        self.assertIn("Poprzedni krok tego ticketu prowadził inny wykonawca", call["prompt"])
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:

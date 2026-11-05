@@ -363,8 +363,10 @@ class PlanEditing:
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
         author, reviewer = catalog.get(candidate["executor"]), catalog.get(candidate["reviewer"])
-        if not author or not reviewer or author.model.lower() == reviewer.model.lower() or (author.provider == "local") != (reviewer.provider == "local"):
-            raise FlowError("bad-assignment", "wybierz znanych wykonawców z różnymi modelami w tym samym zakresie lokalnym")
+        if not author or not reviewer or not plans.independent_reviewer(author, reviewer) or \
+                (author.provider == "local") != (reviewer.provider == "local"):
+            raise FlowError("bad-assignment", "wybierz znanych wykonawców z różnym modelem albo siłą myślenia "
+                                              "w tym samym zakresie lokalnym")
         if candidate["class"] not in ("lekki", "standard", "mocny", "lokalny") or (candidate["class"] == "lokalny" and author.provider != "local"):
             raise FlowError("bad-class", "nieprawidłowa klasa")
         if not isinstance(candidate.get("body"), str) or len(candidate["body"].encode()) > plans.plan_mod.MAX_BYTES or not plans.CRITERION.search(candidate["body"]):

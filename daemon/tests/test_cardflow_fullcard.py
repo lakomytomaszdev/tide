@@ -230,6 +230,30 @@ class BackgroundTest(unittest.TestCase):
         events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1")
         self.assertEqual([s["id"] for s in view(events)["flow"]["running"]], ["K-1-PT-1-2"])
 
+    def test_card_with_outside_command_of_another_ticket_stays_in_progress(self):
+        # 04.11, K-46: ostatni krok to review APPROVE innego ticketu → kafelek trafiał do „Do sprawdzenia”,
+        # choć inny ticket puszczał testy poza piaskownicą.
+        events = approved().step("K-1-PT-2-1", ticket="PT-2", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-2-1", ticket="PT-2", choice="run", command="make test")
+        events.add("outside.started", step="K-1-PT-2-1", command="make test")
+        events.step("K-1-PT-1-1", ticket="PT-1", result="done")
+        events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus", result="done")
+        events.add("review.verdict", ticket="PT-1", round=1, verdict="APPROVE", blockers=0, majors=0, nits=0)
+        merge(events, "PT-1")
+        out = view(events)
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("PT-2: polecenie poza piaskownicą", out["note"])
+
+    def test_author_step_start_clears_stale_author_wait_of_the_ticket(self):
+        # 05.11, K-37/PT-147: wpis „czeka na limit” kroku ticket został, gdy poprawki ruszyły na innym wykonawcy.
+        events = approved()
+        events.add("step.waiting", ticket="PT-1", kind="ticket", provider="anthropic",
+                   reason="czeka na limit Claude do sobota 18:00", cause="quota", until="sobota 18:00")
+        events.step("K-1-PT-1-2", ticket="PT-1", kind="fix", executor="Codex mocny")
+        tickets = {t["id"]: t for t in view(events)["tickets"]}
+        self.assertEqual(tickets["PT-1"]["status"], "fix")
+        self.assertNotIn(("PT-1", "ticket"), events.state().waiting)
+
     def test_finish_counts_running_steps_and_unmerged_tickets(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
         events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")
