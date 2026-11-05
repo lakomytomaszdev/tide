@@ -8,6 +8,7 @@ albo po błędzie wskazującym na szerszą regresję.
 make test-cardflow           # test_cardflow*.py oraz testy basesuggestions i hostingcli
 make test-daemon             # wszystkie testy usługi
 make test-board              # okno Tablicy (apps/board/tests)
+make test-issues             # magazyn spraw i proces CLI na prywatnym D-Bus
 make test-changed BASE=master
 make test                   # końcowa kontrola wszystkich komponentów
 make test JOBS=4             # ograniczenie liczby jednoczesnych procesów

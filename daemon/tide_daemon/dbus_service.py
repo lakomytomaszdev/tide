@@ -222,6 +222,8 @@ MODELS_PATH = "/Models"
 MODELS_IFACE = "org.tide.Daemon.Models"
 BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
+ISSUES_PATH = "/Issues"
+ISSUES_IFACE = "org.tide.Daemon.Issues"
 DOCKER_PATH = "/Docker"
 DOCKER_IFACE = "org.tide.Daemon.Docker"
 ACTIVITY_LOOK_PATH = "/ActivityLook"
@@ -426,6 +428,19 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
   </signal>
 </interface>"""
 
+
+ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
+  <method name="Info"><arg name="json" type="s" direction="out"/></method>
+  <method name="Create">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="List"><arg name="json" type="s" direction="out"/></method>
+  <method name="Show">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+</interface>"""
 
 BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
@@ -941,6 +956,31 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
         self.monitor.refresh(force_tracker=bool(force))
 
 
+@pyqtClassInfo("D-Bus Interface", ISSUES_IFACE)
+@pyqtClassInfo("D-Bus Introspection", ISSUES_XML)
+class IssuesAdaptor(QDBusAbstractAdaptor):
+    def __init__(self, parent, board=None):
+        super().__init__(parent)
+        from .issues import IssueService
+        self.service = IssueService(board.store if board is not None else None)
+
+    @pyqtSlot(result=str)
+    def Info(self):
+        return self.service.call("Info")
+
+    @pyqtSlot(str, result=str)
+    def Create(self, request):
+        return self.service.call("Create", request)
+
+    @pyqtSlot(result=str)
+    def List(self):
+        return self.service.call("List")
+
+    @pyqtSlot(str, result=str)
+    def Show(self, ident):
+        return self.service.call("Show", ident)
+
+
 @pyqtClassInfo("D-Bus Interface", BOARD_IFACE)
 @pyqtClassInfo("D-Bus Introspection", BOARD_XML)
 class BoardAdaptor(QDBusAbstractAdaptor):
@@ -1380,6 +1420,10 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
     if not bus.isConnected():
         raise RuntimeError("brak połączenia z magistralą sesji D-Bus")
     holder = QObject()
+    holder.issues = QObject(holder)
+    holder.issues.adaptor = IssuesAdaptor(holder.issues, board)
+    if not bus.registerObject(ISSUES_PATH, holder.issues):
+        raise RuntimeError(f"nie udało się zarejestrować obiektu {ISSUES_PATH}")
     holder.agents = QObject(holder)
     holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor)
     if not bus.registerObject(AGENTS_PATH, holder.agents):
