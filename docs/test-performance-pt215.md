@@ -8,6 +8,7 @@ Polecenie: `make test-benchmark`. Maszyna udostępnia 16 rdzeni; limit równoleg
 | --- | ---: | ---: | ---: |
 | Dawny `discover`, całe katalogi kolejno | 2447,59 s (40 min 47,59 s) | 4163 | 2 |
 | Równoległy `make test JOBS=14` | 368,98 s (6 min 8,98 s) | 4163 | 2 |
+| Końcowy `make test`, z izolacją i wyjątkami | 373,25 s (6 min 13,25 s) | 4164 | 2 |
 
 Przyspieszenie: **6,63×**. 236 modułów, 27 katalogów; identyfikatory testów wraz
 z krotnością powtórzeń są identyczne. Nie zgubiono ani nie dodano wykonanych testów
@@ -46,8 +47,8 @@ Równolegle dodatkowo nie przeszły:
   uruchomione `LOG-1`, `LOG-3` zamiast `LOG-1`, `LOG-2`.
 
 Nie ma różnic w pominięciach ani oczekiwanych porażkach. Pełny benchmark poprawnie zwrócił
-kod niezerowy i końcową listę pięciu awarii równoległego przebiegu. Stabilność trzech
-różniących się przypadków jest nadal sprawdzana osobno i pod obciążeniem; powyższy pomiar
+kod niezerowy i końcową listę pięciu awarii równoległego przebiegu. Kolejne kroki sprawdziły
+różniące się przypadki osobno i pod obciążeniem; wyniki opisano poniżej. Pierwszy pomiar
 potwierdza wydajność i kompletność, a nie bezbłędność całego zestawu.
 
 ## Zawężona próba i izolacja
@@ -71,6 +72,28 @@ Nowy test `test_cardflow_fixture` wykazał błąd przed poprawką i przeszedł p
 Nie zmieniono produkcyjnego monitora ani oczekiwanego działania przepływu.
 
 Kontrola lokalna: `python3 -m unittest daemon.tests.test_cardflow_fixture scripts.tests.test_test_runner`
-— 13 testów, 0,975 s, OK. Po dodaniu regresji pełny zestaw powinien mieć 4164 testy
-w 237 modułach. Końcowy pełny przebieg po zmianach izolacji pozostaje do wykonania;
-nie ma potrzeby powtarzania pomiaru sekwencyjnego.
+— 13 testów, 0,975 s, OK.
+
+## Końcowy pełny przebieg po izolacji
+
+`make test` wykonano poza piaskownicą na commicie
+`f7c7679b7b5120c89067d85ce3dc30658f513b82`: **373,25 s**, JOBS=14,
+**4164 testy, 237 modułów, 2 pominięcia**. Wzrost liczby testów o jeden pochodzi wyłącznie
+z nowej regresji izolacji fixture. W porównaniu z pierwotnym pomiarem sekwencyjnym oznacza
+to **6,56× krótszy czas** z uwzględnieniem końcowych wyjątków od równoległości.
+
+Log potwierdza wykonanie obu modułów `[OSOBNO]`: `test_cardflow_dbus.py` (15 testów,
+28,50 s, OK), następnie `test_cardflow_review.py` (14 testów, 11,37 s, OK).
+`test_cardflow_youtrack.py` wykonał się równolegle (14 testów, 33,48 s, OK), a nowa
+regresja fixture również przeszła (1 test, 0,45 s).
+
+Na końcu raport zawiera wyłącznie trzy awarie obecne już w pomiarze sekwencyjnym,
+wymienione wyżej: `test_board_derive`, `test_card_branches` i `FollowupArtifactTest`.
+Nie ma nowych porażek. `make test` poprawnie zwrócił kod **2** z powodu tych trzech
+istniejących awarii — nie są pomijane ani zamieniane na sukces.
+
+Źródła kontroli końcowej: `build/test-results/run-sk6n19ac/summary.json`, logi modułów
+w tym katalogu oraz
+`pt-215-szybkie-testy-rownolegly-make.resume-K-54-PT-215-3.step/outside/outside.log`
+obok worktree. Naprawa trzech istniejących awarii nie należy do zakresu przyspieszenia
+testów PT-215; pozostają jawnym ograniczeniem pełnego zestawu na przypiętej bazie.
