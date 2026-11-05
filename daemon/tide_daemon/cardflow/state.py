@@ -98,6 +98,7 @@ class FlowState:
     caretaker_runs: dict = field(default_factory=dict)        # krok opiekuna → caretaker.started
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
     caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
+    caretaker_decisions: dict = field(default_factory=dict)  # id problemu → decyzja użytkownika
     caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
     # PT-150: eskalacja po wyczerpaniu limitu działań nie jest wynikiem żadnego kroku opiekuna (nie ma czwartego).
     caretaker_limits: dict = field(default_factory=dict)      # id problemu → ostatnie caretaker.escalated z limit
@@ -234,12 +235,19 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = {}
             st.caretaking = {}
             st.caretaker_escalations = {}
+            st.caretaker_decisions = {}
             st.caretaker_limits = {}
             st.flow_errors = {}
             st.flow_error_texts = set()
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
+        elif kind == "caretaker.decision":
+            st.caretaker_decisions[e.get("problem")] = e
+            st.stalled_since = ""
+            st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
+            if (e.get("problem") or "").startswith("flow-error:"):
+                st.flow_errors.pop(e["problem"].split(":", 1)[1], None)
         elif kind == "caretaker.started":
             st.caretaker_runs[e.get("step")] = e
             st.caretaking[e.get("target")] = e.get("step")
@@ -466,6 +474,8 @@ def _bookkeeping(st: FlowState, e: dict) -> bool:
     `stalled:card` znikałby, zanim opiekun skończy (PT-147). Skutki akcji opiekuna (np. `step.started` po
     ponowieniu etapu) są zwykłą pracą."""
     kind = e.get("type") or ""
+    if kind == "flow.notice" and (e.get("key") or "").startswith("caretaker:"):
+        return True
     if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") == "caretaker":
         return True
     if kind in ("intent", "result"):

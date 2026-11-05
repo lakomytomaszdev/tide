@@ -104,6 +104,7 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal caretakerResolveRequested(string tag, string cardId, string request)
     signal faultPreviewRequested(string tag, string cardId, string request) // /Board PreviewStepFault (PT-125)
     signal faultReportRequested(string tag, string cardId, string request)  // /Board ReportStepFault (PT-125)
     signal flowSettingsSaveRequested(string tag, string request) // /Board SetCardFlowSettings
@@ -327,6 +328,7 @@ Rectangle {
         tags[tag] = [cardId, decisionId]
         decisionTags = tags
         if (method === "ResolveCardStep") stepResolveRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "ResolveCardCaretaker") caretakerResolveRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
         else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
         else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))

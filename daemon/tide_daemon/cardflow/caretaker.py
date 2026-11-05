@@ -572,7 +572,7 @@ def owned(st, ident: str) -> dict:
             return chain_root(st, name) in roots
         return not tickets or st.steps[name].get("ticket") in tickets
 
-    closed = 0
+    closed = int((st.caretaker_decisions.get(ident) or {}).get("seq") or 0)
     for name, decision in st.step_decisions.items():
         if decision.get("auto") or decision.get("automatic") or "caretaker" in decision:
             continue
@@ -910,6 +910,17 @@ def annotate(st, decision: dict) -> dict:
                       if decision.get("step") and event.get("target") == decision["step"]), None)
     if not escalated:
         return decision
+    return annotate_escalation(st, decision, escalated)
+
+
+def escalations(st):
+    """Aktualne eskalacje, których problem nadal występuje (także decyzje bez kroku)."""
+    current = {p["id"] for p in problems(st)}
+    return [e for e in _escalations(st) if e.get("problem") in current]
+
+
+def annotate_escalation(st, decision: dict, escalated: dict) -> dict:
+    """Wspólny blok rekomendacji dla decyzji kroku i decyzji samego opiekuna."""
     run = st.caretaker_runs.get(escalated.get("step") or "") or {}
     tried = []
     for item in owned(st, run.get("problem") or escalated.get("problem") or "")["runs"]:

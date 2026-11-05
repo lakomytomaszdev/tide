@@ -18,7 +18,7 @@ import unittest
 from . import REPO
 from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, CARE_RECOMMENDATION, CARE_SUMMARY, FINDINGS_C, Q2, Q3,
                           a1_journal, a1_one_journal, a2_journal, decisions, decisions_c, decisions_caretaker,
-                          full_card, journal, journal_c, scenario_b, scenario_c, scenario_f,
+                          full_card, journal, journal_c, journal_caretaker_card, scenario_b, scenario_c, scenario_f,
                           without_options)
 from .test_view import ProbeCase
 
@@ -614,6 +614,24 @@ class DecisionDialogCaretakerTest(ProbeCase):
 
     def scenario(self, with_tried=True):
         return scenario_f(self.data, decisions_caretaker(with_tried))
+
+    def test_card_problem_has_recommendation_and_both_buttons_send_the_new_method(self):
+        for index, choice in enumerate(("retry-stage", "dismiss")):
+            with self.subTest(choice=choice):
+                out = self.probe(STATE_PY + CARE_PY + f'''
+click(card("K-8"))
+out["opened"] = state()
+out["care"] = caretaker()
+click(option({index}))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+''', scenario_f(self.data, decisions(journal_caretaker_card())))
+                self.assertEqual(out["opened"]["kind"], "Opiekun")
+                self.assertEqual([o[0] for o in out["opened"]["options"]], ["Ponów etap", "Zamknij"])
+                self.assertEqual(out["care"]["title"], f"Opiekun poleca: {CARE_RECOMMENDATION}")
+                self.assertEqual(out["sent"], [["ResolveCardCaretaker", "K-8",
+                                               json.dumps({"choice": choice, "problem": "flow-error:advance"},
+                                                          separators=(",", ":"))]])
 
     def test_fixture_comes_from_the_service(self):
         decision = decisions_caretaker()[0]

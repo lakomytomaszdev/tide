@@ -6,6 +6,7 @@
 
 // Podpis plakietki nad pytaniem: rodzaj decyzji (`kind`), dla błędów — czyja to usterka (`fault`).
 var KIND_LABELS = {
+    "caretaker": "Opiekun",
     "question": "Pytanie",
     "permission": "Prośba o zgodę",
     "error": "Błąd kroku",

@@ -48,6 +48,7 @@ from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import caretaker
+from . import decisions
 from . import caretakerctx
 from . import handoff
 from .decisions import clean_options
@@ -2573,6 +2574,31 @@ class FlowEngine(PlanEditing):
             if opened:
                 self.journal.append(card, "step.console_opened", step=name, recovered=True)
 
+    def resolve_caretaker(self, card_id: str, request: dict) -> dict:
+        """Decyzja użytkownika o problemie bez kroku: zamknięcie i ewentualnie jeden przebieg etapu."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if not isinstance(request, dict) or set(request) - {"choice", "problem"}:
+            raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie id problemu")
+        choice = request.get("choice")
+        if choice not in ("retry-stage", "dismiss"):
+            raise FlowError("bad-choice", "wybierz retry-stage albo dismiss")
+        st = fold(self.journal.read(card))
+        waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
+        wanted = request.get("problem")
+        decision = next((d for d in waiting if not wanted or d["technical"]["problem"] == wanted), None)
+        if decision is None:
+            raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
+        ident = decision["technical"]["problem"]
+        problem = next(p for p in caretaker.problems(st) if p["id"] == ident)
+        event = self.journal.append(card, "caretaker.decision", problem=ident, choice=choice)
+        if choice == "retry-stage":
+            self._retry_stage(card, {"problem": ident, "step": f"user:{event['seq']}",
+                                     "trigger": problem["trigger"], "ticket": problem.get("ticket") or ""}, problem)
+        return {"ok": True, "id": card, "choice": choice, "problem": ident}
+
     def resolve_step(self, card_id: str, request: dict, *, caretaker_problem: str = "",
                      caretaker_step: str = "") -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi.
@@ -3491,8 +3517,9 @@ class FlowEngine(PlanEditing):
         if item is None or item.column in ("done", "archived") or self.clock() - st.last_activity_ts < 180:
             return
         event = self.journal.append(card, "card.stalled", reason=st.flow_error or "brak kroku i powodu czekania")
-        self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
-                              "detail": event["reason"]})
+        if caretaker.unavailable(fold(self.journal.read(card)), item.column):
+            self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
+                                  "detail": event["reason"]})
 
     def _progress_mark(self, step: dict) -> tuple:
         """Odcisk postępu: pliki worktree (bez .git) i dziennik sesji kroku."""
@@ -3792,6 +3819,10 @@ class FlowEngine(PlanEditing):
             st.flow_notices.add(key)
             self._notices.append({"card": card, "step": key, "ticket": "", "result": result,
                                   "detail": detail})
+
+        for decision in decisions.build_decisions(st):
+            if decision["kind"] == "caretaker":
+                once(decision["id"], "caretaker", decision["happened"])
 
         if st.plan_revision and st.plan_revision.get("pending") and st.plan_reviewed:
             once(f"revision:{st.plan_revision.get('seq')}", "plan", "Różnica planu czeka na zatwierdzenie")

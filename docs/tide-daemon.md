@@ -1880,11 +1880,34 @@ Dwa wyzwalacze bez kroku-sprawcy i bez decyzji (`caretaker.started` z pustym `ta
 
 Praca opiekuna nie jest pracą karty: `caretaker.*`, kroki, czekanie i pary „zamiar → wynik” opiekuna,
 `flow.error-persisted` i `stage.retry` nie przesuwają `last_activity_ts` i nie zdejmują „stoi”
-(`state._bookkeeping`). Dopóki opiekun pracuje, karta ma znacznik „opiekun sprawdza kartę” (przy błędzie ticketu —
+(`state._bookkeeping`; wyjątek to `caretaker.decision` użytkownika, który rozpoczyna nowy okres bezczynności).
+Dopóki opiekun pracuje, karta ma znacznik „opiekun sprawdza kartę” (przy błędzie ticketu —
 „opiekun sprawdza PT-…”) zamiast „stoi” albo tekstu błędu; po eskalacji (albo po limicie) wraca dzisiejszy znacznik
 błędu albo zastoju, diagnoza jest w historii („Opiekun: oddaje decyzję — …”) i w `derived.flow.caretaker.escalated[]`,
-a `flow.decisions[]` nie dostaje nowej decyzji (decyzję „opiekun” z przyciskami dokłada #12). Powiadomienie
-o zastoju zostaje jak dotąd przy `card.stalled`; eskalacja nie dokłada drugiego.
+a `flow.decisions[]` dostaje decyzję „opiekun” (PT-154). Gdy opiekun działa, powiadomienie o zastoju czeka do
+eskalacji; bez dostępnego opiekuna zostaje przy `card.stalled`.
+
+### Decyzja opiekun
+
+Eskalacja problemu `flow-error:<etap>` lub `stalled:card`, także po limicie działań, daje rodzaj `caretaker`
+w `decisions.KINDS` i `derived.flow.decisions[]` (PT-154). Niepuste `happened` i `why` opisują zatrzymanie
+karty i potrzebę decyzji. Pole `caretaker{summary, recommendation, tried[], optionId, failed}` zasila wspólny
+blok „Opiekun poleca” oraz zwijane „Co próbowano”. Okna Tablicy i Sesji pokazują dwie możliwości: „Ponów etap”
+oraz „Zamknij”; nie wybierają żadnej domyślnie. Powiadomienie o tej decyzji powstaje raz, z zapisem `flow.notice`
+w dzienniku, także po restarcie usługi. Dotychczasowe decyzje kroków nadal korzystają ze swoich metod.
+
+`ResolveCardCaretaker(s id, s request) → s json` na `/Board` (`org.tide.Daemon.Board`) przyjmuje obiekt JSON:
+`{"choice":"retry-stage"}` albo `{"choice":"dismiss"}`. Opcjonalne `problem` wskazuje id problemu (okno przekazuje
+je z możliwości decyzji); bez niego metoda wybiera pierwszą decyzję opiekuna. Nieznany wybór daje `bad-choice`,
+brak oczekującej decyzji lub nieaktualny problem — `not-waiting`, niepoprawne pola lub format — `bad-request`.
+
+Oba wybory zapisują `caretaker.decision` i zamykają problem. `retry-stage` dodatkowo ponawia etap jednym
+przebiegiem `_advance_card` przez istniejącą ścieżkę `stage.retry`; `dismiss` nie wykonuje akcji. Następne
+wystąpienie błędu lub zastoju liczy działania od zera. Zamknięcie zastoju rozpoczyna nowy okres bezczynności;
+zamknięcie błędu usuwa jego bieżący znacznik, więc kolejne wystąpienie jest nową obserwacją etapu.
+
+Pole `caretaker` jest wyłącznie wewnętrznym oznaczeniem akcji opiekuna: `ResolveCardStep` z tym polem
+w żądaniu D-Bus zwraca `bad-request`. Sygnatury istniejących metod pozostają bez zmian.
 
 Kartka (sekcje `flow-error` i `stalled` w `BRIEF_SECTIONS`): tekst błędu, etap, krok i ticket, podpowiedź Tide dla
 użytkownika (`flow_error_hint`) albo od kiedy karta stoi i ostatni krok, ostatnie 15 zdarzeń karty (bez pracy

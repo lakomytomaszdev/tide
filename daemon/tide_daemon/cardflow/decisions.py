@@ -48,7 +48,7 @@ from .state import REASON_LABELS, FlowState
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
-         "plan-approval", "plan-revision", "plan-revision-failed", "plan-reviewer", "tracker")
+         "plan-approval", "plan-revision", "plan-revision-failed", "plan-reviewer", "tracker", "caretaker")
 
 RESOLVE_STEP, RESOLVE_REVIEW = "ResolveCardStep", "ResolveCardReview"
 APPROVE_PLAN, EDIT_PLAN, ENTER_STEP = "ApproveCardPlan", "EditCardPlan", "EnterStep"
@@ -56,6 +56,8 @@ REPORT_FAULT, PREVIEW_FAULT = "ReportStepFault", "PreviewStepFault"
 
 # Zdania, gdy dziennik nie daje szczegółów (US 2) — każdy rodzaj ma swoje, nigdy pusty napis.
 GENERIC = {
+    "caretaker": ("Opiekun sprawdził problem, który zatrzymał kartę.",
+                  "Opiekun oddał decyzję Tobie. Wybierz, co zrobić z problemem."),
     "question": ("Krok zadał pytanie i czeka na odpowiedź.",
                  "Bez odpowiedzi krok nie pójdzie dalej."),
     "permission": ("Krok poprosił o zgodę na polecenie spoza listy dozwolonych.",
@@ -112,12 +114,32 @@ def build_decisions(st: FlowState) -> list[dict]:
         if failure.get("action") == "youtrack-note" or st.running():
             continue
         add(0, failure.get("seq"), _tracker(failure))
+    for event in caretaker.escalations(st):
+        if (event.get("problem") or "").startswith(("flow-error:", "stalled:")):
+            add(0, event.get("seq"), _caretaker(st, event))
     found.sort(key=lambda item: (item[0], item[1]))
     # `findings[]` (uwagi recenzenta z wagą i ticketami) ma tylko zatwierdzenie planu; reszta — pusta lista.
     return [{**decision, "findings": decision.get("findings", [])} for _group, _seq, decision in found]
 
 
 # --- kroki ---------------------------------------------------------------------------------------
+
+def _caretaker(st, event):
+    problem = event["problem"]
+    happened = st.flow_error if problem.startswith("flow-error:") else "Karta stoi bez kroku i powodu czekania."
+    options = [_option(choice, title, effect, "ResolveCardCaretaker", {"choice": choice, "problem": problem})
+               for choice, title, effect in (
+                   ("retry-stage", "Ponów etap", "Tide ponowi etap karty i zamknie ten problem."),
+                   ("dismiss", "Zamknij", "Tide zamknie problem bez ponawiania etapu."))]
+    made = {"id": f"caretaker:{problem}:{event['seq']}", "kind": "caretaker", "step": "", "stepKind": "",
+            "ticket": event.get("ticket") or "", "executor": "", "happened": happened or GENERIC["caretaker"][0],
+            "why": GENERIC["caretaker"][1], "options": options, "freeText": False, "reply": None,
+            "fault": "", "technical": {"problem": problem, "error": event.get("error") or ""}}
+    made = caretaker.annotate_escalation(st, made, event)
+    if not made["caretaker"]["recommendation"]:
+        made["caretaker"]["recommendation"] = "Wybierz, czy ponowić etap, czy zamknąć problem."
+    return made
+
 
 def _latest_steps(st: FlowState) -> list[str]:
     """Ostatni krok każdego ticketu (kroki planu i domknięcia mają wspólny pusty ticket)."""
