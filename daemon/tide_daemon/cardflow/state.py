@@ -50,7 +50,7 @@ class FlowState:
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
     superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
-    plan_resumes: dict = field(default_factory=dict)  # krok odesłany do planu → None przed zgodą, potem zbiór blokerów
+    plan_resumes: dict = field(default_factory=dict)  # krok → None przed rozstrzygnięciem poprawki, potem zbiór blokerów
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
@@ -385,6 +385,11 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = None
             st.plan_checked = None
             st.plan_user_seq = int(e.get("seq") or 0)
+            # Użytkownik zachował dotychczasowy plan. Nie przywracamy starego błędu ticketu ani
+            # nie kasujemy blokerów z wcześniejszej zatwierdzonej różnicy, jeśli czekają na scalenie.
+            for target, blockers in st.plan_resumes.items():
+                if blockers is None:
+                    st.plan_resumes[target] = set()
         elif kind == "plan.revision-failed":
             st.plan_revision = e
         elif kind == "plan.revision-ready":

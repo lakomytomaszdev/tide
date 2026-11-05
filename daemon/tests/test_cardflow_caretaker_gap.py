@@ -171,6 +171,60 @@ class GapActionTest(EngineOnJournal):
             self.engine._advance("K-1", st)
         resume.assert_called_once()
 
+    def test_discarding_failed_revision_resumes_ticket_after_journal_replay(self):
+        returned = self.act().plan_returns[-1]
+        self.add("K-1", "plan.revision-failed", failed=True, baseline=returned["baseline"], errors=["zły plan"])
+        self.assertEqual(self.engine.edit_plan("K-1", {"action": "discard-revision"}), {"ok": True, "id": "K-1"})
+        # Nowy silnik i ponowne złożenie trwałego dziennika, bez pamięci poprzedniej poprawy.
+        restarted = type(self.engine)(self.engine.store, self.journal, tmp_root=self.base)
+        st = fold(self.journal.read("K-1"))
+        self.assertIsNone(st.plan_revision)
+        self.assertEqual(st.plan_approved["rows"], ROWS)
+        self.assertIn(TARGET, st.superseded)
+        self.assertEqual(st.finished[TARGET]["result"], "error")
+        self.assertEqual(decisions.build_decisions(st), [])
+        self.assertEqual(caretaker.problems(st), [])
+        st.last_step = TARGET
+        with mock.patch.object(restarted, "_advance_plan_review", return_value=False), \
+                mock.patch.object(restarted, "_advance_planning", return_value=False), \
+                mock.patch.object(restarted, "_resume_step") as resume, \
+                mock.patch.object(restarted, "_stronger_executor") as stronger:
+            restarted._advance("K-1", st)
+        resume.assert_called_once()
+        self.assertEqual(resume.call_args.args[2]["step"], TARGET)
+        self.assertIn("kontynuuj pierwotny zakres", resume.call_args.args[3]["answer"])
+        self.assertNotIn("zatwierdził różnicę", resume.call_args.args[3]["answer"])
+        stronger.assert_not_called()
+        self.assertFalse([e for e in self.journal.read("K-1") if e["type"] == "plan.revision-approved"])
+        self.add("K-1", "step.started", step="continued", kind="ticket", ticket="PT-7", parentStep=TARGET)
+        st = fold(self.journal.read("K-1"))
+        self.assertNotIn(TARGET, st.plan_resumes)
+        self.assertIn(TARGET, st.superseded)
+        self.assertEqual(decisions.build_decisions(st), [])
+
+    def test_discarding_later_revision_preserves_previously_approved_blockers(self):
+        self.act()
+        extra = {**ROWS[0], "id": "PT-8", "workId": "#2", "title": "Migracja"}
+        self.add("K-1", "plan.revision-approved", plan={"rows": [*ROWS, extra]})
+        with mock.patch.object(self.engine, "_advance_user_revision"):
+            self.engine.edit_plan("K-1", {"action": "return", "feedback": "Popraw inny fragment."})
+        self.add("K-1", "plan.revision-failed", failed=True, errors=["zły plan"])
+        self.engine.edit_plan("K-1", {"action": "discard-revision"})
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(st.plan_resumes[TARGET], {"PT-8"})
+        st.last_step = TARGET
+        with mock.patch.object(self.engine, "_advance_plan_review", return_value=False), \
+                mock.patch.object(self.engine, "_advance_planning", return_value=False), \
+                mock.patch.object(self.engine, "_resume_step") as resume:
+            self.engine._advance("K-1", st)
+            resume.assert_not_called()
+            self.add("K-1", "result", action="merge", key="PT-8", ok=True)
+            st = fold(self.journal.read("K-1"))
+            st.last_step = TARGET
+            self.engine._advance("K-1", st)
+        resume.assert_called_once()
+        self.assertIn("PT-8", resume.call_args.args[3]["answer"])
+
     def test_unapproved_or_previous_order_steps_do_not_resume(self):
         self.act()
         st = fold(self.journal.read("K-1"))

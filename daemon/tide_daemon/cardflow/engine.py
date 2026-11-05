@@ -2211,7 +2211,7 @@ class FlowEngine(PlanEditing):
                     ticket for (action, ticket), made in st.results.items() if action == "merge" and made.get("ok")}
                 if blockers <= ready:
                     info = ticket_of(st, step.get("ticket") or "")
-                    answer = ("Użytkownik zatwierdził różnicę planu po odesłaniu przez opiekuna. "
+                    answer = ("Użytkownik rozstrzygnął poprawę planu po odesłaniu przez opiekuna. "
                               f"Dodatkowa praca jest zakończona: {', '.join(sorted(blockers)) or '(bez nowych blokerów)'}. "
                               f"Uwzględnij zmiany z gałęzi karty {info['cardBranch']} w bieżącym worktree, "
                               "zachowując dotychczasową pracę, i kontynuuj pierwotny zakres ticketu.")

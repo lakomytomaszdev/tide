@@ -2036,6 +2036,11 @@ Oczekiwanie odtwarza się z dziennika po restarcie, a start następcy usuwa je z
 stary błąd nie wraca do decyzji. Jawne ponowienie użytkownika nadal korzysta z dotychczasowej ścieżki.
 Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
 
+Jeśli poprawa planu się nie powiedzie, wybór użytkownika „Odrzuć poprawkę” (`discard-revision`) kończy oczekiwanie
+ticketu na tę poprawkę. Silnik wznawia jego pierwotny zakres według zachowanego planu, bez przywracania starego
+błędu lub pytania. Blokery z wcześniejszych zatwierdzonych różnic nadal muszą być scalone albo odrzucone.
+Ta kontynuacja także odtwarza się po restarcie z istniejącego zdarzenia `plan.revision-discarded`.
+
 Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu, także
 podczas niezależnego review nowej propozycji (przed bramką `review-pending`). Gdy użytkownik
 odeśle plan albo ponowi krok po starcie opiekuna, wynik opiekuna jest `stale`: bez kolejnego `plan.returned`
