@@ -3285,7 +3285,17 @@ class FlowEngine(PlanEditing):
             return
         proc = self.procs.get(name)
         exit_code = proc.poll() if proc is not None else None
-        if exit_code is not None:
+        if step.get("runner") == boxstep.RUNNER:
+            # Usługa kroku przeżywa klienta incus exec; tylko jej stan potwierdza koniec.
+            state = self._unit_state(step)
+            if state == "unknown":
+                return
+            alive = state == "active"
+            if not alive:
+                exit_code = stepstop.read_exit_code(step.get("stepDir") or "")
+                if exit_code is None and proc is not None and proc.poll() is None:
+                    return                   # klient dopiero tworzy jednostkę; brak kodu nie dowodzi końca
+        elif exit_code is not None:
             alive = False
         else:
             state = self._unit_state(step)

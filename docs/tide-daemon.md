@@ -2963,6 +2963,9 @@ silnik, gdy pudełko znów nadaje się do kroku. Krok w pudełku nie robi na ho�
 restarcie usługi, gdy nie ma uchwytu procesu — sprawdza krok (`BoxRunner.step_state`: `incus exec … systemctl --user
 is-active tide-step-<id>.service`), kończy go z `result.json` i kodem z `in/exit-code` i zatrzymuje (`stepstop`:
 `BoxRunner.kill`, potem commit WIP gitem w piaskownicy na hoście jak dziś).
+Zakończenie klienta `incus exec` nie kończy kroku: jednostka może nadal pracować. Stan `active` zachowuje krok,
+zajętość pudełka i dostęp proxy/K3, a `unknown` nie dowodzi zakończenia. Dopiero `inactive` pozwala odebrać wynik
+i kod z `in/exit-code`; kod klienta nie zastępuje kodu kroku.
 
 **Polityka proxy.** Przed `BoxRunner.start`: `set_box_policy(ip pudełka, domeny, ollama, dziennik, full, box)`
 z `proxy.compose_policy(profil projektu, profile kart)` — karty to bieżąca i każda karta z trwającym krokiem w tym

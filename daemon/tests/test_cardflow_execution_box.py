@@ -566,6 +566,50 @@ class DeniedTest(BoxFlow):
         with self.assertRaises(FileNotFoundError):
             boxaccess.read(log)
 
+    def test_poll_tracks_box_unit_independently_of_incus_client(self):
+        for client_code in (1, 0, None):
+            for step_code in (0, 7):
+                with self.subTest(client=client_code, step=step_code):
+                    name = f"poll-{client_code}-{step_code}"
+                    step, log = self.prepared_step(name)
+                    access = boxaccess.read(log)
+                    policy_calls = list(self.proxy.calls)
+                    proc = mock.Mock()
+                    proc.poll.return_value = client_code
+                    proc.wait.return_value = client_code if client_code is not None else 0
+                    self.engine.procs[name] = proc
+                    runner = self.engine._runner_for(step)
+                    with mock.patch.object(runner, "step_state") as state:
+                        if client_code is None:
+                            # Klient może dopiero tworzyć jednostkę; nie ma jeszcze kodu kroku.
+                            state.return_value = "inactive"
+                            self.engine._poll(self.card_id, step)
+                            self.assertNotIn(name, fold(self.engine.journal.read(self.card_id)).finished)
+                        for unit_state in ("active", "unknown", "active"):
+                            state.return_value = unit_state
+                            self.engine._poll(self.card_id, step)
+                            self.assertNotIn(name, fold(self.engine.journal.read(self.card_id)).finished)
+                            self.assertIn(name, bs.running_steps(SLUG, SLUG))
+                            self.assertFalse([e for e in bs.events(SLUG, SLUG)
+                                              if e["type"] == "box.release" and e.get("step") == name])
+                            self.assertIn(name, self.proxy.steps)
+                            grant = access["grant"]
+                            self.assertIsNotNone(self.proxy.grants.check(grant["key"], step["boxIp"], grant["route"]))
+                            self.assertEqual(boxaccess.read(log), access)
+                            self.assertEqual(self.proxy.calls, policy_calls)
+                            self.assertIs(self.engine.procs[name], proc)
+                        # Jednostka zapisuje własny kod; stan klienta nie wpływa na odbiór wyniku.
+                        os.makedirs(os.path.join(step["stepDir"], "in"), exist_ok=True)
+                        with open(os.path.join(step["stepDir"], "in", "exit-code"), "w", encoding="utf-8") as fh:
+                            fh.write(f"{step_code}\n")
+                        state.return_value = "inactive"
+                        self.engine._poll(self.card_id, step)
+                    done = self.finished(self.card_id, name)
+                    self.assertEqual(done["exit"], step_code)
+                    self.assertEqual(done["result"], "done" if step_code == 0 else "error")
+                    self.assert_released(name, log)
+                    proc.wait.assert_not_called()
+
     def test_finish_retries_release_without_writing_a_second_result(self):
         step, log = self.prepared_step("release-failure")
         with mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
