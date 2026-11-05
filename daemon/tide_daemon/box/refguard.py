@@ -95,6 +95,27 @@ def _refs(repo):
     for line in text.splitlines():
         ref, oid, *target = line.split()
         refs[ref] = {"oid": oid, "target": target[0] if target else ""}
+    # for-each-ref pomija aliasy o nieistniejącym celu. Czytamy także luźne refy,
+    # bez podążania za dowiązaniami i bez traktowania plików .lock jako refów.
+    root = _open_git(repo)
+    try:
+        loose = _node(root, "refs")
+    finally:
+        os.close(root)
+
+    def visit(path, node):
+        if not node:
+            return
+        if node["kind"] == "dir":
+            for name, child in node["children"].items():
+                if not name.endswith(".lock"):
+                    visit(path + "/" + name, child)
+        elif node["kind"] == "file" and path not in refs:
+            content = base64.b64decode(node["data"])
+            if content.startswith(b"ref: "):
+                refs[path] = {"oid": "", "target": content[5:].decode("utf-8").strip()}
+
+    visit("refs", loose)
     return refs
 
 
@@ -149,24 +170,44 @@ def _parent(root, path, *, create=False):
         os.close(fd)
 
 
-def _files(root):
+def _files(root, *, errors=None):
+    def failed(path, exc):
+        if errors is None:
+            raise exc
+        errors[path] = str(exc)
+
     paths = ["hooks", "config", "info", "config.worktree"]
     try:
         wts = os.open("worktrees", DIR_FLAGS, dir_fd=root)
     except FileNotFoundError:
         wts = None
+    except OSError as exc:
+        failed("worktrees", exc)
+        wts = None
     if wts is not None:
         try:
             for name in sorted(os.listdir(wts)):
-                paths.append(f"worktrees/{name}/config.worktree")
+                path = f"worktrees/{name}"
+                try:
+                    meta = os.stat(name, dir_fd=wts, follow_symlinks=False)
+                    if not stat.S_ISDIR(meta.st_mode):
+                        raise StepError("wpis administracyjny nie jest katalogiem")
+                    paths.append(path + "/config.worktree")
+                except (OSError, StepError) as exc:
+                    failed(path, exc)
+        except OSError as exc:
+            failed("worktrees", exc)
         finally:
             os.close(wts)
     out = {}
     for path in paths:
-        with _parent(root, path) as (parent, name):
-            node = _node(parent, name)
-        if node is not None:
-            out[path] = node
+        try:
+            with _parent(root, path) as (parent, name):
+                node = _node(parent, name)
+            if node is not None:
+                out[path] = node
+        except (OSError, StepError) as exc:
+            failed(path, exc)
     return out
 
 
@@ -229,12 +270,18 @@ def _open_git(repo):
     return os.open(os.path.join(os.path.realpath(repo), ".git"), DIR_FLAGS)
 
 
-def begin(repo, card, step, git_dir, *, prepare=None, worktree=""):
+def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
     """Zapisuje migawkę dopiero pod blokadą; prepare wykonuje zaufane montowania runnera."""
     with locked(repo):
         peers = list(_active(repo))
         if any(peer["card"] != card for _path_peer, peer in peers):
             raise StepError("strażnik refów: w repozytorium trwa krok innej karty")
+        if not branch:
+            raise StepError("strażnik refów: brak zaufanej gałęzi kroku")
+        branch = "refs/heads/" + branch
+        _git(repo, "check-ref-format", branch)
+        if _git(repo, "--git-dir=" + git_dir, "symbolic-ref", "--quiet", "HEAD") != branch:
+            raise StepError("strażnik refów: HEAD nie wskazuje przypisanej gałęzi kroku")
         root = _open_git(repo)
         try:
             before = _files(root)
@@ -249,9 +296,6 @@ def begin(repo, card, step, git_dir, *, prepare=None, worktree=""):
         trusted = {p: n for p, n in files.items() if p not in before and (
             p in ("hooks", "info") and n.get("kind") == "dir" and not n["children"] or
             p == own_config and n.get("kind") == "file" and not n["data"])}
-        branch = _git(repo, "--git-dir=" + git_dir, "symbolic-ref", "--quiet", "HEAD")
-        if not branch.startswith("refs/heads/"):
-            raise StepError("strażnik refów: krok bez gałęzi")
         allowed = {branch}
         refs = _refs(repo)
         # Nie utrwalamy naruszenia sąsiada jako nowego punktu przywracania.
@@ -357,10 +401,15 @@ def _restore_symref(repo, ref, old, now):
                 with os.fdopen(fd, "wb") as fh:
                     if _refs(repo).get(ref) != now:
                         raise StepError(f"{ref}: zmieniony po porównaniu")
-                    fh.write(("ref: " + old["target"] + "\n").encode())
+                    if old:
+                        value = "ref: " + old["target"] if old["target"] else old["oid"]
+                        fh.write((value + "\n").encode())
                     fh.flush()
                     os.fsync(fh.fileno())
-                os.replace(lock, name, src_dir_fd=parent, dst_dir_fd=parent)
+                if old:
+                    os.replace(lock, name, src_dir_fd=parent, dst_dir_fd=parent)
+                else:
+                    os.unlink(name, dir_fd=parent)
             finally:
                 try:
                     os.unlink(lock, dir_fd=parent)
@@ -371,25 +420,48 @@ def _restore_symref(repo, ref, old, now):
 
 
 def finish(repo, card, step, *, branch=""):
-    """Zwraca naruszenia i błędy naprawy; pusty wynik oznacza poprawny krok. Wynik jest trwały."""
+    """Trwały wynik po pełnej kontroli; błędy naprawy pozostawiają migawkę do ponowienia."""
     report = {"refs": [], "files": [], "head": False, "errors": []}
+
+    @contextmanager
+    def checking(label):
+        # Uszkodzenie jednego obiektu nie pomija pozostałych niezależnych napraw.
+        try:
+            yield
+        except (OSError, ValueError, KeyError, StepError) as exc:
+            report["errors"].append(f"{label}: {exc}")
+
     with locked(repo):
         path = _path(repo, card, step)
         try:
             saved = _load(path)
             if "report" in saved:
                 return saved["report"]
+            previous = saved.get("pendingReport", {})
+            for field in ("refs", "files", "head"):
+                if field in previous:
+                    report[field] = previous[field]
+        except (OSError, ValueError, KeyError) as exc:
+            report["errors"].append(str(exc))
+            return report
+        with checking("pliki"):
             root = _open_git(repo)
             try:
-                current = _files(root)
+                unreadable = {}
+                current = _files(root, errors=unreadable)
+                report["errors"].extend(f"{p}: {error}" for p, error in unreadable.items())
                 for p in sorted(set(current) | set(saved["files"])):
+                    if any(p == failed or p.startswith(failed + "/") for failed in unreadable):
+                        continue
                     if current.get(p) != saved["files"].get(p):
                         report["files"].append(p)
-                        with _parent(root, p) as (parent, name):
-                            _restore(parent, name, saved["files"].get(p))
+                        with checking(p):
+                            with _parent(root, p) as (parent, name):
+                                _restore(parent, name, saved["files"].get(p))
             finally:
                 os.close(root)
-            # Dopiero po odtworzeniu konfiguracji git może ją bezpiecznie parsować.
+        # Najpierw próbujemy odtworzyć konfigurację, ale błąd pliku nie pomija refów/HEAD.
+        with checking("refy"):
             current = _refs(repo)
             for ref in sorted(set(current) | set(saved["refs"])):
                 old, now = saved["refs"].get(ref), current.get(ref)
@@ -398,20 +470,20 @@ def finish(repo, card, step, *, branch=""):
                 report["refs"].append(ref)
                 # --no-deref nie dotyka celu obcego refu symbolicznego. CAS obejmuje
                 # aktualną wartość: legalny ruch po porównaniu nie zostanie nadpisany.
-                if old and old["target"]:
-                    try:
+                if (old and old["target"]) or (now and now["target"]):
+                    with checking(ref):
                         _restore_symref(repo, ref, old, now)
-                    except (OSError, StepError) as exc:
-                        report["errors"].append(str(exc))
                     continue
                 zero = "0" * len((now or old)["oid"])
                 if old:
                     args = (ref, old["oid"], now["oid"] if now else zero)
                 else:
                     args = ("-d", ref, now["oid"])
-                result = Git().run(repo, "update-ref", "--no-deref", *args)
-                if not result.ok:
-                    report["errors"].append(f"{ref}: {result.err}")
+                with checking(ref):
+                    result = Git().run(repo, "update-ref", "--no-deref", *args)
+                    if not result.ok:
+                        report["errors"].append(f"{ref}: {result.err}")
+        with checking("HEAD"):
             expected = "refs/heads/" + branch if branch else saved["branch"]
             common = os.path.join(os.path.realpath(repo), ".git")
             relative = os.path.relpath(saved["gitDir"], common)
@@ -428,7 +500,8 @@ def finish(repo, card, step, *, branch=""):
                                                 "data": base64.b64encode(wanted).decode("ascii")})
             finally:
                 os.close(root)
-            if saved.get("worktree"):
+        if saved.get("worktree"):
+            with checking("worktree/.git"):
                 fd = os.open(saved["worktree"], DIR_FLAGS)
                 try:
                     if _node(fd, ".git") != saved["pointer"]:
@@ -436,10 +509,13 @@ def finish(repo, card, step, *, branch=""):
                         _restore(fd, ".git", saved["pointer"])
                 finally:
                     os.close(fd)
-        except (OSError, ValueError, KeyError, StepError) as exc:
-            report["errors"].append(str(exc))
+        for field in ("refs", "files"):
+            report[field] = sorted(set(report[field]))
         result = report if any(report.values()) else {}
-        if "saved" in locals():
+        if report["errors"]:
+            saved.update(active=True, pendingReport=result)
+        else:
+            saved.pop("pendingReport", None)
             saved.update(active=False, report=result)
-            _save(path, saved)
+        _save(path, saved)
         return result

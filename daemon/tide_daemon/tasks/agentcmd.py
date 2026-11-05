@@ -152,6 +152,7 @@ class Step:
     chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
+    branch: str = ""               # gałąź przypisana przez silnik; BoxRunner nie ufa HEAD worktree
 
 
 @dataclass

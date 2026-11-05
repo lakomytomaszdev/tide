@@ -2887,6 +2887,8 @@ krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego wor
 `box/refguard.py` zapisuje przed uruchomieniem procesu w `BoxRunner.start` pełną migawkę
 `git for-each-ref` oraz kopie i sumy SHA-256 chronionych plików: `.git/hooks/`, `.git/config`,
 `.git/info/` (także `attributes`), `.git/config.worktree` i `.git/worktrees/*/config.worktree`.
+Spis refów uzupełnia odczytem luźnych refów symbolicznych, także z nieistniejącym celem,
+które `for-each-ref` pomija. Pliki blokad refów nie należą do tego spisu.
 Obejmuje nowe i usunięte pliki, tryby plików oraz dowiązania bez odczytywania ich celów.
 Migawki są atomowo zapisywane w `$XDG_STATE_HOME/tide/refguard/<skrót repozytorium>/`
 (domyślnie `~/.local/state/tide/refguard/`), poza montowaniami pudełka. Przeżywają restart usługi.
@@ -2896,6 +2898,9 @@ blokady plikowej `flock`; migawka powstaje dopiero po ich uzyskaniu. Dozwolona j
 kroku i gałęzie ticketów tej samej karty aktywnych w dowolnym momencie jego trwania.
 Nowy krok dopisuje swoją gałąź do starszych aktywnych migawek. Zgoda pozostaje w starszej
 migawce po zakończeniu sąsiada, więc równoległe końce nie cofają sobie commitów.
+Gałąź pochodzi z przypisania silnika (`Step.branch`), a zgodność `HEAD` z tym przypisaniem
+jest sprawdzana przed przygotowaniem i zapisaniem migawki. Podmieniony `HEAD` nie może
+rozszerzyć zbioru dozwolonych refów; niezgodność odmawia startu.
 Gałęzie innych kart, nowe tagi i pomocnicze gałęzie agenta nie należą do tego zbioru.
 Kroki innych kart w tym repozytorium czekają na zwolnienie strażnika; końcowa kontrola
 w runnerze odmawia startu, jeżeli dwie karty mimo to równocześnie przejdą sprawdzanie.
@@ -2915,7 +2920,11 @@ i wskaźnik `.git`; po naruszeniu `HEAD` ponownie wskazuje gałąź kroku.
 Naruszenie zapisuje zdarzenie `refs.guard` z polami `refs`, `files`, `head`, `errors`
 i wymusza wynik `error` z powodem `refs.guard`, niezależnie od wyniku agenta.
 Brak lub uszkodzenie migawki i nieudana naprawa również kończą się błędem.
-Trwały wynik kontroli pozwala ponowić zakończenie bez ponownego cofania refów.
+Uszkodzony wpis w `worktrees/` lub błąd pojedynczego pliku jest raportowany ze ścieżką;
+pozostałe dostępne pliki, refy, `HEAD` i wskaźnik `.git` są nadal sprawdzane i naprawiane.
+Przy błędzie naprawy migawka pozostaje aktywna, zachowuje kopię i listę naruszeń, a kolejne
+`finish` ponawia kontrolę. Dopiero pełna kontrola bez błędów utrwala końcowy wynik,
+który pozwala ponowić zakończenie bez ponownego cofania refów.
 `HostRunner` nie zakłada migawek i nie uruchamia kontroli. Każde wywołanie gita usługi,
 w tym `Git`, `FlowGit`, `StepGit`, odczyty koordynacji i runnera, przechodzi przez
 `gitcommand.git_argv`, które dopisuje `-c core.hooksPath=/dev/null -c core.fsmonitor=false`.
@@ -2957,7 +2966,7 @@ jednostki (`unit_state`) ma trzy wartości jak `stepstop.unit_state`: `active` (
 niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko przy `inactive` — z `unknown` `stepstop`
 nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
 
-**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> [--worktree W]
+**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W]
 [--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).

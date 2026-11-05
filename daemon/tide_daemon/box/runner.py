@@ -675,7 +675,7 @@ class BoxRunner:
         with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
             from . import refguard
             refguard.begin(step.repo, self.card, step.step_id, bg.git_dir,
-                           prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
+                           branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
             try:
                 proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    env=self._client_env(), start_new_session=True)
@@ -774,6 +774,7 @@ def demo_args(argv: list):
     parser.add_argument("slug")
     parser.add_argument("--worktree", default=os.getcwd(), help="worktree w <repo>-worktrees (domyślnie bieżący)")
     parser.add_argument("--card", default="", help="kopia pudełka karty (box: per-card)")
+    parser.add_argument("--branch", required=True, help="oczekiwana gałąź kroku (bez refs/heads/)")
     parser.add_argument("--push-tide-step", action="store_true",
                         help="wgraj tide-step do pudełka (/opt/tide/tide-step) — pudełko prototypowe bez obrazu #16")
     if "--" not in argv:
@@ -807,7 +808,7 @@ def _demo(argv: list) -> int:
     runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step,
                        step_env=lambda _s: {"TIDE_DEMO_SECRET": marker})
     step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
-                         step_id=step_id)
+                         step_id=step_id, branch=args.branch)
 
     def use_command(bg):
         bg.argv = list(command)
@@ -836,7 +837,7 @@ def _read(path: str) -> str:
 
 if __name__ == "__main__":
     if sys.argv[1:2] != ["--demo"]:
-        print("użycie: python3 -m tide_daemon.box.runner --demo <slug> [--worktree W] [--card K-N] -- <polecenie>",
+        print("użycie: python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W] [--card K-N] -- <polecenie>",
               file=sys.stderr)
         sys.exit(2)
     sys.exit(_demo(sys.argv[2:]))

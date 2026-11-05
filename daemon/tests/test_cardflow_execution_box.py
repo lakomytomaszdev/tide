@@ -12,6 +12,7 @@ from unittest import mock
 from tide_daemon.box import builder as bb
 from tide_daemon.box import profile as bp
 from tide_daemon.box import proxy as bproxy
+from tide_daemon.box import refguard
 from tide_daemon.box import runner as br
 from tide_daemon.box import state as bs
 from tide_daemon.cardflow import boxaccess, boxstep, boxwait, engine as flow_engine
@@ -715,8 +716,10 @@ class BoxStepInProcessTest(BoxFlow):
     def test_ticket_step_runs_in_the_box_and_finishes(self):
         self.build_box()
         card_id = self.card()
-        self.assertTrue(self.start(card_id)["ok"])
-        step = self.started_box(card_id)
+        with mock.patch.object(refguard, "begin", wraps=refguard.begin) as begin:
+            self.assertTrue(self.start(card_id)["ok"])
+            step = self.started_box(card_id)
+        self.assertEqual(begin.call_args.kwargs["branch"], step["branch"])
         finished = self.finished(card_id)
         self.assertEqual(finished["result"], "done")
         self.assertTrue(wait_until(lambda: self.proxy.calls[-1][0] == "clear", timeout=10), self.proxy.calls)

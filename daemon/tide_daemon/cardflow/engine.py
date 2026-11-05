@@ -1611,6 +1611,7 @@ class FlowEngine(PlanEditing):
                 bg, proc = runner.start(agentcmd.Step(
                     tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                     step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
+                    branch=made_ticket["branch"],
                     resume=bool(resume_session),
                     local=selected.route, effort=selected.effort,
                     permission_mode="acceptEdits" if selected.tool == "claude" else "",

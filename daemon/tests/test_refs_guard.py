@@ -41,7 +41,7 @@ class GuardTest(unittest.TestCase):
     def begin(self, name="one", card="K-38", **kw):
         wt = self.worktrees[name]
         admin = gitrepos.git(wt, "rev-parse", "--absolute-git-dir").strip()
-        refguard.begin(self.repo, card, name, admin, worktree=wt, **kw)
+        refguard.begin(self.repo, card, name, admin, branch="ticket/" + name, worktree=wt, **kw)
 
     def finish(self, name="one", card="K-38"):
         return refguard.finish(self.repo, card, name, branch="ticket/" + name)
@@ -107,6 +107,135 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(results, [{}, {}])
         for name, tip in tips.items():
             self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/" + name).strip(), tip)
+
+    def test_untrusted_head_cannot_grant_master_to_either_step(self):
+        self.begin()
+        gitrepos.git(self.worktrees["two"], "symbolic-ref", "HEAD", "refs/heads/master")
+        with self.assertRaises(agentcmd.StepError):
+            self.begin("two")
+        peers = refguard._active(self.repo)
+        self.assertEqual(len(peers), 1)
+        self.assertEqual(peers[0][1]["allowed"], ["refs/heads/ticket/one"])
+        # Nawet zapis przez podmieniony HEAD odrzuconego sąsiada nie dostaje wyjątku.
+        gitrepos.commit(self.worktrees["two"], "attack")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+
+    def test_bad_admin_entry_does_not_skip_independent_repairs_and_can_be_retried(self):
+        config = (self.common / "config").read_bytes()
+        pointer = Path(self.worktrees["one"]) / ".git"
+        original_pointer = pointer.read_bytes()
+        self.begin()
+        tip = self.commit("one")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+        gitrepos.git(self.worktrees["one"], "symbolic-ref", "HEAD", "refs/heads/master")
+        (self.common / "hooks/new-hook").write_text("obcy hak")
+        (self.common / "config").write_text("uszkodzona konfiguracja [\n")
+        (self.common / "info/attributes").write_text("obce atrybuty")
+        pointer.write_text("obcy wskaźnik\n")
+        junk = self.common / "worktrees/junk"
+        junk.write_text("nie katalog")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertIn("hooks", result["files"])
+        self.assertTrue(result["head"])
+        self.assertTrue(any("worktrees/junk" in error for error in result["errors"]))
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertFalse((self.common / "hooks/new-hook").exists())
+        self.assertFalse((self.common / "info/attributes").exists())
+        self.assertEqual((self.common / "config").read_bytes(), config)
+        self.assertEqual(pointer.read_bytes(), original_pointer)
+        self.assertEqual(gitrepos.git(self.worktrees["one"], "symbolic-ref", "HEAD").strip(),
+                         "refs/heads/ticket/one")
+        self.assertEqual(len(refguard._active(self.repo)), 1)
+        junk.unlink()
+        retried = self.finish()
+        self.assertFalse(retried["errors"])
+        self.assertEqual(retried["refs"], result["refs"])
+        self.assertEqual(refguard._active(self.repo), [])
+        self.assertEqual(self.finish(), retried)
+
+    def test_new_dangling_symbolic_ref_is_reported_and_removed(self):
+        self.begin()
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/tmp-evil", "refs/heads/missing")
+        result = self.finish()
+        self.assertEqual(result.get("refs"), ["refs/heads/tmp-evil"])
+        self.assertFalse(result["errors"])
+        self.assertFalse((self.common / "refs/heads/tmp-evil").exists())
+
+    def test_dangling_symbolic_ref_is_preserved_or_restored_from_snapshot(self):
+        ref = "refs/heads/alias"
+        gitrepos.git(self.repo, "symbolic-ref", ref, "refs/heads/missing")
+        self.begin()
+        self.assertEqual(self.finish(), {})
+        for change in (("symbolic-ref", ref, "refs/heads/other-missing"), ("symbolic-ref", "--delete", ref)):
+            with self.subTest(change=change):
+                self.begin()
+                gitrepos.git(self.repo, *change)
+                result = self.finish()
+                self.assertEqual(result["refs"], [ref])
+                self.assertFalse(result["errors"])
+                self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", ref).strip(), "refs/heads/missing")
+
+    def test_direct_ref_replaced_by_dangling_symbolic_ref_is_restored_without_touching_target(self):
+        self.begin()
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/master", "refs/heads/missing")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertFalse(result["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertFalse((self.common / "refs/heads/missing").exists())
+
+    def test_dangling_symbolic_ref_deletion_checks_target_again_under_ref_lock(self):
+        self.begin()
+        ref = "refs/heads/tmp-evil"
+        gitrepos.git(self.repo, "symbolic-ref", ref, "refs/heads/missing")
+        real_restore = refguard._restore_symref
+        real_refs = refguard._refs
+
+        def raced(repo, name, old, now):
+            gitrepos.git(repo, "symbolic-ref", name, "refs/heads/new-missing")
+            return real_restore(repo, name, old, now)
+
+        def refs(repo):
+            if (self.common / (ref + ".lock")).exists():
+                # Równoległy zapis przez gita jest blokowany standardowym plikiem lock.
+                self.assertFalse(Git().run(repo, "symbolic-ref", ref, "refs/heads/blocked").ok)
+            return real_refs(repo)
+
+        with mock.patch.object(refguard, "_restore_symref", side_effect=raced), \
+                mock.patch.object(refguard, "_refs", side_effect=refs):
+            result = self.finish()
+        self.assertEqual(result["refs"], [ref])
+        self.assertTrue(any("zmieniony po porównaniu" in e for e in result["errors"]))
+        self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", ref).strip(), "refs/heads/new-missing")
+        self.assertFalse((self.common / (ref + ".lock")).exists())
+
+    def test_single_unreadable_path_does_not_skip_other_paths_or_refs_and_retry_repairs_it(self):
+        self.begin()
+        tip = self.commit("one")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+        (self.common / "hooks/new-hook").write_text("obcy hak")
+        (self.common / "info/attributes").write_text("obce atrybuty")
+        real_node = refguard._node
+
+        def unreadable(parent, name):
+            if name == "hooks":
+                raise PermissionError("brak odczytu hooks")
+            return real_node(parent, name)
+
+        with mock.patch.object(refguard, "_node", side_effect=unreadable):
+            result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertEqual(result["files"], ["info"])
+        self.assertTrue(result["errors"])
+        self.assertFalse((self.common / "info/attributes").exists())
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        retried = self.finish()
+        self.assertFalse(retried["errors"])
+        self.assertEqual(retried["files"], ["hooks", "info"])
+        self.assertFalse((self.common / "hooks/new-hook").exists())
 
     def test_later_start_is_allowed_even_after_older_step_has_committed(self):
         self.begin()
@@ -298,6 +427,21 @@ class GuardTest(unittest.TestCase):
 
 
 class RunnerGuardTest(BoxRunnerCase):
+    def test_switched_head_is_rejected_before_prepare_or_launch(self):
+        gitrepos.git(self.worktree, "symbolic-ref", "HEAD", "refs/heads/master")
+        runner = self.runner(card="K-38")
+        with mock.patch.object(runner, "ensure_devices") as prepare:
+            with self.assertRaisesRegex(agentcmd.StepError, "HEAD"):
+                runner.start(self.step())
+        prepare.assert_not_called()
+        self.assertEqual(self.popen_calls, [])
+        self.assertEqual(refguard._active(self.repo), [])
+
+    def test_missing_trusted_branch_fails_closed(self):
+        with self.assertRaisesRegex(agentcmd.StepError, "zaufanej gałęzi"):
+            self.runner().start(self.step(branch=""))
+        self.assertEqual(self.popen_calls, [])
+
     def test_snapshot_exists_before_process_launch(self):
         def launch(*args, **kw):
             self.assertTrue(list(refguard._active(self.repo)))
