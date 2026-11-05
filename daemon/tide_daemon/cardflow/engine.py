@@ -2204,6 +2204,8 @@ class FlowEngine(PlanEditing):
             return
         if self._caretaker_resume(card, st, step):
             return
+        if st.last_step in st.superseded and st.last_step not in st.step_decisions:
+            return              # PT-155: problem ticketu przejęła poprawa planu; jawne ponowienie nadal działa
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
             if decision:

@@ -1955,7 +1955,8 @@ albo zdarzenie karty z listy. Rozwiązanie danego etapu po `watermark` (`flow.er
 
 #### `return-plan` (PT-146)
 
-Odsyła plan planującemu z uwagą opiekuna; dozwolona tylko przy wyzwalaczu `plan-fix` (patrz „Odesłanie planu”).
+Odsyła plan planującemu z uwagą opiekuna; dozwolona przy wyzwalaczu `plan-fix` (patrz „Odesłanie planu”) oraz
+problemie ticketu `error`, `repeat` albo `waiting` dla pytania (patrz „Luka w planie w trakcie realizacji”).
 Pola: `feedback` (wymagane, 1–4000 znaków — wiersz planu, bloker i błąd standardu planu 1.2; prośbę „odrocz tę
 uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły rozpoznawania odroczeń), `findings`
 (opcjonalne, numery uwag ostatniego review od 1, po przecinku) i `reason` (wymagane, 1–600, do historii).
@@ -1976,8 +1977,8 @@ uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły ro
   z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
   pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
 
-Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3), a lukę
-w zatwierdzonym, działającym planie obsługuje #13. Opiekun nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
+Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3). Opiekun
+nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
 akcji (`approve-plan` to `bad-caretaker-action`), a `return-plan` nie woła `approve_plan`.
 
 **Akcja.** `_CaretakerPort.return_plan` woła istniejące `FlowEngine.edit_plan` z `action: return` (ta sama walidacja,
@@ -2011,6 +2012,35 @@ dokumentów. Dostawcę opiekuna karty bez dostawcy w `card.started` („Mam plan
 **Historia.** „Opiekun: odesłał plan z uwagą — <powód>” z `caretaker.action`; samo `plan.returned` nie ma wpisu
 w historii, więc nic się nie dubluje.
 
+#### Luka w planie w trakcie realizacji
+
+Przy błędzie ticketu w zatwierdzonym planie opiekun może rozpoznać brak osobnej pracy, której ticket nie powinien
+wykonywać (PT-155, przypadek K-16 z 03.11). Korzysta z dotychczasowych wyzwalaczy: `error`, `repeat` lub `waiting`
+dla pytania; kroki ticketu i review zachowują swoje kartki i kontrakty `result.json`. Nie ma osobnego sygnału luki.
+
+`return-plan` wywołuje to samo `EditCardPlan` / `edit_plan` z `action: return`. Baza `plan.returned` pochodzi
+z zatwierdzonego planu i ma nadane ID ticketów, a zdarzenie zapisuje `caretaker`, `caretakerStep`, `caretakerFrom`
+i dosłowną uwagę opiekuna, np. „dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły,
+przepisz bez zmian”. Następnie istniejąca ścieżka `plan-amend` → niezależne review → różnica czeka na użytkownika.
+Opiekun nigdy nie zapisuje `plan.revision-approved`; dodane tickety dostają numery dopiero po zatwierdzeniu różnicy.
+Rozpoczętych ticketów nie można zmieniać ani usuwać: działa dotychczasowe sprawdzenie poprawki i odmowa
+`ticket-started` przy zatwierdzaniu różnicy. Opiekun nie ma akcji omijającej te bramki.
+
+Odesłanie rozwiązuje problem kroku ticketu: projekcja `plan.returned` oznacza krok jako zastąpiony poprawą planu
+(`superseded`), więc jego błąd lub pytanie nie wraca do decyzji, automatycznego ponowienia ani kolejnego opiekuna.
+Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Jawne ponowienie użytkownika nadal korzysta
+z dotychczasowej ścieżki. Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
+
+Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu. Gdy użytkownik
+odeśle plan albo ponowi krok po starcie opiekuna, wynik opiekuna jest `stale`: bez kolejnego `plan.returned`
+i bez zużycia limitu, także dla problemu z decyzją. Historia pokazuje jeden wpis
+„Opiekun: odesłał plan z uwagą — <powód>”.
+
+`in/context/plan/approved.md` zawiera zamaskowaną migawkę zatwierdzonego planu z dziennika (ID i treść kartek),
+a `plan/spec.md` — specyfikację propozycji. Dotychczasowe źródła dołączają kartki `plan/tickets/<ID>.md`,
+kartkę kroku oraz jego notki i końcówkę `step.log` w `steps/<krok>/`. Migawka zatwierdzonego planu odróżnia go
+od pierwotnego `plan.md` z numerami roboczymi. Wszystkie pliki podlegają wspólnemu maskowaniu i limitowi 400 kB.
+
 ### Ponowienie, limit i nieaktualne akcje (PT-150)
 
 **Wspólna ścieżka akcji** (`FlowEngine._caretaker_act`, także z `_reconcile`): wynik kroku opiekuna (`outcome`
@@ -2039,10 +2069,11 @@ zaczętym zamiarze `caretaker-action`:
 - problem z decyzją (`decision` w `caretaker.started`; zapis sprzed PT-150 — decyzja aktualnego problemu): jest
   `step.decision` kroku problemu bez pola `caretaker` („użytkownik już zdecydował”) albo `problems()` nie zwraca
   problemu z tym samym id decyzji („decyzja problemu już nie czeka”),
-- problem bez decyzji: po `watermark` z `caretaker.started` jest zdarzenie spoza opiekuna — w łańcuchu problemu
+- problem bez decyzji: `problems()` nie zwraca już problemu („problem już nie występuje”),
+- w obu przypadkach: po `watermark` z `caretaker.started` jest zdarzenie spoza opiekuna — w łańcuchu problemu
   (problem bez kroku: w jego tickecie, bez ticketu: w całej karcie) `step.started`, `step.retry` albo
   `step.decision`, a w całej karcie `card.paused`, `card.moved`, `plan.returned` albo `plan.edited` („po starcie
-  opiekuna: <zdarzenie>”) — albo `problems()` nie zwraca już problemu („problem już nie występuje”). Zdarzenia samego
+  opiekuna: <zdarzenie>”). Zdarzenia samego
   opiekuna nie liczą się: `caretaker.*`, zdarzenia z `kind: caretaker` (start, czekanie na slot), zdarzenia z polem
   `caretaker` (zapisy jego akcji) oraz wyniki i aktywność kroku opiekuna (nie ma ich na liście).
 

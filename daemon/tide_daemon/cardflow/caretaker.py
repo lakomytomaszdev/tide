@@ -162,11 +162,13 @@ ACTIONS: dict[str, Action] = {
     # z `action: return`), więc walidacja, idempotencja i ochrona ticketów, które ruszyły, są te same. Zatwierdzenia
     # planu ani różnicy opiekun nie ma w ogóle.
     "return-plan": Action(
-        kinds=("plan-fix",),
+        kinds=("plan-fix", "error", "repeat", "waiting"),
         params={
             "feedback": Param(True, 1, TEXT_MAX, "uwaga dla planującego: wskaż wiersz planu (numer ticketu), bloker "
                                                  "i błąd standardu planu 1.2; odroczenie uwagi do ticketu #n podaj "
-                                                 "tu dosłownie"),
+                                                 "tu dosłownie; przy luce w zatwierdzonym planie wskaż brakującą "
+                                                 "pracę i decyzję, z której wynika, oraz każ przepisać tickety, "
+                                                 "które ruszyły, bez zmian"),
             "findings": Param(False, 1, FINDINGS_MAX, "numery uwag review do odesłania (od 1, po przecinku, np. "
                                                        "`1,3`), z listy „Uwagi review”"),
             "reason": Param(True, 1, REASON_MAX, "dlaczego to odesłanie naprawi plan (do historii karty)"),
@@ -614,7 +616,11 @@ def _parent(st, name: str) -> str:
     if step.get("kind") == "plan-amend":
         before = [e for e in st.plan_returns if int(e.get("seq") or 0) < int(step.get("seq") or 0)]
         if before:
-            return before[-1].get("caretakerFrom") or ""
+            parent = before[-1].get("caretakerFrom") or ""
+            # Luka ticketu jest rozwiązana odesłaniem (PT-155). Poprawa planu ma własny łańcuch i limit;
+            # dziedziczenie z PT-146 dotyczy wyłącznie wcześniejszej poprawki planu.
+            if (st.steps.get(parent) or {}).get("kind") in PLAN_STEP_KINDS:
+                return parent
     return ""
 
 
@@ -717,6 +723,10 @@ def owned(st, ident: str) -> dict:
         if done.get("result") == "done" and in_scope(name) and \
                 (st.steps.get(name) or {}).get("kind") not in PLAN_STEP_KINDS:
             closed = max(closed, int(done.get("seq") or 0))
+    for returned in st.plan_returns:
+        target = returned.get("caretakerFrom") or ""
+        if target in st.superseded and in_scope(target):
+            closed = max(closed, int(returned.get("seq") or 0))
     if runs_all and runs_all[0].get("trigger") == "plan-fix":
         closed = max(closed, st.plan_user_seq)       # odesłanie albo odrzucenie poprawki przez użytkownika
     runs = [run for run in runs_all if int(run.get("seq") or 0) > closed and
@@ -761,7 +771,8 @@ def stale(st, run: dict, events: list) -> str:
     Jedna reguła dla obu rodzajów problemów:
     - z decyzją (`decision` w `caretaker.started`): decyzja problemu już nie czeka — jest `step.decision` bez pola
       `caretaker` albo problem ma inną decyzję (albo go nie ma),
-    - bez decyzji: `problems()` nie zwraca już problemu albo po `watermark` jest zdarzenie spoza opiekuna — w łańcuchu
+    - bez decyzji: `problems()` nie zwraca już problemu,
+    - w obu przypadkach: po `watermark` jest zdarzenie spoza opiekuna — w łańcuchu
       problemu `step.started`, `step.retry` albo `step.decision`, w całej karcie wstrzymanie, przeniesienie karty,
       `plan.returned` albo `plan.edited`; dla `flow-error` także rozwiązanie jego etapu (`flow.error-cleared`
       albo udany wynik `plan-commit`), nawet jeśli błąd potem wrócił. Zdarzenia opiekuna (jego kroki i akcje)
@@ -776,7 +787,6 @@ def stale(st, run: dict, events: list) -> str:
             return "użytkownik już zdecydował"
         if found is None or (found.get("decision") or "") != decision:
             return "decyzja problemu już nie czeka"
-        return ""
     watermark = int(run.get("watermark") or 0)
     stage = ident.split(":", 1)[1] if ident.startswith("flow-error:") else ""
     for event in events:

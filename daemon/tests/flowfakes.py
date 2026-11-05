@@ -117,6 +117,11 @@ if prompt.startswith("Jesteś opiekunem karty"):
         data = {"result": "done", "action": "retry", "step": target,
                 "instruction": "Najpierw uruchom test eksportu i popraw format daty na ISO 8601.",
                 "reason": "Dziennik kroku pokazuje błąd formatu daty."}
+    elif care == "return-plan-gap":
+        # PT-155: luka wynika z decyzji A, a rozpoczęte tickety mają pozostać nietykalne.
+        data = {"result": "done", "action": "return-plan",
+                "feedback": "Dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły, "
+                            "przepisz bez zmian.", "reason": "W planie brakuje migracji z decyzji A."}
     elif care in ("return-plan", "return-plan-obce", "approve-plan"):
         # PT-146: odesłanie planu z precyzyjną uwagą (wiersz, bloker, błąd standardu); `-obce` — numer uwagi spoza
         # listy; `approve-plan` — akcja, której opiekun nie ma.
@@ -157,7 +162,8 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
+            fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)

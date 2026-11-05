@@ -49,7 +49,7 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
-    superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
+    superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
@@ -370,6 +370,11 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
             st.closed = None
             st.plan_returns.append(e)
+            target = e.get("caretakerFrom") or ""
+            if e.get("caretaker") and st.plan_approved and (st.steps.get(target) or {}).get("ticket"):
+                # PT-155: problem ticketu przejmuje poprawa planu. Sam wynik kroku i jego kartka zostają;
+                # dawny błąd/pytanie nie wraca ani nie uruchamia kolejnego opiekuna, także po restarcie.
+                st.superseded.add(target)
             if "caretaker" not in e:
                 st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-discarded":

@@ -168,10 +168,15 @@ class ResultTest(unittest.TestCase):
             self.assertEqual(caretaker.parse_result({**base, field: ""}, self.problem, Journal().st)["code"],
                              "bad-caretaker-result")
 
-    def test_return_plan_is_only_for_the_plan_fix_trigger(self):
+    def test_return_plan_supports_plan_fix_and_ticket_problem_triggers(self):
         base = {"result": "done", "action": "return-plan", "feedback": "x", "reason": "y"}
-        other = {"id": "error:K-1-PT-7-1", "trigger": "error", "step": "K-1-PT-7-2", "options": []}
-        self.assertEqual(caretaker.parse_result(base, other, Journal().st)["code"], "bad-caretaker-action")
+        self.assertEqual(caretaker.ACTIONS["return-plan"].kinds, ("plan-fix", "error", "repeat", "waiting"))
+        for trigger in ("plan-fix", "error", "repeat", "waiting"):
+            other = {"id": "problem", "trigger": trigger, "step": "K-1-PT-7-2", "options": []}
+            self.assertTrue(caretaker.parse_result(base, other, Journal().st)["ok"])
+        for trigger in ("flow-error", "stalled", "no-progress"):
+            other = {"id": "problem", "trigger": trigger, "options": []}
+            self.assertEqual(caretaker.parse_result(base, other, Journal().st)["code"], "bad-caretaker-action")
 
     def test_the_caretaker_has_no_approval_action(self):
         for action in ("approve-plan", "approve-revision", "ApproveCardPlan", "approve"):
