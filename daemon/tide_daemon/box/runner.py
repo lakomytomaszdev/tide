@@ -611,7 +611,8 @@ class BoxRunner:
 
     def _require_running(self, running: bool) -> None:
         if not running:
-            raise agentcmd.StepError(f"pudełko {self.box} jest zatrzymane — uruchomienie pudełka należy do #18")
+            # Silnik (#18, `cardflow/boxstep.py`) uruchamia pudełko przed startem kroku; tu tylko zabezpieczenie.
+            raise agentcmd.StepError(f"pudełko {self.box} jest zatrzymane")
 
     def wait_user_manager(self, box: str = "") -> None:
         """Po (re)starcie pudełka `systemd-run --user` działa dopiero, gdy wstanie menedżer usług użytkownika `agent`
@@ -698,10 +699,14 @@ class BoxRunner:
         code = self._systemctl(box, "is-active", "--quiet", unit).returncode
         return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
+    def step_state(self, step: dict) -> str:
+        """Stan jednostki kroku opisanego wpisem dziennika (`unit`, `box`) — dla silnika po restarcie usługi (#18)."""
+        unit, box = self._unit_box(step)
+        return self.unit_state(box, unit)
+
     def alive(self, step: dict) -> bool:
         """False tylko przy pewnym „nieaktywna”; nieznany stan liczy się jako żywy."""
-        unit, box = self._unit_box(step)
-        return self.unit_state(box, unit) != "inactive"
+        return self.step_state(step) != "inactive"
 
     def _unit_box(self, step: dict) -> tuple:
         unit = str(step.get("unit") or "")

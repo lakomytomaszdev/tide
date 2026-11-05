@@ -48,6 +48,7 @@ from ..tasks.runner import HostRunner, Runner
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
+from . import boxstep
 from .decisions import clean_options
 from . import environment as flow_environment
 from . import execution
@@ -83,6 +84,11 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
+# PT-181 (#18): rodzaje kroków, które uruchamiają kod projektu — w projekcie z gotowym pudełkiem idą do `BoxRunner`.
+# Planowanie w każdej odmianie (`planning`, `plan-fix`, `plan-amend`, `plan-revise`, `plan-review`, pełne planowanie
+# w Konsoli) czyta repozytorium i Tablicę, więc zostaje na hoście w bwrap; `conflict` też (scalenie gałęzi).
+# Wznowienie dziedziczy runner wznawianego kroku. Wybór: `cardflow/boxstep.py`.
+BOX_STEP_KINDS = ("ticket", "fix", "review", "close")
 OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
 OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
@@ -273,6 +279,12 @@ class FlowEngine(PlanEditing):
         self._local_claims: dict[str, object] = {}
         self.box_launcher = None        # PT-172: funkcja(slug, profil, "build"|"rebuild"); None — wątek z Builderem (#4)
         self.box_builder = None         # PT-172: fabryka() → Builder dla BoxStatus; None — Builder z ustawień pudełka
+        # PT-181: krok w pudełku. None — ustawienia z `cardflow.json`, proxy uruchomione w usłudze, BoxRunner z ustawień.
+        self.box_settings_source = None  # funkcja() → BoxSettings
+        self.box_proxy = None            # obiekt z set_box_policy/clear_box_policy, listen, port
+        self.box_runner_factory = None   # funkcja(ustawienia, slug, karta, per_card) → BoxRunner
+        self.box_sleep = None            # funkcja(sekundy) — czekanie na start pudełka
+        self._box_runners: dict = {}     # pudełko → BoxRunner do sprawdzania i zatrzymywania kroków z dziennika
         self._env_cache: dict = {}      # karta → (klucz, sekcja „Środowisko karty”)
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
@@ -1230,7 +1242,27 @@ class FlowEngine(PlanEditing):
     def _kill(self, step: dict) -> bool:
         """Zatrzymanie kroku przez Runner; uchwyt procesu jest tylko dla kroków uruchomionych przez tę usługę
         (po restarcie `proc` to None, a krok znamy po jednostce zapisanej w dzienniku)."""
-        return self.runner.kill(step, proc=self.procs.get(step.get("step") or ""), grace=self.grace)
+        return self._runner_for(step).kill(step, proc=self.procs.get(step.get("step") or ""), grace=self.grace)
+
+    def _runner_for(self, step: dict):
+        """Runner trwającego kroku według jego wpisu (`runner: box` → BoxRunner pudełka z wpisu), nie według
+        dzisiejszego stanu projektu — także po restarcie usługi."""
+        if step.get("runner") != boxstep.RUNNER:
+            return self.runner
+        box = step.get("box") or ""
+        runner = self._box_runners.get(box)
+        if runner is None:
+            runner = boxstep.runner_of(self, boxstep.settings_of(self), step.get("boxSlug") or "")
+            self._box_runners[box] = runner
+        return runner
+
+    def _unit_state(self, step: dict) -> str:
+        if step.get("runner") == boxstep.RUNNER:
+            try:
+                return self._runner_for(step).step_state(step)
+            except agentcmd.StepError:
+                return "unknown"
+        return stepstop.unit_state(step.get("unit") or "")
 
     def _stop_for_enter(self, card: str, step: dict) -> bool:
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
@@ -1504,6 +1536,11 @@ class FlowEngine(PlanEditing):
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
         self._admit(card.id, selected, ticket, kind, step_id)
+        try:
+            placement = self._box_place(card.id, project, selected, ticket, kind, parent_step)
+        except BaseException:
+            self._release_local(step_id)
+            raise
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
                                ".step" if kind == "ticket" else
@@ -1535,19 +1572,21 @@ class FlowEngine(PlanEditing):
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
                                                            step_dir=step_dir)
             is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
-            if is_dotnet:
+            # W pudełku paczki instaluje agent przez proxy pudełka — bez `dotnet restore`/`npm ci` na hoście.
+            if is_dotnet and placement is None:
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
             from ..tasks import node as node_mod
             # P1: sieć z piaskownicy kroku tylko do rejestrów paczek stosu (Claude Code `allowedDomains`); Codex
             # ma własną piaskownicę bez listy domen, więc tam bez zmian. `networkDomains[projekt]` dopisuje domeny.
             domains = ()
-            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict"):
+            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict") and placement is None:
                 extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
                 domains = tuple(dict.fromkeys([*node_mod.registry_domains(worktree, dotnet=is_dotnet),
                                                *[d for d in extra if isinstance(d, str)]]))
             node_home = ""
-            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree):
+            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree) \
+                    and placement is None:
                 node_home = node_mod.node_home(os.path.expanduser("~"))
                 if kind in ("ticket", "fix", "conflict") and node_home:
                     ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
@@ -1557,24 +1596,37 @@ class FlowEngine(PlanEditing):
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     shutil.copyfile(source, target)
 
-            bg, proc = self.runner.start(agentcmd.Step(
-                tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
-                step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
-                resume=bool(resume_session),
-                local=selected.route, effort=selected.effort,
-                permission_mode="acceptEdits" if selected.tool == "claude" else "",
-                allowed_tools=allowed_tools if selected.tool == "claude" else (),
-                disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
-                enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
-                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""),
-                before_start=copy_images)
+            runner = self.runner if placement is None else placement.runner
+            if placement is not None:
+                boxstep.before_start(self, placement, card.id, step_id)
+            try:
+                bg, proc = runner.start(agentcmd.Step(
+                    tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
+                    step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
+                    resume=bool(resume_session),
+                    local=selected.route, effort=selected.effort,
+                    permission_mode="acceptEdits" if selected.tool == "claude" else "",
+                    allowed_tools=allowed_tools if selected.tool == "claude" else (),
+                    disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
+                    enforce_command_policy=selected.tool == "claude",
+                    tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
+                    codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
+                    chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""),
+                    before_start=copy_images)
+            except BaseException:
+                if placement is not None:
+                    boxstep.start_failed(placement, step_id)
+                raise
             self.procs[step_id] = proc
-            return {"unit": bg.unit, "gitDir": bg.git_dir}
+            if placement is None:
+                return {"unit": bg.unit, "gitDir": bg.git_dir}
+            boxstep.started(self, placement, card.id, step_id, selected.tool)
+            self._box_runners[placement.box] = placement.runner
+            return {"unit": bg.unit, "gitDir": bg.git_dir, **placement.entry()}
 
+        box_fields = placement.entry() if placement is not None else {}
         try:
-            begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}",
+            begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}", **box_fields,
                               session=session, stepDir=step_dir, worktree=worktree, kind=kind,
                               ticket=ticket, round=round_no, executor=selected.name,
                               program=selected.tool, model=selected.model, provider=selected.provider,
@@ -1597,7 +1649,20 @@ class FlowEngine(PlanEditing):
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
-                                   repo=project.repo)
+                                   repo=project.repo, **box_fields)
+
+    def _box_place(self, card: str, project, selected, ticket: str, kind: str, parent_step: str):
+        """PT-181: `None` (host), `Placement` (pudełko) albo FlowDeferred/FlowError — nigdy cichy powrót na hosta."""
+        try:
+            return boxstep.place(self, card, project.slug, kind, parent_step, BOX_STEP_KINDS)
+        except boxstep.BoxWaiting as exc:
+            previous = fold(self.journal.read(card)).waiting.get((ticket, kind)) or {}
+            if previous.get("reason") != exc.reason:
+                self.journal.append(card, "step.waiting", ticket=ticket, kind=kind, provider=selected.provider,
+                                    reason=exc.reason, cause="box", until="")
+            raise FlowDeferred(exc.reason) from None
+        except boxstep.BoxError as exc:
+            raise FlowError("box", str(exc)) from None
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
@@ -3172,7 +3237,9 @@ class FlowEngine(PlanEditing):
                                 branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
-                                gitDir=result.get("gitDir") or "", repo=self._repo(card))
+                                gitDir=result.get("gitDir") or "", repo=self._repo(card),
+                                # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
+                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp") if intent.get(k)})
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))
@@ -3200,7 +3267,7 @@ class FlowEngine(PlanEditing):
         if exit_code is not None:
             alive = False
         else:
-            state = stepstop.unit_state(step.get("unit") or "")
+            state = self._unit_state(step)
             if state == "unknown":
                 return                       # bez menedżera nie wiemy — nie zgadujemy końca kroku
             alive = state == "active"
@@ -3420,6 +3487,11 @@ class FlowEngine(PlanEditing):
             denied = self._claude_denied_command(os.path.join(out, "step.log"))
             if denied:
                 data = {"result": "denied", "command": denied, "notes": data.get("notes") or []}
+        proxy_note = ""
+        if forced is None and step.get("runner") == boxstep.RUNNER:
+            # PT-181: odmowa proxy, na której krok się zatrzymał (pytanie albo błąd wskazujące domenę z dziennika
+            # odmów TEGO kroku) → `denied` z `network: <domena>`; inne odmowy tylko w notce.
+            data, proxy_note = boxstep.after_step(step, data, out)
         verdict = None
         if step.get("kind") == "review" and data.get("result") == "done":
             verdict = self._review_result(os.path.join(out, handoff.RESULT_FILE))
@@ -3466,6 +3538,13 @@ class FlowEngine(PlanEditing):
                 with open(path, "rb") as fh:
                     self.journal.write_file(card, os.path.join("steps", name, entry), fh.read())
                 kept.append(entry)
+        if proxy_note:
+            # Notka usługi (nie z katalogu kroku, który pudełko może zmienić).
+            self.journal.write_file(card, os.path.join("steps", name, boxstep.NOTE_FILE), proxy_note.encode("utf-8"))
+            if boxstep.NOTE_FILE not in kept:
+                kept.append(boxstep.NOTE_FILE)
+            data = {**data, "notes": [*(n for n in data.get("notes") or [] if n != boxstep.NOTE_FILE),
+                                      boxstep.NOTE_FILE]}
         snapshot_dir = ""
         if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
             snapshot_dir = self._freeze_planning_output(card, name, out)
@@ -3549,6 +3628,11 @@ class FlowEngine(PlanEditing):
                                 round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
         self._queue_notices(card)
         self._release_local(name)
+        if step.get("runner") == boxstep.RUNNER:
+            try:
+                boxstep.release(self, card, step)
+            except Exception as exc:   # zwolnienie nie może zatrzymać zapisu końca kroku
+                print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {name}: {exc!r}", flush=True)
         self.procs.pop(name, None)
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)

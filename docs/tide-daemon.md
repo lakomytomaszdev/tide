@@ -2029,8 +2029,8 @@ dziennika sam. Brak pola = nic nie blokuje.
 | Wartość | Znacznik w panelu | Kto ustawia | Kto czyści |
 |---|---|---|---|
 | `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód | PT-172: `ApproveCardEnvironment` bez `onlyPlan` |
-| `start` | „czeka na pudełko” | #18 (silnik): pudełko zatrzymane, trwa start | #18 |
-| `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny, przebudowa czeka na zatwierdzenie z planem | #18 |
+| `start` | „czeka na pudełko” | #18 (silnik, PT-181): pudełko zatrzymane, trwa start | #18, gdy pudełko odpowiada |
+| `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny albo brak filtrowania NIC, przebudowa czeka na zatwierdzenie z planem | #18, gdy pudełko znów jest zgodne |
 
 `set_box_wait(journal, card, value)` zapisuje zmianę (bez zdarzenia, gdy wartość się nie zmienia).
 
@@ -2891,7 +2891,7 @@ biegnący krok drugiego worktree, którego wpisu jeszcze nie ma, zginąłby przy
 `box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
 bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
 menedżera krok jest odmówiony. Worktree albo katalog kroku spoza `<repo>-worktrees` → odmowa. Zatrzymane pudełko →
-odmowa z czytelnym błędem (start pudełka należy do #18). Błąd `incus` przy montowaniu → `StepError`. Źródło
+odmowa z czytelnym błędem (pudełko uruchamia wcześniej silnik, niżej „Krok w pudełku w silniku”). Błąd `incus` przy montowaniu → `StepError`. Źródło
 równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
 poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Źródło w repozytorium albo
 w `<repo>-worktrees`, którego `realpath` różni się od ścieżki (składnik-dowiązanie, np. `.git/hooks` → `~/.ssh`
@@ -2920,6 +2920,76 @@ nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True
 [--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
+
+### Krok w pudełku w silniku (PT-181)
+
+`cardflow/boxstep.py`, wołane z `FlowEngine._launch`, `_poll`, `_kill` i `_finish`. Dowód na prawdziwym pudełku
+(`tide box run`, czerwona lista, pierwszy prawdziwy krok) jest w #28.
+
+**Które kroki idą do pudełka.** Stała `BOX_STEP_KINDS` w `cardflow/engine.py`: `ticket`, `fix` (poprawki po
+review), `review` i `close` (domknięcie karty) — kroki, które uruchamiają kod projektu. Planowanie w każdej odmianie
+(`planning`, `plan-fix`, `plan-amend`, `plan-revise`, `plan-review`, pełne planowanie w Konsoli) i `conflict` zostają
+na hoście w bwrap (`HostRunner`), bo czytają repozytorium i Tablicę. Wznowienie (`parentStep`) nie wybiera na nowo:
+dziedziczy runner wznawianego kroku z jego wpisu (krok z hosta zostaje na hoście, nawet gdy pudełko jest już gotowe;
+krok z pudełka zostaje w pudełku, a gdy pudełko jest wyłączone albo projekt stracił profil — błąd karty `box`, nigdy
+cichy powrót na hosta).
+
+**Wybór** (rodzaj z `BOX_STEP_KINDS` albo wznowienie kroku z pudełka), po kolei:
+
+| Stan | Wynik |
+|---|---|
+| `box.enabled: false` albo projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38) |
+| `boxWait: environment` | krok nie startuje: `step.waiting` „czeka na środowisko” |
+| budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
+| pudełka nie ma (Incus) | `HostRunner` |
+| brak filtrowania NIC albo hash migawki `clean` ≠ hash profilu (`BoxStatus.diff`), albo błąd budowy | `boxWait: rebuild` (zdarzenie `box.wait` z `why`), krok nie startuje: „czeka na pudełko (do przebudowy)”; przebudowę zatwierdza się z planem (PT-172) |
+| `box: per-card` | `Builder.copy_for_card` przy pierwszym kroku karty (gdy kopii nie ma), krok w `card_box_name(slug, karta)` |
+| pudełko (albo kopia) zatrzymane | `boxWait: start`, `incus start`, `incus exec <pudełko> -- true` do skutku (najwyżej `box.ip-wait-seconds`), menedżer usług `agent`, adres IPv4; potem `boxWait` czyszczone |
+| gotowe | `BoxRunner` |
+
+`step.waiting` z pudełka ma `cause: "box"`; silnik ponawia start w każdym `tick`. `boxWait: rebuild`/`start` czyści
+silnik, gdy pudełko znów nadaje się do kroku. Krok w pudełku nie robi na hoście `dotnet restore` ani `npm ci`
+(paczki instaluje agent w pudełku przez proxy) i nie dostaje `networkDomains`.
+
+**Wpis kroku.** `intent`/`result` akcji `step-start` i `step.started` kroku w pudełku mają pola `runner: "box"`,
+`box` (instancja), `boxSlug` i `boxIp`; krok na hoście ich nie ma (format bez zmian). Po nich silnik — także po
+restarcie usługi, gdy nie ma uchwytu procesu — sprawdza krok (`BoxRunner.step_state`: `incus exec … systemctl --user
+is-active tide-step-<id>.service`), kończy go z `result.json` i kodem z `in/exit-code` i zatrzymuje (`stepstop`:
+`BoxRunner.kill`, potem commit WIP gitem w piaskownicy na hoście jak dziś).
+
+**Polityka proxy.** Przed `BoxRunner.start`: `set_box_policy(ip pudełka, domeny, ollama, dziennik, full, box)`
+z `proxy.compose_policy(profil projektu, profile kart)` — karty to bieżąca i każda karta z trwającym krokiem w tym
+pudełku (karta bez własnego profilu nic nie dodaje). Dziennik odmów kroku:
+`$XDG_STATE_HOME/tide/box/<slug>/steps/<krok>/proxy-denied.log` — poza katalogiem kroku, który jest rw w pudełku
+(proxy dopisuje do niego jako usługa, a podrobiony wpis zmieniałby wynik kroku). Zaraz potem `box.use`
+(`state.mark_in_use`) — przed startem, bo BoxRunner zatrzymuje pudełko na nowe montowania tylko, gdy według dziennika
+pudełka nic w nim nie biegnie; nieudany start zapisuje `box.release`. Po kroku: `box.release` i polityka ustawiona
+na nowo dla pozostałych kroków w pudełku (z dziennikiem najmłodszego) albo `clear_box_policy`, gdy nie ma żadnego.
+Brak uruchomionego proxy = krok nie startuje (`StepError`).
+
+**Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
+odmów kroku (wiersze `CONNECT` i `HTTP`):
+
+- `question`, którego treść wymienia domenę z dziennika → `{"result": "denied", "command": "network: <domena>"}`
+  — pytanie o domenę z PT-172 (pole `network`, bez `envAnswer`),
+- `error`, którego `out/step.log` albo `out/box-exec.log` (końcówka) wymienia domenę z dziennika → to samo,
+- `done` albo `error` z wpisami, których wynik nie dotyczy → bez zmiany wyniku, notka `proxy-denied.md`
+  (zapisana przez usługę w `flow/<karta>/steps/<krok>/`, dopisana do `notes`).
+
+Jeden adres IP pudełka = jedna polityka, więc w pudełku projektu kroki kilku kart dzielą dziennik ostatnio ustawionej
+polityki. Dlatego `denied` nigdy nie powstaje z samego wpisu: wskazać domenę musi wynik kroku. Wpis z dziennika
+kroku innej karty nie zmienia wyniku tego kroku.
+
+**`box.risk`.** Pierwszy krok karty w pudełku z `docker.enabled` i `k3_active(program) == False` dopisuje do dziennika
+karty `box.risk` (`risk: "K1"`, `box`, `step`, `program`, `text`: „poświadczenia agenta czytelne dla kodu w pudełku
+(grupa docker); pełna ochrona: K3”) — raz na kartę.
+
+**Ograniczenia.** `OUTSIDE_PER_PROJECT` dotyczy wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
+tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Atrapy K3 (`GrantRegistry.issue`,
+`step_credentials`) nie są jeszcze wpięte w `step_env` kroku — do dowodu na prawdziwym pudełku (#28).
+
+Testy: `daemon/tests/test_cardflow_execution_box.py` i `daemon/tests/test_stepstop_box.py` (baza `boxflow.py`:
+atrapa `incus` z prawdziwym `tide-step`, atrapy `systemd-run`/`systemctl --user` pudełka i proxy).
 
 ## Uruchamianie
 
