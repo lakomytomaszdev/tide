@@ -465,8 +465,9 @@ class Backend(QObject):
         self._write(tag, "ApproveCardPlan", [card_id])
 
     @pyqtSlot(str, str)
-    def cardBranchDiff(self, tag: str, card_id: str) -> None:
-        self._write(tag, "CardBranchDiff", [card_id])
+    @pyqtSlot(str, str, str)
+    def cardBranchDiff(self, tag: str, card_id: str, target_ref: str = "") -> None:
+        self._write(tag, "CardBranchDiff", [card_id, target_ref] if target_ref else [card_id])
 
     @pyqtSlot(str, str)
     def mergeCardToMain(self, tag: str, card_id: str) -> None:

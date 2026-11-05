@@ -19,10 +19,10 @@ from datetime import datetime
 
 from .labels import result_label, step_name
 
-LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
+LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
           "ticket.rejected", "result")
-USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "step.decision", "plan.approved",
+USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "card.merged", "step.decision", "plan.approved",
                "ticket.rejected", "review.decision")
 RESUMABLE = ("question", "denied", "stopped")
 KIND_LABELS = {"step": "krok", "review": "review", "decision": "decyzja", "plan": "plan", "card": "karta",
@@ -113,8 +113,10 @@ def _event_entry(e: dict, st=None) -> dict | None:
         group, text = "card", "Karta wznowiona"
     elif kind == "card.closed":
         group, text = "card", "Praca domknięta na gałęzi karty"
-    elif kind == "card.main-merged":
-        group, text = "merge", "Karta scalona do master"
+    elif kind in ("card.main-merged", "card.merged"):
+        from .state import merge_of
+        target = merge_of(e)["targetBranch"]
+        group, text = "merge", "Karta scalona" + (f" do {target}" if target else " (cel niezapisany)")
     elif kind == "step.decision":
         group = "decision"
         automatic = bool(e.get("auto") or e.get("automatic"))

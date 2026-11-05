@@ -285,9 +285,11 @@ class FlowGit:
             return {"branch": branch, "worktree": path, "base": self.sha(repo, branch), "existing": False}
 
     def diff(self, repo: str, card_branch: str, ticket_branch: str) -> str:
-        """Diff obiektów bez wywołań zewnętrznego diffa ani textconv."""
+        """Diff obiektów lokalnych lub znanych zdalnych refów, bez zewnętrznego diffa ani textconv."""
+        before = card_branch if card_branch.startswith(("refs/heads/", "refs/remotes/")) else f"refs/heads/{card_branch}"
+        after = ticket_branch if ticket_branch.startswith(("refs/heads/", "refs/remotes/")) else f"refs/heads/{ticket_branch}"
         result = self.run(repo, "diff", "--no-ext-diff", "--no-textconv", "--binary",
-                          f"refs/heads/{card_branch}", f"refs/heads/{ticket_branch}", "--")
+                          before, after, "--")
         if not result.ok:
             raise FlowGitError("nie można odczytać diffu ticketu: " + (result.err.splitlines() or ["błąd"])[0])
         if len(result.out) > 300_000:

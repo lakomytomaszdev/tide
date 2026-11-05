@@ -92,8 +92,10 @@ Rectangle {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
                        "step.finished": "koniec kroku", "step.waiting": "czeka", "review.verdict": "review",
                        "result": "scalenie", "card.paused": "karta wstrzymana", "card.resumed": "karta wznowiona",
-                       "plan.finished": "plan gotowy", "card.stalled": "karta stoi"}
+                       "plan.finished": "plan gotowy", "card.stalled": "karta stoi",
+                       "card.merged": "karta scalona", "card.main-merged": "karta scalona"}
         return [event.ts || "", event.ticket || event.key || "", words[event.type] || event.type,
+                event.targetBranch || event.main || "",
                 event.executor || "", event.verdict || event.reason || ""].filter(x => x).join(" · ")
     }
 
@@ -582,7 +584,7 @@ Rectangle {
                                                      ? panel.card.derived.flow.mainBranch || "" : ""
                     text: "Scal do " + (target || "…")
                     enabled: target !== "" && !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
-                                                && panel.card.derived.flow.mainMerged)
+                                                && panel.card.derived.flow.merged)
                     onClicked: {
                         panel.mergeMainRequested(panel.card.id)
                     }

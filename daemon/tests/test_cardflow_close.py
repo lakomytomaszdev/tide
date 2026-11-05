@@ -34,7 +34,7 @@ class CardClosingTest(FlowInProcess):
         self.assertTrue(merged["ok"], merged)
         self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         self.assertTrue(wait_until(lambda: self.shown(card)["boardColumn"] == "done", timeout=5))
-        self.assertEqual(len(self.of(card, "card.main-merged")), 1)
+        self.assertEqual(len(self.of(card, "card.merged")), 1)
 
     def test_auto_check_closes_without_manual_list_and_leaves_main_untouched(self):
         card = self.card()

@@ -229,8 +229,8 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.approve_plan(card_id), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
-    def card_diff(self, card_id: str, reply) -> None:
-        self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id), reply)
+    def card_diff(self, card_id: str, reply, target_ref: str = "") -> None:
+        self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id, target_ref), reply)
 
     def merge_card_to_main(self, card_id: str, reply) -> None:
         self._action("MergeCardToMain", lambda: self.engine.merge_card_to_main(card_id), reply)
