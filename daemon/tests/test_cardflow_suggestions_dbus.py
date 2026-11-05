@@ -9,6 +9,23 @@ class SuggestBaseDbusTest(FlowCase):
     def suggest(self, card, text, revision=7, scope="text"):
         return self.call("SuggestCardBase", card, json.dumps({"text": text, "revision": revision, "scope": scope}))
 
+    def test_long_repeated_line_has_small_response_without_mutation(self):
+        card = self.card(description="Bez wskazań")
+        before = {"refs": git(self.repo, "show-ref"), "card": self.shown(card),
+                  "board": git(self.board, "rev-parse", "HEAD")}
+        text = ("ordinary " * 100 + "master " * 29000)[:200000]
+        result = self.suggest(card, text)
+        self.assertTrue(result["ok"], result)
+        self.assertLess(len(json.dumps(result)), 10000)
+        evidence = result["candidates"][0]["evidence"]
+        self.assertLessEqual(len(evidence), 5)
+        for item in evidence:
+            self.assertLessEqual(len(item["text"]), 512)
+            self.assertEqual(item["text"][item["start"]:item["end"]], item["match"])
+        self.assertEqual(before, {"refs": git(self.repo, "show-ref"), "card": self.shown(card),
+                                  "board": git(self.board, "rev-parse", "HEAD")})
+        self.assertFalse(os.path.exists(os.path.join(self.board, "flow", card)))
+
     def test_evidence_boundaries_conflicts_unknown_and_no_mutation(self):
         for name in ("feature/base", "team/topic", "release/next", "żółć/nowa"):
             git(self.repo, "branch", name, env=self.git_env)

@@ -1667,8 +1667,12 @@ odrębnymi kandydatami; wiele wskazań daje ostrzeżenie, bez rozstrzygnięcia z
 
 Kandydat zawiera `{ref, name, commit, source, evidence, strength, selectable, reason}` (oraz metadane
 gałęzi `kind`, `remote`). Dla tekstu `source: text`, `strength: explicit`, a `evidence` to lista
-`{field: description|text, line, text, match, start, end}`: numer wiersza od 1, pełny wiersz i zakres
-trafienia od 0, z końcem wyłącznym. Dowody są zwykłym tekstem. Zakresy `files` i `links` są zarezerwowane:
+`{field: description|text, line, text, match, start, end}`: numer wiersza od 1, wycinek wokół trafienia
+(do 512 znaków) i zakres widocznego trafienia w tym wycinku od 0, z końcem wyłącznym. Bardzo długa
+nazwa może być przycięta w dowodzie; kandydat zachowuje pełną nazwę i ref. Odpowiedź zawiera najwyżej
+32 kandydatów, po 5 dowodów na ref łącznie z obu pól, i 20 ostrzeżeń o nieznanych nazwach (nazwa do
+256 znaków), poza komunikatem o konflikcie i ograniczeniu listy. Kontekst polecenia obejmuje najwyżej
+80 znaków przed tokenem. Dowody są zwykłym tekstem. Zakresy `files` i `links` są zarezerwowane:
 obecnie zwracają pustą listę oraz ostrzeżenie, bez odczytu plików i hostingu.
 
 Okno zlecenia analizuje tekst po krótkiej pauzie. Odpowiedź przyjmuje tylko dla bieżącego tagu,

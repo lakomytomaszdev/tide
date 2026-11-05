@@ -1,10 +1,58 @@
 """Granice nazw i dowodów bez dostępu do powłoki, sieci i gita."""
+import json
 import unittest
+from unittest.mock import patch
 
 from tide_daemon.cardflow.basesuggestions import suggest_text
 
 
 class TextSuggestionsTest(unittest.TestCase):
+    def test_long_repeated_line_has_bounded_evidence_and_correct_excerpt_offsets(self):
+        text = "x " * 400 + "master " * 28000
+        result = suggest_text(self.branches("master"), text, text)
+        evidence = result["candidates"][0]["evidence"]
+        self.assertLessEqual(len(evidence), 5)
+        for item in evidence:
+            self.assertLessEqual(len(item["text"]), 512)
+            self.assertEqual(item["text"][item["start"]:item["end"]], item["match"])
+            self.assertEqual(item["match"], "master")
+        self.assertLess(len(json.dumps(result)), 10000)
+
+    def test_many_candidates_and_unknown_names_have_bounded_response(self):
+        names = [f"feature/base-{i}" for i in range(100)]
+        text = " ".join(names) + "\n" + "\n".join(f"git switch missing-{i}" for i in range(100))
+        result = suggest_text(self.branches(*names), "", text)
+        self.assertLessEqual(len(result["candidates"]), 32)
+        self.assertLessEqual(len(result["warnings"]), 22)
+        self.assertTrue(any("Ograniczono" in warning for warning in result["warnings"]))
+        self.assertLess(len(json.dumps(result)), 50000)
+
+    def test_command_context_scans_only_fixed_window(self):
+        import tide_daemon.cardflow.basesuggestions as suggestions
+        search = suggestions.re.search
+        lengths = []
+
+        def measured_search(pattern, value):
+            lengths.append(len(value))
+            return search(pattern, value)
+
+        with patch.object(suggestions.re, "search", side_effect=measured_search):
+            result = suggest_text([], "", "ordinary " * 2000 + "git switch missing")
+        self.assertTrue(lengths)
+        self.assertLessEqual(max(lengths), 80)
+        self.assertTrue(any("missing" in warning for warning in result["warnings"]))
+
+    def test_oversized_name_keeps_full_candidate_but_bounded_visible_evidence(self):
+        name = "feature/" + "a" * 1000
+        result = suggest_text(self.branches(name), "", "git switch " + name)
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["name"], name)
+        evidence = candidate["evidence"][0]
+        self.assertLessEqual(len(evidence["text"]), 512)
+        self.assertEqual(evidence["text"][evidence["start"]:evidence["end"]], evidence["match"])
+        result = suggest_text([], "", "git switch " + name)
+        self.assertLess(len(result["warnings"][0]), 320)
+
     def branches(self, *names):
         return [{"ref": "refs/heads/" + name, "name": name, "commit": "a" * 40,
                  "selectable": True, "reason": ""} for name in names]

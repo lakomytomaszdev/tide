@@ -2,6 +2,14 @@
 import re
 
 
+MAX_CANDIDATES = 32
+MAX_EVIDENCE = 5
+MAX_EXCERPT = 512
+MAX_WARNINGS = 20
+MAX_WARNING_NAME = 256
+COMMAND_CONTEXT = 80
+
+
 def suggest_text(branches: list[dict], description: str, text: str) -> dict:
     names = {}
     for branch in branches:
@@ -15,6 +23,9 @@ def suggest_text(branches: list[dict], description: str, text: str) -> dict:
             names.setdefault(name, []).append(branch)
     evidence = {}
     warnings = []
+    warning_keys = set()
+    saturated_names = set()
+    truncated = False
     separators = r"\s`'\"(),;:|“”„\[\]?!*—<>"
     # Najdłuższa pełna nazwa ma pierwszeństwo, również gdy zawiera znak interpunkcyjny.
     known = re.compile(r"(?<![^" + separators + r"])(?:"
@@ -26,27 +37,53 @@ def suggest_text(branches: list[dict], description: str, text: str) -> dict:
         for number, line in enumerate(value.splitlines(), 1):
             for match in known.finditer(line) if known else ():
                 name = match.group()
+                if name in saturated_names:
+                    continue
                 for branch in names[name]:
-                    evidence.setdefault(branch["ref"], []).append({
-                        "field": field, "line": number, "text": line, "match": name,
-                        "start": match.start(), "end": match.end()})
+                    ref = branch["ref"]
+                    if ref not in evidence and len(evidence) >= MAX_CANDIDATES:
+                        truncated = True
+                        continue
+                    items = evidence.setdefault(ref, [])
+                    if len(items) >= MAX_EVIDENCE:
+                        continue
+                    # Zakres dotyczy wycinka, nie całego wiersza. Pełna nazwa zostaje w kandydacie.
+                    start = max(0, match.start() - 80)
+                    end = min(len(line), start + MAX_EXCERPT)
+                    start = max(0, end - MAX_EXCERPT)
+                    visible_end = min(match.end(), end)
+                    items.append({"field": field, "line": number, "text": line[start:end],
+                                  "match": line[match.start():visible_end],
+                                  "start": match.start() - start, "end": visible_end - start})
+                if all(len(evidence.get(b["ref"], ())) >= MAX_EVIDENCE
+                       or b["ref"] not in evidence and len(evidence) >= MAX_CANDIDATES
+                       for b in names[name]):
+                    saturated_names.add(name)
             for match in tokens.finditer(line):
                 name = match.group().rstrip(".")
                 found = names.get(name, [])
                 # Informacja o wskazaniu, bez prób rozwiązywania go przez rev-parse.
-                before = line[:match.start()]
+                before = line[max(0, match.start() - COMMAND_CONTEXT):match.start()]
                 quoted_branch = ("/" in name and before.endswith("`")
-                                 and line[match.end():].startswith("`"))
+                                 and line[match.end():match.end() + 1] == "`")
                 command_target = re.search(r"\b(?:git\s+(?:checkout|switch)|branch)\s+[`'\"]?$", before)
                 # Sam backtick ani polskie słowo „baza” nie dowodzą wskazania gałęzi.
                 indicated = name.startswith("refs/") or quoted_branch or command_target
                 if name and not name.startswith("-") and not found and indicated:
                     label = "Opis" if field == "description" else "Polecenie"
-                    warning = f"Nieznana nazwa — {label}, wiersz {number}: {name}"
-                    if warning not in warnings:
+                    shown_name = name[:MAX_WARNING_NAME] + ("…" if len(name) > MAX_WARNING_NAME else "")
+                    warning = f"Nieznana nazwa — {label}, wiersz {number}: {shown_name}"
+                    if warning in warning_keys:
+                        continue
+                    if len(warnings) < MAX_WARNINGS:
+                        warning_keys.add(warning)
                         warnings.append(warning)
+                    else:
+                        truncated = True
     candidates = [{**branch, "source": "text", "strength": "explicit", "evidence": evidence[branch["ref"]]}
                   for branch in branches if branch["ref"] in evidence]
     if len(candidates) > 1:
         warnings.append("Tekst wskazuje kilka baz. Wybierz jawnie pełny ref; podpowiedzi nie rozstrzygają konfliktu.")
+    if truncated:
+        warnings.append("Ograniczono listę podpowiedzi lub ostrzeżeń. Wybierz bazę ręcznie, jeśli jej tutaj brakuje.")
     return {"candidates": candidates, "warnings": warnings}
