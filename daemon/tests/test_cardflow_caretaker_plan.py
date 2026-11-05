@@ -179,7 +179,8 @@ class ResultTest(unittest.TestCase):
                 made = caretaker.parse_result({"result": "done", "action": action, "feedback": "x", "reason": "y"},
                                               self.problem, Journal().st)
                 self.assertEqual((made["ok"], made["code"]), (False, "bad-caretaker-action"))
-        self.assertEqual(sorted(caretaker.ACTIONS), ["escalate", "retry", "retry-stage", "return-plan"])
+        self.assertEqual(sorted(caretaker.ACTIONS), ["answer", "change-executor", "escalate", "retry",
+                                                    "retry-stage", "return-plan"])
 
 
 class BriefAndContextTest(unittest.TestCase):

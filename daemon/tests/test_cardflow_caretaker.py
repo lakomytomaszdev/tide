@@ -280,17 +280,18 @@ class NoCaretakerTest(unittest.TestCase):
 
 class RegistryTest(unittest.TestCase):
     def test_only_supported_actions_are_registered(self):
-        # `retry` — PT-150, `retry-stage` — PT-147, `return-plan` — PT-146.
-        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry", "retry-stage", "return-plan"})
+        # `retry` — PT-150, `retry-stage` — PT-147, `return-plan` — PT-146; odpowiedzi i wykonawca — PT-145.
+        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry", "retry-stage", "return-plan",
+                                                  "change-executor", "answer"})
         for name in ("approve-plan", "approve", "allow", "run", "run-always", "outside", "merge", "push", "reject",
                      "reject-ticket"):
             self.assertNotIn(name, caretaker.ACTIONS)
-        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry", "retry-stage", "return-plan"})
+        self.assertEqual(set(caretaker.HISTORY_LABELS), set(caretaker.ACTIONS))
         self.assertEqual(set(caretaker.BRIEF_SECTIONS),
-                         {"error", "repeat", "no-progress", "flow-error", "stalled", "plan-fix"})
+                         {"error", "repeat", "no-progress", "flow-error", "stalled", "plan-fix", "waiting"})
         self.assertEqual([t.__name__ for t in caretaker.TRIGGERS],
                          ["_error_trigger", "_repeat_trigger", "_noprogress_trigger",
-                          "_flow_error_trigger", "_stalled_trigger", "_plan_fix_trigger"])
+                          "_flow_error_trigger", "_stalled_trigger", "_plan_fix_trigger", "_waiting_trigger"])
 
 
 class ParseResultTest(unittest.TestCase):
