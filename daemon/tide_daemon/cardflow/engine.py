@@ -634,11 +634,17 @@ class FlowEngine(PlanEditing):
         previous_branch = ticket_of(st)["cardBranch"]
         card_branch = previous_branch or f"card/{card.id.lower()}-{slug}"
         with lock_for(project.repo):
-            # Wznowienie bierze zapisany commit, nawet gdy ref już zniknął lub przesunął się.
-            if _resume:
+            # Kolejne zlecenie bez wyboru bazy dziedziczy dziennik, nie dzisiejszą główną.
+            # Legacy unknown może kontynuować pracę na istniejącej gałęzi karty, bez zgadywania bazy.
+            if _resume or (previous_branch and request.get("baseRef") is None):
                 base = base_of(st)
                 if base["status"] != "known":
-                    raise FlowError("no-base", "historyczna baza jest nieznana — nie można ponowić startu")
+                    if not previous_branch or not self.git.sha(project.repo, f"refs/heads/{previous_branch}"):
+                        raise FlowError("no-base", "historyczna baza jest nieznana i nie ma gałęzi karty — "
+                                        "przywróć gałąź karty albo rozpocznij nową kartę z wybraną bazą")
+                if not _resume and request.get("baseCommit") is not None and (
+                        base["status"] != "known" or request["baseCommit"] != base["baseCommit"]):
+                    raise FlowError("base-mismatch", "oczekiwany commit różni się od zapisanej bazy karty")
             else:
                 try:
                     base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))

@@ -159,8 +159,8 @@ class StartBaseTest(FlowInProcess):
                 registry = os.path.join(self.base, "state", "tide", "ticket-ids.json")
                 with open(registry, encoding="utf-8") as fh:
                     numbers = fh.read()
-                response = self.start(card, **({} if moved_main else {
-                    "baseRef": "refs/heads/feature/start", "baseCommit": feature}))
+                response = self.start(card, baseRef="refs/heads/master" if moved_main else "refs/heads/feature/start",
+                                      baseCommit=feature)
                 self.assertFalse(response["ok"], response)
                 self.assertEqual(response["error"], "base-mismatch")
                 self.assertEqual(self.events(card), before)
@@ -177,34 +177,97 @@ class StartBaseTest(FlowInProcess):
                     git(self.repo, "branch", "-f", "master", self.master)
                     git(self.repo, "checkout", "-q", "master")
 
-    def test_second_start_with_same_base_reuses_card_branch_and_has_own_version(self):
+    def test_old_client_reuses_pinned_base_after_main_moves_and_restart(self):
         card = self.card()
         first = self.start(card)
         self.assertTrue(first["ok"], first)
         self.assertTrue(json.loads(self.board.move_card(card, "todo", 0))["ok"])
+        moved = self.feature()
+        git(self.repo, "checkout", "-q", "feature/start")
+        git(self.repo, "branch", "-f", "master", moved)
         self.restart()
         second = self.start(card)
         self.assertTrue(second["ok"], second)
         self.assertNotEqual(second["ticket"], first["ticket"])
         self.assertEqual(second["cardBranch"], first["cardBranch"])
+        self.assertEqual(second["cardWorktree"], first["cardWorktree"])
         self.assertEqual(git(second["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.assertEqual(git(self.repo, "rev-parse", "master").strip(), moved)
+        self.assertEqual(git(self.repo, "symbolic-ref", "--short", "HEAD").strip(), "feature/start")
         self.assertEqual([e["baseVersion"] for e in self.of(card, "card.started")], [1, 1])
+        self.restart()
         self.assert_base(card, "refs/heads/master", self.master)
 
-    def test_second_start_with_unknown_legacy_base_is_refused(self):
+    def test_old_client_restarts_legacy_known_and_unknown_from_current_card_branch(self):
+        from tide_daemon.cardflow.gitops import worktree_for
+        feature = self.feature()
+        git(self.repo, "branch", "-D", "feature/start")
+        for known in (True, False):
+            with self.subTest(known=known):
+                card = self.card(title=f"Legacy {known}")
+                branch = f"card/legacy-{known}"
+                path = worktree_for(self.repo, branch)
+                self.flow.engine.git.branch_worktree(self.repo, branch, path, feature)
+                # Praca na gałęzi karty jest nowsza niż jej historyczna baza.
+                git(path, "commit", "--allow-empty", "-qm", "card progress")
+                current = git(path, "rev-parse", "HEAD").strip()
+                journal = self.flow.engine.journal
+                journal.append(card, "card.started", entry="now", repo=self.repo, column="todo")
+                journal.append(card, "intent", action="card-branch", key=branch, base="feature/start")
+                journal.append(card, "result", action="card-branch", key=branch, ok=True,
+                               branch=branch, worktree=path, base=feature, existing=not known)
+                before = self.events(card)
+                self.board.publish()
+                self.assertEqual(self.shown(card)["baseVersion"], 0)
+                self.restart()
+                # Sam oczekiwany SHA też jest jawnym warunkiem, nie wolno go zignorować.
+                refused = self.start(card, baseCommit=self.master)
+                self.assertEqual((refused["ok"], refused["error"]), (False, "base-mismatch"), refused)
+                self.assertEqual(self.events(card), before)
+                reply = self.start(card)
+                self.assertTrue(reply["ok"], reply)
+                self.assertEqual(reply["cardBranch"], branch)
+                self.assertEqual(git(reply["worktree"], "rev-parse", "HEAD").strip(), current)
+                self.assertEqual(self.events(card)[:len(before)], before)
+                self.assertEqual(self.of(card, "card.started")[-1]["baseVersion"], 1)
+                self.restart()
+                self.board.publish()
+                shown = self.shown(card)
+                self.assertEqual(shown["baseVersion"], 1)
+                self.assertEqual(shown["derived"]["flow"]["base"]["status"], "known" if known else "unknown")
+                self.assertEqual(shown["baseCommit"], feature if known else "")
+                self.assertEqual(shown["derived"]["flow"]["initialBase"], shown["derived"]["flow"]["base"])
+
+    def test_restart_without_ref_uses_deleted_base_and_checks_expected_commit(self):
+        feature = self.feature()
+        card = self.card()
+        first = self.start(card, baseRef="refs/heads/feature/start", baseCommit=feature)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(json.loads(self.board.move_card(card, "todo", 0))["ok"])
+        git(self.repo, "branch", "-D", "feature/start")
+        self.restart()
+        before = self.events(card)
+        refused = self.start(card, baseCommit=self.master)
+        self.assertEqual((refused["ok"], refused["error"]), (False, "base-mismatch"), refused)
+        self.assertEqual(self.events(card), before)
+        second = self.start(card, baseCommit=feature)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(second["cardBranch"], first["cardBranch"])
+        self.assertEqual(git(second["worktree"], "rev-parse", "HEAD").strip(), feature)
+        self.assert_base(card, "refs/heads/feature/start", feature)
+
+    def test_unknown_legacy_without_card_branch_explains_recovery_without_new_order(self):
         card = self.card()
         journal = self.flow.engine.journal
         journal.append(card, "card.started", entry="now", repo=self.repo, column="todo")
-        journal.append(card, "intent", action="card-branch", key="card/legacy", base="master")
-        journal.append(card, "result", action="card-branch", key="card/legacy", ok=True,
-                       branch="card/legacy", base=self.master, existing=True)
+        journal.append(card, "result", action="card-branch", key="card/missing", ok=True,
+                       branch="card/missing", base=self.master, existing=True)
         before = self.events(card)
         response = self.start(card)
-        self.assertEqual((response["ok"], response["error"]), (False, "base-mismatch"), response)
+        self.assertEqual((response["ok"], response["error"]), (False, "no-base"), response)
+        self.assertIn("przywróć gałąź karty", response["message"])
         self.assertEqual(self.events(card), before)
-        self.board.publish()
-        self.assertEqual(self.shown(card)["baseVersion"], 0)
-        self.assertEqual(self.shown(card)["baseCommit"], "")
+        self.assertFalse(os.path.exists(os.path.join(self.base, "state", "tide", "ticket-ids.json")))
 
     def test_unknown_projection_does_not_add_empty_fields_or_commit(self):
         card = self.card()

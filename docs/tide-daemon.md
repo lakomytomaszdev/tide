@@ -1601,17 +1601,23 @@ wraz z wykonawcą.
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
 
 **Baza startu „Od razu” (PT-194).** Żądanie może zawierać `baseRef` (wyłącznie pełny lokalny
-`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Bez `baseRef` działa dotychczasowy
+`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy
 `FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
 Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
 rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgodny oczekiwany SHA
 odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
 wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
 Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
-Ponowny start wykorzystuje dotychczasową gałąź karty i wymaga zgodności refu i SHA z jej bazą
-zapisaną w dzienniku. Inna albo nieznana baza powoduje `base-mismatch` przed rezerwacją numeru
-i zapisem zlecenia, także gdy przesunęła się domyślna główna. Zmiana bazy należy do osobnej
-korekty; zgodny start zachowuje gałąź i rozpoczyna własne `baseVersion: 1`.
+Ponowny start wykorzystuje dotychczasową gałąź karty. Bez `baseRef` dziedziczy bazę zapisaną
+w dzienniku, nawet po ruchu lub usunięciu refu; nie rozwiązuje ponownie głównej. Ticket wychodzi
+z aktualnego stanu gałęzi karty, zachowując dotychczasową pracę. Dla legacy z bazą unknown
+start bez wyboru bazy jest dozwolony, jeśli gałąź karty istnieje; baza i `initialBase` pozostają
+unknown, bez zgadywania historycznego SHA. Brak takiej gałęzi daje `no-base` z instrukcją jej
+przywrócenia lub założenia nowej karty z wybraną bazą. Nowe zlecenie ma własne `baseVersion: 1`
+także dla unknown; historyczne zdarzenia i ich wersja 0 pozostają bez zmian.
+Jawny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Sam `baseCommit`
+bez refu musi odpowiadać zapisanemu SHA znanej bazy. Inna lub nieznana baza przy jawnym wyborze
+powoduje `base-mismatch` przed rezerwacją numeru i zapisem zlecenia. Zmiana bazy należy do osobnej korekty.
 
 Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
 `baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
