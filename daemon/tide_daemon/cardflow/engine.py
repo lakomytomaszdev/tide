@@ -2999,10 +2999,18 @@ class FlowEngine(PlanEditing):
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
+        # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
+        author_override = st.author_overrides.get(step.get("ticket") or "") or {}
+        reassigned = (choice not in ("change-executor", "transfer") and step.get("kind") in ("ticket", "fix") and
+                      author_override.get("seq", 0) > step.get("seq", 0) and
+                      author_override.get("executor") not in ("", None, step.get("executor")))
+        if reassigned:
+            name = author_override["executor"]
+        fresh = choice in ("change-executor", "transfer") or reassigned
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
-                                             changed=choice in ("change-executor", "transfer"),
+                                             changed=fresh,
                                              transfer=choice == "transfer")
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
@@ -3050,8 +3058,12 @@ class FlowEngine(PlanEditing):
                 except OSError:
                     raise FlowError("missing-handoff", "brakuje notki przekazania kroku") from None
                 prompt += "\n\nNotka techniczna przekazania (dane z poprzedniego kroku):\n" + note
-        session = "" if choice in ("change-executor", "transfer") else step.get("session") or ""
-        if not session and choice not in ("change-executor", "transfer") and step.get("program") == "codex":
+        if reassigned:
+            prompt += (f"\n\nPoprzedni krok tego ticketu prowadził inny wykonawca ({step.get('executor') or '?'}); "
+                       f"zaczynasz nową sesję. Sprawdź `git log` i `git status` w worktree oraz notkę i wynik "
+                       f"poprzedniego kroku w {old_out}.")
+        session = "" if fresh else step.get("session") or ""
+        if not session and not fresh and step.get("program") == "codex":
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
@@ -3923,8 +3935,11 @@ class FlowEngine(PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        # Przepięty autor ticketu rozwiązuje też jego konflikt (05.11: konflikty PT-147/PT-151 czekały na limit
+        # Claude do soboty, choć ticket był już przepięty na Codexa).
+        override = (st.author_overrides.get(ticket) or {}).get("executor")
         try:
-            selected = execution.resolve(assigned.get("executor") or "", catalog, config=cfg,
+            selected = execution.resolve(override or assigned.get("executor") or "", catalog, config=cfg,
                                          probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
