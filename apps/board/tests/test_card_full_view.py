@@ -337,6 +337,60 @@ out["call"] = calls()[-1][:2]
         self.assertTrue(out["visible"])
         self.assertEqual(out["call"], ["MergeCardToMain", "K-8"])
 
+    def test_merge_preview_button_full_lists_refusals_and_close_only_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "release/complete-target-name"
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/release/complete-target-name", "targetCommit": "b" * 40,
+                  "targetBranch": "release/complete-target-name", "targetWorktree": "/repo",
+                  "targetWorktreeExists": True, "reason": "", "canMerge": True, "readyToMerge": False,
+                  "warnings": ["Lokalne kolizje nie zostały ocenione."],
+                  "commits": [{"sha": str(i).zfill(40), "subject": f"commit {i}"} for i in range(46)],
+                  "commitCount": 46, "files": [{"status": "A", "oldPath": "", "newPath": f"file-{i}.txt"}
+                                               for i in range(465)],
+                  "fileCount": 465, "conflictCount": 0, "conflicts": []}
+        variants = [result, {**result, "canMerge": False, "reason": "conflict", "message": "Konflikty",
+                            "conflictCount": 2, "conflicts": ["conflict-a.txt", "conflict-b.txt"]},
+                    {**result, "canMerge": False, "reason": "unrelated-history", "message": "Brak wspólnej historii",
+                     "commits": [], "commitCount": 0, "files": [], "fileCount": 0},
+                    {**result, "commits": [], "commitCount": 0, "files": [], "fileCount": 0}]
+        out = self.probe(STATE_PY + "\nvariants = " + repr(variants) + r'''
+click(card("K-8"))
+out["label"] = obj("fullPreviewMerge").property("text")
+before = js("JSON.stringify(page.snapshot.cards)")
+out["texts"] = []
+for index, result in enumerate(variants):
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+out["opened"] = obj("mergePreview").property("visible")
+out["same"] = before == js("JSON.stringify(page.snapshot.cards)")
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/complete-target-name")
+        self.assertFalse(out["opened"])
+        self.assertTrue(out["same"])
+        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-8", "{}"]] * 4)
+        for text in out["texts"]:
+            self.assertIn(result["sourceRef"], text)
+            self.assertIn(result["targetRef"], text)
+            self.assertIn("Lokalne kolizje: nieocenione", text)
+        self.assertIn("commit 45", out["texts"][0])
+        self.assertIn("file-464.txt", out["texts"][0])
+        self.assertIn("conflict-b.txt", out["texts"][1])
+        self.assertIn("Brak wspólnej historii [unrelated-history]", out["texts"][2])
+        self.assertIn("Wnoszone commity (0)", out["texts"][3])
+
 
 if __name__ == "__main__":
     unittest.main()

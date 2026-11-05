@@ -874,9 +874,26 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
+| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt próbnego drzewa scalenia gałęzi karty do celu z `FlowGit.main_branch`; `request` to `{}`, bez tokenu i zgody na wykonanie |
 | `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
+
+`PreviewCardMerge` (PT-199) odpowiada asynchronicznie. Wynik zawiera `sourceRef`, `sourceCommit`,
+`targetRef`, `targetCommit` (pełne refy i przypięte SHA), `sourceBranch`, `targetBranch`, `targetWorktree`
+oraz `targetWorktreeExists`. Pełne listy `commits: [{sha, subject}]`,
+`files: [{status, oldPath, newPath}]`, `conflicts: [ścieżka]` mają liczniki `commitCount`, `fileCount`,
+`conflictCount`. Commity to dokładnie `targetCommit..sourceCommit`; pliki to różnica drzewa celu
+i `resultTree` z `merge-tree`, z rozpoznawaniem rename i obiema ścieżkami. Zamknięcie widoku nie zapisuje
+żadnej decyzji ani zmiany kolumny.
+
+Konflikt jest poprawnym odczytem (`ok: true`, `canMerge: false`, `reason: conflict`), podobnie odmowy
+`unrelated-history`, `git-capability`, `git-error`, `no-sandbox` mają własny `reason` i `message`.
+Niepoprawne żądanie albo brak gałęzi daje standardowy błąd `ok: false`. `canMerge` dotyczy tylko drzew;
+do PT-210 zawsze `readyToMerge: false`, `localCollisions: unassessed` i ostrzeżenie w `warnings`.
+Nie ma tokenu wykonania. Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
+dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
+wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`

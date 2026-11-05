@@ -224,6 +224,9 @@ class CardFlowMonitor(QObject):
     def merge_card_to_main(self, card_id: str, reply) -> None:
         self._action("MergeCardToMain", lambda: self.engine.merge_card_to_main(card_id), reply)
 
+    def preview_card_merge(self, card_id: str, request: str, reply) -> None:
+        self._json_action("PreviewCardMerge", request, lambda data: self.engine.preview_card_merge(card_id, data), reply)
+
     def tick(self) -> None:
         if self._ticking:
             return

@@ -71,6 +71,8 @@ Rectangle {
     signal enterStepRequested(string stepId)
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
+    signal previewMergeRequested(string target)
+    property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
@@ -565,6 +567,14 @@ Rectangle {
                     variant: "outline"
                     Accessible.name: "Pokaż zmiany gałęzi karty względem gałęzi głównej"
                     onClicked: view.branchDiffRequested()
+                }
+                Tide.TextButton {
+                    objectName: "fullPreviewMerge"
+                    visible: view.mergePreviewAvailable
+                    text: "Podgląd scalenia do " + (view.flow && view.flow.mainBranch || "…")
+                    enabled: !!(view.flow && view.flow.mainBranch)
+                    variant: "outline"
+                    onClicked: view.previewMergeRequested(view.flow.mainBranch)
                 }
                 Tide.TextButton {
                     objectName: "fullMergeMain"

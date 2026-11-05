@@ -464,6 +464,10 @@ class Backend(QObject):
     def mergeCardToMain(self, tag: str, card_id: str) -> None:
         self._write(tag, "MergeCardToMain", [card_id])
 
+    @pyqtSlot(str, str, str)
+    def previewCardMerge(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "PreviewCardMerge", [card_id, request])
+
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 
     @pyqtSlot(result=bool)
@@ -683,6 +687,8 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
+        elif member == "PreviewCardMerge":
+            self._call(member, args, done, timeout=START_TIMEOUT_MS)
         else:
             self._call(member, args, done)
 

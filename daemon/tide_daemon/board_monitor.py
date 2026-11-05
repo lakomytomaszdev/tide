@@ -309,6 +309,12 @@ class BoardMonitor(QObject):
             return
         self.flow.merge_card_to_main(card_id, reply)
 
+    def preview_card_merge(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.preview_card_merge(card_id, request, reply)
+
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
         try:

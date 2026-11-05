@@ -2165,6 +2165,32 @@ out["call"] = calls()[-1]
 
 
 class ClosingPanelTest(ProbeCase):
+    def test_panel_merge_preview_uses_named_target_and_closes_without_writing(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Gotowe", "mainBranch": "release/full-target",
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + '''
+click(card("K-6"))
+out["label"] = obj("cardPreviewMerge").property("text")
+replies.append({"ok": False, "error": "git-error", "message": "Nie można odczytać drzewa"})
+click(at(FIND + "(page.cardPanel, 'cardPreviewMerge')"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["text"] = obj("mergePreviewText").property("text")
+click(named("mergePreviewClose"))
+out["calls"] = calls()
+out["busy"] = js("page.cardPanel.busy")
+out["column"] = js("page.cardPanel.card.boardColumn")
+''', data=data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/full-target")
+        self.assertEqual(out["text"], "Nie można odczytać drzewa")
+        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-6", "{}"]])
+        self.assertFalse(out["busy"])
+        self.assertEqual(out["column"], "review")
+
     def test_closed_card_exposes_diff_main_merge_and_return(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:

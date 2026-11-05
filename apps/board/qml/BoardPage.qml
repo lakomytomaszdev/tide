@@ -113,6 +113,13 @@ Rectangle {
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal branchDiffRequested(string tag, string cardId)
     signal mergeMainRequested(string tag, string cardId)
+    signal previewMergeRequested(string tag, string cardId, string request)
+
+    function previewMerge(cardId, target) {
+        const tag = nextTag("preview-merge:" + cardId)
+        mergePreview.show(tag, cardId, target)
+        previewMergeRequested(tag, cardId, "{}")
+    }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -693,6 +700,12 @@ Rectangle {
         } else if (tag.indexOf("branch-diff:") === 0) {
             cardPanel.error = error
             if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
+        } else if (tag.indexOf("preview-merge:") === 0) {
+            if (mergePreview.requestTag !== tag) return
+            mergePreview.busy = false
+            mergePreview.error = error
+            mergePreview.result = error ? null : reply
+            if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1675,6 +1688,7 @@ Rectangle {
             page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
         onMergeMainRequested: cardId =>
             page.mergeMainRequested(page.nextTag("merge-main:" + cardId), cardId)
+        onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -1789,6 +1803,7 @@ Rectangle {
     CardUi.CardFullView {
         id: cardFullView
         objectName: "cardFullView"
+        mergePreviewAvailable: true
         anchors.fill: parent
         z: 35
         visible: page.fullOpen && !page.managing
@@ -1804,10 +1819,13 @@ Rectangle {
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
         onMergeMainRequested: page.mergeMainRequested(page.nextTag("merge-main:" + page.fullCardId), page.fullCardId)
+        onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }
+
+    MergePreview { id: mergePreview; parent: page; z: 60 }
 
     // --- duch przeciąganej karty ----------------------------------------------------------------
     Item {

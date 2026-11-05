@@ -221,7 +221,8 @@ class StepGit:
     w swoim kroku. Katalog domowy i /tmp są puste, zapis tylko w worktree i katalogach zapisu gita kroku."""
 
     def __init__(self, repo: str, git_dir: str, worktree: str, step_dir: str, home: str | None = None,
-                 name: str = "Krok", email: str = "krok@tide.invalid"):
+                 name: str = "Krok", email: str = "krok@tide.invalid", *, objects_only: bool = False):
+        self.objects_only = objects_only
         self.worktree, self.git_dir = os.path.realpath(worktree), git_dir
         self.common = os.path.join(os.path.realpath(repo), ".git")
         self.home = os.path.realpath(home or os.path.expanduser("~"))
@@ -239,9 +240,10 @@ class StepGit:
     def sandbox(self) -> list:
         argv = [BWRAP, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-ipc", "--unshare-pid",
                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", self.home,
-                "--ro-bind", self.common, self.common, "--bind", self.worktree, self.worktree,
-                "--bind", self.git_dir, self.git_dir]
-        for name in GIT_DIRS_WRITABLE:
+                "--ro-bind", self.common, self.common,
+                "--ro-bind" if self.objects_only else "--bind", self.worktree, self.worktree,
+                "--ro-bind" if self.objects_only else "--bind", self.git_dir, self.git_dir]
+        for name in (("objects",) if self.objects_only else GIT_DIRS_WRITABLE):
             argv += ["--bind", os.path.join(self.common, name), os.path.join(self.common, name)]
         argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",

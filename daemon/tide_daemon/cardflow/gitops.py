@@ -84,6 +84,98 @@ class FlowGit:
         res = self.run(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
         return res.out.strip() if res.ok else ""
 
+    def prepare_merge_tree(self, run, target: str, source: str) -> dict:
+        """Przygotowanie na przypiętych SHA, wspólne dla odczytu i wykonania. Bez indeksu i refów.
+
+        `run` pochodzi ze StepGit; sterowniki merge z konfiguracji repo też podlegają piaskownicy.
+        Wyjście -z/--name-only zachowuje ścieżki z tabulatorami i nowymi liniami.
+        """
+        help_result = run("merge-tree", "-h")
+        help_text = help_result.out + help_result.err
+        if not all(flag in help_text for flag in ("--write-tree", "--name-only", "messages", "-z")):
+            reason = "git-capability" if help_result.code in (0, 129) else "git-error"
+            return {"reason": reason, "message": "Git nie udostępnia wymaganego merge-tree."
+                    if reason == "git-capability" else "Nie można uruchomić git merge-tree.",
+                    "resultTree": "", "conflicts": []}
+        base = run("merge-base", target, source)
+        if not base.ok:
+            return {"reason": "unrelated-history" if base.code == 1 else "git-error",
+                    "message": "Gałęzie nie mają wspólnej historii." if base.code == 1
+                    else "Nie można odczytać wspólnej historii.", "resultTree": "", "conflicts": []}
+        tree = run("merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, source)
+        parts = tree.out.split("\0")
+        if tree.code not in (0, 1) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", parts[0]):
+            return {"reason": "git-error", "message": "Nie udało się przygotować drzewa scalenia.",
+                    "resultTree": "", "conflicts": []}
+        return {"resultTree": parts[0], "conflicts": [p for p in parts[1:] if p],
+                "reason": "conflict" if tree.code == 1 else "",
+                "message": "Konflikty w drzewie scalenia." if tree.code == 1 else ""}
+
+    def preview_merge(self, repo: str, source_branch: str) -> dict:
+        """Pełny odczyt celu z tej samej polityki co MergeCardToMain; zapis tylko obiektów próbnego drzewa."""
+        with lock_for(repo):
+            target_branch = self.main_branch(repo)
+            source_ref, target_ref = f"refs/heads/{source_branch}", f"refs/heads/{target_branch}"
+            source, target = self.sha(repo, source_ref), self.sha(repo, target_ref)
+            if not target_branch or not source_branch or not source or not target:
+                raise FlowGitError("brak gałęzi głównej albo gałęzi karty")
+            listed = self.run(repo, "worktree", "list", "--porcelain", "-z")
+            # Rekordy NUL zachowują pełne ścieżki worktree bez cytowania i dzielenia po nowych liniach.
+            if not listed.ok:
+                raise FlowGitError("nie można odczytać worktree celu")
+            worktrees = [dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+                         for block in listed.out.split("\0\0")]
+            path = next((w.get("worktree", "") for w in worktrees if w.get("branch") == target_ref), "")
+            out = {"sourceRef": source_ref, "sourceBranch": source_branch, "sourceCommit": source,
+                   "targetRef": target_ref, "targetBranch": target_branch, "targetCommit": target,
+                   "targetWorktree": path or os.path.join(worktrees_dir(repo), f"{target_branch}-main"),
+                   "targetWorktreeExists": bool(path), "commits": [], "commitCount": 0,
+                   "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0,
+                   "canMerge": False, "readyToMerge": False, "localCollisions": "unassessed",
+                   "warnings": ["Lokalne kolizje nie zostały ocenione. Podgląd nie jest zgodą na scalenie."],
+                   "resultTree": "", "reason": "", "message": ""}
+            commits = self.run(repo, "log", "--no-color", "--no-show-signature", "--format=%H%x00%s", "-z",
+                               f"{target}..{source}", "--")
+            if not commits.ok:
+                out.update(reason="git-error", message="Nie można odczytać commitów scalenia.")
+                return out
+            fields = commits.out.split("\0")
+            out["commits"] = [{"sha": fields[i], "subject": fields[i + 1]}
+                              for i in range(0, len(fields) - 1, 2)]
+            out["commitCount"] = len(out["commits"])
+            if not sandbox_available():
+                out.update(reason="no-sandbox", message="Piaskownica gita jest niedostępna.")
+                return out
+            git_dir = self.run(repo, "rev-parse", "--absolute-git-dir")
+            if not git_dir.ok:
+                out.update(reason="git-error", message="Nie można ustalić katalogu gita.")
+                return out
+            runner = StepGit(repo, git_dir.out.strip(), repo, repo + ".step", objects_only=True)
+            out.update(self.prepare_merge_tree(runner.run, target, source))
+            out["conflictCount"] = len(out["conflicts"])
+            if not out["resultTree"]:
+                return out
+            diff = self.run(repo, "diff-tree", "--no-commit-id", "--no-ext-diff", "--no-textconv", "--no-color",
+                            "--ignore-submodules=none", "-r",
+                            "--name-status", "-z", "-M", "-l0", target, out["resultTree"], "--")
+            if not diff.ok:
+                out.update(reason="git-error", message="Nie można odczytać plików drzewa scalenia.")
+                return out
+            fields = diff.out.split("\0")
+            i = 0
+            while i < len(fields) - 1:
+                status, old_path = fields[i:i + 2]
+                i += 2
+                new_path = old_path
+                if status.startswith(("R", "C")):
+                    new_path = fields[i]
+                    i += 1
+                out["files"].append({"status": status, "oldPath": old_path if status[0] != "A" else "",
+                                     "newPath": new_path if status[0] != "D" else ""})
+            out["fileCount"] = len(out["files"])
+            out["canMerge"] = not out["reason"]
+            return out
+
     def branch_worktree(self, repo: str, branch: str, path: str, base: str) -> dict:
         """Gałąź `branch` od `base` w worktree `path`; już jest (ta gałąź w tym worktree) — bez zmian."""
         with lock_for(repo):
@@ -381,12 +473,10 @@ class FlowGit:
                         raise FlowGitError("indeks worktree karty nie odpowiada gałęzi ani poprzedniemu scaleniu")
                     sync(parent.out.strip(), old)
                 return {"commit": old, "already": True}
-            tree = work_git.run("merge-tree", "--write-tree", "--no-messages", old, tip)
-            if tree.code == 1:
-                raise FlowGitError("konflikt przy scalaniu")
-            if not tree.ok or not tree.out.strip():
-                raise FlowGitError("git merge-tree: " + (tree.err.splitlines() or ["błąd"])[0])
-            target_tree = tree.out.split()[0]
+            prepared = self.prepare_merge_tree(work_git.run, old, tip)
+            if prepared["reason"]:
+                raise FlowGitError(prepared["message"])
+            target_tree = prepared["resultTree"]
             if staged_tree not in (current_tree, target_tree):
                 raise FlowGitError("indeks worktree karty nie odpowiada gałęzi ani przygotowanemu scaleniu")
             args = ("commit-tree", target_tree, "-p", old, "-p", tip, "-m", message)

@@ -86,6 +86,7 @@ Rectangle {
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
+    signal previewMergeRequested(string cardId, string target)
 
     function eventLabel(event) {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
@@ -554,7 +555,7 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
             }
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 7
                 PillButton {
@@ -562,6 +563,14 @@ Rectangle {
                     text: "Diff gałęzi"
                     enabled: !panel.busy
                     onClicked: panel.branchDiffRequested(panel.card.id)
+                }
+                PillButton {
+                    objectName: "cardPreviewMerge"
+                    readonly property string target: panel.card && panel.card.derived && panel.card.derived.flow
+                                                     ? panel.card.derived.flow.mainBranch || "" : ""
+                    text: "Podgląd scalenia do " + (target || "…")
+                    enabled: !panel.busy && target !== ""
+                    onClicked: panel.previewMergeRequested(panel.card.id, target)
                 }
                 PillButton {
                     objectName: "cardMergeMain"

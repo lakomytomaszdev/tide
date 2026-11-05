@@ -314,6 +314,7 @@ class FlowEngine(PlanEditing):
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
+        self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -463,6 +464,8 @@ class FlowEngine(PlanEditing):
         out = derived(st, card)
         if out:
             self._limit_view(st, out)
+            if st.closed and not st.main_merged:
+                out["flow"]["mainBranch"] = self._main_branches.get((st.started or {}).get("repo") or "", "")
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
@@ -1857,6 +1860,7 @@ class FlowEngine(PlanEditing):
                 repo = (st.started or {}).get("repo") or ""
                 if repo and repo not in guarded:
                     guarded.add(repo)
+                    self._main_branches[repo] = self.git.main_branch(repo)
                     worktree_guard(repo, self._worktree_heads)
             except Exception as exc:
                 print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
@@ -4253,6 +4257,26 @@ class FlowEngine(PlanEditing):
             note = AUTO_DENY_LONG.format(limit=MAX_COMMAND) if len(command) > MAX_COMMAND else AUTO_DENY_NOTE
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
                             answer=note, command=command, executor="", auto=True)
+
+    def preview_card_merge(self, card_id: str, request: dict) -> dict:
+        """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
+        if request:
+            raise FlowError("bad-request", "podgląd przyjmuje pusty obiekt; cel wybiera polityka gałęzi głównej")
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        st = fold(self.journal.read(card))
+        branch = ticket_of(st)["cardBranch"]
+        if not branch:
+            raise FlowError("no-base", "brak gałęzi karty")
+        try:
+            repo = self._repo(card)
+            preview = self.git.preview_merge(repo, branch)
+            self._main_branches[repo] = preview["targetBranch"]
+        except FlowGitError as exc:
+            raise FlowError("merge-preview", str(exc)) from None
+        return {"ok": True, "id": card, **preview}
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""
