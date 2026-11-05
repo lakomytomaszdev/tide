@@ -171,6 +171,52 @@ class GapActionTest(EngineOnJournal):
             self.engine._advance("K-1", st)
         resume.assert_called_once()
 
+    def test_successive_revisions_do_not_create_a_cycle_between_waiting_resumes(self):
+        # A i B już pracują. Pierwsza luka dodaje X zależny od B; druga Y zależny od A.
+        other = "K-1-PT-8-1"
+        b = {**ROWS[0], "id": "PT-8", "workId": "#2"}
+        x = {**ROWS[0], "id": "PT-9", "workId": "#3", "blockers": ["PT-8"]}
+        y = {**ROWS[0], "id": "PT-10", "workId": "#4", "blockers": ["PT-7"]}
+        self.add("K-1", "plan.approved", rows=[*ROWS, b])
+        self.add("K-1", "step.started", step=other, ticket="PT-8", kind="ticket")
+        self.act()
+        self.add("K-1", "plan.revision-approved", plan={"rows": [*ROWS, b, x]})
+        self.assertEqual(fold(self.journal.read("K-1")).plan_resumes[TARGET], {"PT-9"})
+        self.add("K-1", "step.finished", step=other, result="error", reason="exit")
+        self.add("K-1", "plan.returned", caretaker="error:" + other, caretakerFrom=other,
+                 baseline=[*ROWS, b, x], feedback=FEEDBACK)
+        self.add("K-1", "plan.revision-approved", plan={"rows": [*ROWS, b, x, y]})
+        events = self.journal.read("K-1")
+        for replay in (events, json.loads(json.dumps(events))):
+            with self.subTest(replayed=replay is not events):
+                st = fold(replay)
+                self.assertEqual(st.plan_resumes, {TARGET: {"PT-9"}, other: set()})
+                self.assertEqual(st.plan_approved["rows"][:2], [*ROWS, b])
+                self.assertEqual(decisions.build_decisions(st), [])
+                self.assertEqual(caretaker.problems(st), [])
+                # Bramka silnika przepuszcza B, a A dopiero po scaleniu B i X.
+                restarted = type(self.engine)(self.engine.store, self.journal, tmp_root=self.base)
+                with mock.patch.object(restarted, "_advance_plan_review", return_value=False), \
+                        mock.patch.object(restarted, "_advance_planning", return_value=False), \
+                        mock.patch.object(restarted, "_resume_step") as resume:
+                    st.last_step = TARGET
+                    restarted._advance("K-1", st)
+                    resume.assert_not_called()
+                    st.last_step = other
+                    restarted._advance("K-1", st)
+                    self.assertEqual(resume.call_args.args[2]["step"], other)
+                    resume.reset_mock()
+                    completed = replay + [
+                        {"type": "step.started", "step": "continued-b", "kind": "ticket",
+                         "ticket": "PT-8", "parentStep": other},
+                        {"type": "result", "action": "merge", "key": "PT-8", "ok": True},
+                        {"type": "result", "action": "merge", "key": "PT-9", "ok": True}]
+                    st = fold(completed)
+                    st.last_step = TARGET
+                    restarted._advance("K-1", st)
+                    resume.assert_called_once()
+                    self.assertEqual(resume.call_args.args[2]["step"], TARGET)
+
     def test_discarding_failed_revision_resumes_ticket_after_journal_replay(self):
         returned = self.act().plan_returns[-1]
         self.add("K-1", "plan.revision-failed", failed=True, baseline=returned["baseline"], errors=["zły plan"])

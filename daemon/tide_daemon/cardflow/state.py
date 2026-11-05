@@ -400,16 +400,28 @@ def fold(events: list[dict]) -> FlowState:
             rows = (st.plan_approved or {}).get("rows", [])
             present = {r["id"] for r in rows}
             added = present - before
-            for target, blockers in st.plan_resumes.items():
-                # Rozpoczęta kartka jest nietykalna. Nowa praca uzupełnia lukę przed wznowieniem, ale ticket
-                # zależny (także pośrednio) od tego kroku musi móc poczekać na jego zakończenie.
-                downstream = {st.steps[target]["ticket"]}
-                while True:
-                    more = {r["id"] for r in rows if set(r.get("blockers") or []) & downstream} - downstream
-                    if not more:
-                        break
-                    downstream.update(more)
-                st.plan_resumes[target] = (((blockers or set()) | added) & present) - downstream
+            # Rozpoczęte kartki są nietykalne. Oczekiwania wznowień i jawne blokery tworzą wspólny graf;
+            # samo sprawdzenie kartek nie wykrywa cyklu między dwiema kolejnymi poprawkami (PT-155).
+            graph = {r["id"]: set(r.get("blockers") or []) for r in rows}
+            resumes = {target: set() for target in st.plan_resumes}
+            # Najpierw zachowujemy wcześniejsze oczekiwania, dopiero potem dokładamy nową pracę.
+            # Kolejność kroków z dziennika i sortowanie blokerów zapewniają ten sam wynik po restarcie.
+            for previous in (True, False):
+                for target, blockers in st.plan_resumes.items():
+                    ticket = st.steps[target]["ticket"]
+                    candidates = ((blockers or set()) if previous else added) & present
+                    for blocker in sorted(candidates):
+                        pending, seen = {blocker}, set()
+                        while pending:
+                            node = pending.pop()
+                            if node in seen:
+                                continue
+                            seen.add(node)
+                            pending.update(graph.get(node, set()) - seen)
+                        if ticket not in seen:
+                            graph.setdefault(ticket, set()).add(blocker)
+                            resumes[target].add(blocker)
+            st.plan_resumes = resumes
             # Usunięty niewystartowany ticket nie zajmie już slotu; odtworzenie dziennika usuwa też jego kolejkę.
             removed = set((e.get("difference") or {}).get("removed") or [])
             st.waiting = {key: wait for key, wait in st.waiting.items() if key[0] not in removed}

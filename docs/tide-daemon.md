@@ -2030,7 +2030,11 @@ Odesłanie rozwiązuje problem kroku ticketu: projekcja `plan.returned` oznacza 
 (`superseded`), więc jego błąd lub pytanie nie wraca do decyzji, automatycznego ponowienia ani kolejnego opiekuna.
 Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Po jej zatwierdzeniu przez użytkownika
 czeka jeszcze na scalenie dodanej pracy do gałęzi karty (albo jej odrzucenie przez użytkownika). Nie czeka na nowe
-tickety zależne, także pośrednio, od niego samego. Potem silnik wznawia krok przez istniejące `_resume_step`,
+tickety zależne, także pośrednio, od niego samego. Przy kolejnych poprawkach projekcja sprawdza wspólny graf
+jawnych blokerów i oczekiwań wszystkich wznowień. Najpierw zachowuje wcześniejsze oczekiwania, potem dodaje
+nowe w kolejności kroków z dziennika i ID ticketów; pomija oczekiwanie, które zamknęłoby cykl. Przykładowo,
+gdy A czeka na X zależny od B, dodanie Y zależnego od A nie zatrzyma B przed Y: B kontynuuje, umożliwiając
+kolejno scalenie X, wznowienie A i wykonanie Y. Potem silnik wznawia krok przez istniejące `_resume_step`,
 w tym samym worktree, z instrukcją uwzględnienia zmian z gałęzi karty i kontynuacji pierwotnego zakresu.
 Oczekiwanie odtwarza się z dziennika po restarcie, a start następcy usuwa je z projekcji `plan_resumes`;
 stary błąd nie wraca do decyzji. Jawne ponowienie użytkownika nadal korzysta z dotychczasowej ścieżki.
