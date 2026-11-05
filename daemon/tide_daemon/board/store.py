@@ -397,6 +397,19 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
+    def project_card_base(self, card_id: str, base: dict) -> dict:
+        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
+        def plan(board):
+            card = self._card(board, card_num(card_id))
+            changed = []
+            for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
+                changed += _doc_set(card.doc, key, base.get(public) or "")
+            change = Change(result={"ok": True, "id": card.id})
+            if changed:
+                change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
+            return change
+        return self._execute(plan)
+
     def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
         """Przenosi kartę na pozycję `index` (od 0) kolumny; -1 albo poza zakresem — na koniec.
         from_column: kolumna, w której karta była wyświetlana (z pracy agentów, BoardMonitor) — trafia do
@@ -1033,6 +1046,9 @@ def find_ready_spec(docs_dir: str, card_id: str) -> str:
 
 
 def _card_json(card: Card, project: Project | None, resolved: list, derived, extra=()) -> dict:
+    flow = (derived or {}).get("flow") or {}
+    base = flow.get("base") or {"baseRef": card.base_ref, "baseBranch": card.base_branch,
+                                "baseCommit": card.base_commit}
     return {
         "id": card.id, "num": card.num, "title": card.title, "project": card.project,
         "projectName": project.name if project else "", "tags": list(card.tags), "resolvedTags": resolved,
@@ -1046,6 +1062,8 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
+        "baseRef": base["baseRef"], "baseBranch": base["baseBranch"], "baseCommit": base["baseCommit"],
+        "baseVersion": flow.get("baseVersion", 0),
         "spec": card.spec, "planPath": card.plan, "session": card.session, "branch": card.branch, "check": card.check,
         "entry": card.entry, "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),

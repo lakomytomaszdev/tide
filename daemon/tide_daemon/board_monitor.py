@@ -574,6 +574,10 @@ class BoardMonitor(QObject):
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
             card["derived"] = derived
+            flow = (derived or {}).get("flow") or {}
+            if "base" in flow:
+                card.update({key: flow["base"][key] for key in ("baseRef", "baseBranch", "baseCommit")})
+                card["baseVersion"] = flow["baseVersion"]
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
         snapshot["cards"] = cards

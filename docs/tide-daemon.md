@@ -1599,6 +1599,36 @@ wraz z wykonawcą.
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+
+**Baza startu „Od razu” (PT-194).** Żądanie może zawierać `baseRef` (wyłącznie pełny lokalny
+`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Bez `baseRef` działa dotychczasowy
+`FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
+Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
+rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgodny oczekiwany SHA
+odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
+wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
+Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
+
+Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
+`baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
+i `initialBase` o kształcie `{status: "known"|"unknown", baseRef, baseBranch, baseCommit}` oraz
+liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są puste. Model i plik karty
+mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
+UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
+zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+
+Historyczne zlecenie bez wersji zawsze ma `baseVersion: 0`. Znana historyczna baza wymaga zamiaru
+utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing: false`, z tego zlecenia.
+Wynik zastanej gałęzi nie dowodzi SHA pierwotnego startu. Bez dowodu baza jest unknown; nie czytamy
+dzisiejszej głównej i nie dopisujemy pól do starych zdarzeń.
+
+Kontrakt odczytu przyszłej korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
+(ten sam kształt trzech pól), `map` (mapa zasobów korekty), `previousBaseVersion` i
+`baseVersion: previousBaseVersion + 1`. Replay przyjmuje przejście tylko z bieżącej wersji i znaną
+nową bazą; powtórzenie tego samego zdarzenia nie zwiększa licznika. `initialBase` zachowuje start.
+Nowe zlecenie ma własne 1. Podgląd, odmowa, błąd, ruch refu i naprawa projekcji nie zmieniają wersji.
+Tokeny i przyszłe operacje scalenia/korekty korzystają wyłącznie z tego `baseVersion`. Wykonanie
+korekty, mapowanie zasobów oraz testy odmów należą do PT-202; tutaj dostarczono odczyt zdarzenia.
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
 

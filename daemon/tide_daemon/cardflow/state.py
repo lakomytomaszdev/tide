@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+import re
 
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
@@ -43,6 +44,10 @@ PLAN_WORK_KINDS = ("plan-amend", "plan-revise", "plan-review")
 @dataclass
 class FlowState:
     started: dict | None = None                     # ostatnie card.started
+    base: dict = field(default_factory=dict)
+    initial_base: dict = field(default_factory=dict)
+    base_version: int = 0
+    base_change: dict = field(default_factory=dict)
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
@@ -190,6 +195,11 @@ def fold(events: list[dict]) -> FlowState:
             st.log.append(e)
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "card.started":
+            st.base = _base(e)
+            st.initial_base = dict(st.base)
+            version = e.get("baseVersion", 0)
+            st.base_version = version if type(version) is int and version >= 0 else 0
+            st.base_change = {}
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
             st.superseded.update(st.steps)
@@ -212,6 +222,13 @@ def fold(events: list[dict]) -> FlowState:
             st.limits = {}
             st.waiting = {}
             st.inputs = {}
+        elif kind == "card.base-changed" and st.started:
+            previous, version = e.get("previousBaseVersion"), e.get("baseVersion")
+            candidate = _base(e.get("base") or e)
+            if (e.get("ok", True) is True and type(previous) is int and type(version) is int
+                    and previous == st.base_version and version == previous + 1
+                    and candidate["status"] == "known"):
+                st.base, st.base_version, st.base_change = candidate, version, e
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -220,6 +237,22 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == 'youtrack.retry':
             st.tracker_retries[(e.get('action'), e.get('key'))] = e
         elif kind == "result":
+            if (st.started and not st.base_change and st.initial_base.get("status") != "known"
+                    and e.get("action") == "card-branch" and e.get("ok")
+                    and e.get("existing") is False):
+                intent = st.intents.get(("card-branch", e.get("key"))) or {}
+                # Stary wynik zawiera SHA utworzonej gałęzi, zamiar — nazwę bazy.
+                # Wynik „existing” nie dowodzi pierwotnego SHA, a dzisiejszy git niczego tu nie dopowiada.
+                ref = intent.get("baseRef") or intent.get("base") or ""
+                if ref == "HEAD" or (isinstance(ref, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref)):
+                    ref = ""
+                if isinstance(ref, str) and not ref.startswith("refs/"):
+                    ref = "refs/heads/" + ref
+                candidate = _base({"baseRef": ref, "baseBranch": ref[len("refs/heads/"):] if isinstance(ref, str) else "",
+                                   "baseCommit": e.get("base")})
+                if int(intent.get("seq") or 0) > int(st.started.get("seq") or 0):
+                    st.base = candidate
+                    st.initial_base = dict(candidate)
             st.results[(e.get("action"), e.get("key"))] = e
             st.tracker_retries.pop((e.get('action'), e.get('key')), None)
             if e.get("ok") and e.get("action") == st.flow_error_action:
@@ -384,6 +417,20 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_change_seq = int(e.get("seq") or 0)
             st.plan_change_ts = e.get("ts") or ""
     return st
+
+
+def _base(data: dict) -> dict:
+    ref, branch, commit = (data.get(k) for k in ("baseRef", "baseBranch", "baseCommit"))
+    valid = (isinstance(ref, str) and ref.startswith("refs/heads/") and branch == ref[len("refs/heads/"):]
+             and bool(branch) and not re.search(r"[\s~^:?*\[\\]|\.\.|@\{|//", ref)
+             and not ref.endswith(("/", ".", ".lock"))
+             and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit))
+    return {"status": "known" if valid else "unknown", "baseRef": ref if valid else "",
+            "baseBranch": branch if valid else "", "baseCommit": commit if valid else ""}
+
+
+def base_of(st: FlowState) -> dict:
+    return dict(st.base or _base({}))
 
 
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
@@ -607,6 +654,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     # Kontrakt okna decyzji (PT-123); stare pola decyzji usunął PT-135.
                     "decisions": decisions}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
+                        "base": base_of(st), "initialBase": dict(st.initial_base), "baseVersion": st.base_version,
                         "stalledSince": st.stalled_since,
                         "closed": bool(st.closed), "summary": (st.closed or {}).get("summary") or "",
                         "mainMerged": bool(st.main_merged),
