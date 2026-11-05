@@ -656,6 +656,51 @@ def outside_queued(st: FlowState) -> list[str]:
     return queued
 
 
+PHASE_LABELS = {"pracuje": "pracuje", "kolejka": "w kolejce", "ty": "czeka na Ciebie", "review": "review",
+                "todo": "nie ruszył", "gotowe": "gotowe", "odrzucone": "odrzucony"}
+
+
+def ticket_phase(st: FlowState, ticket: str, latest: dict, waits: list, queued_outside: list) -> tuple[str, str]:
+    """Stan ticketu dla pasków i kartek (05.11): kto ma ruch.
+
+    `pracuje` — agent albo jego polecenie poza piaskownicą działa; `kolejka` — czeka na zasób i ruszy sam
+    (miejsce poza piaskownicą, limit lub miejsce dostawcy, inna karta, decyzja już podjęta); `ty` — bez użytkownika
+    nie ruszy (pytanie, zgoda, decyzja po błędzie); `review`; `todo`. Zwraca (stan, krótki powód)."""
+    name = latest.get("step") or ""
+    if not latest:
+        return "todo", ""
+    command = lambda: str((st.finished.get(name) or {}).get("command") or "polecenie").split("\n")[0][:60]
+    if name in st.outside_started:
+        return "pracuje", "poza piaskownicą: " + command()
+    if name in queued_outside:
+        return "kolejka", "w kolejce poza piaskownicą: " + command()
+    if waits:
+        wait = waits[-1]
+        if wait.get("cause") == "quota" or "limit" in str(wait.get("reason") or ""):
+            return "kolejka", str(wait.get("reason") or "limit dostawcy")
+        return "kolejka", str(wait.get("reason") or "czeka na zasób")
+    done = st.finished.get(name)
+    if done is None:
+        kind = latest.get("kind") or "ticket"
+        return ("review" if kind == "review" else "pracuje"), (latest.get("executor") or "") + (
+            " · review" if kind == "review" else " · poprawki" if kind == "fix" else
+            " · konflikt" if kind == "conflict" else "")
+    result = done.get("result")
+    if result in ("question", "denied", "error", "stopped"):
+        decision = st.step_decisions.get(name)
+        if decision:
+            if decision.get("waitCard"):
+                return "kolejka", "czeka na kartę " + str(decision.get("waitCard"))
+            return "kolejka", "decyzja podjęta, wznowi się sam"
+        if result == "stopped" and done.get("reason") == "interactive-closed":
+            return "ty", "Konsola zamknięta: wznów w tle albo w Konsoli"
+        return "ty", {"question": "pytanie", "denied": "prośba o zgodę", "error": "błąd kroku — decyzja",
+                      "stopped": "krok zatrzymany — decyzja"}[result]
+    if latest.get("kind") == "review" or result == "done":
+        return "review", "po review" if latest.get("kind") == "review" else "czeka na review"
+    return "pracuje", ""
+
+
 def card_waits(st: FlowState) -> dict[str, str]:
     """Tickety, których krok czeka na domknięcie innej karty (decyzja „wait-card”): ticket → karta."""
     resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}
@@ -1083,7 +1128,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         if decision.get("choice") in ("run", "run-always", "run-ticket"):
             started = st.outside_started.get(st.last_step)
             if started is None:
-                return _fill(out, "progress", f"{ident} · w kolejce poza piaskownicą (jedno polecenie naraz w projekcie): "
+                return _fill(out, "progress", f"{ident} · w kolejce poza piaskownicą: "
                                               f"{_clip(done.get('command') or '', 80)}")
             since = str(started.get("ts") or "")[11:16]
             return _fill(out, "progress", f"{ident} · od {since} trwa poza piaskownicą: "
@@ -1131,11 +1176,13 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
     wave_no = next((n for n, wave in enumerate(waves, 1) if set(wave) - finished_ids), len(waves))
     out["flow"].update({"wave": wave_no, "waveTotal": len(waves), "paused": st.paused,
                         "timeline": st.timeline})
+    queued_outside = outside_queued(st)
     for row in rows:
         ident_row = row.get("id") or row.get("workId")
         latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ident_row), {})
         waits = [w for (ticket_id, _), w in st.waiting.items() if ticket_id == ident_row]
         outcome = (st.finished.get(latest.get("step")) or {}).get("result")
+        phase, why = ticket_phase(st, ident_row, latest, waits, queued_outside)
         if ident_row in finished_ids:
             state = "gotowe"
         elif ident_row in st.rejected or not st.plan_approved and row.get("sourceState") == "odrzucone":
@@ -1148,7 +1195,9 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
             state = "todo"
         out["tickets"].append({"id": ident_row, "ticket": ident_row, "title": row.get("title") or "",
                                "state": state, "wave": next((n for n, w in enumerate(waves, 1) if ident_row in w), 0),
-                               "waitReason": waits[-1]["reason"] if waits else ""})
+                               "waitReason": waits[-1]["reason"] if waits else "",
+                               "phase": "gotowe" if state == "gotowe" else "odrzucone" if state == "odrzucone"
+                               else phase, "why": "" if state in ("gotowe", "odrzucone") else why})
     out["tickets"].sort(key=lambda ticket: ticket["wave"])
     out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
     out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},

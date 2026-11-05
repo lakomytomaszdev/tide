@@ -2287,6 +2287,27 @@ out["call"] = calls()[-1]
         self.assertEqual(resumed["text"], "Wznów")
         self.assertEqual(resumed["call"], ["SetCardPaused", "K-6", False])
 
+    def test_ticket_strip_shows_who_has_the_move(self):
+        # 05.11: pomarańczowy znaczył „czeka na Ciebie”, „w kolejce” i „limit” naraz; teraz faza od usługi.
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["boardColumn"] = "progress"
+                card["derived"] = {"column": "progress", "note": "fala 1 z 1", "done": 0, "total": 4,
+                    "tickets": [{"id": "PT-1", "state": "czeka", "phase": "pracuje", "why": "poza piaskownicą: make test", "wave": 1},
+                                {"id": "PT-2", "state": "czeka", "phase": "kolejka", "why": "w kolejce poza piaskownicą: make test", "wave": 1},
+                                {"id": "PT-3", "state": "czeka", "phase": "ty", "why": "pytanie", "wave": 1},
+                                {"id": "PT-4", "state": "w-toku", "wave": 1}],
+                    "flow": {"entry": "plan", "waveLabel": "fala 1 z 1", "paused": False, "timeline": [], "steps": []}}
+        out = self.probe(FIND_PY + """
+strip = FIND + "(page.findCard('K-6'), 'cardTicketStrip')"
+out["phases"] = [js(strip + ".itemAt(%d).phase" % i) for i in range(4)]
+out["tips"] = [js(strip + ".itemAt(%d).hint" % i) for i in range(3)]
+""", data=data)
+        self.assertEqual(out["phases"], ["pracuje", "kolejka", "ty", "pracuje"], "PT-4 bez fazy: dawny stan w-toku")
+        self.assertEqual(out["tips"], ["PT-1 · poza piaskownicą: make test",
+                                       "PT-2 · w kolejce poza piaskownicą: make test", "PT-3 · czeka na Ciebie: pytanie"])
+
 
 
 class LaunchReviewTest(ProbeCase):

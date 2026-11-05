@@ -283,19 +283,49 @@ Rectangle {
                 objectName: "cardTicketStrip"
                 model: root.derived && root.derived.flow ? root.derived.tickets || [] : []
                 Item {
+                    id: segment
                     Layout.fillWidth: true
                     implicitHeight: 6
                     readonly property int wave: modelData.wave || 0
                     readonly property bool gap: index > 0 && root.derived.tickets[index - 1].wave !== wave
+                    // Stan od usługi (05.11): pracuje / kolejka (ruszy sam) / ty (bez Ciebie nie ruszy) / review /
+                    // gotowe / todo. Starsza usługa bez `phase` — dawne stany.
+                    readonly property string phase: modelData.phase
+                        || ({"gotowe": "gotowe", "review": "review", "w-toku": "pracuje", "czeka": "ty",
+                             "odrzucone": "odrzucone"})[modelData.state] || "todo"
                     Rectangle {
+                        objectName: "ticketSegment"
                         anchors.fill: parent
                         anchors.leftMargin: parent.gap ? 5 : 0
                         radius: height / 2
-                        color: modelData.state === "gotowe" ? Tide.Tokens.mint
-                             : modelData.state === "review" ? Tide.Tokens.lavender
-                             : modelData.state === "w-toku" ? Tide.Tokens.sky
-                             : modelData.state === "czeka" ? Tide.Tokens.peach
+                        color: segment.phase === "gotowe" ? Tide.Tokens.mint
+                             : segment.phase === "review" ? Tide.Tokens.lavender
+                             : segment.phase === "pracuje" ? Tide.Tokens.sky
+                             : segment.phase === "ty" ? Tide.Tokens.peach
+                             : segment.phase === "kolejka" ? Tide.Theme.alpha(Tide.Tokens.sky, 0.18)
                              : Tide.Theme.alpha(Tide.Tokens.textMuted, 0.3)
+                        border.width: segment.phase === "kolejka" ? 1 : 0
+                        border.color: Tide.Theme.alpha(Tide.Tokens.sky, 0.75)
+                        SequentialAnimation on opacity {
+                            running: segment.phase === "pracuje" && root.visible
+                            loops: Animation.Infinite
+                            alwaysRunToEnd: true
+                            NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutSine }
+                        }
+                    }
+                    HoverHandler { id: segmentHover }
+                    QQC2.ToolTip.visible: segmentHover.hovered && !root.ghost
+                    QQC2.ToolTip.delay: 300
+                    QQC2.ToolTip.text: segment.hint
+                    readonly property string hint: {
+                        const label = ({"pracuje": "pracuje", "kolejka": "w kolejce", "ty": "czeka na Ciebie",
+                                        "review": "review", "gotowe": "gotowe", "odrzucone": "odrzucony",
+                                        "todo": "nie ruszył"})[segment.phase]
+                        const why = modelData.why || ""
+                        return (modelData.id || "") + " · "
+                            + (!why ? label : segment.phase === "ty" || segment.phase === "pracuje" && !why.startsWith("poza")
+                               ? label + ": " + why : why)
                     }
                 }
             }
