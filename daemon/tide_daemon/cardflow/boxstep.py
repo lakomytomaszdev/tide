@@ -377,6 +377,8 @@ def configure_background(engine, placement: Placement, card: str, step: str, par
         parent = saved.get("parentStep") or ""
     boxaccess.configure(proxy_of(engine), placement, step, denied_log_path(placement.slug, step), bg,
                         codex_step_dir=root)
+    from ..tasks import preparation
+    preparation.prepare(placement.runner, bg)
 
 
 def recover_network(engine) -> None:

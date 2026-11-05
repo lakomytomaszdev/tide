@@ -43,10 +43,16 @@ DESKTOP_CODEX = "/usr/lib/chatgpt/resources/codex"
 def default_homes(env=None) -> list[str]:
     """$CODEX_HOME albo ~/.codex i ~/snap/codex/current (nierozwiązane — resolve() przy użyciu)."""
     env = os.environ if env is None else env
+    extra = box_homes(env)
     if env.get("CODEX_HOME"):
-        return [env["CODEX_HOME"]]
+        return [env["CODEX_HOME"], *extra]
     home = env.get("HOME") or os.path.expanduser("~")
-    return [os.path.join(home, ".codex"), os.path.join(home, SNAP_DIR, "current")]
+    return [os.path.join(home, ".codex"), os.path.join(home, SNAP_DIR, "current"), *extra]
+
+
+def box_homes(env=None) -> list[str]:
+    from .box.homes import codex_roots
+    return codex_roots(env)
 
 
 def resolve(roots) -> list[str]:

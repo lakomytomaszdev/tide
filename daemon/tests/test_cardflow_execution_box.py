@@ -827,14 +827,32 @@ class BoxStepInProcessTest(BoxFlow):
 
     def test_resume_of_a_box_step_uses_the_box_runner_from_the_entry(self):
         self.build_box()
+        # Zwykły build_box nie ma wolumenu domowego; tutaj odwzorowujemy migawkę prawdziwego buildera.
+        self.builder()._attach_home(SLUG)
+        self.builder().incus.snapshot_create(SLUG, bs.SNAPSHOT)
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
         self.start(card_id)
         first = self.started_box(card_id)
         self.assertEqual(self.finished(card_id)["result"], "question")
+        # P-11: reset odtwarza rootfs, zachowuje urządzenie domowe i dziennik w nim.
+        home = self.engine._runner_for(first).base_env()["HOME"]
+        from tide_daemon.tasks import stepstop
+        log = stepstop.find_claude_log(os.path.join(home, ".claude", "projects"), first["session"])
+        self.assertTrue(log)
+        home_device = self.builder().incus.device_show(SLUG)["home"]
+        before = len(self.incus_calls())
+        self.builder().reset(SLUG)
+        self.assertEqual(self.builder().incus.device_show(SLUG)["home"], home_device)
+        self.assertTrue(os.path.isfile(log))
+        self.assertFalse([a for a in self.incus_calls()[before:] if a[:3] == ["config", "device", "remove"]])
         self.assertTrue(self.decide(card_id, choice="answer", answer="ISO 8601", step=first["step"])["ok"])
         resumed = self.resumed(card_id, first["step"])
         self.assertEqual((resumed.get("runner"), resumed.get("box")), ("box", SLUG))
         self.assertEqual(self.finished(card_id, 2)["result"], "done")
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json")) as fh:
+            argv = json.load(fh)["argv"]
+        self.assertIn("--resume", argv)
+        self.assertEqual(argv[argv.index("--resume") + 1], first["session"])
 
     def test_resume_after_local_unavailable_still_starts_in_the_same_card_box(self):
         self.build_box({"tide-box": 1, "box": "per-card"})

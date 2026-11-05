@@ -6,6 +6,7 @@ import os
 import subprocess
 
 from ..box import templates
+from . import commands
 
 # Domeny rejestru NuGet z szablonu stosu (box/stacks/dotnet.yaml, pozycje `registry: true`, #30).
 REGISTRY_DOMAINS = templates.registry_domains("dotnet")
@@ -17,20 +18,27 @@ def is_dotnet(worktree: str) -> bool:
     return any(glob.glob(os.path.join(worktree, pattern)) for pattern in MARKERS)
 
 
-def packages_dir(home: str) -> str:
+def packages_dir(home: str, *, runner=None) -> str:
     """Pamięć pakietów NuGet (NUGET_PACKAGES albo ~/.nuget/packages) — tylko do odczytu w kroku."""
+    if commands.in_box(runner):
+        return os.path.join(home, ".nuget", "packages")
     path = os.environ.get("NUGET_PACKAGES") or os.path.join(home, ".nuget", "packages")
     return os.path.realpath(path)
 
 
-def restore(worktree: str, *, runner=subprocess.run, timeout: float = RESTORE_TIMEOUT) -> tuple[bool, str]:
+def restore(worktree: str, *, runner=subprocess.run, timeout: float = RESTORE_TIMEOUT,
+            background=None) -> tuple[bool, str]:
     """`dotnet restore` w worktree kroku, poza piaskownicą (z siecią usługi). Zwraca (ok, ostatnie linie)."""
     solutions = sorted(glob.glob(os.path.join(worktree, "*.sln")) + glob.glob(os.path.join(worktree, "*.slnx")))
     argv = ["dotnet", "restore"] + ([solutions[0]] if len(solutions) == 1 else [])
-    env = dict(os.environ, DOTNET_NOLOGO="1", DOTNET_CLI_TELEMETRY_OPTOUT="1",
+    boxed = commands.in_box(runner)
+    env = dict(background.env if boxed else os.environ, DOTNET_NOLOGO="1", DOTNET_CLI_TELEMETRY_OPTOUT="1",
                DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1")
+    if boxed:
+        home = runner.base_env()["HOME"]
+        env.update(NUGET_PACKAGES=packages_dir(home, runner=runner), DOTNET_CLI_HOME=home)
     try:
-        run = runner(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=timeout,
+        run = commands.run(runner, argv, background=background, cwd=worktree, env=env, capture_output=True, text=True, timeout=timeout,
                      stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"{type(exc).__name__}: {exc}"[:600]

@@ -2921,6 +2921,34 @@ nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
 
+### Dzienniki i przygotowanie zależności (PT-189, praca w toku)
+
+`worktrees/sessions.py` oprócz korzeni hosta czyta domy projektów w
+`$XDG_DATA_HOME/tide/box/<slug>/home` (domyślnie `~/.local/share/tide/box/<slug>/home`):
+`.claude/projects`, `.codex` i `.codex/steps/*` dla sesji K3. Odkrywanie jest ponawiane przy odświeżeniu.
+Skaner pomija dowiązania w korzeniach pudełek; kopie Claude łączy po identyfikatorze, a Codexa po względnej
+ścieżce pliku dziennika, zachowując osobne segmenty. Katalog roboczy sesji pozostaje ścieżką worktree,
+więc powiązanie z krokiem karty nie wymaga przepisywania ścieżek. Wyszukiwanie dziennika do przekazania
+(`tasks/stepstop.py`) korzysta z tych samych dodatkowych korzeni.
+
+**Nierozstrzygnięta rozbieżność:** obecny `Builder._attach_home` tworzy osobny wolumen Incusa
+`<pudełko>-home`. `BoxRunner` zachowuje ten wolumen, zamiast montować powyższy katalog hosta.
+Skaner nie widzi zawartości takiego wolumenu. PT-189 czeka na decyzję o ujednoliceniu domu lub odczycie
+dzienników z wolumenu; samo dodanie korzeni nie zamyka tego wymagania.
+
+`tasks/preparation.py` jest wołane przez `boxstep.configure_background`, po montowaniach i konfiguracji proxy.
+`node.install` i `dotnet.restore` otrzymują runner z istniejącego `Placement`; polecenia wykonuje `incus exec`
+jako użytkownik `agent`, z katalogiem worktree i środowiskiem pudełka. Wartości środowiska, w tym tożsamość proxy,
+przechodzą przez prywatny plik `in/prepare-env` (0600), usuwany po poleceniu; nie trafiają do argv incusa.
+NuGet używa `/home/agent/.nuget/packages`, CLI `/home/agent`, Node jest wyszukiwany wewnątrz pudełka,
+a Chromium w `/home/agent/.cache/ms-playwright`. Wynik przygotowania trafia do `out/prepare.log` i promptu.
+Niepowodzenie nie uruchamia instalacji zastępczej na hoście. Zachowanie `HostRunner` i dotychczasowych
+atrap `subprocess.run` pozostaje zgodne z wcześniejszym interfejsem.
+
+K3 Codexa zapisuje sesje w `/home/agent/.codex/steps/<hash katalogu pierwotnego kroku>`;
+wznowienie korzysta z tego samego domu. Reset rootfs nie usuwa danych urządzenia domowego.
+Prawdziwy test widoczności Sesji i zrzut ekranu pozostają do wykonania po rozstrzygnięciu domu i #28.
+
 ### Krok w pudełku w silniku (PT-181)
 
 `cardflow/boxstep.py`, wołane z `FlowEngine._launch`, `_poll`, `_kill` i `_finish`. Dowód na prawdziwym pudełku

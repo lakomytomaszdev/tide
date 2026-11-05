@@ -8,6 +8,7 @@ import shutil
 import subprocess
 
 from ..box import templates
+from . import commands
 
 INSTALL_TIMEOUT = 1200
 
@@ -16,8 +17,13 @@ def is_node(worktree: str) -> bool:
     return os.path.isfile(os.path.join(worktree, "package.json"))
 
 
-def node_home(home: str) -> str:
+def node_home(home: str, *, runner=None, background=None) -> str:
     """Katalog instalacji Node (z `bin/node`): wersja domyślna nvm, najnowsza z nvm albo `node` z PATH usługi."""
+    if commands.in_box(runner):
+        return commands.output(runner, background,
+                               'p=$(command -v node) || p=$(printf "%s\\n" '
+                               '"$HOME"/.nvm/versions/node/v*/bin/node | sort -V | tail -n 1); '
+                               '[ -f "$p" ] || exit 1; dirname "$(dirname "$(readlink -f "$p")")"')
     versions = os.path.join(home, ".nvm", "versions", "node")
     found = sorted((d for d in glob.glob(os.path.join(versions, "v*")) if os.path.isfile(os.path.join(d, "bin", "node"))),
                    key=_version_key)
@@ -42,23 +48,26 @@ def _version_key(path: str):
     return tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.]", os.path.basename(path).lstrip("v")))
 
 
-def install(worktree: str, home: str, *, runner=subprocess.run, timeout: float = INSTALL_TIMEOUT) -> tuple[bool, str]:
+def install(worktree: str, home: str, *, runner=subprocess.run, timeout: float = INSTALL_TIMEOUT,
+            background=None) -> tuple[bool, str]:
     """`npm ci` (z package-lock.json) albo `npm install` w worktree kroku, poza piaskownicą (z siecią usługi)."""
-    prefix = node_home(home)
+    boxed = commands.in_box(runner)
+    prefix = node_home(home, runner=runner, background=background)
     if not prefix:
         return False, "nie znaleziono instalacji Node (nvm ani node na PATH)"
     lock = os.path.join(worktree, "package-lock.json")
     marker = os.path.join(worktree, "node_modules", ".package-lock.json")
     try:
-        if os.path.isfile(lock) and os.path.getmtime(marker) >= os.path.getmtime(lock):
+        if not boxed and os.path.isfile(lock) and os.path.getmtime(marker) >= os.path.getmtime(lock):
             return True, "zależności aktualne"
     except OSError:
         pass
     argv = [os.path.join(prefix, "bin", "npm"), "ci" if os.path.isfile(os.path.join(worktree, "package-lock.json"))
             else "install", "--no-audit", "--no-fund"]
-    env = dict(os.environ, PATH=os.path.join(prefix, "bin") + os.pathsep + os.environ.get("PATH", ""))
+    env = dict(background.env if boxed else os.environ)
+    env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
     try:
-        run = runner(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=timeout,
+        run = commands.run(runner, argv, background=background, cwd=worktree, env=env, capture_output=True, text=True, timeout=timeout,
                      stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"{type(exc).__name__}: {exc}"[:600]
@@ -99,9 +108,13 @@ def registry_domains(worktree: str, *, dotnet: bool) -> tuple:
     return tuple(dict.fromkeys(d for stack in stacks for d in REGISTRY_DOMAINS[stack]))
 
 
-def chrome_bin(home: str) -> str:
+def chrome_bin(home: str, *, runner=None, background=None) -> str:
     """Chromium z pamięci Playwrighta (najnowszy) dla Karmy i innych testów przeglądarkowych (`CHROME_BIN`, 03.11
     K-31/DPT-5: „No binary for ChromeHeadless”). Pusty napis, gdy Playwright niczego nie pobrał."""
+    if commands.in_box(runner):
+        return commands.output(runner, background,
+                               'for p in "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome; '
+                               'do [ ! -f "$p" ] || printf "%s\\n" "$p"; done | sort -V | tail -n 1')
     found = sorted(glob.glob(os.path.join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux*", "chrome")),
                    key=lambda p: _version_key(os.path.basename(os.path.dirname(os.path.dirname(p))).split("-")[-1]))
     return os.path.realpath(found[-1]) if found else ""
