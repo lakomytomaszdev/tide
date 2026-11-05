@@ -117,6 +117,9 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             finally:
                 if own:
                     service.stop()
+    except bb.BoxBusy as exc:
+        print(f"tide box {args.cmd}: {exc}", file=err)
+        return 3
     except (bb.BuildError, bp.ProfileError, IncusError, OSError, ValueError) as exc:
         print(f"tide box {args.cmd}: {exc}", file=err)
         return 1

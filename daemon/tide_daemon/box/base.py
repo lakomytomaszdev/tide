@@ -93,7 +93,7 @@ def ensure_proxy(settings: BoxSettings, start=bproxy.start_service):
     except (bproxy.ProxyError, OSError, ValueError) as exc:
         raise bb.BuildError(
             f"proxy Tide nie wstało: {exc} — jeśli usługa Tide już ma proxy pudełka (box.enabled), port "
-            f"{settings.proxy_port} jest zajęty; zatrzymaj usługę na czas budowy obrazu bazowego") from exc
+            f"{settings.proxy_port} jest zajęty; zatrzymaj usługę na czas tego polecenia") from exc
     if service is None:
         raise bb.BuildError("proxy Tide nie wstało (brak polecenia incus albo mostka "
                             f"{settings.bridge}) — budowa bez proxy jest niedozwolona")
@@ -157,16 +157,18 @@ class BaseBuilder:
         self.incus.init(SOURCE_IMAGE, name)
         result.steps.append("nic")
         self._box.apply_nic_filter(name)
-        self.incus.start(name)
-        ip = self._box._wait_ip(name)
-        self.policy.set_box_policy(ip, list(build_domains()), False, denied)
+        ip = None
         try:
+            self.incus.start(name)
+            ip = self._box._wait_ip(name)
+            self.policy.set_box_policy(ip, list(build_domains()), False, denied)
             self._provision(name, proxy, result)
         except BaseException:
             self._stop_quietly(name)           # nieudana budowa nie zostawia uruchomionego tide-base
             raise
         finally:
-            self.policy.clear_box_policy(ip)
+            if ip is not None:
+                self.policy.clear_box_policy(ip)
 
     def _stop_quietly(self, name):
         try:

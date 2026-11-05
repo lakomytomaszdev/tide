@@ -434,6 +434,17 @@ class BaseBuildTest(BaseCase):
         self.assertEqual(argvs[-1][:2], ["stop", "--project"])   # nieudana budowa zatrzymuje tide-base
         self.assertIn("tide-base", argvs[-1])
 
+    def test_no_ip_stops_tide_base_without_touching_the_policy(self):
+        b = self.base_builder()
+        with mock.patch.object(b._box, "_wait_ip", side_effect=bb.BuildError("brak adresu IPv4")):
+            with self.assertRaisesRegex(bb.BuildError, "IPv4"):
+                b.build()
+        argvs = self.incus_calls()
+        self.assertEqual(argvs[-1][:2], ["stop", "--project"])
+        self.assertIn("tide-base", argvs[-1])
+        self.assertEqual(self.proxy.seen, [])
+        self.assertFalse([l for l in calls(self.env) if l.startswith("clear_box_policy")])
+
     def test_without_proxy_nothing_reaches_incus(self):
         with self.assertRaisesRegex(bb.BuildError, "proxy"):
             self.base_builder(policy=bb.ProxyMissing()).build()
@@ -581,6 +592,18 @@ class LoginTest(BaseCase):
                         run=lambda argv: self.fail("logowanie przy biegnącym kroku"), programs=("claude",))
         self.assertEqual(self.proxy.seen, [])
         self.assertEqual(len(self.incus_calls()), before)
+
+    def test_cli_login_while_steps_run_is_exit_3(self):
+        bs.record("plasma-tide", "box.use", bs.box_name("plasma-tide"), step="K-1-PT-1-1")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(k3.K3_PROGRAMS, {"claude": False}), \
+                mock.patch.object(bbase, "ensure_proxy", return_value=(self.proxy, False)):
+            code = cli.main(["login", "plasma-tide"], out=out, err=err)
+        self.assertEqual(code, 3, err.getvalue())
+        self.assertIn("tide box login:", err.getvalue())
+        self.assertIn("K-1-PT-1-1", err.getvalue())
+        self.assertEqual(self.proxy.seen, [])
+        self.assertEqual(self.incus_calls(), [])
 
 
 # ------------------------------------------------------------ make box-base i dokumentacja
