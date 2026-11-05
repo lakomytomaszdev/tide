@@ -85,6 +85,28 @@ class StartBaseTest(FlowInProcess):
         self.assert_base(pinned, "refs/heads/feature/start", commit)
         self.assertEqual(git(self.repo, "config", "--get", "tide.mainBranch").strip(), "feature/start")
 
+    def test_manual_columns_keep_null_derived_and_journal_base_even_without_projection(self):
+        for source, column in (("waiting", "todo"), ("review", "todo"), ("todo", "done"), ("todo", "archived")):
+            with self.subTest(source=source, column=column):
+                card = self.card(title=f"Ręczna {source} {column}")
+                journal = self.flow.engine.journal
+                journal.append(card, "card.started", entry="now", column="todo", repo=self.repo,
+                               baseRef="refs/heads/master", baseBranch="master", baseCommit=self.master,
+                               baseVersion=1)
+                self.store.move_card(card, column)
+                journal.append(card, "card.moved", **{"from": source, "to": column})
+                for restart in (False, True):
+                    if restart:
+                        self.restart()
+                    self.board.publish()
+                    shown = self.shown(card)
+                    self.assertIsNone(shown["derived"])
+                    self.assertEqual(shown["boardColumn"], column)
+                    self.assertEqual(shown["baseRef"], "refs/heads/master")
+                    self.assertEqual(shown["baseCommit"], self.master)
+                    self.assertEqual(shown["baseVersion"], 1)
+                self.assertEqual(self.store.load().cards[int(card[2:])].base_commit, "")
+
     def test_invalid_deleted_or_moved_base_leaves_no_order_or_number(self):
         commit = self.feature()
         git(self.repo, "tag", "tag-start")

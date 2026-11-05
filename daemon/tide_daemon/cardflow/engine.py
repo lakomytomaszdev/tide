@@ -458,15 +458,20 @@ class FlowEngine(PlanEditing):
         flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
                                                         settings["limitThresholdPercent"], pick)
 
+    def card_base(self, card_id: str) -> dict:
+        """Baza migawki niezależna od tego, czy karta ma wyliczany stan przepływu."""
+        st = fold(self.journal.read(card_id))
+        if not st.started:
+            return {}
+        base = base_of(st)
+        return {**{key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")},
+                "baseVersion": st.base_version}
+
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
         out = derived(st, card)
         if out:
             self._limit_view(st, out)
-        elif st.started:
-            # Gotowe i Archiwum zachowują ręczną kolumnę, ale baza nadal pochodzi z dziennika.
-            out = {"flow": {"base": base_of(st), "initialBase": dict(st.initial_base),
-                            "baseVersion": st.base_version}}
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \

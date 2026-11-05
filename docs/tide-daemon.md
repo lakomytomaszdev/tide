@@ -1616,6 +1616,9 @@ liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są pust
 mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
 UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
 zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+Gdy karta nie ma wyliczanego stanu (np. wróciła ręcznie do Do zrobienia albo jest w Gotowych/Archiwum),
+zachowuje `derived: null`. Jej pola `baseRef`, `baseBranch`, `baseCommit` i `baseVersion` na karcie
+w Snapshot nadal pochodzą z dziennika, niezależnie od powodzenia zapisu projekcji.
 
 Historyczne zlecenie bez wersji zawsze ma `baseVersion: 0`. Znana historyczna baza wymaga zamiaru
 utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing: false`, z tego zlecenia.
