@@ -116,7 +116,7 @@ class StructuredReviewFlowTest(FlowInProcess):
 
     def test_malformed_result_is_not_recorded_as_a_review(self):
         card = self.card(description="ATRAPA: plan-review-malformed")
-        self.flow.stop()
+        self.flow._timer.stop()  # pauza zegara do zapisania propozycji, bez zamykania monitora
         self.flow.engine.propose_plan(card, self.proposal(card))
         self.flow.start()
         self.assertTrue(wait_until(lambda: [s for s in self.of(card, "step.finished") if s.get("ticket") == ""],
