@@ -36,8 +36,22 @@ QQC2.Popup {
                        "Drzewo wyniku: " + (r.resultTree || "nieprzygotowane"),
                        "Worktree celu: " + r.targetWorktree + (r.targetWorktreeExists ? "" : " (jeszcze nie istnieje)"),
                        "", r.reason ? r.message + " [" + r.reason + "]" : "Drzewo scalenia bez konfliktów.",
-                       "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione."]
+                       r.localCollisions && typeof r.localCollisions === "object"
+                       ? "Lokalne kolizje: " + r.localCollisionCount + ". " + (r.canMerge
+                         ? "Odczyt nie wykazał blokad scalenia." : "Scalenie jest zablokowane.")
+                       : "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione.",
+                       "To wyłącznie podgląd. Nie stanowi zgody na wykonanie scalenia."]
         for (const warning of r.warnings || []) lines.push(warning)
+        for (const refusal of r.blockedReasons || []) lines.push(refusal.message + " [" + refusal.reason + "]")
+        if (r.localCollisions && typeof r.localCollisions === "object") {
+            const labels = { staged: "staged (indeks)", unstaged: "unstaged (poza indeksem)", untracked: "untracked (nieśledzone)" }
+            for (const kind of ["staged", "unstaged", "untracked"]) {
+                const entries = r.localCollisions[kind] || []
+                lines.push("", "Kolizje " + labels[kind] + " (" + entries.length + "):")
+                for (const entry of entries)
+                    lines.push(entry.status + "  " + entry.paths.join(" ← ") + " · scalenie: " + entry.mergePaths.join(", "))
+            }
+        }
         lines.push("", "Wnoszone commity (" + r.commitCount + ") — cel..karta:")
         for (const c of r.commits || []) lines.push(c.sha + "  " + c.subject)
         lines.push("", "Zmiany plików względem drzewa celu (" + r.fileCount + "):")

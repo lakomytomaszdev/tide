@@ -25,6 +25,8 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import signal
 import shutil
@@ -56,6 +58,7 @@ from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
+from .mergepreview import source_dirty
 from .journal import Journal
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, _epoch)
@@ -315,6 +318,7 @@ class FlowEngine(PlanEditing):
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
+        self._preview_secret = os.urandom(32)  # token sprzed restartu nie uprawnia do nowej operacji
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -4306,8 +4310,8 @@ class FlowEngine(PlanEditing):
 
     def preview_card_merge(self, card_id: str, request: dict) -> dict:
         """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
-        if request:
-            raise FlowError("bad-request", "podgląd przyjmuje pusty obiekt; cel wybiera polityka gałęzi głównej")
+        if not isinstance(request, dict) or set(request) - {"targetRef"}:
+            raise FlowError("bad-request", "podgląd przyjmuje opcjonalny lokalny targetRef")
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
@@ -4318,10 +4322,88 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-base", "brak gałęzi karty")
         try:
             repo = self._repo(card)
-            preview = self.git.preview_merge(repo, branch)
-            self._main_branches[repo] = preview["targetBranch"]
+            target_ref = request.get("targetRef")
+            if "targetRef" in request and (not isinstance(target_ref, str) or
+                    not target_ref.startswith("refs/heads/") or
+                    not self.git.run(repo, "check-ref-format", target_ref).ok or not self.git.sha(repo, target_ref)):
+                raise FlowError("bad-request", "cel musi być istniejącym pełnym lokalnym refem refs/heads/…")
+            preview = self.git.preview_merge(repo, branch, target_ref)
+            if not request:
+                self._main_branches[repo] = preview["targetBranch"]
         except FlowGitError as exc:
             raise FlowError("merge-preview", str(exc)) from None
+        snapshots = preview.pop("_snapshot", None)
+        reasons = []
+
+        def block(reason, message):
+            if not any(r["reason"] == reason for r in reasons):
+                reasons.append({"reason": reason, "message": message})
+
+        if preview["reason"]:
+            block(preview["reason"], preview["message"])
+        if not st.closed:
+            block("not-closed", "Karta nie ma aktualnego domknięcia.")
+        if st.running() or st.open_consoles() or st.outside_started:
+            block("active-step", "Krok karty jest jeszcze czynny.")
+        closed_seq = (st.closed or {}).get("seq", 0)
+        if st.plan_revision or any((e or {}).get("seq", 0) > closed_seq
+                                   for e in (st.plan_proposed, st.plan_approved)):
+            block("plan-change", "Zmiana planu czeka na zakończenie lub decyzję.")
+        if st.base_change.get("seq", 0) > closed_seq:
+            block("base-change", "Po korekcie bazy karta wymaga aktualnego domknięcia.")
+        if st.open_intents() or st.merge_pending():
+            block("pending-action", "Akcja karty, korekta bazy lub scalanie ticketu nie zostały zakończone.")
+        if preview["sourceRef"] == preview["targetRef"]:
+            block("card-target", "Celem nie może być gałąź karty.")
+        protected = []
+        for other_id in self.journal.cards():
+            if other_id == card:
+                continue
+            other = fold(self.journal.read(other_id))
+            other_repo = (other.started or {}).get("repo")
+            if not other_repo:
+                try:
+                    other_repo = self._repo(other_id)
+                except FlowError:
+                    continue
+            info = ticket_of(other)
+            if os.path.realpath(other_repo) == os.path.realpath(repo) and info["cardBranch"]:
+                protected.append({"card": other_id, "branch": info["cardBranch"], "worktree": info["cardWorktree"]})
+            outside_steps = [other.steps.get(name, {}) for name in other.outside_started]
+            for step in other.running() + other.open_consoles() + outside_steps:
+                if os.path.realpath(step.get("repo") or other_repo) == os.path.realpath(repo):
+                    protected.append({"card": other_id, "branch": step.get("branch") or "",
+                                      "worktree": step.get("worktree") or ""})
+        for item in protected:
+            if (preview["targetRef"] == "refs/heads/" + item["branch"] or
+                    (preview["targetWorktreeExists"] and item["worktree"] and
+                     os.path.realpath(item["worktree"]) == os.path.realpath(preview["targetWorktree"]))):
+                block("protected-target", "Cel należy do karty " + item["card"] + " lub jej czynnego kroku.")
+        if snapshots:
+            source, target = snapshots["source"], snapshots["target"]
+            if not source["exists"] or source_dirty(source):
+                block("source-dirty", "Gałąź karty nie ma czystego checkoutu.")
+            if not target["exists"]:
+                block("no-target-worktree", "Cel nie ma checkoutu. Przygotowanie celu wymaga osobnej zgody i obsługi.")
+            if any(any(s.get("operations", {}).values()) for s in (source, target)):
+                block("git-operation", "W checkoucie trwa operacja gita lub indeks jest zablokowany.")
+            if preview.get("localCollisionCount"):
+                block("local-collision", "Lokalna praca koliduje ze ścieżkami scalenia.")
+            collisions = preview["localCollisions"]
+            if isinstance(collisions, dict) and len(target.get("changes", {}).get("staged", [])) > len(collisions["staged"]):
+                block("staged-not-supported", "Niezwiązane zmiany staged: ich zachowanie w nowej ścieżce będzie dostępne w PT-207.")
+        else:
+            block("local-unassessed", "Nie udało się potwierdzić aktualnego stanu checkoutów.")
+        preview.update(blockedReasons=reasons, canMerge=not reasons, baseVersion=st.base_version)
+        if reasons:
+            preview.update(reason=reasons[0]["reason"], message=reasons[0]["message"])
+        if snapshots and preview["reason"] != "state-changed":
+            # To odcisk, nie zapis zgody. PT-204 ponownie odczyta stan przed rozpoczęciem operacji.
+            context = {"card": card, "order": st.started, "baseVersion": st.base_version,
+                       "journalSeq": st.last_seq, "preview": preview, "checkout": snapshots,
+                       "protected": protected}
+            payload = json.dumps(context, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
+            preview["previewToken"] = hmac.new(self._preview_secret, payload, hashlib.sha256).hexdigest()
         return {"ok": True, "id": card, **preview}
 
     def merge_card_to_main(self, card_id: str) -> dict:

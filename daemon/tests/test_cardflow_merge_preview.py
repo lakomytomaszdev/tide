@@ -85,10 +85,11 @@ class PreviewScenarios:
         self.write(self.card_tree, "untracked.txt", "też nieśledzony\n")
         r = self.preview()
         self.assertTrue(r["ok"], r)
-        self.assertTrue(r["canMerge"], r)
+        self.assertFalse(r["canMerge"], r)
         self.assertFalse(r["readyToMerge"])
-        self.assertEqual(r["localCollisions"], "unassessed")
-        self.assertNotIn("token", r)
+        self.assertEqual(r["localCollisionCount"], 0)
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"source-dirty", "staged-not-supported"})
+        self.assertTrue(r["previewToken"])
         self.assertTrue(r["warnings"])
         self.assertEqual((r["sourceRef"], r["sourceCommit"], r["targetRef"], r["targetCommit"]),
                          ("refs/heads/" + self.source, source, "refs/heads/master", target))
@@ -155,7 +156,10 @@ class PreviewScenarios:
         git(self.repo, "branch", "release/full-target")
         git(self.repo, "config", "tide.mainBranch", "release/full-target")
         r = self.preview()
-        self.assertTrue(r["canMerge"], r)
+        self.assertFalse(r["canMerge"], r)
+        self.assertEqual(r["reason"], "no-target-worktree")
+        self.assertEqual(r["localCollisionCount"], 0)
+        self.assertEqual(r["previewToken"], self.preview()["previewToken"])
         self.assertEqual(r["targetBranch"], "release/full-target")
         self.assertFalse(r["targetWorktreeExists"])
         self.assertFalse(os.path.exists(r["targetWorktree"]))
@@ -163,10 +167,265 @@ class PreviewScenarios:
                          "release/full-target")
 
     def test_bad_request_cannot_select_another_target(self):
-        for request in ("[]", "no json", '{"targetRef":"refs/heads/other"}'):
+        git(self.repo, "update-ref", "refs/remotes/origin/master", "master")
+        for request in ("[]", "no json", '{"targetRef":"refs/heads/other"}',
+                        '{"targetRef":"refs/remotes/origin/master"}', '{"targetRef":null}',
+                        '{"targetRef":"master"}', '{"unknown":true}'):
             r = self.preview(request)
             self.assertFalse(r["ok"])
             self.assertEqual(r["error"], "bad-request")
+
+    def source_change(self, path="conflict.txt", text="karta\n"):
+        self.write(self.card_tree, path, text)
+        self.commit(self.card_tree, "source")
+
+    def test_local_staged_unstaged_and_untracked_have_separate_collisions(self):
+        self.source_change()
+        self.source_change("added.txt")
+        self.write(self.repo, "conflict.txt", "indeks\n")
+        git(self.repo, "add", "conflict.txt")
+        self.write(self.repo, "conflict.txt", "plik\n")
+        self.write(self.repo, "added.txt", "nieśledzony\n")
+        r = self.preview()
+        self.assertEqual(r["reason"], "local-collision")
+        self.assertEqual(r["localCollisionCount"], 3)
+        self.assertEqual(r["localCollisions"]["staged"][0]["paths"], ["conflict.txt"])
+        self.assertEqual(r["localCollisions"]["unstaged"][0]["paths"], ["conflict.txt"])
+        self.assertEqual(r["localCollisions"]["untracked"][0]["paths"], ["added.txt"])
+        self.assertNotIn("staged-not-supported", str(r["blockedReasons"]))
+        self.assertEqual(r["conflicts"], [])
+
+    def test_k43_unrelated_unstaged_and_untracked_are_allowed(self):
+        self.source_change("added.txt")
+        self.write(self.repo, "conflict.txt", "praca\n")
+        self.write(self.repo, "note.txt", "notatka\n")
+        r = self.preview()
+        self.assertTrue(r["canMerge"], r)
+        self.assertEqual(r["localCollisionCount"], 0)
+        self.assertFalse(r["readyToMerge"])
+
+    def test_unrelated_staged_is_a_temporary_refusal_not_a_collision(self):
+        self.source_change("added.txt")
+        self.write(self.repo, "conflict.txt", "indeks\n")
+        git(self.repo, "add", "conflict.txt")
+        r = self.preview()
+        self.assertFalse(r["canMerge"])
+        self.assertEqual(r["reason"], "staged-not-supported")
+        self.assertEqual(r["localCollisionCount"], 0)
+        self.assertIn("PT-207", r["message"])
+
+    def test_unrelated_staged_refusal_is_kept_alongside_unstaged_collision(self):
+        self.source_change()
+        self.write(self.repo, "note.txt", "indeks\n")
+        git(self.repo, "add", "note.txt")
+        self.write(self.repo, "conflict.txt", "praca\n")
+        r = self.preview()
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"local-collision", "staged-not-supported"})
+        self.assertEqual(r["localCollisions"]["staged"], [])
+        self.assertEqual(r["localCollisionCount"], 1)
+
+    def test_merge_rename_checks_both_paths_with_control_characters(self):
+        git(self.card_tree, "mv", "old\tname.txt", "new\nname.txt")
+        self.commit(self.card_tree, "rename")
+        self.write(self.repo, "old\tname.txt", "praca\n")
+        self.write(self.repo, "new\nname.txt", "praca\n")
+        r = self.preview()
+        self.assertEqual(r["reason"], "local-collision")
+        self.assertEqual(r["localCollisionCount"], 2)
+        self.assertEqual(r["localCollisions"]["unstaged"][0]["mergePaths"], ["old\tname.txt"])
+        self.assertEqual(r["localCollisions"]["untracked"][0]["mergePaths"], ["new\nname.txt"])
+
+    def test_local_rename_checks_old_and_new_paths(self):
+        self.source_change("old\tname.txt")
+        self.source_change("local-new.txt")
+        git(self.repo, "mv", "old\tname.txt", "local-new.txt")
+        r = self.preview()
+        entry = r["localCollisions"]["staged"][0]
+        self.assertEqual(entry["paths"], ["local-new.txt", "old\tname.txt"])
+        self.assertEqual(entry["mergePaths"], ["local-new.txt", "old\tname.txt"])
+        self.assertEqual(r["reason"], "local-collision")
+
+    def test_deletions_on_either_side_collide(self):
+        git(self.card_tree, "rm", "old\tname.txt")
+        self.source_change()
+        self.write(self.repo, "old\tname.txt", "zmieniony lokalnie\n")
+        git(self.repo, "rm", "conflict.txt")
+        r = self.preview()
+        self.assertEqual(r["localCollisionCount"], 2)
+        self.assertEqual(r["localCollisions"]["staged"][0]["paths"], ["conflict.txt"])
+        self.assertEqual(r["localCollisions"]["unstaged"][0]["paths"], ["old\tname.txt"])
+
+    def test_unstaged_deletion_collides_with_modified_merge_path(self):
+        self.source_change()
+        Path(self.repo, "conflict.txt").unlink()
+        r = self.preview()
+        self.assertEqual(r["reason"], "local-collision")
+        self.assertEqual(r["localCollisions"]["unstaged"][0]["status"], " D")
+
+    def test_file_directory_collisions_both_directions_and_component_boundary(self):
+        self.source_change("file")
+        os.mkdir(os.path.join(self.card_tree, "directory"))
+        self.source_change("directory/child")
+        os.mkdir(os.path.join(self.repo, "file"))
+        self.write(self.repo, "file/child", "praca\n")
+        self.write(self.repo, "directory", "praca\n")
+        self.write(self.repo, "file-suffix", "bez kolizji\n")
+        r = self.preview()
+        entries = r["localCollisions"]["untracked"]
+        self.assertEqual([e["paths"] for e in entries], [["directory"], ["file/child"]])
+        self.assertEqual([e["mergePaths"] for e in entries], [["directory/child"], ["file"]])
+
+    def test_tool_conflict_and_local_collision_are_independent(self):
+        self.source_change()
+        self.write(self.repo, "conflict.txt", "cel\n")
+        self.commit(self.repo, "target")
+        self.write(self.repo, "conflict.txt", "praca lokalna\n")
+        r = self.preview()
+        self.assertEqual(r["reason"], "conflict")
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"conflict", "local-collision"})
+        self.assertEqual(r["conflicts"], ["conflict.txt"])
+
+    def test_source_must_be_clean_but_untracked_tooling_is_allowed(self):
+        os.makedirs(os.path.join(self.card_tree, ".agents", "skills"))
+        self.write(self.card_tree, ".agents/skills/example", "narzędzia\n")
+        self.assertTrue(self.preview()["canMerge"])
+        self.write(self.card_tree, "note.txt", "praca karty\n")
+        self.assertEqual(self.preview()["reason"], "source-dirty")
+
+    def test_flow_gates_closed_running_plan_revision_and_pending_correction(self):
+        journal = self.flow.engine.journal
+        journal.append(self.card_id, "step.started", step="active", kind="close")
+        self.assertEqual(self.preview()["reason"], "active-step")
+        journal.append(self.card_id, "step.finished", step="active", result="done")
+        journal.append(self.card_id, "intent", action="base-change", key="correction")
+        self.assertEqual(self.preview()["reason"], "pending-action")
+        journal.append(self.card_id, "result", action="base-change", key="correction", ok=False)
+        journal.append(self.card_id, "plan.returned", pending=True)
+        r = self.preview()
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"not-closed", "plan-change"})
+
+    def test_local_target_only_and_card_or_foreign_active_target_is_refused(self):
+        r = self.preview(json.dumps({"targetRef": "refs/heads/" + self.source}))
+        self.assertEqual(r["reason"], "card-target")
+        other = self.card()
+        journal = self.flow.engine.journal
+        journal.append(other, "card.started", entry="now", repo=self.repo)
+        journal.append(other, "result", action="card-branch", key="card", ok=True,
+                       branch="another-card", worktree="/no-checkout")
+        journal.append(other, "step.started", step="foreign", kind="ticket", branch="master", worktree=self.repo)
+        r = self.preview()
+        self.assertEqual(r["reason"], "protected-target")
+        journal.append(other, "step.finished", step="foreign", result="done")
+        self.assertTrue(self.preview()["canMerge"])
+        # Worktree jest chroniony także po zmianie gałęzi przez czynny krok.
+        journal.append(other, "step.started", step="moved", kind="ticket", branch="old-branch", worktree=self.repo)
+        self.assertEqual(self.preview()["reason"], "protected-target")
+
+    def test_other_card_branch_is_protected_even_without_a_running_step(self):
+        other = self.card()
+        journal = self.flow.engine.journal
+        journal.append(other, "card.started", entry="now", repo=self.repo)
+        journal.append(other, "result", action="card-branch", key="card", ok=True,
+                       branch="master", worktree=self.repo)
+        self.assertEqual(self.preview()["reason"], "protected-target")
+
+    def test_outside_command_keeps_own_and_foreign_checkout_busy(self):
+        journal = self.flow.engine.journal
+        journal.append(self.card_id, "outside.started", step="outside")
+        self.assertEqual(self.preview()["reason"], "active-step")
+        journal.append(self.card_id, "outside.finished", step="outside")
+        other = self.card()
+        journal.append(other, "card.started", entry="now", repo=self.repo)
+        journal.append(other, "step.started", step="foreign", kind="ticket", branch="master", worktree=self.repo)
+        journal.append(other, "step.finished", step="foreign", result="denied", outside=True)
+        journal.append(other, "outside.started", step="foreign")
+        self.assertEqual(self.preview()["reason"], "protected-target")
+        journal.append(other, "outside.finished", step="foreign")
+        self.assertTrue(self.preview()["canMerge"])
+
+    def test_base_version_change_invalidates_token_and_old_closure(self):
+        before = self.preview()
+        self.flow.engine.journal.append(self.card_id, "card.base-changed", previousBaseVersion=0, baseVersion=1,
+                                        base={"baseRef": "refs/heads/master", "baseBranch": "master",
+                                              "baseCommit": before["targetCommit"]})
+        after = self.preview()
+        self.assertEqual(after["baseVersion"], 1)
+        self.assertEqual(after["reason"], "base-change")
+        self.assertNotEqual(before["previewToken"], after["previewToken"])
+
+    def test_token_binds_refs_index_dirty_bytes_and_order_with_legacy_zero(self):
+        previous = self.preview()
+        self.assertEqual(previous["baseVersion"], 0)
+        self.assertEqual(previous["previewToken"], self.preview()["previewToken"])
+
+        def changed():
+            nonlocal previous
+            current = self.preview()
+            self.assertNotEqual(previous["previewToken"], current["previewToken"])
+            previous = current
+
+        self.source_change("source.txt")
+        changed()
+        self.write(self.repo, "target.txt", "cel\n")
+        self.commit(self.repo, "target")
+        changed()
+        self.write(self.repo, "conflict.txt", "praca 1\n")
+        changed()
+        self.write(self.repo, "conflict.txt", "praca 2\n")
+        changed()
+        git(self.repo, "add", "conflict.txt")
+        changed()
+        self.write(self.repo, "note.txt", "notatka 1\n")
+        changed()
+        self.write(self.repo, "note.txt", "notatka 2\n")
+        changed()
+        # Inny targetRef na tym samym SHA również oznacza inny token.
+        git(self.repo, "branch", "alternate")
+        alternate = self.preview('{"targetRef":"refs/heads/alternate"}')
+        self.assertNotEqual(previous["previewToken"], alternate["previewToken"])
+        journal = self.flow.engine.journal
+        journal.append(self.card_id, "card.started", entry="now", repo=self.repo, baseVersion=1)
+        journal.append(self.card_id, "result", action="card-branch", key="card", ok=True,
+                       branch=self.source, worktree=self.card_tree)
+        journal.append(self.card_id, "card.closed", summary="Nowe zlecenie")
+        changed()
+        self.assertEqual(previous["baseVersion"], 1)
+
+    def test_token_binds_checkout_presence_and_location_and_engine_lifetime(self):
+        initial = self.preview()["previewToken"]
+        git(self.repo, "checkout", "-qb", "parking")
+        absent = self.preview()
+        self.assertEqual(absent["reason"], "no-target-worktree")
+        self.assertNotEqual(absent["previewToken"], initial)
+        self.assertEqual(absent["previewToken"], self.preview()["previewToken"])
+        checkout = os.path.join(self.base, "target-checkout")
+        git(self.repo, "worktree", "add", checkout, "master")
+        moved = self.preview()
+        self.assertTrue(moved["canMerge"])
+        self.assertEqual(moved["targetWorktree"], checkout)
+        self.assertNotEqual(moved["previewToken"], initial)
+        self.assertNotEqual(moved["previewToken"], absent["previewToken"])
+        from tide_daemon.cardflow.engine import FlowEngine
+        restarted = FlowEngine(self.store, journal=self.flow.engine.journal)
+        r = restarted.preview_card_merge(self.card_id, {})
+        self.assertNotEqual(r["previewToken"], moved["previewToken"])
+
+    def test_token_tracks_repeated_edits_inside_a_dirty_submodule(self):
+        module = os.path.join(self.repo, "module")
+        os.mkdir(module)
+        git(module, "init", "-qb", "master")
+        self.write(module, "file.txt", "baza\n")
+        module_head = self.commit(module, "module")
+        git(self.repo, "update-index", "--add", "--cacheinfo", "160000", module_head, "module")
+        git(self.repo, "commit", "-qm", "add gitlink")
+        git(self.card_tree, "merge", "--no-edit", "master")
+        self.write(module, "file.txt", "pierwsza zmiana\n")
+        before = self.preview()
+        self.assertTrue(before["canMerge"], before)
+        self.write(module, "file.txt", "kolejna zmiana\n")
+        after = self.preview()
+        self.assertTrue(after["canMerge"], after)
+        self.assertNotEqual(before["previewToken"], after["previewToken"])
 
     def custom_driver_conflict(self, driver):
         self.write(self.repo, ".gitattributes", "conflict.txt merge=probe\n")
@@ -191,6 +450,34 @@ class LocalPreviewTest(PreviewScenarios, FlowInProcess):
                       mock.patch.object(gitops, "StepGit", ObjectGit)):
             patch.start()
             self.addCleanup(patch.stop)
+
+    def test_concurrent_change_during_preview_cannot_claim_executability_or_issue_token(self):
+        original = self.flow.engine.git.prepare_merge_tree
+
+        def changed(*args):
+            result = original(*args)
+            self.write(self.repo, "note.txt", "ruch użytkownika podczas podglądu\n")
+            return result
+
+        with mock.patch.object(self.flow.engine.git, "prepare_merge_tree", changed):
+            r = self.flow.engine.preview_card_merge(self.card_id, {})
+        self.assertEqual(r["reason"], "state-changed")
+        self.assertFalse(r["canMerge"])
+        self.assertNotIn("previewToken", r)
+
+    def test_checkout_read_error_is_not_an_empty_clean_checkout(self):
+        original = self.flow.engine.git.run
+
+        def failing(cwd, *args, **kwargs):
+            if args[:1] == ("status",):
+                return Result(128, "", "odmowa odczytu")
+            return original(cwd, *args, **kwargs)
+
+        with mock.patch.object(self.flow.engine.git, "run", failing):
+            r = self.preview()
+        self.assertEqual(r["reason"], "git-error")
+        self.assertFalse(r["canMerge"])
+        self.assertNotIn("previewToken", r)
 
     def test_missing_capability_and_tool_failure_have_distinct_reasons(self):
         for code, expected in ((129, "git-capability"), (-1, "git-error")):
@@ -304,7 +591,17 @@ class PreviewDbusTest(FlowCase):
         backend.previewCardMerge("preview", card, "{}")
         self.assertTrue(wait_until(lambda: replies, timeout=30))
         self.assertEqual(replies[0], ("preview", r))
+        # Nowa kwalifikacja zachowuje ochronę K-43, a stary interfejs nadal scala z niezwiązaną pracą.
+        PreviewScenarios.write(self.repo, "CLAUDE.md", "lokalna praca użytkownika\n")
+        PreviewScenarios.write(self.repo, "notes.txt", "nieśledzona praca\n")
+        dirty = fingerprint(self.repo)
+        allowed = self.call("PreviewCardMerge", card, "{}")
+        self.assertTrue(allowed["canMerge"], allowed)
+        self.assertEqual(allowed["localCollisionCount"], 0)
+        self.assertEqual(dirty, fingerprint(self.repo))
         self.assertTrue(self.call("MergeCardToMain", card)["ok"])
+        self.assertEqual(Path(self.repo, "CLAUDE.md").read_text(), "lokalna praca użytkownika\n")
+        self.assertEqual(Path(self.repo, "notes.txt").read_text(), "nieśledzona praca\n")
         self.assertEqual(self.shown(card)["boardColumn"], "done")
         events = self.events(card)
 
@@ -320,6 +617,9 @@ class PreviewDbusTest(FlowCase):
         already = preview()
         self.assertEqual((already["commitCount"], already["fileCount"]), (0, 0))
         self.assertTrue(already["canMerge"])
+        # Kolejna część sondy zapisuje własne commity celu; praca użytkownika powyżej jest już sprawdzona.
+        git(self.repo, "add", "CLAUDE.md", "notes.txt")
+        git(self.repo, "commit", "-qm", "save user work")
         branch = self.results(card, "card-branch")[0]
         source_tree = branch["worktree"]
         PreviewScenarios.write(self.repo, "target-only.txt", "cel\n")

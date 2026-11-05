@@ -391,6 +391,50 @@ out["calls"] = calls()
         self.assertIn("Brak wspólnej historii [unrelated-history]", out["texts"][2])
         self.assertIn("Wnoszone commity (0)", out["texts"][3])
 
+    def test_merge_preview_shows_local_collisions_and_temporary_staged_refusal(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/master", "targetCommit": "b" * 40, "targetBranch": "master",
+                  "targetWorktree": "/repo", "targetWorktreeExists": True, "canMerge": False,
+                  "readyToMerge": False, "previewToken": "odcisk-stanu", "reason": "local-collision",
+                  "message": "Lokalna praca koliduje", "localCollisionCount": 3,
+                  "localCollisions": {kind: [{"status": code, "paths": [path], "mergePaths": [path]}]
+                                      for kind, code, path in (("staged", "M ", "index.txt"),
+                                                               ("unstaged", " M", "work.txt"),
+                                                               ("untracked", "??", "new.txt"))}}
+        staged = {**result, "reason": "staged-not-supported", "message": "Zachowanie staged będzie dostępne w PT-207.",
+                  "localCollisionCount": 0, "localCollisions": {k: [] for k in result["localCollisions"]}}
+        allowed = {**staged, "canMerge": True, "reason": "", "message": ""}
+        out = self.probe(STATE_PY + "\nvariants = " + repr([result, staged, allowed]) + r'''
+click(card("K-8"))
+out["texts"] = []
+for result in variants:
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    click(named("mergePreviewClose"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-8", "{}"]] * 3)
+        for text in out["texts"]:
+            self.assertIn("Nie stanowi zgody", text)
+            self.assertNotIn("odcisk-stanu", text)
+        self.assertIn("Kolizje staged (indeks) (1)", out["texts"][0])
+        self.assertIn("Kolizje unstaged (poza indeksem) (1)", out["texts"][0])
+        self.assertIn("Kolizje untracked (nieśledzone) (1)", out["texts"][0])
+        for path in ("index.txt", "work.txt", "new.txt"):
+            self.assertIn(path, out["texts"][0])
+        self.assertIn("PT-207", out["texts"][1])
+        self.assertIn("Lokalne kolizje: 0", out["texts"][1])
+        self.assertIn("Odczyt nie wykazał blokad", out["texts"][2])
+
 
 if __name__ == "__main__":
     unittest.main()
