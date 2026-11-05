@@ -373,7 +373,10 @@ class GenericSentenceTest(unittest.TestCase):
 
     def empty_inputs(self):
         tracker = Events().add("result", action="youtrack-create", key="k", ok=False, permanent=True, error="")
+        care = Events().add("card.stalled").add("caretaker.started", problem="stalled:card", step="care", n=1)
+        care.add("caretaker.escalated", problem="stalled:card", step="care")
         return {
+            "caretaker": care,
             "question": Events().step("s", ticket="", result="question", question=""),
             "permission": Events().step("s", ticket="", kind="", result="denied", command=""),
             "error": Events().step("s0", ticket="", kind="", result="error", reason="")
@@ -407,7 +410,9 @@ class GenericSentenceTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 [decision] = events.decisions()
                 self.assertEqual(decision["kind"], kind)
-                self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                if kind != "caretaker":
+                    self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                self.assertTrue(decision["happened"] and decision["why"])
                 self.assertTrue(all(GENERIC[kind]))
 
 

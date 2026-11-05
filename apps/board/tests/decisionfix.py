@@ -385,3 +385,29 @@ def journal_caretaker(with_tried: bool = True) -> list[dict]:
 def decisions_caretaker(with_tried: bool = True) -> list[dict]:
     """Decyzje policzone przez usługę z dziennika opiekuna."""
     return build_decisions(fold(journal_caretaker(with_tried)))
+
+
+def journal_caretaker_card(trigger="flow-error", limit=False) -> list[dict]:
+    """PT-154: eskalacja problemu bez własnej decyzji kroku."""
+    items = [journal_caretaker(False)[0]]
+
+    def add(kind, /, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": "2026-11-03T11:00:00+01:00",
+                      "card": CARD, "type": kind, **data})
+
+    problem = "flow-error:advance" if trigger == "flow-error" else "stalled:card"
+    if trigger == "flow-error":
+        add("flow.error", stage="advance", error="Nie udało się przygotować etapu karty.")
+        add("flow.error-persisted", stage="advance", error="Nie udało się przygotować etapu karty.")
+    else:
+        add("card.stalled", reason="brak kroku i powodu czekania")
+    add("caretaker.started", problem=problem, step="K-8-care-1", target="", trigger=trigger,
+        decision="", n=1, watermark=len(items))
+    add("step.started", step="K-8-care-1", kind="caretaker", executor="Sonnet")
+    add("step.finished", step="K-8-care-1", result="done")
+    add("caretaker.escalated", problem=problem, step="K-8-care-1", target="", summary=CARE_SUMMARY,
+        recommendation=CARE_RECOMMENDATION, optionId="", failed=False)
+    if limit:
+        add("caretaker.escalated", problem=problem, step="K-8-care-1", target="", summary="Limit działań.",
+            limit=True, failed=True, count=1)
+    return items

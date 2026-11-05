@@ -214,7 +214,7 @@ class ViewAndBriefTest(unittest.TestCase):
         out = derived(j.st, {"column": "todo"})
         self.assertEqual(out["column"], "waiting")
         self.assertTrue(out["note"].startswith("stoi"), out["note"])
-        self.assertEqual(out["flow"]["decisions"], [])
+        self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in out["flow"]["caretaker"]["escalated"]], [STALLED])
         texts = [h["text"] for h in out["flow"]["history"] if h["kind"] == "caretaker"]
         self.assertEqual(texts, ["Opiekun: oddaje decyzję — Karta stoi po scaleniu PT-7."])
@@ -236,7 +236,7 @@ class ViewAndBriefTest(unittest.TestCase):
         self.assertEqual(out["column"], "waiting")
         self.assertIn("brak gałęzi ticket/pt-7", out["note"])
         self.assertEqual(out["flow"]["flowError"], FE)
-        self.assertEqual(out["flow"]["decisions"], [])
+        self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in out["flow"]["caretaker"]["escalated"]], [FLOW_PROBLEM])
 
     def test_brief_has_the_error_recent_events_and_open_pairs(self):
@@ -490,7 +490,7 @@ class StageObservationTest(unittest.TestCase):
         self.assertEqual((escalation["problem"], escalation["limit"]), (STALLED, True))
         out = self.engine.derived({"id": "K-1", "column": "todo"})
         self.assertTrue(out["note"].startswith("stoi"), out["note"])
-        self.assertEqual(out["flow"]["decisions"], [])
+        self.assertEqual([d["kind"] for d in out["flow"]["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in out["flow"]["caretaker"]["escalated"]], [STALLED])
 
     def test_planned_stall_accepts_caretaker_escalation_after_normal_pass(self):
@@ -686,7 +686,7 @@ class StageEngineTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting", timeout=30)
         flow = card["derived"]["flow"]
         self.assertIn("przygotowanie review nie powiodło się", card["derived"]["note"])
-        self.assertEqual(flow["decisions"], [])
+        self.assertEqual([d["kind"] for d in flow["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in flow["caretaker"]["escalated"]], [run["problem"]])
         texts = [h["text"] for h in flow["history"] if h["kind"] == "caretaker"]
         self.assertEqual(texts, ["Opiekun: oddaje decyzję — Sprawdziłem."])
@@ -713,7 +713,7 @@ class StageEngineTest(FlowInProcess):
         self.assertEqual(len(self.caretaker_steps(card_id)), 3, "czwarty krok opiekuna nie startuje")
         card = self.wait_column(card_id, "waiting", timeout=30)
         flow = card["derived"]["flow"]
-        self.assertEqual(flow["decisions"], [])
+        self.assertEqual([d["kind"] for d in flow["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in flow["caretaker"]["escalated"]], [runs[0]["problem"]])
         texts = [h["text"] for h in flow["history"] if h["kind"] == "caretaker"]
         self.assertEqual(len(texts), 4)
@@ -793,7 +793,7 @@ class StageEngineTest(FlowInProcess):
 
     def notices(self, card_id):
         return [n for n in [*self.taken, *self.flow.engine._notices]
-                if n["card"] == card_id and n["result"] == "stalled"]
+                if n["card"] == card_id and n["result"] in ("stalled", "caretaker")]
 
     def test_stalled_card_starts_the_caretaker_and_escalation_brings_back_the_stalled_marker(self):
         card_id = self.stalled_card("akcja-escalate-powoli")
@@ -809,12 +809,12 @@ class StageEngineTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting", timeout=30)
         self.assertTrue(card["derived"]["note"].startswith("stoi"), card["derived"]["note"])
         flow = card["derived"]["flow"]
-        self.assertEqual(flow["decisions"], [])
+        self.assertEqual([d["kind"] for d in flow["decisions"]], ["caretaker"])
         self.assertEqual([e["problem"] for e in flow["caretaker"]["escalated"]], [STALLED])
         self.assertEqual([h["text"] for h in flow["history"] if h["kind"] == "caretaker"],
                          ["Opiekun: oddaje decyzję — Sprawdziłem."])
         wait_until(lambda: False, timeout=1.5)
-        # Powiadomienie o zastoju jak dotąd przy `card.stalled`; eskalacja nie dokłada drugiego (decyzja — #12).
+        # PT-154: jedno powiadomienie dopiero przy decyzji opiekuna.
         self.assertEqual(len(self.notices(card_id)), 1)
         self.assertEqual(len(self.caretaker_steps(card_id)), 1, "oddany problem nie uruchamia opiekuna znowu")
         self.assertEqual(len(self.of(card_id, "card.stalled")), 1)

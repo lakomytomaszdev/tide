@@ -696,6 +696,7 @@ def owned(st, ident: str) -> dict:
     """Jedyne liczenie działań opiekuna przy problemie: kroki opiekuna z tym id od ostatniego zamknięcia problemu
     (decyzja lub jawne ponowienie użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
     z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
+    Błąd etapu `flow-error` zamykają tylko kroki tego etapu, nie wynik niezwiązanej pracy.
 
     `count` — działania od zamknięcia (udane i nieudane; nieaktualne `stale` się nie liczą — PT-150), `runs` — te
     kroki, `next` — numer następnego kroku przy tym id (do klucza `caretaker:<problem>:<n>`, nigdy się nie powtarza),
@@ -711,9 +712,21 @@ def owned(st, ident: str) -> dict:
             return False
         if roots:
             return chain_root(st, name) in roots
+        if ident.startswith("flow-error:"):
+            # Zakres odpowiada etapom rozwiązywanym przez step.started w fold(). Niezależny
+            # ticket nie zamyka błędu domknięcia ani błędu uruchomienia innego ticketu.
+            stage = ident.split(":", 1)[1]
+            step = st.steps[name]
+            if stage.startswith("advance:"):
+                return step.get("ticket") == stage.split(":", 1)[1]
+            if stage == "close":
+                return step.get("kind") == "close"
+            if stage == "plan-next":
+                return bool(step.get("ticket"))
+            return stage == "advance"
         return not tickets or st.steps[name].get("ticket") in tickets
 
-    closed = 0
+    closed = int((st.caretaker_decisions.get(ident) or {}).get("seq") or 0)
     for name, decision in st.step_decisions.items():
         if decision.get("auto") or decision.get("automatic") or "caretaker" in decision:
             continue
@@ -1146,6 +1159,17 @@ def annotate(st, decision: dict, target: str = "") -> dict:
     escalated = next((event for event in _escalations(st) if target and event.get("target") == target), None)
     if not escalated:
         return decision
+    return annotate_escalation(st, decision, escalated)
+
+
+def escalations(st):
+    """Aktualne eskalacje, których problem nadal występuje (także decyzje bez kroku)."""
+    current = {p["id"] for p in problems(st)}
+    return [e for e in _escalations(st) if e.get("problem") in current]
+
+
+def annotate_escalation(st, decision: dict, escalated: dict) -> dict:
+    """Wspólny blok rekomendacji dla decyzji kroku i decyzji samego opiekuna."""
     run = st.caretaker_runs.get(escalated.get("step") or "") or {}
     tried = []
     for item in owned(st, run.get("problem") or escalated.get("problem") or "")["runs"]:

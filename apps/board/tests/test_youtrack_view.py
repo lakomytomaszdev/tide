@@ -174,6 +174,12 @@ out["picked"] = js("page.managePage.importPanel.pickedCount")
 replies.append({{"ok": True, "created": [{{"issue": "LOG-200", "card": "K-16", "project": "logviewer"}}],
                 "skipped": [], "commitError": ""}})
 replies.append(json.loads({issues!r}))
+# Ustawienia opiekuna wydłużają stronę — przycisk importu może być poza obszarem przewijania.
+engine.rootContext().setContextProperty("importButton", obj("importSubmit"))
+engine.rootContext().setContextProperty("importFlick", obj("manageProjectsFlick"))
+wait(60)
+js("importFlick.contentY = Math.max(0, importButton.mapToItem(importFlick.contentItem, 0, importButton.height).y - importFlick.height + 20)")
+wait(60)
 click(named("importSubmit"))
 until(lambda: obj("importResult").property("text") and calls()[-1][0] == "YouTrackIssues" and calls()[-1][1] is False)
 out["import"] = [c for c in calls() if c[0] == "ImportYouTrack"][-1]

@@ -102,6 +102,7 @@ class FlowState:
     caretaker_runs: dict = field(default_factory=dict)        # krok opiekuna → caretaker.started
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
     caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
+    caretaker_decisions: dict = field(default_factory=dict)  # id problemu → decyzja użytkownika
     caretaking: dict = field(default_factory=dict)            # krok problemu → krok opiekuna, który nad nim pracuje
     # PT-150: eskalacja po wyczerpaniu limitu działań nie jest wynikiem żadnego kroku opiekuna (nie ma czwartego).
     caretaker_limits: dict = field(default_factory=dict)      # id problemu → ostatnie caretaker.escalated z limit
@@ -242,12 +243,19 @@ def fold(events: list[dict]) -> FlowState:
             st.inputs = {}
             st.caretaking = {}
             st.caretaker_escalations = {}
+            st.caretaker_decisions = {}
             st.caretaker_limits = {}
             st.flow_errors = {}
             st.flow_error_texts = set()
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
+        elif kind == "caretaker.decision":
+            st.caretaker_decisions[e.get("problem")] = e
+            st.stalled_since = ""
+            st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
+            if (e.get("problem") or "").startswith("flow-error:"):
+                st.flow_errors.pop(e["problem"].split(":", 1)[1], None)
         elif kind == "caretaker.started":
             st.caretaker_runs[e.get("step")] = e
             st.caretaking[e.get("target")] = e.get("step")
@@ -478,6 +486,8 @@ def _bookkeeping(st: FlowState, e: dict) -> bool:
     `stalled:card` znikałby, zanim opiekun skończy (PT-147). Skutki akcji opiekuna (np. `step.started` po
     ponowieniu etapu) są zwykłą pracą."""
     kind = e.get("type") or ""
+    if kind == "flow.notice" and (e.get("key") or "").startswith("caretaker:"):
+        return True
     if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") == "caretaker":
         return True
     if kind in ("intent", "result"):
@@ -719,6 +729,23 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)
+    caretaker_decision = next((d for d in decisions if d["kind"] == "caretaker"), None)
+    if caretaker_decision:
+        # Decyzja samej karty nie ma kroku dla attention_step; inne tickety mogą nadal pracować.
+        out["question"] = caretaker_decision["why"]
+        note = "stoi — nie ma pracującego kroku ani nazwanego powodu czekania"
+        if caretaker_decision["technical"]["problem"].startswith("flow-error:"):
+            error = caretaker_decision["happened"]
+            out["flow"]["flowError"] = error
+            out["flow"]["flowErrorHint"] = flow_error_hint(error)
+            note = f"{ident}: {flow_error_text(error)}"
+        # Jawna pauza i ręczny Backlog mają pierwszeństwo przed kolumną oczekującej decyzji.
+        if st.paused:
+            return _fill(out, "backlog" if column == "backlog" else "progress",
+                         "wstrzymana — trwające kroki kończą się" if st.running() else "wstrzymana")
+        if column == "backlog":
+            return None
+        return _fill(out, "waiting", note)
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

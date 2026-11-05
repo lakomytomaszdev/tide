@@ -342,6 +342,15 @@ class StepDecisionTest(FlowInProcess):
             with self.subTest(mode=mode):
                 card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
                 self.assertTrue(self.start(card_id)["ok"])
+                # Kolumna może być przejściową migawką sprzed auto-odmowy; czekamy na decyzję po eskalacji.
+                def final_permission():
+                    if not self.of(card_id, "caretaker.escalated"):
+                        return False
+                    decided = {d["step"] for d in self.of(card_id, "step.decision")}
+                    pending = self.shown(card_id)["derived"]["flow"]["decisions"]
+                    return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
+
+                self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
                 card = self.wait_column(card_id, "waiting")
                 self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
                 self.assertTrue(self.of(card_id, "step.decision")[0]["auto"])
