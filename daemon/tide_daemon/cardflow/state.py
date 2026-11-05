@@ -717,6 +717,11 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)
+    caretaker_decision = next((d for d in decisions if d["kind"] == "caretaker"), None)
+    if caretaker_decision:
+        # Decyzja samej karty nie ma kroku dla attention_step; inne tickety mogą nadal pracować.
+        out["question"] = caretaker_decision["why"]
+        return _fill(out, "waiting", "opiekun czeka na Twoją decyzję: " + caretaker_decision["happened"])
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

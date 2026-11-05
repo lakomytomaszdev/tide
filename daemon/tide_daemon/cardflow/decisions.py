@@ -126,7 +126,11 @@ def build_decisions(st: FlowState) -> list[dict]:
 
 def _caretaker(st, event):
     problem = event["problem"]
-    happened = st.flow_error if problem.startswith("flow-error:") else "Karta stoi bez kroku i powodu czekania."
+    if problem.startswith("flow-error:"):
+        stage = problem.split(":", 1)[1]
+        happened = ((st.flow_errors.get(stage) or {}).get("event") or {}).get("error")
+    else:
+        happened = "Karta stoi bez kroku i powodu czekania."
     options = [_option(choice, title, effect, "ResolveCardCaretaker", {"choice": choice, "problem": problem})
                for choice, title, effect in (
                    ("retry-stage", "Ponów etap", "Tide ponowi etap karty i zamknie ten problem."),

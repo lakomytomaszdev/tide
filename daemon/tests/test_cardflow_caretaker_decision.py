@@ -14,7 +14,7 @@ class CaretakerDecisionTest(unittest.TestCase):
         events = journal_caretaker_card(trigger, limit)
         engine = FlowEngine.__new__(FlowEngine)
 
-        def append(card, kind, **fields):
+        def append(card, kind, /, **fields):
             event = {"seq": len(events) + 1, "ts": "2026-11-03T11:01:00+01:00", "type": kind, **fields}
             events.append(event)
             return event
@@ -63,6 +63,49 @@ class CaretakerDecisionTest(unittest.TestCase):
                         engine.journal.append("K-8", "card.stalled")
                     self.assertEqual(caretaker.owned(fold(events), reply["problem"])["count"], 0)
                     self.assertEqual(engine.derived({"id": "K-8", "column": "todo"})["flow"]["decisions"], [])
+
+    def test_each_escalated_stage_describes_its_own_error_in_decision_and_notice(self):
+        engine, events = self.engine()
+        engine.journal.append("K-8", "flow.error", stage="close", error="Nie udało się domknąć karty.")
+        engine.journal.append("K-8", "flow.error-persisted", stage="close", error="Nie udało się domknąć karty.")
+        engine.journal.append("K-8", "caretaker.started", problem="flow-error:close", step="K-8-care-2",
+                              target="", trigger="flow-error", n=1)
+        engine.journal.append("K-8", "caretaker.escalated", problem="flow-error:close",
+                              step="K-8-care-2", target="", summary="Nie udało się domknąć karty.")
+        shown = engine.derived({"id": "K-8", "column": "todo"})
+        expected = {"flow-error:advance": "Nie udało się przygotować etapu karty.",
+                    "flow-error:close": "Nie udało się domknąć karty."}
+        decisions = shown["flow"]["decisions"]
+        self.assertEqual({d["technical"]["problem"]: d["happened"] for d in decisions}, expected)
+        engine._queue_notices("K-8")
+        self.assertEqual({n["step"]: n["detail"] for n in engine.take_notices()},
+                         {d["id"]: expected[d["technical"]["problem"]] for d in decisions})
+        engine._queue_notices("K-8")
+        self.assertEqual(engine.take_notices(), [])
+
+    def test_caretaker_decision_takes_priority_over_parallel_ticket_work(self):
+        for stage in ("close", "advance:PT-1"):
+            with self.subTest(stage=stage):
+                engine, events = self.engine()
+                for event in events:
+                    if event.get("stage") == "advance":
+                        event["stage"] = stage
+                    if event.get("problem") == "flow-error:advance":
+                        event["problem"] = "flow-error:" + stage
+                engine.journal.append("K-8", "step.started", step="PT-99-ticket", kind="ticket",
+                                      ticket="PT-99", executor="Sonnet")
+                shown = engine.derived({"id": "K-8", "column": "todo"})
+                self.assertEqual(shown["column"], "waiting")
+                [decision] = shown["flow"]["decisions"]
+                self.assertEqual(decision["kind"], "caretaker")
+                self.assertEqual(decision["happened"], "Nie udało się przygotować etapu karty.")
+                self.assertIn("opiekun", shown["note"].lower())
+                self.assertEqual([s["step"] for s in fold(events).running()], ["PT-99-ticket"])
+                [running] = [s for s in shown["flow"]["steps"] if s["id"] == "PT-99-ticket"]
+                self.assertEqual(running["result"], "")
+                engine.resolve_caretaker("K-8", {"choice": "dismiss"})
+                self.assertEqual(engine.derived({"id": "K-8", "column": "todo"})["column"], "progress")
+                self.assertEqual([s["step"] for s in fold(events).running()], ["PT-99-ticket"])
 
     def test_bad_choice_and_stale_problem_do_not_write(self):
         engine, events = self.engine()
