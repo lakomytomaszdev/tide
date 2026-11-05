@@ -78,6 +78,18 @@ class FlowInProcess(unittest.TestCase):
                             which=lambda name: self.fakes.get(name), grace=5.0)
         flow = CardFlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
+        stop = flow.stop
+
+        def stop_and_drain():
+            # Monitor w produkcji zamyka pulę bez czekania. Test musi zakończyć jej pracę przed
+            # odtworzeniem os.environ i usunięciem repozytoriów, bo wątek korzysta z obu tych rzeczy.
+            flow._timer.stop()
+            if flow._pool is not None:
+                flow._pool.shutdown(wait=True, cancel_futures=False)
+            stop()
+            app().processEvents()
+
+        flow.stop = stop_and_drain
         flow.start()
         self.addCleanup(flow.stop)
         return flow
@@ -90,12 +102,6 @@ class FlowInProcess(unittest.TestCase):
 
     def stop_flow_worker(self):
         """Bariera przed ręcznym wywołaniem silnika: stop() nie czeka na trwające zadanie."""
-        self.flow._timer.stop()
-        pool = self.flow._pool
-        if pool is not None:
-            pool.submit(lambda: None).result(timeout=15)
-        # Odbieramy sygnały ukończonych zadań, zanim test podmieni metodę silnika lub dziennika.
-        app().processEvents()
         self.flow.stop()
 
     # --- pomocnicze -------------------------------------------------------------------------------

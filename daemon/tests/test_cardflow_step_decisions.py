@@ -371,7 +371,8 @@ class StepDecisionTest(FlowInProcess):
         command = "git fetch origin " + "x" * 300
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["command"], command)
         self.assertTrue(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
-        self.assertTrue(self.decide(card_id, choice="allow")["ok"])
+        reply = self.decide(card_id, choice="allow")
+        self.assertTrue(reply["ok"], reply)
         self.assertIn("git fetch *", self.store.load().projects["proj"].allowed_commands)
         self.assertNotIn(command, self.store.load().projects["proj"].allowed_commands)
 
