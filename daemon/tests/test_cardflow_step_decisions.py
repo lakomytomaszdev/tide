@@ -15,6 +15,18 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def wait_permission_after_caretaker(self, card_id):
+        # Sama kolumna „Czeka na mnie” może być przejściową migawką po automatycznej odmowie.
+        def final_permission():
+            if not self.of(card_id, "caretaker.escalated"):
+                return False
+            decided = {d["step"] for d in self.of(card_id, "step.decision")}
+            pending = self.shown(card_id)["derived"]["flow"]["decisions"]
+            return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
+
+        self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
+        return self.wait_column(card_id, "waiting")
+
     def test_outside_command_runs_on_consent_and_its_output_resumes_the_step(self):
         # 03.11: krok prosi o polecenie, którego piaskownica nie wykona (sieć, Docker, pełne testy).
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -312,16 +324,7 @@ class StepDecisionTest(FlowInProcess):
         # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
         # polecenia. Atrapa uparcie powtarza prośbę; od PT-148 druga automatyczna odmowa z tym samym poleceniem
         # uruchamia opiekuna (przed `AUTO_DENY_LIMIT`), a gdy ten odda problem, decyzja wraca do użytkownika.
-        def final_permission():
-            if not self.of(card_id, "caretaker.escalated"):
-                return False
-            decided = {d["step"] for d in self.of(card_id, "step.decision")}
-            pending = self.shown(card_id)["derived"]["flow"]["decisions"]
-            return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
-
-        # Sama kolumna „Czeka na mnie” może być przejściową migawką po dowolnej z automatycznych odmów.
-        self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
-        card = self.wait_column(card_id, "waiting")
+        card = self.wait_permission_after_caretaker(card_id)
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
         self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)], "druga odmowa to opiekun")
@@ -342,16 +345,7 @@ class StepDecisionTest(FlowInProcess):
             with self.subTest(mode=mode):
                 card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
                 self.assertTrue(self.start(card_id)["ok"])
-                # Kolumna może być przejściową migawką sprzed auto-odmowy; czekamy na decyzję po eskalacji.
-                def final_permission():
-                    if not self.of(card_id, "caretaker.escalated"):
-                        return False
-                    decided = {d["step"] for d in self.of(card_id, "step.decision")}
-                    pending = self.shown(card_id)["derived"]["flow"]["decisions"]
-                    return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
-
-                self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
-                card = self.wait_column(card_id, "waiting")
+                card = self.wait_permission_after_caretaker(card_id)
                 self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
                 self.assertTrue(self.of(card_id, "step.decision")[0]["auto"])
                 self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")

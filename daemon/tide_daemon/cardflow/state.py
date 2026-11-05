@@ -49,7 +49,8 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
-    superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
+    superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
+    plan_resumes: dict = field(default_factory=dict)  # krok → None przed rozstrzygnięciem poprawki, potem zbiór blokerów
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
@@ -230,6 +231,7 @@ def fold(events: list[dict]) -> FlowState:
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
             st.plan_returns, st.plan_user_seq = [], 0
+            st.plan_resumes.clear()
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.plan_finished = False
@@ -303,6 +305,7 @@ def fold(events: list[dict]) -> FlowState:
                     not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
         elif kind == "step.started":
+            st.plan_resumes.pop(e.get("parentStep"), None)
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
             if e.get("kind") == "plan-review":
                 # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
@@ -381,18 +384,55 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
             st.closed = None
             st.plan_returns.append(e)
+            target = e.get("caretakerFrom") or ""
+            if e.get("caretaker") and st.plan_approved and (st.steps.get(target) or {}).get("ticket"):
+                # PT-155: problem ticketu przejmuje poprawa planu. Sam wynik kroku i jego kartka zostają;
+                # dawny błąd/pytanie nie wraca ani nie uruchamia kolejnego opiekuna, także po restarcie.
+                st.superseded.add(target)
+                st.plan_resumes[target] = None
             if "caretaker" not in e:
                 st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-discarded":
             st.plan_revision = None
             st.plan_checked = None
             st.plan_user_seq = int(e.get("seq") or 0)
+            # Użytkownik zachował dotychczasowy plan. Nie przywracamy starego błędu ticketu ani
+            # nie kasujemy blokerów z wcześniejszej zatwierdzonej różnicy, jeśli czekają na scalenie.
+            for target, blockers in st.plan_resumes.items():
+                if blockers is None:
+                    st.plan_resumes[target] = set()
         elif kind == "plan.revision-failed":
             st.plan_revision = e
         elif kind == "plan.revision-ready":
             st.plan_revision = e
         elif kind == "plan.revision-approved":
+            before = {r["id"] for r in (st.plan_approved or {}).get("rows", [])}
             st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            rows = (st.plan_approved or {}).get("rows", [])
+            present = {r["id"] for r in rows}
+            added = present - before
+            # Rozpoczęte kartki są nietykalne. Oczekiwania wznowień i jawne blokery tworzą wspólny graf;
+            # samo sprawdzenie kartek nie wykrywa cyklu między dwiema kolejnymi poprawkami (PT-155).
+            graph = {r["id"]: set(r.get("blockers") or []) for r in rows}
+            resumes = {target: set() for target in st.plan_resumes}
+            # Najpierw zachowujemy wcześniejsze oczekiwania, dopiero potem dokładamy nową pracę.
+            # Kolejność kroków z dziennika i sortowanie blokerów zapewniają ten sam wynik po restarcie.
+            for previous in (True, False):
+                for target, blockers in st.plan_resumes.items():
+                    ticket = st.steps[target]["ticket"]
+                    candidates = ((blockers or set()) if previous else added) & present
+                    for blocker in sorted(candidates):
+                        pending, seen = {blocker}, set()
+                        while pending:
+                            node = pending.pop()
+                            if node in seen:
+                                continue
+                            seen.add(node)
+                            pending.update(graph.get(node, set()) - seen)
+                        if ticket not in seen:
+                            graph.setdefault(ticket, set()).add(blocker)
+                            resumes[target].add(blocker)
+            st.plan_resumes = resumes
             # Usunięty niewystartowany ticket nie zajmie już slotu; odtworzenie dziennika usuwa też jego kolejkę.
             removed = set((e.get("difference") or {}).get("removed") or [])
             st.waiting = {key: wait for key, wait in st.waiting.items() if key[0] not in removed}

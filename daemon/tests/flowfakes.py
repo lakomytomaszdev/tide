@@ -117,6 +117,11 @@ if prompt.startswith("Jesteś opiekunem karty"):
         data = {"result": "done", "action": "retry", "step": target,
                 "instruction": "Najpierw uruchom test eksportu i popraw format daty na ISO 8601.",
                 "reason": "Dziennik kroku pokazuje błąd formatu daty."}
+    elif care == "return-plan-gap":
+        # PT-155: luka wynika z decyzji A, a rozpoczęte tickety mają pozostać nietykalne.
+        data = {"result": "done", "action": "return-plan",
+                "feedback": "Dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły, "
+                            "przepisz bez zmian.", "reason": "W planie brakuje migracji z decyzji A."}
     elif care in ("return-plan", "return-plan-obce", "approve-plan"):
         # PT-146: odesłanie planu z precyzyjną uwagą (wiersz, bloker, błąd standardu); `-obce` — numer uwagi spoza
         # listy; `approve-plan` — akcja, której opiekun nie ma.
@@ -147,6 +152,8 @@ if prompt.startswith("Popraw propozycję planu karty"):
     rows = proposal["rows"]
     if "Dodaj ticket" in prompt:
         rows.append({**rows[-1], "workId": "#3", "title": "Dodatkowy ticket", "blockers": []})
+        if "Dodaj ticket na migrację formatu" in prompt:
+            rows[-1]["body"] = "# Migracja\nATRAPA: migracja\nATRAPA-PLIK: migracja\n- [ ] Format zmigrowany.\n"
     os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
     with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
         fh.write("---\ntide-plan: 1\ntitle: Poprawiony\ncard: " + re.search(r"karty (K-[0-9]+)", prompt).group(1) +
@@ -157,7 +164,8 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
+            fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)
@@ -378,7 +386,16 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("error", reason="awaria testowa")
 elif word == "blad-opiekun":
     # PT-143: błąd po każdej próbie z powodem z linii „ATRAPA-POWOD: …” (tam też polecenie dla atrapy opiekuna).
-    if "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
+    if "Użytkownik rozstrzygnął poprawę planu po odesłaniu przez opiekuna" in prompt:
+        # PT-155: wznowiony autor rzeczywiście korzysta z nowej pracy dostępnej w gałęzi karty.
+        branch = re.search(r"Uwzględnij zmiany z gałęzi karty (\S+) w bieżącym worktree", prompt).group(1)
+        migrated = subprocess.check_output(["git", "show", branch + ":MIGRACJA.txt"], text=True)
+        with open(os.path.join(cwd, "MIGRACJA.txt"), "w", encoding="utf-8") as fh:
+            fh.write(migrated)
+        write("eksport po migracji: " + migrated.strip())
+        commit()
+        finish("done")
+    elif "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
         finish("done")
     else:
         reason = re.search(r"ATRAPA-POWOD: (.+)", prompt)
@@ -387,6 +404,11 @@ elif word == "blad-opiekun":
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "text", "text": "Test pada: " + reason}]}}), flush=True)
         finish("error", reason=reason)
+elif word == "migracja":
+    with open(os.path.join(cwd, "MIGRACJA.txt"), "w", encoding="utf-8") as fh:
+        fh.write("format-v2\n")
+    commit()
+    finish("done")
 elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",

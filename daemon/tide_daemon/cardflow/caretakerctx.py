@@ -166,6 +166,14 @@ def _journal(ctx: Ctx) -> list[File]:
 def _plan(ctx: Ctx) -> list[File]:
     """Plan i kartki ticketów z katalogu karty (`plan/plan.md`, `plan/tickets/*.md`) oraz kartka kroku problemu."""
     out = []
+    if ctx.st.plan_approved:
+        out.append(File("plan/approved.md", "zatwierdzony plan z nadanymi ID i kartkami (z dziennika karty)",
+                        text="# Zatwierdzony plan\n\n```json\n" + json.dumps(
+                            faults.mask_json(ctx.st.plan_approved, env=ctx.env), ensure_ascii=False, indent=2,
+                            default=str) + "\n```\n"))
+    specification = (ctx.st.plan_proposed or {}).get("specification")
+    if specification:
+        out.append(File("plan/spec.md", "specyfikacja planu karty", text=specification))
     plan_dir = os.path.join(ctx.card_dir, "plan")
     for name in ("plan.md", "source.md"):
         text = ctx.read_text(os.path.join(plan_dir, name))
