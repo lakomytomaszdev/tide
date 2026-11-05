@@ -9,7 +9,8 @@ Kolejność budowy (`build`):
     ustawień) — zanim pudełko wystartuje i wyśle pierwszy pakiet,
  3. start, adres IP pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów)` w proxy
     (#5) — przed pierwszym `incus exec`,
- 4. szablony stosów wg `stacks` (`box/stacks/<stos>.sh`, kopiowane `incus file push`, powstają w #29),
+ 4. szablony stosów wg `stacks` (`box/stacks/<stos>.sh` z `lib.sh`, kopiowane `incus file push`, #29/PT-192;
+    lista budowy z punktu 3 zawiera też `build-domains` szablonów),
  5. `apt-get install` (pakiety szablonów i profilu), 6. `setup`, 7. `docker pull` (gdy `docker.enabled`),
  8. `verify` (nieudane → „zbudowane z ostrzeżeniem”), 9. migawka `clean` z odciskiem przepisu.
 
@@ -38,7 +39,13 @@ from .settings import BoxSettings
 
 SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów danych (#29)
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
+STACKS_LIB = "lib.sh"                    # wspólne funkcje szablonów, wypychane obok `<stos>.sh` (PT-192)
 BUILD_NO_PROXY = netenv.BOX_NO_PROXY     # jedno NO_PROXY dla budowy, obrazu bazowego i kroku (P-6)
+
+# Zapisana wersja szablonów stosów: `templates_version()` katalogu `box/stacks` (dane `*.yaml` i skrypty `*.sh`).
+# Wchodzi do hasha przepisu jako `templates`. Test (`test_box_stacks.py`) porównuje ją z sumą katalogu, więc każda
+# zmiana szablonu wymaga świadomego podbicia tej stałej — a pudełka zbudowane wcześniej stają się nieaktualne.
+STACKS_VERSION = "9f5b7f2bd8e679bcf9992f5966987fb898feb73b22c6b72cc9567ff907e96a43"
 
 
 class BuildError(RuntimeError):
@@ -139,9 +146,11 @@ class Builder:
         if full["type"] == "vm":
             raise BuildError("type: vm — nieobsługiwane w tej wersji (tylko kontener)")
         proxy = proxy_url(self.policy)
-        missing = [s for s in full["stacks"] if not os.path.isfile(os.path.join(self.scripts_dir, f"{s}.sh"))]
+        scripts = [f"{s}.sh" for s in full["stacks"]]
+        missing = [s for s in ([STACKS_LIB] if scripts else []) + scripts
+                   if not os.path.isfile(os.path.join(self.scripts_dir, s))]
         if missing:
-            raise BuildError("brak skryptów szablonów stosów (#29): " + ", ".join(f"{s}.sh" for s in missing))
+            raise BuildError("brak skryptów szablonów stosów (#29): " + ", ".join(missing))
         domains = list(templates.build_domains(full))
         name = bs.box_name(slug)
         if bs.running_steps(slug, name):
@@ -186,6 +195,10 @@ class Builder:
         self.incus.start(name)
         ip = self._wait_ip(name)
         denied = os.path.join(state_dir(slug), "build-denied.log")
+        # Dziennik odmów czyszczony na starcie budowy (jak base-denied.log): pusty po budowie = żadnej brakującej domeny.
+        with open(denied, "w", encoding="utf-8"):
+            pass
+        os.chmod(denied, 0o600)
         self.policy.set_box_policy(ip, domains, bool(full["network"].get("host-ollama")), denied)
         try:
             return self._provision(slug, name, full, proxy, steps)
@@ -194,12 +207,17 @@ class Builder:
             self.policy.clear_box_policy(ip)
 
     def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
-        env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive"}
+        # Szablony (lib.sh) sprawdzają, że HTTP(S)_PROXY wywołania = TIDE_BOX_PROXY, a drop-in dockerd (docker.sh)
+        # dostaje NO_PROXY wyłącznie z TIDE_BOX_NO_PROXY — obie wartości tylko stąd.
+        env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive",
+               "TIDE_BOX_PROXY": proxy, "TIDE_BOX_NO_PROXY": BUILD_NO_PROXY}
         if full.get("node", {}).get("version"):
             env["TIDE_NODE_VERSION"] = full["node"]["version"]
         if full.get("dotnet", {}).get("sdk"):
             env["TIDE_DOTNET_SDK"] = " ".join(full["dotnet"]["sdk"])
-        # 4. szablony stosów
+        # 4. szablony stosów (z lib.sh obok)
+        if full["stacks"]:
+            self.incus.file_push(os.path.join(self.scripts_dir, STACKS_LIB), name, f"{REMOTE_STACKS}/{STACKS_LIB}")
         for stack in full["stacks"]:
             steps.append(f"stack:{stack}")
             remote = f"{REMOTE_STACKS}/{stack}.sh"

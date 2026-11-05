@@ -1774,11 +1774,15 @@ wyłączona pozycja czerwona z opisem (nie trafia do `network.domains`); obraz T
 **Szablony stosów** to dane YAML w `tide_daemon/box/stacks/<stos>.yaml` (`base`, `node`, `playwright`, `dotnet`,
 `docker`, `python-qt`), nie kod powłoki. Każdy ma `domains` (`name`, `risk`: `green`/`yellow`/`red`, `note`, opcjonalnie
 `registry: true` dla rejestrów paczek), `apt` i `images` (szablon `docker` niesie Ryuk z przypiętą wersją i opisem
-ryzyka K1 w `image_notes`). Szablony nie zawierają `github.com`, `gitlab.*` ani adresów wewnętrznych. Projekt nie
-używa biblioteki YAML, więc `box/templates.py` czyta podzbiór (skalary, listy, listy map). Funkcje:
+ryzyka K1 w `image_notes`). `domains` szablonów nie zawierają `github.com`, `gitlab.*` ani adresów wewnętrznych;
+wyjątkiem jest lista `build-domains` (PT-192) — domeny tylko dla skryptu szablonu w czasie budowy (`docker` →
+`github.com` dla wydania runc), nigdy dla kroków. Projekt nie używa biblioteki YAML, więc `box/templates.py` czyta
+podzbiór (skalary, listy, listy map). Funkcje:
 
-- `build_domains(profile)` — suma domen `base` + szablonów z `stacks` + `network.domains`, bez powtórzeń (dla budowy
-  pudełka i proxy); nieznany stos → `ValueError`. Podobnie `build_apt(profile)` i `build_images(profile)`;
+- `work_domains(profile)` — suma `domains` szablonu `base` + szablonów z `stacks` + `network.domains`, bez powtórzeń
+  (polityka kroków w proxy); nieznany stos → `ValueError`;
+- `build_domains(profile)` — `work_domains` + `build-domains` szablonów (lista budowy pudełka dla proxy). Podobnie
+  `build_apt(profile)` i `build_images(profile)`;
 - `known_domains()` — słownik domena → klasa ryzyka (przy rozbieżności wygrywa groźniejsza), dla `classify`;
 - `registry_domains(stack)` — domeny z `registry: true`; z nich składa się `tasks/node.REGISTRY_DOMAINS` i
   `tasks/dotnet.REGISTRY_DOMAINS` (wartości jak przed zmianą).
@@ -2479,8 +2483,9 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
    budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
    `$XDG_STATE_HOME/tide/box/<slug>/build-denied.log`.
-4. Szablony stosów wg `stacks`: `incus file push box/stacks/<stos>.sh <slug>/opt/tide/stacks/<stos>.sh`
-   i `bash /opt/tide/stacks/<stos>.sh` (skrypty powstają w #29; brak skryptu = błąd przed `incus`).
+4. Szablony stosów wg `stacks`: `incus file push box/stacks/lib.sh` i `box/stacks/<stos>.sh` do
+   `<slug>/opt/tide/stacks/`, potem `bash /opt/tide/stacks/<stos>.sh` w kolejności `stacks` (niżej, „Szablony stosów
+   w pudełku (PT-192)”; brak skryptu albo `lib.sh` = błąd przed `incus`).
 5. `apt-get update` i `apt-get install -y --no-install-recommends` z pakietami szablonów i profilu
    (`templates.build_apt`). 6. Polecenia `setup` (`bash -c`). 7. `docker pull` obrazów (`templates.build_images`),
    tylko przy `docker.enabled`. 8. `verify` — nieudane polecenie nie przerywa budowy: zdarzenie `box.verify`
@@ -2489,15 +2494,17 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
    (JSON: hash i skróty kluczy do `diff`), potem `incus snapshot create <slug> clean --reuse`. Migawka niesie
    klucz w swojej konfiguracji, więc każda kopia z `<slug>/clean` ma ten sam odcisk. (Incus 6.0 nie ustawia
    opisu migawki przy `snapshot create`, dlatego „opis” to klucz `user.*` konfiguracji migawki.)
-   `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh`.
+   `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh` (zapisany jako `builder.STACKS_VERSION`).
 
 Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
 `http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY` = `box/netenv.py` `BOX_NO_PROXY`,
-`DEBIAN_FRONTEND=noninteractive`, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy
-(albo jego adresu) to błąd przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy”
-nie ma. Proxy biegnie w usłudze, więc `tide box build` uruchomione jako osobny proces dziś zawsze odmawia;
-pierwszą prawdziwą budowę (przez usługę) robi #29. Inaczej `tide box base` i `tide box login`: bez usługi startują
-własne proxy na czas polecenia (decyzja `base-wlasne-proxy-cli`), a przy działającej usłudze odmawiają (port zajęty). Po migawce (i przy błędzie) builder zdejmuje politykę budowy
+`DEBIAN_FRONTEND=noninteractive`, `TIDE_BOX_PROXY` (adres proxy) i `TIDE_BOX_NO_PROXY` (= `BOX_NO_PROXY`) dla
+szablonów, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy (albo jego adresu) to błąd
+przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy” nie ma. `tide box build`,
+`tide box base` i `tide box login` z wiersza poleceń używają proxy uruchomionego w tym procesie, a bez niego startują
+własne `ProxyService` na czas polecenia (decyzja `base-wlasne-proxy-cli`, dla `build` od PT-192); przy działającej
+usłudze Tide port jest zajęty i polecenie odmawia (kod 1). Dziennik odmów budowy jest czyszczony na jej starcie
+(pusty po budowie = żadna domena nie brakowała), a `tide box build` wypisuje jego ścieżkę. Po migawce (i przy błędzie) builder zdejmuje politykę budowy
 (`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
 Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
 `type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy
@@ -2600,7 +2607,7 @@ base`, bez sudo — projekt ograniczony Incusa). Moduły: `box/base.py` (budowa 
    tide-base --reuse` (obraz dla `incus init` buildera), `incus stop tide-base`.
 7. Polityka budowy zdjęta z proxy (`clear_box_policy`) — także po błędzie. Nieudany krok = błąd bez migawki i obrazu.
 
-Bez drop-inu `dockerd` (szablon `docker.sh`, #29). Skrypt nie wpisuje żadnej wartości z usługi (adres proxy,
+Bez drop-inu `dockerd` (szablon `docker.sh`, PT-192 — niżej). Skrypt nie wpisuje żadnej wartości z usługi (adres proxy,
 `NO_PROXY`, wersje): odmawia pracy bez `TIDE_BOX_PROXY` równego `HTTP(S)_PROXY` wywołania, z nieprzypiętą wersją
 (`x.y.z`) albo poza rootem.
 
@@ -2637,6 +2644,63 @@ czcionki i konfiguracja proxy są w obrazie, nie w `/home/agent`.
 
 Testy: `daemon/tests/test_box_base.py` (atrapa `incus` z `fake_incus.py` uczy się `publish`; prawdziwy `base.sh`
 nie jest wykonywany w całości — jego funkcje plików biegną po `source` w katalogu tymczasowym).
+
+### Szablony stosów w pudełku (PT-192)
+
+Skrypty powłoki `box/stacks/<stos>.sh` (`node`, `playwright`, `dotnet`, `docker`, `python-qt`) obok danych
+`<stos>.yaml` (#30). Builder (krok 4 budowy) wypycha `lib.sh` i skrypty z `stacks` profilu do `/opt/tide/stacks/`
+i uruchamia każdy jako root pudełka, w kolejności `stacks`, na obrazie bazowym. Każdy skrypt: `set -euo pipefail`,
+`source lib.sh`, odmowa poza rootem i bez proxy (`TIDE_BOX_PROXY` musi być równe `HTTP(S)_PROXY` wywołania),
+pobieranie wyłącznie funkcją `fetch` (`curl` do pliku, tylko `https://`, także przekierowania — nigdy potok do
+powłoki) z domen własnego szablonu, wersje przypięte w skrypcie albo wzięte z profilu (nigdy `latest`). Żaden
+skrypt nie czyta ani nie kopiuje plików agentów hosta (`~/.claude`, `~/.codex`).
+
+**Kto jest właścicielem czego.** `base.sh` (obraz bazowy, apt przez HTTPS, `/etc/environment` z proxy) — #16/PT-179;
+skrypty stosów, `lib.sh`, **drop-in `dockerd` i `/etc/docker/daemon.json` — wyłącznie `docker.sh`** (#29/PT-192;
+test `test_box_stacks.py` sprawdza, że żaden inny plik repozytorium poza dokumentacją, testami i jednorazowymi
+skryptami prototypu nie tworzy `docker.service.d`); obrazy Dockera (`docker pull` z `templates.build_images`) —
+builder (#4) i konfiguracja Dockera w pudełku (#8/PT-171), nie szablon; domeny i klasy ryzyka — `<stos>.yaml` (#30).
+
+| Szablon | Co robi | Wejście z profilu |
+| --- | --- | --- |
+| `node.sh` | Node z `nodejs.org/dist` (archiwum `.tar.gz` ze sprawdzoną sumą z `SHASUMS256.txt` tej wersji) do `/usr/local` (wygrywa w PATH z Node 18 z apt obrazu, którego potrzebuje Codex); npm z tej dystrybucji; `CHROME_BIN=/usr/local/bin/tide-chrome` dla Karmy (opakowanie uruchamiające Chromium z `/opt/ms-playwright`, bez niego kod 127 z podpowiedzią „dodaj stos playwright”); `NODE_USE_ENV_PROXY=1` (Node ≥ 24 `fetch` przez proxy, P-6) | `node.version`: dokładne `x.y.z` albo numer główny przypięty w `NODE_PINS` (18, 20, 22, 24); bez wersji — `NODE_DEFAULT_MAJOR` (22); `x.y` = błąd |
+| `playwright.sh` | `npx --yes playwright@<PLAYWRIGHT_VERSION> install --with-deps chromium` przez proxy (zależności systemowe przez apt obrazu), przeglądarki w `/opt/ms-playwright` (w migawce `clean`, właściciel `agent` — projekt z inną wersją Playwrighta dociąga w kroku swoją rewizję), `PLAYWRIGHT_BROWSERS_PATH`; wymaga Node ≥ 20, czyli stosu `node` wcześniej w `stacks` | — (wersja przypięta w skrypcie) |
+| `dotnet.sh` | `dotnet-install.sh` z `dot.net` pobrany do pliku, SDK do `/usr/share/dotnet` (dowiązanie `/usr/local/bin/dotnet`), zależności (`libicu74`…) z apt, `DOTNET_ROOT`, telemetria wyłączona; `~/.nuget/NuGet/NuGet.Config` agenta z `<clear />` i **wyłącznie `nuget.org`** — bez rejestrów wewnętrznych (zapis jako `agent`, bo `/home/agent` to wolumen agenta) | `dotnet.sdk`: `8`/`8.0` (kanał — najnowsza poprawka w chwili budowy) albo dokładna wersja SDK `8.0.415`; brak = błąd |
+| `docker.sh` | `docker.io` z Ubuntu, **runc 1.2.6** z wydań GitHub (suma SHA-256 przypięta, ta sama co w P-1; tylko amd64) jako domyślny runtime w `/etc/docker/daemon.json` (decyzja `runc-1-2-6-w-pudelku`), drop-in **`/etc/systemd/system/docker.service.d/proxy.conf`** z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami) = `TIDE_BOX_PROXY` i `NO_PROXY`/`no_proxy` = `TIDE_BOX_NO_PROXY` (`BOX_NO_PROXY` wstrzyknięte przez builder — skrypt odmawia przy pustym), `agent` w grupie `docker`, restart `dockerd` i sprawdzenie `systemctl show docker -p Environment`, domyślnego runtime'u i `docker info` jako `agent`. `DOCKER_HOST` nie jest ustawiany | `docker.enabled` (nesting ustawia builder) |
+| `python-qt.sh` | Python 3, `python3-venv`, `pip`, PyQt6 z QML (`python3-pyqt6`, `python3-pyqt6.qtquick`, moduły `qml6-module-qtquick*`) z archiwum Ubuntu, `QT_QPA_PLATFORM=offscreen`; `xvfb` i czcionki są w obrazie bazowym; sprawdzenie `QGuiApplication` offscreen. PySide6 z PyPI nie jest instalowane (projekt dopisuje przypiętą wersję w `setup`) | — |
+
+**Zmienne stosów** (`write_stack_env` z `lib.sh`) trafiają w te same trzy miejsca co proxy obrazu bazowego:
+`/etc/environment`, `/etc/profile.d/tide-<stos>.sh` i `/etc/systemd/user.conf.d/91-tide-<stos>.conf`
+(`DefaultEnvironment` usług `systemd --user`, czyli kroków `tide-step`). Wartości są sprawdzane (bez spacji,
+cudzysłowów i `$`).
+
+**Domeny tylko budowy.** Szablon może mieć poza `domains` listę `build-domains`: domeny potrzebne wyłącznie
+skryptowi szablonu w czasie budowy. `templates.build_domains(profile)` (lista budowy dla proxy) zawiera je,
+`templates.work_domains(profile)` (polityka kroków w `proxy.compose_policy`) i `known_domains()` (klasyfikacja
+pozycji profilu) — nie. Dziś: `docker` → `github.com` (czerwone jako domena pracy — repozytorium zdalne)
+i `release-assets.githubusercontent.com` (wydanie runc), `dotnet` → `aka.ms` (kanały `dotnet-install.sh`). Domeny
+pracy dopisane w PT-192 z dzienników P-1/P-6: `production.cloudfront.docker.com`, `crl3/crl4/ocsp.digicert.com`
+(sprawdzanie podpisów paczek NuGet), lustra `playwright-akamai/verizon.azureedge.net`.
+
+**`STACKS_VERSION`** (`box/builder.py`) to zapisana suma katalogu `box/stacks` (`templates_version()`: wszystkie
+`*.yaml` i `*.sh`, także `lib.sh` i `base.sh`). Wchodzi do hasha przepisu jako `templates`, więc każda zmiana
+szablonu (np. podbicie `PLAYWRIGHT_VERSION` albo przypięcia Node) robi zbudowane pudełka nieaktualnymi.
+`test_box_stacks.py` porównuje sumę katalogu z zapisaną wartością — zmiana szablonu bez podbicia stałej nie
+przechodzi testów. Po zmianie: nowa suma do `STACKS_VERSION`, potem `tide box build <slug>`.
+
+**Ograniczenia.** Archiwum Node i `dotnet-install.sh` są sprawdzane sumą z tego samego źródła (integralność, nie
+niezależne przypięcie); runc ma sumę przypiętą w repozytorium. Kanał SDK .NET (`8.0`) daje najnowszą poprawkę
+w chwili budowy — dokładną wersję daje `dotnet.sdk: 8.0.415`. `verify` z profilu biegnie po szablonach, `apt`,
+`setup` i `docker pull` (krok 8 budowy).
+
+Testy: `daemon/tests/test_box_stacks.py` — tekst skryptów (reguły wyżej, `shellcheck`, jeśli jest), funkcje plików
+po `source` w katalogu tymczasowym (drop-in `dockerd` porównany z `netenv.proxy_env`, `daemon.json`,
+`NuGet.Config`, zmienne stosu, rozwiązywanie wersji Node i SDK), budowa na atrapie `incus` z prawdziwymi `*.yaml`
+i prawdziwym `ProxyService` z #5 (lista domen przed pierwszym `incus exec`, `TIDE_BOX_*` w każdym `exec`).
+Pierwsza prawdziwa budowa i pomiary (budowa ≤ 15 min, reset ≤ 60 s, Docker z proxy w pudełku): `bash
+scripts/box/stacks-trial.sh` poza piaskownicą — profile próbne python-qt (`plasma-tide`) i dotnet + docker
+(`tide-stacks-test`), chwilowe `restricted.snapshots=allow` w projekcie (cofane na końcu), log
+`docs/box-prototype/pt192-<czas>.log`; pudełka i profile próbne są usuwane po próbie.
 
 ### Proxy wyjściowe (PT-168)
 
@@ -2675,8 +2739,8 @@ i `ipv6_filtering` (Incus odrzuca pakiety z cudzym adresem źródłowym) — pro
 
 Listę składa `compose_policy(project, cards)`: domeny modeli (`MODEL_DOMAINS`: `api.anthropic.com`,
 `statsig.anthropic.com`, `api.openai.com`, `chatgpt.com`, `auth.openai.com` — dokłada usługa, nie profil)
-+ `templates.build_domains` profilu projektu (`base`, szablony wg `stacks`, `network.domains` — ta sama funkcja co
-w builderze) + profile aktywnych kart scalone z profilem projektu przez `profile.merge` (czerwone pozycje karty
++ `templates.work_domains` profilu projektu (`base`, szablony wg `stacks`, `network.domains` — lista budowy
+z buildera bez `build-domains` szablonów, PT-192) + profile aktywnych kart scalone z profilem projektu przez `profile.merge` (czerwone pozycje karty
 tylko z `accepted_red`). Usługa sama nigdy nie dokłada `github.com`, `gitlab.*`, adresów wewnętrznych ani
 `*.firma.example` (test). `network.full` karty bez `network.full-consent: true` jest pomijane z wpisem w dzienniku
 usługi; z jawną zgodą i `accepted_red: [network.full]` daje `full=True`: każda poprawna nazwa i goły adres

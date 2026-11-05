@@ -230,10 +230,10 @@ def compose_policy(project: dict | None, cards=None, known: dict | None = None, 
     Profil karty jest scalany z profilem projektu przez `profile.merge`, więc jego czerwone pozycje wchodzą tylko
     z `accepted_red`. `network.full` karty bez `network.full-consent: true` jest pomijane z wpisem w dzienniku
     (`log`, domyślnie dziennik usługi), reszta karty działa. Usługa sama dokłada wyłącznie `MODEL_DOMAINS`
-    i domeny szablonów (`templates.build_domains` — ta sama funkcja co w builderze)."""
+    i domeny pracy szablonów (`templates.work_domains` — bez `build-domains`, które dostaje tylko budowa)."""
     project = box_profile.validate(project or {"tide-box": box_profile.SCHEMA_VERSION}, "project")
     known = templates.known_domains() if known is None else known
-    domains = list(MODEL_DOMAINS) + list(templates.build_domains(project))
+    domains = list(MODEL_DOMAINS) + list(templates.work_domains(project))
     ollama = bool((project.get("network") or {}).get("host-ollama"))
     full = False
     notes = []
@@ -252,7 +252,7 @@ def compose_policy(project: dict | None, cards=None, known: dict | None = None, 
             continue
         for item in merged.dropped_red:
             notes.append(f"karta {card_id}: pozycja czerwona {item!r} bez accepted_red — pominięta")
-        domains += templates.build_domains(merged.profile)
+        domains += templates.work_domains(merged.profile)
         mnet = merged.profile.get("network") or {}
         ollama = ollama or bool(mnet.get("host-ollama"))
         full = full or (mnet.get("full") is True and mnet.get("full-consent") is True)

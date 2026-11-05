@@ -97,6 +97,8 @@ class BoxCase(unittest.TestCase):
         with open(os.path.join(self.stacks, "node.sh"), "w", encoding="utf-8") as fh:
             fh.write('echo "box[$TIDE_FAKE_BOX] node.sh HTTPS_PROXY=$HTTPS_PROXY node=$TIDE_NODE_VERSION" '
                      '>> "$TIDE_FAKE_LOG"\n')
+        with open(os.path.join(self.stacks, "lib.sh"), "w", encoding="utf-8") as fh:
+            fh.write("# atrapa wspólnych funkcji szablonów\n")
         p = mock.patch.object(templates, "STACKS_DIR", self.stacks)
         p.start()
         self.addCleanup(p.stop)
@@ -637,8 +639,9 @@ class CliTest(BoxCase):
             self.assertIn(f"NO_PROXY={netenv.BOX_NO_PROXY}", argv)
 
     def test_tide_entry_point_build_without_running_proxy_fails_before_incus(self):
-        # Osobny proces czyta prawdziwe box/stacks (bez skryptów .sh z #29), więc profil bez stosów.
-        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie.
+        # Osobny proces czyta prawdziwe box/stacks; profil bez stosów, żeby nic z nich nie biegło na atrapie.
+        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie,
+        # a własne proxy polecenia (PT-192, base-wlasne-proxy-cli) nie wstaje bez mostka — odmowa przed incus.
         self.approve({**PROFILE, "stacks": []})
         path = bset.settings_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -648,8 +651,8 @@ class CliTest(BoxCase):
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py"), "box", "build", "plasma-tide"],
                               env=env, stdin=subprocess.PIPE, capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertIn("proxy Tide (#5)", proc.stderr)
-        self.assertEqual(self.incus_calls(), [])
+        self.assertIn("tide box build: proxy Tide", proc.stderr)
+        self.assertFalse([a for a in self.incus_calls() if a[0] != "network"])
 
 
 class SettingsTest(unittest.TestCase):

@@ -14,12 +14,25 @@ domains:
   - name: production.cloudflare.docker.com
     risk: yellow
     note: warstwy obrazów Docker Hub
+  - name: production.cloudfront.docker.com
+    risk: yellow
+    note: warstwy obrazów Docker Hub (P-1, docker pull przez proxy)
   - name: ghcr.io
     risk: yellow
     note: obrazy GitHub Container Registry
   - name: pkg-containers.githubusercontent.com
     risk: yellow
     note: warstwy obrazów ghcr.io
+# Domeny wyłącznie dla skryptu docker.sh w czasie budowy (PT-192) — nie trafiają do polityki kroków
+# (`templates.work_domains`) ani do klasyfikacji pozycji profilu. runc 1.2.6 z wydań GitHub, suma SHA-256
+# przypięta w docker.sh (decyzja runc-1-2-6-w-pudelku); github.com w kroku byłby repozytorium zdalnym (czerwone).
+build-domains:
+  - name: github.com
+    risk: red
+    note: wydanie runc 1.2.6 (opencontainers/runc), tylko budowa
+  - name: release-assets.githubusercontent.com
+    risk: yellow
+    note: plik wydania runc (przekierowanie z github.com), tylko budowa
 images:
   - testcontainers/ryuk:0.11.0
 # Opis pozycji obrazu; treść ryzyka K1 do uzgodnienia z #8.

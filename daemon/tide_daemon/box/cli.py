@@ -6,6 +6,7 @@ albo nieaktualne w `status`). Opis: docs/tide-daemon.md (Budowa pudełka → CLI
 """
 import argparse
 import json
+import os
 import sys
 
 from . import base as bbase
@@ -89,6 +90,15 @@ def run_base(base_builder, out) -> int:
     return 0
 
 
+def run_build(builder, slug, out) -> int:
+    res = builder.build(slug)
+    print(f"pudełko {res.box}: migawka clean, hash {res.hash}, {res.duration:.1f} s", file=out)
+    print(f"dziennik odmów proxy: {os.path.join(bb.state_dir(slug), 'build-denied.log')}", file=out)
+    if res.warning:
+        print("zbudowane z ostrzeżeniem — verify nieudane: " + "; ".join(res.failed_verify), file=out)
+    return 0
+
+
 def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
     out = out or sys.stdout
     err = err or sys.stderr
@@ -130,15 +140,21 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             bb.approve(args.slug, text, args.accept_red)
             print(f"profil {args.slug} zatwierdzony (box.approved source=cli): {bp.project_path(args.slug)}", file=out)
             return 0
+        if args.cmd == "build" and builder is None:
+            # Jak `base`: bez proxy w tym procesie budowa startuje własne `ProxyService` (#5) na swój czas
+            # (decyzja base-wlasne-proxy-cli); przy działającej usłudze port jest zajęty i budowa odmawia.
+            settings = _settings(err)
+            service, own = bbase.ensure_proxy(settings)
+            try:
+                return run_build(bb.Builder(settings, policy=service), args.slug, out)
+            finally:
+                if own:
+                    service.stop()
         if builder is None:
             builder = bb.Builder(_settings(err))
         b = builder
         if args.cmd == "build":
-            res = b.build(args.slug)
-            print(f"pudełko {res.box}: migawka clean, hash {res.hash}, {res.duration:.1f} s", file=out)
-            if res.warning:
-                print("zbudowane z ostrzeżeniem — verify nieudane: " + "; ".join(res.failed_verify), file=out)
-            return 0
+            return run_build(b, args.slug, out)
         if args.cmd == "status":
             st = b.status(args.slug, args.card)
             print(json.dumps(st.to_dict(), ensure_ascii=False, indent=2) if args.json else format_status(st), file=out)
