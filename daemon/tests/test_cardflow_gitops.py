@@ -25,8 +25,11 @@ class LocalStepGit:
         self.git = Git()
         self.worktree = worktree
 
-    def run(self, *args, timeout=120):
-        return self.git.run(self.worktree, *gitops.HARDENED, *args, timeout=timeout)
+    def run(self, *args, timeout=120, index_dir=None):
+        runner = Git() if index_dir is not None else self.git
+        if index_dir is not None:
+            runner.env["GIT_INDEX_FILE"] = os.path.join(index_dir, "index")
+        return runner.run(self.worktree, *gitops.HARDENED, *args, timeout=timeout)
 
 
 class MergeTest(unittest.TestCase):

@@ -4619,9 +4619,6 @@ class FlowEngine(PlanEditing):
                 block("git-operation", "W checkoucie trwa operacja gita lub indeks jest zablokowany.")
             if preview.get("localCollisionCount"):
                 block("local-collision", "Lokalna praca koliduje ze ścieżkami scalenia.")
-            collisions = preview["localCollisions"]
-            if isinstance(collisions, dict) and len(target.get("changes", {}).get("staged", [])) > len(collisions["staged"]):
-                block("staged-not-supported", "Niezwiązane zmiany staged: ich zachowanie w nowej ścieżce będzie dostępne w PT-207.")
         else:
             block("local-unassessed", "Nie udało się potwierdzić aktualnego stanu checkoutów.")
         preview.update(blockedReasons=reasons, canMerge=not reasons, baseVersion=st.base_version)
@@ -4803,6 +4800,15 @@ class FlowEngine(PlanEditing):
                     ("sourceCommit", "sourceCommit"), ("targetCommitBefore", "targetCommit"),
                     ("targetRef", "targetRef"), ("targetWorktree", "targetWorktree"), ("resultTree", "resultTree"))):
                 raise FlowError("stale-preview", "Stan zmienił się podczas przygotowania. Potwierdź nowy podgląd.")
+            if preview is not None:
+                # Przygotowanie na kopii indeksu nie zmienia odcisku zgody. Wykrywamy także edycje użytkownika
+                # między ponownym podglądem a zakończeniem przygotowania, zanim zapiszemy zamiar i pliki.
+                try:
+                    latest = self.preview_card_merge(card, {"targetRef": preview["targetRef"]})
+                except FlowError:
+                    raise FlowError("stale-preview", "Cel lub kontekst zmienił się podczas przygotowania. Potwierdź nowy podgląd.") from None
+                if latest.get("previewToken") != preview["previewToken"]:
+                    raise FlowError("stale-preview", "Stan lokalny zmienił się podczas przygotowania. Potwierdź nowy podgląd.")
             ident = uuid.uuid4().hex
             intent = self.journal.append(card, "intent", action="main-merge", key=ident, operationId=ident,
                                          requestSeq=(st.started or {}).get("seq"), baseVersion=st.base_version,

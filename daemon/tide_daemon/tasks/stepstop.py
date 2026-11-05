@@ -237,7 +237,7 @@ class StepGit:
         if os.path.isfile(ignore):
             self.opts += ["-c", f"core.excludesFile={ignore}"]
 
-    def sandbox(self) -> list:
+    def sandbox(self, index_dir: str | None = None) -> list:
         argv = [BWRAP, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-ipc", "--unshare-pid",
                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", self.home,
                 "--ro-bind", self.common, self.common,
@@ -245,19 +245,24 @@ class StepGit:
                 "--ro-bind" if self.objects_only else "--bind", self.git_dir, self.git_dir]
         for name in (("objects",) if self.objects_only else GIT_DIRS_WRITABLE):
             argv += ["--bind", os.path.join(self.common, name), os.path.join(self.common, name)]
+        if index_dir is not None:
+            # Prywatna kopia indeksu przeżywa kolejne wywołania, ale nie odsłania innych plików /tmp.
+            argv += ["--bind", index_dir, "/tmp/tide-index"]
         argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
                "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
                "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
                "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/tide-step/bus"}
+        if index_dir is not None:
+            env["GIT_INDEX_FILE"] = "/tmp/tide-index/index"
         for key, value in env.items():
             argv += ["--setenv", key, value]
         return argv + ["--chdir", self.worktree, "--"]
 
-    def run(self, *args, timeout=120) -> Result:
+    def run(self, *args, timeout=120, index_dir: str | None = None) -> Result:
         try:
-            proc = subprocess.run([*self.sandbox(), "git", *self.opts, *args], capture_output=True, text=True,
+            proc = subprocess.run([*self.sandbox(index_dir), "git", *self.opts, *args], capture_output=True, text=True,
                                   errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired) as exc:

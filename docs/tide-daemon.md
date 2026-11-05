@@ -904,8 +904,8 @@ dodaje `mergePaths`. `localCollisionCount` liczy wpisy we wszystkich trzech list
 Kolizja obejmuje usunięcia i relację plik–katalog w obu kierunkach, z granicą komponentu ścieżki.
 `blockedReasons: [{reason, message}]` pokazuje wszystkie ograniczenia, a `reason`/`message` pierwsze z nich.
 Konflikt drzew (`conflict`) i kolizja pracy lokalnej (`local-collision`) pozostają odrębne, również gdy
-wystąpią równocześnie. Niezwiązane unstaged i untracked nie blokują podglądu (K-43).
-Niezwiązane staged dają przejściowe `staged-not-supported` do PT-207, bez udawania kolizji ścieżek.
+wystąpią równocześnie. Niezwiązane staged, unstaged i untracked nie blokują podglądu (K-43, PT-207).
+Plik z jednoczesnymi staged i unstaged zachowuje oba poziomy pracy po scaleniu.
 Cel bez checkoutu ma `no-target-worktree`; metoda niczego nie zakłada. Błąd odczytu checkoutu blokuje
 kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localCollisions` może pozostać `unassessed`.
 
@@ -930,7 +930,7 @@ sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy z
 PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
 checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
 Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`;
-niezwiązane staged odmawiają do PT-207, brak checkoutu do PT-206. Cel inny niż `FlowGit.main_branch`
+brak checkoutu odmawia do PT-206. Cel inny niż `FlowGit.main_branch`
 daje `unsupported-target` do PT-205. Nie powstają nowe checkouty, refy ani zasoby.
 
 Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
@@ -2540,7 +2540,10 @@ gałęzi głównej.
 PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
 z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
 `targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
-i początkowe drzewo materializacji (`materializationBaseTree`). Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+i początkowe drzewo materializacji (`materializationBaseTree`). PT-207 dodaje `resultIndexTree`:
+oczekiwany indeks po wniesieniu wyniku, z niezwiązanymi staged użytkownika. `resultTree` pozostaje
+drzewem samego commita scalenia; lokalne staged nie trafiają do tego commita.
+Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
 dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
 `main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
 i `projected`. Wynik zawiera pola potrzebne przyszłemu ogólnemu zakończeniu scalenia;
@@ -2570,6 +2573,14 @@ Bez takiej decyzji obcy ref pozostaje jawnym oczekiwaniem; nigdy nie jest zgodą
 reset ani nadpisanie. Porzucenie przy obcym refie nie dotyka refu, indeksu ani plików, a materializacja,
 która została w checkoutcie, nie jest dziedziczona (wymaga niezmienionego refu) — nowe scalenie odmówi jak przy
 obcych staged.
-Niezwiązane zmiany niezapisane w indeksie pozostają obsługiwane (K-43); obce staged nadal są odmawiane.
+Niezwiązane staged i zmiany poza indeksem pozostają obsługiwane (K-43, PT-207). Kopia indeksu jest
+przygotowywana i odświeżana w prywatnym katalogu, z worktree i katalogiem gita tylko do odczytu;
+zapis obejmuje wyłącznie obiekty i kopię indeksu. Dopiero po zapisaniu zamiaru `read-tree -m -u`
+materializuje różnicę między początkowym i wynikowym indeksem. Niezwiązane wpisy (blob i tryb), ich delta
+względem nowego HEAD oraz bajty plików pozostają bez zmian. Nie używamy resetu, stasha ani sprzątania untracked.
+Przed zapisem zamiaru ponownie sprawdzamy token podglądu, także po przygotowaniu kopii indeksu.
+Recovery przyjmuje wyłącznie zapisany indeks początkowy lub wynikowy; nowe obce staged powodują oczekiwanie.
+Częściowy zapis plików z niezmienionym indeksem i kolizją pozostaje w jawnym oczekiwaniu, bez nadpisywania.
+Starsze zamiary bez `resultIndexTree` nadal używają `resultTree` jako oczekiwanego indeksu.
 Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
 przygotowaniem; wspólna własność nowych zasobów należy do PT-206.
