@@ -1,4 +1,4 @@
-// Odczyt lokalnych baz projektu karty. Odpowiedzi starego projektu i zapytania są odrzucane po tagu.
+// Wspólny wybór bazy i lokalnego celu scalenia. Odpowiedzi starego projektu i zapytania odrzucamy po tagu.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -7,6 +7,8 @@ import "tide" as Tide
 ColumnLayout {
     id: picker
     property bool active: false
+    property string purpose: "base"
+    property string baseRef: ""
     property string contextKey: ""
     property var branches: []
     property var recentBases: []
@@ -44,6 +46,7 @@ ColumnLayout {
         status.text = ""
         branches = []
         recentBases = []
+        if (purpose === "merge") selected = null
         requested(search.text)
     }
     function receive(tag, reply) {
@@ -56,7 +59,7 @@ ColumnLayout {
             return
         }
         branches = reply.branches || []
-        recentBases = reply.recentBases || []
+        recentBases = purpose === "base" ? reply.recentBases || [] : []
         mainRef = reply.mainRef || ""
         if (refreshRef) {
             selected = branches.find(b => b.ref === refreshRef && b.selectable) || null
@@ -68,7 +71,8 @@ ColumnLayout {
         }
         currentIndex = 0
         // Domyślna baza jest nazwanym refem głównej, nigdy bieżącym HEAD.
-        if (!selected && search.text === "") selected = branches.find(b => b.ref === mainRef && b.selectable) || null
+        if (purpose === "base" && !selected && search.text === "")
+            selected = branches.find(b => b.ref === mainRef && b.selectable) || null
         message = ""
         status.text = (reply.hasMore ? "Zawęź wyszukiwanie — lista ma więcej wyników. " : "")
                     + (reply.warnings || []).join(" ")
@@ -83,10 +87,13 @@ ColumnLayout {
     onPinnedChanged: reset()
     onInitialSelectionChanged: reset()
     spacing: 8
-    FieldLabel { text: picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
+    FieldLabel { text: picker.purpose === "merge" ? "Lokalny cel scalenia" : picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
     Text {
         Layout.fillWidth: true
-        text: "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy i odczyt. "
+        text: picker.purpose === "merge" ? "Wybór celu nie zmienia bazy karty. Wymagany jest istniejący checkout. "
+              + (picker.baseRef.indexOf("refs/remotes/") === 0 ? "Baza jest zdalna — wybierz jawnie lokalny cel."
+                 : !picker.baseRef ? "Baza jest nieznana. Nazwana główna jest tylko propozycją celu." : "Baza: " + picker.baseRef)
+              : "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy i odczyt. "
               + (picker.readOnlyRevision ? "Kod wybranej rewizji tylko do odczytu; bez gałęzi i worktree karty. " : "")
               + (picker.pinned ? "Baza karty jest utrwalona." : picker.mainRef ? "Główna: " + picker.mainRef.substring(11) : "")
         textFormat: Text.PlainText
@@ -111,7 +118,7 @@ ColumnLayout {
         enabled: picker.active
         LineInput {
             id: search
-            objectName: "baseSearch"
+            objectName: picker.purpose === "merge" ? "mergeTargetSearch" : "baseSearch"
             Layout.fillWidth: true
             placeholder: "Szukaj po dowolnym fragmencie nazwy…"
             onEdited: picker.refresh()
@@ -120,7 +127,7 @@ ColumnLayout {
             Keys.onUpPressed: picker.currentIndex = Math.max(0, picker.currentIndex - 1)
         }
         PillButton {
-            objectName: "baseRefresh"
+            objectName: picker.purpose === "merge" ? "mergeTargetRefresh" : "baseRefresh"
             text: "Odśwież"
             onClicked: { picker.refreshRef = picker.selected ? picker.selected.ref : ""; picker.refresh() }
         }
@@ -190,7 +197,7 @@ ColumnLayout {
                 delegate: Rectangle {
                     required property var modelData
                     required property int index
-                    objectName: "baseResult" + index
+                    objectName: (picker.purpose === "merge" ? "mergeTargetResult" : "baseResult") + index
                     Layout.fillWidth: true
                     implicitHeight: branchName.implicitHeight + 16
                     color: index === picker.currentIndex ? Tide.Theme.alpha(Tide.Tokens.accent, 0.12) : Tide.Tokens.backgroundCard
@@ -209,7 +216,9 @@ ColumnLayout {
                         anchors.right: parent.right
                         anchors.margins: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: (modelData.kind === "remote" ? modelData.ref : modelData.name)
+                        text: (picker.purpose === "merge" ? (modelData.ref === picker.baseRef ? "Baza karty · " : "")
+                               + (modelData.ref === picker.mainRef ? "Główna · " : "") : "")
+                              + (modelData.kind === "remote" ? modelData.ref : modelData.name)
                               + (modelData.selectable ? "" : " — " + modelData.reason)
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
@@ -225,7 +234,9 @@ ColumnLayout {
     Text {
         Layout.fillWidth: true
         visible: picker.active
-        text: picker.selected ? "Wybrana baza: " + picker.selected.ref + " · " + picker.selected.commit
+        text: picker.selected ? (picker.purpose === "merge" ? "Wybrany cel: " : "Wybrana baza: ")
+                               + picker.selected.ref + " · " + picker.selected.commit
+                              : picker.purpose === "merge" ? "Wybierz lokalny cel, a następnie otwórz podgląd."
                               : "Wybierz lokalną lub zdalną gałąź bazową."
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere

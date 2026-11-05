@@ -135,6 +135,13 @@ Brak wiarygodnego refu lub SHA w dzienniku (`status: unknown`). Nie odgadujemy j
 historyczny zamiar i wynik utworzenia gałęzi muszą dowodzić obu wartości.
 _Avoid_: domyślna baza historyczna
 
+**Cel scalenia karty**:
+Jawnie wybrana lokalna gałąź (`targetRef`, pełne `refs/heads/…`) i jej bieżący commit (`targetCommit`)
+odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej albo nieznanej użytkownik
+wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
+Wybór celu nie zmienia bazy i nie jest zgodą na scalenie. Zgoda dotyczy refu i SHA z aktualnego podglądu.
+_Avoid_: główna jako nazwa każdego celu, krótka nazwa zdalnej bazy jako domyślny lokalny cel
+
 **Domknięcie**:
 Ostatni krok karty: podsumowanie pracy i lista rzeczy do sprawdzenia przez użytkownika.
 _Avoid_: finalizacja, merge

@@ -87,6 +87,11 @@ Rectangle {
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
     signal previewMergeRequested(string cardId, string target)
+    signal chooseMergeRequested(string cardId)
+    readonly property var mergeBase: card && card.derived && card.derived.flow ? card.derived.flow.base : null
+    readonly property string defaultMergeTarget: mergeBase && mergeBase.status === "known"
+                                                 && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
+                                                 ? mergeBase.baseRef.substring(11) : ""
 
     function eventLabel(event) {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
@@ -570,8 +575,7 @@ Rectangle {
                     objectName: "cardPreviewMerge"
                     Layout.fillWidth: true
                     wrapText: true
-                    readonly property string target: panel.card && panel.card.derived && panel.card.derived.flow
-                                                     ? panel.card.derived.flow.mainBranch || "" : ""
+                    readonly property string target: panel.defaultMergeTarget
                     text: "Podgląd scalenia do " + (target || "…")
                     enabled: !panel.busy && target !== ""
                     onClicked: panel.previewMergeRequested(panel.card.id, target)
@@ -580,14 +584,20 @@ Rectangle {
                     objectName: "cardMergeMain"
                     Layout.fillWidth: true
                     wrapText: true
-                    readonly property string target: panel.card && panel.card.derived && panel.card.derived.flow
-                                                     ? panel.card.derived.flow.mainBranch || "" : ""
-                    text: "Scal do " + (target || "…")
-                    enabled: target !== "" && !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
+                    readonly property string target: panel.defaultMergeTarget
+                    text: target ? "Scal do " + target : "Scal…"
+                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
                                                 && panel.card.derived.flow.merged)
                     onClicked: {
-                        panel.mergeMainRequested(panel.card.id)
+                        if (target) panel.previewMergeRequested(panel.card.id, target)
+                        else panel.chooseMergeRequested(panel.card.id)
                     }
+                }
+                PillButton {
+                    objectName: "cardMergeChoose"
+                    text: "Scal…"
+                    visible: panel.defaultMergeTarget !== ""
+                    onClicked: panel.chooseMergeRequested(panel.card.id)
                 }
             }
             QQC2.TextArea {

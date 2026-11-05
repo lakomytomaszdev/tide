@@ -4483,7 +4483,23 @@ class FlowEngine(PlanEditing):
         if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
         try:
-            result = self.git.list_branches(project.repo, text, limit, request["purpose"])
+            result = self.git.list_branches(project.repo, text, limit if request["purpose"] == "base" else 2**31,
+                                            request["purpose"])
+            if request["purpose"] == "merge":
+                st = fold(self.journal.read(card_id))
+                protected = self._protected_merge_targets(card_id, project.repo)
+                checkouts = self.git.branch_checkouts(project.repo)
+                source_ref = "refs/heads/" + ticket_of(st)["cardBranch"]
+                for item in result["branches"]:
+                    path = checkouts.get(item["ref"], "")
+                    blocks = self._merge_target_blocks(source_ref, item["ref"], path,
+                                                       bool(path) and os.path.isdir(path), protected)
+                    item.update(selectable=not blocks, reason=blocks[0][1] if blocks else "")
+                base = base_of(st)
+                base_ref = base["baseRef"] if base["status"] == "known" else ""
+                result["branches"].sort(key=lambda b: (b["ref"] != base_ref, b["ref"] != result["mainRef"]))
+                result["hasMore"] = len(result["branches"]) > limit
+                result["branches"] = result["branches"][:limit]
         except FlowGitError as exc:
             raise FlowError("branches", str(exc)) from None
         if request["purpose"] == "base":
@@ -4492,6 +4508,52 @@ class FlowEngine(PlanEditing):
             except Exception:
                 result["warnings"].append("Nie można odczytać ostatnich baz. Wybierz bazę z listy.")
         return {"ok": True, **result}
+
+    def _protected_merge_targets(self, card: str, repo: str) -> list[dict]:
+        """Ten sam zbiór dla listy, podglądu i ponownego sprawdzenia zgody."""
+        key = self.git.repository_key(repo)
+        protected = []
+        for other_id in self.journal.cards():
+            if other_id == card:
+                continue
+            other = fold(self.journal.read(other_id))
+            other_repo = (other.started or {}).get("repo")
+            if not other_repo:
+                try:
+                    other_repo = self._repo(other_id)
+                except FlowError:
+                    continue
+
+            def same_repository(path):
+                try:
+                    return self.git.repository_key(path) == key
+                except FlowGitError:
+                    return False
+
+            info = ticket_of(other)
+            if same_repository(other_repo) and info["cardBranch"]:
+                protected.append({"card": other_id, "branch": info["cardBranch"], "worktree": info["cardWorktree"]})
+            outside_steps = [other.steps.get(name, {}) for name in other.outside_started]
+            for step in other.running() + other.open_consoles() + outside_steps:
+                if same_repository(step.get("repo") or other_repo):
+                    protected.append({"card": other_id, "branch": step.get("branch") or "",
+                                      "worktree": step.get("worktree") or ""})
+        return protected
+
+    @staticmethod
+    def _merge_target_blocks(source_ref, target_ref, path, exists, protected):
+        """Kwalifikacja celu; kolizje treści i gotowość karty ocenia dopiero podgląd."""
+        reasons = []
+        if source_ref == target_ref:
+            reasons.append(("card-target", "Celem nie może być gałąź karty."))
+        for item in protected:
+            if (target_ref == "refs/heads/" + item["branch"] or
+                    (exists and item["worktree"] and os.path.realpath(item["worktree"]) == os.path.realpath(path))):
+                reasons.append(("protected-target", "Cel należy do karty " + item["card"] + " lub jej czynnego kroku."))
+                break
+        if not exists:
+            reasons.append(("no-target-worktree", "Cel nie ma checkoutu. Przygotowanie celu wymaga osobnej zgody i obsługi."))
+        return reasons
 
     def _recent_bases(self, repo: str) -> list[dict]:
         """Skróty są projekcją udanych zdarzeń, wspólną dla worktrees rzeczywistego repozytorium."""
@@ -4659,7 +4721,9 @@ class FlowEngine(PlanEditing):
             target_ref = request.get("targetRef")
             if "targetRef" in request and (not isinstance(target_ref, str) or
                     not target_ref.startswith("refs/heads/") or
-                    not self.git.run(repo, "check-ref-format", target_ref).ok or not self.git.sha(repo, target_ref)):
+                    not self.git.run(repo, "check-ref-format", target_ref).ok or
+                    self.git.run(repo, "symbolic-ref", "--quiet", target_ref).ok or
+                    not self.git.sha(repo, target_ref)):
                 raise FlowError("bad-request", "cel musi być istniejącym pełnym lokalnym refem refs/heads/…")
             preview = self.git.preview_merge(repo, branch, target_ref)
             if not request:
@@ -4677,38 +4741,15 @@ class FlowEngine(PlanEditing):
             block(preview["reason"], preview["message"])
         for reason, message in self._card_merge_blocks(st):
             block(reason, message)
-        if preview["sourceRef"] == preview["targetRef"]:
-            block("card-target", "Celem nie może być gałąź karty.")
-        protected = []
-        for other_id in self.journal.cards():
-            if other_id == card:
-                continue
-            other = fold(self.journal.read(other_id))
-            other_repo = (other.started or {}).get("repo")
-            if not other_repo:
-                try:
-                    other_repo = self._repo(other_id)
-                except FlowError:
-                    continue
-            info = ticket_of(other)
-            if os.path.realpath(other_repo) == os.path.realpath(repo) and info["cardBranch"]:
-                protected.append({"card": other_id, "branch": info["cardBranch"], "worktree": info["cardWorktree"]})
-            outside_steps = [other.steps.get(name, {}) for name in other.outside_started]
-            for step in other.running() + other.open_consoles() + outside_steps:
-                if os.path.realpath(step.get("repo") or other_repo) == os.path.realpath(repo):
-                    protected.append({"card": other_id, "branch": step.get("branch") or "",
-                                      "worktree": step.get("worktree") or ""})
-        for item in protected:
-            if (preview["targetRef"] == "refs/heads/" + item["branch"] or
-                    (preview["targetWorktreeExists"] and item["worktree"] and
-                     os.path.realpath(item["worktree"]) == os.path.realpath(preview["targetWorktree"]))):
-                block("protected-target", "Cel należy do karty " + item["card"] + " lub jej czynnego kroku.")
+        protected = self._protected_merge_targets(card, repo)
+        for reason, message in self._merge_target_blocks(
+                preview["sourceRef"], preview["targetRef"], preview["targetWorktree"],
+                bool(snapshots and snapshots["target"]["exists"]), protected):
+            block(reason, message)
         if snapshots:
             source, target = snapshots["source"], snapshots["target"]
             if not source["exists"] or source_dirty(source):
                 block("source-dirty", "Gałąź karty nie ma czystego checkoutu.")
-            if not target["exists"]:
-                block("no-target-worktree", "Cel nie ma checkoutu. Przygotowanie celu wymaga osobnej zgody i obsługi.")
             if any(any(s.get("operations", {}).values()) for s in (source, target)):
                 block("git-operation", "W checkoucie trwa operacja gita lub indeks jest zablokowany.")
             if preview.get("localCollisionCount"):
@@ -4763,8 +4804,6 @@ class FlowEngine(PlanEditing):
                 raise FlowError("stale-preview", "Podgląd jest nieaktualny. Przygotuj nowy podgląd i potwierdź go.")
             if not preview["canMerge"]:
                 raise FlowError(preview["reason"], preview["message"])
-            if request["targetRef"] != f"refs/heads/{self.git.main_branch(repo)}":
-                raise FlowError("unsupported-target", "Scalanie do innych celów nie jest jeszcze dostępne.")
             if intent or st.merged:
                 raise FlowError("stale-preview", "Zlecenie ma już operację scalenia. Użyj jej ID albo nowego zlecenia.")
             self._merge_card_to_main_locked(card, repo, preview=preview)
@@ -4856,11 +4895,9 @@ class FlowEngine(PlanEditing):
             # Historyczny sukces bez zamiaru: cel pochodzi ze zdarzenia, nigdy z dzisiejszej konfiguracji.
             self._project_main_merge(card, st, operation_id=st.merged.get("operationId") or "")
             return {"ok": True, "id": card, "main": st.merged["targetBranch"], "already": True}
-        main = self.git.main_branch(repo)
+        main = preview["targetBranch"] if preview is not None else self.git.main_branch(repo)
         if not main or not info["cardBranch"]:
             raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
-        if preview is not None and preview["targetRef"] != f"refs/heads/{main}":
-            raise FlowError("stale-preview", "Nazwana główna zmieniła się. Potwierdź nowy podgląd.")
         if preview is not None:
             # Podgląd czyta rekordy NUL i zachowuje również ścieżki z tabulatorem lub nową linią.
             main_tree = preview["targetWorktree"] if preview["targetWorktreeExists"] else ""
@@ -4938,7 +4975,7 @@ class FlowEngine(PlanEditing):
                 checkpoint("ref-moved")
                 result = MergeWorktree.result(intent)
             else:
-                if intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
+                if not intent.get("previewToken") and intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
                     raise FlowGitError("gałąź główna zmieniła się po przygotowaniu operacji — scalenie czeka")
                 if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
                         (st.started or {}).get("seq") != intent["requestSeq"]):
@@ -4946,6 +4983,12 @@ class FlowEngine(PlanEditing):
                 blocks = self._card_merge_blocks(st, operation_id=key)
                 if blocks:
                     raise FlowGitError(blocks[0][1])
+                if intent.get("previewToken"):
+                    blocks = self._merge_target_blocks(
+                        intent["sourceRef"], intent["targetRef"], intent["targetWorktree"],
+                        os.path.isdir(intent["targetWorktree"]), self._protected_merge_targets(card, intent["repo"]))
+                    if blocks:
+                        raise FlowGitError(blocks[0][1])
                 self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
                 worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
                 result = worktree.execute(intent, checkpoint)

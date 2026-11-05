@@ -134,10 +134,25 @@ Rectangle {
         }
     }
 
-    function previewMerge(cardId, target) {
+    function mergeContext(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
+        return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
+    }
+    function chooseMerge(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        const base = card && card.derived && card.derived.flow && card.derived.flow.base
+        mergeTargets.cardId = cardId
+        mergeTargets.contextKey = mergeContext(cardId)
+        mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
+        mergeTargets.open()
+    }
+    function previewMerge(cardId, target, targetRef) {
         const tag = nextTag("preview-merge:" + cardId)
         mergePreview.show(tag, cardId, target)
-        previewMergeRequested(tag, cardId, "{}")
+        mergePreview.contextKey = mergeContext(cardId)
+        mergePreview.targetRef = targetRef || "refs/heads/" + target
+        previewMergeRequested(tag, cardId, JSON.stringify({targetRef: mergePreview.targetRef}))
     }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
@@ -638,6 +653,10 @@ Rectangle {
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
+        if (tag.indexOf("merge-targets:") === 0) {
+            mergeTargets.picker.receive(tag, reply)
+            return
+        }
         if (tag.indexOf("base-change-branches:") === 0) {
             baseChangePicker.receive(tag, reply)
             return
@@ -782,6 +801,8 @@ Rectangle {
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
     onSnapshotChanged: {
         optimistic = []
+        if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
+        if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
             const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
@@ -1744,6 +1765,7 @@ Rectangle {
         onMergeMainRequested: cardId =>
             page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
         onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
+        onChooseMergeRequested: cardId => page.chooseMerge(cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -1887,6 +1909,7 @@ Rectangle {
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
         onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
         onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
+        onChooseMergeRequested: page.chooseMerge(page.fullCardId)
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
@@ -1900,7 +1923,18 @@ Rectangle {
             requestTag = page.nextTag("merge-card:" + cardId)
             page.mergeRequested(requestTag, cardId, JSON.stringify(request))
         }
-        onRefreshRequested: page.previewMerge(cardId, targetBranch)
+        onRefreshRequested: page.previewMerge(cardId, targetBranch, targetRef)
+    }
+    MergeTargetPicker {
+        id: mergeTargets
+        parent: page
+        z: 60
+        onRequested: text => {
+            const tag = page.nextTag("merge-targets:" + cardId)
+            picker.pendingTag = tag
+            page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
+        }
+        onPreviewRequested: target => page.previewMerge(cardId, target.name, target.ref)
     }
     CardUi.BaseChangePreview {
         id: baseChangePreview

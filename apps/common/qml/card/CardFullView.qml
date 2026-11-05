@@ -72,6 +72,10 @@ Rectangle {
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
     signal previewMergeRequested(string target)
+    signal chooseMergeRequested()
+    readonly property string defaultMergeTarget: flow && flow.base && flow.base.status === "known"
+                                                 && (flow.base.baseRef || "").indexOf("refs/heads/") === 0
+                                                 ? flow.base.baseRef.substring(11) : ""
     signal baseChangeRequested()
     property bool baseChangeAvailable: false
     property bool mergePreviewAvailable: false
@@ -575,7 +579,7 @@ Rectangle {
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
-                    text: "Karta jest domknięta na swojej gałęzi. Scalenie do gałęzi głównej robisz Ty."
+                    text: "Karta jest domknięta na swojej gałęzi. Wybierz cel, sprawdź podgląd i potwierdź scalenie."
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
@@ -586,7 +590,7 @@ Rectangle {
                     objectName: "fullBranchDiff"
                     text: "Diff gałęzi"
                     variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem gałęzi głównej"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
                     onClicked: view.branchDiffRequested()
                 }
                 Tide.TextButton {
@@ -594,21 +598,28 @@ Rectangle {
                     Layout.fillWidth: true
                     wrapText: true
                     visible: view.mergePreviewAvailable
-                    text: "Podgląd scalenia do " + (view.flow && view.flow.mainBranch || "…")
-                    enabled: !!(view.flow && view.flow.mainBranch)
+                    text: "Podgląd scalenia do " + (view.defaultMergeTarget || "…")
+                    enabled: view.defaultMergeTarget !== ""
                     variant: "outline"
-                    onClicked: view.previewMergeRequested(view.flow.mainBranch)
+                    onClicked: view.previewMergeRequested(view.defaultMergeTarget)
                 }
                 Tide.TextButton {
                     objectName: "fullMergeMain"
                     Layout.fillWidth: true
                     wrapText: true
-                    text: "Scal do " + (view.flow && view.flow.mainBranch || "…")
-                    enabled: !view.mergeBusy && !!(view.flow && view.flow.mainBranch)
+                    text: view.defaultMergeTarget ? "Scal do " + view.defaultMergeTarget : "Scal…"
+                    enabled: !view.mergeBusy
                     Accessible.name: text
                     onClicked: {
-                        view.mergeMainRequested()
+                        if (view.defaultMergeTarget) view.previewMergeRequested(view.defaultMergeTarget)
+                        else view.chooseMergeRequested()
                     }
+                }
+                Tide.TextButton {
+                    objectName: "fullMergeChoose"
+                    text: "Scal…"
+                    visible: view.defaultMergeTarget !== ""
+                    onClicked: view.chooseMergeRequested()
                 }
             }
 

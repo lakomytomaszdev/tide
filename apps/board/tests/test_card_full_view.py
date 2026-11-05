@@ -325,6 +325,7 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         for item in data["cards"]:
             if item["id"] == "K-8":
                 item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -343,6 +344,7 @@ out["call"] = calls()[-1][:2]
         for item in data["cards"]:
             if item["id"] == "K-8":
                 item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -353,6 +355,7 @@ out["labels"], out["texts"], out["rendered"] = [], [], []
 for index, target in enumerate(names):
     snap = json.loads(backend.snapshotJson)
     next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["mainBranch"] = target
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/" + target}
     set_snapshot(snap)
     result = {"ok": True, "canMerge": True, "previewToken": "token-" + str(index),
               "targetRef": "refs/heads/" + target, "targetBranch": target, "targetCommit": "b" * 40,
@@ -391,7 +394,7 @@ out["calls"] = calls()
             self.assertIn("b" * 40, out["texts"][index])
             self.assertEqual(out["rendered"][index], ["Scal do " + name, 0, False])
             calls = out["calls"][3 * index:3 * index + 3]
-            self.assertEqual(calls[:2], [["PreviewCardMerge", "K-8", "{}"]] * 2)
+            self.assertEqual([json.loads(c[2]) for c in calls[:2]], [{"targetRef": "refs/heads/" + name}] * 2)
             self.assertEqual(calls[2][:2], ["MergeCard", "K-8"])
             self.assertEqual(json.loads(calls[2][2]), {"targetRef": "refs/heads/" + name,
                                                      "previewToken": "token-" + str(index)})
@@ -401,6 +404,7 @@ out["calls"] = calls()
         for item in data["cards"]:
             if item["id"] == "K-8":
                 item["derived"]["flow"]["mainBranch"] = "develop"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/develop"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -437,6 +441,7 @@ out["calls"] = calls()
         for item in data["cards"]:
             if item["id"] == "K-8":
                 item["derived"]["flow"]["mainBranch"] = "release/complete-target-name"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/release/complete-target-name"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -475,7 +480,7 @@ out["calls"] = calls()
         self.assertEqual(out["label"], "Podgląd scalenia do release/complete-target-name")
         self.assertFalse(out["opened"])
         self.assertTrue(out["same"])
-        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-8", "{}"]] * 4)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": result["targetRef"]}] * 4)
         for text in out["texts"]:
             self.assertIn(result["sourceRef"], text)
             self.assertIn(result["targetRef"], text)
@@ -491,6 +496,7 @@ out["calls"] = calls()
         for item in data["cards"]:
             if item["id"] == "K-8":
                 item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -517,7 +523,7 @@ for result in variants:
     click(named("mergePreviewClose"))
 out["calls"] = calls()
 ''', data)
-        self.assertEqual(out["calls"], [["PreviewCardMerge", "K-8", "{}"]] * 3)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/master"}] * 3)
         for text in out["texts"]:
             self.assertIn("Nie stanowi zgody", text)
             self.assertNotIn("odcisk-stanu", text)
