@@ -669,7 +669,9 @@ Rectangle {
                         onEscapePressed: view.backRequested()
                         onPreviewRequested: (decisionId, method, params) => view.previewRequested(decisionId, method, params)
                         onAnswered: (decisionId, method, params) => {
-                            view.answeredIds = view.answeredIds.concat([decisionId])
+                            if (!Decision.keepsPending(params))
+                                view.answeredIds = view.answeredIds.concat([decisionId])
+                            else form.reset()
                             view.answered(decisionId, method, params)
                             view.forceActiveFocus()
                         }

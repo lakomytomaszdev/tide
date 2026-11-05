@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
 
+from .baseproposal import pending
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -48,6 +49,7 @@ class FlowState:
     initial_base: dict = field(default_factory=dict)
     base_version: int = 0
     base_change: dict = field(default_factory=dict)
+    base_waits: dict = field(default_factory=dict)
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
@@ -194,6 +196,8 @@ def fold(events: list[dict]) -> FlowState:
         if kind in HISTORY_LOGGED:
             st.log.append(e)
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
+        if kind == "step.base-wait":
+            st.base_waits[e.get("step")] = e
         if kind == "card.started":
             st.base = _base(e)
             st.initial_base = dict(st.base)
@@ -661,6 +665,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                         "mainMerged": bool(st.main_merged),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
+    out["flow"]["baseDecisionPending"] = bool(pending(st))
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -685,6 +690,11 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)
+    if pending(st):
+        for item in out["flow"]["steps"]:
+            item["canEnter"] = False
+            item["canTransfer"] = False
+        return _fill(out, "waiting", "Decyzja o bazie karty; wyniki pozostają niescalone")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

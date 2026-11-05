@@ -126,6 +126,37 @@ class PackageTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class DecisionDialogTest(ProbeCase):
+    def test_base_proposal_plain_evidence_and_structural_choices(self):
+        events = journal()[:-1]
+        events[0].update(baseRef="refs/heads/master", baseBranch="master", baseCommit="a" * 40)
+        events[-1]["baseProposal"] = {"valid": True, "ref": "refs/heads/topic", "baseCommit": "b" * 40,
+                                      "evidence": "<b>Sprawdzona historia pliku</b>"}
+        items = decisions(events)
+        for index, choice in ((0, "keep"), (1, "change")):
+            with self.subTest(choice=choice):
+                out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["state"] = state()
+# Przewiń treść do możliwości, tak jak użytkownik czytający ograniczenia v1.
+js("(function () { const p = page.decisionDialog; const a = " + ALL + "; "
+   "const target = a(p, 'decisionOption')[0]; let f = target.parent; "
+   "while (f && f.contentY === undefined) f = f.parent; if (f) f.contentY = f.contentHeight - f.height; })()")
+wait(80)
+click(option(""" + str(index) + """))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+out["after"] = state()
+""", scenario_f(self.data, items))
+                self.assertIn("<b>Sprawdzona historia pliku</b>", out["state"]["happened"])
+                self.assertIn("K-50-replay-code", out["state"]["why"])
+                self.assertEqual([o[0] for o in out["state"]["options"]],
+                                 ["Zachowaj refs/heads/master", "Zmień na refs/heads/topic"])
+                self.assertEqual(out["state"]["answer"], 0)
+                self.assertEqual(out["sent"][0][:2], ["ResolveCardStep", "K-8"])
+                self.assertEqual(json.loads(out["sent"][0][2]),
+                                 {"choice": "answer", "step": "K-8-ticket-3-0", "baseDecision": choice})
+                self.assertEqual(out["after"]["open"], choice == "change")
+
     def test_scenario_f_texts_order_buttons_enter_and_esc(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))

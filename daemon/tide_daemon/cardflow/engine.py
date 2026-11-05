@@ -58,6 +58,7 @@ from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
+from . import baseproposal
 from .mergepreview import source_dirty
 from .journal import Journal
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
@@ -605,6 +606,12 @@ class FlowEngine(PlanEditing):
                          baseRef=base["baseRef"], baseBranch=base["baseBranch"])
 
     def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
+        try:
+            card_id = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if baseproposal.pending(fold(self.journal.read(card_id))):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
@@ -1016,6 +1023,9 @@ class FlowEngine(PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip=""):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
+        if baseproposal.pending(fold(self.journal.read(item.id))):
+            raise FlowDeferred("decyzja o bazie karty")
+        prompt += baseproposal.context(base_of(fold(self.journal.read(item.id))))
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
@@ -1263,6 +1273,8 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
         st = fold(self.journal.read(card_id))
+        if baseproposal.pending(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
@@ -1660,6 +1672,8 @@ class FlowEngine(PlanEditing):
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = fold(self.journal.read(card))
+        if baseproposal.pending(st):
+            raise FlowDeferred("decyzja o bazie karty")
         reason = "karta wstrzymana" if st.paused else self._wait_reason(selected)
         if not reason and selected.local:
             claim = model_queue.shared().claim_step(self.store.root + ":" + step_id, endpoint=selected.route.url,
@@ -1703,6 +1717,7 @@ class FlowEngine(PlanEditing):
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
+        prompt += baseproposal.context(base_of(fold(self.journal.read(card.id))))
         read_dirs, context_dirs = [], []
         order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
                  if kind in ("planning", "plan-fix") else [])
@@ -1822,6 +1837,8 @@ class FlowEngine(PlanEditing):
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
         st = fold(self.journal.read(card))
+        if baseproposal.pending(st):
+            raise FlowDeferred("decyzja o bazie karty")
         done = st.results.get((action, key))
         if done is not None:
             if not done.get("ok") and not retry_failed:
@@ -1964,6 +1981,11 @@ class FlowEngine(PlanEditing):
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        if baseproposal.pending(st):
+            for step in st.running():
+                self._poll(card, step)
+            self._queue_notices(card)
+            return
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
         self._recover_console_openings(card, st)
@@ -1995,6 +2017,8 @@ class FlowEngine(PlanEditing):
             pass
         st = fold(self.journal.read(card))
         for intent in st.open_intents(include_background=True):
+            if baseproposal.pending(st):
+                break
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
@@ -2010,6 +2034,9 @@ class FlowEngine(PlanEditing):
             if step.get("step") in st.transfer_requests and step.get("step") not in st.step_decisions:
                 continue
             self._poll(card, step)
+        # Zbieramy wyniki procesów, ale nie oceniamy ani nie integrujemy ich w czasie decyzji.
+        if baseproposal.pending(fold(self.journal.read(card))):
+            return
         self._advance_user_revision(card, fold(self.journal.read(card)))
         current = fold(self.journal.read(card))
         if current.running() and (current.plan_revision or {}).get("pending"):
@@ -2181,6 +2208,8 @@ class FlowEngine(PlanEditing):
 
     def _advance(self, card: str, st: FlowState) -> None:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
+        if baseproposal.pending(st):
+            return
         if st.open_intents():
             return
         if self._advance_limit(card, st):
@@ -2339,6 +2368,8 @@ class FlowEngine(PlanEditing):
 
     def _plan_next(self, card: str, st: FlowState) -> None:
         """Uruchamia gotowe tickety w granicach slotów, po scaleniu wszystkich ich blokerów."""
+        if baseproposal.pending(st):
+            return
         approved = st.plan_approved or {}
         if not approved or st.plan_finished or st.paused or st.open_intents():
             return
@@ -2645,7 +2676,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
-                                                            "card"}:
+                                                            "card", "baseDecision"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2653,6 +2684,8 @@ class FlowEngine(PlanEditing):
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
         if choice in ("transfer", "wait-limit"):
+            if baseproposal.pending(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
             return self._resolve_transfer(card, st, request)
         if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
@@ -2671,6 +2704,22 @@ class FlowEngine(PlanEditing):
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
         result = done.get("result")
+        proposal = done.get("baseProposal") or {}
+        base_decision = request.get("baseDecision")
+        if proposal.get("valid") is True and result == "question":
+            if st.card_finished:
+                raise FlowError("no-step-question", "karta została zakończona")
+            if choice != "answer" or base_decision not in ("keep", "change"):
+                raise FlowError("base-decision", "wybierz strukturalnie Zachowaj albo Zmień bazę")
+            if focus in st.step_decisions:
+                raise FlowError("already-decided", "odpowiedź na ten krok jest już zapisana")
+            if base_decision == "change":
+                # PT-201 dostarczy podgląd. Sam wybór nigdy nie zmienia refów i nie rozstrzyga pytania.
+                if focus not in st.base_waits:
+                    self.journal.append(card, "step.base-wait", step=focus)
+                return {"ok": True, "id": card, "step": focus, "waiting": True, "changed": False}
+        elif base_decision is not None:
+            raise FlowError("bad-request", "ten krok nie ma poprawnej propozycji bazy")
         valid = {"question": ("answer", "wait-card"), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
                  else ("allow", "deny"), "error": ("retry", "change-executor", "reject", "wait-card"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
@@ -2689,6 +2738,8 @@ class FlowEngine(PlanEditing):
                 return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
             raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
         answer = str(request.get("answer") or "").strip()
+        if base_decision == "keep" and not answer:
+            answer = "Zachowaj " + (base_of(st).get("baseRef") or "unknown")
         executor = str(request.get("executor") or "").strip()
         instead = str(request.get("instead") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
@@ -2727,6 +2778,8 @@ class FlowEngine(PlanEditing):
                     raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
+        if base_decision == "keep":
+            extra["baseDecision"] = "keep"
         if choice == "wait-card":
             # „Czeka na kartę” (04.11, K-41/KAMP-13 czekał na K-43 jako „błąd kroku” w Czeka na mnie): krok stoi bez
             # decyzji użytkownika, a gdy wskazana karta się domknie, Tide wznawia go sam z podaną instrukcją.
@@ -3416,7 +3469,8 @@ class FlowEngine(PlanEditing):
             return
         name = step.get("step") or ""
         log = os.path.join(step.get("stepDir") or "", "out", "step.log")
-        if flow_limits.exhausted_log(log, step.get("program") or ""):
+        base_wait = bool(baseproposal.pending(fold(self.journal.read(card))))
+        if not base_wait and flow_limits.exhausted_log(log, step.get("program") or ""):
             if name not in fold(self.journal.read(card)).limits:
                 low = self._low_limit(step.get("provider") or "") or {}
                 base_tip = self.git.sha(step.get("repo") or self._repo(card),
@@ -3445,6 +3499,8 @@ class FlowEngine(PlanEditing):
                 exit_code = stepstop.read_exit_code(step.get("stepDir") or "")
         if not alive:
             self._finish(card, step, exit_code=exit_code)
+            return
+        if base_wait:
             return
         try:
             started_at = datetime.fromisoformat(step.get("ts") or "").timestamp()
@@ -3703,6 +3759,8 @@ class FlowEngine(PlanEditing):
         if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
             snapshot_dir = self._freeze_planning_output(card, name, out)
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
+        if data.get("result") == "question" and data.get("baseProposal") is not None:
+            extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
         remembered = False
         auto_allow = False
         broken_mcp = self._codex_broken_mcp(step, data)
@@ -3768,6 +3826,8 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="",
                                 command=data.get("command") or "", executor="", auto=True)
+        # Agent konfliktu już scalił w worktree karty. Utrwalamy potwierdzony stan także podczas
+        # decyzji o bazie; blokada nadal odracza sprzątanie i kolejne scalenia w _tick_card/_act.
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
@@ -3873,6 +3933,7 @@ class FlowEngine(PlanEditing):
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
+                "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
 
     @staticmethod
@@ -3919,6 +3980,8 @@ class FlowEngine(PlanEditing):
         return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
 
     def _merge(self, card: str, st: FlowState, step: dict, retry: bool = False) -> None:
+        if baseproposal.pending(st):
+            return
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
@@ -4090,6 +4153,8 @@ class FlowEngine(PlanEditing):
         """Pytanie kroku o środowisko (piaskownica, Docker, porty, instalacje, testy) dostaje odpowiedź Tide zamiast
         trafić do użytkownika (03.11: „to serio tak ma działać, że muszę odpalać sesję ratunkową?”). Raz na ticket
         z rzędu: gdy agent zapyta ponownie zaraz po odpowiedzi Tide, pytanie idzie do użytkownika."""
+        if done.get("baseProposal") is not None or baseproposal.pending(fold(self.journal.read(card))):
+            return
         question = str(done.get("question") or "")
         name = step.get("step") or ""
         if not ENV_QUESTION.search(question) or self.journal is None:
@@ -4460,6 +4525,8 @@ class FlowEngine(PlanEditing):
 
         if preview["reason"]:
             block(preview["reason"], preview["message"])
+        if baseproposal.pending(st):
+            block("base-decision", "Najpierw rozstrzygnij pytanie o bazę karty; wyniki pozostają niescalone.")
         if not st.closed:
             block("not-closed", "Karta nie ma aktualnego domknięcia.")
         if st.running() or st.open_consoles() or st.outside_started:
@@ -4532,6 +4599,8 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card))
+        if baseproposal.pending(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         if not st.closed or st.plan_revision:
             raise FlowError("not-closed", "karta nie jest jeszcze gotowa do scalenia")
         info = ticket_of(st)
@@ -4579,6 +4648,8 @@ class FlowEngine(PlanEditing):
 
     def _advance_close(self, card: str, st: FlowState) -> None:
         """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
+        if baseproposal.pending(st):
+            return
         if (st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or
                 st.moved_to == "todo" or st.open_intents()):
             return

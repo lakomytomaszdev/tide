@@ -194,6 +194,34 @@ dokłada na końcu „Inną odpowiedź…” — agent jej nie podaje. Wybór wz
 tytuł, zły typ) nie są błędem kroku: okno ma wtedy samo pole odpowiedzi. Pytanie bez `options` działa jak dotąd.
 Autor i recenzent nie wykonują push ani scalenia.
 
+**Pytanie o bazę (PT-208).** Każde przekazanie kroku zawiera bieżący pełny ref i przypięty SHA bazy
+albo jawne `unknown`. Sam brak pliku nie dowodzi błędnej bazy ani nie pozwala tworzyć zamiennika,
+wykonywać checkout, rebase czy reset. Po sprawdzeniu dowodów krok może zapisać:
+
+```json
+{"result":"question","question":"Czy zachować bazę?","baseProposal":{"ref":"refs/heads/feature/example","evidence":"Sprawdzona historia wskazanego pliku…"}}
+```
+
+`baseProposal` jest opcjonalne. `ref` musi być pełnym lokalnie znanym refem `refs/heads/…` lub
+`refs/remotes/…` (do 1024 znaków), `evidence` niepustym zwykłym tekstem (do 4000 znaków).
+Usługa sprawdza kandydata w repozytorium projektu karty, bez fetch ani zmiany gita. Nieprawidłowa
+propozycja pozostaje informacją przy zwykłym pytaniu; stare pytania i `options` zachowują działanie.
+
+Poprawna propozycja wstrzymuje nowe kroki i integrację wyników tej karty. Procesy mogą dokończyć,
+a ich wyniki pozostają zapisane i niescalone. Pytanie i blokada wracają po restarcie; oczekiwanie nie
+trzyma blokady repozytorium i nie blokuje innych kart. `ResolveCardStep` przyjmuje `choice: answer`,
+`step` oraz strukturalne `baseDecision: keep` albo `change`, niezależnie od tekstu odpowiedzi.
+Zachowaj zapisuje zwykłą odpowiedź i odblokowuje kontynuację. Zmień zapisuje oczekiwanie (`waiting: true`,
+`changed: false`), pozostawiając pytanie i możliwość Zachowaj. Nie wykonuje operacji git ani nie
+potwierdza zmiany; podgląd dostarczy PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+
+Korekta v1 jest ograniczona do karty bez commitów wkładu i czynnych procesów, zwykle Od razu przed
+pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP i praca po review (K-49) wymagają odmowy
+korekty i zachowania danych. Cel pkt 4 oraz historie 35–37 pozostają częściowe. Wymagania wskazują
+szkic `K-50-replay-code` (`followups/replay-code.md` obok planu), którego obecność i zakres ma
+zweryfikować PT-201; sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
+pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeniesienia.
+
 **Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
 `{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
 `severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;
