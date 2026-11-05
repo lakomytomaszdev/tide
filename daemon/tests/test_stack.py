@@ -159,11 +159,13 @@ class TemplatesTest(unittest.TestCase):
             self.assertIn(expected, domains)
 
     def test_build_domains_node_playwright_and_profile_extras(self):
-        domains = templates.build_domains({"stacks": ["node", "playwright"], "network": {"domains": ["a.example"]}})
+        profile = {"stacks": ["node", "playwright"], "network": {"domains": ["a.example"]}}
+        domains = templates.build_domains(profile)
         self.assertIn("registry.npmjs.org", domains)
         self.assertIn("cdn.playwright.dev", domains)
         self.assertIn("playwright.azureedge.net", domains)
-        self.assertEqual(domains[-1], "a.example")
+        self.assertIn("a.example", domains)
+        self.assertEqual(templates.work_domains(profile)[-1], "a.example")
         self.assertEqual(len(domains), len(set(domains)))
         self.assertEqual(templates.build_domains({"stacks": ["node"]}), templates.build_domains({"stacks": ["node"]}))
         self.assertNotIn("cdn.playwright.dev", templates.build_domains({"stacks": ["node"]}))

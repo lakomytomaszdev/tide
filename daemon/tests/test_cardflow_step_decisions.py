@@ -223,6 +223,7 @@ class StepDecisionTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "question")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który format daty?")
+        self.assertTrue(wait_until(lambda: len(notices) == 1, timeout=5), self.events(card_id))
         self.assertEqual(len(notices), 1)
         self.assertEqual((notices[0]["card"], notices[0]["result"]), (card_id, "question"))
         self.flow.tick()
@@ -251,6 +252,8 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")
+        # Publikacja kolumny i dostarczenie powiadomienia są osobnymi zdarzeniami Qt.
+        self.assertTrue(wait_until(lambda: len(notices) == 1, timeout=5), self.events(card_id))
         self.assertEqual(len(notices), 1)
         self.flow.tick()
         self.restart()

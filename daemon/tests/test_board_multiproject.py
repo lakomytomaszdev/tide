@@ -427,8 +427,9 @@ class StickyMonitorTest(unittest.TestCase):
         w.store.update_card(w.card_id, {"session": "claude:recznie"})
         w.k1_session(moved=False)
         self.agents.sessions = w.sessions()
-        head = git(w.store.root, "rev-parse", "HEAD").strip()
         monitor = self.start()
+        # Start synchronizuje także pliki inicjalizacji monitora. Mierzymy brak późniejszego commita sesji.
+        head = git(w.store.root, "rev-parse", "HEAD").strip()
         wait_until(lambda: False, timeout=0.5)
         self.assertEqual(self.file_session(), "claude:recznie")
         self.assertEqual(git(w.store.root, "rev-parse", "HEAD").strip(), head,

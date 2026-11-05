@@ -5,6 +5,12 @@ domains:
   - name: playwright.azureedge.net
     risk: yellow
     note: CDN przeglądarek Playwrighta
+  - name: playwright-akamai.azureedge.net
+    risk: yellow
+    note: lustro pobierania przeglądarek Playwrighta (P-6)
+  - name: playwright-verizon.azureedge.net
+    risk: yellow
+    note: lustro pobierania przeglądarek Playwrighta (P-6)
   - name: cdn.playwright.dev
     risk: yellow
     note: CDN przeglądarek Playwrighta

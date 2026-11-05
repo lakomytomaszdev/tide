@@ -160,6 +160,12 @@ class Incus:
     def volume_create(self, pool: str, volume: str, config: dict | None = None):
         self.call("storage", "volume", "create", pool, volume, *_kv(config or {}))
 
+    def volume_get(self, pool: str, volume: str, key: str) -> str:
+        return self.call("storage", "volume", "get", pool, volume, key).stdout.strip()
+
+    def volume_set(self, pool: str, volume: str, values: dict):
+        self.call("storage", "volume", "set", pool, volume, *_kv(values))
+
     def volume_delete(self, pool: str, volume: str, check=True):
         return self.call("storage", "volume", "delete", pool, volume, check=check)
 

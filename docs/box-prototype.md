@@ -131,6 +131,41 @@ startów jednostki, błąd skryptu — poprawiony). Runda 5: tylko `bash scripts
 | Zimny start zatrzymanego kontenera (`incus start` do końca startu systemd) | ≤ 30 s | runda 4: 2,828 / 2,301 / 1,909 s (runda 3: 3,811 / 1,813 / 2,395 s) | 2,301 s | tak |
 | Reset: `incus snapshot restore` (do końca startu systemd) | ≤ 60 s | runda 4: 3,982 / 3,498 / 3,877 s (runda 3: 3,962 / 3,304 / 3,291 s) — tylko z chwilowym `restricted.snapshots=allow` (projekt z PT-166 blokuje migawki: „Project user-1000 doesn't allow for snapshot creation”) | 3,877 s | tak, ale wymaga `restricted.snapshots=allow` w projekcie |
 
+### Pierwsza budowa szablonów stosów (PT-192)
+
+Próba `bash scripts/box/stacks-trial.sh` z **2026-11-05 19:27:52**, commit `aab9dcad`, Incus 6.0.0:
+wszystkie kontrole przeszły (kod 0). Użyto produkcyjnego buildera i proxy z polityką domen; profile próbne
+zatwierdzono przez `tide box approve`. `STACKS_VERSION` i suma katalogu były zgodne:
+`7a15d6f7613824463834189090b264fd54eb34302d6929a76e2769c3f7ac39d5`.
+
+| Pomiar / kontrola | Wynik |
+| --- | --- |
+| `tide box build plasma-tide`, python-qt | **58,8 s**, `clean`, próg ≤ 900 s |
+| `tide box reset plasma-tide` | **1,5 s**, `clean`, próg ≤ 60 s; plik w `/home/agent` zachowany, plik w `/root` cofnięty |
+| Budowa `tide-stacks-test`, dotnet + docker | **76,5 s**, `clean` |
+| Status obu pudełek | hash zgodny z profilem, filtrowanie NIC: tak (mac i IPv4 włączone, IPv6 wyłączone zgodnie z ustawieniami) |
+| Dzienniki odmów proxy obu budów | puste; wcześniejsze odmowy `motd.ubuntu.com` wyjaśniono i domenę dopisano wyłącznie do `base.yaml: build-domains` |
+| Programy jako `agent` | Claude Code 2.1.317 i codex-cli 0.166.0 działają |
+| Qt | importy PyQt6 wymagane przez projekt i QGuiApplication przeszły; platforma `offscreen` |
+| .NET | SDK 8.0.427, `verify` i kontrola NuGet.Config przeszły |
+| Docker jako `agent` | `docker info` działa: Docker 29.1.3, runtime `runc-126`; lokalny obraz `testcontainers/ryuk:0.11.0` dostępny |
+| Środowisko dockerd | HTTP_PROXY i HTTPS_PROXY na `http://10.173.184.1:18080`, pełne `NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal`, bez DOCKER_HOST |
+
+Hash python-qt: `cb1e5ea3cb315a07fc08de8a6585ea0e14f02c8180d716ab510ed038d9643a6c`;
+hash dotnet + docker: `83b835c92db25fab340bc25876e22ba589d729c57e4fc5362a93f95e92b71925`.
+Obraz Ryuk pobrał builder podczas działania proxy; kontrola po budowie odczytuje go lokalnie.
+Nowe wolumeny domowe zostały zainicjalizowane wewnątrz pudełek, a kontrola braku swapu przeszła przed
+szablonami (decyzje `home-init-bez-initial` i `swap-zero-bez-lowlevel`). Obie instancje i profile próbne
+usunięto, chwilowe `restricted.snapshots=allow` cofnięto do braku wartości.
+
+Źródła pomiarów w worktree: `docs/box-prototype/pt192-2026-11-05T192752.log` oraz katalog o tej samej
+nazwie bez rozszerzenia (szczegółowe logi budowy i odmów). Pełne wyjście polecenia jest również w wyniku
+kroku `pt-192-szablony-stosow-node-playwright.resume-K-38-PT-192-6.step/outside/outside.log` obok worktree.
+Po poprawkach izolacji testów w `7be29619` osobne **`make test` zakończyło się kodem 0**: wszystkie grupy
+OK, w tym 2438 testów daemona (2 pominięte). Wynik w kroku `resume-K-38-PT-192-7.step/outside/outside.log`.
+Shellcheck był niedostępny; kontrola ta została pominięta zgodnie z kryterium karty. Pomiary pojedynczej
+budowy nie zastępują końcowej oceny wydajności z #24.
+
 ## Co widać z kontenera (P-4)
 
 | Sprawdzenie | Polecenie | Wynik |

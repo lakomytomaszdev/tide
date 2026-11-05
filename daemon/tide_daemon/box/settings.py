@@ -19,7 +19,8 @@ Builder (PT-167):
 - `agents-version` — nadpisuje wersję agentów obrazu bazowego `box/agents.py` `AGENTS_VERSION` w hashu przepisu
   (puste = `AGENTS_VERSION`; jedno źródło: `builder.agents_version`),
 - `ip-wait-seconds` — ile czekać na adres IP pudełka po starcie (domyślnie 30),
-- `agent-uid`, `agent-gid` — właściciel wolumenu `/home/agent` w pudełku (`initial.uid/gid`, domyślnie 1000;
+- `agent-uid`, `agent-gid` — właściciel nowego wolumenu `/home/agent` w pudełku (inicjalizacja po starcie,
+  domyślnie 1000;
   ostateczną wartość ustala obraz bazowy #16).
 
 Adresu proxy nie ma w ustawieniach: builder bierze adres i port z uruchomionego proxy (`proxy.running()`, nasłuch

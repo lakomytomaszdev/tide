@@ -97,6 +97,8 @@ class BoxCase(unittest.TestCase):
         with open(os.path.join(self.stacks, "node.sh"), "w", encoding="utf-8") as fh:
             fh.write('echo "box[$TIDE_FAKE_BOX] node.sh HTTPS_PROXY=$HTTPS_PROXY node=$TIDE_NODE_VERSION" '
                      '>> "$TIDE_FAKE_LOG"\n')
+        with open(os.path.join(self.stacks, "lib.sh"), "w", encoding="utf-8") as fh:
+            fh.write("# atrapa wspólnych funkcji szablonów\n")
         p = mock.patch.object(templates, "STACKS_DIR", self.stacks)
         p.start()
         self.addCleanup(p.stop)
@@ -190,6 +192,33 @@ class FakeIncusTest(BoxCase):
 
 
 class BuildTest(BoxCase):
+    def test_restricted_build_checks_zero_swap_before_stack(self):
+        self.approve()
+        self.builder().build("plasma-tide")
+        argvs = self.incus_calls()
+        init = next(a for a in argvs if a[0] == "init")
+        self.assertFalse(any(a.startswith("limits.memory.swap=") for a in init))
+        execs = [a for a in argvs if a[0] == "exec"]
+        self.assertIn("/sys/fs/cgroup/memory.swap.max", execs[0])
+        log = calls(self.env)
+        first_exec = next(i for i, line in enumerate(log) if line.startswith("incus exec"))
+        policy = next(i for i, line in enumerate(log) if line.startswith("set_box_policy"))
+        stack = next(i for i, line in enumerate(log) if "node.sh HTTPS_PROXY=" in line)
+        self.assertLess(policy, first_exec)
+        self.assertLess(first_exec, stack)
+
+    def test_swap_enabled_or_unreadable_aborts_before_provisioning(self):
+        self.approve()
+        for value in ("max", "1024", "missing", "", "invalid"):
+            with self.subTest(swap=value), mock.patch.dict(os.environ, {"TIDE_FAKE_SWAP_MAX": value}):
+                with self.assertRaisesRegex(bb.BuildError, "swap"):
+                    self.builder().build("plasma-tide")
+                state = self.fake_state()
+                self.assertFalse(state["instances"]["plasma-tide"]["snapshots"])
+                self.assertFalse(state.get("pushed"))
+                self.assertEqual(len(self.policy.cleared), len(self.policy.calls))
+                self.assertNotEqual(bs.journal_state("plasma-tide", "plasma-tide")[0], bs.CLEAN)
+
     def test_build_order_argv_and_proxy_on_every_exec(self):
         self.approve()
         res = self.builder().build("plasma-tide")
@@ -314,9 +343,47 @@ class BuildTest(BoxCase):
             .build("plasma-tide")
         create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"]]
         self.assertEqual(create, [["storage", "volume", "create", "--project", "user-1000", "tide", "plasma-tide-home",
-                                   "initial.uid=1001", "initial.gid=1002", "initial.mode=0750"]])
+                                   f"{bb.HOME_INIT_KEY}=pending"]])
         self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"],
-                         {"initial.uid": "1001", "initial.gid": "1002", "initial.mode": "0750"})
+                         {bb.HOME_INIT_KEY: "ready"})
+        argvs = self.incus_calls()
+        prepare = next(a for a in argvs if a[0] == "exec" and a[a.index("--") + 1] == "install")
+        self.assertEqual(prepare[prepare.index("--") + 1:],
+                         ["install", "-d", "-m", "0750", "-o", "1001", "-g", "1002", "/home/agent"])
+        stack = next(a for a in argvs if a[0] == "exec" and f"{bb.REMOTE_STACKS}/node.sh" in a)
+        self.assertLess(argvs.index(prepare), argvs.index(stack))
+
+    def test_rebuild_keeps_existing_home_permissions(self):
+        self.approve()
+        b = self.builder()
+        b.build("plasma-tide")
+        before = len(self.incus_calls())
+        b.build("plasma-tide")
+        after = self.incus_calls()[before:]
+        self.assertFalse([a for a in after if a[:3] == ["storage", "volume", "create"]
+                          or a[0] == "exec" and a[a.index("--") + 1] == "install"])
+
+    def test_unmarked_existing_home_is_not_changed(self):
+        self.approve()
+        b = self.builder()
+        b.incus.volume_create("tide", "plasma-tide-home")
+        b.build("plasma-tide")
+        self.assertFalse([a for a in self.incus_calls() if a[0] == "exec" and a[a.index("--") + 1] == "install"])
+        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"], {})
+
+    def test_home_initialization_failure_is_retried_without_snapshot(self):
+        self.approve()
+        b = self.builder()
+        with mock.patch.dict(os.environ, {"TIDE_FAKE_BOX_FAIL": "install"}):
+            with self.assertRaisesRegex(bb.BuildError, "inicjalizacja /home/agent"):
+                b.build("plasma-tide")
+        state = self.fake_state()
+        self.assertEqual(state["volume_config"]["tide/plasma-tide-home"][bb.HOME_INIT_KEY], "pending")
+        self.assertFalse(state["instances"]["plasma-tide"]["snapshots"])
+        self.assertFalse(state.get("pushed"))
+        self.assertEqual(len(self.policy.calls), len(self.policy.cleared))
+        b.build("plasma-tide")
+        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"][bb.HOME_INIT_KEY], "ready")
 
     def test_failed_verify_still_snapshots_with_warning(self):
         self.approve({**PROFILE, "verify": ["true", "exit 3"]})
@@ -357,7 +424,7 @@ class BuildTest(BoxCase):
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
-                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB", "-c", "limits.memory.swap=false",
+                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
                                 "-c", "security.nesting=true"])
         self.assertIn(["config", "device", "override", "--project", "user-1000", "plasma-tide", "root", "size=25GB"],
                       self.incus_calls())
@@ -366,7 +433,7 @@ class BuildTest(BoxCase):
         self.approve({k: v for k, v in PROFILE.items() if k != "docker"})
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
-        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB", "-c", "limits.memory.swap=false"])
+        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB"])
         self.assertIn("size=60GB", [a for a in self.incus_calls() if "root" in a][0])
 
     def test_vm_is_refused_without_incus(self):
@@ -436,7 +503,15 @@ class CardCopyTest(BoxCase):
         self.assertEqual(snap["devices"]["home"]["source"], "plasma-tide-k-38-home")
         self.assertEqual(snap["devices"]["eth0"]["security.mac_filtering"], "true")
         create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"] and name + "-home" in a]
-        self.assertIn("initial.uid=1000", create[0])
+        self.assertIn(f"{bb.HOME_INIT_KEY}=pending", create[0])
+        self.assertEqual(self.fake_state()["volume_config"][f"tide/{name}-home"][bb.HOME_INIT_KEY], "ready")
+        self.assertEqual(inst["status"], "Stopped")
+        argvs = self.incus_calls()
+        prepare = next(a for a in argvs if a[0] == "exec" and a[a.index("--") + 1] == "install" and name in a)
+        stop = ["stop", "--project", "user-1000", name, "--force"]
+        snap_argv = next(a for a in argvs if a[:2] == ["snapshot", "create"] and name in a)
+        self.assertLess(argvs.index(prepare), argvs.index(stop))
+        self.assertLess(argvs.index(stop), argvs.index(snap_argv))
         bs.mark_in_use("plasma-tide", name, "PT-2")
         code, _, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
         self.assertEqual(code, 3, err)
@@ -462,6 +537,19 @@ class CardCopyTest(BoxCase):
     def test_copy_without_clean_snapshot_is_refused(self):
         with self.assertRaisesRegex(bb.BuildError, "clean"):
             self.builder().copy_for_card("plasma-tide", "K-38")
+
+    def test_failed_home_initialization_removes_partial_copy_and_can_retry(self):
+        self.approve()
+        b = self.builder()
+        b.build("plasma-tide")
+        with mock.patch.dict(os.environ, {"TIDE_FAKE_BOX_FAIL": "install"}):
+            with self.assertRaisesRegex(bb.BuildError, "inicjalizacja /home/agent"):
+                b.copy_for_card("plasma-tide", "K-38")
+        self.assertNotIn("plasma-tide-k-38", self.fake_state()["instances"])
+        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-k-38-home"][bb.HOME_INIT_KEY], "pending")
+        name = b.copy_for_card("plasma-tide", "K-38")
+        self.assertEqual(self.fake_state()["instances"][name]["status"], "Stopped")
+        self.assertEqual(self.fake_state()["volume_config"][f"tide/{name}-home"][bb.HOME_INIT_KEY], "ready")
 
     def test_card_box_name(self):
         self.assertEqual(bs.card_box_name("toolssuite", "k-7"), "toolssuite-k-7")
@@ -637,19 +725,25 @@ class CliTest(BoxCase):
             self.assertIn(f"NO_PROXY={netenv.BOX_NO_PROXY}", argv)
 
     def test_tide_entry_point_build_without_running_proxy_fails_before_incus(self):
-        # Osobny proces czyta prawdziwe box/stacks (bez skryptów .sh z #29), więc profil bez stosów.
-        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie.
+        # Osobny proces czyta prawdziwe box/stacks; profil bez stosów, żeby nic z nich nie biegło na atrapie.
+        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie,
+        # a własne proxy polecenia (PT-192, base-wlasne-proxy-cli) nie wstaje bez mostka — odmowa przed incus.
         self.approve({**PROFILE, "stacks": []})
         path = bset.settings_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"box": {"project": "user-1000", "ip-wait-seconds": 0, "proxy-port": 18555}}, fh)
+        # Host z zainstalowanym Incusem ma prawdziwy mostek. Także zapasowy odczyt przez ip musi być atrapą.
+        ip = os.path.join(self.tmp, "fakebin", "ip")
+        with open(ip, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 1\n")
+        os.chmod(ip, 0o755)
         env = {**os.environ, "PYTHONPATH": DAEMON}
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py"), "box", "build", "plasma-tide"],
                               env=env, stdin=subprocess.PIPE, capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertIn("proxy Tide (#5)", proc.stderr)
-        self.assertEqual(self.incus_calls(), [])
+        self.assertIn("tide box build: proxy Tide", proc.stderr)
+        self.assertFalse([a for a in self.incus_calls() if a[0] != "network"])
 
 
 class SettingsTest(unittest.TestCase):

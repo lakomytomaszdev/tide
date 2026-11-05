@@ -442,10 +442,12 @@ class ComposeTests(unittest.TestCase):
         project = {"tide-box": 1, "stacks": ["node"], "network": {"domains": ["api.example.org"]}}
         cards = {"K-1": {"tide-box": 1, "stacks": ["dotnet"], "network": {"domains": ["cdn.example.net"]}}}
         got = self.compose(project, cards)
-        for domain in bx.MODEL_DOMAINS + templates.build_domains(project) + ("cdn.example.net",):
+        for domain in bx.MODEL_DOMAINS + templates.work_domains(project) + ("cdn.example.net",):
             self.assertIn(domain, got.domains)
-        for domain in templates.build_domains({"stacks": ["dotnet"]}):
+        for domain in templates.work_domains({"stacks": ["dotnet"]}):
             self.assertIn(domain, got.domains)
+        # domeny tylko budowy szablonów (PT-192) nie trafiają do polityki kroków
+        self.assertNotIn("aka.ms", got.domains)
         self.assertEqual(len(got.domains), len(set(got.domains)))
         self.assertFalse(got.ollama)
         self.assertFalse(got.full)
@@ -494,7 +496,8 @@ class ComposeTests(unittest.TestCase):
 
     def test_invalid_card_is_skipped(self):
         got = self.compose(None, {"K-7": {"tide-box": 2}})
-        self.assertEqual(got.domains, bx.MODEL_DOMAINS + templates.build_domains({}))
+        self.assertEqual(got.domains, bx.MODEL_DOMAINS + templates.work_domains({}))
+        self.assertNotIn("motd.ubuntu.com", got.domains)
         self.assertTrue(any("K-7" in n for n in self.notes))
 
 

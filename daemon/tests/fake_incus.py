@@ -11,6 +11,8 @@
   (`<fakebin>/box`: `apt-get`, `docker`, `systemctl` tylko zapisują wywołanie) — nic nie trafia na hosta;
   argument równy ścieżce wypchniętej `file push` jest podmieniany na lokalną kopię,
 - `$TIDE_FAKE_INCUS_FAIL` — lista podpoleceń (np. `snapshot create,start`), które kończą się kodem 1.
+- `/sys/fs/cgroup/memory.swap.max` w argv `exec` jest podmieniane na plik atrapy: domyślnie `0`
+  (Incus 6.0 z twardym limitem pamięci); `$TIDE_FAKE_SWAP_MAX` zmienia treść, `missing` symuluje brak pliku.
 """
 import json
 import os
@@ -116,6 +118,9 @@ def main(argv):
                 config.update(kv([opts[j + 1]]))
         if config.get("security.privileged") == "true":
             die("atrapa: security.privileged jest zabronione w projekcie ograniczonym")
+        if "limits.memory.swap" in config:
+            die(f'Failed checking if instance creation allowed: Use of low-level config "limits.memory.swap" '
+                f'on container "{name}" of project "{project}" is forbidden')
         config["image.source"] = image
         data["instances"][name] = new_instance(data, config, {}, "Running" if cmd == "launch" else "Stopped")
     elif cmd == "copy":
@@ -212,8 +217,12 @@ def main(argv):
         if action == "create":
             if key in data["volumes"]:
                 die(f"Volume by that name already exists: {key}")
+            config = kv(args[5:])
+            for option in config:
+                if option in ("initial.uid", "initial.gid", "initial.mode"):
+                    die(f'Invalid option for volume "{volume}" option "{option}"')
             data["volumes"].append(key)
-            data.setdefault("volume_config", {})[key] = kv(args[5:])
+            data.setdefault("volume_config", {})[key] = config
         elif action == "delete":
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
@@ -223,6 +232,14 @@ def main(argv):
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
             print(json.dumps({"name": volume, "pool": pool}))
+        elif action in ("get", "set"):
+            if key not in data["volumes"]:
+                die(f"Storage volume not found: {key}")
+            config = data.setdefault("volume_config", {}).setdefault(key, {})
+            if action == "get":
+                print(config.get(args[5], ""))
+            else:
+                config.update(kv(args[5:]))
         else:
             die(f"atrapa: nieznane storage volume {action}", 2)
     elif cmd == "file":
@@ -278,6 +295,18 @@ def run_exec(data, opts, command):
         os.makedirs(cwd, exist_ok=True)
     pushed = data.get("pushed", {}).get(name, {})
     command = [pushed.get(a, a) for a in command]
+    swap_path = "/sys/fs/cgroup/memory.swap.max"
+    if swap_path in command:
+        local = os.path.join(STATE, "cgroup", name, "memory.swap.max")
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        value = os.environ.get("TIDE_FAKE_SWAP_MAX", "0")
+        if value == "missing":
+            if os.path.exists(local):
+                os.remove(local)
+        else:
+            with open(local, "w", encoding="utf-8") as fh:
+                fh.write(value + "\n")
+        command = [local if a == swap_path else a for a in command]
     env["TIDE_FAKE_BOX"] = name
     if not command:
         die("brak polecenia po --", 2)
