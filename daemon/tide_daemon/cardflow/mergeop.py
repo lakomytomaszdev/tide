@@ -55,8 +55,13 @@ class MergeWorktree:
         if overlap:
             raise gitops.FlowGitError("worktree karty ma lokalne zmiany w scalanych plikach: " + ", ".join(overlap[:5]))
         # read-tree może zastąpić ignorowany plik. Sama próba -n ani diff-files go nie chronią.
-        untracked = {p.rstrip("/") for p in self.checked(self.runner.run("ls-files", "--others", "-z")).split("\0") if p}
+        # Tylko scalane ścieżki i ich rodzice: pathspec obejmuje plik o tej nazwie i wszystko pod katalogiem,
+        # więc duże ignorowane katalogi spoza scalenia (node_modules, build) nie są wyliczane.
         parents = {"/".join(p.split("/")[:i]) for p in changed for i in range(1, len(p.split("/")) + 1)}
+        specs, untracked = sorted(f":(literal){p}" for p in parents), set()
+        for start in range(0, len(specs), 500):
+            listed = self.checked(self.runner.run("ls-files", "--others", "-z", "--", *specs[start:start + 500]))
+            untracked |= {p.rstrip("/") for p in listed.split("\0") if p}
         collisions = sorted(p for p in untracked if p in parents or any(
             "/".join(p.split("/")[:i]) in changed for i in range(1, len(p.split("/")) + 1)))
         if collisions:

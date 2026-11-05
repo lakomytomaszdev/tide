@@ -2382,17 +2382,23 @@ na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Zmian
 obcy ref, indeks albo kolizje lokalnej pracy w scalanych ścieżkach powodują `main-merge.waiting`
 i „Czeka na mnie”, bez cofania plików i bez drugiego scalenia. Pliki ignorowane są sprawdzane pod
 kątem kolizji nazw, bez odczytywania i hashowania ich treści. Niezwiązane edycje i artefakty nie blokują
-recovery. Gdy ref wskazuje `resultCommit`, git jest zakończony: recovery sprawdza SHA i drzewo wyniku,
-a następnie dokańcza wynik oraz projekcję niezależnie od dalszej pracy w indeksie, checkoutcie i źródle.
+recovery. Gdy ref wskazuje `resultCommit` (albo jego potomka po dalszych commitach użytkownika), git jest
+zakończony: recovery sprawdza SHA i drzewo wyniku, a następnie dokańcza wynik oraz projekcję niezależnie od dalszej
+pracy w indeksie, checkoutcie i źródle oraz od późniejszej zmiany `tide.mainBranch` — polityka gałęzi głównej
+dotyczy tylko wykonania przed przesunięciem refu. Kolizje z plikami nieśledzonymi i ignorowanymi sprawdzamy
+wyłącznie w scalanych ścieżkach i ich rodzicach (pathspec), bez wyliczania całych ignorowanych katalogów.
 
 Oczekiwanie nie zatrzymuje synchronizacji ruchów użytkownika, poprawki planu ani pozostałych kroków karty.
 Po usunięciu przyczyny wznowienie używa tego samego ID. „Do poprawy”, zwrot planu, nowe domknięcie lub ręczne zakończenie
-po zamiarze pozwala zapisać `main-merge.abandoned`, jeśli ref nadal wskazuje `targetCommitBefore`
-i nie zapisano sukcesu. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
+po zamiarze zapisuje `main-merge.abandoned`, jeśli wynik nie trafił do refu celu i nie zapisano sukcesu —
+także przy obcym refie (np. commit użytkownika na głównej), z materializacją albo bez niej. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
 i nie pozwala dalej wznawiać starego zamiaru. Kolejne domknięcie wymaga nowego jawnego scalenia.
 W tym samym zleceniu nowa operacja może przejąć dokładny indeks porzuconej materializacji przy tym samym
 celu i niezmienionym refie; kontrola lokalnych kolizji nadal obejmuje stare i nowe scalane ścieżki.
-Obcy ref pozostaje jawnym oczekiwaniem, nigdy zgodą na porzucenie lub nadpisanie.
+Bez takiej decyzji obcy ref pozostaje jawnym oczekiwaniem; nigdy nie jest zgodą na ponowne wykonanie,
+reset ani nadpisanie. Porzucenie przy obcym refie nie dotyka refu, indeksu ani plików, a materializacja,
+która została w checkoutcie, nie jest dziedziczona (wymaga niezmienionego refu) — nowe scalenie odmówi jak przy
+obcych staged.
 Niezwiązane zmiany niezapisane w indeksie pozostają obsługiwane (K-43); obce staged nadal są odmawiane.
 Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
 przygotowaniem; wspólna własność nowych zasobów należy do PT-206.

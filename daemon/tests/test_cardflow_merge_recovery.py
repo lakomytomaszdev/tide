@@ -471,19 +471,98 @@ class DurableMergeTest(FlowInProcess):
         self.assertEqual(self.sha(self.target), self.before)
         self.assertEqual(Path(self.repo, "result.txt").read_text(), "nowa ignorowana praca\n")
 
-    def test_return_to_revision_with_foreign_target_ref_never_abandons_or_overwrites(self):
-        self.crash_after("main-merge.checkpoint", stage="materialized")
-        intent = self.intent()
+    def foreign_target(self, intent):
         external = git(self.repo, "commit-tree", self.before + "^{tree}", "-p", self.before, "-m", "external").strip()
         git(self.repo, "update-ref", intent["targetRef"], external, self.before)
+        return external
+
+    def assert_released_without_resume(self, intent, external, index):
+        engine = self.flow.engine
+        with mock.patch.object(engine, "_resume_main_merge", side_effect=AssertionError("wznowienie")) as resume:
+            for _ in range(2):
+                engine.tick()
+        resume.assert_not_called()
+        events = engine.journal.read(self.card_id)
+        self.assertEqual([e["key"] for e in events if e["type"] == "main-merge.abandoned"], [intent["key"]])
+        self.assertFalse(any(e["type"] == "result" and e.get("action") == "main-merge" for e in events))
+        self.assertFalse(any(e["type"] == "card.main-merged" for e in events))
+        st = fold(events)
+        self.assertEqual(st.open_intents(), [])
+        self.assertEqual(st.busy_reason(), "")
+        self.assertFalse(st.active())  # StartCard może przyjąć nowe zlecenie
+        self.assertEqual(self.sha(self.target), external)
+        self.assertEqual(git(self.repo, "write-tree"), index)
+
+    def test_return_to_revision_with_foreign_target_ref_abandons_without_touching_checkout(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        intent = self.intent()
+        external = self.foreign_target(intent)
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        self.flow.engine.tick()
+        self.assert_waiting(intent)
         self.flow.engine.moved(self.card_id, "todo", "waiting", "revision")
+        self.assert_released_without_resume(intent, external, index)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
+        self.assertIn("obcym refie", next(e for e in self.flow.engine.journal.read(self.card_id)
+                                          if e["type"] == "main-merge.abandoned")["reason"])
+        # Materializacja nie jest dziedziczona przy zmienionym refie: nowa zgoda odmawia bez nadpisania.
+        self.assertFalse(self.merge()["ok"])
+        self.assertEqual(self.sha(self.target), external)
+        self.assertEqual(git(self.repo, "write-tree"), index)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
+
+    def test_manual_archive_with_foreign_target_ref_ends_intent_without_materialization(self):
+        self.crash_after("intent", action="main-merge")
+        intent = self.intent()
+        external = self.foreign_target(intent)
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        self.flow.engine.tick()
+        self.assert_waiting(intent)
+        self.store.move_card(self.card_id, "archived", -1, from_column="waiting")
+        self.assert_released_without_resume(intent, external, index)
+        events = self.flow.engine.journal.read(self.card_id)
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(self.store.load().cards[1].column, "archived")
+        self.assertFalse(Path(self.repo, "result.txt").exists())
+        self.assertEqual(Path(self.repo, "local.txt").read_text(), "baza lokalnej pracy\n")
+
+    def test_manual_done_with_foreign_target_ref_after_materialization_releases_card(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        intent = self.intent()
+        external = self.foreign_target(intent)
+        index = git(self.repo, "write-tree")
+        self.restart_stopped()
+        self.store.move_card(self.card_id, "done", -1, from_column="waiting")
+        self.assert_released_without_resume(intent, external, index)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
+
+    def test_user_commit_on_top_of_moved_ref_completes_result_instead_of_abandoning(self):
+        self.crash_after("main-merge.checkpoint", stage="ref-moved")
+        intent = self.intent()
+        self.write(self.repo, "local.txt", "commit użytkownika po scaleniu\n")
+        later = self.commit(self.repo, "user work after merge")
+        self.store.move_card(self.card_id, "archived", -1, from_column="review")
         self.restart_stopped()
         self.flow.engine.tick()
         events = self.flow.engine.journal.read(self.card_id)
         self.assertFalse(any(e["type"] == "main-merge.abandoned" for e in events))
-        self.assertFalse(self.merge()["ok"])
-        self.assertEqual(self.sha(self.target), external)
-        self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
+        self.assertEqual(len([e for e in events if e["type"] == "result" and e.get("action") == "main-merge"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
+        self.assertEqual(self.sha(self.target), later)
+        self.assertEqual(self.store.load().cards[1].column, "archived")
+        self.assertEqual(fold(events).busy_reason(), "")
+
+    def test_changed_main_branch_after_ref_move_still_records_result(self):
+        self.crash_after("main-merge.checkpoint", stage="ref-moved")
+        git(self.repo, "branch", "other-main", self.before)
+        git(self.repo, "config", "tide.mainBranch", "other-main")
+        self.restart_stopped()
+        self.flow.engine.tick()
+        self.assert_success()
+        self.assertEqual(self.sha("other-main"), self.before)
 
     def test_new_staged_work_after_intent_waits_without_changing_index(self):
         self.crash_after("intent", action="main-merge")

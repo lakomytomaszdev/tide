@@ -4350,34 +4350,55 @@ class FlowEngine(PlanEditing):
                      i.get("key") not in st.abandoned_main_merges and
                      i.get("requestSeq") == (st.started or {}).get("seq")), None)
 
-    def _recover_main_merge(self, card: str) -> bool:
-        st = fold(self.journal.read(card))
-        intent = self._main_merge_intent(st)
+    def _pending_main_merge(self, card: str) -> dict | None:
+        events = self.journal.read(card)
+        intent = self._main_merge_intent(fold(events))
         if not intent or any(e.get("type") == "main-merge.checkpoint" and e.get("key") == intent["key"] and
-                             e.get("stage") == "projected" for e in self.journal.read(card)):
+                             e.get("stage") == "projected" for e in events):
+            return None
+        return intent
+
+    def _recover_main_merge(self, card: str) -> bool:
+        intent = self._pending_main_merge(card)
+        if not intent:
             return False
         try:
             with lock_for(intent["repo"]):
-                if self._abandon_main_merge(card, intent):
+                # Równoległe MergeCardToMain mogło porzucić ten zamiar i zapisać nowy — czytamy pod blokadą.
+                intent = self._pending_main_merge(card)
+                if not intent or self._abandon_main_merge(card, intent):
                     return False
                 self._resume_main_merge(card, intent)
         except FlowError:
             pass  # Jawne oczekiwanie jest już w dzienniku; brak pętli nowych zamiarów.
         return True
 
+    def _result_in_target(self, intent: dict, current: str) -> bool:
+        """Ref celu wskazuje wynik albo jego potomka: git tej operacji jest zakończony."""
+        return bool(current) and (current == intent["resultCommit"] or
+                                  self.git.run(intent["repo"], "merge-base", "--is-ancestor",
+                                               intent["resultCommit"], current).ok)
+
     def _abandon_main_merge(self, card: str, intent: dict) -> bool:
-        """Decyzja użytkownika zamyka nieprzesunięty zamiar, nigdy nie cofa plików ani indeksu."""
+        """Jawna decyzja użytkownika zamyka zamiar, którego wynik nie trafił do refu celu.
+
+        Obcy ref (np. commit użytkownika na głównej) nie jest zgodą na wykonanie, ale decyzja „Do poprawy”, zwrot
+        planu, nowe domknięcie albo ręczne Gotowe/Archiwum kończy oczekiwanie. Zapisujemy tylko porzucenie —
+        bez dotykania plików, indeksu i refu. Ewentualna materializacja zostaje w checkoutcie; nowy zamiar
+        odziedziczy ją wyłącznie przy niezmienionym refie (MergeWorktree.prepare)."""
         st = fold(self.journal.read(card))
         returned = any(e["seq"] > intent["seq"] and (e["type"] in ("plan.returned", "card.closed") or
                        (e["type"] == "card.moved" and e.get("to") in ("todo", "done", "archived")))
                        for e in self.journal.read(card))
-        if (returned and intent["resultCommit"] != intent["targetCommitBefore"] and
-                self.git.sha(intent["repo"], intent["targetRef"]) == intent["targetCommitBefore"] and
-                ("main-merge", intent["key"]) not in st.results):
-            self.journal.append(card, "main-merge.abandoned", key=intent["key"],
-                                reason="decyzja użytkownika przed przesunięciem refu celu")
-            return True
-        return False
+        if not returned or ("main-merge", intent["key"]) in st.results:
+            return False
+        current = self.git.sha(intent["repo"], intent["targetRef"])
+        if self._result_in_target(intent, current):
+            return False  # Ref już przesunięty: recovery dokańcza wynik i projekcję, nie porzuca.
+        reason = ("decyzja użytkownika przed przesunięciem refu celu" if current == intent["targetCommitBefore"]
+                  else "decyzja użytkownika przy obcym refie celu — bez wykonania i bez nadpisania")
+        self.journal.append(card, "main-merge.abandoned", key=intent["key"], reason=reason)
+        return True
 
     def _merge_card_to_main_locked(self, card: str, repo: str) -> dict:
         st = fold(self.journal.read(card))
@@ -4446,24 +4467,25 @@ class FlowEngine(PlanEditing):
 
         try:
             st = fold(self.journal.read(card))
-            if intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
-                raise FlowGitError("gałąź główna zmieniła się po przygotowaniu operacji — scalenie czeka")
             if st.card_finished and st.main_merged and st.main_merged.get("operationId") == key:
                 checkpoint("projected")
                 return
             checkpoint("prepared")
             branch = intent["sourceRef"][len("refs/heads/"):]
             current = self.git.sha(intent["repo"], intent["targetRef"])
-            if current == intent["resultCommit"]:
-                tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{current}^{{tree}}")
+            if self._result_in_target(intent, current):
+                tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{intent['resultCommit']}^{{tree}}")
                 if not tree.ok or tree.out.strip() != intent["resultTree"]:
                     raise FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
-                # Ref dowodzi zakończenia gita także po awarii przed checkpointem. Źródło, worktree
-                # i indeks mogą już zawierać dalszą pracę użytkownika — projekcja ich nie dotyka.
+                # Ref (wynik albo jego potomek po dalszych commitach użytkownika) dowodzi zakończenia gita także
+                # po awarii przed checkpointem. Polityka gałęzi głównej dotyczy tylko wykonania przed przesunięciem
+                # refu. Źródło, worktree i indeks mogą już zawierać dalszą pracę — projekcja ich nie dotyka.
                 checkpoint("materialized")
                 checkpoint("ref-moved")
                 result = MergeWorktree.result(intent)
             else:
+                if intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
+                    raise FlowGitError("gałąź główna zmieniła się po przygotowaniu operacji — scalenie czeka")
                 if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
                         (st.started or {}).get("seq") != intent["requestSeq"]):
                     raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
