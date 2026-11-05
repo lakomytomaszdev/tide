@@ -88,6 +88,16 @@ class FlowInProcess(unittest.TestCase):
         wait_until(lambda: False, timeout=0.3)
         self.flow = self.make_flow()
 
+    def stop_flow_worker(self):
+        """Bariera przed ręcznym wywołaniem silnika: stop() nie czeka na trwające zadanie."""
+        self.flow._timer.stop()
+        pool = self.flow._pool
+        if pool is not None:
+            pool.submit(lambda: None).result(timeout=15)
+        # Odbieramy sygnały ukończonych zadań, zanim test podmieni metodę silnika lub dziennika.
+        app().processEvents()
+        self.flow.stop()
+
     # --- pomocnicze -------------------------------------------------------------------------------
 
     def card(self, title="Eksport CSV", description="Dodaj eksport.\n\nATRAPA: gotowe", column="todo") -> str:

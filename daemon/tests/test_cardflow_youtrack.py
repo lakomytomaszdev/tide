@@ -63,7 +63,8 @@ class YouTrackFlowTest(FlowInProcess):
         with open(path, 'w', encoding='utf-8') as fh:
             fh.write(proposal)
         self.assertTrue(self.submit(card, path)['ok'])
-        self.assertTrue(self.approve(card)['ok'])
+        # Poprawka planu dotyczy ticketów, które nie ruszyły: środowisko zatwierdzamy dopiero po niej.
+        self.assertTrue(self.approve(card, environment=False)['ok'])
         box = []
         self.flow.edit_plan(card, json.dumps({'action': 'return', 'feedback': 'Dodaj ticket z poprawką'}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))

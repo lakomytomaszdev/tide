@@ -828,7 +828,7 @@ class BoxStepInProcessTest(BoxFlow):
 
     def test_resume_of_a_box_step_uses_the_box_runner_from_the_entry(self):
         self.build_box()
-        # Zwykły build_box nie ma wolumenu domowego; tutaj odwzorowujemy migawkę prawdziwego buildera.
+        # Migawka obejmuje montowanie domu tak samo jak w prawdziwym builderze.
         self.builder()._attach_home(SLUG)
         self.builder().incus.snapshot_create(SLUG, bs.SNAPSHOT)
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
@@ -873,7 +873,7 @@ class BoxStepInProcessTest(BoxFlow):
         first = self.started(card_id)
         self.assertEqual(first["box"], bs.card_box_name(SLUG, card_id))
         self.assertEqual(self.finished(card_id)["result"], "question")
-        self.flow.stop()  # Kolejne próby prowadzimy bez równoległego tick monitora.
+        self.stop_flow_worker()  # Kolejne próby prowadzimy bez równoległego tick monitora.
         journal = self.engine.journal
         st = fold(journal.read(card_id))
         previous = st.steps[first["step"]]
