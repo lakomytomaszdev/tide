@@ -1903,7 +1903,9 @@ czekający od tej samej chwili nie czekają na siebie nawzajem. Zwolnione miejsc
 niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty zakończone, wstrzymane, przeniesione do
 Gotowe, Archiwum albo Backlogu i odrzucone tickety. Opiekun zakończony przed startem (np. `stale` po decyzji
 użytkownika, gdy czekał na slot) traci czekanie: wynik (`caretaker.action`/`caretaker.escalated`) zdejmuje jego
-`step.waiting` w `fold`, więc nie blokuje kroków innych kart. Pomijane są również zwykłe kroki, których start
+`step.waiting` w `fold`, więc nie blokuje kroków innych kart. Zatwierdzenie różnicy planu
+(`plan.revision-approved`) usuwa czekanie usuniętych ticketów w `fold`, również po restarcie usługi.
+Pomijane są również zwykłe kroki, których start
 blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzięki temu kolejność czekania
 ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
 Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
@@ -1919,6 +1921,12 @@ przy próbie zerowej (zamiast automatycznego ponowienia bez instrukcji).
 nieaktualny. Decyzja zapisana akcją opiekuna ma też `caretakerStep`: dokończenie po restarcie rozpoznaje własny
 `step.decision` (jak `step.retry`) przed walidacją `focus`, więc inna oczekująca decyzja karty nie zamienia
 wykonanego ponowienia w porażkę.
+
+**Ponowienie kroku przy błędzie trackera:** `resolve_step` z jawnym `step` (także od opiekuna) zapisuje decyzję
+tego kroku, nawet gdy nie ma trwających kroków i czeka trwały błąd komentarza YouTracka. Globalne `retry` bez
+`step` i bez problemu opiekuna nadal resetuje błędy trackera. Port opiekuna sprawdza wynik `resolve_step`:
+reset trackera albo odpowiedź bez potwierdzenia ponowienia wskazanego kroku daje nieudane działanie
+`retry-not-applied`, bez wpisu historii o udanym ponowieniu.
 
 ### Kontekst
 

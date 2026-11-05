@@ -310,6 +310,82 @@ class RestartWithParallelDecisionTest(EngineOnJournal):
         self.assertEqual(tried, ["Opiekun: ponowił PT-7 z instrukcją — Format daty."])
 
 
+class RetryWithTrackerFailureTest(EngineOnJournal):
+    """R4-M2: błąd komentarza w trackerze nie może przejąć ponowienia wskazanego kroku."""
+
+    def setUp(self):
+        super().setUp()
+        self.add("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.add("K-1", "step.started", step="K-1-PT-7-1", ticket="PT-7", kind="ticket", attempt=0,
+                 provider="anthropic")
+        self.add("K-1", "step.finished", step="K-1-PT-7-1", ticket="PT-7", result="error", reason="x")
+        self.add("K-1", "step.retry", step="K-1-PT-7-1", ticket="PT-7")
+        self.add("K-1", "step.started", step="K-1-PT-7-2", ticket="PT-7", kind="ticket", attempt=1,
+                 parentStep="K-1-PT-7-1", provider="anthropic")
+        self.add("K-1", "step.finished", step="K-1-PT-7-2", ticket="PT-7", result="error", reason="x")
+        failed = self.add("K-1", "result", action="youtrack-note", key="note-1", ok=False, permanent=True,
+                          error="Nie można dodać komentarza")
+        self.caretaker_run = self.add("K-1", caretaker.STARTED, problem=PROBLEM, key=f"caretaker:{PROBLEM}:1", n=1,
+                                      step="K-1-care-1", target="K-1-PT-7-2", root="K-1-PT-7-1", ticket="PT-7",
+                                      trigger="error", triggers=["error"], decision="step:K-1-PT-7-2",
+                                      watermark=failed["seq"])
+        self.add("K-1", "step.started", step="K-1-care-1", ticket="PT-7", kind="caretaker", provider="anthropic")
+        self.params = {"step": "K-1-PT-7-2", "instruction": "Popraw datę.", "reason": "Format daty."}
+        self.add("K-1", "step.finished", step="K-1-care-1", ticket="PT-7", result="done",
+                 outcome={"ok": True, "action": "retry", "params": self.params})
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(len(st.tracker_failures()), 1)
+        self.assertEqual(st.running(), [])
+        self.assertEqual([p["id"] for p in caretaker.problems(st)], [PROBLEM])
+
+    def act(self):
+        with mock.patch.object(self.engine, "_guard_check", return_value=None), \
+                mock.patch.object(self.engine, "_guard_rebase", return_value=None):
+            self.engine._caretaker_act("K-1", self.caretaker_run, "retry", self.params)
+        return self.journal.read("K-1")
+
+    def test_retry_records_the_decision_even_with_a_failed_tracker_note(self):
+        events = self.act()
+        decisions = [e for e in events if e["type"] == "step.decision"]
+        self.assertEqual([(d["step"], d["choice"], d["answer"], d["auto"], d["caretaker"], d["caretakerStep"])
+                          for d in decisions],
+                         [("K-1-PT-7-2", "retry", "Popraw datę.", True, PROBLEM, "K-1-care-1")])
+        self.assertFalse([e for e in events if e["type"] == "youtrack.reset"])
+        self.assertEqual(len(fold(events).tracker_failures()), 1)
+        actions = [e for e in events if e["type"] == caretaker.ACTION]
+        self.assertEqual([(a["ok"], a["retried"]) for a in actions], [(True, "K-1-PT-7-2")])
+        # Wznowienie ma nadal instrukcję opiekuna i wskazanego rodzica mimo błędu trackera.
+        with mock.patch.object(self.engine, "_resume_step") as resume:
+            self.engine._advance("K-1", fold(events))
+        self.assertEqual(resume.call_count, 1)
+        self.assertEqual(resume.call_args.args[2]["step"], "K-1-PT-7-2")
+        self.assertEqual(resume.call_args.args[3]["answer"], "Popraw datę.")
+
+    def test_tracker_reset_is_not_reported_as_a_successful_step_retry(self):
+        with mock.patch.object(self.engine, "resolve_step", return_value={"ok": True, "id": "K-1",
+                                                                         "choice": "retry", "tracker": True}):
+            events = self.act()
+        actions = [e for e in events if e["type"] == caretaker.ACTION]
+        self.assertEqual([(a["ok"], a["code"]) for a in actions], [(False, "retry-not-applied")])
+        self.assertFalse([e for e in events if e["type"] == "step.decision"])
+        self.assertEqual(caretaker.owned(fold(events), PROBLEM)["count"], 1)
+        self.assertFalse([h for h in history.build(fold(events), []) if "Opiekun: ponowił" in h["text"]])
+
+    def test_global_retry_still_resets_tracker_failures(self):
+        reply = self.engine.resolve_step("K-1", {"choice": "retry"})
+        self.assertTrue(reply["tracker"])
+        self.assertEqual(fold(self.journal.read("K-1")).tracker_failures(), [])
+
+    def test_users_retry_of_an_explicit_step_does_not_reset_tracker_failures(self):
+        reply = self.engine.resolve_step("K-1", {"choice": "retry", "step": "K-1-PT-7-2"})
+        self.assertEqual(reply["step"], "K-1-PT-7-2")
+        self.assertNotIn("tracker", reply)
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(st.step_decisions["K-1-PT-7-2"]["choice"], "retry")
+        self.assertEqual(len(st.tracker_failures()), 1)
+
+
 class SlotPriorityTest(EngineOnJournal):
     """US 37 przez `FlowEngine._admit` na złożonych dziennikach (bez procesów kroków): `providerSlots` = 1,
     slot zajęty krokiem karty K-1; K-2 czeka na slot wcześniej; K-3 ma gotowy krok opiekuna i nowy ticket."""
@@ -414,6 +490,37 @@ class SlotPriorityTest(EngineOnJournal):
         self.finish("K-1", "K-1-PT-1-1")
         self.assertEqual(self.round(only=[("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")]),
                          ["K-3-care-1"])
+
+    def test_removed_waiter_does_not_block_another_cards_caretaker_after_plan_approval(self):
+        """R4-M1: usunięty niewystartowany ticket traci kolejkę także po odtworzeniu dziennika."""
+        removed = {"id": "PT-2", "workId": "PT-2", "blockers": []}
+        kept = {"id": "PT-9", "workId": "PT-9", "blockers": []}
+        self.add("K-2", "plan.approved", rows=[removed, kept], map={})
+        self.add("K-2", "step.started", step="K-2-PT-9-1", ticket="PT-9", kind="ticket", provider="anthropic")
+        self.add("K-2", "step.finished", step="K-2-PT-9-1", ticket="PT-9", result="error", reason="login")
+        k2 = ("K-2", self.sonnet, "PT-2", "ticket", "K-2-PT-2-1")
+        k3 = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        self.assertEqual(self.round(only=[k2, k3]), [])
+        self.assertIn(("PT-2", "ticket"), fold(self.journal.read("K-2")).waiting)
+        self.add("K-2", "plan.proposed", rows=[kept], prefix="PT")
+        self.add("K-2", "plan.revision-ready", pending=True)
+        self.add("K-2", "plan.reviewed", verdict="APPROVE")
+        with mock.patch.object(self.engine, "_project", return_value=(None, types.SimpleNamespace(youtrack=""))):
+            reply = self.engine.approve_plan("K-2")
+        self.assertEqual(reply["difference"]["removed"], ["PT-2"])
+        self.finish("K-1", "K-1-PT-1-1")
+        self.assertEqual(self.engine._wait_reason(self.opus), "")
+        st = fold(self.journal.read("K-2"))
+        self.assertNotIn(("PT-2", "ticket"), st.waiting)
+        self.assertNotIn("PT-2", st.rejected)
+        self.assertEqual([r["id"] for r in st.plan_approved["rows"]], ["PT-9"])
+
+        from tide_daemon.cardflow.engine import FlowEngine
+        self.engine = FlowEngine(self.engine.store, self.journal, catalog=self.engine.catalog,
+                                 settings=self.engine.settings, tmp_root=self.base)
+        self.assertEqual(self.engine._earlier_waiters("K-3", fold(self.journal.read("K-3")), self.opus,
+                                                    "PT-3", caretaker.KIND), 0)
+        self.assertEqual(self.round(only=[k3]), ["K-3-care-1"])
 
     def test_reservation_counts_as_a_running_step_and_does_not_hold_other_cards(self):
         with open(self.engine.settings, "w", encoding="utf-8") as fh:

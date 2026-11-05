@@ -212,8 +212,12 @@ class _CaretakerPort:
                     "error": f"{caretaker.NOT_PROBLEM_STEP}: krok {name[:80]} {where} {ident}"}
         instruction = params.get("instruction") or ""
         if problem.get("decision"):
-            engine.resolve_step(self.card, {"choice": "retry", "answer": instruction, "step": name},
-                                caretaker_problem=ident, caretaker_step=own)
+            reply = engine.resolve_step(self.card, {"choice": "retry", "answer": instruction, "step": name},
+                                        caretaker_problem=ident, caretaker_step=own)
+            if not reply.get("ok") or reply.get("step") != name or reply.get("choice") != "retry" or \
+                    reply.get("tracker"):
+                return {"failed": "retry-not-applied",
+                        "error": f"retry-not-applied: nie zapisano ponowienia kroku {name[:80]}"}
         else:
             step, done = st.steps[name], st.finished.get(name) or {}
             engine.journal.append(self.card, "step.retry", step=name, ticket=step.get("ticket") or "",
@@ -2554,11 +2558,13 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         if choice in ("transfer", "wait-limit"):
             return self._resolve_transfer(card, st, request)
-        if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
+        wanted = str(request.get("step") or "")
+        # Ponowienie wskazanego kroku (także przez opiekuna) nie jest globalnym ponowieniem trackera.
+        if choice == 'retry' and not wanted and not caretaker_problem and not st.card_finished and \
+                not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         focus = decision_step(st)
-        wanted = str(request.get("step") or "")
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
             # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.

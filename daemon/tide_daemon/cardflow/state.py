@@ -350,6 +350,9 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
         elif kind == "plan.revision-approved":
             st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            # Usunięty niewystartowany ticket nie zajmie już slotu; odtworzenie dziennika usuwa też jego kolejkę.
+            removed = set((e.get("difference") or {}).get("removed") or [])
+            st.waiting = {key: wait for key, wait in st.waiting.items() if key[0] not in removed}
             st.plan_revision = None
             st.plan_finished = False
             st.closed = None
