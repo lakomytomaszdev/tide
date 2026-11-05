@@ -44,7 +44,12 @@ class StepDecisionTest(FlowInProcess):
         previous_out = os.path.join(first["stepDir"], "out")
         self.assertIn(previous_out, prompt)
         with open(os.path.join(resumed["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
-            self.assertIn(previous_out, json.load(fh)["sandbox"]["filesystem"]["allowRead"])
+            allowed = json.load(fh)["sandbox"]["filesystem"]["allowRead"]
+        self.assertIn(previous_out, allowed)
+        # 04.11, K-46/KAMP-31: długi wynik obcinany do końcówki — krok dostaje ścieżkę pełnego wyniku i może ją czytać.
+        full_log = os.path.join(first["stepDir"], "outside", "outside.log")
+        self.assertIn(f"Pełny wynik (do odczytu): {full_log}", prompt)
+        self.assertIn(os.path.dirname(full_log), allowed)
 
     def test_remembered_outside_command_runs_without_asking_next_time(self):
         first = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -382,6 +387,10 @@ class StepDecisionTest(FlowInProcess):
         # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
         card = self.wait_column(card_id, "waiting")
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
+        # Kolumna „Czeka na mnie” bywa widoczna chwilę przed zapisem ostatniej automatycznej odmowy (test niestabilny).
+        self.assertTrue(wait_until(lambda: len([d for d in self.of(card_id, "step.decision") if d.get("auto")]) >= 3,
+                                   timeout=10))
+        card = self.wait_column(card_id, "waiting")
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
         self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]

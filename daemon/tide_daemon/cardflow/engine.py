@@ -1659,6 +1659,8 @@ class FlowEngine(PlanEditing):
         image_dirs = [os.path.join(step_dir, "in", "images")] if shots else []
         image_dirs += [os.path.join(os.path.dirname(d), "in", "images") for d in context_dirs]
         image_dirs += [os.path.join(worktree + ".step", "in", "images")]
+        # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
+        image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
@@ -3963,7 +3965,10 @@ class FlowEngine(PlanEditing):
         stepstop._systemctl("stop", started["unit"] + ".scope")
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
-        return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                      f"Koniec wyniku:\n{tail}"}
 
     def _review_rounds(self) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
