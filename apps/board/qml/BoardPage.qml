@@ -116,6 +116,7 @@ Rectangle {
     signal branchDiffRequested(string tag, string cardId)
     signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
+    signal mergeRequested(string tag, string cardId, string request)
 
     function previewMerge(cardId, target) {
         const tag = nextTag("preview-merge:" + cardId)
@@ -718,6 +719,17 @@ Rectangle {
             mergePreview.error = error
             mergePreview.result = error ? null : reply
             if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
+        } else if (tag.indexOf("merge-card:") === 0) {
+            if (mergePreview.requestTag !== tag) return
+            mergePreview.busy = false
+            mergePreview.error = error
+            if (error) {
+                // Ponowna zgoda wymaga nowego odczytu; stary przycisk nie może ponowić mutacji.
+                mergePreview.result = null
+            } else {
+                mergePreview.close()
+                showToast("Karta scalona do " + reply.targetBranch + ".", "mint")
+            }
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1699,7 +1711,7 @@ Rectangle {
         onBranchDiffRequested: cardId =>
             page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
         onMergeMainRequested: cardId =>
-            page.mergeMainRequested(page.nextTag("merge-main:" + cardId), cardId)
+            page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
         onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
@@ -1840,14 +1852,23 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
-        onMergeMainRequested: page.mergeMainRequested(page.nextTag("merge-main:" + page.fullCardId), page.fullCardId)
+        onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
         onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }
 
-    MergePreview { id: mergePreview; parent: page; z: 60 }
+    MergePreview {
+        id: mergePreview
+        parent: page
+        z: 60
+        onConfirmRequested: request => {
+            requestTag = page.nextTag("merge-card:" + cardId)
+            page.mergeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onRefreshRequested: page.previewMerge(cardId, targetBranch)
+    }
 
     // --- duch przeciąganej karty ----------------------------------------------------------------
     Item {

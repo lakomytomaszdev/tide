@@ -566,6 +566,8 @@ Rectangle {
                 }
                 PillButton {
                     objectName: "cardPreviewMerge"
+                    Layout.fillWidth: true
+                    wrapText: true
                     readonly property string target: panel.card && panel.card.derived && panel.card.derived.flow
                                                      ? panel.card.derived.flow.mainBranch || "" : ""
                     text: "Podgląd scalenia do " + (target || "…")
@@ -574,11 +576,14 @@ Rectangle {
                 }
                 PillButton {
                     objectName: "cardMergeMain"
-                    text: "Scal do gałęzi głównej"
-                    enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
+                    Layout.fillWidth: true
+                    wrapText: true
+                    readonly property string target: panel.card && panel.card.derived && panel.card.derived.flow
+                                                     ? panel.card.derived.flow.mainBranch || "" : ""
+                    text: "Scal do " + (target || "…")
+                    enabled: target !== "" && !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
                                                 && panel.card.derived.flow.mainMerged)
                     onClicked: {
-                        panel.busy = true
                         panel.mergeMainRequested(panel.card.id)
                     }
                 }

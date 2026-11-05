@@ -18,6 +18,12 @@ QQC2.Popup {
     property bool busy: false
     property string error: ""
     property var result: null
+    signal confirmRequested(var request)
+    signal refreshRequested()
+    onClosed: {
+        result = null
+        requestTag = ""
+    }
 
     function show(tag, card, target) {
         requestTag = tag
@@ -31,7 +37,7 @@ QQC2.Popup {
 
     function describe(r) {
         if (!r) return ""
-        const lines = ["Źródło: " + r.sourceRef, "SHA źródła: " + r.sourceCommit,
+        const lines = ["Scal do " + r.targetBranch, "Źródło: " + r.sourceRef, "SHA źródła: " + r.sourceCommit,
                        "Cel: " + r.targetRef, "SHA celu: " + r.targetCommit,
                        "Drzewo wyniku: " + (r.resultTree || "nieprzygotowane"),
                        "Worktree celu: " + r.targetWorktree + (r.targetWorktreeExists ? "" : " (jeszcze nie istnieje)"),
@@ -40,7 +46,8 @@ QQC2.Popup {
                        ? "Lokalne kolizje: " + r.localCollisionCount + ". " + (r.canMerge
                          ? "Odczyt nie wykazał blokad scalenia." : "Scalenie jest zablokowane.")
                        : "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione.",
-                       "To wyłącznie podgląd. Nie stanowi zgody na wykonanie scalenia."]
+                       "Sam podgląd nie jest zgodą. Nie stanowi zgody zamknięcie ani anulowanie.",
+                       "Dopiero przycisk „Scal do " + r.targetBranch + "” potwierdza ten podgląd."]
         for (const warning of r.warnings || []) lines.push(warning)
         for (const refusal of r.blockedReasons || []) lines.push(refusal.message + " [" + refusal.reason + "]")
         if (r.localCollisions && typeof r.localCollisions === "object") {
@@ -77,7 +84,7 @@ QQC2.Popup {
             color: Tide.Tokens.textPrimary
             font.family: Tide.Theme.uiFamily
             font.pointSize: Tide.Tokens.fontSizePt
-            wrapMode: Text.Wrap
+            wrapMode: Text.WrapAnywhere
         }
         QQC2.ScrollView {
             Layout.fillWidth: true
@@ -94,10 +101,34 @@ QQC2.Popup {
                 wrapMode: TextEdit.Wrap
             }
         }
-        Tide.TextButton {
-            objectName: "mergePreviewClose"
-            text: "Zamknij"
-            onClicked: preview.close()
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 12
+            Tide.TextButton {
+                objectName: "mergePreviewConfirm"
+                Layout.fillWidth: true
+                wrapText: true
+                text: "Scal do " + preview.targetBranch
+                enabled: !preview.busy && !!preview.result && preview.result.canMerge === true
+                         && !!preview.result.previewToken
+                onClicked: {
+                    if (!enabled) return
+                    const r = preview.result
+                    preview.busy = true
+                    preview.confirmRequested({ targetRef: r.targetRef, previewToken: r.previewToken })
+                }
+            }
+            Tide.TextButton {
+                objectName: "mergePreviewRefresh"
+                text: "Odśwież podgląd"
+                enabled: !preview.busy
+                onClicked: preview.refreshRequested()
+            }
+            Tide.TextButton {
+                objectName: "mergePreviewClose"
+                text: "Zamknij"
+                onClicked: preview.close()
+            }
         }
     }
 }

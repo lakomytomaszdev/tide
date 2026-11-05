@@ -19,7 +19,7 @@ class PowerLoss(BaseException):
     """Nagłe przerwanie, bez obsługi błędu i bez rollbacku procesu usługi."""
 
 
-class DurableMergeTest(FlowInProcess):
+class DurableMergeFixture:
     local_git = True
     def make_flow(self):
         # Sterujemy tickiem jawnie: restart nie może wyprzedzić miejsca wstrzyknięcia awarii w teście.
@@ -132,6 +132,7 @@ class DurableMergeTest(FlowInProcess):
         self.assertEqual(self.shown(self.card_id)["boardColumn"], "done")
         self.assertEqual(git(intent["targetWorktree"], "write-tree").strip(), intent["resultTree"])
 
+class DurableMergeTest(DurableMergeFixture, FlowInProcess):
     def test_intent_before_any_mutation_and_public_retry_after_restart(self):
         old_index = git(self.repo, "write-tree")
         self.crash_after("intent", action="main-merge")

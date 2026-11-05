@@ -68,7 +68,7 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "AbandonStep", "ResolveCardStep", "ApproveCardPlan", "SetCardPaused",
-          "EditCardPlan", "MergeCardToMain", "SetCardFlowSettings", "ReportStepFault")
+          "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -476,6 +476,10 @@ class Backend(QObject):
     def previewCardMerge(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "PreviewCardMerge", [card_id, request])
 
+    @pyqtSlot(str, str, str)
+    def mergeCard(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "MergeCard", [card_id, request])
+
     # --- zrzuty ekranu i model w oknie uruchomienia (PT-43) ------------------------------------
 
     @pyqtSlot(result=bool)
@@ -695,7 +699,7 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
-        elif member == "PreviewCardMerge":
+        elif member in ("PreviewCardMerge", "MergeCard"):
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
         else:
             self._call(member, args, done)

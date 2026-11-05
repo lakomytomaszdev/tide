@@ -14,6 +14,7 @@ T.AbstractButton {
     property color textColor: variant === "filled" ? Tokens.backgroundWindow
                             : variant === "link" ? accent : Tokens.textSecondary
     property real pointSize: Tokens.fontSizePt - 1
+    property bool wrapText: false
     readonly property bool lit: hovered || visualFocus || down
 
     hoverEnabled: true
@@ -36,12 +37,14 @@ T.AbstractButton {
 
     contentItem: Text {
         text: button.text
+        textFormat: Text.PlainText
         color: button.textColor
         font.family: Theme.uiFamily
         font.pointSize: button.pointSize
         font.weight: button.variant === "filled" ? Font.DemiBold : Font.Medium
         font.underline: button.variant === "link" && button.hovered
-        elide: Text.ElideRight
+        elide: button.wrapText ? Text.ElideNone : Text.ElideRight
+        wrapMode: button.wrapText ? Text.WrapAnywhere : Text.NoWrap
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: Text.AlignHCenter
     }
