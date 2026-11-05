@@ -875,7 +875,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
-| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt próbnego drzewa scalenia gałęzi karty do celu z `FlowGit.main_branch`; `request` to `{}`, bez tokenu i zgody na wykonanie |
+| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
 | `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -890,9 +890,32 @@ i `resultTree` z `merge-tree`, z rozpoznawaniem rename i obiema ścieżkami. Zam
 
 Konflikt jest poprawnym odczytem (`ok: true`, `canMerge: false`, `reason: conflict`), podobnie odmowy
 `unrelated-history`, `git-capability`, `git-error`, `no-sandbox` mają własny `reason` i `message`.
-Niepoprawne żądanie albo brak gałęzi daje standardowy błąd `ok: false`. `canMerge` dotyczy tylko drzew;
-do PT-210 zawsze `readyToMerge: false`, `localCollisions: unassessed` i ostrzeżenie w `warnings`.
-Nie ma tokenu wykonania. Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
+Niepoprawne żądanie albo brak gałęzi daje standardowy błąd `ok: false`. PT-210 rozszerza `canMerge`
+o domknięcie, czystość checkoutu karty, brak czynnych kroków (również Konsoli i poleceń poza piaskownicą),
+niedokończonych akcji, zmian planu i korekty bazy po domknięciu. Cel jest wyłącznie lokalnym refem;
+gałęzie kart i gałęzie/worktree czynnych kroków innych kart są wykluczone. Domyślny cel i jawny `targetRef`
+korzystają z tej samej kwalifikacji. Ref zdalny, SHA ani skrót nazwy nie są celami tej metody.
+
+`localChanges` i `localCollisions` zawierają osobne listy `staged`, `unstaged`, `untracked`.
+Wpis zmiany to `{status, paths}` z surowym kodem porcelain i obiema ścieżkami rename; wpis kolizji
+dodaje `mergePaths`. `localCollisionCount` liczy wpisy we wszystkich trzech listach kolizji.
+Kolizja obejmuje usunięcia i relację plik–katalog w obu kierunkach, z granicą komponentu ścieżki.
+`blockedReasons: [{reason, message}]` pokazuje wszystkie ograniczenia, a `reason`/`message` pierwsze z nich.
+Konflikt drzew (`conflict`) i kolizja pracy lokalnej (`local-collision`) pozostają odrębne, również gdy
+wystąpią równocześnie. Niezwiązane unstaged i untracked nie blokują podglądu (K-43).
+Niezwiązane staged dają przejściowe `staged-not-supported` do PT-207, bez udawania kolizji ścieżek.
+Cel bez checkoutu ma `no-target-worktree`; metoda niczego nie zakłada. Błąd odczytu checkoutu blokuje
+kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localCollisions` może pozostać `unassessed`.
+
+`previewToken` jest HMAC od karty, zlecenia, `baseVersion` (także stabilnego 0 dla legacy/unknown),
+przypiętych SHA i refów, odczytu worktrees, HEAD, surowego i logicznego indeksu, treści lokalnie zmienionych
+plików oraz blokad przepływu. Brak checkoutu ma osobną reprezentację. Sekret żyje wyłącznie w silniku:
+po restarcie nowy podgląd ma inny token. Token nie jest trwałą zgodą ani rozpoczętą operacją; PT-204
+musi ponownie przygotować podgląd przed wykonaniem i sprawdzić aktualność tokenu.
+Odczyt checkoutów i refów jest ponawiany po przygotowaniu drzewa; zmiana podczas odczytu daje
+`state-changed`, `canMerge: false` i brak tokenu. Nieudany odczyt checkoutu również nie wystawia tokenu.
+Zawsze pozostaje `readyToMerge: false`, ostrzeżenie i wyłącznie przycisk zamknięcia w UI.
+Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
 dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
 wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
 Własny sterownik merge wymagający plików `.merge_file_*` w katalogu roboczym jest w podglądzie

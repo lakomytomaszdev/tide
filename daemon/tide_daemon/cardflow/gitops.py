@@ -21,6 +21,7 @@ import threading
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from ..tasks.agentcmd import StepError, resolve_git_dir
 from ..tasks.stepstop import StepGit, sandbox_available
+from .mergepreview import checkout_snapshot, assess_local
 
 HARDENED = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null",
             "-c", "submodule.recurse=false", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false",
@@ -111,10 +112,13 @@ class FlowGit:
                 "reason": "conflict" if tree.code == 1 else "",
                 "message": "Konflikty w drzewie scalenia." if tree.code == 1 else ""}
 
-    def preview_merge(self, repo: str, source_branch: str) -> dict:
+    def preview_merge(self, repo: str, source_branch: str, target_ref: str | None = None) -> dict:
         """Pełny odczyt celu z tej samej polityki co MergeCardToMain; zapis tylko obiektów próbnego drzewa."""
         with lock_for(repo):
-            target_branch = self.main_branch(repo)
+            if target_ref is not None and (not target_ref.startswith("refs/heads/") or
+                                           not self.run(repo, "check-ref-format", target_ref).ok):
+                raise FlowGitError("cel musi być pełnym lokalnym refem refs/heads/…")
+            target_branch = target_ref[len("refs/heads/"):] if target_ref else self.main_branch(repo)
             source_ref, target_ref = f"refs/heads/{source_branch}", f"refs/heads/{target_branch}"
             source, target = self.sha(repo, source_ref), self.sha(repo, target_ref)
             if not target_branch or not source_branch or not source or not target:
@@ -126,14 +130,22 @@ class FlowGit:
             worktrees = [dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
                          for block in listed.out.split("\0\0")]
             path = next((w.get("worktree", "") for w in worktrees if w.get("branch") == target_ref), "")
+            source_path = next((w.get("worktree", "") for w in worktrees if w.get("branch") == source_ref), "")
             out = {"sourceRef": source_ref, "sourceBranch": source_branch, "sourceCommit": source,
                    "targetRef": target_ref, "targetBranch": target_branch, "targetCommit": target,
                    "targetWorktree": path or os.path.join(worktrees_dir(repo), f"{target_branch}-main"),
                    "targetWorktreeExists": bool(path), "commits": [], "commitCount": 0,
                    "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0,
                    "canMerge": False, "readyToMerge": False, "localCollisions": "unassessed",
-                   "warnings": ["Lokalne kolizje nie zostały ocenione. Podgląd nie jest zgodą na scalenie."],
+                   "warnings": ["Podgląd jest tylko odczytem. Nie potwierdza ani nie wykonuje scalenia."],
                    "resultTree": "", "reason": "", "message": ""}
+            try:
+                snapshots = {"target": checkout_snapshot(self.run, path),
+                             "source": checkout_snapshot(self.run, source_path), "worktrees": listed.out}
+            except OSError as exc:
+                out.update(reason="git-error", message=str(exc))
+                return out
+            out["_snapshot"] = snapshots
             commits = self.run(repo, "log", "--no-color", "--no-show-signature", "--format=%H%x00%s", "-z",
                                f"{target}..{source}", "--")
             if not commits.ok:
@@ -173,6 +185,17 @@ class FlowGit:
                 out["files"].append({"status": status, "oldPath": old_path if status[0] != "A" else "",
                                      "newPath": new_path if status[0] != "D" else ""})
             out["fileCount"] = len(out["files"])
+            out.update(assess_local(snapshots["target"], out["files"], out["conflicts"]))
+            try:
+                after = {"target": checkout_snapshot(self.run, path),
+                         "source": checkout_snapshot(self.run, source_path),
+                         "worktrees": self.run(repo, "worktree", "list", "--porcelain", "-z").out}
+                if (after != snapshots or self.sha(repo, source_ref) != source or self.sha(repo, target_ref) != target):
+                    out.update(reason="state-changed", message="Stan gita zmienił się podczas podglądu. Odśwież podgląd.")
+                    out.pop("_snapshot", None)
+            except OSError as exc:
+                out.update(reason="git-error", message=str(exc))
+                out.pop("_snapshot", None)
             out["canMerge"] = not out["reason"]
             return out
 
