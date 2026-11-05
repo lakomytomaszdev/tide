@@ -44,11 +44,13 @@ class PlanEditing:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
             author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
-            options = [e for e in catalog.executors if e.name != author.name and e.model.lower() != author.model.lower()
+            options = [e for e in catalog.executors if e.name != author.name and plans.independent_reviewer(author, e)
                        and (e.provider == "local") == (author.provider == "local")]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
             # (K-33, K-35: domyślnie brany Haiku łamał format wyniku i nie łapał rozmiaru ticketów).
-            options.sort(key=lambda e: tuple(e.classes) == ("lekki",))
+            # Dostawca planisty ma pierwszeństwo (05.11: plan Codexa szedł do Claude bez limitu do soboty), a ten sam
+            # model z inną siłą myślenia jest niezależny — jak przy ticketach.
+            options.sort(key=lambda e: (tuple(e.classes) == ("lekki",), e.provider != author.provider))
             if not options:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
