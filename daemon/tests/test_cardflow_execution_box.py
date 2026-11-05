@@ -391,6 +391,10 @@ class DeniedTest(BoxFlow):
         self.flow.stop()
         self.build_box()
         self.card_id = self.card()
+        # Te syntetyczne kroki testują proxy/zwolnienia i nie przechodzą przez BoxRunner.start.
+        guard = mock.patch("tide_daemon.box.refguard.finish", return_value={})
+        guard.start()
+        self.addCleanup(guard.stop)
         self.engine.journal.append(self.card_id, "card.started", entry="now", executor="Sonnet", program="claude",
                                    provider="anthropic", repo=self.repo)
 
@@ -878,21 +882,42 @@ class BoxStepInProcessTest(BoxFlow):
         self.assertEqual(self.incus_calls("exec"), [])
 
     def test_outside_limit_does_not_hold_box_steps_and_two_steps_run_in_parallel(self):
+        from .test_cardflow_plan_integration import PlanFlowTest
+        from .test_cardflow_gitops import LocalStepGit
+        # Ten test dotyczy współbieżności runnerów. Osobne testy gitops sprawdzają bwrap;
+        # tutaj adapter lokalny pozwala zatwierdzić plan także w piaskownicy testu.
+        for patch in (mock.patch("tide_daemon.cardflow.gitops.sandbox_available", return_value=True),
+                      mock.patch("tide_daemon.cardflow.gitops.StepGit", LocalStepGit)):
+            patch.start()
+            self.addCleanup(patch.stop)
         self.build_box()
-        a = self.card(title="A", description="Dodaj eksport.\n\nATRAPA: powoli 4")
-        b = self.card(title="B", description="Dodaj import.\n\nATRAPA: powoli 4")
+        card = self.card()
+        path = PlanFlowTest.proposal(self, card)
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(source.replace("| Opus | #1 |", "| Opus | |"))
+        for number in (1, 2):
+            with open(os.path.join(os.path.dirname(path), "tickets", f"{number}.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"# Ticket {number}\nATRAPA: powoli 4\nATRAPA-PLIK: {number}\n- [ ] Wynik.\n")
+        self.assertTrue(PlanFlowTest.submit(self, card, path)["ok"])
         # Polecenie poza piaskownicą trwa w tym projekcie (OUTSIDE_PER_PROJECT wyczerpane).
-        self.engine._outside_active = {"zewn": (a, "")}
-        self.assertTrue(self.engine._outside_busy(a))
-        self.start(a)
-        self.start(b)
-        sa, sb = self.started_box(a), self.started_box(b)
-        self.assertEqual(self.finished(a)["result"], "done")
-        self.assertEqual(self.finished(b)["result"], "done")
+        self.engine._outside_active = {"zewn": (card, "")}
+        self.assertTrue(self.engine._outside_busy(card))
+        self.assertTrue(PlanFlowTest.approve(self, card)["ok"])
+        # D7 dopuszcza gałęzie równoległych ticketów tej samej karty.
+        starts = lambda: [e for e in self.of(card, "step.started") if e.get("runner") == "box"]
+        self.assertTrue(wait_until(lambda: len(starts()) >= 2, timeout=15), self.events(card))
+        sa, sb = starts()[:2]
+        names = {sa["step"], sb["step"]}
+        ends = lambda: [e for e in self.of(card, "step.finished") if e["step"] in names]
+        self.assertTrue(wait_until(lambda: len(ends()) == 2, timeout=30), self.events(card))
+        self.assertEqual([e["result"] for e in ends()], ["done", "done"], self.events(card))
         uses = [e for e in bs.events(SLUG, SLUG) if e["type"] in ("box.use", "box.release")]
         # Oba kroki weszły do pudełka, zanim którykolwiek wyszedł.
         self.assertEqual([e["type"] for e in uses[:2]], ["box.use", "box.use"], uses)
         self.assertEqual({sa["step"], sb["step"]}, {e["step"] for e in uses[:2]})
+        self.flow.stop()
 
 
 if __name__ == "__main__":

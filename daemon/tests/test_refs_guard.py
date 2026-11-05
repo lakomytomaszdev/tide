@@ -1,0 +1,333 @@
+"""PT-170: rzeczywiste refy, kopie .git i współbieżne końce kroków bez Incusa."""
+import concurrent.futures
+import os
+from pathlib import Path
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+from tide_daemon.box import refguard
+from tide_daemon.cardflow.engine import FlowEngine
+from tide_daemon.cardflow.gitops import FlowGit, lock_for
+from tide_daemon.gitcommand import HOST_OPTIONS
+from tide_daemon.tasks import agentcmd, stepstop
+from tide_daemon.worktrees.git import Git
+
+from . import gitrepos
+from .test_box_runner import BoxRunnerCase
+
+
+class GuardTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="tide-refguard-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.repo = str(self.root / "repo")
+        os.mkdir(self.repo)
+        patch = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")})
+        patch.start()
+        self.addCleanup(patch.stop)
+        gitrepos.git(self.repo, "init", "-q", "-b", "master")
+        gitrepos.commit(self.repo, "initial")
+        self.original = gitrepos.git(self.repo, "rev-parse", "master").strip()
+        self.worktrees = {}
+        for name in ("one", "two"):
+            wt = str(self.root / "repo-worktrees" / name)
+            gitrepos.git(self.repo, "worktree", "add", "-q", "-b", f"ticket/{name}", wt)
+            self.worktrees[name] = wt
+        self.common = Path(self.repo) / ".git"
+
+    def begin(self, name="one", card="K-38", **kw):
+        wt = self.worktrees[name]
+        admin = gitrepos.git(wt, "rev-parse", "--absolute-git-dir").strip()
+        refguard.begin(self.repo, card, name, admin, worktree=wt, **kw)
+
+    def finish(self, name="one", card="K-38"):
+        return refguard.finish(self.repo, card, name, branch="ticket/" + name)
+
+    def commit(self, name):
+        gitrepos.commit(self.worktrees[name], name)
+        return gitrepos.git(self.repo, "rev-parse", "ticket/" + name).strip()
+
+    def test_master_is_restored_with_expected_old_oid_and_own_commit_survives(self):
+        self.begin()
+        tip = self.commit("one")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+        with mock.patch.object(Git, "run", autospec=True, side_effect=Git.run) as run:
+            result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), tip)
+        updates = [c.args[2:] for c in run.call_args_list if "update-ref" in c.args]
+        self.assertIn(("update-ref", "--no-deref", "refs/heads/master", self.original, tip), updates)
+        self.assertEqual(self.finish(), result)  # trwały wynik, także po utracie pamięci procesu
+
+    def test_added_branch_tag_and_deleted_ref_are_restored(self):
+        gitrepos.git(self.repo, "branch", "existing")
+        self.begin()
+        gitrepos.git(self.repo, "branch", "tmp-evil")
+        gitrepos.git(self.repo, "tag", "evil")
+        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/existing")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/existing", "refs/heads/tmp-evil", "refs/tags/evil"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "existing").strip(), self.original)
+        refs = gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)")
+        self.assertNotIn("evil", refs)
+
+    def test_ref_cas_does_not_overwrite_a_change_after_comparison(self):
+        self.begin()
+        bad = self.commit("one")
+        good = self.commit("two")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/master", bad)
+        real_run = Git.run
+
+        def raced(git, cwd, *args, **kw):
+            if "update-ref" in args and "refs/heads/master" in args:
+                gitrepos.git(self.repo, "update-ref", "refs/heads/master", good)
+            return real_run(git, cwd, *args, **kw)
+
+        with mock.patch.object(Git, "run", raced):
+            result = self.finish()
+        self.assertTrue(result["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), good)
+
+    def test_two_overlapping_steps_finish_together_without_reverting_either_ticket(self):
+        self.begin()
+        self.begin("two")
+        tips = {name: self.commit(name) for name in self.worktrees}
+        barrier = threading.Barrier(2)
+
+        def end(name):
+            barrier.wait(timeout=5)
+            return self.finish(name)
+
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(end, ("one", "two")))
+        self.assertEqual(results, [{}, {}])
+        for name, tip in tips.items():
+            self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/" + name).strip(), tip)
+
+    def test_later_start_is_allowed_even_after_older_step_has_committed(self):
+        self.begin()
+        self.commit("one")
+        self.begin("two")
+        self.commit("two")
+        self.assertEqual(self.finish("one"), {})
+        self.assertEqual(self.finish("two"), {})
+
+    def test_snapshot_waits_for_repository_lock_before_reading_refs(self):
+        entered = threading.Event()
+        real_refs = refguard._refs
+
+        def refs(repo):
+            entered.set()
+            return real_refs(repo)
+
+        with mock.patch.object(refguard, "_refs", side_effect=refs), concurrent.futures.ThreadPoolExecutor(1) as pool:
+            with lock_for(self.repo):
+                future = pool.submit(self.begin)
+                self.assertFalse(entered.wait(0.1))
+                gitrepos.git(self.repo, "tag", "before-lock")
+            future.result(timeout=5)
+        self.assertTrue(entered.is_set())
+        self.assertEqual(self.finish(), {})
+
+    def test_foreign_card_branch_is_not_allowed(self):
+        self.begin()
+        self.commit("two")
+        self.assertEqual(self.finish()["refs"], ["refs/heads/ticket/two"])
+
+    def test_other_card_waits_and_cannot_start_until_guard_is_finished(self):
+        self.begin()
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), ["K-38"])
+        with self.assertRaises(agentcmd.StepError):
+            self.begin("two", card="K-99")
+        self.assertEqual(self.finish(), {})
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), [])
+        self.begin("two", card="K-99")
+        self.commit("two")
+        self.assertEqual(self.finish("two", card="K-99"), {})
+
+    def test_host_creates_a_future_card_branch_without_triggering_guard(self):
+        self.begin()
+        service = FlowGit()
+        path = str(self.root / "repo-worktrees" / "future-card")
+        service.branch_worktree(self.repo, "card/future", path, "master")
+        self.assertEqual(self.finish(), {})
+
+    def test_host_merge_and_worktree_cleanup_do_not_trigger_older_guard(self):
+        config = self.common / "worktrees/two/config.worktree"
+        config.write_text("")
+        self.begin()
+        self.begin("two")
+        tip = self.commit("two")
+        self.assertEqual(self.finish("two"), {})
+        service = FlowGit()
+        with lock_for(self.repo):
+            self.assertTrue(service.run(self.repo, "update-ref", "refs/heads/master", tip, self.original).ok)
+            self.assertTrue(service.run(self.repo, "worktree", "remove", self.worktrees["two"]).ok)
+        self.assertEqual(self.finish(), {})
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
+
+    def test_symbolic_ref_target_is_restored_and_new_symbolic_ref_removed(self):
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/master")
+        self.begin()
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/ticket/one")
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/tmp-alias", "refs/heads/master")
+        result = self.finish()
+        self.assertFalse(result["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias").strip(), "refs/heads/master")
+        self.assertNotIn("tmp-alias", gitrepos.git(self.repo, "for-each-ref"))
+
+    def test_symbolic_alias_to_ticket_is_not_a_violation_when_ticket_advances(self):
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/ticket/one")
+        self.begin()
+        self.commit("one")
+        self.begin("two")
+        self.assertEqual(self.finish(), {})
+        self.assertEqual(self.finish("two"), {})
+
+    def test_changed_worktree_pointer_is_restored_without_following_symlink(self):
+        pointer = Path(self.worktrees["one"]) / ".git"
+        original = pointer.read_bytes()
+        victim = self.root / "pointer-victim"
+        victim.write_text("nie ruszać")
+        self.begin()
+        pointer.unlink()
+        pointer.symlink_to(victim)
+        result = self.finish()
+        self.assertEqual(result["files"], ["worktree/.git"])
+        self.assertEqual(pointer.read_bytes(), original)
+        self.assertEqual(victim.read_text(), "nie ruszać")
+
+    def test_detached_or_switched_head_is_restored_to_ticket(self):
+        for args in (("checkout", "--detach", "-q"), ("symbolic-ref", "HEAD", "refs/heads/master")):
+            with self.subTest(args=args):
+                self.begin()
+                gitrepos.git(self.worktrees["one"], *args)
+                self.assertTrue(self.finish()["head"])
+                self.assertEqual(gitrepos.git(self.worktrees["one"], "symbolic-ref", "HEAD").strip(),
+                                 "refs/heads/ticket/one")
+
+    def test_protected_files_content_modes_new_files_and_worktree_configs(self):
+        paths = ["hooks/pre-commit", "info/attributes", "config.worktree", "worktrees/one/config.worktree"]
+        for name in paths:
+            p = self.common / name
+            p.write_text("oryginał\n")
+            p.chmod(0o755)
+        originals = {p: (self.common / p).read_bytes() for p in paths + ["config"]}
+        self.begin()
+        for p in paths + ["config"]:
+            (self.common / p).write_text("uszkodzona konfiguracja [\n")
+            (self.common / p).chmod(0o600)
+        (self.common / "hooks/new-hook").write_text("nowy hak")
+        (self.common / "info/new-file").write_text("nowy plik")
+        (self.common / "worktrees/two/config.worktree").write_text("nowy config")
+        result = self.finish()
+        self.assertFalse(result["errors"])
+        self.assertEqual(set(result["files"]), {"hooks", "info", "config", "config.worktree",
+                                               "worktrees/one/config.worktree", "worktrees/two/config.worktree"})
+        for p, content in originals.items():
+            self.assertEqual((self.common / p).read_bytes(), content)
+        self.assertEqual((self.common / paths[0]).stat().st_mode & 0o777, 0o755)
+        self.assertFalse((self.common / "hooks/new-hook").exists())
+        self.assertFalse((self.common / "info/new-file").exists())
+        self.assertFalse((self.common / "worktrees/two/config.worktree").exists())
+
+    def test_symlink_and_hardlink_substitution_does_not_write_to_target(self):
+        victim = self.root / "victim"
+        victim.write_text("nie ruszać")
+        self.begin()
+        config = self.common / "config"
+        config.unlink()
+        config.symlink_to(victim)
+        attributes = self.common / "info/attributes"
+        os.link(victim, attributes)
+        result = self.finish()
+        self.assertFalse(result["errors"])
+        self.assertEqual(victim.read_text(), "nie ruszać")
+        self.assertFalse(config.is_symlink())
+        self.assertFalse(attributes.exists())
+
+    def test_poisoned_peer_is_not_saved_as_a_new_baseline(self):
+        for kind in ("hook", "ref"):
+            with self.subTest(kind=kind):
+                self.begin()
+                if kind == "hook":
+                    (self.common / "hooks/new-hook").write_text("złośliwy hak")
+                else:
+                    gitrepos.git(self.repo, "tag", "evil")
+                with self.assertRaises(agentcmd.StepError):
+                    self.begin("two")
+                self.assertTrue(self.finish())
+
+    def test_trusted_runner_config_creation_updates_older_snapshot(self):
+        self.begin()
+
+        def prepare():
+            (self.common / "worktrees/two/config.worktree").write_text("")
+
+        self.begin("two", prepare=prepare)
+        self.assertEqual(self.finish(), {})
+        self.assertEqual(self.finish("two"), {})
+
+    def test_missing_snapshot_fails_closed(self):
+        self.assertTrue(self.finish()["errors"])
+
+    def test_engine_records_violation_and_forces_error_even_for_forced_finish(self):
+        self.begin()
+        tip = self.commit("one")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = mock.Mock()
+        engine.journal.read.return_value = []
+        engine._queue_notices = mock.Mock()
+        engine._release_local = mock.Mock()
+        engine._release_box = mock.Mock()
+        engine._codex_broken_mcp = mock.Mock(return_value=False)
+        engine.tmp_root = str(self.root / "tmp")
+        engine.procs, engine.watch = {}, {}
+        step = dict(step="one", runner="box", repo=self.repo, branch="ticket/one", kind="ticket")
+        engine._finish("K-38", step, forced={"result": "stopped", "reason": "timeout"})
+        events = engine.journal.append.call_args_list
+        guard = next(c for c in events if c.args[1] == "refs.guard")
+        done = next(c for c in events if c.args[1] == "step.finished")
+        self.assertEqual(guard.kwargs["refs"], ["refs/heads/master"])
+        self.assertEqual((done.kwargs["result"], done.kwargs["reason"]), ("error", "refs.guard"))
+
+
+class RunnerGuardTest(BoxRunnerCase):
+    def test_snapshot_exists_before_process_launch(self):
+        def launch(*args, **kw):
+            self.assertTrue(list(refguard._active(self.repo)))
+            return mock.Mock()
+
+        self.runner(card="K-38", popen=launch).start(self.step())
+        gitrepos.git(self.repo, "tag", "evil")
+        self.assertEqual(refguard.finish(self.repo, "K-38", "s1")["refs"], ["refs/tags/evil"])
+
+    def test_failed_launch_unregisters_snapshot(self):
+        with self.assertRaises(OSError):
+            self.runner(card="K-38", popen=mock.Mock(side_effect=OSError("start"))).start(self.step())
+        self.assertEqual(list(refguard._active(self.repo)), [])
+
+
+class HostGitTest(unittest.TestCase):
+    def test_shared_argv_protects_plain_flow_and_step_git(self):
+        from tide_daemon.cardflow.gitops import FlowGit
+        results = []
+
+        def run(argv, **kw):
+            results.append(argv)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=run):
+            Git().run("/repo", "status")
+            FlowGit().run("/repo", "update-ref", "refs/heads/a", "abc")
+            git = stepstop.StepGit("/repo", "/repo/.git/worktrees/a", "/worktree", "/step")
+            with mock.patch.object(git, "sandbox", return_value=[]):
+                git.run("commit", "-m", "test")
+        self.assertEqual(len(results), 3)
+        for argv in results:
+            self.assertEqual(tuple(argv[1:5]), HOST_OPTIONS)

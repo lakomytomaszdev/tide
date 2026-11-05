@@ -10,6 +10,7 @@ Zasady:
 import os
 import subprocess
 from dataclasses import dataclass
+from ..gitcommand import git_argv
 
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
@@ -43,7 +44,7 @@ class Git:
 
     def run(self, cwd: str, *args: str, timeout: float | None = None) -> Result:
         try:
-            proc = subprocess.run([self.executable, "-C", cwd, *args], capture_output=True, text=True,
+            proc = subprocess.run(git_argv("-C", cwd, *args, executable=self.executable), capture_output=True, text=True,
                                   errors="replace", env=self.env, timeout=timeout or self.timeout,
                                   stdin=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired) as exc:

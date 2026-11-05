@@ -343,13 +343,15 @@ class DevicesTest(BoxRunnerCase):
         cfg = os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree")
         with open(cfg, "w", encoding="utf-8") as fh:
             fh.write("[core]\n")
-        self.runner().start(self.step())
-        self.assertFalse([n for n in self.device_map() if n.startswith("tide-wtcfg")])
-        bs.mark_in_use("proj", "proj", "s1")
+        # Dane obu worktrees powstają przed migawką strażnika (późniejszy obcy config
+        # byłby naruszeniem PT-170 niezależnie od wyłączonej flagi extensions.worktreeConfig).
         other = os.path.join(self.wt_root, "pt-2")
         gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-2", other)
         with open(os.path.join(self.repo, ".git", "worktrees", "pt-2", "config.worktree"), "w") as fh:
             fh.write("[core]\n")
+        self.runner().start(self.step())
+        self.assertFalse([n for n in self.device_map() if n.startswith("tide-wtcfg")])
+        bs.mark_in_use("proj", "proj", "s1")
         self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2"))
         self.assertEqual(len([line for line in calls(self.env) if line.startswith("incus stop")]), 1)
         self.assertEqual(len(self.popen_calls), 2)

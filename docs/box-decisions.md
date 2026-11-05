@@ -5,6 +5,23 @@ tu wiersze; do `docs/decisions.md` przenosi je wyłącznie ticket dokumentów (#
 Etykieta jest stała — skrypty i testy mogą się do niej odwoływać (np. `tryb-admin` odblokowuje
 `--project-mode admin` w `scripts/box/install.sh`).
 
+## PT-170: strażnik refów (2026-11-05)
+
+### AUTO: Inne karty czekają na zwolnienie strażnika tego repozytorium
+
+- **Powód**: D7 dopuszcza gałęzie aktywnych ticketów tej samej karty. Jednoczesne kroki różnych
+  kart w tym samym repozytorium powodowałyby cofanie ich legalnych commitów jako obcych zmian.
+- **Skutek**: `boxstep.place` kolejkuje inną kartę, a `refguard.begin` ponownie sprawdza warunek
+  pod blokadą. Równoległe tickety tej samej karty pozostają dozwolone. Reguła D7 nie jest rozszerzana.
+
+### AUTO: Migawki uwzględniają konkretne operacje gita wykonywane przez usługę
+
+- **Powód**: podczas kroku Tide tworzy gałęzie kolejnych ticketów, zapisuje stan planu na gałęzi
+  karty, scala zakończone tickety i usuwa ich worktrees. Ich zmiany nie pochodzą od agenta.
+- **Skutek**: pod wspólną blokadą `gitops` aktualizuje w migawkach tylko wskazany ref lub
+  `config.worktree` usuwanego worktree, gdy wartość sprzed operacji zgadzała się z migawką.
+  Inne zmiany pozostają naruszeniami; nie poszerzamy zbioru refów dozwolonych agentowi.
+
 | Etykieta | Data | Ticket | Treść | Uzasadnienie |
 | --- | --- | --- | --- | --- |
 | nftables-statyczne | 2026-11-04 | PT-166 | **nftables statyczne, polityka w proxy.** Reguły sieci pudełka zakłada wyłącznie `scripts/box/install.sh` z sudo, we własnej tabeli `inet tide-box`: z `incusbr0` wolno tylko do adresu mostka na port proxy Tide (`box.proxy-port`, domyślnie 18080) i DHCP (udp 68→67); DNS, forward i reszta DROP. Usługa `tide-daemon` nigdy nie zmienia nftables; polityka per pudełko (domeny, Ollama hosta) żyje w proxy (#5). Bez ACL sieciowych Incusa i bez sudoers/pomocnika z uprawnieniami. | Granica sieciowa nie zależy od kodu usługi działającej jako zwykły użytkownik — błąd albo przejęcie usługi nie otwiera sieci. Reguły są proste do przeczytania i porównania ze wzorcem w teście. ACL Incusa na mostku są ograniczone (analiza 4.5), a pomocnik z sudo byłby nową powierzchnią podniesienia uprawnień. |

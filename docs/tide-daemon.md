@@ -2880,7 +2880,48 @@ na dowiązanie po sprawdzeniu `realpath`). Nakładka
 chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
 krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
 `core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
-`gitops.HARDENED` (`core.hooksPath=/dev/null`).
+`gitcommand.git_argv` (`core.hooksPath=/dev/null`, `core.fsmonitor=false`).
+
+### Strażnik refów
+
+`box/refguard.py` zapisuje przed uruchomieniem procesu w `BoxRunner.start` pełną migawkę
+`git for-each-ref` oraz kopie i sumy SHA-256 chronionych plików: `.git/hooks/`, `.git/config`,
+`.git/info/` (także `attributes`), `.git/config.worktree` i `.git/worktrees/*/config.worktree`.
+Obejmuje nowe i usunięte pliki, tryby plików oraz dowiązania bez odczytywania ich celów.
+Migawki są atomowo zapisywane w `$XDG_STATE_HOME/tide/refguard/<skrót repozytorium>/`
+(domyślnie `~/.local/state/tide/refguard/`), poza montowaniami pudełka. Przeżywają restart usługi.
+
+Start, porównanie i przywracanie używają tej samej blokady repozytorium co `gitops` oraz
+blokady plikowej `flock`; migawka powstaje dopiero po ich uzyskaniu. Dozwolona jest gałąź
+kroku i gałęzie ticketów tej samej karty aktywnych w dowolnym momencie jego trwania.
+Nowy krok dopisuje swoją gałąź do starszych aktywnych migawek. Zgoda pozostaje w starszej
+migawce po zakończeniu sąsiada, więc równoległe końce nie cofają sobie commitów.
+Gałęzie innych kart, nowe tagi i pomocnicze gałęzie agenta nie należą do tego zbioru.
+Kroki innych kart w tym repozytorium czekają na zwolnienie strażnika; końcowa kontrola
+w runnerze odmawia startu, jeżeli dwie karty mimo to równocześnie przejdą sprawdzanie.
+Zaufane tworzenie gałęzi, scalenia i sprzątanie worktree przez `gitops` aktualizują w aktywnych migawkach tylko
+konkretny ref/config zmieniony przez usługę i tylko wtedy, gdy wcześniejsza wartość zgadza
+się z migawką. Runner uwzględnia też założenie pustego `config.worktree` nowego kroku.
+Start kolejnego kroku odmawia utrwalenia obcych zmian aktywnego sąsiada jako nowej kopii.
+
+Silnik sprawdza strażnika przy każdym zakończeniu kroku w pudełku, również po zatrzymaniu,
+timeout i błędzie programu. Najpierw odtwarza konfigurację i pliki, następnie przywraca
+obce refy (`git update-ref --no-deref <ref> <nowa> <oczekiwana-stara>`; nowe refy usuwa
+z oczekiwaną wartością). Zmiana po porównaniu powoduje błąd CAS zamiast nadpisania
+nowszej wartości. Przywracanie celów refów symbolicznych używa standardowego `<ref>.lock`
+i ponownego sprawdzenia OID oraz celu pod blokadą. Kontrola sprawdza też `HEAD` worktree
+i wskaźnik `.git`; po naruszeniu `HEAD` ponownie wskazuje gałąź kroku.
+
+Naruszenie zapisuje zdarzenie `refs.guard` z polami `refs`, `files`, `head`, `errors`
+i wymusza wynik `error` z powodem `refs.guard`, niezależnie od wyniku agenta.
+Brak lub uszkodzenie migawki i nieudana naprawa również kończą się błędem.
+Trwały wynik kontroli pozwala ponowić zakończenie bez ponownego cofania refów.
+`HostRunner` nie zakłada migawek i nie uruchamia kontroli. Każde wywołanie gita usługi,
+w tym `Git`, `FlowGit`, `StepGit`, odczyty koordynacji i runnera, przechodzi przez
+`gitcommand.git_argv`, które dopisuje `-c core.hooksPath=/dev/null -c core.fsmonitor=false`.
+
+Strażnik wykrywa zmiany po kroku; nakładki tylko do odczytu pozostają granicą zapobiegającą
+zapisowi haków i konfiguracji podczas pracy agenta. Testy: `daemon/tests/test_refs_guard.py`.
 
 Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
 `raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się

@@ -955,7 +955,8 @@ class FlowEngine(PlanEditing):
             return "(pominięto: osiągnięto limit danych dodatkowych projektów)"
         root = os.path.realpath(repo)
         try:
-            listed = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            from ..gitcommand import git_argv
+            listed = subprocess.run(git_argv("-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"),
                                     capture_output=True, timeout=30)
         except (OSError, subprocess.TimeoutExpired):
             raise FlowError("extra-project", f"nie można odczytać plików dodatkowego projektu {repo}") from None
@@ -3531,6 +3532,13 @@ class FlowEngine(PlanEditing):
             # PT-181: odmowa proxy, na której krok się zatrzymał (pytanie albo błąd wskazujące domenę z dziennika
             # odmów TEGO kroku) → `denied` z `network: <domena>`; inne odmowy tylko w notce.
             data, proxy_note = boxstep.after_step(step, data, out)
+        if step.get("runner") == boxstep.RUNNER:
+            from ..box import refguard
+            guarded = refguard.finish(step.get("repo") or self._repo(card), card, name,
+                                      branch=step.get("branch") or "")
+            if guarded:
+                self.journal.append(card, "refs.guard", step=name, ticket=step.get("ticket") or "", **guarded)
+                data = {"result": "error", "reason": "refs.guard", "notes": data.get("notes") or []}
         verdict = None
         if step.get("kind") == "review" and data.get("result") == "done":
             verdict = self._review_result(os.path.join(out, handoff.RESULT_FILE))

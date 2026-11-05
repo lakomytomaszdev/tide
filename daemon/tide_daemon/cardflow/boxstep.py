@@ -166,6 +166,10 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         if rebuilding:
             raise BoxWaiting(WAIT_REBUILD)
         return None
+    from ..box import refguard
+    others = refguard.other_cards(engine._repo(card_id), card_id)
+    if others:
+        raise BoxWaiting("czeka na zakończenie kroków innej karty w repozytorium: " + ", ".join(others))
     builder = builder_of(engine, settings)
     full = bp.with_defaults(profile)
     per_card = full.get("box") == "per-card"
@@ -400,6 +404,11 @@ def recover_network(engine) -> None:
     for card, step in ended:
         try:
             _release_resources(engine, step)
+            # Także awaria między zapisaniem migawki a uruchomieniem procesu/step.started.
+            from ..box import refguard
+            repo = step.get("repo") or (fold(engine.journal.read(card)).started or {}).get("repo")
+            if repo:
+                refguard.cancel(repo, card, step["step"])
         except (OSError, ValueError) as exc:
             released = False  # Nie zapamiętujemy sukcesu: następny tick ponawia także bez nowych zdarzeń.
             print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {step['step']}: {exc!r}", flush=True)

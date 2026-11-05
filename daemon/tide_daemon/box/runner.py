@@ -48,6 +48,7 @@ import stat
 import subprocess
 import sys
 import time
+from ..gitcommand import git_argv
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -129,7 +130,7 @@ def worktree_config_enabled(git_dir: str) -> bool:
     nic nie chronią, a każda nowa (plik) wymaga zatrzymania pudełka. `git config --file` czyta wyłącznie ten plik
     (bez `include`, bez konfiguracji systemowej i użytkownika). Błąd odczytu → StepError (nie „wyłączone”)."""
     path = os.path.join(git_dir, "config")
-    run = subprocess.run(["git", "config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig"],
+    run = subprocess.run(git_argv("config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig"),
                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
                          env={"PATH": os.environ.get("PATH") or "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1",
                               "LC_ALL": "C"})
@@ -649,7 +650,6 @@ class BoxRunner:
     def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None
               ) -> Started:
         bg = self._background(step)
-        self.ensure_devices(step)
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
         fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
         fs.prepare(bg)
@@ -673,8 +673,15 @@ class BoxRunner:
                                               "kod w pudełku czyta to, co agent"})
             self._risk_logged = True
         with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
-            proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                               env=self._client_env(), start_new_session=True)
+            from . import refguard
+            refguard.begin(step.repo, self.card, step.step_id, bg.git_dir,
+                           prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
+            try:
+                proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                   env=self._client_env(), start_new_session=True)
+            except BaseException:
+                refguard.cancel(step.repo, self.card, step.step_id)
+                raise
         return Started(bg, proc)
 
     def _client_env(self) -> dict:
@@ -782,7 +789,7 @@ def _demo(argv: list) -> int:
     args, command = demo_args(argv)
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
-    common = subprocess.run(["git", "-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"),
                             capture_output=True, text=True, check=True).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")
