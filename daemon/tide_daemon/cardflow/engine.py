@@ -2508,13 +2508,33 @@ class FlowEngine(PlanEditing):
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         key = f"{approved.get('seq')}:{st.plan_change_seq}"
-        files = self._plan_files(card, st, merged)
+        files = self._plan_files(card, st, merged, worktree=worktree)
         self._act(card, "plan-commit", key,
                   lambda: self.git.commit_plan(repo, branch, worktree, files),
                   retry_failed=True,
                   repo=repo, branch=branch, worktree=worktree)
 
-    def _plan_files(self, card: str, st: FlowState, merged: set[str]) -> dict[str, bytes]:
+    @staticmethod
+    def _plan_extra(text: str) -> tuple[str, str]:
+        """Tekst planu poza nagłówkiem i tabelą ticketów: (przed tabelą, po tabeli). Aktualizacja tabeli go zachowuje
+        (05.11, K-50: odnośnik „Zakres poza v1” do szkicu followups znikał przy pierwszej zmianie stanu ticketu)."""
+        lines = text.splitlines()
+        if len(lines) < 2 or lines[0].strip() != "---":
+            return "", ""
+        try:
+            end = lines.index("---", 1)
+        except ValueError:
+            return "", ""
+        body = lines[end + 1:]
+        start = next((i for i, line in enumerate(body) if line.startswith("| Ticket |")), None)
+        if start is None:
+            return "", ""
+        stop = start
+        while stop < len(body) and body[stop].startswith("|"):
+            stop += 1
+        return "\n".join(body[:start]).strip(), "\n".join(body[stop:]).strip()
+
+    def _plan_files(self, card: str, st: FlowState, merged: set[str], *, worktree: str = "") -> dict[str, bytes]:
         approved, proposed = st.plan_approved or {}, st.plan_proposed or {}
         def cell(value):
             return " ".join(str(value or "").replace("|", "\\|").split())
@@ -2526,8 +2546,17 @@ class FlowEngine(PlanEditing):
                  f"session: {cell(proposed.get('session'))}",
                  f"ticket-prefix: {proposed.get('prefix') or ''}", f"card: {card}",
                  "status: done" if len(merged | st.rejected) == len(approved.get("rows") or []) else "status: active",
-                 f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", "",
-                 "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
+                 f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", ""]
+        before, after = "", ""
+        if worktree and approved.get("planFile"):
+            try:
+                with open(os.path.join(worktree, approved["planFile"]), encoding="utf-8") as fh:
+                    before, after = self._plan_extra(fh.read())
+            except OSError:
+                pass
+        if before:
+            lines += [before, ""]
+        lines += ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
         files = {}
         for row in approved.get("rows") or []:
@@ -2539,7 +2568,23 @@ class FlowEngine(PlanEditing):
                           row.get("class") or "", row["reviewer"], ", ".join(row["blockers"]))) + " |")
             ticket_dir = os.path.dirname(approved["planFile"]).replace("/plans", "/tickets")
             ticket_path = f"{ticket_dir}/{card.lower()}-flow/{ticket.lower()}.md"
-            files[ticket_path] = self._plan_card(card, row).encode("utf-8")
+            # Kartka w propozycji leżała w tickets/ obok followups/ („../followups/x.md”); w repozytorium szkice są
+            # obok planu, więc odnośnik wskazuje je względem katalogu kartki (05.11, K-50: martwe linki w PT-201/208).
+            followups = os.path.relpath(os.path.join(os.path.dirname(approved["planFile"]), "followups"),
+                                        os.path.dirname(ticket_path))
+            text = self._plan_card(card, row).replace("](../followups/", f"]({followups}/")
+            if worktree:
+                # Dopisek pod kartką z pracy ticketu (np. odnośnik do szkicu) zostaje, gdy reszta kartki się zgadza.
+                try:
+                    with open(os.path.join(worktree, ticket_path), encoding="utf-8") as fh:
+                        existing = fh.read()
+                    if existing.rstrip() != text.rstrip() and existing.startswith(text.rstrip()):
+                        text = existing
+                except OSError:
+                    pass
+            files[ticket_path] = text.encode("utf-8")
+        if after:
+            lines += ["", after]
         files[approved["planFile"]] = ("\n".join(lines) + "\n").encode("utf-8")
         return files
 
