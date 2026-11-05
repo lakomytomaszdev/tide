@@ -2713,6 +2713,11 @@ scripts/box/stacks-trial.sh` poza piaskownicą — profile próbne python-qt (`p
 Skrypt zwraca kod 1 po nieudanej budowie, kontroli, resecie, przekroczeniu progu czasu albo błędzie
 sprzątania. Gdy usunięcie pudełka się nie powiedzie, zachowuje jego profil próbny do ponowienia sprzątania.
 Pomiary mają kropkę dziesiętną niezależnie od ustawień języka hosta.
+Jeśli zmiana ustawienia migawek wymaga hasła, próba bez terminala używa `sudo -A` z `SUDO_ASKPASS` albo
+wykrytym `ksshaskpass`/`ssh-askpass`. Hasło wpisuje się w oknie systemowym; nie trafia przez stdin skryptu
+ani do dziennika próby. Ten sam mechanizm działa przy cofaniu ustawienia, także po wygaśnięciu zgody sudo.
+Bez terminala i pomocnika pozostaje `sudo -n` (brak wcześniejszej zgody przerywa próbę przed profilami).
+Nieudany odczyt początkowego ustawienia migawek również przerywa próbę, zanim zmieni ona projekt.
 
 ### Proxy wyjściowe (PT-168)
 

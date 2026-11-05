@@ -596,7 +596,7 @@ class StackBuildTest(unittest.TestCase):
 class TrialScriptTest(unittest.TestCase):
     TRIAL = os.path.join(ROOT, "scripts", "box", "stacks-trial.sh")
 
-    def run_trial(self, failure=""):
+    def run_trial(self, failure="", snapshots="allow"):
         # Cały skrypt próby, ale bez hostowego Incusa, Tablicy i instalowania pakietów.
         # Atrapy zwracają też prawidłowe dane kontroli po budowie, aby kod zakończenia
         # zależał od wskazanego błędu, a nie od przypadkowego braku wyniku innej kontroli.
@@ -613,6 +613,18 @@ date() {
         +%s.%N) echo 100.0 ;;
         *) echo trial ;;
     esac
+}
+sudo() {
+    printf 'SUDO %s\n' "$*"
+    if [[ $1 != -A || $SUDO_ASKPASS != "$TRIAL_ASKPASS" ]]; then
+        echo 'sudo: do odczytu hasła wymagany jest terminal' >&2
+        return 1
+    fi
+    if [[ $FAIL_STAGE == auth || ( $FAIL_STAGE == restore && $* != *restricted.snapshots=allow* ) ]]; then
+        return 1
+    fi
+    shift
+    "$@"
 }
 python3() {
     if [[ $1 == -c ]]; then echo localhost; return; fi
@@ -632,7 +644,11 @@ python3() {
 incus() {
     case "$1" in
         image) echo tide-base ;;
-        project) echo allow ;;
+        project)
+            if [[ $2 == get ]]; then
+                [[ $FAIL_STAGE != snapshot-read ]] || return 1
+                echo "$TRIAL_SNAPSHOTS"
+            fi ;;
         exec)
             if [[ $* == *claude* && $FAIL_STAGE == check ]]; then return 7; fi
             if [[ $* == *'/root/pt192-poza-home'* && $* == *'test -e'* ]]; then return 1; fi
@@ -643,18 +659,56 @@ incus() {
     esac
     return 0
 }
-export -f git sleep date python3 incus
+export -f git sleep date sudo python3 incus
 bash "$TRIAL"
 '''
             env = {**os.environ, "TRIAL": trial, "FAIL_STAGE": failure,
+                   "TIDE_BOX_PROJECT": "user-1000",
+                   "TRIAL_SNAPSHOTS": snapshots, "TRIAL_ASKPASS": os.path.join(folder, "askpass"),
+                   "SUDO_ASKPASS": os.path.join(folder, "askpass"),
                    "XDG_STATE_HOME": os.path.join(folder, "state"),
                    "TIDE_BOARD_DIR": os.path.join(folder, "board")}
-            return subprocess.run(["bash", "-c", body], env=env, capture_output=True, text=True, timeout=20)
+            return subprocess.run(["bash", "-c", body], env=env, capture_output=True, text=True,
+                                  timeout=20, start_new_session=True)
+
+    def test_trial_without_terminal_uses_askpass_for_set_and_restore(self):
+        for old, restore in (("", "unset"), ("block", "set")):
+            with self.subTest(old=old):
+                proc = self.run_trial(snapshots=old)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("SUDO -A incus project set user-1000 restricted.snapshots=allow", proc.stdout)
+                self.assertIn(f"SUDO -A incus project {restore} user-1000 restricted.snapshots", proc.stdout)
+                if old:
+                    self.assertIn("restricted.snapshots=block", proc.stdout)
+
+    def test_trial_without_terminal_stops_before_profiles_if_auth_fails(self):
+        proc = self.run_trial("auth", snapshots="")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("A: plasma-tide", proc.stdout)
+        self.assertNotIn("SUDO -A incus project unset", proc.stdout)
+
+    def test_trial_reports_failure_to_restore_snapshots(self):
+        proc = self.run_trial("restore", snapshots="")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("WYNIK cleanup-snapshots: fail", proc.stdout)
+        self.assertNotIn("restricted.snapshots cofnięte:", proc.stdout)
+
+    def test_trial_restores_snapshots_after_failed_build(self):
+        proc = self.run_trial("build", snapshots="block")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("SUDO -A incus project set user-1000 restricted.snapshots=block", proc.stdout)
+
+    def test_trial_does_not_change_unknown_snapshot_setting(self):
+        proc = self.run_trial("snapshot-read", snapshots="")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("SUDO ", proc.stdout)
+        self.assertNotIn("A: plasma-tide", proc.stdout)
 
     def test_trial_success_exits_zero(self):
         proc = self.run_trial()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn(": fail", proc.stdout)
+        self.assertNotIn("SUDO ", proc.stdout)
 
     def test_trial_failure_cannot_be_hidden_by_successful_cleanup(self):
         for stage in ("approve", "build", "check", "reset", "warning", "cleanup"):

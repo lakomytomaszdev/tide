@@ -11,6 +11,8 @@
 #
 # Zmiana hosta tylko chwilowa i cofana na końcu: `restricted.snapshots=allow` w projekcie Incusa (sudo) — projekt
 # z PT-166 blokuje migawki, a budowa kończy się migawką clean (decyzja migawki-w-projekcie; na stałe zrobi to PT-182).
+# Bez terminala sudo używa SUDO_ASKPASS albo dostępnego ksshaskpass/ssh-askpass (okno hasła także przy cofaniu,
+# jeśli zgoda wygasła). Hasło nie przechodzi przez stdin próby ani jej dziennik. Bez pomocnika: tylko sudo -n.
 # Budowa idzie przez własne proxy Tide polecenia `tide box build` (port box.proxy-port) — zatrzymaj usługę Tide
 # z box.enabled na czas próby, jeśli trzyma ten port. Obraz bazowy `tide-base` musi istnieć (`make box-base`).
 set -uo pipefail
@@ -27,6 +29,7 @@ RESET_LIMIT=60
 SNAP_OLD=""
 SNAP_CHANGED=0
 FAILURES=0
+SUDO=(sudo)
 CREATED=()       # sluga z profilem założonym przez próbę (do usunięcia na końcu)
 
 mkdir -p "$OUT"
@@ -43,6 +46,29 @@ result() {
 }
 now() { date +%s.%N; }
 since() { LC_ALL=C awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+
+select_sudo() {
+    # Ten sam sposób uwierzytelnienia przy zmianie i sprzątaniu; bez uruchamiania budowy jako root hosta.
+    if (: </dev/tty) 2>/dev/null; then
+        return 0
+    fi
+    if [[ -z ${SUDO_ASKPASS:-} ]]; then
+        local helper
+        for helper in /usr/bin/ksshaskpass /usr/bin/ssh-askpass /usr/lib/ssh/x11-ssh-askpass; do
+            if [[ -x $helper ]]; then
+                export SUDO_ASKPASS=$helper
+                break
+            fi
+        done
+    fi
+    if [[ -n ${SUDO_ASKPASS:-} ]]; then
+        SUDO=(sudo -A)
+        echo "sudo: bez terminala używam okna hasła (askpass) do zmiany i cofnięcia ustawienia migawek"
+    else
+        SUDO=(sudo -n)
+        echo "sudo: brak terminala i askpass — możliwa tylko wcześniej przyznana zgoda"
+    fi
+}
 
 cleanup() {
     local code=$?
@@ -64,14 +90,17 @@ cleanup() {
         echo "profil próbny $slug usunięty ($BOARD/projects/$slug/box.yaml); dziennik pudełka zostaje w Tablicy"
     done
     if (( SNAP_CHANGED )); then
+        local restored=0
         if [[ -n $SNAP_OLD ]]; then
-            sudo incus project set "$PROJECT" "restricted.snapshots=$SNAP_OLD" \
-                || result cleanup-snapshots fail "nie cofnięto restricted.snapshots"
+            "${SUDO[@]}" incus project set "$PROJECT" "restricted.snapshots=$SNAP_OLD" && restored=1
         else
-            sudo incus project unset "$PROJECT" restricted.snapshots \
-                || result cleanup-snapshots fail "nie cofnięto restricted.snapshots"
+            "${SUDO[@]}" incus project unset "$PROJECT" restricted.snapshots && restored=1
         fi
-        echo "restricted.snapshots cofnięte: $(incus project get "$PROJECT" restricted.snapshots </dev/null)"
+        if (( restored )); then
+            echo "restricted.snapshots cofnięte: $(incus project get "$PROJECT" restricted.snapshots </dev/null)"
+        else
+            result cleanup-snapshots fail "nie cofnięto restricted.snapshots"
+        fi
     fi
     echo "log: $LOG"
     if (( FAILURES > 0 )); then
@@ -148,10 +177,17 @@ if ! incus image list --project "$PROJECT" --format csv -c l </dev/null | grep -
 fi
 
 section "migawki w projekcie (chwilowo)"
-SNAP_OLD=$(incus project get "$PROJECT" restricted.snapshots </dev/null)
+if ! SNAP_OLD=$(incus project get "$PROJECT" restricted.snapshots </dev/null); then
+    result snapshot-read fail "nie odczytano restricted.snapshots — próba nie zmieni nieznanego ustawienia"
+    exit 1
+fi
 echo "restricted.snapshots przed: '${SNAP_OLD:-<domyślne>}'"
 if [[ $SNAP_OLD != allow ]]; then
-    sudo incus project set "$PROJECT" restricted.snapshots=allow || exit 1
+    select_sudo
+    if ! "${SUDO[@]}" incus project set "$PROJECT" restricted.snapshots=allow; then
+        result snapshot-auth fail "nie ustawiono restricted.snapshots=allow — próba przerwana przed profilami"
+        exit 1
+    fi
     SNAP_CHANGED=1
 fi
 
