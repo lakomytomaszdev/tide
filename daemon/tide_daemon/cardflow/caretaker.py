@@ -555,6 +555,7 @@ def owned(st, ident: str) -> dict:
     """Jedyne liczenie działań opiekuna przy problemie: kroki opiekuna z tym id od ostatniego zamknięcia problemu
     (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
     z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
+    Błąd etapu `flow-error` zamykają tylko kroki tego etapu, nie wynik niezwiązanej pracy.
 
     `count` — działania od zamknięcia (udane i nieudane; nieaktualne `stale` się nie liczą — PT-150), `runs` — te
     kroki, `next` — numer następnego kroku przy tym id (do klucza `caretaker:<problem>:<n>`, nigdy się nie powtarza),
@@ -570,6 +571,18 @@ def owned(st, ident: str) -> dict:
             return False
         if roots:
             return chain_root(st, name) in roots
+        if ident.startswith("flow-error:"):
+            # Zakres odpowiada etapom rozwiązywanym przez step.started w fold(). Niezależny
+            # ticket nie zamyka błędu domknięcia ani błędu uruchomienia innego ticketu.
+            stage = ident.split(":", 1)[1]
+            step = st.steps[name]
+            if stage.startswith("advance:"):
+                return step.get("ticket") == stage.split(":", 1)[1]
+            if stage == "close":
+                return step.get("kind") == "close"
+            if stage == "plan-next":
+                return bool(step.get("ticket"))
+            return stage == "advance"
         return not tickets or st.steps[name].get("ticket") in tickets
 
     closed = int((st.caretaker_decisions.get(ident) or {}).get("seq") or 0)

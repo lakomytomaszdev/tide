@@ -118,3 +118,72 @@ class CaretakerDecisionTest(unittest.TestCase):
                 engine.resolve_caretaker("K-8", request)
             self.assertEqual(caught.exception.code, code)
             self.assertEqual(events, before)
+
+    def test_parallel_ticket_completion_preserves_unresolved_stage_decision(self):
+        for stage in ("close", "advance:PT-1"):
+            for limit in (False, True):
+                with self.subTest(stage=stage, limit=limit):
+                    engine, events = self.engine(limit=limit)
+                    problem = "flow-error:" + stage
+                    for event in events:
+                        if event.get("stage") == "advance":
+                            event["stage"] = stage
+                        if event.get("problem") == "flow-error:advance":
+                            event["problem"] = problem
+                    before = engine.derived({"id": "K-8", "column": "todo"})["flow"]["decisions"]
+                    engine._queue_notices("K-8")
+                    self.assertEqual(len(engine.take_notices()), 1)
+                    engine.journal.append("K-8", "step.started", step="PT-99-ticket", kind="ticket",
+                                          ticket="PT-99", executor="Sonnet")
+                    engine.journal.append("K-8", "step.finished", step="PT-99-ticket", result="done")
+                    st = fold(events)
+                    self.assertIn(stage, st.flow_errors)
+                    self.assertIn(problem, [p["id"] for p in caretaker.problems(st)])
+                    own = caretaker.owned(st, problem)
+                    self.assertEqual((own["count"], own["handed"]), (1, True))
+                    shown = engine.derived({"id": "K-8", "column": "todo"})
+                    self.assertEqual(shown["column"], "waiting")
+                    self.assertEqual(shown["flow"]["decisions"], before)
+                    engine._queue_notices("K-8")
+                    self.assertEqual(engine.take_notices(), [])
+                    self.assertTrue(engine.resolve_caretaker("K-8", {"choice": "dismiss"})["ok"])
+                    self.assertEqual(caretaker.owned(fold(events), problem)["count"], 0)
+
+    def test_stage_recovery_closes_escalation_and_resets_count_before_recurrence(self):
+        for stage, kind, ticket in (("close", "close", ""), ("advance:PT-1", "ticket", "PT-1")):
+            with self.subTest(stage=stage):
+                engine, events = self.engine()
+                problem = "flow-error:" + stage
+                for event in events:
+                    if event.get("stage") == "advance":
+                        event["stage"] = stage
+                    if event.get("problem") == "flow-error:advance":
+                        event["problem"] = problem
+                engine.journal.append("K-8", "step.started", step="recovery", kind=kind, ticket=ticket)
+                engine.journal.append("K-8", "step.finished", step="recovery", result="done")
+                self.assertNotIn(stage, fold(events).flow_errors)
+                engine.journal.append("K-8", "flow.error", stage=stage, error="Nowy błąd")
+                engine.journal.append("K-8", "flow.error-persisted", stage=stage, error="Nowy błąd")
+                own = caretaker.owned(fold(events), problem)
+                self.assertEqual((own["count"], own["handed"]), (0, False))
+                self.assertEqual(engine.derived({"id": "K-8", "column": "todo"})["flow"]["decisions"], [])
+
+    def test_pause_and_manual_backlog_take_priority_over_caretaker_decision(self):
+        for entry in ("now", "plan"):
+            for paused, column in ((True, "todo"), (False, "backlog"), (True, "backlog")):
+                with self.subTest(entry=entry, paused=paused, column=column):
+                    engine, events = self.engine()
+                    events[0]["entry"] = entry
+                    if column == "backlog":
+                        engine.journal.append("K-8", "card.moved", **{"from": "waiting", "to": "backlog"})
+                    if paused:
+                        engine.journal.append("K-8", "card.paused")
+                    shown = engine.derived({"id": "K-8", "column": column})
+                    if not paused:
+                        self.assertIsNone(shown)
+                    else:
+                        self.assertEqual(shown["column"], "backlog" if column == "backlog" else "progress")
+                        self.assertTrue(shown["flow"]["paused"])
+                        self.assertIn("wstrzymana", shown["note"])
+                        self.assertEqual([d["kind"] for d in shown["flow"]["decisions"]], ["caretaker"])
+                    self.assertTrue(caretaker.owned(fold(events), "flow-error:advance")["handed"])
