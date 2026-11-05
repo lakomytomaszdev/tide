@@ -343,13 +343,16 @@ class BoardStore:
         rendered = flows.render(template, values)
         if revision:
             import shlex
+            protection = "Nie przełączaj checkoutu. Nie zmieniaj refów, indeksu ani plików użytkownika"
+            if not in_board:
+                protection += " poza zapisem i commitem wyłącznie pliku specyfikacji opisanym wyżej"
             rendered += (f"\n\nKontekst wejścia Tylko specyfikacja (wyłącznie do odczytu):\n"
                          f"Repozytorium: {revision['repo']}\nRef: {revision['ref']}\nSHA: {revision['commit']}\n"
                          "Czytaj kod i dokumenty z podanego SHA, także pliki nieobecne w bieżącym checkoutcie. "
                          "Nie zastępuj tej rewizji przez HEAD ani zawartość katalogu roboczego. "
                          f"Używaj `git -C {shlex.quote(revision['repo'])} show {revision['commit']}:ścieżka` "
                          f"oraz `git -C {shlex.quote(revision['repo'])} ls-tree -r --name-only {revision['commit']}`. "
-                         "Nie przełączaj checkoutu, nie zmieniaj refów, indeksu ani plików użytkownika. "
+                         f"{protection}. "
                          "Nie uruchamiaj StartCard, nie zakładaj gałęzi/worktree karty ani nie rezerwuj ticketów. "
                          "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy tylko do odczytu. "
                          "Wynikową specyfikację zapisz według powyższych zasad w dotychczasowym miejscu.\n")

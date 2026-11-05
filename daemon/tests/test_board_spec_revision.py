@@ -58,6 +58,30 @@ class SpecRevisionTest(BoardCase):
         self.assertEqual((git_out(extra, "show-ref"), git_out(extra, "symbolic-ref", "HEAD"),
                           git_out(extra, "status", "--porcelain")), before)
 
+    def test_revision_allows_only_existing_specification_write_and_commit_policy(self):
+        before = self.state()
+        for ai_docs in ("repo", "tide"):
+            with self.subTest(ai_docs=ai_docs):
+                self.store.upsert_project({"repo": self.project, "aiDocs": ai_docs})
+                reply = self.render({"entry": "spec", "baseRef": "refs/heads/feature", "baseCommit": self.sha})
+                self.assertTrue(reply["ok"], reply)
+                text = reply["text"]
+                protection = "Nie przełączaj checkoutu. Nie zmieniaj refów, indeksu ani plików użytkownika"
+                exception = " poza zapisem i commitem wyłącznie pliku specyfikacji opisanym wyżej"
+                if ai_docs == "repo":
+                    self.assertIn("`git add docs/agents/specs/k-1-spec.md`", text)
+                    self.assertIn('`git commit -m "docs(spec): K-1 <short English title>"`', text)
+                    self.assertIn("na bieżącej gałęzi repozytorium", text)
+                    self.assertIn(protection + exception + ".", text)
+                    self.assertNotIn(protection + ".", text)
+                else:
+                    self.assertIn("plik specyfikacji w tablicy commituje usługa Tide", text)
+                    self.assertIn(protection + ".", text)
+                    self.assertNotIn(exception, text)
+                    self.assertNotIn("`git add ", text)
+                self.assertNotIn("Nie przełączaj checkoutu, nie zmieniaj refów, indeksu ani plików użytkownika.", text)
+                self.assertEqual(self.state(), before)
+
     def render(self, request):
         monitor = BoardMonitor(self.store)
         try:
