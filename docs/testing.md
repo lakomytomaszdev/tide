@@ -46,6 +46,14 @@ Takie moduły biegną pojedynczo dopiero po wszystkich równoległych. Pusta lis
 nie stwierdzono potrzeby serializacji; nie dodawaj wyjątków wyłącznie z powodu używania Qt lub D-Bus.
 Limit dotyczy jednego wywołania runnera; kilka jednoczesnych wywołań `make test` ma niezależne limity.
 
+W PT-215 osobno oznaczono `test_cardflow_review.py` (tick domknięcia konkurujący z callbackiem
+decyzji) i `test_cardflow_dbus.py` (odtworzenie pliku dziennika widoczne przed ostrzeżeniem
+w migawce). Oba przeszły po 3 próby pojedyncze, lecz pod obciążeniem 14 procesów miały
+odpowiednio 1/5 i 2/4 porażek. Uzasadnienia są przy wpisach `SERIAL_MODULES`; testy nadal
+się wykonują i ich błędy trafiają do wspólnego raportu. `FlowInProcess` dodatkowo kończy
+wątki i dostarcza ich callbacki przed restartem lub usunięciem fixture, aby praca starego
+silnika nie przechodziła do następnego testu.
+
 Logi trafiają do unikalnego `build/test-results/run-*/`: plik `.log` i `.json` na moduł oraz
 `summary.json` z czasem, kodami wyjścia, licznikami i identyfikatorami wykonanych testów.
 Po ukończeniu modułu widać nazwę, wynik i czas; dla nieudanego także jego log.

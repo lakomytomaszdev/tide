@@ -32,7 +32,7 @@ Wszystkie trzy odtworzono też pojedynczo w bieżącym worktree przez `python3 -
 (3 testy, 0,605 s, 3 porażki). Nie zmieniamy tych testów ani zachowania innych kart w PT-215.
 Brak odnośnika w istniejącym planie nie jest dowodem nieprawidłowej bazy.
 
-## Różnice wymagające diagnozy
+## Różnice w pierwszym pomiarze
 
 Sekwencyjnie dodatkowo nie przeszedł
 `test_cardflow_dbus.JournalTest.test_journal_removed_from_outside_comes_back_with_a_warning`:
@@ -49,3 +49,28 @@ Nie ma różnic w pominięciach ani oczekiwanych porażkach. Pełny benchmark po
 kod niezerowy i końcową listę pięciu awarii równoległego przebiegu. Stabilność trzech
 różniących się przypadków jest nadal sprawdzana osobno i pod obciążeniem; powyższy pomiar
 potwierdza wydajność i kompletność, a nie bezbłędność całego zestawu.
+
+## Zawężona próba i izolacja
+
+Próba `build/pt215/probe.py`, wykonana poza piaskownicą, zapisała wyniki w
+`build/pt215/probe-3xyoh3bt/`. Trzy przypadki wykonane po 3 razy pojedynczo przeszły
+wszystkie 9 prób. Przy 14 jednoczesnych procesach odrzucenie review miało 1/5 porażek,
+odczyt ostrzeżenia D-Bus 2/4, a komentarz YouTracka przeszedł 5/5 prób.
+
+Zapisany dziennik potwierdził, że siódmym krokiem po odrzuceniu review jest domknięcie
+karty. Test liczy kroki, zanim kolejny tick zdąży je uruchomić. Test ostrzeżenia odczytuje
+migawkę zaraz po pojawieniu się odtworzonego pliku — publikacja ostrzeżenia jest osobna.
+Oba moduły oznaczono do wykonania pojedynczo **po zakończeniu części równoległej**;
+`tools/test_suites.py` zawiera uzasadnienia i wyniki próby. Nie zmieniono ich asercji.
+
+Fixture `FlowInProcess` używała produkcyjnego `stop()`, które zamyka pulę z `wait=False`.
+Stary wątek mógł nadal zmieniać dziennik podczas restartu silnika, cofania środowiska testu
+lub usuwania repozytorium. W wariancie monitora używanym wyłącznie przez fixture dodano
+oczekiwanie na zakończenie puli i dostarczenie callbacków Qt przed powrotem ze `stop()`.
+Nowy test `test_cardflow_fixture` wykazał błąd przed poprawką i przeszedł po niej.
+Nie zmieniono produkcyjnego monitora ani oczekiwanego działania przepływu.
+
+Kontrola lokalna: `python3 -m unittest daemon.tests.test_cardflow_fixture scripts.tests.test_test_runner`
+— 13 testów, 0,975 s, OK. Po dodaniu regresji pełny zestaw powinien mieć 4164 testy
+w 237 modułach. Końcowy pełny przebieg po zmianach izolacji pozostaje do wykonania;
+nie ma potrzeby powtarzania pomiaru sekwencyjnego.

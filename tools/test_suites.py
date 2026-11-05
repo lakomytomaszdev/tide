@@ -44,4 +44,11 @@ CHANGE_MAP["daemon/tests/test_cardflow"] = "cardflow"
 # Klucz to ścieżka modułu; wartość musi wyjaśniać wspólny zasób. Takie moduły
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.
-SERIAL_MODULES = {}
+SERIAL_MODULES = {
+    "daemon/tests/test_cardflow_review.py":
+        "Qt: tick uruchamia domknięcie przed callbackiem decyzji; test liczy step.started przed następnym tickiem. "
+        "Próba PT-215: 0/3 porażek osobno, 1/5 przy 14 procesach; osobno do czasu synchronizacji scenariusza.",
+    "daemon/tests/test_cardflow_dbus.py":
+        "D-Bus: test czyta Snapshot natychmiast po odtworzeniu pliku dziennika, przed publikacją ostrzeżenia. "
+        "Próba PT-215: 0/3 porażek osobno, 2/4 przy 14 procesach; osobno do czasu synchronizacji scenariusza.",
+}
