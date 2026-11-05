@@ -184,6 +184,79 @@ class BaseContextTest(StartBaseSetup):
         with self.assertRaises(FlowError):
             engine.enter(self.ident, "old")
 
+    def test_empty_planning_question_restarts_on_new_base_with_fresh_step_after_restart(self):
+        self.ident = self.card(description="ATRAPA: plan-question")
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+        reply = self.start(self.ident, entry="planning", mode="light")
+        self.assertTrue(reply["ok"], reply)
+
+        def question_count(count):
+            self.flow.engine.tick()
+            return len([e for e in self.of(self.ident, "step.finished") if e.get("result") == "question"]) == count
+
+        self.assertTrue(wait_until(lambda: question_count(1), timeout=10))
+        old = self.of(self.ident, "step.started")[0]
+        old_call = Path(old["stepDir"], "out/fake-call.json").read_text()
+        self.assertEqual(old["kind"], "planning")
+        self.assertEqual(git(old["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.assertEqual(git(old["worktree"], "status", "--porcelain"), "")
+        self.assertFalse(fold(self.events(self.ident)).running())
+        self.assertFalse(self.of(self.ident, "plan.proposed"))
+        self.change()
+        self.restart()
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+        with mock.patch.object(engine.git, "branch_worktree", side_effect=AssertionError("ponowna aktywacja")):
+            self.assertTrue(wait_until(lambda: question_count(2), timeout=10), self.events(self.ident))
+        steps = self.of(self.ident, "step.started")
+        self.assertEqual(len(steps), 2)
+        new = steps[-1]
+        self.assertNotEqual(new["step"], old["step"])
+        self.assertNotEqual(new["stepDir"], old["stepDir"])
+        self.assertNotEqual(new["session"], old["session"])
+        self.assertNotEqual(new["worktree"], old["worktree"])
+        self.assertEqual((new["baseRef"], new["baseCommit"], new["baseVersion"]),
+                         ("refs/heads/feature/start", self.feature_sha, 2))
+        self.assertEqual(git(new["worktree"], "rev-parse", "HEAD").strip(), self.feature_sha)
+        call = json.loads(Path(new["stepDir"], "out/fake-call.json").read_text())
+        self.assertEqual(call["cwd"], new["worktree"])
+        self.assertNotIn("--resume", call["argv"])
+        self.assertIn(new["session"], call["argv"])
+        self.assertIn("Notka korekty bazy", call["prompt"])
+        self.assertIn("Wersja bazy karty: 2", call["prompt"])
+        self.assertIn(self.feature_sha, call["prompt"])
+        self.assertEqual(Path(old["stepDir"], "out/fake-call.json").read_text(), old_call)
+        self.assertEqual(git(old["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.restart()
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+        engine.tick()
+        engine.tick()
+        self.assertEqual(self.of(self.ident, "step.started"), steps)
+        self.assertEqual(len(self.results(self.ident, "step-start")), 2)
+        self.assertEqual(len(self.results(self.ident, "card-branch")), 1)
+        self.board.publish()
+        flow = self.shown(self.ident)["derived"]["flow"]
+        self.assertTrue(any(h["old"] and h.get("step") == old["step"] for h in flow["history"]))
+        self.assertEqual(flow["decisions"][0]["step"], new["step"])
+        before = self.events(self.ident)
+        refused = self.call("resolve_card_step", {"choice": "answer", "step": old["step"], "answer": "Pierwszy"})
+        self.assertEqual(refused["error"], "stale-context", refused)
+        self.assertEqual(self.events(self.ident), before)
+        self.assertEqual(len(self.of(self.ident, "card.base-changed")), 1)
+        answered = self.call("resolve_card_step", {"choice": "answer", "step": new["step"], "answer": "Pierwszy"})
+        self.assertTrue(answered["ok"], answered)
+
+        def reviewed():
+            engine.tick()
+            return bool(self.of(self.ident, "plan.reviewed"))
+
+        self.assertTrue(wait_until(reviewed, timeout=10), self.events(self.ident))
+        self.assertEqual(self.of(self.ident, "plan.reviewed")[-1]["verdict"], "APPROVE")
+        review = next(s for s in self.of(self.ident, "step.started") if s["kind"] == "plan-review")
+        self.assertEqual((review["baseCommit"], review["baseVersion"]), (self.feature_sha, 2))
+
     def test_even_empty_commit_or_merge_is_refused(self):
         for merge in (False, True):
             with self.subTest(merge=merge):

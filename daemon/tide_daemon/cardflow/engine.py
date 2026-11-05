@@ -598,6 +598,10 @@ class FlowEngine(PlanEditing):
         item, _ = self._project(card)
         branch = (ticket_of(st)["cardBranch"] or st.started.get("cardBranch")
                   or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}")
+        for row in st.base_change.get("generation", []):
+            if row["action"] == "card-branch" and row["branch"] == branch:
+                # Aktywacja już przygotowała ten zasób; nie zakładamy nowej operacji pod nowym refem.
+                return st.results[(row["action"], row["key"])]
         base = base_of(st)
         start = (f"refs/heads/{branch}" if self.git.sha(project.repo, f"refs/heads/{branch}") else
                  base["baseCommit"] if base["status"] == "known" else self.git.main_branch(project.repo))
@@ -988,7 +992,9 @@ class FlowEngine(PlanEditing):
         branch, worktree = made["branch"], made["worktree"]
         importing = st.started.get("entry") == "plan"
         kind = "plan-import" if importing else "plan-fix" if round_no else "planning"
-        step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
+        # Granica generacji jest trwała: restart zachowuje klucz, korekta dostaje nowy.
+        boundary = max(st.started["seq"], st.base_change.get("seq", 0))
+        step_id = f"{card}-plan-{boundary}-{round_no}"
         out = worktree + f".{kind}-{step_id}.step/out"
         shots = [os.path.join(os.path.dirname(out), "in", "images", f"{i + 1}-{os.path.basename(p)}")
                  for i, p in enumerate(images)]
@@ -1181,7 +1187,7 @@ class FlowEngine(PlanEditing):
         if st.paused or st.plan_proposed is not None:
             return True
         steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix", "plan-import")
-                 and step.get("seq", 0) > st.started["seq"]]
+                 and step.get("seq", 0) > st.started["seq"] and step["step"] not in st.superseded]
         if not steps:
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
             cfg = self.models_config() if self.models_config else None
