@@ -99,6 +99,8 @@ Item {
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
         onFlowRequested: (tag, id, request) => view.backend.startCard(tag, id, request)
+        onBranchesRequested: (tag, id, request) => { if (view.backend) view.backend.listCardBranches(tag, id, request) }
+        onSuggestionsRequested: (tag, id, request) => { if (view.backend) view.backend.suggestCardBase(tag, id, request) }
         onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
@@ -112,6 +114,10 @@ Item {
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
         onBranchDiffRequested: (tag, id) => view.backend.cardBranchDiff(tag, id)
         onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
+        onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)
+        onMergeRequested: (tag, id, request) => view.backend.mergeCard(tag, id, request)
+        onPreviewBaseChangeRequested: (tag, id, request) => view.backend.previewCardBaseChange(tag, id, request)
+        onRequestBaseChangeRequested: (tag, id, request) => view.backend.requestCardBaseChange(tag, id, request)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

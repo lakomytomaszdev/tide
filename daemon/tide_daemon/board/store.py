@@ -262,14 +262,16 @@ class BoardStore:
     def render_launch(self, card_id: str, request: dict | None = None) -> dict:
         """Polecenie trybu dla karty (szablon z flows/ albo wbudowany) i dane uruchomienia.
 
-        request: {entry, mode, tool, branch, check} — wszystko opcjonalne; puste wejście, tryb i narzędzie to
+        request: {entry, mode, tool, branch, check, baseRef, baseCommit} — pola opcjonalne; para baseRef/baseCommit
+        jest kontekstem odczytu specyfikacji, walidowanym i zapisywanym oddzielnie od przepływu.
+        Puste wejście, tryb i narzędzie to
         domyślne projektu (wejście: planning albo spec; tryb full albo light dotyczy tylko Planowania; dawne
         `mode: spec` to wejście spec), pusta gałąź — `branch` karty albo propozycja `<narzędzie>/k-12-<opis>`, check —
         `auto` (domyślnie: koniec po review AI) albo `manual` (test ręczny użytkownika po zakończeniu).
         Katalog dokumentów w tablicy (`ai-docs: tide`) zakładamy od razu — agent dostaje go przez
         --add-dir. Szablon `flows/<tryb>.md`, który jest nietkniętym dawnym zaczynem, zastępuje
         wbudowana treść (migrate_flows podmieni plik przy najbliższej okazji)."""
-        data = _fields(request or {}, ("entry", "mode", "tool", "branch", "check", "preferredProvider"))
+        data = _fields(request or {}, ("entry", "mode", "tool", "branch", "check", "preferredProvider", "baseRef", "baseCommit"))
         board = self.load()
         card = self._card(board, card_num(card_id))
         project = board.projects.get(card.project)
@@ -286,6 +288,17 @@ class BoardStore:
         from ..models import config as models_config
         if preferred not in ("mixed", "local") and not models_config.load().catalog.known_provider(preferred):
             raise BoardError(f"nieznany preferowany dostawca „{preferred}”")
+        revision = None
+        if "baseRef" in data or "baseCommit" in data:
+            if entry != "spec":
+                raise BoardError("wybrana rewizja RenderLaunch dotyczy tylko specyfikacji")
+            if not data.get("baseRef") or not data.get("baseCommit"):
+                raise BoardError("wybór rewizji wymaga pełnego refu i SHA — odśwież wybór")
+            revision = self._spec_revision(card.id, project, data["baseRef"], data["baseCommit"])
+        elif entry == "spec" and card.spec_revision_ref:
+            if not project or project.repo != card.spec_revision_repo:
+                raise BoardError("projekt rewizji zmienił się — odśwież wybór")
+            revision = self._spec_revision(card.id, project, card.spec_revision_ref, card.spec_revision_commit)
         template, source = None, "builtin"
         candidates = ([os.path.join("flows", project.slug, f"{flow_key}.md")] if project else []) + \
             [os.path.join("flows", f"{flow_key}.md")]
@@ -328,16 +341,60 @@ class BoardStore:
         values["spec_commit"] = flows.spec_commit_text(in_board, card.id, values["spec_file"])
         values["projects"] = flows.projects_text(extra_repos, flow_key, branch, values["repo"], docs_ref)
         rendered = flows.render(template, values)
+        if revision:
+            import shlex
+            protection = "Nie przełączaj checkoutu. Nie zmieniaj refów, indeksu ani plików użytkownika"
+            if not in_board:
+                protection += " poza zapisem i commitem wyłącznie pliku specyfikacji opisanym wyżej"
+            rendered += (f"\n\nKontekst wejścia Tylko specyfikacja (wyłącznie do odczytu):\n"
+                         f"Repozytorium: {revision['repo']}\nRef: {revision['ref']}\nSHA: {revision['commit']}\n"
+                         "Czytaj kod i dokumenty z podanego SHA, także pliki nieobecne w bieżącym checkoutcie. "
+                         "Nie zastępuj tej rewizji przez HEAD ani zawartość katalogu roboczego. "
+                         f"Używaj `git -C {shlex.quote(revision['repo'])} show {revision['commit']}:ścieżka` "
+                         f"oraz `git -C {shlex.quote(revision['repo'])} ls-tree -r --name-only {revision['commit']}`. "
+                         f"{protection}. "
+                         "Nie uruchamiaj StartCard, nie zakładaj gałęzi/worktree karty ani nie rezerwuj ticketów. "
+                         "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy tylko do odczytu. "
+                         "Wynikową specyfikację zapisz według powyższych zasad w dotychczasowym miejscu.\n")
         if entry == "planning" and data.get("preferredProvider"):
             rendered += f"\n\nPreferowany dostawca wykonawców: {preferred}. Dobieraj wykonawców według klas z katalogu Tide.\n"
         return {"ok": True, "id": card.id, "entry": entry, "mode": mode, "tool": tool, "branch": branch, "check": check,
                 "preferredProvider": preferred,
+                "specRevision": revision,
                 "docsDir": docs,
                 "aiDocs": ai_docs, "repo": values["repo"], "repoMissing": bool(project and project.repo_missing),
                 "project": card.project, "projectName": values["project"], "template": source,
                 "specFile": os.path.join(docs, "specs", spec_name(card)), "text": rendered,
                 "projects": [p.slug for p in extra], "extraRepos": [repo for _name, repo in extra_repos],
                 "addDirs": add_dirs}
+
+    def _spec_revision(self, card_id: str, project: Project | None, ref: str, commit: str) -> dict:
+        """Osobny kontekst odczytu; bez dziennika i zasobów przepływu karty."""
+        from ..cardflow.gitops import FlowGit, FlowGitError, lock_for
+        if not project or not project.repo or project.repo_missing:
+            raise BoardError("wybrana rewizja wymaga repozytorium projektu karty")
+        with lock_for(project.repo):
+            try:
+                base = FlowGit().resolve_base(project.repo, ref, commit)
+            except FlowGitError as exc:
+                raise BoardError(str(exc)) from exc
+            revision = {"repo": project.repo, "ref": base["baseRef"], "commit": base["baseCommit"]}
+
+            def plan(board):
+                card = self._card(board, card_num(card_id))
+                current = board.projects.get(card.project)
+                if not current or current.repo != project.repo:
+                    raise BoardError("projekt rewizji zmienił się — odśwież wybór")
+                changed = []
+                for key, value in revision.items():
+                    changed += _doc_set(card.doc, "spec-revision-" + key, value)
+                change = Change(result={"ok": True, "id": card.id})
+                if changed:
+                    change.commits.append((f"{card.id}: remember specification revision",
+                                           [(_rel(self.root, card.path), card.doc.text())]))
+                return change
+            self._execute(plan)
+        return revision
 
     def migrate_flows(self) -> list[str]:
         """Podmienia w flows/ szablony trybów, które są nietkniętymi dawnymi zaczynami (flows.PREVIOUS_SEEDS),
@@ -396,6 +453,23 @@ class BoardStore:
         values = _card_values(_fields(data, CARD_FIELDS, hint="do zmiany kolumny i kolejności służy MoveCard"))
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
+
+    def project_card_base(self, card_id: str, base: dict) -> dict:
+        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
+        def plan(board):
+            card = self._card(board, card_num(card_id))
+            change = Change(result={"ok": True, "id": card.id})
+            if card.column in ("done", "archived"):
+                return change
+            changed = []
+            for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
+                value = base.get(public) or ""
+                if value or card.doc.has(key):
+                    changed += _doc_set(card.doc, key, value)
+            if changed:
+                change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
+            return change
+        return self._execute(plan)
 
     def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
         """Przenosi kartę na pozycję `index` (od 0) kolumny; -1 albo poza zakresem — na koniec.
@@ -1033,6 +1107,9 @@ def find_ready_spec(docs_dir: str, card_id: str) -> str:
 
 
 def _card_json(card: Card, project: Project | None, resolved: list, derived, extra=()) -> dict:
+    flow = (derived or {}).get("flow") or {}
+    base = flow.get("base") or {"baseRef": card.base_ref, "baseBranch": card.base_branch,
+                                "baseCommit": card.base_commit}
     return {
         "id": card.id, "num": card.num, "title": card.title, "project": card.project,
         "projectName": project.name if project else "", "tags": list(card.tags), "resolvedTags": resolved,
@@ -1046,6 +1123,10 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         # Ostatnia prawdziwa zmiana kolumny (PT-7, synchronizacja z YouTrackiem); 0 — nigdy.
         "columnMoved": card.column_moved, "columnMovedTs": parse_ts(card.column_moved),
         "youtrack": card.youtrack,
+        "baseRef": base["baseRef"], "baseBranch": base["baseBranch"], "baseCommit": base["baseCommit"],
+        "baseVersion": flow.get("baseVersion", 0),
+        "specRevision": {"repo": card.spec_revision_repo, "ref": card.spec_revision_ref,
+                         "commit": card.spec_revision_commit} if card.spec_revision_ref else None,
         "spec": card.spec, "planPath": card.plan, "session": card.session, "branch": card.branch, "check": card.check,
         "entry": card.entry, "mode": card.mode, "tool": card.tool, "worktree": card.worktree, "launched": card.launched,
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),

@@ -71,6 +71,14 @@ Rectangle {
     signal enterStepRequested(string stepId)
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
+    signal previewMergeRequested(string target)
+    signal chooseMergeRequested()
+    readonly property string defaultMergeTarget: flow && flow.base && flow.base.status === "known"
+                                                 && (flow.base.baseRef || "").indexOf("refs/heads/") === 0
+                                                 ? flow.base.baseRef.substring(11) : ""
+    signal baseChangeRequested()
+    property bool baseChangeAvailable: false
+    property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
@@ -83,7 +91,7 @@ Rectangle {
     readonly property string shownColumn: derived && derived.column ? derived.column : (card ? card.column : "")
     readonly property bool paused: !!(flow && flow.paused)
     readonly property bool canPause: !!(derived && (!flow || !flow.plan || flow.plan.status !== "done")
-                                        && derived.column !== "review")
+                                        && derived.column !== "review" && !(flow && flow.merged))
     property bool menuOpen: false
     property string settingError: ""
     // Pytanie o potwierdzenie: null albo {kind, params, title, effect, yes}.
@@ -546,13 +554,32 @@ Rectangle {
             }
 
             RowLayout {
+                Layout.fillWidth: true
+                visible: view.baseChangeAvailable && !!view.flow
+                Text {
+                    Layout.fillWidth: true
+                    text: "Baza: " + (view.flow && view.flow.base && view.flow.base.baseRef || "unknown")
+                          + " · " + (view.flow && view.flow.base && view.flow.base.baseCommit || "unknown")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                }
+                Tide.TextButton {
+                    objectName: "fullBaseChange"
+                    text: "Podejrzyj korektę bazy"
+                    onClicked: view.baseChangeRequested()
+                }
+            }
+            ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
                 visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
-                    text: "Karta jest domknięta na swojej gałęzi. Scalenie do gałęzi głównej robisz Ty."
+                    text: "Karta jest domknięta na swojej gałęzi. Wybierz cel, sprawdź podgląd i potwierdź scalenie."
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
@@ -563,18 +590,36 @@ Rectangle {
                     objectName: "fullBranchDiff"
                     text: "Diff gałęzi"
                     variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem gałęzi głównej"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
                     onClicked: view.branchDiffRequested()
                 }
                 Tide.TextButton {
+                    objectName: "fullPreviewMerge"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    visible: view.mergePreviewAvailable
+                    text: "Podgląd scalenia do " + (view.defaultMergeTarget || "…")
+                    enabled: view.defaultMergeTarget !== ""
+                    variant: "outline"
+                    onClicked: view.previewMergeRequested(view.defaultMergeTarget)
+                }
+                Tide.TextButton {
                     objectName: "fullMergeMain"
-                    text: view.mergeBusy ? "Scalam…" : "Scal do gałęzi głównej"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    text: view.defaultMergeTarget ? "Scal do " + view.defaultMergeTarget : "Scal…"
                     enabled: !view.mergeBusy
-                    Accessible.name: "Scal kartę do gałęzi głównej"
+                    Accessible.name: text
                     onClicked: {
-                        view.mergeBusy = true
-                        view.mergeMainRequested()
+                        if (view.defaultMergeTarget) view.previewMergeRequested(view.defaultMergeTarget)
+                        else view.chooseMergeRequested()
                     }
+                }
+                Tide.TextButton {
+                    objectName: "fullMergeChoose"
+                    text: "Scal…"
+                    visible: view.defaultMergeTarget !== ""
+                    onClicked: view.chooseMergeRequested()
                 }
             }
 
@@ -659,7 +704,9 @@ Rectangle {
                         onEscapePressed: view.backRequested()
                         onPreviewRequested: (decisionId, method, params) => view.previewRequested(decisionId, method, params)
                         onAnswered: (decisionId, method, params) => {
-                            view.answeredIds = view.answeredIds.concat([decisionId])
+                            if (!Decision.keepsPending(params))
+                                view.answeredIds = view.answeredIds.concat([decisionId])
+                            else form.reset()
                             view.answered(decisionId, method, params)
                             view.forceActiveFocus()
                         }

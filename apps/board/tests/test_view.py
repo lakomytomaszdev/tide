@@ -81,6 +81,19 @@ class PackageTest(unittest.TestCase):
 
 
 class LogicTest(unittest.TestCase):
+    def test_exact_base_for_all_flow_entries(self):
+        state = {"entry": "now", "executor": "Sonnet", "baseRef": "refs/heads/feature/a/b",
+                 "baseCommit": "b" * 40, "cardBranch": "card/custom"}
+        reply = self.js(f"startCardRequest({json.dumps(state)}, [])")
+        for key in ("baseRef", "baseCommit", "cardBranch"):
+            self.assertEqual(reply[key], state[key])
+        for entry, mode in (("planning", "light"), ("planning", "full"), ("plan", "")):
+            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry, mode=mode))}, [])")
+            for key in ("baseRef", "baseCommit", "cardBranch"):
+                self.assertEqual(request[key], state[key])
+        request = self.js(f"startCardRequest({json.dumps(dict(state, entry='spec'))}, [])")
+        self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
+
     @classmethod
     def setUpClass(cls):
         from PyQt6.QtCore import QCoreApplication
@@ -1167,9 +1180,13 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
-                          "preferredProvider": "anthropic", "images": [], "projects": []})
+                          "preferredProvider": "anthropic", "images": [], "projects": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
+        self.assertEqual(json.loads(out["calls2"][0][2]), json.loads(out["calls1"][2][2]),
+                         "ponowienie zachowuje pełny ref, SHA i nazwę gałęzi karty")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("ruszyło w Konsoli", out["toast"][0])
@@ -1207,7 +1224,8 @@ out["calls"] = calls()
         self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
         self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual",
+                                                       "baseRef": "refs/heads/master", "baseCommit": "a" * 40})
         start = json.loads(out["calls"][1][1])
         self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
                          (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))
@@ -1769,7 +1787,9 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
                          {"entry": "now", "executor": "Opus", "reviewer": "Sonnet",
-                          "preferredProvider": "anthropic", "check": "manual", "images": []})
+                          "preferredProvider": "anthropic", "check": "manual", "images": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/" + next(c["branchSlug"] for c in self.data["cards"] if c["id"] == "K-15")})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
@@ -2165,12 +2185,41 @@ out["call"] = calls()[-1]
 
 
 class ClosingPanelTest(ProbeCase):
+    def test_panel_merge_preview_uses_named_target_and_closes_without_writing(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Gotowe", "mainBranch": "release/full-target",
+                    "base": {"status": "known", "baseRef": "refs/heads/release/full-target"},
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + '''
+click(card("K-6"))
+out["label"] = obj("cardPreviewMerge").property("text")
+replies.append({"ok": False, "error": "git-error", "message": "Nie można odczytać drzewa"})
+click(at(FIND + "(page.cardPanel, 'cardPreviewMerge')"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["text"] = obj("mergePreviewText").property("text")
+click(named("mergePreviewClose"))
+out["calls"] = calls()
+out["busy"] = js("page.cardPanel.busy")
+out["column"] = js("page.cardPanel.card.boardColumn")
+''', data=data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/full-target")
+        self.assertEqual(out["text"], "Nie można odczytać drzewa")
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/release/full-target"}])
+        self.assertFalse(out["busy"])
+        self.assertEqual(out["column"], "review")
+
     def test_closed_card_exposes_diff_main_merge_and_return(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:
             if card["id"] == "K-6":
                 card["derived"] = {"column": "review", "flow": {
                     "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
+                    "mainBranch": "develop",
+                    "base": {"status": "known", "baseRef": "refs/heads/develop"},
                     "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
                 card["boardColumn"] = "review"
         out = self.probe(FIND_PY + """
@@ -2188,7 +2237,8 @@ out["mergeCall"] = calls()[-1]
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
         self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
-        self.assertEqual(out["mergeCall"], ["MergeCardToMain", "K-6"])
+        self.assertEqual(out["mergeCall"][:2], ["PreviewCardMerge", "K-6"])
+        self.assertEqual(json.loads(out["mergeCall"][2]), {"targetRef": "refs/heads/develop"})
         self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["returnCall"][2])["feedback"], "Dopisz błąd eksportu")
 

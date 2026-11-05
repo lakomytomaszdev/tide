@@ -52,7 +52,7 @@ class ShapeTest(unittest.TestCase):
         phases = view(Events().step("K-1-PT-1-1"))["phases"]
         self.assertEqual([p["id"] for p in phases], [ident for ident, _label in PHASES])
         self.assertEqual([p["label"] for p in phases], ["Zlecenie", "Planowanie", "Review planu", "Zatwierdzenie planu",
-                                                        "Tickety", "Domknięcie", "Scalenie do master"])
+                                                        "Tickety", "Domknięcie", "Scalenie"])
         for item in phases:
             self.assertEqual(set(item), PHASE_KEYS)
             self.assertIn(item["state"], STATES)

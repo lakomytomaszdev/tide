@@ -19,10 +19,10 @@ from datetime import datetime
 
 from .labels import result_label, step_name
 
-LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
+LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
           "ticket.rejected", "result")
-USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "step.decision", "plan.approved",
+USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "card.merged", "step.decision", "plan.approved",
                "ticket.rejected", "review.decision")
 RESUMABLE = ("question", "denied", "stopped")
 KIND_LABELS = {"step": "krok", "review": "review", "decision": "decyzja", "plan": "plan", "card": "karta",
@@ -38,6 +38,7 @@ VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 def build(st, steps: list[dict]) -> list[dict]:
     """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`)."""
     last_started = max((int(e.get("seq") or 0) for e in st.log if e.get("type") == "card.started"), default=0)
+    last_started = max(last_started, st.base_change.get("seq", 0))
     enter = {item.get("id"): item.get("canEnter") is True for item in steps}
     roots = {name: _root(st, name) for name in st.steps}
     chains: dict[str, list[str]] = {}
@@ -62,12 +63,17 @@ def build(st, steps: list[dict]) -> list[dict]:
 
 
 def _root(st, name: str) -> str:
-    """Pierwsza próba kroku: łańcuch `parentStep` w obrębie tego samego rodzaju kroku."""
+    """Pierwsza próba kroku tego samego rodzaju, w obrębie jednej generacji."""
     kind = (st.steps.get(name) or {}).get("kind")
     seen = {name}
     while True:
         parent = (st.steps.get(name) or {}).get("parentStep")
         if not parent or parent in seen or (st.steps.get(parent) or {}).get("kind") != kind:
+            return name
+        step, previous = st.steps[name], st.steps[parent]
+        # Powiązanie z dawnym wynikiem służy promptowi; nie scala prób różnych baz/zleceń.
+        if ((name in st.superseded) != (parent in st.superseded)
+                or step.get("baseVersion") != previous.get("baseVersion")):
             return name
         seen.add(parent)
         name = parent
@@ -113,8 +119,10 @@ def _event_entry(e: dict, st=None) -> dict | None:
         group, text = "card", "Karta wznowiona"
     elif kind == "card.closed":
         group, text = "card", "Praca domknięta na gałęzi karty"
-    elif kind == "card.main-merged":
-        group, text = "merge", "Karta scalona do master"
+    elif kind in ("card.main-merged", "card.merged"):
+        from .state import merge_of
+        target = merge_of(e)["targetBranch"]
+        group, text = "merge", "Karta scalona" + (f" do {target}" if target else " (cel niezapisany)")
     elif kind == "step.decision":
         group = "decision"
         automatic = bool(e.get("auto") or e.get("automatic"))

@@ -219,6 +219,10 @@ class Backend(QObject):
         self._write(tag, "ResolveCardStep", [card_id, request])
 
     @pyqtSlot(str, str, str)
+    def previewCardBaseChange(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "PreviewCardBaseChange", [card_id, request])
+
+    @pyqtSlot(str, str, str)
     def previewStepFault(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "PreviewStepFault", [card_id, request])
 
@@ -364,7 +368,7 @@ class Backend(QObject):
                 self._load_flow_cards()
 
         self._call(BOARD_PATH, BOARD_IFACE, member, args, done,
-                   timeout=START_TIMEOUT_MS if member == "EnterStep" else 15_000)
+                   timeout=START_TIMEOUT_MS if member in ("EnterStep", "PreviewCardBaseChange", "ResolveCardStep") else 15_000)
 
     def _set(self, name: str, value: str, signal) -> None:
         if getattr(self, name) != value:

@@ -100,6 +100,8 @@ Rectangle {
     signal renderRequested(string tag, string cardId, string request)   // /Board RenderLaunch
     signal startRequested(string tag, string request)                   // /Tasks Start
     signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
+    signal branchesRequested(string tag, string cardId, string request)
+    signal suggestionsRequested(string tag, string cardId, string request)
     signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
@@ -113,6 +115,45 @@ Rectangle {
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal branchDiffRequested(string tag, string cardId)
     signal mergeMainRequested(string tag, string cardId)
+    signal previewMergeRequested(string tag, string cardId, string request)
+    signal mergeRequested(string tag, string cardId, string request)
+    signal previewBaseChangeRequested(string tag, string cardId, string request)
+    signal requestBaseChangeRequested(string tag, string cardId, string request)
+
+    function openBaseChange(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        if (card && card.derived && card.derived.flow && card.derived.flow.baseDecisionPending) {
+            baseChangePreview.show(cardId, null)
+            baseChangePreview.busy = true
+            const tag = nextTag("base-change:" + cardId)
+            baseChangePreview.requestTag = tag
+            previewBaseChangeRequested(tag, cardId, "{}")
+        } else {
+            baseChangePreview.select(cardId)
+            baseChangePicker.reset()
+        }
+    }
+
+    function mergeContext(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        const project = card && (snapshot.projects || []).find(p => p.slug === card.project)
+        return card ? cardId + ":" + card.project + ":" + (project && project.repo || "") : ""
+    }
+    function chooseMerge(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        const base = card && card.derived && card.derived.flow && card.derived.flow.base
+        mergeTargets.cardId = cardId
+        mergeTargets.contextKey = mergeContext(cardId)
+        mergeTargets.baseRef = base && base.status === "known" ? base.baseRef : ""
+        mergeTargets.open()
+    }
+    function previewMerge(cardId, target, targetRef) {
+        const tag = nextTag("preview-merge:" + cardId)
+        mergePreview.show(tag, cardId, target)
+        mergePreview.contextKey = mergeContext(cardId)
+        mergePreview.targetRef = targetRef || "refs/heads/" + target
+        previewMergeRequested(tag, cardId, JSON.stringify({targetRef: mergePreview.targetRef}))
+    }
     signal launchClosed(bool started)        // okno uruchomienia zamknięte: zrzuty zostają agentowi albo znikają
     signal captureRequested()                // „Zrób zrzut” (Spectacle; widok chowa okno)
     signal removeImageRequested(string path)
@@ -361,6 +402,7 @@ Rectangle {
         const tags = Object.assign({}, decisionTags)
         delete tags[tag]
         decisionTags = tags
+        if (sent && !error && reply && reply.preview) baseChangePreview.show(sent[0], reply.preview)
         if (sent && !error && reply && reply.reported)
             showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported
                       + " w Backlogu " + (reply.project || "plasma-tide") + " — krok ponowiony.", "butter")
@@ -512,6 +554,7 @@ Rectangle {
         const c = launchChoice
         launchDialog.busyText = "Przygotowuję polecenie…"
         const request = { entry: c.entry, tool: c.tool, check: c.check }
+        if (c.entry === "spec") { request.baseRef = c.baseRef; request.baseCommit = c.baseCommit }
         if (c.entry === "planning") request.preferredProvider = c.preferredProvider
         if (c.entry !== "spec") request.mode = c.mode   // tryb dotyczy tylko Planowania
         if (c.entry !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
@@ -563,7 +606,8 @@ Rectangle {
         } else if (tag.indexOf("launch-render:") === 0) {
             if (error) return failLaunch("Nie przygotowano polecenia: " + error)
             launchFlow = reply
-            launchDialog.busyText = "Zakładam worktree i otwieram kartę Konsoli z agentem…"
+            launchDialog.busyText = launchChoice.entry === "spec" ? "Otwieram Konsolę ze wskazaną rewizją…"
+                                                                  : "Zakładam worktree i otwieram kartę Konsoli z agentem…"
             startRequested(nextTag("launch-start:" + launchCardId), JSON.stringify(Logic.launchStartRequest(reply, launchChoice)))
         } else if (tag.indexOf("launch-start:") === 0) {
             if (error && (!reply || reply.error === "no-service")) launchUncertain = true
@@ -609,6 +653,22 @@ Rectangle {
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
+        if (tag.indexOf("merge-targets:") === 0) {
+            mergeTargets.picker.receive(tag, reply)
+            return
+        }
+        if (tag.indexOf("base-change-branches:") === 0) {
+            baseChangePicker.receive(tag, reply)
+            return
+        }
+        if (tag.indexOf("base-suggestions:") === 0) {
+            launchDialog.baseSuggestions.receive(tag, reply)
+            return
+        }
+        if (tag.indexOf("branches:") === 0) {
+            launchDialog.basePicker.receive(tag, reply)
+            return
+        }
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         const notice = Logic.commitNote(reply)
         // Rzadkie ustawienia z pełnej karty (PT-134): widoczny skutek albo powód odmowy usługi. Błąd przeniesienia
@@ -618,7 +678,18 @@ Rectangle {
             if (!error) showToast(settingNote, "mint")
             else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
         }
-        if (tag.indexOf("launch-") === 0) {
+        if (tag.indexOf("base-change:") === 0) {
+            if (baseChangePreview.requestTag !== tag) return
+            baseChangePreview.busy = false
+            baseChangePreview.error = error
+            if (!error) baseChangePreview.show(baseChangePreview.cardId, reply.preview || reply)
+        } else if (tag.indexOf("base-keep:") === 0 || tag.indexOf("base-confirm:") === 0) {
+            if (baseChangePreview.requestTag !== tag) return
+            baseChangePreview.busy = false
+            baseChangePreview.error = error
+            if (!error && (tag.indexOf("base-keep:") === 0 || reply.changed)) baseChangePreview.close()
+            else if (!error) baseChangePreview.error = reply.reason || "Korekta czeka; zachowano dane podglądu."
+        } else if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
         } else if (tag.indexOf("setting:") === 0) {
             if (notice) showToast(notice, "butter")
@@ -693,6 +764,23 @@ Rectangle {
         } else if (tag.indexOf("branch-diff:") === 0) {
             cardPanel.error = error
             if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
+        } else if (tag.indexOf("preview-merge:") === 0) {
+            if (mergePreview.requestTag !== tag) return
+            mergePreview.busy = false
+            mergePreview.error = error
+            mergePreview.result = error ? null : reply
+            if (!error) mergePreview.targetBranch = reply.targetBranch || mergePreview.targetBranch
+        } else if (tag.indexOf("merge-card:") === 0) {
+            if (mergePreview.requestTag !== tag) return
+            mergePreview.busy = false
+            mergePreview.error = error
+            if (error) {
+                // Ponowna zgoda wymaga nowego odczytu; stary przycisk nie może ponowić mutacji.
+                mergePreview.result = null
+            } else {
+                mergePreview.close()
+                showToast("Karta scalona do " + reply.targetBranch + ".", "mint")
+            }
         } else if (tag.indexOf("merge-main:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -714,6 +802,8 @@ Rectangle {
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
     onSnapshotChanged: {
         optimistic = []
+        if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
+        if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
         if (launchOpen && !launchDialog.busy) {
             const c = (snapshot && snapshot.cards || []).find(card => card.id === launchCardId)
             const exact = Logic.planCandidates(c).find(plan => plan.card === launchCardId)
@@ -1674,7 +1764,9 @@ Rectangle {
         onBranchDiffRequested: cardId =>
             page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
         onMergeMainRequested: cardId =>
-            page.mergeMainRequested(page.nextTag("merge-main:" + cardId), cardId)
+            page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
+        onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
+        onChooseMergeRequested: cardId => page.chooseMerge(cardId)
         onMoveRequested: column => {
             page.moveCard(page.panelCardId, column, page.topOf(column))
             if (column === "archived") page.panelOpen = false
@@ -1743,6 +1835,16 @@ Rectangle {
         onRemoveImageRequested: path => page.removeImageRequested(path)
         onFilesDropped: urls => page.filesDropped(urls)
         onModelsRequested: page.modelsRequested()
+        onBranchesRequested: text => {
+            const tag = page.nextTag("branches:" + page.launchCardId)
+            launchDialog.basePicker.pendingTag = tag
+            page.branchesRequested(tag, page.launchCardId, JSON.stringify({purpose: "base", text: text, limit: 50}))
+        }
+        onSuggestionsRequested: request => {
+            const tag = page.nextTag("base-suggestions:" + page.launchCardId)
+            launchDialog.baseSuggestions.pendingTag = tag
+            page.suggestionsRequested(tag, page.launchCardId, JSON.stringify(request))
+        }
         onLaunchRequested: (choice, description, changed) => page.startLaunch(choice, description, changed)
         onCancelRequested: page.cancelLaunch()
         onMoveOnlyRequested: page.closeLaunch()
@@ -1789,6 +1891,9 @@ Rectangle {
     CardUi.CardFullView {
         id: cardFullView
         objectName: "cardFullView"
+        mergePreviewAvailable: true
+        baseChangeAvailable: true
+        onBaseChangeRequested: page.openBaseChange(page.fullCardId)
         anchors.fill: parent
         z: 35
         visible: page.fullOpen && !page.managing
@@ -1803,10 +1908,71 @@ Rectangle {
         onPanelRequested: notice => page.panelFromFull(notice)
         onDescriptionRequested: page.openDescription(page.fullCardId)
         onSettingRequested: (kind, params) => page.applySetting(page.fullCardId, kind, params)
-        onMergeMainRequested: page.mergeMainRequested(page.nextTag("merge-main:" + page.fullCardId), page.fullCardId)
+        onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
+        onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
+        onChooseMergeRequested: page.chooseMerge(page.fullCardId)
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
+    }
+
+    MergePreview {
+        id: mergePreview
+        parent: page
+        z: 60
+        onConfirmRequested: request => {
+            requestTag = page.nextTag("merge-card:" + cardId)
+            page.mergeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onRefreshRequested: page.previewMerge(cardId, targetBranch, targetRef)
+    }
+    MergeTargetPicker {
+        id: mergeTargets
+        parent: page
+        z: 60
+        onRequested: text => {
+            const tag = page.nextTag("merge-targets:" + cardId)
+            picker.pendingTag = tag
+            page.branchesRequested(tag, cardId, JSON.stringify({purpose: "merge", text: text, limit: 50}))
+        }
+        onPreviewRequested: target => page.previewMerge(cardId, target.name, target.ref)
+    }
+    CardUi.BaseChangePreview {
+        id: baseChangePreview
+        parent: page
+        z: 65
+        selectedBase: baseChangePicker.selected
+        selectionReady: baseChangePicker.ready
+        selectionContent: BranchPicker {
+            id: baseChangePicker
+            Layout.fillWidth: true
+            active: baseChangePreview.visible && baseChangePreview.selecting
+            contextKey: baseChangePreview.cardId
+            onRequested: text => {
+                const tag = page.nextTag("base-change-branches:" + baseChangePreview.cardId)
+                pendingTag = tag
+                page.branchesRequested(tag, baseChangePreview.cardId, JSON.stringify({purpose: "base", text: text}))
+            }
+        }
+        onRequested: request => {
+            requestTag = page.nextTag("base-change:" + cardId)
+            page.requestBaseChangeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onRefreshed: request => {
+            requestTag = page.nextTag("base-change:" + cardId)
+            page.previewBaseChangeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onKeepRequested: step => {
+            busy = true
+            requestTag = page.nextTag("base-keep:" + cardId)
+            page.stepResolveRequested(requestTag, cardId,
+                                      JSON.stringify({choice: "answer", step: step, baseDecision: "keep"}))
+        }
+        onConfirmed: request => {
+            requestTag = page.nextTag("base-confirm:" + cardId)
+            page.stepResolveRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onFileRequested: path => page.fileRequested(path, "open")
     }
 
     // --- duch przeciąganej karty ----------------------------------------------------------------

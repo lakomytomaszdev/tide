@@ -209,7 +209,9 @@ Rectangle {
                     onEscapePressed: dialog.laterRequested()
                     onPreviewRequested: (decisionId, method, params) => dialog.previewRequested(decisionId, method, params)
                     onAnswered: (decisionId, method, params) => {
-                        dialog.answeredIds = dialog.answeredIds.concat([decisionId])
+                        if (!Decision.keepsPending(params))
+                            dialog.answeredIds = dialog.answeredIds.concat([decisionId])
+                        else form.reset()
                         dialog.answered(decisionId, method, params)
                         if (dialog.pending.length > 0) dialog.forceActiveFocus()
                     }

@@ -155,7 +155,7 @@ class Journal:
 
     def _now(self) -> str:
         ts = self.clock() if self.clock else datetime.now(timezone.utc).timestamp()
-        return datetime.fromtimestamp(ts, timezone.utc).astimezone().isoformat(timespec="seconds")
+        return datetime.fromtimestamp(ts, timezone.utc).astimezone().isoformat(timespec="microseconds")
 
 
 def _read(path: str) -> str:

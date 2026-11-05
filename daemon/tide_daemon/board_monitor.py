@@ -263,6 +263,18 @@ class BoardMonitor(QObject):
             return
         self.flow.start_card(card_id, request, reply)
 
+    def list_card_branches(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.list_card_branches(card_id, request, reply)
+
+    def suggest_card_base(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.suggest_card_base(card_id, request, reply)
+
     def enter_step(self, card_id: str, step_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
@@ -329,17 +341,41 @@ class BoardMonitor(QObject):
             return
         self.flow.approve_plan(card_id, reply)
 
-    def card_branch_diff(self, card_id: str, reply) -> None:
+    def card_branch_diff(self, card_id: str, reply, target_ref: str = "") -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
             return
-        self.flow.card_diff(card_id, reply)
+        self.flow.card_diff(card_id, reply, target_ref)
 
     def merge_card_to_main(self, card_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
             return
         self.flow.merge_card_to_main(card_id, reply)
+
+    def preview_card_merge(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.preview_card_merge(card_id, request, reply)
+
+    def merge_card(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.merge_card(card_id, request, reply)
+
+    def preview_card_base_change(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.preview_card_base_change(card_id, request, reply)
+
+    def request_card_base_change(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.request_card_base_change(card_id, request, reply)
 
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
@@ -594,6 +630,9 @@ class BoardMonitor(QObject):
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
                     derived = self.flow.derived(card)
+                    if derived is None and hasattr(self.flow, "card_base"):
+                        # Ręczna kolumna ma derived: null; jej baza nadal pochodzi z dziennika.
+                        card.update(self.flow.card_base(card.get("id") or ""))
                     if hasattr(self.flow, 'tracker_tickets'):
                         card['flowTickets'] = self.flow.tracker_tickets(card)
                 elif derive is not None:
@@ -613,6 +652,10 @@ class BoardMonitor(QObject):
             elif derived is None and not from_flow and not self._derive_ready and ident in self._derived_cache:
                 derived = {**self._derived_cache[ident], "cached": True}
             card["derived"] = derived
+            flow = (derived or {}).get("flow") or {}
+            if "base" in flow:
+                card.update({key: flow["base"][key] for key in ("baseRef", "baseBranch", "baseCommit")})
+                card["baseVersion"] = flow["baseVersion"]
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
         if fresh:

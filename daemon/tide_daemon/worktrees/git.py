@@ -41,11 +41,11 @@ class Git:
         self.timeout = timeout
         self.env = dict(os.environ, **GIT_ENV)
 
-    def run(self, cwd: str, *args: str, timeout: float | None = None) -> Result:
+    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
         try:
             proc = subprocess.run([self.executable, "-C", cwd, *args], capture_output=True, text=True,
                                   errors="replace", env=self.env, timeout=timeout or self.timeout,
-                                  stdin=subprocess.DEVNULL)
+                                  **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Result(-1, "", str(exc))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())

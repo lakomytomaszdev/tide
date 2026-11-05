@@ -1,0 +1,143 @@
+import QtQuick
+import QtQuick.Controls as QQC2
+import QtQuick.Layouts
+import "tide" as Tide
+
+QQC2.Popup {
+    id: preview
+    objectName: "mergePreview"
+    anchors.centerIn: parent
+    width: Math.min(parent.width - 40, 1000)
+    height: Math.min(parent.height - 40, 760)
+    modal: true
+    focus: true
+    closePolicy: QQC2.Popup.CloseOnEscape
+    property string requestTag: ""
+    property string cardId: ""
+    property string targetBranch: ""
+    property string targetRef: ""
+    property string contextKey: ""
+    property bool busy: false
+    property string error: ""
+    property var result: null
+    signal confirmRequested(var request)
+    signal refreshRequested()
+    onClosed: {
+        result = null
+        requestTag = ""
+    }
+
+    function show(tag, card, target) {
+        requestTag = tag
+        cardId = card
+        targetBranch = target
+        result = null
+        error = ""
+        busy = true
+        open()
+    }
+
+    function describe(r) {
+        if (!r) return ""
+        const lines = ["Scal do " + r.targetBranch, "Źródło: " + r.sourceRef, "SHA źródła: " + r.sourceCommit,
+                       "Cel: " + r.targetRef, "SHA celu: " + r.targetCommit,
+                       "Drzewo wyniku: " + (r.resultTree || "nieprzygotowane"),
+                       "Worktree celu: " + r.targetWorktree + (r.targetWorktreeExists ? "" : " (jeszcze nie istnieje)"),
+                       "", r.reason ? r.message + " [" + r.reason + "]" : "Drzewo scalenia bez konfliktów.",
+                       r.localCollisions && typeof r.localCollisions === "object"
+                       ? "Lokalne kolizje: " + r.localCollisionCount + ". " + (r.canMerge
+                         ? "Odczyt nie wykazał blokad scalenia." : "Scalenie jest zablokowane.")
+                       : "Gotowość do wykonania nie została potwierdzona. Lokalne kolizje: nieocenione.",
+                       "Sam podgląd nie jest zgodą. Nie stanowi zgody zamknięcie ani anulowanie.",
+                       "Dopiero przycisk „Scal do " + r.targetBranch + "” potwierdza ten podgląd."]
+        for (const warning of r.warnings || []) lines.push(warning)
+        if (r.targetPreparation) {
+            const p = r.targetPreparation
+            lines.push("", "Commit startu celu: " + p.startCommit)
+            if (p.createRef) lines.push("Po zgodzie: utwórz " + r.targetRef + " od " + p.remoteRef,
+                                        "SHA remote: " + p.remoteCommit)
+            if (p.createWorktree) lines.push("Po zgodzie: utwórz własny worktree " + p.path)
+        }
+        for (const refusal of r.blockedReasons || []) lines.push(refusal.message + " [" + refusal.reason + "]")
+        if (r.localCollisions && typeof r.localCollisions === "object") {
+            const labels = { staged: "staged (indeks)", unstaged: "unstaged (poza indeksem)", untracked: "untracked (nieśledzone)" }
+            for (const kind of ["staged", "unstaged", "untracked"]) {
+                const entries = r.localCollisions[kind] || []
+                lines.push("", "Kolizje " + labels[kind] + " (" + entries.length + "):")
+                for (const entry of entries)
+                    lines.push(entry.status + "  " + entry.paths.join(" ← ") + " · scalenie: " + entry.mergePaths.join(", "))
+            }
+        }
+        lines.push("", "Wnoszone commity (" + r.commitCount + ") — cel..karta:")
+        for (const c of r.commits || []) lines.push(c.sha + "  " + c.subject)
+        lines.push("", "Zmiany plików względem drzewa celu (" + r.fileCount + "):")
+        for (const f of r.files || [])
+            lines.push(f.status + "  " + (f.oldPath && f.newPath && f.oldPath !== f.newPath
+                       ? f.oldPath + " → " + f.newPath : f.newPath || f.oldPath))
+        lines.push("", "Konflikty (" + r.conflictCount + "):")
+        for (const path of r.conflicts || []) lines.push(path)
+        return lines.join("\n")
+    }
+
+    background: Rectangle {
+        color: Tide.Tokens.backgroundPanel
+        radius: Tide.Tokens.radiusCard
+        border.color: Tide.Tokens.textMuted
+    }
+    contentItem: ColumnLayout {
+        spacing: 12
+        Text {
+            Layout.fillWidth: true
+            text: preview.cardId + " · Podgląd scalenia do " + preview.targetBranch
+            textFormat: Text.PlainText
+            color: Tide.Tokens.textPrimary
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt
+            wrapMode: Text.WrapAnywhere
+        }
+        QQC2.ScrollView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            QQC2.TextArea {
+                objectName: "mergePreviewText"
+                readOnly: true
+                selectByMouse: true
+                textFormat: TextEdit.PlainText
+                text: preview.busy ? "Przygotowuję odczyt…" : preview.error || preview.describe(preview.result)
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.uiFamily
+                wrapMode: TextEdit.Wrap
+            }
+        }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 12
+            Tide.TextButton {
+                objectName: "mergePreviewConfirm"
+                Layout.fillWidth: true
+                wrapText: true
+                text: "Scal do " + preview.targetBranch
+                enabled: !preview.busy && !!preview.result && preview.result.canMerge === true
+                         && !!preview.result.previewToken
+                onClicked: {
+                    if (!enabled) return
+                    const r = preview.result
+                    preview.busy = true
+                    preview.confirmRequested({ targetRef: r.targetRef, previewToken: r.previewToken })
+                }
+            }
+            Tide.TextButton {
+                objectName: "mergePreviewRefresh"
+                text: "Odśwież podgląd"
+                enabled: !preview.busy
+                onClicked: preview.refreshRequested()
+            }
+            Tide.TextButton {
+                objectName: "mergePreviewClose"
+                text: "Zamknij"
+                onClicked: preview.close()
+            }
+        }
+    }
+}

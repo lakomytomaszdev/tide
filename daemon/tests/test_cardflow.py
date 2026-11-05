@@ -478,12 +478,13 @@ class RestartInProcessTest(FlowInProcess):
         with open(fake, "w", encoding="utf-8") as fh:
             fh.write(script + "\nsys.exit(7)\n")
         card_id = self.card()
-        self.flow.stop()  # uruchomienie bez zegara: nowa usługa odczyta dopiero wynik z dysku
+        self.flow._timer.stop()  # wyłączamy tylko zegar; monitor nadal przyjmuje StartCard
         reply = self.start(card_id)
         self.assertTrue(reply["ok"], reply)
         step = self.started(card_id)
         from tide_daemon.tasks import stepstop
         self.assertEqual(wait_until(lambda: stepstop.read_exit_code(step["stepDir"]), timeout=10), 7)
+        self.flow.stop()  # dopiero teraz zamykamy monitor; nowy odczyta wynik z dysku
         self.flow = self.make_flow()
         self.wait_column(card_id, "waiting")
         finished = self.of(card_id, "step.finished")[0]

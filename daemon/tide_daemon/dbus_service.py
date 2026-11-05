@@ -138,6 +138,19 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
+- ListCardBranches(s id, s json) -> s  gałęzie projektu karty: purpose=base|merge, text, limit (1–100).
+  base obejmuje lokalne refs/heads i znane refs/remotes (bez symbolicznych); merge tylko refs/heads.
+  recentBases: do 10 różnych istniejących pełnych refów z udanych startów/korekt w dziennikach Tablicy,
+  wspólnych dla worktrees repozytorium; skrót zawiera aktualny SHA i wymaga jawnego wyboru.
+  recentTargets (merge): do 10 różnych istniejących lokalnych pełnych refów od najnowszego card.merged
+  lub card.main-merged ze znanym main, wspólnych dla worktrees repozytorium, z tym samym selectable/reason.
+  Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
+- SuggestCardBase(s id, s json) -> s  {text, revision: int, scope: text|files|links}; opis czytany z karty.
+  Odczyt bez zapisu. Tylko scope=links odpytuje hosting na żądanie. Odpowiedź: ok, revision, card, project, repo, candidates, warnings.
+  Kandydat: ref, name, commit, source, evidence [{field,line,text,match,start,end}], strength, selectable, reason.
+  source=text|files|links; strength=explicit dla text/links, heuristic dla files.
+  files dodaje rank, matchedPaths, lastTouch i dowody path/commit/timestamp/time oraz ograniczone analysis.
+  links dodaje host, project, sourceProject, sourceBranch, sourceCommit, targetBranch, link, localCommit, stale.
 - StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
                              worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
@@ -472,6 +485,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="choice" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="ListCardBranches">
+    <arg direction="in" type="s" name="id"/>
+    <arg direction="in" type="s" name="request"/>
+    <arg direction="out" type="s" name="reply"/>
+  </method>
+  <method name="SuggestCardBase">
+    <arg direction="in" type="s" name="id"/>
+    <arg direction="in" type="s" name="request"/>
+    <arg direction="out" type="s" name="reply"/>
+  </method>
   <method name="StartCard">
     <arg name="id" type="s" direction="in"/>
     <arg name="request" type="s" direction="in"/>
@@ -532,8 +555,33 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="CardBranchDiff">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="targetRef" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="MergeCardToMain">
     <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="PreviewCardMerge">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="MergeCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="PreviewCardBaseChange">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="RequestCardBaseChange">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
@@ -941,6 +989,20 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ListCardBranches(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.list_card_branches(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def SuggestCardBase(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.suggest_card_base(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
     def StartCard(self, card_id: str, request: str, message: QDBusMessage) -> str:
         # Zlecenie zakłada gałęzie i worktree i startuje krok w wątku roboczym (cardflow_monitor.py) — odpowiedź później.
         message.setDelayedReply(True)
@@ -1088,10 +1150,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)
-    def CardBranchDiff(self, card_id: str, message: QDBusMessage) -> str:
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def CardBranchDiff(self, card_id: str, target_ref, message: QDBusMessage = None) -> str:
+        if message is None:
+            message, target_ref = target_ref, ""
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
-        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])))
+        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])), target_ref)
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)
@@ -1099,6 +1164,34 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
         self.monitor.merge_card_to_main(card_id, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewCardMerge(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.preview_card_merge(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def MergeCard(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.merge_card(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewCardBaseChange(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.preview_card_base_change(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def RequestCardBaseChange(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.request_card_base_change(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, result=str)

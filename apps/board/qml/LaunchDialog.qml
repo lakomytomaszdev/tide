@@ -37,6 +37,9 @@ Rectangle {
     property string mode: "full"           // tryb Planowania: full | light (przy innym wejściu zapamiętany)
     property string tool: "claude"
     property string branch: ""
+    property string cardBranch: ""
+    readonly property alias basePicker: basePicker
+    readonly property alias baseSuggestions: baseSuggestions
     property bool branchEdited: false
     property bool editingBranch: false
     property bool newWorktree: true
@@ -86,10 +89,13 @@ Rectangle {
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
     readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
                                       && (entry !== "plan" || planPath !== "")
+                                      && basePicker.ready && (!flowEntry || cardBranch.trim() !== "")
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, planPath: planPath, tool: agentTool, branch: branch, newWorktree: newWorktree,
         executor: executor, reviewer: reviewer, preferredProvider: preferredProvider,
+        cardBranch: cardBranch.trim(), baseRef: basePicker.selected ? basePicker.selected.ref : "",
+        baseCommit: basePicker.selected ? basePicker.selected.commit : "",
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -192,6 +198,8 @@ Rectangle {
     signal removeImageRequested(string path)
     signal filesDropped(var urls)
     signal modelsRequested()   // „ustaw/zmień w Tide → Modele”: widok Modele okna Tide
+    signal branchesRequested(string text)
+    signal suggestionsRequested(var request)
 
     function tone(name) {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
@@ -219,6 +227,9 @@ Rectangle {
         model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
         tool = p ? p.tool || "claude" : "claude"
         branch = Logic.launchBranch(c, agentTool)
+        cardBranch = c && c.derived && c.derived.flow && c.derived.flow.cardBranch
+                     ? c.derived.flow.cardBranch : "card/" + (c && c.branchSlug ? c.branchSlug : cardId.toLowerCase())
+        basePicker.reset()
         newWorktree = true
         manualCheck = false
         extras = Logic.cardExtras(snapshot, c)
@@ -1039,6 +1050,45 @@ Rectangle {
                     }
                 }
 
+                BranchPicker {
+                    id: basePicker
+                    objectName: "basePicker"
+                    Layout.fillWidth: true
+                    active: dialog.visible && dialog.workProject !== null
+                    readOnlyRevision: dialog.entry === "spec"
+                    initialSelection: readOnlyRevision && dialog.card && dialog.card.specRevision
+                                      && dialog.workProject && dialog.card.specRevision.repo === dialog.workProject.repo
+                                      ? dialog.card.specRevision : null
+                    pinned: dialog.flowEntry && dialog.card && dialog.card.baseRef && dialog.card.baseCommit
+                            ? ({ref: dialog.card.baseRef, commit: dialog.card.baseCommit, name: dialog.card.baseBranch}) : null
+                    contextKey: dialog.cardId + ":" + (dialog.entry === "spec" ? "spec" : "flow") + ":" + (dialog.workProject ? dialog.workProject.slug + ":" + dialog.workProject.repo : "")
+                    onRequested: text => dialog.branchesRequested(text)
+                }
+                BaseSuggestions {
+                    id: baseSuggestions
+                    Layout.fillWidth: true
+                    active: basePicker.active && !basePicker.pinned
+                    cardId: dialog.cardId
+                    project: dialog.workProject ? dialog.workProject.slug : ""
+                    repo: dialog.workProject ? dialog.workProject.repo : ""
+                    text: dialog.taskText
+                    description: dialog.card ? dialog.card.description || "" : ""
+                    selectionKey: basePicker.selected ? basePicker.selected.ref + ":" + basePicker.selected.commit : ""
+                    onRequested: request => dialog.suggestionsRequested(request)
+                    onChosen: candidate => basePicker.selected = candidate
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: dialog.flowEntry
+                    FieldLabel { text: "Nazwa nowej gałęzi karty" }
+                    LineInput {
+                        objectName: "cardBranchInput"
+                        Layout.fillWidth: true
+                        text: dialog.cardBranch
+                        accessibleName: "Nazwa nowej gałęzi karty"
+                        onEdited: dialog.cardBranch = text
+                    }
+                }
                 // Nowy worktree i test ręczny.
                 RowLayout {
                     Layout.fillWidth: true

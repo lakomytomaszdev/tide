@@ -18,6 +18,9 @@ mkdir -p "$dest" "$(dirname "$unit")" "$(dirname "$activation")"
 tar -C "$src" --exclude=__pycache__ -cf - tide-daemon.py tide_daemon | tar -C "$dest" -xf -
 # Kolory stanów (np. karta Konsole z czekającym agentem) z palety, bo kopia działa bez repozytorium.
 cp "$src/../theme/palette/mist.json" "$dest/palette.json"
+# Jawny zakres produktu w podglądzie odmowy, z działającym odnośnikiem także poza repozytorium.
+mkdir -p "$dest/docs/agents/plans/followups"
+cp "$src/../docs/agents/plans/followups/replay-code.md" "$dest/docs/agents/plans/followups/"
 
 cat > "$unit" <<EOF
 [Unit]

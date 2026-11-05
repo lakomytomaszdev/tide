@@ -324,6 +324,8 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         data = full_d(self.data)
         for item in data["cards"]:
             if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -335,7 +337,208 @@ click(named("fullMergeMain"))
 out["call"] = calls()[-1][:2]
 """, data)
         self.assertTrue(out["visible"])
-        self.assertEqual(out["call"], ["MergeCardToMain", "K-8"])
+        self.assertEqual(out["call"], ["PreviewCardMerge", "K-8"])
+
+    def test_named_main_requires_confirmation_and_cancel_is_only_a_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        names = ["master", "develop", "integration/custom-tide-main", "release/<b>" + "long-name-" * 18]
+        out = self.probe(STATE_PY + "\nnames = " + repr(names) + r'''
+click(card("K-8"))
+out["labels"], out["texts"], out["rendered"] = [], [], []
+for index, target in enumerate(names):
+    snap = json.loads(backend.snapshotJson)
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["mainBranch"] = target
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/" + target}
+    set_snapshot(snap)
+    result = {"ok": True, "canMerge": True, "previewToken": "token-" + str(index),
+              "targetRef": "refs/heads/" + target, "targetBranch": target, "targetCommit": "b" * 40,
+              "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+              "targetWorktree": "/repo", "targetWorktreeExists": True,
+              "localCollisions": {"staged": [], "unstaged": [], "untracked": []}, "localCollisionCount": 0,
+              "commits": [], "commitCount": 0, "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0}
+    out["labels"].append(obj("fullMergeMain").property("text"))
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    # Anulowanie ani Escape nie są zgodą, nawet przy canMerge=true i check:auto.
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    button = obj("mergePreviewConfirm")
+    out["labels"].append(button.property("text"))
+    engine.rootContext().setContextProperty("probeTarget", button)
+    out["rendered"].append(json.loads(js("JSON.stringify([probeTarget.contentItem.text, "
+                                       "probeTarget.contentItem.textFormat, probeTarget.contentItem.truncated])")))
+    replies.append({"ok": True, "targetBranch": target, "operationId": "op-" + str(index)})
+    click(named("mergePreviewConfirm"))
+    until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["labels"], ["Scal do " + name for name in names for _ in range(2)])
+        for index, name in enumerate(names):
+            self.assertIn("refs/heads/" + name, out["texts"][index])
+            self.assertIn("b" * 40, out["texts"][index])
+            self.assertEqual(out["rendered"][index], ["Scal do " + name, 0, False])
+            calls = out["calls"][3 * index:3 * index + 3]
+            self.assertEqual([json.loads(c[2]) for c in calls[:2]], [{"targetRef": "refs/heads/" + name}] * 2)
+            self.assertEqual(calls[2][:2], ["MergeCard", "K-8"])
+            self.assertEqual(json.loads(calls[2][2]), {"targetRef": "refs/heads/" + name,
+                                                     "previewToken": "token-" + str(index)})
+
+    def test_stale_preview_requires_refresh_and_another_explicit_confirmation(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "develop"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/develop"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        out = self.probe(STATE_PY + r'''
+click(card("K-8"))
+result = {"ok": True, "canMerge": True, "targetBranch": "develop", "targetRef": "refs/heads/develop",
+          "targetCommit": "b" * 40, "previewToken": "old"}
+replies.append(result)
+click(named("fullMergeMain"))
+until(lambda: not obj("mergePreview").property("busy"))
+replies.append({"ok": False, "error": "stale-preview", "message": "Potwierdź nowy podgląd"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["message"] = obj("mergePreviewText").property("text")
+out["enabled"] = obj("mergePreviewConfirm").property("enabled")
+replies.append({**result, "previewToken": "new", "targetCommit": "c" * 40})
+click(named("mergePreviewRefresh"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["beforeConfirm"] = calls()
+out["text"] = obj("mergePreviewText").property("text")
+replies.append({"ok": True, "targetBranch": "develop"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["message"], "Potwierdź nowy podgląd")
+        self.assertFalse(out["enabled"])
+        self.assertEqual([c[0] for c in out["beforeConfirm"]], ["PreviewCardMerge", "MergeCard", "PreviewCardMerge"])
+        self.assertIn("c" * 40, out["text"])
+        self.assertEqual(json.loads(out["calls"][-1][2]), {"targetRef": "refs/heads/develop", "previewToken": "new"})
+
+    def test_merge_preview_button_full_lists_refusals_and_close_only_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "release/complete-target-name"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/release/complete-target-name"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/release/complete-target-name", "targetCommit": "b" * 40,
+                  "targetBranch": "release/complete-target-name", "targetWorktree": "/repo",
+                  "targetWorktreeExists": True, "reason": "", "canMerge": True, "readyToMerge": False,
+                  "warnings": ["Lokalne kolizje nie zostały ocenione."],
+                  "commits": [{"sha": str(i).zfill(40), "subject": f"commit {i}"} for i in range(46)],
+                  "commitCount": 46, "files": [{"status": "A", "oldPath": "", "newPath": f"file-{i}.txt"}
+                                               for i in range(465)],
+                  "fileCount": 465, "conflictCount": 0, "conflicts": []}
+        variants = [result, {**result, "canMerge": False, "reason": "conflict", "message": "Konflikty",
+                            "conflictCount": 2, "conflicts": ["conflict-a.txt", "conflict-b.txt"]},
+                    {**result, "canMerge": False, "reason": "unrelated-history", "message": "Brak wspólnej historii",
+                     "commits": [], "commitCount": 0, "files": [], "fileCount": 0},
+                    {**result, "commits": [], "commitCount": 0, "files": [], "fileCount": 0}]
+        out = self.probe(STATE_PY + "\nvariants = " + repr(variants) + r'''
+click(card("K-8"))
+out["label"] = obj("fullPreviewMerge").property("text")
+before = js("JSON.stringify(page.snapshot.cards)")
+out["texts"] = []
+for index, result in enumerate(variants):
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+out["opened"] = obj("mergePreview").property("visible")
+out["same"] = before == js("JSON.stringify(page.snapshot.cards)")
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/complete-target-name")
+        self.assertFalse(out["opened"])
+        self.assertTrue(out["same"])
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": result["targetRef"]}] * 4)
+        for text in out["texts"]:
+            self.assertIn(result["sourceRef"], text)
+            self.assertIn(result["targetRef"], text)
+            self.assertIn("Lokalne kolizje: nieocenione", text)
+        self.assertIn("commit 45", out["texts"][0])
+        self.assertIn("file-464.txt", out["texts"][0])
+        self.assertIn("conflict-b.txt", out["texts"][1])
+        self.assertIn("Brak wspólnej historii [unrelated-history]", out["texts"][2])
+        self.assertIn("Wnoszone commity (0)", out["texts"][3])
+
+    def test_merge_preview_shows_local_collisions_and_allows_unrelated_staged(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/master", "targetCommit": "b" * 40, "targetBranch": "master",
+                  "targetWorktree": "/repo", "targetWorktreeExists": True, "canMerge": False,
+                  "readyToMerge": False, "previewToken": "odcisk-stanu", "reason": "local-collision",
+                  "message": "Lokalna praca koliduje", "localCollisionCount": 3,
+                  "localCollisions": {kind: [{"status": code, "paths": [path], "mergePaths": [path]}]
+                                      for kind, code, path in (("staged", "M ", "index.txt"),
+                                                               ("unstaged", " M", "work.txt"),
+                                                               ("untracked", "??", "new.txt"))}}
+        staged = {**result, "reason": "", "message": "", "canMerge": True,
+                  "localChanges": {"staged": [{"status": "MM", "paths": ["local.txt"]}],
+                                   "unstaged": [{"status": "MM", "paths": ["local.txt"]}], "untracked": []},
+                  "localCollisionCount": 0, "localCollisions": {k: [] for k in result["localCollisions"]}}
+        out = self.probe(STATE_PY + "\nvariants = " + repr([result, staged]) + r'''
+click(card("K-8"))
+out["texts"] = []
+out["enabled"] = []
+for result in variants:
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    out["enabled"].append(obj("mergePreviewConfirm").property("enabled"))
+    click(named("mergePreviewClose"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual([c[:2] for c in out["calls"]], [["PreviewCardMerge", "K-8"]] * 2)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/master"}] * 2)
+        self.assertEqual(out["enabled"], [False, True])
+        for text in out["texts"]:
+            self.assertIn("Nie stanowi zgody", text)
+            self.assertNotIn("odcisk-stanu", text)
+        self.assertIn("Kolizje staged (indeks) (1)", out["texts"][0])
+        self.assertIn("Kolizje unstaged (poza indeksem) (1)", out["texts"][0])
+        self.assertIn("Kolizje untracked (nieśledzone) (1)", out["texts"][0])
+        for path in ("index.txt", "work.txt", "new.txt"):
+            self.assertIn(path, out["texts"][0])
+        self.assertIn("Lokalne kolizje: 0", out["texts"][1])
+        self.assertIn("Odczyt nie wykazał blokad", out["texts"][1])
 
 
 if __name__ == "__main__":

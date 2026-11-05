@@ -43,9 +43,10 @@ from __future__ import annotations
 import re
 
 from . import faults
+from . import baseproposal
 from . import findings as review_findings
 from .labels import kind_label
-from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState
+from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
@@ -94,6 +95,11 @@ def build_decisions(st: FlowState) -> list[dict]:
     def add(group: int, seq, decision: dict) -> None:
         found.append((group, int(seq or 0), decision))
 
+    if st.base_request:
+        asked = st.base_request
+        add(0, asked.get("seq"), _question(st, asked["decision"], {}, {
+            "question": "Wybrano nową bazę w pełnej karcie. Czy zachować obecną bazę?",
+            "baseProposal": asked["baseProposal"]}))
     for name in _latest_steps(st):
         if (st.steps.get(name) or {}).get("ticket") in st.rejected:
             continue        # odrzucony ticket nie czeka na nikogo (K-16/LEGAL-75, 03.11)
@@ -168,6 +174,28 @@ def _question(st, name, step, done) -> dict:
     if question:
         decision["happened"] = happened          # z podziałem na linie (layout), nie spłaszczone przez _sentences
     decision["copyCommands"] = copy_commands(done.get("question"), *(o["effect"] for o in raw_options))
+    proposal = done.get("baseProposal")
+    if proposal:
+        decision["happened"] += "\nDowód propozycji bazy: " + (proposal.get("evidence") or "(brak)")
+        decision["technical"]["baseProposal"] = proposal
+        decision["technical"]["base"] = base_of(st)
+        if proposal.get("valid") is True:
+            current = base_of(st).get("baseRef") or "unknown"
+            decision["options"] = [
+                _option("base-keep", "Zachowaj " + current,
+                        "Wznów krok na obecnej bazie i odblokuj ocenę oraz integrację zachowanych wyników.",
+                        RESOLVE_STEP, {"choice": "answer", "step": name, "baseDecision": "keep"}, recommended=True),
+                _option("base-change", "Zmień na " + proposal["ref"],
+                        "Otwórz podgląd korekty. Bez operacji git i bez potwierdzenia wykonania.",
+                        RESOLVE_STEP, {"choice": "answer", "step": name, "baseDecision": "change"})]
+            decision["reply"] = None
+            decision["freeText"] = False
+            decision["why"] = ("Decyzja o bazie blokuje nowe kroki i integrację wyników tej karty. "
+                               "Biegnące procesy mogą dokończyć; ich wyniki pozostają niescalone.\n" +
+                               ("Oczekiwanie na podgląd korekty; baza nie została zmieniona.\n"
+                                if name in st.base_waits else "") + baseproposal.LIMITS)
+        else:
+            decision["why"] += "\nNieprawidłowa propozycja bazy (tylko informacja): " + proposal.get("error", "")
     return decision
 
 

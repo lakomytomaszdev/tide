@@ -3,15 +3,20 @@
 Typy zdarzeń (schemat 1, PT-58):
 - `card.started` — zlecenie: entry (now), executor, program, model, check,
 - `intent` / `result` — para „zamiar → wynik” akcji ze skutkami poza dziennikiem: action (reserve, card-branch,
-  ticket-branch, step-start, merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
+  ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
+- `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,
+- `main-merge.abandoned` — porzucenie zamiaru po decyzji użytkownika, bez cofania materializacji,
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
 - `card.moved` (to, from — kolumna, w której kartę widać), `card.paused`, `card.finished` (column),
-  `ticket.rejected` (ticket).
+  `ticket.rejected` (ticket),
+- `card.merged` — zakończone scalenie: operationId, targetRef/targetBranch, sourceCommit,
+  targetCommitBefore, resultCommit i baseVersion; stare `card.main-merged` odczytujemy z zapisanym main.
 
 Kolumna (ręczne kolumny wygrywają z dziennikiem):
-- Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono),
+- Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono);
+  wyjątek: scalenie przerwane po zapisie kolumny, przed card.finished, nadal może jawnie czekać na recovery,
 - Backlog — „wstrzymana”, gdy kartę wstrzymano po zleceniu (inaczej bez stanu),
 - Do zrobienia — z dziennika: krok trwa albo scalanie czeka → W toku; pytanie, brak zgody, błąd kroku albo nieudane
   scalenie → Czeka na mnie; ticket na gałęzi karty → Do sprawdzenia. Karta przeniesiona ręcznie do Do zrobienia po
@@ -21,7 +26,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+import re
 
+from .baseproposal import pending
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -43,6 +50,15 @@ PLAN_WORK_KINDS = ("plan-amend", "plan-revise", "plan-review")
 @dataclass
 class FlowState:
     started: dict | None = None                     # ostatnie card.started
+    base: dict = field(default_factory=dict)
+    initial_base: dict = field(default_factory=dict)
+    base_version: int = 0
+    base_change: dict = field(default_factory=dict)
+    base_validation_required: bool = False
+    base_generation_wait: dict = field(default_factory=dict)
+    base_restart_ticket: str = ""
+    base_waits: dict = field(default_factory=dict)
+    base_request: dict = field(default_factory=dict)  # decyzja użytkownika niezwiązana z krokiem
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
@@ -88,6 +104,9 @@ class FlowState:
     card_finished: bool = False
     closed: dict | None = None
     main_merged: dict | None = None
+    merged: dict | None = None                       # ogólny wynik, także ze starego card.main-merged
+    merge_waiting: dict | None = None
+    abandoned_main_merges: set = field(default_factory=set)
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
@@ -106,6 +125,7 @@ class FlowState:
 
     def open_intents(self, *, include_background=False) -> list[dict]:
         return [i for k, i in self.intents.items() if k not in self.results and
+                not (i.get("action") == "main-merge" and i.get("key") in self.abandoned_main_merges) and
                 (include_background or i.get('action') != 'youtrack-note')]
 
     def tracker_failures(self):
@@ -117,7 +137,8 @@ class FlowState:
         for (ticket, _round), verdict in self.verdicts.items():
             if verdict.get("verdict") == "APPROVE" and ("merge", ticket) not in self.results \
                     and ticket not in self.rejected:
-                step = next((s for s in self.steps.values() if s.get("ticket") == ticket and
+                step = next((s for name, s in self.steps.items() if name not in self.superseded and
+                             s.get("ticket") == ticket and
                              s.get("kind") == "ticket"), None)
                 if step is not None:
                     out.append(step)
@@ -132,12 +153,19 @@ class FlowState:
 
         Karta przeniesiona ręcznie do Do zrobienia po ostatnim wyniku stoi na Tablicy bez stanu (`derived`), więc
         stare pytanie, błąd, review albo plan nie blokują nowego zlecenia — blokuje tylko to, co naprawdę trwa."""
+        if self.base_validation_required or self.base_generation_wait:
+            return "generacja karty czeka na walidację kontekstu albo odzyskanie zasobów"
         if self.running():
             return "krok tej karty jeszcze trwa"
         if self.open_consoles():
             return "Konsola kroku tej karty jest jeszcze otwarta"
         if self.merge_pending():
             return "zatwierdzony ticket czeka na scalenie"
+        if not self.card_finished and any(i.get("action") == "main-merge" and
+                                         i.get("key") not in self.abandoned_main_merges and
+                                         i.get("requestSeq") == (self.started or {}).get("seq")
+                                         for i in self.intents.values()):
+            return "scalenie karty jest zaczęte i niedokończone"
         if self.open_intents():
             return "akcja karty jest zaczęta i niedokończona"
         if self.moved_to == "todo":
@@ -177,25 +205,45 @@ def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
+        duplicate_merge = kind in ("card.merged", "card.main-merged") and st.merged is not None
         if kind != "card.stalled":
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
-        if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
+        if not duplicate_merge and (kind in (
+                    "card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
                     "step.decision", "step.transfer_requested", "step.wip", "step.limit",
-                    "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
-                    kind == "result" and e.get("action") == "merge"):
+                    "plan.approved", "card.paused", "card.resumed", "plan.finished",
+                    "card.merged", "card.main-merged") or (
+                    kind == "result" and e.get("action") == "merge")):
             st.timeline.append({key: e[key] for key in (
                 "seq", "ts", "type", "step", "ticket", "executor", "kind", "result", "reason", "verdict",
-                "action", "key", "ok") if key in e})
-        if kind in HISTORY_LOGGED:
+                "action", "key", "ok", "targetRef", "targetBranch", "main", "operationId") if key in e})
+        if kind in HISTORY_LOGGED and not duplicate_merge:
             st.log.append(e)
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
+        if kind == "step.base-wait":
+            st.base_waits[e.get("step")] = e
+        if kind == "card.base-requested":
+            st.base_request = e
+        elif kind == "card.base-kept":
+            if st.base_request.get("decision") == e.get("decision"):
+                st.base_request = {}
         if kind == "card.started":
+            st.base = _base(e)
+            st.initial_base = dict(st.base)
+            version = e.get("baseVersion", 0)
+            st.base_version = version if type(version) is int and version >= 0 else 0
+            st.base_change = {}
+            st.base_validation_required = False
+            st.base_generation_wait = {}
+            st.base_restart_ticket = ""
+            st.base_request = {}
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
             st.superseded.update(st.steps)
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
-            st.closed = st.main_merged = None
+            st.closed = st.main_merged = st.merged = None
+            st.merge_waiting = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
@@ -213,6 +261,49 @@ def fold(events: list[dict]) -> FlowState:
             st.limits = {}
             st.waiting = {}
             st.inputs = {}
+        elif kind == "card.base-changed" and st.started:
+            previous, version = e.get("previousBaseVersion"), e.get("baseVersion")
+            candidate = _base(e.get("base") or e)
+            if (e.get("ok", True) is True and type(previous) is int and type(version) is int
+                    and previous == st.base_version and version == previous + 1
+                    and candidate["status"] == "known" and _valid_generation(st, e, candidate)):
+                st.base, st.base_version, st.base_change = candidate, version, e
+                st.base_validation_required = e.get("validationRequired") is True
+                st.base_generation_wait = {}
+                if "generation" in e:
+                    # Dowiedziona pusta generacja nie ma wkładu do ponownego review. Zgody i
+                    # domknięcie poprzedniego kodu pozostają w dzienniku, ale nie autoryzują nowego.
+                    st.base_validation_required = False
+                    st.base_restart_ticket = ticket_of(st)["id"]
+                    st.closed = None
+                    st.verdicts = {}
+                    st.review_questions = {}
+                    st.review_decisions = {}
+                    st.step_decisions = {}
+                    st.base_request = {}
+                    st.waiting = {}
+                    st.transfer_requests = {}
+                    st.flow_error = st.flow_error_action = ""
+                    st.superseded.update(st.steps)
+                    st.last_step = ""
+                    st.moved_to = ""
+                    # Propozycja i review planu także dotyczą dawnego kodu, nawet jeśli
+                    # powstały wyłącznie poza repo i nie ma jeszcze commitu planu.
+                    st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+                    st.plan_reviewed = st.plan_revision = None
+                    st.plan_reviewer = ""
+                    st.plan_review_wait = None
+                    st.plan_change_seq, st.plan_change_ts = 0, ""
+                    st.plan_finished = False
+                    # Jeden fold wybiera kompletną mapę. Historyczne step.started pozostają dowodami
+                    # starych procesów; bieżące ścieżki pochodzą wyłącznie z wyników tej generacji.
+                    for row in e["generation"]:
+                        key = (row["action"], row["key"])
+                        st.results[key] = {**st.results[key], "branch": row["branch"],
+                                           "worktree": row["worktree"], "base": row["base"],
+                                           "seq": e["seq"], "existing": False}
+        elif kind == "base-change.waiting":
+            st.base_generation_wait = e
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -221,6 +312,22 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == 'youtrack.retry':
             st.tracker_retries[(e.get('action'), e.get('key'))] = e
         elif kind == "result":
+            if (st.started and not st.base_change and st.initial_base.get("status") != "known"
+                    and e.get("action") == "card-branch" and e.get("ok")
+                    and e.get("existing") is False):
+                intent = st.intents.get(("card-branch", e.get("key"))) or {}
+                # Stary wynik zawiera SHA utworzonej gałęzi, zamiar — nazwę bazy.
+                # Wynik „existing” nie dowodzi pierwotnego SHA, a dzisiejszy git niczego tu nie dopowiada.
+                ref = intent.get("baseRef") or intent.get("base") or ""
+                if ref == "HEAD" or (isinstance(ref, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", ref)):
+                    ref = ""
+                if isinstance(ref, str) and not ref.startswith("refs/"):
+                    ref = "refs/heads/" + ref
+                candidate = _base({"baseRef": ref, "baseBranch": ref[len("refs/heads/"):] if isinstance(ref, str) else "",
+                                   "baseCommit": e.get("base")})
+                if int(intent.get("seq") or 0) > int(st.started.get("seq") or 0):
+                    st.base = candidate
+                    st.initial_base = dict(candidate)
             st.results[(e.get("action"), e.get("key"))] = e
             st.tracker_retries.pop((e.get('action'), e.get('key')), None)
             if e.get("ok") and e.get("action") == st.flow_error_action:
@@ -272,7 +379,11 @@ def fold(events: list[dict]) -> FlowState:
             if st.moved_to not in ("done", "archived"):
                 st.moved_to = ""
         elif kind == "review.verdict":
-            st.verdicts[(e.get("ticket"), e.get("round"))] = e
+            source = st.steps.get(e.get("step")) or {}
+            if e.get("step") not in st.superseded and (not st.base_change or
+                    (source.get("baseVersion") == e.get("baseVersion") == st.base_version and
+                     bool(source.get("reviewTip")) and source["reviewTip"] == e.get("reviewTip"))):
+                st.verdicts[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.question":
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.decision":
@@ -280,7 +391,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.retry":
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
-            st.step_decisions[e.get("step")] = e
+            if e.get("step") not in st.superseded:
+                st.step_decisions[e.get("step")] = e
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
@@ -363,9 +475,26 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.closed":
-            st.closed = e
+            if e.get("step") not in st.superseded and (not st.base_change or
+                    e.get("baseVersion") == st.base_version and e.get("baseCommit") == st.base.get("baseCommit")):
+                st.closed = e
         elif kind == "card.main-merged":
             st.main_merged = e
+            if st.merged is None:
+                st.merged = merge_of(e)
+            st.merge_waiting = None
+        elif kind == "card.merged":
+            if st.merged is None:
+                st.merged = merge_of(e)
+            st.merge_waiting = None
+        elif kind == "main-merge.waiting":
+            st.merge_waiting = e
+        elif kind == "main-merge.resumed":
+            st.merge_waiting = None
+        elif kind == "main-merge.abandoned":
+            st.abandoned_main_merges.add(e.get("key"))
+            if (st.merge_waiting or {}).get("key") == e.get("key"):
+                st.merge_waiting = None
         elif kind == "card.moved":
             st.store_column = e.get("to") or ""
             st.store_move_id = e.get("moveId") or ""
@@ -394,10 +523,76 @@ def fold(events: list[dict]) -> FlowState:
     return st
 
 
+def _base(data: dict) -> dict:
+    ref, branch, commit = (data.get(k) for k in ("baseRef", "baseBranch", "baseCommit"))
+    prefix = "refs/remotes/" if isinstance(ref, str) and ref.startswith("refs/remotes/") else "refs/heads/"
+    valid = (isinstance(ref, str) and ref.startswith(prefix) and branch == ref[len(prefix):]
+             and bool(branch) and not re.search(r"[\s~^:?*\[\\]|\.\.|@\{|//", ref)
+             and not ref.endswith(("/", ".", ".lock"))
+             and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit))
+    return {"status": "known" if valid else "unknown", "baseRef": ref if valid else "",
+            "baseBranch": branch if valid else "", "baseCommit": commit if valid else ""}
+
+
+def merge_of(event: dict) -> dict:
+    """Odczyt zapisanego celu bez zgadywania dzisiejszej głównej i bez migracji dziennika."""
+    branch = event.get("targetBranch") or event.get("main") or ""
+    return {**event, "targetBranch": branch,
+            "targetRef": event.get("targetRef") or ("refs/heads/" + branch if branch else ""),
+            "resultCommit": event.get("resultCommit") or event.get("commit") or ""}
+
+
+def base_of(st: FlowState) -> dict:
+    return dict(st.base or _base({}))
+
+
+def _valid_generation(st, event, base):
+    """Nieprawidłowa/częściowa mapa nie zmienia ani bazy, ani jednego ticketu."""
+    if "generation" not in event:
+        return True  # kontrakt historycznych zdarzeń PT-194
+    rows = event["generation"]
+    intent = st.intents.get(("change-base", event.get("operationId"))) or {}
+    if (event.get("validationRequired") is not True or intent.get("generation") != rows or
+            intent.get("requestSeq") != (st.started or {}).get("seq") or
+            intent.get("previousBaseVersion") != st.base_version or
+            intent.get("baseVersion") != event.get("baseVersion") or
+            intent.get("newBase") != {k: base[k] for k in ("baseRef", "baseBranch", "baseCommit")}):
+        return False
+    expected = {key for key, res in st.results.items() if res.get("ok") and
+                key[0] in ("card-branch", "ticket-branch", "review-branch", "step-reopen")}
+    if not isinstance(rows, list) or not rows or not expected:
+        return False
+    mapped = set()
+    resources = {}
+    old_branches = {st.results[k].get("branch") for k in expected}
+    old_paths = {st.results[k].get("worktree") for k in expected}
+    for row in rows:
+        if not isinstance(row, dict) or not all(isinstance(row.get(k), str) and row[k]
+                for k in ("action", "key", "branch", "worktree", "base", "oldBranch", "oldWorktree", "oldCommit")):
+            return False
+        key = (row["action"], row["key"])
+        old = st.results.get(key) or {}
+        if (key in mapped or key not in expected or row["oldBranch"] != old.get("branch") or
+                row["oldWorktree"] != old.get("worktree") or row["oldCommit"] != old.get("base") or
+                row["base"] != base["baseCommit"] or row["branch"] in old_branches or
+                row["worktree"] in old_paths):
+            return False
+        resource = (row["branch"], row["worktree"])
+        source = (row["oldBranch"], row["oldWorktree"])
+        if resource in resources and resources[resource] != source:
+            return False
+        if any(resource != target and (resource[0] == target[0] or resource[1] == target[1] or source == origin)
+               for target, origin in resources.items()):
+            return False
+        resources[resource] = source
+        mapped.add(key)
+    return mapped == expected
+
+
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
     """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
     out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
-    wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or ""
+    wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or st.base_restart_ticket
     for (action, _key), res in st.results.items():
         if not res.get("ok"):
             continue
@@ -472,6 +667,8 @@ def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
+    if st.base_validation_required or st.base_generation_wait:
+        return "generacja czeka na walidację kontekstu albo odzyskanie zasobów"
     if st.outside_started:
         return None     # trwa polecenie poza piaskownicą — to praca, nie postój (K-31, 03.11: fałszywy alarm)
     waits = card_waits(st)
@@ -587,7 +784,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if st.started is None:
         return None
     column = card.get("column") or "backlog"
-    if column in ("done", "archived"):
+    if column in ("done", "archived") and not st.merged and not (st.merge_waiting and not st.card_finished) and not (
+            st.base_validation_required or st.base_generation_wait):
         return None
     from .decisions import build_decisions
     decisions = build_decisions(st)
@@ -615,11 +813,21 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                     # Kontrakt okna decyzji (PT-123); stare pola decyzji usunął PT-135.
                     "decisions": decisions}}
     out["flow"].update({"paused": st.paused, "timeline": st.timeline,
+                        "base": base_of(st), "initialBase": dict(st.initial_base), "baseVersion": st.base_version,
                         "stalledSince": st.stalled_since,
                         "closed": bool(st.closed), "summary": (st.closed or {}).get("summary") or "",
-                        "mainMerged": bool(st.main_merged),
+                        "mainMerged": bool(st.merged),  # zgodność dawnych klientów
+                        "merged": bool(st.merged), "merge": dict(st.merged or {}),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
+    out["flow"]["baseDecisionPending"] = bool(pending(st))
+    out["flow"].update(baseValidationRequired=st.base_validation_required,
+                       approvals=list(st.verdicts.values()),
+                       historicalApprovals=[e for e in st.log if e.get("type") == "review.verdict" and
+                                            e.get("seq", 0) < st.base_change.get("seq", 0)],
+                       generation=(st.base_change or {}).get("generation") or [],
+                       generationWaiting=st.base_generation_wait,
+                       preservedGenerations=[i for i in st.intents.values() if i.get("action") == "change-base"])
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -631,19 +839,45 @@ def _derived(st: FlowState, card: dict) -> dict | None:
          "lastActivityTs": _epoch((st.activity.get(name) or item).get("ts")),
          "kind": item.get("kind") or "", "executor": item.get("executor") or "",
          "provider": item.get("provider") or "",
-         "canTransfer": (name not in st.finished or
+         "historical": name in st.superseded,
+         "baseVersion": item.get("baseVersion", 0),
+         "canTransfer": name not in st.superseded and (name not in st.finished or
                          ((st.finished.get(name) or {}).get("reason") == "transfer" and
                           name not in st.step_decisions)) and
                         bool(item.get("provider")) and not st.card_finished,
-         "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
+         "canEnter": name not in st.superseded and not any(other.get("worktree") == item.get("worktree") and
+                             other.get("step") != name
                              for other in st.running()) and
                      not any(other.get("worktree") == item.get("worktree") and other.get("mode") == "interactive"
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    if st.base_validation_required or st.base_generation_wait:
+        if st.started.get("entry") in ("plan", "planning"):
+            _plan_view(st, out)
+        out["flow"]["decisions"] = []
+        for item in out["flow"]["steps"]:
+            item["canEnter"] = item["canTransfer"] = False
+        return _fill(out, "waiting", st.base_generation_wait.get("reason") or
+                     "Nowa generacja czeka na walidację kontekstu.")
+    if st.merge_waiting and not st.card_finished:
+        return _fill(out, "waiting", "Scalenie czeka: " + st.merge_waiting["reason"])
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)
+    if st.merged:
+        out["flow"]["decisions"] = []
+        for item in out["flow"]["steps"]:
+            item["canTransfer"] = False
+        out["done"] = out["total"]
+        target = st.merged["targetBranch"]
+        return _fill(out, column if column in ("done", "archived") else "done",
+                     "Karta scalona" + (f" do {target}" if target else ""))
+    if pending(st):
+        for item in out["flow"]["steps"]:
+            item["canEnter"] = False
+            item["canTransfer"] = False
+        return _fill(out, "waiting", "Decyzja o bazie karty; wyniki pozostają niescalone")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

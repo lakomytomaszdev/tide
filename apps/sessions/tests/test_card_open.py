@@ -148,6 +148,39 @@ class CardOpenTest(unittest.TestCase):
                                        "result['page'] = js('cardOpen')")
         self.assertEqual((out["cardOpen"], out["page"]), ("full", "full"))
 
+    def test_base_refusal_opens_shared_preview_and_escape_keeps_question(self):
+        from apps.board.tests.test_base_change import PREVIEW
+        response = json.dumps({"ok": True, "waiting": True, "changed": False, "preview": PREVIEW})
+        out = self.probe(self.waiting, "click_entry(0)\n"
+                         "js(\"cardTags = {'decision:test': ['K-8', 'decision-id']}\")\n"
+                         "js(" + repr("handleReply('decision:test', " + response + ")") + ")\n"
+                         "QTest.qWait(100)\nresult['open'] = js('baseChangePreview.visible')\n"
+                         "result['text'] = js('baseChangePreview.describe(baseChangePreview.result)')\n"
+                         "press_escape()\nresult['after'] = js('baseChangePreview.visible')\n"
+                         "result['question'] = state()['decisionOpen']\nresult['calls'] = calls()")
+        self.assertTrue(out["open"], out)
+        self.assertFalse(out["after"])
+        self.assertTrue(out["question"])
+        self.assertIn("K-50-replay-code", out["text"])
+        self.assertIn("Odmowa korekty", out["text"])
+        self.assertEqual(out["calls"], [])
+
+    def test_base_confirmation_uses_the_same_structured_resolve_in_sessions(self):
+        from apps.board.tests.test_base_change import PREVIEW
+        preview = {**PREVIEW, "canExecute": True, "canChange": True}
+        request = {"choice": "change-base", "step": "base-request:5", "baseRef": "refs/heads/topic",
+                   "baseCommit": "b" * 40, "previewId": "token"}
+        out = self.probe(self.waiting, "click_entry(0)\n"
+                         "js(" + repr("baseChangePreview.show('K-8', " + json.dumps(preview) + ")") + ")\n"
+                         "js(" + repr("baseChangePreview.confirmed(" + json.dumps(request) + ")") + ")\n"
+                         "QTest.qWait(200)\nresult['calls'] = calls()\n"
+                         "result['visible'] = js('baseChangePreview.visible')\n"
+                         "result['text'] = js('baseChangePreview.describe(baseChangePreview.result)')")
+        self.assertEqual(out["calls"][0][:2], ["ResolveCardStep", CARD])
+        self.assertEqual(json.loads(out["calls"][0][2]), request)
+        self.assertTrue(out["visible"], "odmowa backendu podglądu zachowuje dane")
+        self.assertIn("K-50-replay-code", out["text"])
+
 
 class SharedSettingTest(unittest.TestCase):
     def test_setting_saved_by_one_view_reaches_the_other(self):

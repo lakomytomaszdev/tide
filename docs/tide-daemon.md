@@ -868,15 +868,126 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie `{entry: "planning", mode: "light"|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `ListCardBranches(s id, s request)` | `→ s` | bazy lokalne i znane lokalnie zdalne albo wyłącznie lokalne cele scalenia: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
+| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tekst i historia plików lokalnie, linki PR/MR przez CLI; files/links wyłącznie na żądanie |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
-| `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
-| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
+| `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
+| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
+| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel, w razie potrzeby ref/worktree tworzone po zgodzie; używa trwałej operacji PT-212 |
+| `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
+
+`PreviewCardMerge` (PT-199) odpowiada asynchronicznie. Wynik zawiera `sourceRef`, `sourceCommit`,
+`targetRef`, `targetCommit` (pełne refy i przypięte SHA), `sourceBranch`, `targetBranch`, `targetWorktree`
+oraz `targetWorktreeExists`. Pełne listy `commits: [{sha, subject}]`,
+`files: [{status, oldPath, newPath}]`, `conflicts: [ścieżka]` mają liczniki `commitCount`, `fileCount`,
+`conflictCount`. Commity to dokładnie `targetCommit..sourceCommit`; pliki to różnica drzewa celu
+i `resultTree` z `merge-tree`, z rozpoznawaniem rename i obiema ścieżkami. Zamknięcie widoku nie zapisuje
+żadnej decyzji ani zmiany kolumny.
+
+Konflikt jest poprawnym odczytem (`ok: true`, `canMerge: false`, `reason: conflict`), podobnie odmowy
+`unrelated-history`, `git-capability`, `git-error`, `no-sandbox` mają własny `reason` i `message`.
+Niepoprawne żądanie albo brak gałęzi daje standardowy błąd `ok: false`. PT-210 rozszerza `canMerge`
+o domknięcie, czystość checkoutu karty, brak czynnych kroków (również Konsoli i poleceń poza piaskownicą),
+niedokończonych akcji, zmian planu i korekty bazy po domknięciu. Cel jest wyłącznie lokalnym refem;
+gałęzie kart i gałęzie/worktree czynnych kroków innych kart są wykluczone. Domyślny cel i jawny `targetRef`
+korzystają z tej samej kwalifikacji. Ref zdalny, SHA ani skrót nazwy nie są celami tej metody.
+
+`localChanges` i `localCollisions` zawierają osobne listy `staged`, `unstaged`, `untracked`.
+Wpis zmiany to `{status, paths}` z surowym kodem porcelain i obiema ścieżkami rename; wpis kolizji
+dodaje `mergePaths`. `localCollisionCount` liczy wpisy we wszystkich trzech listach kolizji.
+Kolizja obejmuje usunięcia i relację plik–katalog w obu kierunkach, z granicą komponentu ścieżki.
+`blockedReasons: [{reason, message}]` pokazuje wszystkie ograniczenia, a `reason`/`message` pierwsze z nich.
+Konflikt drzew (`conflict`) i kolizja pracy lokalnej (`local-collision`) pozostają odrębne, również gdy
+wystąpią równocześnie. Niezwiązane staged, unstaged i untracked nie blokują podglądu (K-43, PT-207).
+Plik z jednoczesnymi staged i unstaged zachowuje oba poziomy pracy po scaleniu.
+Cel bez checkoutu ma plan własnego worktree; metoda niczego nie zakłada. Zarejestrowany, niedostępny
+checkout ma `no-target-worktree`. Błąd odczytu checkoutu blokuje
+kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localCollisions` może pozostać `unassessed`.
+
+`previewToken` jest HMAC od karty, zlecenia, `baseVersion` (także stabilnego 0 dla legacy/unknown),
+przypiętych SHA i refów, odczytu worktrees, HEAD, surowego i logicznego indeksu, treści lokalnie zmienionych
+plików oraz blokad przepływu. Brak checkoutu ma osobną reprezentację. Sekret żyje wyłącznie w silniku:
+po restarcie nowy podgląd ma inny token. Token nie jest trwałą zgodą ani rozpoczętą operacją.
+`MergeCard` ponownie przygotowuje podgląd i sprawdza aktualność tokenu pod blokadą repozytorium;
+blokada obejmuje również przygotowanie i zapis zamiaru PT-212. Blokada dziennika chroni w tym czasie
+stan zlecenia, domknięcia i wersję bazy przed innymi zapisami usługi.
+Odczyt checkoutów i refów jest ponawiany po przygotowaniu drzewa; zmiana podczas odczytu daje
+`state-changed`, `canMerge: false` i brak tokenu. Nieudany odczyt checkoutu również nie wystawia tokenu.
+Historyczne pole `readyToMerge: false` pozostaje dla zgodności; samo otrzymanie podglądu nigdy nie jest zgodą.
+Okno korzysta z `canMerge` i `previewToken`, aby włączyć osobny przycisk „Scal do <pełna nazwa>”.
+Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
+dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
+wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
+Własny sterownik merge wymagający plików `.merge_file_*` w katalogu roboczym jest w podglądzie
+odrzucany jako `git-error`: odczytowy mount blokuje już przygotowanie tych plików, przed uruchomieniem
+sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy zapisu w worktree.
+
+PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
+checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
+Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`.
+PT-200 dopuszcza jawnie wybrany lokalny cel przez tę samą operację. PT-206 dodaje przygotowanie
+brakującego lokalnego refu i checkoutu po zgodzie, opisane poniżej.
+
+Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
+baseVersion, operationId, already}` z istniejącej operacji. `already` oznacza źródło już zawarte w celu.
+Opcjonalne `operationId` wskazuje wyłącznie rozpoczętą operację tego samego zlecenia, refu i tokenu;
+nie jest zgodą na rozpoczęcie nowej. Ponowienie pierwotnego żądania również odnajduje zapisane ID
+po przypisanym tokenie, więc utrata odpowiedzi i restart nie powodują drugiego scalenia. Wznowienie
+korzysta z kontroli recovery PT-212. Oba API kończą kartę zdarzeniem `card.merged` z rzeczywistym celem (PT-205);
+stare `MergeCardToMain(id)` nadal wybiera główną i zwraca `main`, także gdy musi otworzyć własny checkout.
+
+W Tablicy zarówno panel, jak i pełna karta otwierają podgląd po „Scal do <pełna nazwa>”. Potwierdzenie
+pokazuje pełny ref i SHA źródła oraz celu. Zamknięcie, Escape, odświeżenie i `check: auto` nie wywołują
+`MergeCard`. Po błędzie stary przycisk zostaje zablokowany; odświeżenie wymaga kolejnego potwierdzenia.
+
+PT-200: przy znanej lokalnej bazie przycisk pokazuje „Scal do <pełna nazwa bazy>”. Menu „Scal…”
+korzysta z `ListCardBranches(purpose=merge)`: wyłącznie pełne lokalne refy, bez duplikatów, z bazą
+i nazwaną główną na początku pasujących wyników. Wyszukiwanie obejmuje cały zbiór przed limitem
+50 (maks. 100); `hasMore` oznacza konieczność zawężenia. Lista współdzieli z podglądem kontrolę
+gałęzi karty i chronionych refów/worktrees innych kart (`selectable: false`, `reason`).
+Ocena kolizji treści pozostaje w podglądzie.
+PT-214: `recentTargets` zwraca do 10 różnych istniejących lokalnych pełnych refów, od najnowszego
+udanego `card.merged` lub starego `card.main-merged` ze znanym `main`. Nieznany cel nie jest zgadywany.
+Lista jest odtwarzana z dzienników Tablicy po restarcie, wspólna dla worktrees rzeczywistego repozytorium
+i odseparowana od innych repozytoriów; bez nowego magazynu. Usunięty ref znika ze skrótów, a historia
+pozostaje. Skróty mają aktualny SHA oraz te same `selectable` i `reason` co wyniki wyszukiwania;
+nie zależą od filtra i limitu wyników. Błąd historii daje ostrzeżenie i pozostawia ręczne wyszukiwanie.
+Menu pokazuje bazę, nazwaną główną, ostatnie cele i wyszukiwarkę, bez powtarzania refów. Kliknięcie
+skrótu otwiera jedynie podgląd, nie zmienia bazy ani domyślnego celu i nie daje zgody na scalenie.
+Dla bazy nieznanej główna jest propozycją wymagającą wyboru. Wybór zmienia jedynie kontekst podglądu,
+bez zapisu bazy ani zgody. Zmiana projektu lub
+repozytorium karty zamyka wybór i podgląd oraz odrzuca ich spóźnione odpowiedzi.
+
+PT-206: lista celów ma dodatkowo `defaultTargetRef`, `trackingTargets` i `createTarget` (obiekt albo null).
+Dla zdalnej bazy tylko jedna lokalna gałąź z dokładnym pełnym upstreamem tej bazy jest domyślna;
+zgodność SHA lub krótkiej nazwy nie wystarcza. Kilku kandydatów wymaga jawnego wyboru (`target-required`
+przy podglądzie bez celu). Przy braku śledzącego celu menu proponuje „Utwórz lokalną <pełna nazwa>
+od <remote/nazwa>”. Zajęta nazwa nigdy nie jest nadpisywana: menu pozwala wpisać inną albo jawnie wybrać
+istniejący lokalny cel. Nowa nazwa trafia jako pełne `targetRef`; punkt startu pochodzi wyłącznie ze znanej
+zdalnej bazy tego zlecenia, nigdy z dowolnego refu podanego przez klienta.
+
+`targetPreparation` podglądu opisuje `createRef`, `createWorktree`, `path`, `startCommit`,
+`remoteRef`, `remoteCommit`, dostępność nazwy i katalogu. Token obejmuje cały plan, nieistnienie refu
+i checkoutu oraz SHA remote. Ruch remote, zajęcie nazwy/katalogu albo nowy checkout po podglądzie daje
+`stale-preview` przed zapisaniem zamiaru i tworzeniem. Istniejący checkout ma pierwszeństwo; cudzy katalog
+nie jest przełączany. Brakujący worktree ma nazwę `merge-target-<skrót>` niezależną od znaków refu.
+Podgląd, lista i anulowanie nie tworzą zasobów; nie ma fetch, push, zmiany refs/remotes ani konfiguracji remote.
+
+Pełny zamiar PT-212 powstaje przed zasobami. Dodatkowe checkpointy to `target-ref-created`,
+`target-directory` (urządzenie/inode) i `target-worktree-created`. Atomowa transakcja refów tworzy cel
+i dowód własności `refs/tide/merge-targets/<operationId>`; ten dowód pozostaje z zapisaną operacją.
+Worktree ma podczas przygotowania blokadę opisaną ID operacji. Checkout początkowego drzewa działa
+w StepGit; po zakończeniu gita własna blokada jest zwalniana. Recovery rozpoznaje zasoby także po awarii
+przed checkpointem refu/worktree i kontynuuje ten sam wynik bez drugiego merge. Obcy ref (także zgodny SHA),
+zmieniony inode, checkout albo commit dają oczekiwanie bez nadpisania. Awaria między `mkdir` a utrwaleniem
+inode również bezpiecznie czeka. Zasoby nie są automatycznie usuwane przy porzuceniu zamiaru.
+`card.merged` wskazuje rzeczywisty lokalny ref; projekcje i ostatnie cele używają tego wyniku.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
@@ -1338,6 +1449,18 @@ przez `UpdateCard`, tylko jeśli dane różnią się od zapisanych. Następnie P
 wywołują `/Board StartCard`: krok biegnie w tle w przepływie karty, bez otwierania Konsoli. „Mam plan”
 przekazuje `entry: import` i `planPath`; usługa zapisuje migawkę źródła bez edycji pliku projektu, zachowuje
 istniejące ID i stany ticketów, uzupełnia niepełny plan w tle i kieruje propozycję do review oraz zatwierdzenia.
+Tylko specyfikacja (PT-203) przekazuje do `RenderLaunch` parę `baseRef` (pełne
+`refs/heads/…` albo `refs/remotes/…`) i `baseCommit` (oczekiwany SHA) projektu karty.
+Wspólna polityka baz odmawia po ruchu/usunięciu refu oraz dla refów symbolicznych;
+okno wymaga odświeżenia wyboru. Polecenie zawiera ref/SHA oraz instrukcje `git show`
+i `git ls-tree` do czytania także plików nieobecnych w checkoutcie. Dodatkowe projekty
+zachowują swoje bazy i odczyt. Karta przechowuje osobne `spec-revision-repo`,
+`spec-revision-ref`, `spec-revision-commit`, widoczne w migawce i odpowiedzi jako
+`specRevision: {repo, ref, commit}`. To kontekst wejścia, bez initialBase,
+`card.started`, numeracji ticketów, gałęzi/worktree i przełączania checkoutu.
+Powtórne RenderLaunch bez jawnego wyboru waliduje zapisany kontekst; starsze wywołania
+bez kontekstu zachowują dotychczasowe działanie. Sposób zapisu specyfikacji pozostaje ten sam.
+
 Pełne planowanie i Tylko specyfikacja używają dotychczasowej ścieżki Konsoli: `RenderLaunch` → `/Tasks Start`
 → zapis gałęzi, worktree i sesji na karcie przez `UpdateCard`. Pełny proces planowania w przepływie karty
 należy do drugiego etapu. Karta uruchomiona z Backlogu przez popup idzie do Do zrobienia; błąd odpowiedzi
@@ -1599,6 +1722,212 @@ wraz z wykonawcą.
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+
+**Lista lokalnych baz (PT-209).** `ListCardBranches` zwraca wyłącznie `refs/heads/` z rekordami
+`{ref, name, kind: "local", remote: "", commit, selectable, reason}`. `name` zachowuje pełną nazwę,
+`commit` jest pełnym SHA, `reason` zawiera powód ewentualnej odmowy. Filtr `text` dopasowuje dowolny
+fragment bez rozróżniania wielkości liter. `mainRef` jest pełnym refem według wspólnej polityki
+głównej lub pustym napisem z ostrzeżeniem. Główna jest pierwsza, jeśli pasuje do filtra.
+`recentBases` zawiera skróty udanych startów i korekt, a `recentTargets` dla celu merge — udanych scaleń
+(opis PT-214 powyżej). `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
+Okno startu pozwala wybrać bazę w „Od razu”, „Mam plan” i Planowaniu, wysyła pełny ref i SHA z wyniku listy oraz osobną
+nazwę nowej gałęzi karty `cardBranch`. Niepoprawna lub zajęta nazwa jest odrzucana. Brak pola zachowuje
+automatyczną nazwę starszych klientów. Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują
+dotychczasowe bazy i odczyt. „Tylko specyfikacja” ma nieaktywny wybór do czasu obsługi wybranej rewizji.
+Review, poprawki i zatwierdzanie planu używają tej samej gałęzi karty; kolejna fala wychodzi z jej aktualnego
+stanu po integracji blokerów. Przejęcie planu kopiuje artefakty do dziennika, bez zmiany źródła i jego numerów.
+
+**Podpowiedzi tekstowe bazy (PT-196).** `SuggestCardBase` czyta opis zapisanej karty i osobno tekst
+formularza (do 200000 znaków). `revision` to nieujemny numer wersji formularza. Analiza rozpoznaje pełne,
+istniejące nazwy i refy ze spisu lokalnego gita, z rozróżnieniem wielkości liter i granic nazw, również
+w backtickach oraz przykładach `git switch`/`checkout`. Nie rozwiązuje tekstu jako rewizji gita.
+Wskazana nieistniejąca nazwa jest ostrzeżeniem. Lokalny i zdalny ref o tej samej nazwie pozostają
+odrębnymi kandydatami; wiele wskazań daje ostrzeżenie, bez rozstrzygnięcia za użytkownika.
+
+Kandydat zawiera `{ref, name, commit, source, evidence, strength, selectable, reason}` (oraz metadane
+gałęzi `kind`, `remote`). Dla tekstu `source: text`, `strength: explicit`, a `evidence` to lista
+`{field: description|text, line, text, match, start, end}`: numer wiersza od 1, wycinek wokół trafienia
+(do 512 znaków) i zakres widocznego trafienia w tym wycinku od 0, z końcem wyłącznym. Bardzo długa
+nazwa może być przycięta w dowodzie; kandydat zachowuje pełną nazwę i ref. Odpowiedź zawiera najwyżej
+32 kandydatów, po 5 dowodów na ref łącznie z obu pól, i 20 ostrzeżeń o nieznanych nazwach (nazwa do
+256 znaków), poza komunikatem o konflikcie i ograniczeniu listy. Kontekst polecenia obejmuje najwyżej
+80 znaków przed tokenem. Dowody są zwykłym tekstem. Historia plików i linki PR/MR
+mają osobne przyciski i wymagają jawnego żądania użytkownika.
+
+Okno zlecenia analizuje tekst po krótkiej pauzie. Odpowiedź przyjmuje tylko dla bieżącego tagu,
+revision, karty, projektu i repozytorium. Zmiana tekstu, kontekstu lub wyboru unieważnia oczekującą
+odpowiedź. Podpowiedź nigdy nie zmienia wyboru samoczynnie. „Użyj <pełny ref>” wypełnia istniejące pole
+bazy z SHA; dopiero `StartCard` utrwala decyzję. Błąd analizy nie blokuje ręcznego startu. Dla utrwalonej
+bazy podpowiedzi są wyłączone. Sam odczyt nie zapisuje karty ani dziennika i nie mutuje gita.
+
+**Lokalna historia plików (PT-197).** Przycisk „Sprawdź lokalną historię plików” wywołuje ten sam
+kontrakt z `scope: files`. Analiza działa w istniejącym wątku roboczym i nie blokuje ręcznego startu.
+Ścieżki pochodzą z opisu karty i polecenia: nazwy z ukośnikiem lub kropką, a w cytatach/backtickach
+także nazwy bez rozszerzenia i ze spacjami. Ścieżki są względne wobec katalogu repozytorium;
+bezwzględne przyjmujemy tylko wewnątrz tego katalogu. Traversal i globy są pomijane z ostrzeżeniem.
+Nie odczytujemy wskazanych plików z dysku, nie podążamy za dowiązaniami; plik może istnieć wyłącznie
+w drzewie gałęzi feature. Sam basename jest używany dopiero po jednoznacznym dopasowaniu w całym
+analizowanym zbiorze drzew. Wieloznaczny skrót wymaga podania ścieżki od katalogu repozytorium.
+Plik w katalogu głównym można wskazać dokładnie jako `./config.py`, także gdy gdzie indziej jest jego imiennik.
+
+Zakres wynosi najwyżej 20 różnych ścieżek, 100 lokalnie dostępnych refów gałęzi (lokalnych i remote,
+bez symbolicznych), uporządkowanych po dacie commita końcowego, 200 najnowszych osiągalnych commitów
+na gałąź oraz 5 sekund łącznie. Każde wywołanie gita dostaje pozostały czas. Najpierw ograniczamy
+zbiór commitów bez filtra ścieżek, następnie czytamy zmiany plików wyłącznie w tym zbiorze, bez
+dalszego przechodzenia historii. Ścieżki trafiają za `--` z literalnymi pathspecami, bez powłoki.
+Nie ma fetch, checkoutu ani indeksowania całej historii. Przy limicie lub błędzie wynik pozostaje
+częściowy; ostrzeżenie wyjaśnia, że brak wskazania nie wyklucza gałęzi. Odpowiedź zawiera również
+`analysis: {partial, paths, branches, limits: {paths, branches, commitsPerBranch, seconds}}`.
+
+Kandydat zawsze ma `source: files`, `strength: heuristic`, końcowy ref/SHA oraz dowody
+`{path, commit, timestamp, time}` (czas committera UTC). Dowód wymaga obecności ścieżki w drzewie
+końcowego SHA i dotknięcia jej w ograniczonej historii. Ranking: liczba udowodnionych ścieżek
+(`matchedPaths`), następnie najnowszy czas ich dotknięcia (`lastTouch`); data niezwiązanego commita
+końcowego nie podwyższa oceny. Identyczna ocena daje identyczny `rank`, także dla wspólnego przodka
+kilku gałęzi; kolejność alfabetyczna jest wyłącznie porządkiem prezentacji. Wspólna lista pokazuje
+pozycję, ścieżkę, dotykający commit i czas. Dopiero „Użyj <pełny ref>” zmienia ręczną bazę, a start
+przekazuje wybrany SHA do istniejącego mechanizmu utrwalania bazy.
+
+**Podpowiedzi PR/MR (PT-198).** „Sprawdź linki PR/MR” wysyła `scope: links`; automatyczna analiza tekstu
+nie odpytuje hostingu. Adaptery `gh api` i `glab api` korzystają z istniejącego logowania CLI, bez konfiguracji
+integracji w Tide. Rozpoznają wyłącznie HTTPS `/owner/repo/pull/N` i `/grupa/podgrupa/repo/-/merge_requests/N`
+na hoście i w projekcie zgodnym ze skonfigurowanym remote (SSH/scp/HTTPS oznaczają tę samą tożsamość).
+Userinfo, query, obce projekty/hosty i inne rodzaje URL są odrzucane przed uruchomieniem CLI.
+Aliasy remote przez `url.<base>.insteadOf` nie są rozwijane: np. `gh:team/proj` wymaga remote
+z pełnym adresem SSH/HTTPS, inaczej link dostanie ostrzeżenie o niezgodności z remote.
+Najwyżej 4 różne linki na analizę, wspólny termin 10 sekund dla wszystkich odczytów (także projektów
+źródłowych/docelowych GitLaba) i 1 MiB łącznego stdout/stderr na wywołanie CLI. Po upływie terminu
+wraca dotychczasowy wynik z ostrzeżeniem. Migawka karty, gałęzi i remote powstaje w szeregowym wątku
+przepływu; hosting jest odczytywany w osobnej puli, bez blokad gita i dziennika. Jednocześnie mogą trwać
+dwie analizy hostingu; kolejne dostają błąd zajętości bez kolejki sieciowej. StartCard i tick nie czekają na CLI.
+
+Kandydat `source: links` dodaje `{host, project, sourceProject, sourceBranch, sourceCommit, targetBranch,
+link, localCommit, stale}`. Target nigdy nie jest proponowaną bazą. Źródłowe repozytorium musi mieć
+odpowiedni remote; lokalny ref musi wynikać z jego refspec fetch albo jawnej konfiguracji upstream lokalnej
+gałęzi. Nakładające się mapowania refu z obcych repozytoriów są niejednoznaczne. Sama zgodność nazwy
+lokalnej gałęzi z forkiem nie wystarcza. Brak źródła daje niewybieralną pozycję z `reason`.
+Nie wykonuje się fetch. Rozbieżne SHA API i lokalnego refu są widoczne razem; „Użyj stanu lokalnego
+<pełny ref>” przekazuje lokalny SHA do istniejącego wyboru bazy i `StartCard`.
+
+Bramka `gh` wykonuje jeden ustalony GET HTTPS na wywołanie i odrzuca wszystkie przekierowania.
+CLI używa klucza `http_unix_socket` z tymczasowego `GH_CONFIG_DIR/config.yml`; `hosts.yml` jest wyłącznie
+dowiązaniem do istniejącego pliku konfiguracji użytkownika (bez kopiowania i odczytu sekretów przez Tide).
+Tymczasowy `config.yml` zawiera też `version: "1"`: bez niego gh uruchamia migrację konfiguracji
+i zapisuje `hosts.yml` przez dowiązanie. Gdy `hosts.yml` istnieje, a `config.yml` użytkownika nie ma
+`version: "1"` (magazyn niezmigrowany), Tide nie uruchamia gh i zwraca ostrzeżenie; Tide czyta z
+`config.yml` tylko klucz `version`.
+Nieobsługiwany transport kończy się błędem przez zastępcze proxy bez dostępu do hostingu.
+`glab` dostaje jawne `GLAB_PROXY` wskazujące lokalne proxy TCP oraz `GLAB_API_PROTOCOL=https`
+i `API_PROTOCOL=https`. Proxy przyjmuje tylko `CONNECT` do ustalonego hosta na porcie 443; odrzuca obcy
+host, inny port i zwykły HTTP bez połączenia wychodzącego. Nie odszyfrowuje TLS ani nie widzi tokena.
+Przekierowanie HTTPS na tym samym hoście może być obsłużone przez `glab` wewnątrz tunelu; przekierowanie
+na obcy host lub HTTP zatrzymuje proxy. TLS weryfikuje CLI (wymuszone `skip_tls_verify=false`).
+Transport ma limit 2 MiB na tunel z narzutem TLS, niezależnie od limitu 1 MiB stdout/stderr i terminu analizy.
+Poświadczenia nie są odczytywane przez `auth token`, zapisywane ani zwracane. Wynik zawiera tylko
+dozwolone pola metadanych; stderr i surowy
+JSON CLI nie trafiają do odpowiedzi ani dziennika. Opis i polecenie służą wyłącznie wyodrębnieniu linków,
+nie są wysyłane do hostingu. Brak CLI, logowania, sieci, PR/MR, błędny JSON, limit lub timeout daje ostrzeżenie;
+ręczny lokalny start pozostaje dostępny. Dla hostów z wymaganym zewnętrznym proxy należy wybrać bazę lokalnie;
+adapter nie przejmuje konfiguracji pośrednika ani logowania.
+
+**Baza startu karty (PT-194, PT-211).** Od razu, Mam plan (`entry: import`), propozycja z Konsoli
+(`entry: plan`) i oba istniejące tryby Planowania korzystają z jednego rozstrzygnięcia bazy.
+Żądanie każdego z tych wejść może zawierać `baseRef` (wyłącznie pełny lokalny
+`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy
+`FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
+Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
+rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgodny oczekiwany SHA
+odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
+wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
+Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
+Ponowny start wykorzystuje dotychczasową gałąź karty. Bez `baseRef` dziedziczy bazę zapisaną
+w dzienniku, nawet po ruchu lub usunięciu refu; nie rozwiązuje ponownie głównej. Ticket wychodzi
+z aktualnego stanu gałęzi karty, zachowując dotychczasową pracę. Dla legacy z bazą unknown
+start bez wyboru bazy jest dozwolony, jeśli gałąź karty istnieje; baza i `initialBase` pozostają
+unknown, bez zgadywania historycznego SHA. Brak takiej gałęzi daje `no-base` z instrukcją jej
+przywrócenia lub założenia nowej karty z wybraną bazą. Nowe zlecenie ma własne `baseVersion: 1`
+także dla unknown; historyczne zdarzenia i ich wersja 0 pozostają bez zmian.
+Jawny inny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Formularz wznowienia
+pokazuje utrwalony ref i SHA bez odpytywania listy; przekazanie tego samego refu zachowuje zapisany SHA,
+nawet po ruchu albo usunięciu refu. Sam `baseCommit`
+bez refu musi odpowiadać zapisanemu SHA znanej bazy. Inna lub nieznana baza przy jawnym wyborze
+powoduje `base-mismatch` przed rezerwacją numeru i zapisem zlecenia. Zmiana bazy należy do osobnej korekty.
+
+Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
+`baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
+i `initialBase` o kształcie `{status: "known"|"unknown", baseRef, baseBranch, baseCommit}` oraz
+liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są puste. Model i plik karty
+mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
+UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
+zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+Projekcja nie dopisuje brakujących pustych pól ani nie zmienia plików kart w Gotowych i Archiwum.
+Gdy karta nie ma wyliczanego stanu (np. wróciła ręcznie do Do zrobienia albo jest w Gotowych/Archiwum),
+zachowuje `derived: null`. Jej pola `baseRef`, `baseBranch`, `baseCommit` i `baseVersion` na karcie
+w Snapshot nadal pochodzą z dziennika, niezależnie od powodzenia zapisu projekcji.
+
+Historyczne zlecenie bez wersji zawsze ma `baseVersion: 0`. Znana historyczna baza wymaga zamiaru
+utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing: false`, z tego zlecenia.
+Wynik zastanej gałęzi nie dowodzi SHA pierwotnego startu. Bez dowodu baza jest unknown; nie czytamy
+dzisiejszej głównej i nie dopisujemy pól do starych zdarzeń.
+
+Kontrakt korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
+(ten sam kształt trzech pól), `generation` (pełna mapa zasobów korekty PT-202), `previousBaseVersion` i
+`baseVersion: previousBaseVersion + 1`. Replay przyjmuje przejście tylko z bieżącej wersji i znaną
+nową bazą; powtórzenie tego samego zdarzenia nie zwiększa licznika. `initialBase` zachowuje start.
+Nowe zlecenie ma własne 1. Podgląd, odmowa, błąd, ruch refu i naprawa projekcji nie zmieniają wersji.
+Tokeny i przyszłe operacje scalenia/korekty korzystają wyłącznie z tego `baseVersion`. Wykonanie
+korekty oraz mapowanie zasobów opisano poniżej. Historyczne zdarzenia z pustym `map` zachowują odczyt.
+
+**Pusta generacja (PT-202).** `PreviewCardBaseChange` pozostaje odczytem. Wykonanie wymaga
+`ResolveCardStep(id, {choice: "change-base", baseRef, baseCommit?, previewId, step?})`, gdzie `baseRef`
+jest pełnym refem lokalnym lub znanym lokalnie remote, `previewId` pochodzi z aktualnego podglądu,
+a `step` wskazuje pytanie agenta lub decyzję `RequestCardBaseChange`, jeżeli taka istnieje.
+Sam wybór `baseDecision: "change"` nadal tylko otwiera podgląd. Odpowiedź i etykieta opcji nie są
+poleceniem Git. Panel Tablicy i Sesji udostępnia osobne potwierdzenie tylko dla `canExecute: true`,
+przekazując dokładny ref/SHA i identyfikator wyświetlonego podglądu. Odmowa lub oczekiwanie
+na odzyskanie zasobów pozostawia dowody i odnośnik do szkicu w otwartym panelu.
+
+Pod blokadą repozytorium usługa ponawia kwalifikację PT-201: dokładne SHA obu baz, wersję, pełną
+mapę, dowiedzione punkty startu wszystkich gałęzi, brak wkładu, lokalnych zmian oraz procesów.
+Zmiana daje `stale-preview` bez zamiaru i mutacji. Zamiar `intent(action: change-base)` przechowuje
+stały `operationId`, odcisk, granicę dziennika, `oldBase`/`newBase`, obie wersje i kompletną `generation`.
+Wiersz mapy zawiera `action`, `key`, `ticket`, `branch`, `worktree`, `base`, `oldBranch`, `oldWorktree`,
+`oldCommit`, `ownerRef`, `archiveRef` i pełną listę ignorowanych ścieżek (katalogi zbiorczo).
+
+Gałęzie/worktrees nowej generacji powstają poza starymi katalogami od przypiętego SHA. Transakcja
+CAS tworzy gałąź, ref właściciela i ref zachowujący stary SHA; obca nazwa oznacza oczekiwanie.
+Stare worktrees są blokowane, a nowe powstają z `--lock`. Ignorowane dane pozostają w starych
+katalogach. `base-change.checkpoint` zapisuje pełną mapę po przygotowaniu każdego zasobu i przed
+aktywacją. Ponowna kwalifikacja i kontrola całej nowej mapy poprzedzają jedno `card.base-changed`.
+Fold wybiera pełną mapę i zwiększa wersję raz; częściowa/nieprawidłowa mapa nie zmienia żadnego pola.
+`initialBase`, ID, treści, plan i blokery pozostają. Nie powstają puste merge ani replay commitów.
+
+Restart odnajduje ten sam zamiar. Przed aktywacją dokańcza własne zasoby albo zapisuje
+`base-change.waiting` z przyczyną i wykazem zachowanych zasobów, pozostawiając starą mapę.
+Po aktywacji ponawia wyłącznie wynik i projekcję bazy, bez gita i kolejnej inkrementacji.
+Retry z tym samym refem/odciskiem zwraca ten sam zamiar. Snapshot udostępnia `flow.generation`,
+`flow.preservedGenerations`, `flow.generationWaiting` i `flow.baseValidationRequired`.
+Stare refy, archiwalne SHA i katalogi nie podlegają zwykłemu sprzątaniu; cleanup nie przenosi ich danych.
+
+**Skutki pustej korekty (PT-213).** Aktywacja zachowuje pole `validationRequired: true` jako część
+kontraktu PT-202. Fold dowiedzionej kompletnej mapy odtwarza unieważnienia i uznaje walidację pustego
+wkładu za spełnioną (`flow.baseValidationRequired: false`). Nie wymaga review fikcyjnego commitu.
+Stare review, decyzje i domknięcie pozostają w dzienniku oraz historii, ale nie autoryzują nowego
+SHA. Snapshot wystawia bieżące `flow.approvals` oraz osobne `flow.historicalApprovals` z oryginalnymi
+SHA i wersjami. Historyczne kroki mają `historical: true`, bez EnterStep i transferu.
+
+Nieodrzucony ticket rozpoczyna nowy krok w nowym katalogu z aktualnym ref/SHA/baseVersion, notką
+korekty, dostępem do dawnych wyników i świeżą sesją CLI. Odrzucony ticket pozostaje odrzucony.
+Nowa praca przechodzi istniejące testy i review swojego rzeczywistego SHA przed integracją; zasoby
+generacji pozostają zachowane również podczas cleanup. Stara zgoda na polecenia do końca ticketu
+nie przechodzi do nowej generacji. Stare kroki i zgody nie wracają przez recovery.
+
+Karta wymaga nowego podsumowania na nowej bazie, także gdy zamknięto ją wcześniej po odrzuceniu
+ticketu bez zmian. MergeCard i MergeCardToMain stosują tę samą bramkę domknięcia. Domyślny cel
+w menu i porównaniu korzysta z bieżącej bazy, a token sprzed korekty daje `stale-preview`.
+Remote nadal wymaga jawnego istniejącego lokalnego celu według wspólnej polityki celów.
+Powtórny fold i restart nie uruchamiają przygotowania generacji ani kolejnej inkrementacji.
+
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
 
@@ -1708,7 +2037,7 @@ Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.p
 `apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
 
 - `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
-  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie; po sukcesie pełna nazwa zapisanego celu). `state`:
   `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
   `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
   wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
@@ -2300,6 +2629,72 @@ przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowa
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
-Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
-`card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
+Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
+`card.merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
 gałęzi głównej.
+
+PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
+z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
+`targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
+i początkowe drzewo materializacji (`materializationBaseTree`). PT-207 dodaje `resultIndexTree`:
+oczekiwany indeks po wniesieniu wyniku, z niezwiązanymi staged użytkownika. `resultTree` pozostaje
+drzewem samego commita scalenia; lokalne staged nie trafiają do tego commita.
+Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
+`main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
+i `projected`. PT-205: nowe sukcesy obu metod (`MergeCard` i zgodnego wstecz `MergeCardToMain`)
+zapisują pojedyncze `card.merged` z `operationId`, `targetRef`/`targetBranch`, `sourceCommit`,
+`targetCommitBefore`, `resultCommit` i `baseVersion` ze wspólnego zamiaru, a następnie `card.finished`.
+Stare `card.main-merged` nadal oznacza zakończenie do zapisanego `main`; dzienniki nie są przepisywane.
+Mieszany zapis zakończenia w jednym zleceniu daje jeden wynik, jedną pozycję historii i raportu.
+Przepływ zachowuje `derived.flow` również w Gotowych/Archiwum: `merged` to znacznik zakończenia,
+`merge` zawiera zapisany wynik (stare pola `main`/`commit` odczytywane jako cel i wynik).
+`mainMerged` pozostaje aliasem znacznika dla dawnych klientów. Snapshot, Sesje, historia, faza scalenia
+i raport pokazują rzeczywisty pełny cel. Raport wykazuje zakończenie karty w okresie zdarzenia,
+nie zalicza jej do otwartych kart. Zgłoszenie kolejnego błędu nie dopisuje wystąpienia do scalonej karty.
+`MergeCardToMain` nadal zwraca `{ok, id, main, already}`; historyczny sukces używa zapisanego celu,
+nie dzisiejszej głównej. Przyjmowanie innych celów przez `MergeCard` pozostaje zakresem PT-200.
+
+`CardBranchDiff` bez celu używa bieżącego refu zapisanej bazy (bez zastępowania przypiętego SHA).
+Przeciążenie z `targetRef` przyjmuje `refs/heads/…` albo znany lokalnie `refs/remotes/…`;
+krótkie nazwy, refy symboliczne i nieistniejące są odrzucane. Przy bazie `unknown` wymagany jest jawny ref.
+Odpowiedź zawiera `targetRef`, `targetBranch`, `branch`, `diff` oraz dawny klucz `main` jako nazwę porównania.
+Sam odczyt nie zapisuje zdarzeń, nie zmienia bazy ani nie stanowi zgody na merge.
+
+Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
+na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Nierozstrzygnięte pytanie o bazę
+blokuje zarówno jawne scalenie (także ponowienie), jak i recovery z ticku do decyzji użytkownika.
+Zmiana nazwanej głównej,
+obcy ref, indeks albo kolizje lokalnej pracy w scalanych ścieżkach powodują `main-merge.waiting`
+i „Czeka na mnie”, bez cofania plików i bez drugiego scalenia. Pliki ignorowane są sprawdzane pod
+kątem kolizji nazw, bez odczytywania i hashowania ich treści. Niezwiązane edycje i artefakty nie blokują
+recovery. Gdy ref wskazuje `resultCommit` (albo jego potomka po dalszych commitach użytkownika), git jest
+zakończony: recovery sprawdza SHA i drzewo wyniku, a następnie dokańcza wynik oraz projekcję niezależnie od dalszej
+pracy w indeksie, checkoutcie i źródle oraz od późniejszej zmiany `tide.mainBranch` — polityka gałęzi głównej
+dotyczy tylko wykonania przed przesunięciem refu. Kolizje z plikami nieśledzonymi i ignorowanymi sprawdzamy
+wyłącznie w scalanych ścieżkach i ich rodzicach (pathspec), bez wyliczania całych ignorowanych katalogów.
+
+Oczekiwanie nie zatrzymuje synchronizacji ruchów użytkownika, poprawki planu ani pozostałych kroków karty.
+Po usunięciu przyczyny wznowienie używa tego samego ID. „Do poprawy”, zwrot planu, nowe domknięcie lub ręczne zakończenie
+po zamiarze zapisuje `main-merge.abandoned`, jeśli wynik nie trafił do refu celu i nie zapisano sukcesu —
+także przy obcym refie (np. commit użytkownika na głównej), z materializacją albo bez niej. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
+i nie pozwala dalej wznawiać starego zamiaru. Kolejne domknięcie wymaga nowego jawnego scalenia.
+W tym samym zleceniu nowa operacja może przejąć dokładny indeks porzuconej materializacji przy tym samym
+celu i niezmienionym refie; kontrola lokalnych kolizji nadal obejmuje stare i nowe scalane ścieżki.
+Bez takiej decyzji obcy ref pozostaje jawnym oczekiwaniem; nigdy nie jest zgodą na ponowne wykonanie,
+reset ani nadpisanie. Porzucenie przy obcym refie nie dotyka refu, indeksu ani plików, a materializacja,
+która została w checkoutcie, nie jest dziedziczona (wymaga niezmienionego refu) — nowe scalenie odmówi jak przy
+obcych staged.
+Niezwiązane staged i zmiany poza indeksem pozostają obsługiwane (K-43, PT-207). Kopia indeksu jest
+przygotowywana i odświeżana w prywatnym katalogu, z worktree i katalogiem gita tylko do odczytu;
+zapis obejmuje wyłącznie obiekty i kopię indeksu. Dopiero po zapisaniu zamiaru `read-tree -m -u`
+materializuje różnicę między początkowym i wynikowym indeksem. Niezwiązane wpisy (blob i tryb), ich delta
+względem nowego HEAD oraz bajty plików pozostają bez zmian. Nie używamy resetu, stasha ani sprzątania untracked.
+Przed zapisem zamiaru ponownie sprawdzamy token podglądu, także po przygotowaniu kopii indeksu.
+StepGit ustawia `GIT_OPTIONAL_LOCKS=0`: kontrola czystości źródła przez `status` nie odświeża ani nie
+konwertuje jego indeksu do split-index, więc nie unieważnia zgody własnym odczytem.
+Recovery przyjmuje wyłącznie zapisany indeks początkowy lub wynikowy; nowe obce staged powodują oczekiwanie.
+Częściowy zapis plików z niezmienionym indeksem i kolizją pozostaje w jawnym oczekiwaniu, bez nadpisywania.
+Starsze zamiary bez `resultIndexTree` nadal używają `resultTree` jako oczekiwanego indeksu.
+Brak checkoutu celu korzysta z etapu PT-206: plan i pełny zamiar przed tworzeniem,
+własność zasobów w checkpointach i przekazanie do tego samego wykonawcy. Dotyczy także starego API głównej.

@@ -759,7 +759,8 @@ class RejectFailedTicketTest(FlowInProcess):
 
         with _mock.patch.object(engine, "_plan_card", side_effect=reached), \
                 _mock.patch.object(engine, "_plan_commit"), \
-                _mock.patch.object(engine.git, "branch_worktree", return_value={"created": True}), \
+                _mock.patch.object(engine.git, "branch_worktree", side_effect=lambda repo, branch, path, base:
+                                   {"branch": branch, "worktree": path, "base": base, "existing": False}), \
                 _mock.patch.object(engine.git, "main_branch", return_value="master"):
             with self.assertRaises(Started):
                 engine._plan_next(card, st)

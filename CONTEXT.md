@@ -109,6 +109,48 @@ _Avoid_: zależność w tekstach dla użytkownika
 Gałąź, do której trafiają tickety karty po review; do gałęzi głównej przenosi ją tylko użytkownik.
 _Avoid_: gałąź koordynatora, gałąź integracyjna
 
+**Baza karty**:
+Zapisany w dzienniku punkt wyjścia zlecenia: pełny lokalny lub zdalny ref (`baseRef`, `refs/heads/…`
+albo `refs/remotes/…`), nazwa gałęzi (dla zdalnej razem z nazwą remote)
+(`baseBranch`) i przypięty commit (`baseCommit`, SHA). Ruch lub usunięcie refu nie zmienia zapisanej bazy.
+_Avoid_: bieżący HEAD, dzisiejsza główna jako domysł historycznej bazy
+
+**Ostatnie bazy repozytorium**:
+Do 10 różnych pełnych refów od najnowszego udanego `card.started` lub `card.base-changed`, odtworzonych
+z dzienników Tablicy. Worktrees jednego repozytorium współdzielą skróty. Skrót jawnie wybiera obecny SHA
+istniejącego refu; nie zmienia domyślnej głównej ani utrwalonej bazy wznowienia.
+
+**Pierwotna baza**:
+Opis bazy w chwili startu zlecenia (`initialBase`); późniejsza korekta go nie zmienia.
+_Avoid_: aktualna baza
+
+**Ostatnie cele scalenia repozytorium**:
+Do 10 różnych istniejących lokalnych pełnych refów od najnowszego `card.merged` lub starego
+`card.main-merged` ze znanym celem. Projekcja dzienników Tablicy jest wspólna dla worktrees jednego
+repozytorium. Skrót otwiera podgląd z bieżącym SHA i tymi samymi ograniczeniami co lista celów;
+nie zastępuje bazy jako domyślnego celu ani nie daje zgody na scalenie.
+
+**Wersja bazy**:
+Nieujemna liczba całkowita `baseVersion` z dziennika, osobna dla każdego zlecenia. Nowy start ma 1;
+historyczny bez zapisanej wersji ma 0. Wyłącznie skuteczne `card.base-changed` zwiększa ją o jeden.
+Wartość 0 nie dowodzi znajomości bazy ani nie uprawnia do korekty.
+_Avoid_: SHA jako wersja, osobne liczniki operacji
+
+**Nieznana baza**:
+Brak wiarygodnego refu lub SHA w dzienniku (`status: unknown`). Nie odgadujemy jej z obecnego gita;
+historyczny zamiar i wynik utworzenia gałęzi muszą dowodzić obu wartości.
+_Avoid_: domyślna baza historyczna
+
+**Cel scalenia karty**:
+Jawnie wybrana lokalna gałąź (`targetRef`, pełne `refs/heads/…`) i jej bieżący commit (`targetCommit`)
+odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej domyślna jest wyłącznie
+jedna lokalna gałąź śledząca dokładnie ten pełny remote/ref; kilku kandydatów wymaga wyboru.
+Bez kandydata można wybrać utworzenie lokalnego celu od bieżącego SHA zdalnej bazy. Dla bazy nieznanej
+użytkownik wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
+Wybór celu nie zmienia bazy i nie jest zgodą na scalenie. Zgoda dotyczy refu i SHA z aktualnego podglądu.
+Lista celów, podgląd i scalenie używają repozytorium zapisanego przy starcie zlecenia, także po zmianie projektu karty.
+_Avoid_: główna jako nazwa każdego celu, krótka nazwa zdalnej bazy jako domyślny lokalny cel
+
 **Domknięcie**:
 Ostatni krok karty: podsumowanie pracy i lista rzeczy do sprawdzenia przez użytkownika.
 _Avoid_: finalizacja, merge

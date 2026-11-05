@@ -194,6 +194,67 @@ dokłada na końcu „Inną odpowiedź…” — agent jej nie podaje. Wybór wz
 tytuł, zły typ) nie są błędem kroku: okno ma wtedy samo pole odpowiedzi. Pytanie bez `options` działa jak dotąd.
 Autor i recenzent nie wykonują push ani scalenia.
 
+**Pytanie o bazę (PT-208).** Każde przekazanie kroku zawiera bieżący pełny ref i przypięty SHA bazy
+albo jawne `unknown`. Sam brak pliku nie dowodzi błędnej bazy ani nie pozwala tworzyć zamiennika,
+wykonywać checkout, rebase czy reset. Po sprawdzeniu dowodów krok może zapisać:
+
+```json
+{"result":"question","question":"Czy zachować bazę?","baseProposal":{"ref":"refs/heads/feature/example","evidence":"Sprawdzona historia wskazanego pliku…"}}
+```
+
+`baseProposal` jest opcjonalne. `ref` musi być pełnym lokalnie znanym refem `refs/heads/…` lub
+`refs/remotes/…` (do 1024 znaków), `evidence` niepustym zwykłym tekstem (do 4000 znaków).
+Usługa sprawdza kandydata w repozytorium projektu karty, bez fetch ani zmiany gita. Nieprawidłowa
+propozycja pozostaje informacją przy zwykłym pytaniu; stare pytania i `options` zachowują działanie.
+
+Poprawna propozycja wstrzymuje nowe kroki i integrację wyników tej karty. Procesy mogą dokończyć,
+a ich wyniki pozostają zapisane i niescalone. Pytanie i blokada wracają po restarcie; oczekiwanie nie
+trzyma blokady repozytorium i nie blokuje innych kart. `ResolveCardStep` przyjmuje `choice: answer`,
+`step` oraz strukturalne `baseDecision: keep` albo `change`, niezależnie od tekstu odpowiedzi.
+Zachowaj zapisuje zwykłą odpowiedź i odblokowuje kontynuację. Zmień zapisuje oczekiwanie (`waiting: true`,
+`changed: false`), pozostawiając pytanie i możliwość Zachowaj. Nie wykonuje operacji git ani nie
+potwierdza zmiany; podgląd dostarcza PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+
+**Podgląd korekty (PT-201).** `/Board PreviewCardBaseChange(id, request)` przyjmuje pełny `baseRef`
+i opcjonalny `baseCommit` (dla zdalnego refu wymagany SHA), albo `step` nierozstrzygniętej propozycji;
+puste `{}` wybiera pierwszą oczekującą decyzję o bazie. Walidacja jest taka sama jak przy starcie,
+bez fetch i domyślnego HEAD. Odpowiedź zawiera `oldBase`, `newBase`, `baseVersion`, `branches[]`
+z zapisanymi punktami startu i commitami, `processes[]`, lokalne zmiany oraz ignorowane ścieżki,
+`blockedReasons[]`, `invalidations[]`, `followup` i instrukcję. Dowody są zwykłym tekstem.
+
+Jawny wybór użytkownika w pełnej karcie wywołuje `RequestCardBaseChange(id, {baseRef, baseCommit})`.
+Zapisuje wyłącznie decyzję `card.base-requested`, blokuje nowe kroki i integrację, zachowuje istniejące
+pytania oraz zwraca ten sam podgląd co propozycja agenta. `decisionStep` identyfikuje decyzję;
+`ResolveCardStep` z tym identyfikatorem i `baseDecision: keep` odblokowuje kartę, a `change` jedynie
+otwiera podgląd. Zamknięcie/Esc nie zapisuje odpowiedzi ani nie zatrzymuje procesów.
+
+`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, logicznej zawartości indeksów,
+statusu, metadanych lokalnych danych i procesów. Oba odczyty są lekkie: bez hashowania treści plików.
+Ignorowane katalogi zwijamy przez `ls-files --others --ignored --exclude-standard --directory`;
+odcisk obejmuje ich stat, bez wyliczania wnętrza. Zmiana treści pliku wewnątrz takiego katalogu nie musi
+zmienić identyfikatora. To odcisk kwalifikacji pustej generacji, bez prawa do kopiowania lub kasowania
+lokalnych danych; PT-202 musi zachować stare worktrees wraz z ich zawartością. Limit 4096 odczytów
+metadanych na worktree (także dla nieśledzonych zagnieżdżonych repozytoriów) daje odmowę
+`unknown-local-state` po przekroczeniu. Odpowiedź zawiera najwyżej 20 ignorowanych ścieżek na gałąź,
+`ignoredCount` liczy zwinięte ścieżki/katalogi, a `ignoredTruncated` oznacza skrócenie listy.
+Panel pokazuje najwyżej 10 i liczbę pozostałych. Nie jest to liczba plików w ignorowanych katalogach.
+Dowody, powody odmowy i procesy poprzednich zleceń mają `previousOrder: true`; kontrola pozostaje zachowawcza.
+PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
+wymagać `canChange: true` i równości identyfikatora; każda wykryta różnica wymaga świeżej decyzji. Identyfikator
+sam w sobie nie jest zgodą. `canExecute: true` udostępnia osobne końcowe potwierdzenie pustej korekty;
+panel wysyła `choice: change-base` z dokładnym ref/SHA i `previewId`. Aktywacja unieważnia stare
+zgody, sesje i domknięcie; nowy krok rusza w nowym katalogu i świeżej sesji. Nowa praca podlega
+zwykłym testom i review, a karta wymaga nowego podsumowania. Historyczne dane pozostają do odczytu.
+Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
+commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.
+
+Korekta v1 jest ograniczona do karty bez commitów wkładu i czynnych procesów, zwykle Od razu przed
+pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP i praca po review (K-49) wymagają odmowy
+korekty i zachowania danych. Cel pkt 4 oraz historie 35–37 pozostają częściowe. Wymagania wskazują
+szkic [K-50-replay-code](agents/plans/followups/replay-code.md), zweryfikowany w PT-201 i dołączony
+do zatwierdzonego planu. Sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
+pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeniesienia.
+
 **Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
 `{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
 `severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;

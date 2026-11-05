@@ -42,8 +42,35 @@ class Scripted(module.Backend):
     def __init__(self, snapshot):
         super().__init__(None, snapshot)
         self.replies = []
+        self.branch_replies = []
+        self.branch_calls = []
+        self.branch_delay = 10
+        self.suggestion_replies = []
+        self.suggestion_calls = []
+        self.suggestion_delay = 10
 
     def _write(self, tag, member, args):
+        if member == "SuggestCardBase":
+            self.suggestion_calls.append([tag, *args])
+            request = json.loads(args[1])
+            card = next(c for c in json.loads(self._snapshot)["cards"] if c["id"] == args[0])
+            snap = json.loads(self._snapshot)
+            project = next(p for p in snap["projects"] if p["slug"] == card["project"])
+            reply = {"ok": True, "revision": request["revision"], "card": args[0],
+                     "project": project["slug"], "repo": project["repo"], "candidates": [], "warnings": []}
+            if self.suggestion_replies:
+                reply.update(self.suggestion_replies.pop(0))
+            QTimer.singleShot(self.suggestion_delay, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            return
+        if member == "ListCardBranches":
+            # Odczyty nie zużywają scenariuszy zapisów istniejących testów formularza.
+            self.branch_calls.append([member, *args])
+            reply = self.branch_replies.pop(0) if self.branch_replies else {
+                "ok": True, "branches": [{"ref": "refs/heads/master", "name": "master", "kind": "local",
+                                           "remote": "", "commit": "a" * 40, "selectable": True, "reason": ""}],
+                "mainRef": "refs/heads/master", "recentBases": [], "recentTargets": [], "warnings": [], "hasMore": False}
+            QTimer.singleShot(self.branch_delay, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            return
         self._calls.append([member, *args])
         self.callsChanged.emit()
         reply = self.replies.pop(0) if self.replies else {"ok": True, "id": args[0] if member != "CreateCard" else "K-99",

@@ -18,9 +18,10 @@ Rectangle {
     property int pixelSize: 13
     property real pillRadius: Tide.Tokens.radiusFrame
     property bool leftAligned: false
+    property bool wrapText: false
     signal clicked()
 
-    implicitHeight: 36
+    implicitHeight: Math.max(36, label.implicitHeight + 12)
     implicitWidth: label.implicitWidth + horizontalPadding * 2
     radius: pillRadius
     color: flat || outline ? (area.containsMouse || activeFocus ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.05) : "transparent")
@@ -44,6 +45,8 @@ Rectangle {
         x: button.leftAligned ? button.horizontalPadding : (button.width - width) / 2
         anchors.verticalCenter: parent.verticalCenter
         text: button.text
+        width: button.wrapText ? button.width - button.horizontalPadding * 2 : implicitWidth
+        wrapMode: button.wrapText ? Text.WrapAnywhere : Text.NoWrap
         textFormat: Text.PlainText
         color: button.enabled || button.flat || button.outline ? button.textColor : Tide.Tokens.textMuted
         font.family: Tide.Theme.uiFamily
