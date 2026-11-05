@@ -2942,6 +2942,17 @@ class FlowEngine(PlanEditing):
                 raise FlowError(exc.code, str(exc)) from None
         return granted, skipped
 
+    @staticmethod
+    def _reviewer_context(st: FlowState, ticket: str) -> tuple[dict, dict]:
+        """Przydział i ostatnie review; nowszy przydział recenzenta unieważnia poprzedni krok review."""
+        assigned = st.assignments.get(ticket) or st.started or {}
+        override = st.reviewer_overrides.get(ticket) or {}
+        previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
+                         s.get("kind") == "review"), {})
+        if override and override.get("seq", 0) > previous.get("seq", 0):
+            previous = {}
+        return {**assigned, **override}, previous
+
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
                          transfer=False, automated=False):
         cfg = self.models_config() if self.models_config else None
@@ -2976,14 +2987,14 @@ class FlowEngine(PlanEditing):
             return selected
         if changed:
             assigned = st.assignments.get(step.get("ticket") or "") or st.started or {}
-            reviewer = st.reviewer_overrides.get(step.get("ticket") or "") or assigned
-            opposite_kind = ("ticket", "fix") if step.get("kind") == "review" else ("review",)
-            opposite = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == step.get("ticket")
-                             and s.get("kind") in opposite_kind), None) or {}
             if step.get("kind") == "review":
+                opposite = next((s for s in reversed(list(st.steps.values()))
+                                 if s.get("ticket") == step.get("ticket") and
+                                 s.get("kind") in ("ticket", "fix")), {})
                 other_model = opposite.get("model") or assigned.get("model") or ""
                 other_provider = opposite.get("provider") or assigned.get("provider") or ""
             else:
+                reviewer, opposite = self._reviewer_context(st, step.get("ticket") or "")
                 other_model = opposite.get("model") or reviewer.get("reviewerModel") or ""
                 other_provider = opposite.get("provider") or reviewer.get("reviewerProvider") or ""
             # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
@@ -3229,18 +3240,12 @@ class FlowEngine(PlanEditing):
     def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
         item, project = self._project(card)
         ticket = source["ticket"]
-        assigned = st.assignments.get(ticket) or st.started or {}
-        override = st.reviewer_overrides.get(ticket) or {}
-        assigned = {**assigned, **override}
+        assigned, previous = self._reviewer_context(st, ticket)
         info = ticket_of(st, ticket)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-reviewer", f"{card}: katalog recenzentów jest niedostępny")
-        previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
-                         s.get("kind") == "review"), {})
-        if override and override.get("seq", 0) > previous.get("seq", 0):
-            previous = {}
         try:
             reviewer_name = previous.get("executor") or assigned.get("reviewer") or ""
             reviewer = execution.resolve(reviewer_name, catalog, config=cfg,

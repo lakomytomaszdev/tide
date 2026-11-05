@@ -270,6 +270,83 @@ class DecisionActionsTest(EngineOnJournal):
                 self.assertFalse(st.open_intents(include_background=True))
                 self.assertEqual(len([e for e in self.journal.read("K-1") if e["type"] == "step.decision"]), 1)
 
+    def reviewer_history(self, review, reassigned, *, newer_override, preferred="anthropic"):
+        self.reset_scenario()
+        self.add("K-1", "ticket.assigned", ticket="PT-7", executor="Sonnet", model="sonnet",
+                 provider="anthropic", preferredProvider=preferred, reviewer="Opus",
+                 reviewerModel="opus", reviewerProvider="anthropic")
+        catalog = self.engine.catalog()
+
+        def history():
+            executor = catalog.get(review)
+            self.add("K-1", "step.started", step="past-review", kind="review", ticket="PT-7", round=1,
+                     executor=executor.name, model=executor.model, provider=executor.provider,
+                     program=executor.program, effort=executor.effort)
+            self.add("K-1", "step.finished", step="past-review", result="done")
+
+        def reassign():
+            executor = catalog.get(reassigned)
+            self.add("K-1", "reviewer.reassigned", ticket="PT-7", reviewer=executor.name,
+                     reviewerModel=executor.model, reviewerProvider=executor.provider,
+                     reviewerProgram=executor.program, reviewerEffort=executor.effort)
+
+        if newer_override:
+            history()
+            reassign()
+        else:
+            reassign()
+            history()
+        self.target(result="error", kind="fix")
+
+    def test_change_executor_rejects_the_current_reviewers_model_and_mixed_provider(self):
+        cases = [("Opus", "Haiku", True, "Haiku", "anthropic", "bad-executor"),
+                 ("Opus", "Codex mocny", True, "Codex lekki", "mixed", "bad-executor-provider"),
+                 ("Haiku", "Opus", False, "Haiku", "anthropic", "bad-executor"),
+                 ("Codex mocny", "Opus", False, "Codex lekki", "mixed", "bad-executor-provider")]
+        for review, reassigned, newer, executor, preferred, code in cases:
+            with self.subTest(review=review, reassigned=reassigned, newer_override=newer, code=code):
+                self.reviewer_history(review, reassigned, newer_override=newer, preferred=preferred)
+                before = self.state().steps.copy()
+                st, outcome = self.act(self.caretaker_run(), "change-executor", step="target",
+                                       executor=executor, reason="Zmiana po błędzie poprawek.")
+                self.assertFalse(outcome["ok"], outcome)
+                self.assertEqual(outcome["code"], code)
+                self.assertEqual(st.steps, before)
+                self.assertEqual(st.step_decisions, {})
+                self.assertEqual(caretaker.owned(st, outcome["problem"])["count"], 1)
+                self.assertFalse(st.open_intents(include_background=True))
+
+    def test_change_executor_can_use_the_obsolete_reviewers_model(self):
+        for newer in (True, False):
+            with self.subTest(newer_override=newer):
+                self.reviewer_history("Haiku" if newer else "Codex mocny",
+                                      "Codex mocny" if newer else "Haiku",
+                                      newer_override=newer, preferred="mixed")
+                st, outcome = self.act(self.caretaker_run(), "change-executor", step="target",
+                                       executor="Haiku", reason="Obecny recenzent jest u innego dostawcy.")
+                self.assertTrue(outcome["ok"], outcome)
+                self.assertEqual(st.step_decisions["target"]["executor"], "Haiku")
+
+    def test_review_launch_uses_the_same_event_order_as_executor_validation(self):
+        for newer, expected in ((True, "Codex mocny"), (False, "Haiku")):
+            with self.subTest(newer_override=newer):
+                self.reviewer_history("Haiku", "Codex mocny", newer_override=newer, preferred="mixed")
+                self.add("K-1", "step.finished", step="target", result="done")
+                st = self.state()
+                with mock.patch.object(self.engine, "_project", return_value=(mock.Mock(), mock.Mock(repo=self.base))), \
+                        mock.patch.object(self.engine.git, "clean_tip", return_value="tip"), \
+                        mock.patch.object(self.engine.git, "review_diff", return_value="diff"), \
+                        mock.patch.object(self.engine, "_ticket_text", return_value=("Tytuł", "Opis")), \
+                        mock.patch.object(self.engine, "_note", return_value="Notka."), \
+                        mock.patch.object(self.engine, "_rules", return_value="Zasady."), \
+                        mock.patch.object(self.engine, "_launch") as launch:
+                    self.engine._review("K-1", st, st.steps["target"], 2)
+                launch.assert_called_once()
+                reviewer = launch.call_args.args[2]
+                entry = self.engine.catalog().get(expected)
+                self.assertEqual((reviewer.name, reviewer.model, reviewer.provider),
+                                 (entry.name, entry.model, entry.provider))
+
 
 class DecisionFlowTest(FlowInProcess):
     def setUp(self):
