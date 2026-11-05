@@ -257,6 +257,69 @@ class BaseContextTest(StartBaseSetup):
         review = next(s for s in self.of(self.ident, "step.started") if s["kind"] == "plan-review")
         self.assertEqual((review["baseCommit"], review["baseVersion"]), (self.feature_sha, 2))
 
+    def test_empty_full_planning_restarts_with_current_context_and_note(self):
+        from .test_cardflow_full_planning import _Terminal
+
+        self.ident = self.card(description="Planowanie bez zmian")
+        engine = self.flow.engine
+        terminal = _Terminal()
+        engine.terminal = terminal
+        reply = self.start(self.ident, entry="planning", mode="full")
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(reply["interactive"])
+        old = self.of(self.ident, "step.started")[0]
+        old_prompt = Path(old["stepDir"], "in/prompt.txt").read_text()
+        # Zakończona rozmowa bez wkładu; dowód nieaktywnego procesu Konsoli.
+        Path(old["stepDir"], "in/console-process.json").write_text(json.dumps({
+            "launcher": {"pid": 99999999, "start": "0", "boot": "previous-boot"}}))
+        Path(old["stepDir"], "in/console-closed.json").write_text("{}")
+        Path(old["stepDir"], "out/result.json").write_text(json.dumps({
+            "result": "question", "question": "Jaki format?"}))
+        engine.tick()
+        self.assertEqual(self.of(self.ident, "step.finished")[-1]["result"], "question")
+        self.assertFalse(fold(self.events(self.ident)).running())
+        self.assertEqual(git(old["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.assertEqual(git(old["worktree"], "status", "--porcelain"), "")
+        self.assertFalse(self.of(self.ident, "plan.proposed"))
+        self.change()
+        self.restart()
+        engine = self.flow.engine
+        engine.terminal = terminal
+        with mock.patch.object(engine.git, "branch_worktree", side_effect=AssertionError("ponowna aktywacja")):
+            engine.tick()
+        steps = self.of(self.ident, "step.started")
+        self.assertEqual(len(steps), 2)
+        new = steps[-1]
+        for key in ("step", "stepDir", "session", "worktree"):
+            self.assertNotEqual(new[key], old[key], key)
+        self.assertEqual((new.get("baseRef"), new.get("baseCommit"), new.get("baseVersion")),
+                         ("refs/heads/feature/start", self.feature_sha, 2))
+        self.assertEqual(git(new["worktree"], "rev-parse", "HEAD").strip(), self.feature_sha)
+        self.assertEqual(len(terminal.opened), 2)
+        task = json.loads(Path(terminal.opened[-1].task_file).read_text())
+        prompt = Path(new["stepDir"], "in/prompt.txt").read_text()
+        self.assertEqual(task["workdir"], new["worktree"])
+        self.assertEqual(task["argv"][-1], prompt)
+        self.assertNotIn("--resume", task["argv"])
+        self.assertIn(new["session"], task["argv"])
+        self.assertIn("Notka korekty bazy", prompt)
+        self.assertIn("Wersja bazy karty: 2", prompt)
+        self.assertIn(self.feature_sha, prompt)
+        self.assertEqual(Path(old["stepDir"], "in/prompt.txt").read_text(), old_prompt)
+        self.assertEqual(git(old["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.assert_base(self.ident, "refs/heads/feature/start", self.feature_sha, version=2)
+        flow = self.shown(self.ident)["derived"]["flow"]
+        shown = next(s for s in flow["steps"] if s["id"] == new["step"])
+        self.assertEqual(shown["baseVersion"], 2)
+        self.assertTrue(any(h["old"] and h.get("step") == old["step"] for h in flow["history"]))
+        self.restart()
+        self.flow.engine.terminal = terminal
+        self.flow.engine.tick()
+        self.flow.engine.tick()
+        self.assertEqual(self.of(self.ident, "step.started"), steps)
+        self.assertEqual(len(terminal.opened), 2)
+        self.assertEqual(len(self.of(self.ident, "card.base-changed")), 1)
+
     def test_even_empty_commit_or_merge_is_refused(self):
         for merge in (False, True):
             with self.subTest(merge=merge):

@@ -1033,9 +1033,11 @@ class FlowEngine(PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip=""):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
-        if baseproposal.blocked(fold(self.journal.read(item.id))):
+        context_state = fold(self.journal.read(item.id))
+        if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
-        prompt += baseproposal.context(base_of(fold(self.journal.read(item.id))))
+        context_prompt, base_context = self._step_base_context(context_state)
+        prompt += context_prompt
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
@@ -1101,7 +1103,7 @@ class FlowEngine(PlanEditing):
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip)
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip, **base_context)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -1716,6 +1718,18 @@ class FlowEngine(PlanEditing):
             name = step.get("parentStep") or ""
         return found
 
+    @staticmethod
+    def _step_base_context(st) -> tuple[str, dict]:
+        """Ten sam kontekst generacji w poleceniu i metadanych kroku w tle oraz Konsoli."""
+        prompt = baseproposal.context(base_of(st))
+        prompt += f"\nWersja bazy karty: {st.base_version}\n"
+        if st.base_change:
+            prompt += ("\nNotka korekty bazy: uruchomiono nową sesję na nowej pustej generacji. "
+                       "Poprzednie review, zgody i domknięcie są historyczne. Sprawdź bieżący kod "
+                       "i wykonaj wymagane testy; wynik pracy przejdzie zwykłe review.\n")
+        return prompt, {"baseVersion": st.base_version, "baseRef": st.base.get("baseRef", ""),
+                        "baseCommit": st.base.get("baseCommit", "")}
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
@@ -1731,13 +1745,8 @@ class FlowEngine(PlanEditing):
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
-        context_state = fold(self.journal.read(card.id))
-        prompt += baseproposal.context(base_of(context_state))
-        prompt += f"\nWersja bazy karty: {context_state.base_version}\n"
-        if context_state.base_change:
-            prompt += ("\nNotka korekty bazy: uruchomiono nową sesję na nowej pustej generacji. "
-                       "Poprzednie review, zgody i domknięcie są historyczne. Sprawdź bieżący kod "
-                       "i wykonaj wymagane testy; wynik pracy przejdzie zwykłe review.\n")
+        context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
+        prompt += context_prompt
         read_dirs, context_dirs = [], []
         order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
                  if kind in ("planning", "plan-fix") else [])
@@ -1838,10 +1847,7 @@ class FlowEngine(PlanEditing):
                               routeKind=selected.route.kind if selected.route else "",
                               routeTokenFile=selected.route.token_file if selected.route else "",
                               local=selected.local, branch=made_ticket["branch"],
-                              baseVersion=context_state.base_version,
-                              baseRef=context_state.base.get("baseRef", ""),
-                              baseCommit=context_state.base.get("baseCommit", ""),
-                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
+                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt, **base_context)
         except (agentcmd.StepError, OSError) as exc:
             self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
@@ -1855,9 +1861,7 @@ class FlowEngine(PlanEditing):
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
-                                   repo=project.repo, baseVersion=context_state.base_version,
-                                   baseRef=context_state.base.get("baseRef", ""),
-                                   baseCommit=context_state.base.get("baseCommit", ""))
+                                   repo=project.repo, **base_context)
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
