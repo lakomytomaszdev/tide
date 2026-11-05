@@ -1829,6 +1829,9 @@ Dwa wyzwalacze bez kroku-sprawcy i bez decyzji (`caretaker.started` z pustym `ta
   ticketu — w katalogu karty. Błąd znika, gdy rusza krok jego etapu (`step.started`) albo etap wykona się bez błędu
   w zwykłym przebiegu lub po ponowieniu (`flow.error-cleared` z `stage`; udany `result` akcji `plan-commit`
   zdejmuje błąd commita bez startu kroku). Rozwiązanie jednego etapu nie zdejmuje błędów innych ticketów.
+  Pominięte domknięcie (np. trwa krok opiekuna) nie kasuje błędu `close`. Commit planu odbywa się raz na przebieg,
+  przed startem kolejnych ticketów; jego awaria ma wyłącznie etap `plan-commit`, także po zakończonym planowaniu.
+  Zwykły przebieg zapisuje również końcowy stan zakończonego planu.
 - **`stalled`** (wyzwalacz 5) — karta stoi (`card.stalled`: 3 minuty bez kroku, akcji i nazwanego powodu czekania)
   i nadal nie ma nazwanego powodu (`guard_reason` liczony bez pracy opiekuna: jego kroku, czekania na slot i par
   „zamiar → wynik”). Limit, slot dostawcy, wstrzymanie, decyzja, plan do zatwierdzenia, trwający krok albo zaczęta

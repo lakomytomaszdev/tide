@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tide_daemon.cardflow import caretaker
+from tide_daemon.cardflow import caretaker, execution
 from tide_daemon.cardflow.engine import FlowEngine
 from tide_daemon.cardflow.gitops import FlowGitError
 from tide_daemon.cardflow.state import derived, fold, guard_reason
@@ -389,6 +389,7 @@ class StageObservationTest(unittest.TestCase):
     def test_successful_normal_plan_commit_makes_late_retry_stale_without_spending_limit(self):
         self.j.add("result", action="card-branch", key="K-1", ok=True, branch="card/k-1", worktree="/w")
         self.j.add("plan.approved", rows=[])
+        self.real_plan_next()
         self.engine.git.commit_plan.side_effect = FlowGitError("chwilowy błąd commita")
         for now in (100.0, 111.0):
             self.engine.clock.return_value = now
@@ -418,6 +419,96 @@ class StageObservationTest(unittest.TestCase):
         self.failing_pair(same_text=True)
         self.j.add("flow.error-cleared", stage="advance:PT-8", error="OSError: Permission denied")
         self.assertEqual(ids(self.j), [FLOW_PROBLEM])
+
+    def observe_pass(self, now):
+        self.engine.clock.return_value = now
+        found = self.engine._advance_card("K-1")
+        for item in found:
+            self.engine._flow_error("K-1", item)
+        return found
+
+    def real_plan_next(self):
+        self.engine._plan_next = FlowEngine._plan_next.__get__(self.engine)
+        self.engine._project = mock.Mock(return_value=(SimpleNamespace(title="Plan"), SimpleNamespace(repo="/r")))
+        self.engine.git.main_branch.return_value = "master"
+        self.engine.git.branch_worktree.return_value = {"branch": "card/k-1-plan", "worktree": "/w"}
+
+    def test_finished_plan_is_still_committed_without_starting_another_ticket(self):
+        self.j.add("plan.approved", rows=[{"id": "PT-7", "title": "Ticket", "blockers": []}])
+        self.j.add("result", action="merge", key="PT-7", ok=True)
+        self.j.add("plan.finished", merged=1, rejected=0)
+        self.real_plan_next()
+        self.assertEqual(self.observe_pass(100.0), [])
+        self.engine.git.commit_plan.assert_called_once()
+        self.assertFalse(any(e["type"] == "step.started" for e in self.j.events))
+        self.assertEqual(self.observe_pass(111.0), [])
+        self.engine.git.commit_plan.assert_called_once()
+
+    def test_real_close_error_survives_caretaker_work_and_retries_reach_limit(self):
+        done_step(self.j)
+        self.j.add("result", action="merge", key="PT-7", ok=True)
+        self.j.add("result", action="cleanup", key="PT-7", ok=True)
+        self.j.add("result", action="card-branch", key="K-1", ok=True, branch="card/k-1", worktree="/w")
+        self.engine._advance_close = FlowEngine._advance_close.__get__(self.engine)
+        self.engine._project = mock.Mock(return_value=(SimpleNamespace(), SimpleNamespace()))
+        self.engine.models_config = None
+        self.engine.catalog = mock.Mock(return_value={"Opus": {}})
+        self.engine.model_probe = self.engine.which = None
+        with mock.patch.object(execution, "resolve", side_effect=execution.ExecutionError(
+                "unknown-executor", "wykonawca domknięcia został usunięty")) as resolve:
+            for now in (100.0, 111.0):
+                self.assertEqual([f["stage"] for f in self.observe_pass(now)], ["close"])
+            self.assertEqual(ids(self.j), ["flow-error:close"])
+            for n in range(1, 4):
+                run = care(self.j, "flow-error:close", "flow-error", step=f"K-1-care-{n}", n=n)
+                self.j.add("step.started", step=run["step"], kind="caretaker", ticket="", executor="Opus")
+                before = resolve.call_count
+                self.assertEqual(self.observe_pass(111.0 + n), [])
+                self.assertEqual(resolve.call_count, before, "domknięcie pominięte, a nie naprawione")
+                self.assertEqual(ids(self.j), ["flow-error:close"])
+                self.assertFalse(any(e["type"] == "flow.error-cleared" for e in self.j.events))
+                self.j.add("step.finished", step=run["step"], ticket="", result="done")
+                self.engine._caretaker_act("K-1", run, "retry-stage", {})
+                self.assertEqual(resolve.call_count, before + 1, "jedna próba domknięcia na akcję")
+                action = self.j.st.caretaker_outcomes[run["step"]]
+                self.assertEqual((action["ok"], action["code"]), (False, caretaker.STAGE_FAILED))
+                self.assertEqual(caretaker.owned(self.j.st, "flow-error:close")["count"], n)
+            self.engine._caretake("K-1", self.j.st)
+            self.engine._caretake("K-1", self.j.st)
+            self.engine._caretaker_launch.assert_not_called()
+            self.assertTrue(caretaker.owned(self.j.st, "flow-error:close")["handed"])
+
+    def test_real_plan_next_has_one_commit_attempt_and_one_problem_until_limit(self):
+        # Zakończone planowanie też przechodzi przez rzeczywiste `_advance`; dawniej wołało `_plan_next`
+        # przed jego wywołaniem w `_advance_card` i przed końcowym, trzecim miejscem commita planu.
+        done_step(self.j, name="K-1-plan", ticket="")
+        self.j.events[-2]["kind"] = "planning"
+        self.j.add("plan.approved", rows=[{"id": "PT-7", "title": "Ticket", "blockers": []}])
+        self.real_plan_next()
+        self.engine._advance = FlowEngine._advance.__get__(self.engine)
+        for name in ("_advance_limit", "_advance_plan_review", "_advance_planning", "_caretaker_resume"):
+            setattr(self.engine, name, mock.Mock(return_value=False))
+        self.engine.git.commit_plan.side_effect = FlowGitError("chwilowy błąd commita")
+        for now in (100.0, 111.0):
+            self.engine.git.commit_plan.reset_mock()
+            found = self.observe_pass(now)
+            with self.subTest(now=now):
+                self.assertEqual([f["stage"] for f in found], ["plan-commit"])
+                self.assertEqual(self.engine.git.commit_plan.call_count, 1)
+        self.assertEqual(ids(self.j), ["flow-error:plan-commit"])
+        for n in range(1, 4):
+            run = care(self.j, "flow-error:plan-commit", "flow-error", step=f"K-1-care-{n}", n=n)
+            self.engine.git.commit_plan.reset_mock()
+            self.engine._caretaker_act("K-1", run, "retry-stage", {})
+            self.assertEqual(self.engine.git.commit_plan.call_count, 1)
+            action = self.j.st.caretaker_outcomes[run["step"]]
+            self.assertEqual((action["ok"], action["code"]), (False, caretaker.STAGE_FAILED))
+            self.assertEqual(caretaker.owned(self.j.st, "flow-error:plan-commit")["count"], n)
+            self.assertEqual(ids(self.j), ["flow-error:plan-commit"])
+        self.engine._caretake("K-1", self.j.st)
+        self.engine._caretake("K-1", self.j.st)
+        self.engine._caretaker_launch.assert_not_called()
+        self.assertTrue(caretaker.owned(self.j.st, "flow-error:plan-commit")["handed"])
 
 
 class StageEngineTest(FlowInProcess):

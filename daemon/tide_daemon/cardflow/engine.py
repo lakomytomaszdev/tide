@@ -1938,7 +1938,7 @@ class FlowEngine(PlanEditing):
         self._caretake(card, fold(self.journal.read(card)))
 
     def _advance_card(self, card: str, *, own: tuple | None = None) -> list[dict]:
-        """Przebieg etapów karty: ostatnie kroki ticketów, kolejny ticket planu, domknięcie karty i commit planu.
+        """Przebieg etapów karty: ostatnie kroki ticketów, commit planu i kolejne tickety, domknięcie karty.
         Zwraca błędy Tide z tego przebiegu (`{error, stage, step, ticket}`), nie zapisuje ich — zapisuje
         `_flow_error` w zwykłym przebiegu, a ponowienie etapu opiekuna (`retry-stage`, PT-147) ocenia nimi swój
         wynik. `own` — para „zamiar → wynik” akcji opiekuna, w której ten przebieg się wykonuje: nie blokuje go
@@ -1992,30 +1992,13 @@ class FlowEngine(PlanEditing):
                     pass
                 except Exception as exc:
                     found.append(self._isolated_fault(card, current, "", exc))
-                self._advance_close(card, fresh())
-                self._clear_flow_error(card, "close", own=own)
+                if self._advance_close(card, fresh()):
+                    self._clear_flow_error(card, "close", own=own)
             except FlowDeferred:
                 pass
             except (FlowError, FlowGitError) as exc:
                 found.append({"error": f"{exc.__class__.__name__}: {exc}", "stage": "close", "step": "",
                               "ticket": ""})
-        st = fresh()
-        if st.plan_approved is not None and not st.card_finished and not st.open_intents() and not any(
-                s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend")
-                and s["step"] not in st.finished for s in st.steps.values()) and not any(
-                s.get("kind") == "conflict" and not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
-                or s.get("kind") == "close" and not st.closed for s in st.steps.values()):
-            info = ticket_of(st)
-            if info["cardBranch"] and info["cardWorktree"]:
-                approved = st.plan_approved
-                key = f"{approved.get('seq')}:{st.plan_change_seq}"
-                previous = st.results.get(("plan-commit", key))
-                if previous is None or not previous.get("ok"):
-                    try:
-                        self._plan_commit(card, st, self._repo(card), info["cardBranch"], info["cardWorktree"])
-                    except (FlowError, FlowGitError) as exc:
-                        found.append({"error": f"{exc.__class__.__name__}: {exc}", "stage": "plan-commit",
-                                      "step": "", "ticket": ""})
         return found
 
     def _isolated_fault(self, card: str, st: FlowState, step_name: str, exc: Exception) -> dict:
@@ -2027,6 +2010,8 @@ class FlowEngine(PlanEditing):
         ticket = step.get("ticket") or ""
         stage = (f"advance:{ticket}" if ticket else "advance") if step_name else \
             "plan-next" if st.plan_approved is not None else "advance"
+        if isinstance(exc, FlowError) and exc.code == "plan-commit":
+            stage, step_name, ticket = "plan-commit", "", ""
         if not isinstance(exc, (FlowError, FlowGitError)):
             print(f"tide-daemon: przepływ karty {card}, krok {step_name or '-'}: "
                   + "".join(traceback.format_exception_only(type(exc), exc)).strip(), flush=True)
@@ -2151,7 +2136,8 @@ class FlowEngine(PlanEditing):
         return True
 
     def _advance(self, card: str, st: FlowState) -> None:
-        """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
+        """Jedna zmiana etapu ticketu: ticket → review → poprawki/review → scalenie i sprzątanie.
+        Start kolejnych ticketów i domknięcie wykonuje wyłącznie `_advance_card`, raz po obsłudze ticketów."""
         if st.open_intents():
             return
         if self._advance_limit(card, st):
@@ -2161,8 +2147,6 @@ class FlowEngine(PlanEditing):
         if self._advance_planning(card, st):
             return
         if not st.last_step:
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
             if st.started and st.started.get("entry") == "now" and st.started.get("executor") and not st.paused:
                 item, project = self._project(card)
                 info = ticket_of(st)
@@ -2180,8 +2164,6 @@ class FlowEngine(PlanEditing):
         result = done.get("result")
         if (step.get("ticket") or "") in st.rejected and result != "done":
             # Odrzucony ticket (także z decyzji o błędzie kroku) nie jest wznawiany ani ponawiany (K-16/LEGAL-75).
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
             return
         if self._caretaker_resume(card, st, step):
             return
@@ -2225,11 +2207,7 @@ class FlowEngine(PlanEditing):
             return
         if result != "done":
             return
-        if step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend"):
-            self._plan_next(card, st)
-            return
-        if step.get("kind") == "close":
-            self._advance_close(card, st)
+        if step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "close"):
             return
         ticket = step.get("ticket") or ""
         if not ticket:
@@ -2237,14 +2215,10 @@ class FlowEngine(PlanEditing):
         if (st.results.get(("cleanup", ticket)) or {}).get("ok"):
             return
         if ticket in st.rejected:
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
             return
         if step.get("kind") == "conflict":
             if (st.results.get(("merge", ticket)) or {}).get("ok"):
                 self._cleanup(card, st, ticket, int(step.get("round") or 1))
-                if st.plan_approved is not None:
-                    self._plan_next(card, fold(self.journal.read(card)))
             return
         if step.get("kind") in ("ticket", "fix"):
             round_no = 1 if step.get("kind") == "ticket" else int(step.get("round") or 0) + 1
@@ -2288,13 +2262,12 @@ class FlowEngine(PlanEditing):
             return
         if merged and merged.get("ok"):
             self._cleanup(card, fold(self.journal.read(card)), ticket, int(step.get("round") or 1))
-            if st.plan_approved is not None:
-                self._plan_next(card, fold(self.journal.read(card)))
 
     def _plan_next(self, card: str, st: FlowState) -> None:
-        """Uruchamia gotowe tickety w granicach slotów, po scaleniu wszystkich ich blokerów."""
+        """Zapisuje aktualny plan i uruchamia gotowe tickety w granicach slotów, po scaleniu ich blokerów.
+        Jedyne miejsce commita planu w przebiegu; zapisuje także końcowy stan po domknięciu."""
         approved = st.plan_approved or {}
-        if not approved or st.plan_finished or st.paused or st.open_intents():
+        if not approved or st.card_finished or st.paused or st.open_intents():
             return
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
@@ -2307,15 +2280,14 @@ class FlowEngine(PlanEditing):
         made = self._act(card, "card-branch", card_branch,
                          lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
                          repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
-        card_work = any(s.get("kind") in ("conflict", "close") and
+        card_work = any(s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend") and
                         (s["step"] not in st.finished or
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
         if not card_work:
             self._plan_commit(card, fold(self.journal.read(card)), project.repo, card_branch, card_worktree)
-        if len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
-            self._advance_close(card, st)
+        if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
             return
         for row in rows:
             ticket = row["id"]
@@ -4590,32 +4562,33 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "card.finished", column="done")
         return {"ok": True, "id": card, "main": main, "already": bool(st.main_merged)}
 
-    def _advance_close(self, card: str, st: FlowState) -> None:
-        """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
+    def _advance_close(self, card: str, st: FlowState) -> bool:
+        """Po ostatnim tickecie tworzy podsumowanie; True tylko po wykonaniu etapu, False przy pominięciu.
+        Sam brak wyjątku przy pominięciu (np. trwa opiekun) nie oznacza rozwiązania błędu domknięcia."""
         if (st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or
                 st.moved_to == "todo" or st.open_intents()):
-            return
+            return False
         if st.plan_approved:
             rows = st.plan_approved.get("rows") or []
             if not rows or not all((st.results.get(("merge", row["id"])) or {}).get("ok") or
                                    row["id"] in st.rejected or row["id"] in st.imported_done for row in rows):
-                return
+                return False
             if any(row["id"] not in st.rejected and row["id"] not in st.imported_done and
                    not (st.results.get(("cleanup", row["id"])) or {}).get("ok") for row in rows):
-                return
+                return False
             tickets = [{"id": row["id"], "state": "odrzucone" if row["id"] in st.rejected else "gotowe"}
                        for row in rows]
             executor = (st.plan_proposed or {}).get("planner") or rows[0]["executor"]
         elif st.started.get("entry") == "now":
             ticket = next((s.get("ticket") for s in st.steps.values() if s.get("kind") == "ticket"), "")
             if not ticket or not ((st.results.get(("merge", ticket)) or {}).get("ok") or ticket in st.rejected):
-                return
+                return False
             if ticket not in st.rejected and not (st.results.get(("cleanup", ticket)) or {}).get("ok"):
-                return
+                return False
             tickets = [{"id": ticket, "state": "odrzucone" if ticket in st.rejected else "gotowe"}]
             executor = st.started.get("executor") or ""
         else:
-            return
+            return False
         last_return = max((int(e.get("seq") or 0) for e in self.journal.read(card)
                            if e.get("type") == "plan.returned"), default=0)
         closings = [s for s in st.steps.values() if s.get("kind") == "close" and
@@ -4632,9 +4605,10 @@ class FlowEngine(PlanEditing):
                 if st.plan_approved and not st.plan_finished:
                     self.journal.append(card, "plan.finished", merged=sum(1 for t in tickets if t["state"] == "gotowe"),
                                         rejected=sum(1 for t in tickets if t["state"] == "odrzucone"))
-            return
+                return True
+            return False
         if st.running():
-            return
+            return False
         item, project = self._project(card)
         info = ticket_of(st)
         if not info["cardWorktree"]:
@@ -4655,3 +4629,4 @@ class FlowEngine(PlanEditing):
         self._launch(item, project, selected, "", {"branch": info["cardBranch"]},
                      {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                      step_id, [], kind="close", prompt_text=prompt)
+        return True
