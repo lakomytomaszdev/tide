@@ -1,9 +1,32 @@
 """PT-80/63: bramka review i zdarzenia zmian planu."""
 import json
 import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from . import flowfakes
 from . import test_cardflow_plan_integration as fixtures
 from .test_cardflow import FlowInProcess
 from .privatebus import wait_until
+
+
+class PlanAmendFixtureTest(unittest.TestCase):
+    def test_amending_plan_preserves_started_ticket_body_for_any_tracker_prefix(self):
+        body = "# Rozpoczęty ticket\n- [ ] Wynik.\n"
+        for ticket in ("PT-1", "LOG-1"):
+            with self.subTest(ticket=ticket), tempfile.TemporaryDirectory(prefix="tide-amend-fixture-") as folder:
+                out = os.path.join(folder, "out")
+                row = dict(workId=ticket, title="Ticket", body=body, blockers=[], executor="Sonnet",
+                           reviewer="Opus", note="", **{"class": "standard"})
+                prompt = ("Popraw propozycję planu karty K-1\n"
+                          f"Plik wyniku: {out}/result.json\n"
+                          "Poprzednia propozycja: " + json.dumps({"rows": [row]}))
+                subprocess.run([sys.executable, "-c", flowfakes.CLAUDE, "--session-id", "fixture"],
+                               input=prompt, text=True, capture_output=True, check=True, cwd=folder,
+                               env=dict(os.environ, HOME=folder))
+                with open(os.path.join(out, "tickets", ticket + ".md"), encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), body)
 
 
 class PlanReviewEditingTest(FlowInProcess):
