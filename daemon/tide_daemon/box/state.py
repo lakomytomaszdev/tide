@@ -2,7 +2,7 @@
 
 Dziennik: `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, tylko dopisywanie pod blokadą `flock`).
 Zdarzenie: `v`, `ts`, `type`, `box` (nazwa instancji Incusa) i pola typu; `box.build`, `box.ready`, `box.reset`,
-`box.verify` mają `duration` (sekundy). Stan pudełka wynika z ostatniego zdarzenia, a potem jest korygowany tym,
+`box.stop`, `box.verify` mają `duration` (sekundy). Stan pudełka wynika z ostatniego zdarzenia, a potem jest korygowany tym,
 co mówi Incus (brak instancji, brak filtrowania NIC, hash migawki różny od profilu, zatrzymane).
 
 Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset → zatrzymane`, plus `niezgodne` (karta sieciowa
@@ -32,7 +32,7 @@ FAILED = "błąd budowy"
 
 EVENTS = ("box.build", "box.ready", "box.reset", "box.stop", "box.verify", "box.approved",
           "box.use", "box.release", "box.destroy")
-TIMED = ("box.build", "box.ready", "box.reset", "box.verify")
+TIMED = ("box.build", "box.ready", "box.reset", "box.stop", "box.verify")
 
 RECIPE_KEY = "user.tide.recipe"      # odcisk przepisu (JSON z profile.recipe_stamp) — zapisany w migawce clean
 COPY_OF_KEY = "user.tide.copy-of"    # kopia per karta: nazwa pudełka projektu
@@ -61,7 +61,7 @@ def card_box_name(slug: str, card: str) -> str:
     card_id = str(card).strip().lower()
     if not re.match(r"^k-[1-9][0-9]{0,8}$", card_id):
         raise ValueError(f"niepoprawny identyfikator karty: {card!r}")
-    return f"{box_name(slug)}-{card_id}"[:63]
+    return f"{box_name(slug)[:62 - len(card_id)]}-{card_id}"
 
 
 def home_volume(name: str) -> str:
@@ -149,7 +149,10 @@ def journal_state(slug: str, box: str) -> tuple:
         elif kind == "box.ready":
             state, warning = CLEAN, bool(event.get("warning"))
         elif kind == "box.reset":
-            state = CLEAN if event.get("result", "ok") == "ok" else RESETTING
+            if event.get("removed"):
+                state = ABSENT
+            elif event.get("result") != "deferred":
+                state = CLEAN if event.get("result", "ok") == "ok" else RESETTING
         elif kind == "box.stop":
             state = STOPPED
         elif kind == "box.destroy":

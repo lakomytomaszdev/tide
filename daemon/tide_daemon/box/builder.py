@@ -114,6 +114,16 @@ class Builder:
         self.policy = policy or bproxy.running() or ProxyMissing()
         self.clock, self.wall, self.sleep = clock, wall, sleep
         self.scripts_dir = scripts_dir or SCRIPTS_DIR
+        self.steps_source = None
+
+    def running_steps(self, slug, name):
+        from .lifecycle import active_steps
+        return self.steps_source(slug, name) if self.steps_source else active_steps(self, slug, name)
+
+    def require_idle(self, slug, name):
+        steps = self.running_steps(slug, name)
+        if steps:
+            raise BoxBusy(f"w pudełku {name} biegną kroki: {', '.join(steps)} — operacja odmówiona")
 
     # --- profil i hash ---------------------------------------------------------------------------
 
@@ -144,8 +154,10 @@ class Builder:
             raise BuildError("brak skryptów szablonów stosów (#29): " + ", ".join(f"{s}.sh" for s in missing))
         domains = list(templates.build_domains(full))
         name = bs.box_name(slug)
-        if bs.running_steps(slug, name):
-            raise BoxBusy(f"w pudełku {name} biegną kroki: {', '.join(bs.running_steps(slug, name))}")
+        self.require_idle(slug, name)
+        old = self.incus.instance(name)
+        old_stamp = bs.parse_stamp(((old or {}).get("config") or {}).get(bs.RECIPE_KEY))
+        old_hash = old_stamp.get("hash", "") if isinstance(old_stamp, dict) else old_stamp
 
         started = self.clock()
         bs.record(slug, "box.build", name, self.wall, phase="start")
@@ -163,6 +175,9 @@ class Builder:
         finally:
             self.incus.log = None
         result.duration = round(self.clock() - started, 3)
+        if old_hash and old_hash != result.hash:
+            bs.record(slug, "box.reset", name, self.wall, reason="zmiana przepisu", result="ok",
+                      duration=result.duration)
         bs.record(slug, "box.build", name, self.wall, phase="end", result="ok", steps=steps,
                   duration=result.duration, hash=result.hash)
         return result
@@ -173,7 +188,8 @@ class Builder:
         # 1. kopia obrazu bazowego z limitami z profilu
         steps.append("base")
         res = full["resources"]
-        config = {"limits.cpu": res["cpu"], "limits.memory": res["memory"], "limits.memory.swap": False}
+        from .lifecycle import limits
+        config = limits(full)
         if full["docker"]["enabled"]:
             config["security.nesting"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
@@ -287,17 +303,30 @@ class Builder:
         kopia dostaje własną migawkę `clean` — `reset --card` przywraca ją razem z tymi urządzeniami."""
         source = bs.box_name(slug)
         target = bs.card_box_name(slug, card)
-        if self.incus.instance(target) is not None:
-            return target
+        existing = self.incus.instance(target)
+        reset_started = None
+        if existing is not None:
+            config = existing.get("config") or {}
+            if target == source or config.get(bs.COPY_OF_KEY) != source or config.get(bs.CARD_KEY) != card.upper():
+                raise BuildError(f"{target}: nie jest kopią pudełka karty {card}")
+            if self.incus.config_get(target, bs.RECIPE_KEY) == self.incus.config_get(source, bs.RECIPE_KEY):
+                return target
+            self.require_idle(slug, target)
         snaps = [s.get("name") for s in self.incus.snapshot_list(source)] if self.incus.instance(source) else []
         if bs.SNAPSHOT not in snaps:
             raise BuildError(f"pudełko projektu {source} nie ma migawki {bs.SNAPSHOT} (tide box build {slug})")
+        if existing is not None:
+            reset_started = self.clock()
+            self.incus.delete(target, force=True)
         started = self.clock()
         self.incus.copy(f"{source}/{bs.SNAPSHOT}", target)
         self.incus.config_set(target, {bs.COPY_OF_KEY: source, bs.CARD_KEY: str(card).upper()})
         self._attach_home(target)
         self.apply_nic_filter(target)
         self.incus.snapshot_create(target, bs.SNAPSHOT)
+        if reset_started is not None:
+            bs.record(slug, "box.reset", target, self.wall, reason="zmiana przepisu", result="ok",
+                      duration=round(self.clock() - reset_started, 3))
         stamp = bs.parse_stamp(self.incus.config_get(target, bs.RECIPE_KEY))
         recipe = stamp.get("hash", "") if isinstance(stamp, dict) else (stamp or "")
         _, warning = bs.journal_state(slug, source)     # ostrzeżenie `verify` pudełka projektu przechodzi na kopię
@@ -353,9 +382,7 @@ class Builder:
 
     def reset(self, slug: str, card: str | None = None) -> float:
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
-        steps = bs.running_steps(slug, name)
-        if steps:
-            raise BoxBusy(f"w pudełku {name} biegną kroki: {', '.join(steps)} — reset odmówiony")
+        self.require_idle(slug, name)
         if self.incus.instance(name) is None:
             raise BuildError(f"pudełko {name} nie istnieje")
         started = self.clock()
@@ -370,7 +397,7 @@ class Builder:
         victims = [inst["name"] for inst in self.incus.list()
                    if inst.get("name") == source
                    or (inst.get("config") or {}).get(bs.COPY_OF_KEY) == source]
-        busy = {v: bs.running_steps(slug, v) for v in victims if bs.running_steps(slug, v)}
+        busy = {v: steps for v in victims if (steps := self.running_steps(slug, v))}
         if busy:
             raise BoxBusy("biegną kroki: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in busy.items()))
         victims.sort(key=lambda v: v == source)      # najpierw kopie, potem pudełko projektu

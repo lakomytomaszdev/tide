@@ -1803,6 +1803,7 @@ class FlowEngine(PlanEditing):
                 busy.add(ticket_of(st)["cardWorktree"])
         self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
         self._busy = tuple(sorted(busy))
+        boxstep.lifecycle.tick(self)
 
     def _tick_card(self, card: str, st: FlowState) -> None:
         self._recover_transfer_requests(card, st)

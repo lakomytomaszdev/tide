@@ -1902,6 +1902,7 @@ Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta w
 | `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
 | `docker.enabled` / `docker.images` | bool / lista | |
 | `resources.cpu/memory/disk` | liczba / `24GiB` / `60GB` | domyślnie 8 / 24GiB / 60GB |
+| `resources.swap` | bool | domyślnie false; aktualizowane przy starcie, poza hashem przepisu |
 | `packs`, `accepted_red` | listy | tylko profil karty |
 | `box` | `per-project` \| `per-card` | domyślnie `per-project` |
 | `notes` | napis | |
@@ -2520,14 +2521,15 @@ nie startuje (#18).
 filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
 migawek; migawka po podpięciu wolumenu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
 z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
-Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
+Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę), chyba że przepis projektu został
+przebudowany z nowym hashem — wtedy nieaktywna kopia zostaje odtworzona z nowej migawki.
 Kopia startuje dopiero z pierwszym krokiem (#18/#19).
 
 **Dziennik i stany.** `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, `flock`): `box.build`
 (`phase: start|end`, `result`, `steps`, `hash`), `box.ready`, `box.verify` (`result`, `failed`), `box.reset`,
-`box.stop` (#19), `box.approved` (`source: cli`, `accepted_red`), `box.use`/`box.release` (krok w pudełku — woła
+`box.stop`, `box.approved` (`source: cli`, `accepted_red`), `box.use`/`box.release` (krok w pudełku — woła
 #18 przez `mark_in_use`/`mark_released`) i `box.destroy`. `box.build` (koniec), `box.ready`, `box.reset`,
-`box.verify` mają `duration` w sekundach. Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset →
+`box.stop`, `box.verify` mają `duration` w sekundach. Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset →
 zatrzymane`, plus `niezgodne` i `błąd budowy`. Stan z dziennika jest korygowany przez Incusa: brak instancji →
 `brak`, brak filtrowania → `niezgodne`, hash migawki różny od profilu → `nieaktualny (do przebudowy)` z listą
 kluczy z `profile.diff` (np. `stacks, apt`; zmiana zasobów albo domen nie jest różnicą przepisu), zatrzymana
@@ -2540,13 +2542,36 @@ filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i brak
 | --- | --- |
 | `build <slug>` | budowa jak wyżej |
 | `status <slug> [--card K-38] [--json]` | stan, stan w dzienniku, hash migawki i profilu, różnice, filtrowanie NIC, kroki w pudełku |
-| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
+| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
+| `stop <slug> [--card K-38]` | zatrzymanie przez `incus stop`; kod 3, gdy biegnie krok; zdarzenie `box.stop` z czasem trwania |
+| `start <slug> [--card K-38]` | odczyt limitów z profilu, `incus start`, oczekiwanie na `incus exec … true`; zdarzenie `box.ready` z czasem trwania |
 | `destroy <slug> --yes` | usuwa pudełko i wszystkie kopie per karta (`user.tide.copy-of`) z ich wolumenami `/home/agent`; odmawia, gdy biegnie krok |
 | `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
 | `base` | buduje obraz bazowy Tide (`make box-base`) — niżej, „Obraz bazowy Tide” |
 | `login [<slug>]` | logowanie agentów bez K3 (K1) w pudełku projektu; przy K3 dla obu programów — „nic do zalogowania” |
 
-`stop`/`start` doda #19, `run` — #28.
+`run` doda #28. Tekstowy `status` pokazuje także czasy zdarzeń `box.stop` i `box.reset`; kontrakt JSON
+`BoxStatus` pozostaje bez zmian (K-36).
+
+**Cykl życia (PT-182, D14).** `box/lifecycle.py` obsługuje auto-stop po `box.idle-hours` bez kroku
+(ustawienie usługi w sekcji `box` pliku `cardflow.json`, domyślnie 4 godziny). Sprawdzenie biegnie w `tick`
+silnika przy włączonym `box.enabled`. Liczy się ostatnie użycie/zwolnienie/start pudełka; sam stary czas
+zdarzenia nie pozwala zatrzymać pudełka. Rezerwacje `box.use`, `procs` i stan jednostek
+`systemctl --user is-active` wewnątrz pudełka blokują stop, reset i przebudowę. Po restarcie usługi stan
+jednostek pochodzi z trwałych wpisów kroków; nieznany stan również blokuje operację. CLI sprawdza te same
+dzienniki i jednostki. Krok trwający dłużej niż limit bezczynności nie zostaje zatrzymany.
+
+Przy każdym starcie istniejącego pudełka limity są odświeżane przez `incus config set`: `limits.cpu`
+z `resources.cpu`, `limits.memory` z `resources.memory`, `limits.memory.swap` z opcjonalnego
+`resources.swap` (bool, domyślnie false). Zmiana tych wartości nie zmienia hasha przepisu i nie wymaga
+przebudowy. Start nie usuwa ani nie wyłącza filtrowania NIC.
+
+Pudełko projektu resetuje się na żądanie użytkownika lub przy jawnej przebudowie zmienionego przepisu
+(`box.reset`, powód `zmiana przepisu`). Bezczynność i domknięcie karty nie resetują pudełka projektu.
+Po `card.closed` usługa usuwa wyłącznie kopię karty wyliczoną przez `card_box_name` i potwierdzoną
+metadanymi `user.tide.copy-of` oraz `user.tide.card`, wraz z jej wolumenem domowym. Zapisuje `box.reset`
+z powodem `karta domknięta`, `removed: true` i `duration`. Gdy kopia ma aktywny krok, zapisuje
+`result: deferred` i ponawia sprzątanie w kolejnych przebiegach, także po restarcie usługi.
 
 **Testy bez Incusa.** `daemon/tests/fakebin.py` ma atrapę `incus` (`daemon/tests/fake_incus.py`): zapisuje argv
 w `$TIDE_FAKE_LOG`, trzyma stan w `$TIDE_FAKE_INCUS_STATE` (`list`, `snapshot list`, `config show`,

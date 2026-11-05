@@ -70,7 +70,7 @@ class SchemaTest(unittest.TestCase):
 
     def test_defaults_for_resources(self):
         full = bp.with_defaults(bp.validate(card()))
-        self.assertEqual(full["resources"], {"cpu": 8, "memory": "24GiB", "disk": "60GB"})
+        self.assertEqual(full["resources"], {"cpu": 8, "memory": "24GiB", "disk": "60GB", "swap": False})
         self.assertEqual(full["type"], "container")
         self.assertEqual(full["box"], "per-project")
 
@@ -277,7 +277,7 @@ class HashTest(unittest.TestCase):
         schema = {"tide-box", "project", "type", "base", "stacks", "node", "dotnet", "apt", "setup",
                   "network.domains", "network.host-ollama", "network.full", "network.full-consent",
                   "ports.pool", "ports.env", "docker.enabled", "docker.images",
-                  "resources.cpu", "resources.memory", "resources.disk", "verify", "packs", "box", "notes",
+                  "resources.cpu", "resources.memory", "resources.disk", "resources.swap", "verify", "packs", "box", "notes",
                   "accepted_red"}
         self.assertEqual(set(bp.HASH_KEYS) | set(bp.NON_HASH_KEYS), schema)
         self.assertFalse(set(bp.HASH_KEYS) & set(bp.NON_HASH_KEYS))

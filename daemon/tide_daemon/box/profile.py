@@ -29,7 +29,7 @@ GREEN, YELLOW, RED = "green", "yellow", "red"
 BOX_KINDS = ("per-project", "per-card")
 TYPES = ("container", "vm")
 
-DEFAULT_RESOURCES = {"cpu": 8, "memory": "24GiB", "disk": "60GB"}
+DEFAULT_RESOURCES = {"cpu": 8, "memory": "24GiB", "disk": "60GB", "swap": False}
 
 # Klucze, których zmiana zmienia obraz pudełka, więc wchodzą do hasha przepisu. Reszta (resources,
 # ports, network.*, verify, packs, box, notes, project) jest czytana przy starcie albo po budowie.
@@ -37,7 +37,7 @@ HASH_KEYS = ("type", "base", "stacks", "node", "dotnet", "apt", "setup", "docker
 # Klucze celowo poza hashem — test sprawdza, że lista razem z HASH_KEYS pokrywa cały schemat.
 NON_HASH_KEYS = ("tide-box", "project", "network.domains", "network.host-ollama", "network.full",
                  "network.full-consent", "ports.pool", "ports.env", "resources.cpu", "resources.memory",
-                 "resources.disk", "verify", "packs", "box", "notes", "accepted_red")
+                 "resources.disk", "resources.swap", "verify", "packs", "box", "notes", "accepted_red")
 
 KEY_ORDER = ("tide-box", "project", "type", "base", "stacks", "node", "dotnet", "apt", "setup", "network",
              "ports", "docker", "resources", "verify", "packs", "box", "notes", "accepted_red")
@@ -354,8 +354,10 @@ def validate(raw, scope: str = "project") -> dict:
         out["docker"] = clean
 
     if "resources" in raw:
-        res = _check_map(raw["resources"], {"cpu", "memory", "disk"}, "resources", errors)
+        res = _check_map(raw["resources"], {"cpu", "memory", "disk", "swap"}, "resources", errors)
         clean = {}
+        if "swap" in res:
+            clean["swap"] = _bool(res["swap"], "resources.swap", errors)
         if "cpu" in res:
             if isinstance(res["cpu"], bool) or not isinstance(res["cpu"], int) or not 1 <= res["cpu"] <= 256:
                 errors.append("resources.cpu: oczekiwano liczby całkowitej 1–256")
