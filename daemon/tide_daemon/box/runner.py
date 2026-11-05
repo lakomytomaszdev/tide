@@ -372,7 +372,8 @@ class BoxRunner:
 
     def wait_user_manager(self, box: str = "") -> None:
         """Po (re)starcie pudełka `systemd-run --user` działa dopiero, gdy wstanie menedżer usług użytkownika `agent`
-        (lingering) — wcześniej „Failed to connect to bus” i kod 1 klienta `incus exec` (próba ręczna PT-169)."""
+        (lingering); wcześniej grozi „Failed to connect to bus” i kod 1 klienta `incus exec`. Zabezpieczenie: w próbie
+        ręcznej PT-169 menedżer wstawał ~2 s po starcie pudełka."""
         box = box or self.box
         deadline = time.monotonic() + max(1.0, float(self.settings.ip_wait_seconds))
         while self._systemctl(box, "show-environment") != 0:
@@ -500,19 +501,27 @@ def _stop_client(proc, grace: float) -> bool:
 
 # ------------------------------------------------------------ tryb próbny (ręcznie, poza piaskownicą)
 
-def _demo(argv: list) -> int:
+def demo_args(argv: list):
+    """(opcje, polecenie): opcje przed `--`, polecenie po nim. Bez `nargs=REMAINDER` — ten połykał opcje po slugu
+    (`--push-tide-step` trafiało do polecenia, próba ręczna PT-169, rundy 1–2)."""
     parser = argparse.ArgumentParser(prog="python3 -m tide_daemon.box.runner --demo",
                                      description="Uruchamia polecenie w pudełku projektu tak jak krok (BoxRunner).")
     parser.add_argument("slug")
-    parser.add_argument("command", nargs=argparse.REMAINDER)
     parser.add_argument("--worktree", default=os.getcwd(), help="worktree w <repo>-worktrees (domyślnie bieżący)")
     parser.add_argument("--card", default="", help="kopia pudełka karty (box: per-card)")
     parser.add_argument("--push-tide-step", action="store_true",
                         help="wgraj tide-step do pudełka (/opt/tide/tide-step) — pudełko prototypowe bez obrazu #16")
-    args = parser.parse_args(argv)
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if "--" not in argv:
+        parser.error("polecenie po `--`: --demo <slug> [opcje] -- <polecenie>")
+    cut = argv.index("--")
+    args, command = parser.parse_args(argv[:cut]), list(argv[cut + 1:])
     if not command:
-        parser.error("brak polecenia")
+        parser.error("brak polecenia po `--`")
+    return args, command
+
+
+def _demo(argv: list) -> int:
+    args, command = demo_args(argv)
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
     common = subprocess.run(["git", "-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"],

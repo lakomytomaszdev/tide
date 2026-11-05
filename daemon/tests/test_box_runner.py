@@ -510,6 +510,23 @@ class EndToEndTest(BoxRunnerCase):
         self.assertFalse([line for line in calls(self.env) if MARKER in line])
 
 
+class DemoArgsTest(unittest.TestCase):
+    def test_options_after_slug_are_not_swallowed_by_the_command(self):
+        """Próba ręczna PT-169: `--push-tide-step` po slugu trafiało do polecenia, a krok szukał
+        /usr/local/bin/tide-step."""
+        args, command = br.demo_args(["tide-proto", "--worktree", "/w", "--push-tide-step", "--card", "K-38",
+                                      "--", "/bin/sh", "-c", "echo --worktree"])
+        self.assertEqual((args.slug, args.worktree, args.push_tide_step, args.card),
+                         ("tide-proto", "/w", True, "K-38"))
+        self.assertEqual(command, ["/bin/sh", "-c", "echo --worktree"])
+
+    def test_command_is_required_after_double_dash(self):
+        with mock.patch("sys.stderr"):
+            for argv in (["tide-proto", "true"], ["tide-proto", "--"]):
+                with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                    br.demo_args(argv)
+
+
 class TideStepTest(unittest.TestCase):
     """`tide-step` lokalnie, bez Incusa."""
 

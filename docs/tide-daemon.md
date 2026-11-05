@@ -2707,7 +2707,8 @@ Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "
 dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dodania i startuje z powrotem — a gdy według
 dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Po takim restarcie runner czeka (najwyżej
 `box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
-bo `systemd-run --user` tuż po starcie kończy się kodem 1 (próba ręczna PT-169); bez menedżera krok jest odmówiony. Worktree spoza `<repo>-worktrees` → odmowa. Źródło
+bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
+menedżera krok jest odmówiony. Worktree spoza `<repo>-worktrees` → odmowa. Źródło
 równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
 poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Kopia karty dostaje urządzenia
 we własnej konfiguracji, pudełko projektu zostaje bez zmian.
