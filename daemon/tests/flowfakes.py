@@ -386,7 +386,7 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("error", reason="awaria testowa")
 elif word == "blad-opiekun":
     # PT-143: błąd po każdej próbie z powodem z linii „ATRAPA-POWOD: …” (tam też polecenie dla atrapy opiekuna).
-    if "Użytkownik zatwierdził różnicę planu po odesłaniu przez opiekuna" in prompt:
+    if "Użytkownik rozstrzygnął poprawę planu po odesłaniu przez opiekuna" in prompt:
         # PT-155: wznowiony autor rzeczywiście korzysta z nowej pracy dostępnej w gałęzi karty.
         branch = re.search(r"Uwzględnij zmiany z gałęzi karty (\S+) w bieżącym worktree", prompt).group(1)
         migrated = subprocess.check_output(["git", "show", branch + ":MIGRACJA.txt"], text=True)
