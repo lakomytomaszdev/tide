@@ -148,6 +148,23 @@ class CardOpenTest(unittest.TestCase):
                                        "result['page'] = js('cardOpen')")
         self.assertEqual((out["cardOpen"], out["page"]), ("full", "full"))
 
+    def test_base_refusal_opens_shared_preview_and_escape_keeps_question(self):
+        from apps.board.tests.test_base_change import PREVIEW
+        response = json.dumps({"ok": True, "waiting": True, "changed": False, "preview": PREVIEW})
+        out = self.probe(self.waiting, "click_entry(0)\n"
+                         "js(\"cardTags = {'decision:test': ['K-8', 'decision-id']}\")\n"
+                         "js(" + repr("handleReply('decision:test', " + response + ")") + ")\n"
+                         "QTest.qWait(100)\nresult['open'] = js('baseChangePreview.visible')\n"
+                         "result['text'] = js('baseChangePreview.describe(baseChangePreview.result)')\n"
+                         "press_escape()\nresult['after'] = js('baseChangePreview.visible')\n"
+                         "result['question'] = state()['decisionOpen']\nresult['calls'] = calls()")
+        self.assertTrue(out["open"], out)
+        self.assertFalse(out["after"])
+        self.assertTrue(out["question"])
+        self.assertIn("K-50-replay-code", out["text"])
+        self.assertIn("Odmowa korekty", out["text"])
+        self.assertEqual(out["calls"], [])
+
 
 class SharedSettingTest(unittest.TestCase):
     def test_setting_saved_by_one_view_reaches_the_other(self):

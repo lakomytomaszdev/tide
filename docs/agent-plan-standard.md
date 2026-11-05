@@ -213,13 +213,33 @@ trzyma blokady repozytorium i nie blokuje innych kart. `ResolveCardStep` przyjmu
 `step` oraz strukturalne `baseDecision: keep` albo `change`, niezależnie od tekstu odpowiedzi.
 Zachowaj zapisuje zwykłą odpowiedź i odblokowuje kontynuację. Zmień zapisuje oczekiwanie (`waiting: true`,
 `changed: false`), pozostawiając pytanie i możliwość Zachowaj. Nie wykonuje operacji git ani nie
-potwierdza zmiany; podgląd dostarczy PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+potwierdza zmiany; podgląd dostarcza PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+
+**Podgląd korekty (PT-201).** `/Board PreviewCardBaseChange(id, request)` przyjmuje pełny `baseRef`
+i opcjonalny `baseCommit` (dla zdalnego refu wymagany SHA), albo `step` nierozstrzygniętej propozycji;
+puste `{}` wybiera pierwszą oczekującą decyzję o bazie. Walidacja jest taka sama jak przy starcie,
+bez fetch i domyślnego HEAD. Odpowiedź zawiera `oldBase`, `newBase`, `baseVersion`, `branches[]`
+z zapisanymi punktami startu i commitami, `processes[]`, lokalne zmiany oraz ignorowane ścieżki,
+`blockedReasons[]`, `invalidations[]`, `followup` i instrukcję. Dowody są zwykłym tekstem.
+
+Jawny wybór użytkownika w pełnej karcie wywołuje `RequestCardBaseChange(id, {baseRef, baseCommit})`.
+Zapisuje wyłącznie decyzję `card.base-requested`, blokuje nowe kroki i integrację, zachowuje istniejące
+pytania oraz zwraca ten sam podgląd co propozycja agenta. `decisionStep` identyfikuje decyzję;
+`ResolveCardStep` z tym identyfikatorem i `baseDecision: keep` odblokowuje kartę, a `change` jedynie
+otwiera podgląd. Zamknięcie/Esc nie zapisuje odpowiedzi ani nie zatrzymuje procesów.
+
+`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, indeksów, treści danych
+lokalnych (także ignorowanych) i procesów. PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
+wymagać `canChange: true` i równości identyfikatora; każda różnica wymaga świeżej decyzji. Identyfikator
+sam w sobie nie jest zgodą. `canExecute` pozostaje fałszem do dostarczenia potwierdzenia w PT-213.
+Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
+commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.
 
 Korekta v1 jest ograniczona do karty bez commitów wkładu i czynnych procesów, zwykle Od razu przed
 pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP i praca po review (K-49) wymagają odmowy
 korekty i zachowania danych. Cel pkt 4 oraz historie 35–37 pozostają częściowe. Wymagania wskazują
-szkic `K-50-replay-code` (`followups/replay-code.md` obok planu), którego obecność i zakres ma
-zweryfikować PT-201; sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
+szkic [K-50-replay-code](agents/plans/followups/replay-code.md), zweryfikowany w PT-201 i dołączony
+do zatwierdzonego planu. Sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
 pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeniesienia.
 
 **Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:

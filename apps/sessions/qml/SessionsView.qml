@@ -91,6 +91,7 @@ Item {
         else if (method === "EnterStep") b.enterStep(tag, cardId, params.step || "")
         else if (method === "ReportStepFault") b.reportStepFault(tag, cardId, JSON.stringify(params))
         else if (method === "PreviewStepFault") b.previewStepFault(tag, cardId, JSON.stringify(params))
+        else if (method === "PreviewCardBaseChange") b.previewCardBaseChange(tag, cardId, JSON.stringify(params))
         else page.handleReply(tag, { ok: false, error: "unknown-method", message: "Sesje nie znają metody " + method + "." })
     }
 

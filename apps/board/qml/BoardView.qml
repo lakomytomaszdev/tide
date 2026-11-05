@@ -115,6 +115,8 @@ Item {
         onBranchDiffRequested: (tag, id) => view.backend.cardBranchDiff(tag, id)
         onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)
+        onPreviewBaseChangeRequested: (tag, id, request) => view.backend.previewCardBaseChange(tag, id, request)
+        onRequestBaseChangeRequested: (tag, id, request) => view.backend.requestCardBaseChange(tag, id, request)
         // Zrzuty ekranu i model w oknie uruchomienia (PT-43).
         launchImages: view.backend ? Logic.parse(view.backend.imagesJson, []) : []
         canCapture: view.backend ? view.backend.canCapture : false

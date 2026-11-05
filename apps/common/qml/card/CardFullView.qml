@@ -72,6 +72,8 @@ Rectangle {
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
     signal previewMergeRequested(string target)
+    signal baseChangeRequested()
+    property bool baseChangeAvailable: false
     property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
@@ -547,6 +549,25 @@ Rectangle {
                 }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                visible: view.baseChangeAvailable && !!view.flow
+                Text {
+                    Layout.fillWidth: true
+                    text: "Baza: " + (view.flow && view.flow.base && view.flow.base.baseRef || "unknown")
+                          + " · " + (view.flow && view.flow.base && view.flow.base.baseCommit || "unknown")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                }
+                Tide.TextButton {
+                    objectName: "fullBaseChange"
+                    text: "Podejrzyj korektę bazy"
+                    onClicked: view.baseChangeRequested()
+                }
+            }
             RowLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true

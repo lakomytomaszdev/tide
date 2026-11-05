@@ -2683,6 +2683,14 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if st.base_request and request.get("step") == st.base_request["decision"]:
+            if choice != "answer" or request.get("baseDecision") not in ("keep", "change"):
+                raise FlowError("base-decision", "wybierz strukturalnie Zachowaj albo Zmień bazę")
+            if request["baseDecision"] == "change":
+                return {"ok": True, "id": card, "waiting": True, "changed": False,
+                        "preview": self.preview_card_base_change(card, {})}
+            self.journal.append(card, "card.base-kept", decision=st.base_request["decision"])
+            return {"ok": True, "id": card, "changed": False, "baseDecision": "keep"}
         if choice in ("transfer", "wait-limit"):
             if baseproposal.pending(st):
                 raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
@@ -2714,10 +2722,11 @@ class FlowEngine(PlanEditing):
             if focus in st.step_decisions:
                 raise FlowError("already-decided", "odpowiedź na ten krok jest już zapisana")
             if base_decision == "change":
-                # PT-201 dostarczy podgląd. Sam wybór nigdy nie zmienia refów i nie rozstrzyga pytania.
+                # Sam wybór otwiera odczyt; pytanie pozostaje nierozstrzygnięte.
                 if focus not in st.base_waits:
                     self.journal.append(card, "step.base-wait", step=focus)
-                return {"ok": True, "id": card, "step": focus, "waiting": True, "changed": False}
+                return {"ok": True, "id": card, "step": focus, "waiting": True, "changed": False,
+                        "preview": self.preview_card_base_change(card, {"step": focus})}
         elif base_decision is not None:
             raise FlowError("bad-request", "ten krok nie ma poprawnej propozycji bazy")
         valid = {"question": ("answer", "wait-card"), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
@@ -4491,6 +4500,86 @@ class FlowEngine(PlanEditing):
             if len(recent) == 10:
                 break
         return recent
+
+    def request_card_base_change(self, card_id: str, request: dict) -> dict:
+        """Jawny wybór użytkownika tworzy decyzję, bez zatrzymywania kroków i bez zmiany bazy."""
+        from . import basechange
+        if not isinstance(request, dict) or set(request) - {"baseRef", "baseCommit"}:
+            raise FlowError("bad-request", "wybór użytkownika przyjmuje baseRef i baseCommit")
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        st = fold(self.journal.read(card))
+        if not st.started or st.card_finished:
+            raise FlowError("no-order", "karta nie ma otwartego zlecenia")
+        if baseproposal.pending(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij istniejącą decyzję o bazie")
+        try:
+            new = basechange.candidate(self.git, self._repo(card), request)
+        except (ValueError, FlowGitError) as exc:
+            raise FlowError("bad-base", str(exc)) from None
+        decision = "base-request:" + str(st.last_seq + 1)
+        self.journal.append(card, "card.base-requested", decision=decision,
+                            baseProposal={"valid": True, "ref": new["baseRef"], "baseCommit": new["baseCommit"],
+                                          "evidence": "Jawny wybór użytkownika w pełnej karcie."})
+        return {"ok": True, "id": card, "waiting": True, "changed": False,
+                "preview": self.preview_card_base_change(card, {})}
+
+    def _base_change_processes(self, st):
+        """Odczyt procesów obejmuje także wynik zapisany przed końcem procesu."""
+        from ..tasks import launch
+        processes = []
+        for name, step in st.steps.items():
+            unit = step.get("unit") or ""
+            unit_state = stepstop.unit_state(unit) if unit else ""
+            process = launch.process_alive(step["processFile"]) if step.get("processFile") else False
+            active = (name not in st.finished or unit_state not in ("", "inactive") or
+                      process is not False or name in st.outside_started or
+                      step.get("mode") == "interactive" and not step.get("consoleClosed"))
+            processes.append({"step": name, "unit": unit, "state": unit_state, "active": active,
+                              "processAlive": process, "finished": name in st.finished,
+                              "worktree": step.get("worktree") or ""})
+        return processes
+
+    def preview_card_base_change(self, card_id: str, request: dict) -> dict:
+        """Odcisk całej mapy i dowody kwalifikacji; brak zdarzeń i brak mutacji gita."""
+        from . import basechange
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if not isinstance(request, dict) or set(request) - {"baseRef", "baseCommit", "step"}:
+            raise FlowError("bad-request", "oczekiwano baseRef/baseCommit albo kroku propozycji")
+        if "step" in request and not isinstance(request["step"], str):
+            raise FlowError("bad-request", "krok propozycji musi być tekstem")
+        events = self.journal.read(card)
+        st = fold(events)
+        asked = request.get("step") or next(iter(baseproposal.pending(st)), "")
+        proposal = (st.base_request.get("baseProposal") if asked == st.base_request.get("decision") else
+                    (st.finished.get(asked) or {}).get("baseProposal")) or {}
+        wanted = dict(request)
+        if "baseRef" not in wanted and proposal.get("valid"):
+            wanted.update(baseRef=proposal["ref"], baseCommit=proposal["baseCommit"])
+        repo = self._repo(card)
+        try:
+            with lock_for(repo):
+                new = basechange.candidate(self.git, repo, wanted)
+                processes = self._base_change_processes(st)
+                result = basechange.preview(self.git, repo, card, events, st, new, processes)
+                # Powtórny odczyt wykrywa ruch refu, plików lub procesów w trakcie zbierania dowodów.
+                after = basechange.preview(self.git, repo, card, events, st,
+                                           basechange.candidate(self.git, repo, wanted),
+                                           self._base_change_processes(st))
+                if result["previewId"] != after["previewId"] or events != self.journal.read(card):
+                    result.update(canChange=False, previewId="")
+                    result["blockedReasons"].append({"reason": "state-changed", "message":
+                        "Stan zmienił się podczas odczytu. Ponów podgląd; stary identyfikator jest nieważny."})
+        except (ValueError, FlowGitError) as exc:
+            raise FlowError("bad-base", str(exc)) from None
+        result["decisionStep"] = asked if asked in baseproposal.pending(st) else ""
+        result["evidence"] = proposal.get("evidence") or "Jawny podgląd wybranej bazy."
+        return result
 
     def preview_card_merge(self, card_id: str, request: dict) -> dict:
         """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
