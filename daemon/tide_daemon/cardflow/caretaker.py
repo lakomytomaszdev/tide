@@ -276,14 +276,15 @@ def _plan_fix_section(problem: dict, st) -> str:
                      "`return-plan` się nie powiedzie. Ponów krok `plan-fix` z instrukcją (`retry`) albo oddaj "
                      "decyzję (`escalate`).")
     lines += ["", "Błędy sprawdzania formatu:"]
-    lines += [f"- {_text(error)[:300]}" for error in errors[:20]] or ["- (brak zapisanych błędów)"]
+    # Maskujemy pełne wartości przed normalizacją i skracaniem, które mogłyby zniszczyć dopasowanie sekretu.
+    lines += [f"- {_text(faults.mask(error))[:300]}" for error in errors[:20]] or ["- (brak zapisanych błędów)"]
     if len(errors) > 20:
         lines.append(f"- … i {len(errors) - 20} kolejnych (plik kontekstu plan-fix/errors.md)")
     if returnable and revision.get("feedback"):
-        lines += ["", "Uwagi odesłane planującemu przed tą poprawką:", str(revision["feedback"])[:1500]]
+        lines += ["", "Uwagi odesłane planującemu przed tą poprawką:", faults.mask(revision["feedback"])[:1500]]
     items = review_items(st)
     lines += ["", "Uwagi review (numery do pola `findings`):"]
-    lines += [f"{n}. [{item.get('severity')}] {_text(item.get('text'))[:300]}" +
+    lines += [f"{n}. [{item.get('severity')}] {_text(faults.mask(item.get('text')))[:300]}" +
               (f" (tickety: {', '.join(item.get('tickets') or [])})" if item.get("tickets") else "")
               for n, item in enumerate(items, 1)] or ["(brak uwag review)"]
     lines += ["", "Zasady uwagi (`feedback`): wskaż wiersz planu (numer ticketu z tabeli), bloker (co nie pozwala "

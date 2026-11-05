@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tide_daemon.cardflow import caretaker, caretakerctx, decisions, history
+from tide_daemon.cardflow import caretaker, caretakerctx, decisions, faults, history
 from tide_daemon.cardflow.state import derived, fold
 
 from . import test_cardflow_plan_integration as fixtures
@@ -208,6 +208,37 @@ class BriefAndContextTest(unittest.TestCase):
         self.assertIn("Uwagi użytkownika: popraw.", files["plan-fix/returned-feedback.md"])
         self.assertIn("docs/agent-plan-standard.md", files)
         self.assertIn("1.2", files["docs/agent-plan-standard.md"])
+
+    def test_brief_masks_multiline_secrets_before_normalizing_errors_and_findings(self):
+        secret = "abcdefgh\nijklmnop"
+        for source in ("errors", "review", "feedback"):
+            with self.subTest(source=source), mock.patch.dict(os.environ, {"PRIVATE_SECRET": secret}):
+                j = planning_journal()
+                if source == "review":
+                    reviewed = next(e for e in j.events if e["type"] == "plan.reviewed")
+                    reviewed["findings"] = [{**FINDINGS[0], "text": f"Jawna uwaga: {secret}"}]
+                else:
+                    j.events[-1][source] = [secret] if source == "errors" else secret
+                text = caretaker.brief(caretaker.problems(j.st)[0], j.st, card="K-1", out_dir="/o", worktree="/w")
+                self.assertIn(faults.MASK, text)
+                for part in secret.splitlines():
+                    self.assertNotIn(part, text)
+
+    def test_brief_masks_secrets_before_shortening_errors_findings_and_feedback(self):
+        secret = "abcdefghijklmnopqrstuvwx"
+        for source, limit in (("errors", 300), ("review", 300), ("feedback", 1500)):
+            with self.subTest(source=source), mock.patch.dict(os.environ, {"PRIVATE_SECRET": secret}):
+                j = planning_journal()
+                # Granica skrótu przecina sekret; przed maskowaniem zostawiłaby jawne pierwsze 10 znaków.
+                value = "x" * (limit - 11) + " " + secret
+                if source == "review":
+                    reviewed = next(e for e in j.events if e["type"] == "plan.reviewed")
+                    reviewed["findings"] = [{**FINDINGS[0], "text": value}]
+                else:
+                    j.events[-1][source] = [value] if source == "errors" else value
+                text = caretaker.brief(caretaker.problems(j.st)[0], j.st, card="K-1", out_dir="/o", worktree="/w")
+                self.assertIn(faults.MASK, text)
+                self.assertNotIn(secret[:10], text)
 
     def test_previous_proposal_is_masked_after_decoding_quoted_and_multiline_secrets(self):
         j = planning_journal()
