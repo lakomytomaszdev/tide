@@ -703,12 +703,15 @@ def owned(st, ident: str) -> dict:
     `open` — krok opiekuna bez wyniku, `handed` — ostatnie działanie oddało problem użytkownikowi albo po nim
     wyczerpał się limit działań (`caretaker.escalated` z `limit: true`)."""
     runs_all = [run for run in st.caretaker_runs.values() if run.get("problem") == ident]
-    roots = {run.get("root") for run in runs_all if run.get("root")}
-    tickets = {run.get("ticket") for run in runs_all if run.get("ticket")}
+    # Rozmowa zna zakres problemu także przed pierwszym krokiem w tle. Wyznacza zamknięcie
+    # eskalacji, ale nie trafia do `runs_all`: nadal nie zużywa limitu ani numeru działania.
+    contexts = runs_all + [chat for chat in st.caretaker_chats.values() if chat.get("problem") == ident]
+    roots = {context.get("root") for context in contexts if context.get("root")}
+    tickets = {context.get("ticket") for context in contexts if context.get("ticket")}
 
     def in_scope(name: str) -> bool:
         # `st.steps` nie zawiera kroków opiekuna: jego wynik `done` nigdy nie rozwiązuje problemu.
-        if name not in st.steps or not runs_all:
+        if name not in st.steps or not contexts:
             return False
         if roots:
             return chain_root(st, name) in roots
@@ -743,7 +746,7 @@ def owned(st, ident: str) -> dict:
         if done.get("result") == "done" and in_scope(name) and \
                 (st.steps.get(name) or {}).get("kind") not in PLAN_STEP_KINDS:
             closed = max(closed, int(done.get("seq") or 0))
-    if runs_all and runs_all[0].get("trigger") == "plan-fix":
+    if contexts and contexts[0].get("trigger") == "plan-fix":
         closed = max(closed, st.plan_user_seq)       # odesłanie albo odrzucenie poprawki przez użytkownika
     runs = [run for run in runs_all if int(run.get("seq") or 0) > closed and
             not (st.caretaker_outcomes.get(run.get("step")) or {}).get("stale")]

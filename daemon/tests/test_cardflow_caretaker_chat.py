@@ -178,6 +178,49 @@ class CaretakerChatTest(EngineOnJournal):
                                          caretaker_problem="error:K-2-plan", caretaker_step="K-2-chat-action-1")
         self.assertTrue(reply["ok"])
 
+    def test_chat_escalation_before_background_run_closes_on_user_retry_and_replays(self):
+        # Druga próba mogła skończyć się podczas pauzy, zanim ruszył opiekun w tle.
+        self.engine._finish_caretaker_chat("K-1", self.step)
+        self.add("K-1", "card.paused")
+        self.name = self.engine.talk_to_caretaker("K-1", {"problem": PROBLEM})["step"]
+        self.step = self.st.caretakers[self.name]
+        self.write_action(action="escalate", summary="Potrzebna decyzja.", recommendation="Ponów krok.")
+        self.poll()
+        self.assertFalse(self.st.caretaker_runs)
+        before = caretaker.owned(self.st, PROBLEM)
+        self.assertEqual((before["count"], before["runs"], before["handed"], before["closedSeq"]),
+                         (0, [], True, 0))
+
+        # Decyzja w innym łańcuchu tego samego ticketu nie zamyka tej eskalacji.
+        self.add("K-1", "step.started", step="unrelated", kind="ticket", ticket="PT-7")
+        self.add("K-1", "step.finished", step="unrelated", result="done")
+        self.add("K-1", "step.decision", step="unrelated", choice="retry")
+        self.assertTrue(caretaker.owned(self.st, PROBLEM)["handed"])
+
+        self.engine.resolve_step("K-1", {"choice": "retry", "step": "K-1-PT-7-2"})
+        decision = self.st.step_decisions["K-1-PT-7-2"]
+        self.assertFalse(caretaker.owned(self.st, PROBLEM)["handed"])
+        self.engine._finish_caretaker_chat("K-1", self.step)
+        self.add("K-1", "card.resumed")
+        self.add("K-1", "step.started", step="K-1-PT-7-3", kind="ticket", ticket="PT-7",
+                 parentStep="K-1-PT-7-2", attempt=2)
+        self.add("K-1", "step.finished", step="K-1-PT-7-3", ticket="PT-7", result="error", reason="test")
+
+        # Nowy silnik odtwarza wyłącznie dziennik; rozmowa nadal nie zużywa limitu.
+        restarted = FlowEngine(self.engine.store, self.journal, tmp_root=self.base)
+        st = fold(restarted.journal.read("K-1"))
+        own = caretaker.owned(st, PROBLEM)
+        self.assertEqual((own["count"], own["runs"], own["handed"], own["closedSeq"]),
+                         (0, [], False, decision["seq"]))
+        self.assertIn(PROBLEM, [p["id"] for p in caretaker.problems(st)])
+        with mock.patch.object(restarted, "_caretaker_setup", return_value=self.engine._caretaker_setup()), \
+                mock.patch.object(restarted, "_card_column", return_value="todo"), \
+                mock.patch.object(restarted, "_caretaker_launch") as launch_run:
+            restarted._caretake("K-1", st)
+        launch_run.assert_called_once()
+        run = launch_run.call_args.args[2]
+        self.assertEqual((run["problem"], run["target"], run["n"]), (PROBLEM, "K-1-PT-7-3", 1))
+
     def test_incomplete_file_is_not_rejected_while_it_is_still_being_written(self):
         path = os.path.join(self.step["stepDir"], "out", "action-1.json")
         with open(path, "w") as fh:
