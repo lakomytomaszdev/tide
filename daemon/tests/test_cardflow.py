@@ -71,11 +71,24 @@ class FlowInProcess(unittest.TestCase):
         from tide_daemon.cardflow.engine import FlowEngine
         from tide_daemon.cardflow_monitor import CardFlowMonitor
         from tide_daemon.models import executors
+
+        class IsolatedFlowMonitor(CardFlowMonitor):
+            def stop(self):
+                # Produkcyjne stop() nie czeka na wątki. Fixture musi je zakończyć
+                # przed restartem silnika, cofnięciem patch.dict i usunięciem repozytorium.
+                pools = (self._pool, self._hosting_pool)
+                super().stop()
+                for pool in pools:
+                    if pool is not None:
+                        pool.shutdown(wait=True, cancel_futures=True)
+                app().processEvents()  # dostarczenie _done przed kolejnym testem
+                self._ticking = False
+
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
-        flow = CardFlowMonitor(engine, self.board, poll_ms=150)
+        flow = IsolatedFlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         flow.start()
         self.addCleanup(flow.stop)

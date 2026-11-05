@@ -11,6 +11,14 @@ Własny motyw KDE Plasma 6 (KDE neon, Wayland, dwa monitory) z widżetami do pra
 - Pakiety apt instalujemy tylko po symulacji (`apt-get -s install`), która nie może podnosić Qt ani KDE Frameworks.
 - Ekran blokady i SDDM testujemy w trybach testowych (`kscreenlocker_greet --testing`, `sddm-greeter-qt6 --test-mode`), zanim trafią do systemu.
 
+## Testy podczas pracy
+
+W trakcie ticketu uruchamiaj testy dobrane do zmiany (`make test-cardflow`, `make test-daemon`,
+`make test-board` albo `make test-changed BASE=<baza>`). Pełny `make test` wykonaj raz przed
+oddaniem ticketu. Domyślnie moduły biegną w liczbie procesów równej liczbie rdzeni minus dwa;
+`JOBS=N` zmienia limit. Lista zestawów: `tools/test_suites.py`, instrukcja i izolacja:
+[docs/testing.md](docs/testing.md).
+
 ## Agent skills
 
 ### Issue tracker
