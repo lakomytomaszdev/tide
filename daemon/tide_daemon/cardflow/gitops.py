@@ -27,14 +27,14 @@ HARDENED = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c"
             "-c", "gc.auto=0")
 FALLBACK_IDENTITY = ("-c", "user.name=Tide", "-c", "user.email=tide@localhost")
 
-_locks: dict[str, threading.Lock] = {}
+_locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
 
-def lock_for(repo: str) -> threading.Lock:
+def lock_for(repo: str) -> threading.RLock:
     key = os.path.realpath(repo)
     with _locks_guard:
-        return _locks.setdefault(key, threading.Lock())
+        return _locks.setdefault(key, threading.RLock())
 
 
 def _foreign_changes(porcelain: str) -> list[str]:
@@ -64,8 +64,9 @@ class FlowGit:
     def __init__(self, git: Git | None = None):
         self.git = git or Git(timeout=120)
 
-    def run(self, cwd: str, *args, timeout=None):
-        return self.git.run(cwd, *HARDENED, *args, timeout=timeout)
+    def run(self, cwd: str, *args, timeout=None, input_text=None):
+        options = {"input_text": input_text} if input_text is not None else {}
+        return self.git.run(cwd, *HARDENED, *args, timeout=timeout, **options)
 
     def main_branch(self, repo: str) -> str:
         # Gałąź bazowa wskazana w repozytorium (`git config tide.mainBranch <gałąź>`) — dla projektów, których praca

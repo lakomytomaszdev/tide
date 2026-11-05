@@ -875,7 +875,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt próbnego drzewa scalenia gałęzi karty do celu z `FlowGit.main_branch`; `request` to `{}`, bez tokenu i zgody na wykonanie |
-| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
+| `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
 
@@ -2364,6 +2364,23 @@ przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowa
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
-Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
+Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
 `card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
 gałęzi głównej.
+
+PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
+z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
+`targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
+i odcisk lokalnej pracy. Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
+`main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
+i `projected`. Wynik zawiera pola potrzebne przyszłemu ogólnemu zakończeniu scalenia;
+obecnie nadal powstają pojedyncze `card.main-merged` i `card.finished`.
+
+Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
+na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Obcy ref, indeks albo nowe
+lokalne zmiany powodują `main-merge.waiting` i „Czeka na mnie”, bez cofania plików i bez drugiego
+scalenia. Po usunięciu przyczyny wznowienie używa tego samego ID. Wcześniejsze niezwiązane
+zmiany niezapisane w indeksie pozostają obsługiwane (K-43); staged nie otrzymuje nowego algorytmu.
+Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
+przygotowaniem; wspólna własność nowych zasobów należy do PT-206.

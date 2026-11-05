@@ -56,6 +56,7 @@ from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
+from .mergeop import MergeWorktree
 from .journal import Journal
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, _epoch)
@@ -1929,6 +1930,9 @@ class FlowEngine(PlanEditing):
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        # Tylko zapisany zamiar jest zgodą na recovery; tick nigdy nie zaczyna nowego scalenia.
+        if self._recover_main_merge(card):
+            return
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
         self._recover_console_openings(card, st)
@@ -4325,16 +4329,43 @@ class FlowEngine(PlanEditing):
         return {"ok": True, "id": card, **preview}
 
     def merge_card_to_main(self, card_id: str) -> dict:
-        """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""
+        """Jawna zgoda po domknięciu; ponowienie odnajduje operację tego samego zlecenia."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
+        intent = self._main_merge_intent(fold(self.journal.read(card)))
+        repo = intent["repo"] if intent else self._repo(card)
+        with lock_for(repo):
+            return self._merge_card_to_main_locked(card, repo)
+
+    def _main_merge_intent(self, st: FlowState) -> dict | None:
+        return next((i for i in reversed(list(st.intents.values())) if i.get("action") == "main-merge" and
+                     i.get("requestSeq") == (st.started or {}).get("seq")), None)
+
+    def _recover_main_merge(self, card: str) -> bool:
         st = fold(self.journal.read(card))
+        intent = self._main_merge_intent(st)
+        if not intent or any(e.get("type") == "main-merge.checkpoint" and e.get("key") == intent["key"] and
+                             e.get("stage") == "projected" for e in self.journal.read(card)):
+            return False
+        try:
+            with lock_for(intent["repo"]):
+                self._resume_main_merge(card, intent)
+        except FlowError:
+            pass  # Jawne oczekiwanie jest już w dzienniku; brak pętli nowych zamiarów.
+        return True
+
+    def _merge_card_to_main_locked(self, card: str, repo: str) -> dict:
+        st = fold(self.journal.read(card))
+        intent = self._main_merge_intent(st)
+        if intent:
+            already = bool(st.main_merged)
+            self._resume_main_merge(card, intent)
+            return {"ok": True, "id": card, "main": intent["targetBranch"], "already": already}
         if not st.closed or st.plan_revision:
             raise FlowError("not-closed", "karta nie jest jeszcze gotowa do scalenia")
         info = ticket_of(st)
-        repo = self._repo(card)
         main = self.git.main_branch(repo)
         if not main or not info["cardBranch"]:
             raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
@@ -4358,12 +4389,63 @@ class FlowEngine(PlanEditing):
                 main_tree = path
             try:
                 tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
-                merged = self.git.merge(repo, main, info["cardBranch"], main_tree,
-                                        f"Merge card {card} into {main}", expected_tip=tip)
+                prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
+                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}")
             except FlowGitError as exc:
                 raise FlowError("main-merge", str(exc)) from None
-            self.journal.append(card, "card.main-merged", main=main, branch=info["cardBranch"],
-                                commit=merged["commit"])
+            ident = uuid.uuid4().hex
+            intent = self.journal.append(card, "intent", action="main-merge", key=ident, operationId=ident,
+                                         requestSeq=(st.started or {}).get("seq"), baseVersion=st.base_version,
+                                         repo=repo, sourceWorktree=info["cardWorktree"], **prepared)
+            self._resume_main_merge(card, intent)
+            return {"ok": True, "id": card, "main": main, "already": False}
+        # Historyczny sukces bez zamiaru zachowuje dotychczasową naprawę projekcji.
+        self._project_main_merge(card, st)
+        return {"ok": True, "id": card, "main": main, "already": True}
+
+    def _resume_main_merge(self, card: str, intent: dict) -> None:
+        """Wspólna trwała operacja dla starej zgody i przyszłych adapterów, pod lock_for(repo)."""
+        key = intent["key"]
+        stages = {e.get("stage") for e in self.journal.read(card)
+                  if e["type"] == "main-merge.checkpoint" and e.get("key") == key}
+
+        def checkpoint(stage):
+            if stage not in stages:
+                self.journal.append(card, "main-merge.checkpoint", key=key, stage=stage)
+                stages.add(stage)
+
+        try:
+            st = fold(self.journal.read(card))
+            if st.card_finished and st.main_merged and st.main_merged.get("operationId") == key:
+                checkpoint("projected")
+                return
+            if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
+                    (st.started or {}).get("seq") != intent["requestSeq"]):
+                raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
+            checkpoint("prepared")
+            branch = intent["sourceRef"][len("refs/heads/"):]
+            self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
+            worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
+            result = worktree.execute(intent, checkpoint)
+            if st.merge_waiting:
+                self.journal.append(card, "main-merge.resumed", key=key)
+            if ("main-merge", key) not in st.results:
+                self.journal.append(card, "result", action="main-merge", key=key, ok=True,
+                                    commit=result["resultCommit"], **result)
+            checkpoint("result-saved")
+            st = fold(self.journal.read(card))
+            if not st.main_merged:
+                self.journal.append(card, "card.main-merged", main=intent["targetBranch"], branch=branch,
+                                    commit=result["resultCommit"], **result)
+            self._project_main_merge(card, fold(self.journal.read(card)), operation_id=key)
+            checkpoint("projected")
+        except (FlowGitError, BoardError, OSError, FlowError) as exc:
+            waiting = fold(self.journal.read(card)).merge_waiting or {}
+            if waiting.get("key") != key or waiting.get("reason") != str(exc):
+                self.journal.append(card, "main-merge.waiting", key=key, reason=str(exc))
+            raise FlowError("main-merge", str(exc)) from None
+
+    def _project_main_merge(self, card: str, st: FlowState, *, operation_id: str = "") -> None:
         try:
             item = self.store.load().cards.get(card_num(card))
             if item is None:
@@ -4373,8 +4455,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         if not st.card_finished:
-            self.journal.append(card, "card.finished", column="done")
-        return {"ok": True, "id": card, "main": main, "already": bool(st.main_merged)}
+            self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
 
     def _advance_close(self, card: str, st: FlowState) -> None:
         """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
