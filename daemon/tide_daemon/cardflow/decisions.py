@@ -106,6 +106,14 @@ def build_decisions(st: FlowState) -> list[dict]:
             continue
         add(1, question.get("seq"), _review(st, ticket, round_no, question))
     plan = _plan_decision(st)
+    if plan and plan.get("kind") == "plan-revision-failed":
+        # PT-146: nieudaną poprawkę planu sprawdza opiekun — decyzja wraca z jego wynikiem (jak decyzja kroku).
+        target = caretaker.revision_step(st)
+        if target and caretaker.hidden(st, target):
+            plan = None
+        elif target:
+            seq = plan.pop("_seq", 0)
+            plan = {**caretaker.annotate(st, plan, target), "_seq": seq}
     if plan:
         add(0, plan.pop("_seq", 0), plan)
     for failure in st.tracker_failures():

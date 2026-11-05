@@ -54,6 +54,12 @@ work = os.path.join(cwd, "ATRAPA-" + file_match.group(1) + ".md" if file_match e
 if prompt.startswith("Jesteś opiekunem karty"):
     # Krok opiekuna (PT-143): co zrobić mówi „ATRAPA-OPIEKUN: …” w opisie problemu (powód błędu kroku).
     care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", prompt)
+    if not care:
+        # PT-146: przy poprawie planu polecenie jest w odrzuconym pliku plan.md z kontekstu (druga nieudana poprawka).
+        failed_plan = re.search(r"(\S*plan-fix/failed-plan\.md)", prompt)
+        if failed_plan and os.path.isfile(failed_plan.group(1)):
+            with open(failed_plan.group(1), encoding="utf-8") as fh:
+                care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", fh.read())
     care = care.group(1) if care else "escalate"
     if care == "powoli":            # opiekun pracuje kilka sekund (widok „W toku”, restart usługi), potem escalate
         time.sleep(6)
@@ -107,6 +113,15 @@ if prompt.startswith("Jesteś opiekunem karty"):
         data = {"result": "done", "action": "retry", "step": target,
                 "instruction": "Najpierw uruchom test eksportu i popraw format daty na ISO 8601.",
                 "reason": "Dziennik kroku pokazuje błąd formatu daty."}
+    elif care in ("return-plan", "return-plan-obce", "approve-plan"):
+        # PT-146: odesłanie planu z precyzyjną uwagą (wiersz, bloker, błąd standardu); `-obce` — numer uwagi spoza
+        # listy; `approve-plan` — akcja, której opiekun nie ma.
+        data = {"result": "done", "action": care if care == "approve-plan" else "return-plan",
+                "feedback": "Wiersz #1: kryterium nie jest mierzalne (bloker: ticket nie może ruszyć); błąd "
+                            "standardu 1.2: brak sekcji Dla recenzenta. Odrocz tę uwagę do ticketu #2.",
+                "reason": "Poprzednia poprawka nie przeszła sprawdzenia formatu."}
+        if care == "return-plan-obce":
+            data["findings"] = "9"
     if data is not None:
         with open(result, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
@@ -190,8 +205,10 @@ if prompt.startswith("Krok planowania Lekkiego"):
     os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
     bad = "ATRAPA: plan-bad" in prompt
     repair = "ATRAPA: plan-repair" in prompt and ".plan-fix-" not in out
+    marker = re.search(r"ATRAPA-OPIEKUN: [a-z-]+", prompt)     # PT-146: polecenie dla opiekuna w odrzuconym planie
     with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
-        fh.write("nie plan" if bad or repair else "---\ntide-plan: 1\ntitle: Eksport\ncard: " + card +
+        fh.write("nie plan" + (" " + marker.group(0) if marker else "") if bad or repair else
+                 "---\ntide-plan: 1\ntitle: Eksport\ncard: " + card +
                  "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
                  "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
