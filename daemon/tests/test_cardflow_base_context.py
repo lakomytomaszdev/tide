@@ -39,7 +39,7 @@ class BaseContextTest(StartBaseSetup):
 
     def seed_question(self):
         journal = self.flow.engine.journal
-        step_dir = Path(self.base, "old.step")
+        step_dir = Path(self.base, self.ident + "-old.step")
         (step_dir / "out").mkdir(parents=True)
         (step_dir / "out/note.md").write_text("Pytanie przed pierwszą zmianą.\n")
         journal.append(self.ident, "step.started", step="old", kind="ticket", attempt=1,
@@ -364,3 +364,84 @@ class BaseContextTest(StartBaseSetup):
         self.assertGreater(st.closed["seq"], merged["seq"])
         self.assertEqual(Path(ticket_of(st)["cardWorktree"], "feature.txt").read_text(), "tylko feature\n")
         self.assertTrue(self.results(self.ident, "cleanup")[0]["preserved"])
+
+    def test_current_review_enter_preserves_base_and_approval_after_restart(self):
+        from .test_cardflow_enter_unit import _Terminal
+
+        for result in ("question", "error"):
+            for recover in (False, True):
+                with self.subTest(result=result, recover=recover):
+                    from tide_daemon.cardflow.engine import FlowDeferred
+
+                    self.flow.engine._launch = mock.Mock(side_effect=FlowDeferred("kolejka testowa"))
+                    self.ident = self.card(description="ATRAPA: gotowe")
+                    self.started = self.start(self.ident)
+                    self.seed_question()
+                    self.change()
+                    self.restart()
+                    engine = self.flow.engine
+                    engine._launch = FlowEngine._launch.__get__(engine)
+                    finish = engine._finish
+                    advance = engine._advance
+
+                    def interrupt_review(card, step, **kwargs):
+                        if step.get("kind") == "review":
+                            kwargs["forced"] = {"result": result, "question": "Potrzebuję wyjaśnienia",
+                                                "reason": "test"}
+                        return finish(card, step, **kwargs)
+
+                    def review_waiting():
+                        engine.tick()
+                        st = fold(self.events(self.ident))
+                        return any(s.get("kind") == "review" and s["step"] in st.finished
+                                   for s in st.steps.values())
+
+                    def pause_review(card, st):
+                        if any(s.get("kind") == "review" and s["step"] in st.finished
+                               for s in st.steps.values()):
+                            return
+                        return advance(card, st)
+
+                    with mock.patch.object(engine, "_finish", side_effect=interrupt_review), \
+                            mock.patch.object(engine, "_advance", side_effect=pause_review):
+                        self.assertTrue(wait_until(review_waiting, timeout=20))
+                    st = fold(self.events(self.ident))
+                    review = next(s for s in st.steps.values() if s.get("kind") == "review")
+                    self.assertEqual(st.finished[review["step"]]["result"], result)
+                    self.assertFalse(st.verdicts)
+                    self.assertFalse(self.results(self.ident, "merge"))
+                    engine.terminal = _Terminal([])
+                    entered = engine.enter(self.ident, review["step"])
+                    current = fold(self.events(self.ident)).steps[entered["step"]]
+                    self.assertEqual(current["kind"], "review")
+                    self.assertEqual(current.get("reviewTip"), review["reviewTip"])
+                    for key in ("baseRef", "baseCommit", "baseVersion"):
+                        self.assertEqual(current.get(key), review[key], key)
+                    self.assertEqual(current["baseVersion"], 2)
+                    Path(current["stepDir"], "out/result.json").write_text(json.dumps({
+                        "result": "done", "verdict": "APPROVE", "blockers": 0, "majors": 0, "nits": 0}))
+                    Path(current["closeFile"]).write_text("{}")
+                    if recover:
+                        # Awaria między step.finished a review.verdict: restart odzyskuje zgodę z pliku.
+                        append = engine.journal.append
+
+                        def crash(card, kind, **data):
+                            if kind == "review.verdict":
+                                raise OSError("przerwano zapis werdyktu")
+                            return append(card, kind, **data)
+
+                        with mock.patch.object(engine.journal, "append", side_effect=crash):
+                            with self.assertRaisesRegex(OSError, "przerwano zapis werdyktu"):
+                                engine._finish(self.ident, current, exit_code=0)
+                        self.assertIn(current["step"], fold(self.events(self.ident)).finished)
+                        self.assertFalse(fold(self.events(self.ident)).verdicts)
+                    self.restart()
+                    self.flow.engine._launch = FlowEngine._launch.__get__(self.flow.engine)
+                    self.assertTrue(wait_until(lambda: self._tick_closed(), timeout=20))
+                    st = fold(self.events(self.ident))
+                    verdict = st.verdicts[(review["ticket"], review["round"])]
+                    self.assertEqual((verdict["step"], verdict["reviewTip"], verdict["baseVersion"]),
+                                     (current["step"], review["reviewTip"], 2))
+                    self.assertEqual(verdict["verdict"], "APPROVE")
+                    self.assertGreater(self.results(self.ident, "merge")[0]["seq"], verdict["seq"])
+                    self.assertEqual(len(self.of(self.ident, "card.base-changed")), 1)

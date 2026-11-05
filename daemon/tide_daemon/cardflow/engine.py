@@ -1388,6 +1388,8 @@ class FlowEngine(PlanEditing):
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
+                                baseVersion=current.get("baseVersion", 0),
+                                baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
