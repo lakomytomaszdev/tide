@@ -89,6 +89,9 @@ class CardBranchesTest(bases.StartBaseSetup):
         git(self.repo, "branch", "master")
         for branch in ("master", "bad name", "HEAD", "-wrong"):
             self.assertFalse(self.start(card, cardBranch=branch)["ok"], branch)
+        # PT-211: planowanie przyjmuje przypiętą bazę. Brak miejsca u dostawcy (atrapa kolejki) nie jest błędem:
+        # karta rusza, a planowanie wystartuje z kolejnym tickiem.
         response = self.start(card, entry="planning", mode="light", baseRef="refs/heads/master")
-        self.assertIn("tylko", response["message"])
-        self.assertEqual(self.events(card), [])
+        self.assertTrue(response["ok"], response)
+        started = [e for e in self.events(card) if e.get("type") == "card.started"]
+        self.assertEqual([e.get("baseRef") for e in started], ["refs/heads/master"])

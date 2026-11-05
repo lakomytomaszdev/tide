@@ -920,7 +920,12 @@ class FlowEngine(PlanEditing):
                             trackerUrl=yt.load_config()['url'] if project.youtrack else '',
                             projects=order, **base)
         self._project_base(card_id)
-        self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+        try:
+            self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+        except FlowDeferred:
+            # Brak wolnego miejsca u dostawcy: karta już ruszyła, planowanie wystartuje z kolejnym tickiem
+            # (_advance_planning). Wcześniej StartCard zgłaszał wtedy „błąd usługi” mimo zapisanego startu (05.11).
+            pass
         st = fold(self.journal.read(card_id))
         low = self._low_limit(selected.provider)
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
