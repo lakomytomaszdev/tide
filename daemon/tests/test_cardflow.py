@@ -674,6 +674,25 @@ class ManualColumnsInProcessTest(FlowInProcess):
         wait_until(lambda: False, timeout=1.0)
         self.assertEqual(len(self.events(card_id)), count, "kolejne przeliczenia nic nie dopisują")
 
+    def test_resume_after_backlog_pause_brings_the_card_back_to_work(self):
+        # 06.11, K-55: karta wstrzymana przeniesieniem do Backlogu i wznowiona SetCardPaused pracowała dalej,
+        # a Tablica pokazywała ją w Backlogu (zapisana kolumna została „backlog”).
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        self.started(card_id)
+        self.wait_column(card_id, "progress")
+        self.assertTrue(json.loads(self.board.move_card(card_id, "backlog", 0))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=10))
+        self.wait_column(card_id, "backlog")
+        box = []
+        self.flow.set_paused(card_id, False, box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        card = self.wait_column(card_id, "progress")
+        self.assertNotIn("wstrzymana", card["derived"]["note"])
+        self.assertEqual(self.store.load().cards[int(card_id.split("-")[1])].column, "todo")
+        self.assertEqual(len(self.of(card_id, "card.paused")), 1, "wznowienie nie wstrzymuje karty ponownie")
+
     def test_started_from_backlog_reaches_review_and_back_to_todo_is_rework(self):
         card_id = self.card(column="backlog")
         self.assertTrue(self.start(card_id)["ok"])
