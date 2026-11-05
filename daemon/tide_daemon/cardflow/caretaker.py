@@ -10,6 +10,8 @@ Publiczny interfejs (silnik i widoki wołają tylko te funkcje):
 - `stale(st, run, events)` — czy działanie opiekuna jest nieaktualne (PT-150; jedna reguła dla problemów z decyzją
   i bez niej),
 - `problem_steps(problem, st)` — kroki, które opiekun może ponowić akcją `retry` (PT-150),
+- `repeat_of(st, krok)`, `takes_over(st, krok, kolumna)`, `handed_repeat(st, krok)` — ten sam powód drugi raz
+  (PT-148): silnik pyta `takes_over` przed automatycznym ponowieniem i automatyczną odmową łańcucha,
 - `brief(problem, st, ...)` — kartka kroku opiekuna (pierwsza linia „Jesteś opiekunem karty …”),
 - `parse_result(data, problem, st)` — walidacja pliku wyniku opiekuna; granica uprawnień jest tu, nie w kartce.
   Przed nią silnik sprawdza strażnikiem (`guard.py`, PT-158), czy krok nie pisał poza `out` — inaczej `WROTE`.
@@ -135,10 +137,10 @@ HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku"}
 
 # --- wyzwalacze ----------------------------------------------------------------------------------
 
-def _error_trigger(st) -> list[dict]:
-    """Wyzwalacz 1: błąd kroku ticketu czekający na decyzję — po automatycznym ponowieniu i ewentualnym przejściu
-    na mocniejszego wykonawcę (automaty silnika działają wcześniej w tym samym przebiegu). Bez wygasłego logowania,
-    limitu dostawcy i winy użytkownika: tam zostaje dzisiejsza decyzja."""
+def _latest_errors(st) -> list[tuple[str, dict, dict]]:
+    """Ostatni krok każdego ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error` po automatycznym
+    ponowieniu (`attempt ≥ 1`), bez decyzji, następcy i odrzucenia ticketu; bez wygasłego logowania, limitu dostawcy
+    i winy użytkownika: tam zostaje dzisiejsza decyzja. Wspólne dla `error` i `no-progress`."""
     latest: dict = {}
     for name, item in st.steps.items():
         latest[item.get("ticket") or ""] = name
@@ -158,12 +160,110 @@ def _error_trigger(st) -> list[dict]:
         if reason in ("login", "limit") or done.get("faultCause") == "limit" or \
                 found_fault["cause"] == "limit" or found_fault["fault"] == "user":
             continue
-        found.append({"trigger": "error", "step": name, "ticket": step.get("ticket") or "",
-                      "decision": f"step:{name}"})
+        found.append((name, step, done))
     return found
 
 
-TRIGGERS = [_error_trigger]
+def _error_trigger(st) -> list[dict]:
+    """Wyzwalacz 1: błąd kroku ticketu czekający na decyzję — po automatycznym ponowieniu i ewentualnym przejściu
+    na mocniejszego wykonawcę (automaty silnika działają wcześniej w tym samym przebiegu)."""
+    return [{"trigger": "error", "step": name, "ticket": step.get("ticket") or "", "decision": f"step:{name}"}
+            for name, step, _ in _latest_errors(st)]
+
+
+NO_PROGRESS = "no-progress"
+REPEAT_RESULTS = ("error", "denied")
+
+
+def _noprogress_trigger(st) -> list[dict]:
+    """Wyzwalacz 6 (PT-148): krok zatrzymany przez strażnika kroku (`reason: no-progress`) i nadal czekający na
+    decyzję. Strażnika nie zmienia — dokłada przesłankę (czas zastoju, końcówka zdarzeń sesji) do problemu, który
+    otwiera też `error` (ten sam łańcuch → jeden problem, `triggers[]`)."""
+    return [{"trigger": NO_PROGRESS, "step": name, "ticket": step.get("ticket") or "", "decision": f"step:{name}"}
+            for name, step, done in _latest_errors(st) if done.get("reason") == NO_PROGRESS]
+
+
+def _hash(text: str) -> str:
+    import hashlib
+    return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def _command_of(done: dict) -> str:
+    return " ".join(str(done.get("command") or "").split())
+
+
+def _error_cause(done: dict) -> str:
+    """Przyczyna błędu do porównania „ten sam powód”: kod z `faults.of_finished` (swobodny powód agenta:
+    `other-<skrót>`); pusty napis dla `login`, limitu dostawcy i winy `user` — tych wyzwalacz nie dotyczy."""
+    reason = done.get("reason") or ""
+    found = faults.of_finished(done)
+    if reason in ("login", "limit") or done.get("faultCause") == "limit" or found["cause"] == "limit" or \
+            found["fault"] == "user":
+        return ""
+    cause = found["cause"] or reason
+    return f"other-{_hash(reason)}" if cause == "other" and reason else cause
+
+
+def _scope(step: dict) -> tuple:
+    """Zakres porównania: ticket; krok planu (bez ticketu) — jego rodzaj."""
+    return ("ticket", step.get("ticket")) if step.get("ticket") else ("kind", step.get("kind") or "")
+
+
+def repeat_of(st, name: str) -> dict | None:
+    """Powtórzony powód kroku `name`: `{step, previous, cause, ticket, kind, result}` albo None. Krok musi być
+    ostatnim zakończonym krokiem swojego zakresu (ticket albo rodzaj kroku planu), a poprzedni zakończony krok tego
+    zakresu ma ten sam `result` i tę samą przyczynę. `denied` liczy się, gdy poprzednią odmowę z tym samym
+    poleceniem dała sama usługa (`_auto_deny`). Bez kroku opiekuna, decyzji, następcy i odrzuconego ticketu."""
+    step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
+    if not step or not done or step.get("kind") == KIND or done.get("result") not in REPEAT_RESULTS:
+        return None
+    if name in st.step_decisions or name in st.superseded or step.get("ticket") in st.rejected:
+        return None
+    if any(other.get("parentStep") == name for other in st.steps.values()):
+        return None
+    scope = _scope(step)
+    ordered = sorted((n for n, item in st.steps.items() if n in st.finished and _scope(item) == scope),
+                     key=lambda n: int(st.finished[n].get("seq") or 0))
+    if len(ordered) < 2 or ordered[-1] != name:
+        return None
+    previous = ordered[-2]
+    before = st.finished[previous]
+    if before.get("result") != done.get("result"):
+        return None
+    if done["result"] == "error":
+        cause = _error_cause(done)
+        if not cause or _error_cause(before) != cause:
+            return None
+    else:
+        command, asked = _command_of(done), st.step_decisions.get(previous) or {}
+        if not command or _command_of(before) != command or asked.get("choice") != "deny" or \
+                not asked.get("auto") or "caretaker" in asked:
+            return None
+        cause = f"denied-{_hash(command)}"
+    return {"step": name, "previous": previous, "cause": cause, "ticket": step.get("ticket") or "",
+            "kind": step.get("kind") or "", "result": done["result"]}
+
+
+def _repeat_trigger(st) -> list[dict]:
+    """Wyzwalacz 2 (PT-148): „ten sam powód drugi raz” — dwa kolejne zakończenia kroków tego samego ticketu (albo
+    rodzaju kroku planu) z tym samym `result` i tą samą przyczyną. Zastępuje kolejną ślepą próbę: automatyczne
+    ponowienie albo automatyczną odmowę łańcucha (silnik pyta `takes_over`). Problem bez decyzji (`decision` puste)."""
+    scopes = {}
+    for name, step in st.steps.items():
+        if name in st.finished and step.get("kind") != KIND:
+            scopes[_scope(step)] = name
+    found = []
+    for scope, _ in scopes.items():
+        last = max((n for n, item in st.steps.items() if n in st.finished and _scope(item) == scope),
+                   key=lambda n: int(st.finished[n].get("seq") or 0))
+        repeat = repeat_of(st, last)
+        if repeat:
+            found.append({"trigger": "repeat", "step": last, "ticket": repeat["ticket"], "kind": repeat["kind"],
+                          "cause": repeat["cause"]})
+    return found
+
+
+TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger]
 
 
 def _error_section(problem: dict, st) -> str:
@@ -183,7 +283,66 @@ def _error_section(problem: dict, st) -> str:
     return "\n".join(lines)
 
 
-BRIEF_SECTIONS = {"error": _error_section}
+SESSION_TAIL = 5
+SESSION_CHARS = 300
+
+
+def _repeat_detail(problem: dict, st) -> str:
+    """Ten sam powód drugi raz: oba kroki, przyczyna i (przy odmowie) polecenie. Pusty napis, gdy ostatni krok
+    problemu nie jest już drugim z pary (np. po ponowieniu opiekuna)."""
+    found = repeat_of(st, problem.get("step") or "")
+    if not found:
+        return ""
+    previous, done = st.finished.get(found["previous"]) or {}, st.finished.get(found["step"]) or {}
+    cause = found["cause"]
+    label = faults.cause_label(cause.split("-")[0] if cause.startswith(("other-", "denied-")) else cause)
+    lines = ["## Ten sam powód drugi raz", "",
+             f"Dwa kolejne zakończenia {step_name(found['kind'], found['ticket'])} mają ten sam wynik "
+             f"({done.get('result')}) i tę samą przyczynę: {label}.",
+             f"Poprzedni krok: {found['previous']}, ten krok: {found['step']}."]
+    if found["result"] == "denied":
+        lines.append(f"Polecenie odmówione dwa razy: {_command_of(done)[:600]}")
+    else:
+        lines.append(f"Powód poprzedniego kroku: {previous.get('reason') or '(brak)'}; tego kroku: "
+                     f"{done.get('reason') or '(brak)'}.")
+    lines.append("Kolejna próba bez zmiany byłaby ślepą powtórką: zmień podejście (instrukcja `retry` ma wynikać "
+                 "z dziennika kroku) albo oddaj decyzję użytkownikowi.")
+    return "\n".join(lines)
+
+
+def _noprogress_detail(problem: dict, st) -> str:
+    """Krok bez postępu: czas zastoju (od ostatniego postępu do zatrzymania przez strażnika) i końcówka zdarzeń
+    sesji z wyniku kroku (`messages`)."""
+    name = problem.get("step") or ""
+    done = st.finished.get(name) or {}
+    if done.get("reason") != NO_PROGRESS:
+        return ""
+    since, stopped = _epoch(done.get("stalledSince")), _epoch(done.get("ts"))
+    lines = ["## Krok bez postępu", "",
+             f"Strażnik kroku zatrzymał {name}: od {done.get('stalledSince') or '(nieznany czas)'} nic się nie "
+             "zmieniało w worktree ani w sesji."]
+    if since and stopped >= since:
+        lines.append(f"Czas zastoju: {int((stopped - since) // 60)} min {int((stopped - since) % 60)} s.")
+    else:
+        lines.append("Czas zastoju: nieznany.")
+    messages = [m for m in done.get("messages") or [] if isinstance(m, dict)][-SESSION_TAIL:]
+    lines += ["", f"Końcówka zdarzeń sesji (ostatnie {SESSION_TAIL}):"]
+    if not messages:
+        lines.append("(wynik kroku nie ma zdarzeń sesji; końcówka dziennika kroku jest w plikach kontekstu)")
+    for message in messages:
+        text = " ".join(str(message.get("text") or "").split())[:SESSION_CHARS]
+        lines.append(f"- {message.get('role') or '?'}: {text}")
+    return "\n".join(lines)
+
+
+def _with_detail(detail):
+    return lambda problem, st: "\n\n".join(part for part in (_error_section(problem, st), detail(problem, st)) if part)
+
+
+BRIEF_SECTIONS = {"error": _error_section, "repeat": _with_detail(_repeat_detail),
+                  NO_PROGRESS: _with_detail(_noprogress_detail)}
+# Dopiski do przesłanki, gdy wyzwalacz dołączył do problemu otwartego przez inny (`problem["triggers"]`).
+BRIEF_DETAILS = {"repeat": _repeat_detail, NO_PROGRESS: _noprogress_detail}
 
 
 # --- problemy i liczenie działań -----------------------------------------------------------------
@@ -200,10 +359,11 @@ def chain_root(st, name: str) -> str:
 
 
 def problem_id(trigger: str, st=None, *, step: str = "", ticket: str = "", cause: str = "", stage: str = "",
-               decision: str = "") -> str:
-    """Jedyna definicja id problemu (bez `seq`): kolejne próby jednego łańcucha kroków mają to samo id."""
+               decision: str = "", kind: str = "") -> str:
+    """Jedyna definicja id problemu (bez `seq`): kolejne próby jednego łańcucha kroków mają to samo id. Powtórzenie
+    przyczyny: `repeat:<ticket>:<przyczyna>`, dla kroku planu (bez ticketu) `repeat:<rodzaj kroku>:<przyczyna>`."""
     if trigger == "repeat":
-        return f"repeat:{ticket}:{cause}"
+        return f"repeat:{ticket or kind}:{cause}"
     if trigger == "waiting":
         return f"waiting:{decision}"
     if step:
@@ -225,7 +385,7 @@ def problems(st) -> list[dict]:
             root = chain_root(st, step) if step else ""
             ident = problem_id(candidate["trigger"], st, step=step, ticket=candidate.get("ticket") or "",
                                cause=candidate.get("cause") or "", stage=candidate.get("stage") or "",
-                               decision=candidate.get("decision") or "")
+                               decision=candidate.get("decision") or "", kind=candidate.get("kind") or "")
             group = f"chain:{root}" if root else ident
             if group in grouped:
                 grouped[group]["triggers"].append(candidate["trigger"])
@@ -386,6 +546,26 @@ def unavailable(st, column: str) -> str:
     return ""
 
 
+def takes_over(st, name: str, column: str = "") -> bool:
+    """Czy opiekun zastępuje kolejną ślepą próbę po kroku `name` (PT-148): krok jest drugim z tą samą przyczyną
+    (`repeat_of`) i opiekun przy tej karcie działa. Wtedy silnik nie robi automatycznego ponowienia ani
+    automatycznej odmowy łańcucha: krok czeka na opiekuna, a po oddaniu problemu — na decyzję użytkownika
+    (`handed_repeat`). Gdy opiekuna nie ma (wstrzymana karta, „Tylko lokalnie”), zostaje dzisiejszy automat."""
+    return bool(repeat_of(st, name)) and not unavailable(st, column)
+
+
+def handed_repeat(st, name: str) -> bool:
+    """Krok `name` jest powtórzeniem przyczyny, a opiekun oddał już jego problem użytkownikowi: decyzja błędu
+    kroku jest widoczna także przy próbie zerowej (bez opiekuna użytkownik nie miałby czego wybrać). Id liczone
+    bez `problems()` — decyzja jest częścią opisu problemu (bez rekursji)."""
+    found = repeat_of(st, name)
+    if not found:
+        return False
+    ident = _known_id(st, chain_root(st, name)) or problem_id(
+        "repeat", st, ticket=found["ticket"], cause=found["cause"], kind=found["kind"])
+    return bool(owned(st, ident)["handed"])
+
+
 def executor_name(catalog, st) -> str:
     """Wykonawca opiekuna do #9: najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym — dostawcy
     wykonawcy karty)."""
@@ -431,6 +611,11 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
     z `BRIEF_SECTIONS` według wyzwalacza."""
     section = BRIEF_SECTIONS.get(problem.get("trigger") or "")
     described = section(problem, st) if section else f"## Problem\n\nProblem {problem.get('id')}."
+    for other in dict.fromkeys(problem.get("triggers") or []):
+        detail = BRIEF_DETAILS.get(other) if other != problem.get("trigger") else None
+        extra = detail(problem, st) if detail else ""
+        if extra:
+            described += "\n\n" + extra
     files = []
     if context:
         files = ["## Kontekst", "",

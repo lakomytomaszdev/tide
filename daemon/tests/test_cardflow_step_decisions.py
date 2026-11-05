@@ -307,12 +307,12 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: zgoda-zabroniona")
         self.assertTrue(self.start(card_id)["ok"])
         # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
-        # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
+        # polecenia. Atrapa uparcie powtarza prośbę; od PT-148 druga automatyczna odmowa z tym samym poleceniem
+        # uruchamia opiekuna (przed `AUTO_DENY_LIMIT`), a gdy ten odda problem, decyzja wraca do użytkownika.
         def final_permission():
-            decisions = self.of(card_id, "step.decision")
-            if len([d for d in decisions if d.get("auto")]) < 3:
+            if not self.of(card_id, "caretaker.escalated"):
                 return False
-            decided = {d["step"] for d in decisions}
+            decided = {d["step"] for d in self.of(card_id, "step.decision")}
             pending = self.shown(card_id)["derived"]["flow"]["decisions"]
             return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
 
@@ -321,7 +321,9 @@ class StepDecisionTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting")
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
-        self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
+        self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)], "druga odmowa to opiekun")
+        started = self.of(card_id, "caretaker.started")
+        self.assertEqual([(r["trigger"], r["decision"]) for r in started], [("repeat", "")])
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
         with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn("Uruchamiaj polecenia pojedynczo", json.load(fh)["prompt"])

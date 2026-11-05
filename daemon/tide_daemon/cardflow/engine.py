@@ -1005,7 +1005,8 @@ class FlowEngine(PlanEditing):
                 pass
             elif result == "denied":
                 self._consent_recheck(card, step, done)
-            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" \
+                    and not self._caretaker_takes_over(card, st, step["step"]):    # PT-148: opiekun zamiast ślepej próby
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
                                         reason=done.get("reason") or "")
@@ -2150,6 +2151,8 @@ class FlowEngine(PlanEditing):
                                     kind=step.get("kind") or "", choice="retry", answer="", command="",
                                     executor="", auto=True)
             elif int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+                if self._caretaker_takes_over(card, st, st.last_step):
+                    return      # PT-148: opiekun zamiast kolejnej ślepej próby, także bez mocniejszego wykonawcy
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
                                         reason=done.get("reason") or "")
@@ -2586,7 +2589,8 @@ class FlowEngine(PlanEditing):
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running() if s.get("kind") != caretaker.KIND)
         if st.card_finished or busy or not step or choice not in valid or \
-                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login"):
+                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" and
+                 not caretaker.handed_repeat(st, focus)):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(focus)
         if previous:
@@ -2918,6 +2922,11 @@ class FlowEngine(PlanEditing):
                             reviewerRouteKind=route.kind if route else "",
                             reviewerRouteTokenFile=route.token_file if route else "",
                             reviewerEffort=candidate.effort)
+
+    def _caretaker_takes_over(self, card: str, st: FlowState, name: str) -> bool:
+        """Ten sam powód drugi raz (PT-148): opiekun zamiast automatycznego ponowienia albo automatycznej odmowy
+        łańcucha. Ocenia `caretaker.takes_over` — bez opiekuna zostaje dzisiejszy automat."""
+        return caretaker.takes_over(st, name, self._card_column(card))
 
     def _caretaker_resume(self, card: str, st: FlowState, step: dict) -> bool:
         """`retry` opiekuna przy problemie bez decyzji (PT-150): wewnętrzna ścieżka automatycznego ponowienia
@@ -3733,7 +3742,8 @@ class FlowEngine(PlanEditing):
                 continue        # krok opiekuna i problem, który sprawdza (albo zaraz sprawdzi) opiekun — bez powiadomienia
             if name in st.step_notices or name in st.step_decisions or st.card_finished or not (
                     result in ("question", "denied") or
-                    result == "error" and (int(step.get("attempt") or 0) >= 1 or done.get("reason") == "limit")):
+                    result == "error" and (int(step.get("attempt") or 0) >= 1 or done.get("reason") == "limit" or
+                                           caretaker.handed_repeat(st, name))):
                 continue
             detail = done.get("question") if result == "question" else done.get("command") if result == "denied" \
                 else done.get("reason") or ""
@@ -4428,6 +4438,8 @@ class FlowEngine(PlanEditing):
         (albo kroku planu) decyzja wraca do użytkownika, żeby nie kręcić się w kółko."""
         ticket = step.get("ticket") or ""
         kind = step.get("kind") or ""
+        if self._caretaker_takes_over(card, fold(self.journal.read(card)), name):
+            return      # ta sama odmowa drugi raz (PT-148): opiekun przed kolejną ślepą próbą i przed AUTO_DENY_LIMIT
         used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
                    and e.get("choice") == "deny"
                    and (e.get("ticket") or "") == ticket and (ticket or e.get("kind") == kind))

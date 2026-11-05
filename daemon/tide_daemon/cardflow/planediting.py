@@ -119,7 +119,8 @@ class PlanEditing:
             self._resume_step(card, st, step, decision)
         elif self._caretaker_resume(card, st, step):
             pass                # `retry` opiekuna bez decyzji (PT-150), z jego instrukcją
-        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" \
+                and not self._caretaker_takes_over(card, st, step["step"]):    # PT-148: opiekun zamiast ślepej próby
             if step["step"] not in st.step_retries:
                 self.journal.append(card, "step.retry", step=step["step"], ticket="", reason=done.get("reason") or "")
             self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)

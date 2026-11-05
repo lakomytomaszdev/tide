@@ -457,7 +457,7 @@ def attention_step(st: FlowState, user_only: bool = False) -> str:
         if user_only and _limit_wait_only(st, name):
             continue
         if done.get("result") in ("question", "denied") or (done.get("result") == "error" and
-                (int(item.get("attempt") or 0) >= 1 or done.get("reason") == "limit")) or (
+                (int(item.get("attempt") or 0) >= 1 or done.get("reason") == "limit" or _handed_repeat(st, name))) or (
                 done.get("result") == "stopped" and done.get("reason") in ("interactive-closed", "transfer")):
             return name
         key = (item.get("ticket"), item.get("round"))
@@ -509,6 +509,12 @@ def guard_reason(st: FlowState) -> str | None:
     return ""
 
 
+def _handed_repeat(st: FlowState, name: str) -> bool:
+    """Ten sam powód drugi raz, problem oddany przez opiekuna (PT-148) — decyzja błędu także przy próbie zerowej."""
+    from .caretaker import handed_repeat
+    return handed_repeat(st, name)
+
+
 def decision_step(st: FlowState, user_only: bool = False) -> str:
     """Krok planu czekający na decyzję ma pierwszeństwo nad równoległym ticketem."""
     for name, step in reversed(list(st.steps.items())):
@@ -518,7 +524,7 @@ def decision_step(st: FlowState, user_only: bool = False) -> str:
         if done.get("result") not in ("question", "denied", "error"):
             continue
         if done.get("result") == "error" and int(step.get("attempt") or 0) == 0 and \
-                done.get("reason") not in ("limit", "login"):
+                done.get("reason") not in ("limit", "login") and not _handed_repeat(st, name):
             continue
         if user_only and _limit_wait_only(st, name):
             continue
@@ -697,7 +703,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
         focus_done = st.finished.get(focus) or {}
-        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0 or focus_done.get("reason") == "login"):
+        if focus_step.get("kind") in ("plan-amend", "plan-review", "plan-revise") and focus_done.get("result") in ("question", "denied", "error") and focus not in st.step_decisions and (focus_done.get("result") != "error" or int(focus_step.get("attempt") or 0) > 0 or focus_done.get("reason") == "login" or _handed_repeat(st, focus)):
             result = focus_done["result"]
             out["flow"].update({"step": focus, "stepKind": focus_step["kind"], "result": result,
                                 "executor": focus_step.get("executor") or "", "provider": focus_step.get("provider") or "",
@@ -848,7 +854,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         reason = REASON_LABELS.get(done.get("reason") or "", done.get("reason") or "")
         if result == "error":
             if int(step.get("attempt") or 0) == 0 and st.last_step not in st.step_decisions and \
-                    done.get("reason") != "login":
+                    done.get("reason") != "login" and not _handed_repeat(st, st.last_step):
                 return _fill(out, "progress", f"{ident} · ponawiam krok po błędzie")
             if st.last_step in st.step_decisions:
                 return _fill(out, "progress", f"{ident} · wznawiam po decyzji użytkownika")

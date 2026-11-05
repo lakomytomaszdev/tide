@@ -1811,6 +1811,43 @@ Ostatni krok ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error`
 (`attempt ≥ 1`) i ewentualnym przejściu na mocniejszego wykonawcę, bez decyzji, bez kroku-następcy, bez
 odrzucenia ticketu; bez `login`, limitu dostawcy i winy `user`. Id: `error:<korzeń łańcucha>`.
 
+#### Ten sam powód i brak postępu (`repeat`, `no-progress`, PT-148)
+
+Dwa wpisy `TRIGGERS` (`_repeat_trigger`, `_noprogress_trigger`) po `error`. Kolejność względem automatów silnika:
+
+1. **Pierwsza porażka** — bez zmian: automatyczne ponowienie (`attempt: 0` → `step.retry` → próba 1), potem
+   (próba 1) przejście na mocniejszego wykonawcę, potem `error` opiekuna. Wyzwalacz zastępuje wyłącznie kolejną
+   *ślepą* próbę z tą samą przyczyną; przejście na mocniejszego wykonawcę, limity dostawcy (D3) i `login` zostają.
+2. **`repeat` (wyzwalacz 2)** — dwa kolejne `step.finished` w tym samym tickecie (albo tym samym rodzaju kroku
+   planu, gdy krok nie ma ticketu) z tym samym `result` i tą samą przyczyną: `faultCause`/`reason` przez
+   `faults.of_finished` (swobodny powód agenta liczy się jako ta sama przyczyna tylko przy identycznym tekście,
+   `other-<skrót>`), a dla `denied` — to samo polecenie po automatycznej odmowie łańcucha (`_auto_deny`). Nie
+   dotyczy `login`, limitu dostawcy i winy `user`. Kandydat nie ma decyzji (`decision` puste), więc `retry` idzie
+   ścieżką bez decyzji (`step.retry` z `caretaker` i `instruction`), a `stale` — regułą `watermark`.
+   Id: `problem_id("repeat", …)` → `repeat:<ticket>:<przyczyna>`, dla kroków planu `repeat:<rodzaj kroku>:<przyczyna>`
+   (bez `seq`); licznik działań to `owned()`. Gdy łańcuch ma już problem (np. `error:`), kandydat dołącza do niego
+   (`triggers[]`, id znanego problemu) — ponowienie opiekuna i kolejne błędy z tą samą przyczyną liczą się do jednego
+   limitu `caretakerActionLimit`.
+3. **Zamiast ślepej próby** — `FlowEngine._caretaker_takes_over` (`caretaker.takes_over`) jest pytane w trzech
+   miejscach automatycznego ponowienia próby zerowej (`_advance`, `_advance_planning`, `_plan_step_decision`)
+   i w `_auto_deny`: dla kroku, który jest drugim z tą samą przyczyną, `step.retry` ani automatyczna odmowa nie
+   powstają — krok czeka na opiekuna (`_caretake` na końcu przebiegu). Druga automatyczna odmowa łańcucha z tym samym
+   poleceniem w tickecie uruchamia więc opiekuna przed `AUTO_DENY_LIMIT`. Bez opiekuna (karta wstrzymana, Backlog,
+   „Tylko lokalnie”) zostaje dzisiejszy automat.
+4. **Po oddaniu** — gdy opiekun oddał problem (`escalate` albo limit), automatyczne ponowienie nie wraca: błąd
+   kroku z próby zerowej staje się zwykłą decyzją użytkownika (`caretaker.handed_repeat` w `decisions`, `state`,
+   `resolve_step` i powiadomieniach), z `caretaker{…}` jak przy `error`. Decyzja użytkownika zamyka problem (licznik
+   od zera, to samo id).
+5. **`no-progress` (wyzwalacz 6)** — krok zatrzymany przez strażnika (`reason: no-progress`, bez zmiany
+   `stepGuardMinutes` i `stepstop`) po automatycznym ponowieniu. Dołącza do problemu `error:` tego łańcucha
+   (`triggers: ["error", "no-progress"]`) i dokłada do kartki sekcję „Krok bez postępu”: czas zastoju (od
+   `stalledSince` do zatrzymania) i końcówkę zdarzeń sesji (ostatnie 5 z `messages` wyniku kroku, po 300 znaków).
+   Dziennik kroku po ludzku jest w plikach kontekstu.
+
+Kartka (`BRIEF_SECTIONS`, `BRIEF_DETAILS`): problem `repeat` ma opis błędu kroku i sekcję „Ten sam powód drugi raz”
+(oba kroki, przyczyna, powody albo odmówione polecenie, ostrzeżenie przed ślepą powtórką); przy problemie otwartym
+przez `error` sekcje dołączonych wyzwalaczy są dopisane za opisem błędu. Wszystko przechodzi przez `faults.mask`.
+
 ### Akcje
 
 `ACTIONS` to `nazwa → Action(kinds, params, apply, description)`; `kinds` — wyzwalacze, przy których akcja jest
