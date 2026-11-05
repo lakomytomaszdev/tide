@@ -366,7 +366,30 @@ class BaseContextTest(StartBaseSetup):
         self.assertTrue(self.results(self.ident, "cleanup")[0]["preserved"])
 
     def test_current_review_enter_preserves_base_and_approval_after_restart(self):
+        self._review_enter_preserves_context()
+
+    def test_local_unavailable_review_enter_preserves_approval_after_restart(self):
+        self._review_enter_preserves_context(local_unavailable=True)
+
+    def _review_enter_preserves_context(self, *, local_unavailable=False):
         from .test_cardflow_enter_unit import _Terminal
+
+        def configure_local(engine):
+            from tide_daemon.models import config as models_config
+
+            path = Path(self.base, "config/tide/models.json")
+            path.write_text(json.dumps({
+                "roles": {"agent": "local:qwen3-coder:30b"}, "agentProgram": "claude",
+                "executors": [
+                    {"name": "Sonnet", "provider": "anthropic", "program": "claude", "model": "sonnet"},
+                    {"name": "Opus", "provider": "anthropic", "program": "claude", "model": "opus"},
+                    {"name": "Lokalny", "provider": "local", "classes": ["lokalny"]},
+                    {"name": "Lokalny recenzent", "provider": "local", "program": "claude",
+                     "model": "qwen2.5-coder:7b", "endpoint": "local", "classes": ["lokalny"]}]}))
+            engine.models_config = lambda: models_config.load(str(path))
+            engine.model_probe = lambda endpoint: {
+                "online": True, "kind": "ollama",
+                "models": [{"name": "qwen3-coder:30b"}, {"name": "qwen2.5-coder:7b"}]}
 
         for result in ("question", "error"):
             for recover in (False, True):
@@ -375,11 +398,17 @@ class BaseContextTest(StartBaseSetup):
 
                     self.flow.engine._launch = mock.Mock(side_effect=FlowDeferred("kolejka testowa"))
                     self.ident = self.card(description="ATRAPA: gotowe")
-                    self.started = self.start(self.ident)
+                    if local_unavailable:
+                        configure_local(self.flow.engine)
+                    self.started = self.start(self.ident, **(
+                        {"executor": "Lokalny", "preferredProvider": "local"} if local_unavailable else {}))
+                    self.assertTrue(self.started["ok"], self.started)
                     self.seed_question()
                     self.change()
                     self.restart()
                     engine = self.flow.engine
+                    if local_unavailable:
+                        configure_local(engine)
                     engine._launch = FlowEngine._launch.__get__(engine)
                     finish = engine._finish
                     advance = engine._advance
@@ -410,13 +439,28 @@ class BaseContextTest(StartBaseSetup):
                     self.assertEqual(st.finished[review["step"]]["result"], result)
                     self.assertFalse(st.verdicts)
                     self.assertFalse(self.results(self.ident, "merge"))
+                    if local_unavailable:
+                        self.assertEqual((review["program"], review["provider"]), ("claude", "local"))
+                        engine.model_probe = lambda endpoint: {"online": False, "error": "offline", "models": []}
+                        engine._resume_step(self.ident, st, review, {"choice": "retry"})
+                        st = fold(self.events(self.ident))
+                        unavailable = next(s for s in st.steps.values()
+                                           if s.get("parentStep") == review["step"])
+                        self.assertEqual(st.finished[unavailable["step"]]["reason"], "local-unavailable")
+                        self.assertFalse(st.verdicts)
+                        self.assertFalse(self.results(self.ident, "merge"))
+                        self.restart()
+                        engine = self.flow.engine
+                        configure_local(engine)
+                        review = fold(self.events(self.ident)).steps[unavailable["step"]]
                     engine.terminal = _Terminal([])
                     entered = engine.enter(self.ident, review["step"])
                     current = fold(self.events(self.ident)).steps[entered["step"]]
                     self.assertEqual(current["kind"], "review")
                     self.assertEqual(current.get("reviewTip"), review["reviewTip"])
-                    for key in ("baseRef", "baseCommit", "baseVersion"):
-                        self.assertEqual(current.get(key), review[key], key)
+                    for key, expected in (("baseRef", "refs/heads/feature/start"),
+                                          ("baseCommit", self.feature_sha), ("baseVersion", 2)):
+                        self.assertEqual(current.get(key), expected, key)
                     self.assertEqual(current["baseVersion"], 2)
                     Path(current["stepDir"], "out/result.json").write_text(json.dumps({
                         "result": "done", "verdict": "APPROVE", "blockers": 0, "majors": 0, "nits": 0}))
@@ -436,6 +480,8 @@ class BaseContextTest(StartBaseSetup):
                         self.assertIn(current["step"], fold(self.events(self.ident)).finished)
                         self.assertFalse(fold(self.events(self.ident)).verdicts)
                     self.restart()
+                    if local_unavailable:
+                        configure_local(self.flow.engine)
                     self.flow.engine._launch = FlowEngine._launch.__get__(self.flow.engine)
                     self.assertTrue(wait_until(lambda: self._tick_closed(), timeout=20))
                     st = fold(self.events(self.ident))

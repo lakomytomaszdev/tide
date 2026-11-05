@@ -3174,6 +3174,8 @@ class FlowEngine(PlanEditing):
                                 routeTokenFile=step.get("routeTokenFile") or "",
                                 parentStep=step.get("step") or "", attempt=attempt, session=step.get("session") or "",
                                 worktree=step.get("worktree") or "", branch=step.get("branch") or "",
+                                baseRef=step.get("baseRef") or "", baseCommit=step.get("baseCommit") or "",
+                                baseVersion=step.get("baseVersion", 0),
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "")
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
