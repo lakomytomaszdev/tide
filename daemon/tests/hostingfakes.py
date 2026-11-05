@@ -30,7 +30,10 @@ if mode == 'transport':
     api_host = 'api.github.com' if github and host == 'github.com' else host
     if github:
         with open(os.path.join(os.environ['GH_CONFIG_DIR'], 'config.yml')) as f:
-            socket_path = json.loads(f.read().split(': ', 1)[1])
+            lines = f.read().splitlines()
+        assert lines[0] == 'version: "1"', lines
+        socket_path = json.loads(next(line for line in lines
+                                      if line.startswith('http_unix_socket: ')).split(': ', 1)[1])
         class UnixHTTP(http.client.HTTPConnection):
             def connect(self):
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

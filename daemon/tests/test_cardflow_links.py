@@ -332,7 +332,10 @@ class GatewayTransportTest(unittest.TestCase):
     def test_both_cli_transports_reach_only_fixed_https_host(self):
         with tempfile.TemporaryDirectory() as folder:
             hostingfakes.install(folder, {"mode": "transport"})
-            with patch.dict(os.environ, PATH=folder + os.pathsep + os.environ.get("PATH", "")):
+            # Pusty katalog konfiguracji: test nie zagląda do ~/.config/gh użytkownika.
+            config = os.path.join(folder, "gh-config")
+            os.mkdir(config)
+            with patch.dict(os.environ, PATH=folder + os.pathsep + os.environ.get("PATH", ""), GH_CONFIG_DIR=config):
                 for program, host, expected_host, expected_path in (
                         ("gh", "github.com", "api.github.com", "/repos/team/proj/pulls/17"),
                         ("gh", "github.example.org", "github.example.org", "/api/v3/repos/team/proj/pulls/17"),
