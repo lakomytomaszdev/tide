@@ -4343,7 +4343,7 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "wymagane: text (do 200000 znaków), nieujemna revision i scope text|files|links")
         card, project = self._project(card_id)
         identity = {"revision": revision, "card": card_id, "project": project.slug, "repo": project.repo}
-        if scope != "text":
+        if scope == "files":
             return {"ok": True, **identity, "candidates": [], "warnings": ["To źródło podpowiedzi nie jest jeszcze obsługiwane."]}
         if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
@@ -4351,7 +4351,15 @@ class FlowEngine(PlanEditing):
             branches = self.git.list_branches(project.repo, "", 2**31, "base")["branches"]
         except FlowGitError as exc:
             raise FlowError("suggestions", str(exc)) from None
-        return {"ok": True, **identity, **suggest_text(branches, card.description, text)}
+        if scope == "links":
+            from .linksuggestions import suggest_links
+            try:
+                suggestions = suggest_links(self.git, project.repo, branches, card.description, text)
+            except Exception:
+                suggestions = {"candidates": [], "warnings": ["Nie można sprawdzić linków. Wybierz bazę ręcznie."]}
+        else:
+            suggestions = suggest_text(branches, card.description, text)
+        return {"ok": True, **identity, **suggestions}
 
     def list_card_branches(self, card_id: str, request: dict) -> dict:
         if set(request) - {"purpose", "text", "limit"}:

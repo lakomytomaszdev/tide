@@ -144,9 +144,10 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
   wspólnych dla worktrees repozytorium; skrót zawiera aktualny SHA i wymaga jawnego wyboru.
   Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
 - SuggestCardBase(s id, s json) -> s  {text, revision: int, scope: text|files|links}; opis czytany z karty.
-  Odczyt bez sieci i zapisu. Odpowiedź: ok, revision, card, project, repo, candidates, warnings.
+  Odczyt bez zapisu. Tylko scope=links odpytuje hosting na żądanie. Odpowiedź: ok, revision, card, project, repo, candidates, warnings.
   Kandydat: ref, name, commit, source, evidence [{field,line,text,match,start,end}], strength, selectable, reason.
-  Obecnie source=text, strength=explicit; files i links zwracają ostrzeżenie bez kandydatów.
+  source=text|links, strength=explicit; files zwraca ostrzeżenie bez kandydatów.
+  links dodaje host, project, sourceProject, sourceBranch, sourceCommit, targetBranch, link, localCommit, stale.
 - StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
                              worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
