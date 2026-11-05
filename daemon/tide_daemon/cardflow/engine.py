@@ -3226,9 +3226,12 @@ class FlowEngine(PlanEditing):
             if code not in (None, 0):
                 self.journal.append(card, "result", action=action, key=key, ok=False,
                                     error=f"program zakończył się kodem {code}")
+                self._release_box(card, {**intent, "step": key})
                 return
         self.journal.append(card, "result", action=action, key=key, ok=False,
                             error="przerwane restartem usługi przed końcem akcji")
+        if action == "step-start":
+            self._release_box(card, {**intent, "step": key})
 
     def _recover_started_steps(self, card: str, st: FlowState) -> None:
         """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started."""
@@ -3489,10 +3492,18 @@ class FlowEngine(PlanEditing):
                      messages=stopped.messages, exit_code=stopped.exit_code)
         return True
 
+    def _release_box(self, card: str, step: dict) -> None:
+        if step.get("runner") == boxstep.RUNNER:
+            try:
+                boxstep.release(self, card, step)
+            except Exception as exc:   # Trwały wynik pozwala ponowić sprzątanie w recover_network.
+                print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {step.get('step')}: {exc!r}", flush=True)
+
     def _finish(self, card: str, step: dict, forced: dict | None = None, wip: dict | None = None,
                 messages=None, exit_code=None) -> None:
         name = step.get("step") or ""
         if name in fold(self.journal.read(card)).finished:
+            self._release_box(card, step)
             return
         out = os.path.join(step.get("stepDir") or "", "out")
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
@@ -3646,11 +3657,7 @@ class FlowEngine(PlanEditing):
                                 round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
         self._queue_notices(card)
         self._release_local(name)
-        if step.get("runner") == boxstep.RUNNER:
-            try:
-                boxstep.release(self, card, step)
-            except Exception as exc:   # zwolnienie nie może zatrzymać zapisu końca kroku
-                print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {name}: {exc!r}", flush=True)
+        self._release_box(card, step)
         self.procs.pop(name, None)
         self.watch.pop(name, None)
         shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)

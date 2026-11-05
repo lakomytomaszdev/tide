@@ -148,10 +148,13 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
             return None
     elif kind not in kinds:
         return None          # planowanie i inne rodzaje zostają na hoście (bwrap)
+    rebuilding = boxwait.card_box_wait(st) == boxwait.REBUILD
     settings = settings_of(engine)
     if not settings.enabled:
         if forced:
             raise BoxError("wznawiany krok biegł w pudełku, a pudełko jest wyłączone (box.enabled)")
+        if rebuilding:
+            raise BoxWaiting(WAIT_REBUILD)
         return None
     try:
         profile = bp.load_project(slug)
@@ -160,6 +163,8 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if profile is None:
         if forced:
             raise BoxError(f"wznawiany krok biegł w pudełku, a projekt {slug} nie ma już zatwierdzonego profilu")
+        if rebuilding:
+            raise BoxWaiting(WAIT_REBUILD)
         return None
     builder = builder_of(engine, settings)
     full = bp.with_defaults(profile)
@@ -175,6 +180,12 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if status.state in (bs.BUILDING, bs.RESETTING) or status.journal_state in (bs.BUILDING, bs.RESETTING):
         raise BoxWaiting(WAIT_BUILD)
     if not status.exists:
+        # Nieudana przebudowa może usunąć starą instancję. To nadal oczekiwanie na pudełko,
+        # a nie projekt, który nigdy go nie miał — brak instancji nie znosi zatwierdzonej granicy.
+        if rebuilding or status.journal_state == bs.FAILED:
+            boxwait.set_box_wait(engine.journal, card_id, boxwait.REBUILD, box=status.box,
+                                 why="brak instancji po budowie lub podczas oczekiwania na przebudowę")
+            raise BoxWaiting(WAIT_REBUILD)
         if forced:
             raise BoxWaiting(f"czeka na pudełko ({status.box} nie istnieje)")
         return None          # projekt z profilem, ale bez zbudowanego pudełka — jak dziś
@@ -335,10 +346,8 @@ def release(engine, card_id: str, step: dict) -> None:
     name, slug, box, ip = step.get("step") or "", step.get("boxSlug") or "", step.get("box") or "", step.get("boxIp") or ""
     if not slug or not box:
         return
-    if name in bs.running_steps(slug, box):
-        bs.mark_released(slug, box, name)
+    _release_resources(engine, step)
     proxy = proxy_of(engine)
-    boxaccess.revoke(proxy, name, denied_log_path(slug, name))
     if proxy is None or not ip:
         return
     rest = _box_steps(engine, box, exclude=name)
@@ -346,6 +355,16 @@ def release(engine, card_id: str, step: dict) -> None:
         proxy.clear_box_policy(ip)
         return
     _apply_policy(engine, slug, box, ip, [card for card, _ in rest])
+
+
+def _release_resources(engine, step: dict) -> None:
+    """Idempotentne sprzątanie, także bez proxy; trwały wynik kroku jest podstawą ponowienia."""
+    name, slug, box = step.get("step") or "", step.get("boxSlug") or "", step.get("box") or ""
+    if not slug or not box:
+        return
+    boxaccess.revoke(proxy_of(engine), name, denied_log_path(slug, name))
+    if name in bs.running_steps(slug, box):
+        bs.mark_released(slug, box, name)
 
 
 def configure_background(engine, placement: Placement, card: str, step: str, parent: str, bg) -> None:
@@ -361,18 +380,30 @@ def configure_background(engine, placement: Placement, card: str, step: str, par
 
 
 def recover_network(engine) -> None:
-    """Odtwarza polityki, przypisanie dzienników i atrapy K3 także w oknie przed `step.started`."""
+    """Uzgadnia zwolnienia oraz polityki/K3; obejmuje oba okna awarii startu i końca kroku."""
     proxy = proxy_of(engine)
-    if proxy is None:
-        return
-    active = []
+    active, ended = [], []
     for card in engine.journal.cards():
         st = fold(engine.journal.read(card))
         active.extend((card, s) for s in st.running() if s.get("runner") == RUNNER)
         active.extend((card, {**i, "step": i["key"]}) for i in st.open_intents(include_background=True)
                       if i.get("action") == "step-start" and i.get("runner") == RUNNER and i["key"] not in st.steps)
-    signature = (proxy, tuple(sorted(s["step"] for _card, s in active)))
+        ended.extend((card, s) for name, s in st.steps.items() if name in st.finished and s.get("runner") == RUNNER)
+        ended.extend((card, {**i, "step": key}) for (action, key), i in st.intents.items()
+                     if action == "step-start" and i.get("runner") == RUNNER and key not in st.steps
+                     and (action, key) in st.results and not st.results[(action, key)].get("ok"))
+    signature = (proxy, tuple(sorted(s["step"] for _card, s in active)),
+                 tuple(sorted(s["step"] for _card, s in ended)))
     if getattr(engine, "_box_network_state", None) == signature:
+        return
+    released = True
+    for card, step in ended:
+        try:
+            _release_resources(engine, step)
+        except (OSError, ValueError) as exc:
+            released = False  # Nie zapamiętujemy sukcesu: następny tick ponawia także bez nowych zdarzeń.
+            print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {step['step']}: {exc!r}", flush=True)
+    if proxy is None:
         return
     groups = {}
     errors = {}
@@ -390,7 +421,11 @@ def recover_network(engine) -> None:
             errors[step["step"]] = f"nie da się odtworzyć sieci kroku: {type(exc).__name__}"
     for (slug, box, ip), (cards, contexts) in groups.items():
         _apply_policy(engine, slug, box, ip, cards, contexts)
-    engine._box_network_state = signature
+    active_ips = {ip for _slug, _box, ip in groups}
+    for ip in {s.get("boxIp") for _card, s in ended} - active_ips - {None, ""}:
+        proxy.clear_box_policy(ip)
+    if released:
+        engine._box_network_state = signature
     engine._box_network_errors = errors
 
 

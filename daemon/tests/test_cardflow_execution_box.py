@@ -9,6 +9,7 @@ import os
 import unittest
 from unittest import mock
 
+from tide_daemon.box import builder as bb
 from tide_daemon.box import profile as bp
 from tide_daemon.box import proxy as bproxy
 from tide_daemon.box import runner as br
@@ -18,7 +19,7 @@ from tide_daemon.cardflow.engine import BOX_STEP_KINDS, FlowDeferred, FlowError
 from tide_daemon.cardflow.state import fold
 from tide_daemon.tasks.runner import HostRunner
 
-from .boxflow import SLUG, BoxFlow
+from .boxflow import SLUG, BoxFlow, FakeProxy
 from .privatebus import wait_until
 
 PLANNING_KINDS = ("planning", "plan-fix", "plan-amend", "plan-revise", "plan-review")
@@ -97,6 +98,48 @@ class PlacementTest(BoxFlow):
         self.assertEqual(self.waits()[-1]["reason"], boxstep.WAIT_ENVIRONMENT)
         self.assertEqual(self.waits()[-1]["cause"], "box")
         self.assertEqual(fold(self.events_now()).box_wait, boxwait.ENVIRONMENT)
+
+    def test_failed_rebuild_without_instance_keeps_all_execution_kinds_waiting(self):
+        self.build_box()
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.REBUILD)
+        builder = self.builder()
+        with mock.patch.object(builder.incus, "init", side_effect=bb.BuildError("init failed")):
+            with self.assertRaises(bb.BuildError):
+                builder.build(SLUG)
+        status = builder.status(SLUG)
+        self.assertFalse(status.exists)
+        self.assertEqual(status.journal_state, bs.FAILED)
+        for kind in BOX_STEP_KINDS:
+            with self.subTest(kind=kind), self.assertRaises(FlowDeferred):
+                self.box_place(kind)
+        self.assertTrue(self.waits())
+        self.assertEqual(self.waits()[-1]["reason"], boxstep.WAIT_REBUILD)
+        self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
+        for kind in PLANNING_KINDS:
+            self.assertIsNone(self.place(kind))
+        self.build_box()
+        self.assertIsInstance(self.place().runner, br.BoxRunner)
+        self.assertEqual(fold(self.events_now()).box_wait, "")
+
+    def test_rebuild_wait_blocks_missing_instance_even_without_failed_build(self):
+        self.approve()
+        self.assertIsNone(self.place())  # Projekt, który nigdy nie miał pudełka, nadal korzysta z hosta.
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.REBUILD)
+        with self.assertRaises(boxstep.BoxWaiting):
+            self.place()
+        self.box_enabled = False
+        with self.assertRaises(boxstep.BoxWaiting):
+            self.place()
+
+    def test_failed_first_build_without_wait_does_not_fall_back_to_host(self):
+        self.approve()
+        builder = self.builder()
+        with mock.patch.object(builder.incus, "init", side_effect=bb.BuildError("init failed")):
+            with self.assertRaises(bb.BuildError):
+                builder.build(SLUG)
+        with self.assertRaises(boxstep.BoxWaiting):
+            self.place()
+        self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
 
     def test_environment_wait_blocks_without_an_approved_profile(self):
         boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
@@ -510,6 +553,99 @@ class DeniedTest(BoxFlow):
         self.assertNotEqual(call[4], boxstep.denied_log_path(SLUG, "K-2-PT-2-1"))
         self.engine._finish(other, second, exit_code=0)
         self.assertEqual(self.proxy.calls[-1], ("clear", "10.173.184.10"))
+
+    def prepared_step(self, name):
+        placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
+        log = boxstep.before_start(self.engine, placement, self.card_id, name)
+        return self.step(self.card_id, name, {"result": "done", "notes": []}), log
+
+    def assert_released(self, name, log):
+        self.assertNotIn(name, bs.running_steps(SLUG, SLUG))
+        self.assertNotIn(name, self.proxy.steps)
+        self.assertEqual(self.proxy.grants.active(), 0)
+        with self.assertRaises(FileNotFoundError):
+            boxaccess.read(log)
+
+    def test_finish_retries_release_without_writing_a_second_result(self):
+        step, log = self.prepared_step("release-failure")
+        with mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
+            self.engine._finish(self.card_id, step, exit_code=0)
+        self.assertIn(step["step"], bs.running_steps(SLUG, SLUG))
+        self.engine._finish(self.card_id, step, exit_code=0)
+        self.assert_released(step["step"], log)
+        self.assertEqual(len(self.of(self.card_id, "step.finished")), 1)
+
+    def test_recovery_retries_release_and_preserves_other_steps_network_context(self):
+        step, log = self.prepared_step("finished")
+        other = self.card(title="Inna karta")
+        bp.save_card(SLUG, other, {"tide-box": 1, "network": {"domains": ["other.example.org"]}})
+        placement = boxstep.place(self.engine, other, SLUG, "ticket", "", BOX_STEP_KINDS)
+        active_log = boxstep.before_start(self.engine, placement, other, "active")
+        self.step(other, "active", {"result": "done", "notes": []})
+        saved = boxaccess.read(active_log)
+        boxstep.recover_network(self.engine)  # Stan zapamiętany przed zakończeniem.
+        self.engine.journal.append(self.card_id, "step.finished", step=step["step"], result="done")
+        # Awaria tuż po trwałym zapisie końca; po restarcie zmienione profile nie rozszerzają zgody kroku.
+        self.engine._box_network_state = None
+        self.proxy = FakeProxy()
+        self.engine.box_proxy = self.proxy
+        bp.save_project(SLUG, {"tide-box": 1, "network": {"domains": ["new.example.org"]}})
+        with mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
+            boxstep.recover_network(self.engine)
+        boxstep.recover_network(self.engine)  # Ponowienie bez restartu i bez nowego zdarzenia w karcie.
+        self.assertEqual(bs.running_steps(SLUG, SLUG), ["active"])
+        with self.assertRaises(FileNotFoundError):
+            boxaccess.read(log)
+        self.assertNotIn("finished", self.proxy.steps)
+        self.assertEqual(self.proxy.steps["active"][1], saved["networkKey"])
+        self.assertEqual(self.proxy.grants.active(), 1)
+        domains = self.proxy.sets()[-1][2]
+        self.assertIn("other.example.org", domains)
+        self.assertIn("api.example.org", domains)
+        self.assertNotIn("new.example.org", domains)
+        releases = [e for e in bs.events(SLUG, SLUG) if e["type"] == "box.release"]
+        boxstep.recover_network(self.engine)
+        self.assertEqual([e for e in bs.events(SLUG, SLUG) if e["type"] == "box.release"], releases)
+
+    def test_reconcile_inactive_start_releases_use_and_context(self):
+        for code in (None, 2):
+            with self.subTest(code=code):
+                name = "failed-start-" + str(code)
+                placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
+                log = boxstep.before_start(self.engine, placement, self.card_id, name)
+                intent = self.engine.journal.append(self.card_id, "intent", action="step-start", key=name,
+                                                   kind="ticket", ticket="PT-1", unit="tide-step-" + name,
+                                                   **placement.entry())
+                with mock.patch.object(self.engine, "_unit_state", return_value="inactive"), \
+                        mock.patch.object(flow_engine.stepstop, "read_exit_code", return_value=code), \
+                        mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
+                    self.engine._reconcile(self.card_id, intent)
+                self.assertFalse(fold(self.engine.journal.read(self.card_id)).results[("step-start", name)]["ok"])
+                self.engine._box_network_state = None  # Nowy proces usługi, zamiar już nie jest otwarty.
+                boxstep.recover_network(self.engine)
+                self.assert_released(name, log)
+                self.assertEqual(self.proxy.calls[-1], ("clear", placement.ip))
+
+    def test_reconcile_inactive_start_releases_immediately(self):
+        placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
+        log = boxstep.before_start(self.engine, placement, self.card_id, "failed-start")
+        intent = self.engine.journal.append(self.card_id, "intent", action="step-start", key="failed-start",
+                                           kind="ticket", ticket="PT-1", unit="tide-step-failed-start",
+                                           **placement.entry())
+        with mock.patch.object(self.engine, "_unit_state", return_value="inactive"):
+            self.engine._reconcile(self.card_id, intent)
+        self.assert_released("failed-start", log)
+
+    def test_recovery_without_proxy_still_releases_finished_step(self):
+        step, log = self.prepared_step("finished-offline")
+        self.engine.journal.append(self.card_id, "step.finished", step=step["step"], result="done")
+        with mock.patch.object(boxstep, "proxy_of", return_value=None):
+            boxstep.recover_network(self.engine)
+        self.assertEqual(bs.running_steps(SLUG, SLUG), [])
+        with self.assertRaises(FileNotFoundError):
+            boxaccess.read(log)
+        boxstep.recover_network(self.engine)
+        self.assert_released(step["step"], log)
 
 
 class BoxStepInProcessTest(BoxFlow):

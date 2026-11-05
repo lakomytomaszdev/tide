@@ -2944,9 +2944,10 @@ powrocie wykonawcy pozostaje w tym samym pudełku.
 | Stan | Wynik |
 |---|---|
 | `boxWait: environment` | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu, przy wyłączonych pudełkach lub hostowym rodzicu; planowanie pozostaje dostępne |
-| `box.enabled: false` albo projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38) |
+| `box.enabled: false` albo projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38), chyba że karta już czeka na `rebuild` — wtedy nadal czeka |
 | budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
-| pudełka nie ma (Incus) | `HostRunner` |
+| pudełka nie ma (Incus), bez `boxWait: rebuild` i bez nieudanej budowy w dzienniku pudełka | `HostRunner` |
+| pudełka nie ma po błędzie budowy albo przy `boxWait: rebuild` | nadal `boxWait: rebuild`; brak instancji po nieudanej przebudowie nie przenosi kroku na hosta |
 | brak filtrowania NIC, brak migawki `clean`, niezgodny hash instancji lub migawki, albo błąd budowy | `boxWait: rebuild` (zdarzenie `box.wait` z `why`), krok nie startuje: „czeka na pudełko (do przebudowy)”; silnik sprawdza odcisk `user.tide.recipe` konfiguracji migawki z `incus snapshot list` także dla istniejącej kopii karty; przebudowę zatwierdza się z planem (PT-172) |
 | `box: per-card` | `Builder.copy_for_card` przy pierwszym kroku karty (gdy kopii nie ma), krok w `card_box_name(slug, karta)` |
 | pudełko (albo kopia) zatrzymane | `boxWait: start`, `incus start`, `incus exec <pudełko> -- true` do skutku (najwyżej `box.ip-wait-seconds`), menedżer usług `agent`, adres IPv4; potem `boxWait` czyszczone |
@@ -2985,6 +2986,12 @@ do argv. Po końcu albo nieudanym starcie `revoke_step` unieważnia atrapę i id
 sieciowy; nigdy poświadczenia hosta. Nowy proces usługi odtwarza z niego polityki aktywnych pudełek i te same
 atrapy przed monitorowaniem kroków. Dotyczy to również zamiaru `step-start` bez zapisanego wyniku startu:
 jednostka jest sprawdzana we wskazanym runnerze, a nie na hoście.
+Odtwarzanie uzgadnia też zwolnienia na podstawie `step.finished` oraz nieudanego wyniku zamiaru `step-start`.
+Awaria po zapisie końca lub przed startem jednostki nie pozostawia trwałego `box.use`: kolejne sprawdzenie
+ponawia `box.release`, usuwa `access.json`, unieważnia identyfikator proxy i atrapę K3. Powtórne `_finish` też
+ponawia zwolnienie bez drugiego wyniku. Nieudane sprzątanie jest ponawiane bez nowego zdarzenia i bez restartu.
+Polityka po odtworzeniu pochodzi z zapisanych kontekstów nadal aktywnych kroków; gdy żaden nie pozostał,
+jest zdejmowana. Zwolnienie wpisu użycia i pliku kontekstu działa również przy niedostępnym proxy.
 
 **Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
 odmów kroku (wiersze `CONNECT` i `HTTP`):
