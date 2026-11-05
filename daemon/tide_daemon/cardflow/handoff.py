@@ -118,12 +118,22 @@ Nie wykonuj push ani scalenia gałęzi.
 """
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, box: bool = False) -> str:
     """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
     own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
            "nie proś o zgodę na niego.\n") if step_dir else ""
+    wrapped = ("W pudełku wolno opakować dozwolone polecenie testowe jako `tide-test <polecenie> [argumenty…]`\n"
+               "bez osobnego wpisu tide-test na liście zgód. Dla tej formy sprawdzaj listę dozwolonych\n"
+               "wobec polecenia wewnątrz owijki. Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c,\n"
+               "nie sam program sh; owijka ani powłoka nie rozszerzają zgody na argumenty lub łańcuchy.\n"
+               "Zakazy mają pierwszeństwo: sprawdzaj zarówno pełne wywołanie, jak i polecenie wewnętrzne\n"
+               "(w tym każde polecenie w treści sh -c). Zabronionego polecenia nie uruchamiaj przez owijkę.\n"
+               "Lista verify profilu wskazuje testy do opakowania, sama nie nadaje zgody na ich wykonanie.\n") if box else ""
+    boundary = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
+                "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.") if box else (
+                "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
     return f"""
 
 Polecenia projektu w tym kroku (najnowsza lista):
@@ -131,7 +141,7 @@ Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
 Zabronione polecenia:
 {deny}
-{own}Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+{own}{wrapped}{boundary}
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
 na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
 Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.

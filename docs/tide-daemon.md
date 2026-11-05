@@ -3000,6 +3000,10 @@ jest zdejmowana. Zwolnienie wpisu użycia i pliku kontekstu działa również pr
 Prompt ticketu i poprawek każe uruchamiać testy przez `tide-test <polecenie> [argumenty…]`,
 także polecenia `verify` profilu i rodziny `npm test`, `npx playwright test`, `dotnet test`,
 `make test`, `pytest`, `python -m unittest`. Złożone polecenie: `tide-test sh -c '…'`.
+Polityka promptu pudełka pozwala opakować dozwolony test bez osobnej zgody na `tide-test`:
+listę zgód porównuje się z poleceniem wewnętrznym (dla `sh -c` z jego treścią).
+Zakazy mają pierwszeństwo i obejmują pełne wywołanie oraz polecenia wewnątrz owijki i powłoki.
+Owijka nie rozszerza zgody na argumenty ani łańcuchy; sam wpis w `verify` nie nadaje zgody.
 Nie ma globalnego przechwytywania poleceń; uruchomienie bez owijki nie daje artefaktu.
 Owijka dziedziczy środowisko, stdin i katalog roboczy, łączy stdout/stderr w log oraz przekazuje kod wyjścia.
 Każde wywołanie tworzy `out/tests/<n>.log` i atomowo dopisuje rekord do listy `out/tests/summary.json`:

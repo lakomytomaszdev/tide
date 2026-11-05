@@ -115,6 +115,12 @@ class CommandTest(unittest.TestCase):
 
 
 class HandoffTest(unittest.TestCase):
+    def test_host_command_policy_keeps_original_boundary(self):
+        text = handoff.command_policy(["make test"], ["make install"], step_dir="/step")
+        self.assertIn("Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.", text)
+        self.assertNotIn("tide-test", text)
+        self.assertEqual(text, handoff.command_policy(["make test"], ["make install"], step_dir="/step", box=False))
+
     def test_box_instruction_includes_custom_verify(self):
         text = handoff.box_tests({"verify": ["./check-project --quick", "make test"]})
         self.assertIn("testy uruchamiaj przez `tide-test", text)

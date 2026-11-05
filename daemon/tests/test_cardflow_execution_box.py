@@ -724,13 +724,26 @@ class BoxStepInProcessTest(BoxFlow):
         return step
 
     def test_ticket_step_runs_in_the_box_and_finishes(self):
-        self.build_box()
+        self.build_box({"tide-box": 1, "verify": ["make test"],
+                        "network": {"domains": ["api.example.org"]}})
+        changed = json.loads(self.board.upsert_project(json.dumps({
+            "slug": SLUG, "allowedCommands": ["make test"], "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"])
         card_id = self.card()
         self.assertTrue(self.start(card_id)["ok"])
         step = self.started_box(card_id)
         finished = self.finished(card_id)
         with open(os.path.join(step["stepDir"], "in", "prompt.txt")) as fh:
-            self.assertIn("testy uruchamiaj przez `tide-test", fh.read())
+            prompt = fh.read()
+        self.assertIn("testy uruchamiaj przez `tide-test", prompt)
+        self.assertIn("- make test\nZabronione polecenia:\n- make install\n", prompt)
+        self.assertIn("bez osobnego wpisu tide-test na liście zgód", prompt)
+        self.assertIn("wobec polecenia wewnątrz owijki", prompt)
+        self.assertIn("Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c", prompt)
+        self.assertIn("Zakazy mają pierwszeństwo", prompt)
+        self.assertIn("(w tym każde polecenie w treści sh -c)", prompt)
+        self.assertIn("- tide-test sh -c 'make test'", prompt)
+        self.assertNotIn("Przed poleceniem spoza listy dozwolonych zapisz", prompt)
         self.assertEqual(finished["result"], "done")
         self.assertTrue(wait_until(lambda: self.proxy.calls[-1][0] == "clear", timeout=10), self.proxy.calls)
         execs = [c for c in self.incus_calls("exec") if "/usr/bin/env" in c]
@@ -760,6 +773,9 @@ class BoxStepInProcessTest(BoxFlow):
 
     def test_fix_prompt_and_review_receive_box_test_instructions_and_artifacts(self):
         self.build_box({"tide-box": 1, "verify": ["./custom-check --quick"]})
+        changed = json.loads(self.board.upsert_project(json.dumps({
+            "slug": SLUG, "allowedCommands": ["npm test"], "deniedCommands": ["npm test --unsafe"]})))
+        self.assertTrue(changed["ok"])
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 1")
         configure = boxstep.configure_background
         test_dirs = []
@@ -776,7 +792,12 @@ class BoxStepInProcessTest(BoxFlow):
                     fh.write(content)
 
         # Artefakty istnieją przed startem autora — test nie ściga się z monitorem.
-        with mock.patch.object(boxstep, "configure_background", side_effect=prepare):
+        # Sprawdzamy przekazanie i prompty; kontrolę czystości przez bwrap testuje gitops.
+        def clean_tip(repo, branch, path):
+            return self.engine.git.sha(repo, f"refs/heads/{branch}")
+
+        with mock.patch.object(boxstep, "configure_background", side_effect=prepare), \
+                mock.patch.object(self.engine.git, "clean_tip", side_effect=clean_tip):
             self.assertTrue(self.start(card_id)["ok"])
             self.finished(card_id, count=3)
         tests = test_dirs[0]
@@ -792,6 +813,11 @@ class BoxStepInProcessTest(BoxFlow):
             prompt = fh.read()
         self.assertIn("testy uruchamiaj przez `tide-test", prompt)
         self.assertIn("./custom-check --quick", prompt)
+        self.assertIn("- npm test\nZabronione polecenia:\n- npm test --unsafe\n", prompt)
+        self.assertIn("bez osobnego wpisu tide-test na liście zgód", prompt)
+        self.assertIn("Zakazy mają pierwszeństwo", prompt)
+        self.assertIn("sama nie nadaje zgody na ich wykonanie", prompt)
+        self.assertNotIn("Przed poleceniem spoza listy dozwolonych zapisz", prompt)
 
     def test_restart_during_a_box_step_finds_it_by_its_entry_and_reads_the_result(self):
         self.build_box()

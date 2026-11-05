@@ -1564,7 +1564,8 @@ class FlowEngine(PlanEditing):
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
-        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
+        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands,
+                                         step_dir=step_dir, box=placement is not None)
         if placement is not None:
             prompt += handoff.box_tests(placement.profile)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
