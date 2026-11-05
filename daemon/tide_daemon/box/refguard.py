@@ -419,8 +419,12 @@ def _restore_symref(repo, ref, old, now):
         os.close(root)
 
 
-def finish(repo, card, step, *, branch=""):
-    """Trwały wynik po pełnej kontroli; błędy naprawy pozostawiają migawkę do ponowienia."""
+def finish(repo, card, step, *, branch="", active_only=False):
+    """Trwały wynik po pełnej kontroli; błędy naprawy pozostawiają migawkę do ponowienia.
+
+    active_only służy odzyskiwaniu: pomija brak migawki starszych kroków i zakończone kontrole.
+    Odczyt stanu oraz decyzja o ponowieniu odbywają się pod tą samą blokadą co naprawa.
+    """
     report = {"refs": [], "files": [], "head": False, "errors": []}
 
     @contextmanager
@@ -431,16 +435,24 @@ def finish(repo, card, step, *, branch=""):
         except (OSError, ValueError, KeyError, StepError) as exc:
             report["errors"].append(f"{label}: {exc}")
 
-    with locked(repo):
+    with locked(repo, existing_only=active_only) as present:
+        if not present:
+            return {}
         path = _path(repo, card, step)
         try:
             saved = _load(path)
+            if active_only and not saved.get("active"):
+                return {}
             if "report" in saved:
                 return saved["report"]
             previous = saved.get("pendingReport", {})
             for field in ("refs", "files", "head"):
                 if field in previous:
                     report[field] = previous[field]
+        except FileNotFoundError as exc:
+            if not active_only:
+                report["errors"].append(str(exc))
+            return report if report["errors"] else {}
         except (OSError, ValueError, KeyError) as exc:
             report["errors"].append(str(exc))
             return report

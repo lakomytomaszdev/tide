@@ -1,5 +1,8 @@
 """PT-170: rzeczywiste refy, kopie .git i współbieżne końce kroków bez Incusa."""
 import concurrent.futures
+import contextlib
+from dataclasses import replace
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -8,7 +11,11 @@ import unittest
 from unittest import mock
 
 from tide_daemon.box import refguard
+from tide_daemon.box import runner as br
+from tide_daemon.cardflow import boxstep
 from tide_daemon.cardflow.engine import FlowEngine
+from tide_daemon.cardflow.journal import Journal
+from tide_daemon.cardflow.state import fold
 from tide_daemon.cardflow.gitops import FlowGit, lock_for
 from tide_daemon.gitcommand import HOST_OPTIONS
 from tide_daemon.tasks import agentcmd, stepstop
@@ -425,8 +432,156 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(guard.kwargs["refs"], ["refs/heads/master"])
         self.assertEqual((done.kwargs["result"], done.kwargs["reason"]), ("error", "refs.guard"))
 
+    def test_finished_step_retries_original_snapshot_through_recovery_and_tick(self):
+        for failure in ("read", "cas"):
+            with self.subTest(failure=failure):
+                self.begin()
+                engine = FlowEngine.__new__(FlowEngine)
+                engine.journal = Journal(str(self.root / ("board-" + failure)))
+                engine.journal.append("K-38", "card.started", repo=self.repo)
+                engine.journal.append("K-38", "step.started", step="one", runner="box", repo=self.repo,
+                                      branch="ticket/one", kind="ticket")
+                for name in ("_queue_notices", "_release_local", "_release_box", "_recover_started_steps",
+                             "_tick_card", "_guard_card"):
+                    setattr(engine, name, mock.Mock())
+                engine._codex_broken_mcp = mock.Mock(return_value=False)
+                engine.tmp_root = str(self.root / "tmp")
+                engine.procs, engine.watch = {}, {}
+                engine._local_claims, engine._warnings, engine._worktree_heads = {}, {}, {}
+                engine.box_proxy = mock.Mock()
+                engine.store = mock.Mock(root=str(self.root / "store"))
+                step = fold(engine.journal.read("K-38")).steps["one"]
+                gitrepos.commit(self.worktrees["one"], "engine-" + failure)
+                tip = gitrepos.git(self.repo, "rev-parse", "ticket/one").strip()
+                gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+                hook = self.common / "hooks/new-hook"
+                hook.write_text("obcy hak")
+                real_node, real_run = refguard._node, Git.run
+
+                def unreadable(parent, name):
+                    if name == "hooks":
+                        raise PermissionError("chwilowy brak odczytu")
+                    return real_node(parent, name)
+
+                def cas_error(git, cwd, *args, **kw):
+                    if "update-ref" in args and "refs/heads/master" in args:
+                        raise agentcmd.StepError("chwilowy błąd CAS")
+                    return real_run(git, cwd, *args, **kw)
+
+                patch = (mock.patch.object(refguard, "_node", side_effect=unreadable) if failure == "read"
+                         else mock.patch.object(Git, "run", cas_error))
+                # Odczyt ponawiamy także bez proxy; CAS sprawdza ścieżkę z pamięcią podpisu sieci.
+                with mock.patch.object(boxstep, "proxy_of", return_value=None if failure == "read" else engine.box_proxy):
+                    with patch:
+                        engine._finish("K-38", step, forced={"result": "done"})
+                        boxstep.recover_network(engine)
+                    self.assertTrue(refguard._active(self.repo))
+                    self.assertEqual(refguard.other_cards(self.repo, "K-99"), ["K-38"])
+                    # Nowy krok nie może przyjąć obcego haka/refu jako punktu przywracania.
+                    with self.assertRaises(agentcmd.StepError):
+                        self.begin("two")
+                    # Awaria sprzątania sieci nie może pominąć niezależnej naprawy repozytorium.
+                    with mock.patch.object(boxstep, "_release_resources", side_effect=OSError("sprzątanie sieci")):
+                        engine.tick()
+                self.assertFalse(hook.exists())
+                self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+                self.assertEqual(refguard._active(self.repo), [])
+                events = engine.journal.read("K-38")
+                ended = [e for e in events if e["type"] == "step.finished"]
+                self.assertEqual(len(ended), 1)
+                self.assertEqual((ended[0]["result"], ended[0]["reason"]), ("error", "refs.guard"))
+                repaired = [e for e in events if e["type"] == "refs.guard"][-1]
+                self.assertEqual(repaired["errors"], [])
+                self.assertEqual(repaired["files"], ["hooks"])
+                self.assertEqual(repaired["refs"], ["refs/heads/master"])
+                self.begin("two")
+                self.assertEqual(self.finish("two"), {})
+
+    def test_recovery_cancels_snapshot_of_a_start_that_never_ran(self):
+        self.begin()
+        engine = mock.Mock()
+        engine.journal = Journal(str(self.root / "board"))
+        engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo)
+        engine.journal.append("K-38", "result", action="step-start", key="one", ok=False)
+        boxstep.recover_network(engine)
+        self.assertEqual(refguard._active(self.repo), [])
+
 
 class RunnerGuardTest(BoxRunnerCase):
+    def demo(self, runner, *options):
+        start = runner.start
+
+        def start_in_temp(step, **kw):
+            return start(replace(step, tmp_root=os.path.join(self.tmp, "tmp")), **kw)
+
+        with mock.patch.object(br, "BoxRunner", return_value=runner), \
+                mock.patch.object(runner, "start", side_effect=start_in_temp), \
+                mock.patch("tide_daemon.box.settings.load", return_value=self.settings), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return br._demo(["proj", "--worktree", self.worktree, "--branch", "feat/pt-1", *options])
+
+    def test_clean_demo_releases_guard(self):
+        runner = self.runner()
+        runner.unit_state = mock.Mock(return_value="inactive")
+        runner._popen = mock.Mock(return_value=mock.Mock(wait=mock.Mock(return_value=0)))
+        self.assertEqual(self.demo(runner, "--", "true"), 0)
+        self.assertEqual(refguard._active(self.repo), [])
+
+    def test_demo_restores_foreign_ref_and_returns_error(self):
+        runner = self.runner()
+        runner.unit_state = mock.Mock(return_value="inactive")
+
+        def ended():
+            gitrepos.git(self.repo, "tag", "evil")
+            return 0
+
+        runner._popen = mock.Mock(return_value=mock.Mock(wait=mock.Mock(side_effect=ended)))
+        self.assertEqual(self.demo(runner, "--", "true"), 1)
+        self.assertNotIn("refs/tags/evil", gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)"))
+        self.assertEqual(refguard._active(self.repo), [])
+
+    def test_demo_waits_for_confirmed_unit_end_before_checking_guard(self):
+        for state in ("active", "unknown"):
+            with self.subTest(state=state):
+                runner = self.runner()
+                runner.unit_state = mock.Mock(return_value=state)
+                runner._popen = mock.Mock(return_value=mock.Mock(wait=mock.Mock(return_value=0)))
+                with mock.patch.object(refguard, "finish", wraps=refguard.finish) as finish:
+                    self.assertEqual(self.demo(runner, "--", "true"), 1)
+                    saved = refguard._active(self.repo)[0][1]
+                    self.assertEqual(self.demo(runner, "--finish-guard", saved["step"]), 1)
+                    finish.assert_not_called()
+                    runner.unit_state.return_value = "inactive"
+                    self.assertEqual(self.demo(runner, "--finish-guard", saved["step"]), 0)
+                self.assertEqual(refguard._active(self.repo), [])
+                runner._popen.assert_called_once()
+
+    def test_demo_retries_failed_repair_without_running_command_again(self):
+        runner = self.runner()
+        runner.unit_state = mock.Mock(return_value="inactive")
+        hook = Path(self.repo) / ".git/hooks/new-hook"
+
+        def ended():
+            hook.write_text("obcy hak")
+            return 0
+
+        real_node = refguard._node
+
+        def unreadable(parent, name):
+            if name == "hooks" and hook.exists():
+                raise PermissionError("chwilowy brak odczytu")
+            return real_node(parent, name)
+
+        runner._popen = mock.Mock(return_value=mock.Mock(wait=mock.Mock(side_effect=ended)))
+        with mock.patch.object(refguard, "_node", side_effect=unreadable):
+            self.assertEqual(self.demo(runner, "--", "true"), 1)
+        saved = refguard._active(self.repo)[0][1]
+        self.assertTrue(hook.exists())
+        self.assertEqual(self.demo(runner, "--finish-guard", saved["step"]), 1)
+        self.assertFalse(hook.exists())
+        self.assertEqual(refguard._active(self.repo), [])
+        runner._popen.assert_called_once()
+
     def test_switched_head_is_rejected_before_prepare_or_launch(self):
         gitrepos.git(self.worktree, "symbolic-ref", "HEAD", "refs/heads/master")
         runner = self.runner(card="K-38")

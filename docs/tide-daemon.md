@@ -2922,9 +2922,24 @@ i wymusza wynik `error` z powodem `refs.guard`, niezależnie od wyniku agenta.
 Brak lub uszkodzenie migawki i nieudana naprawa również kończą się błędem.
 Uszkodzony wpis w `worktrees/` lub błąd pojedynczego pliku jest raportowany ze ścieżką;
 pozostałe dostępne pliki, refy, `HEAD` i wskaźnik `.git` są nadal sprawdzane i naprawiane.
-Przy błędzie naprawy migawka pozostaje aktywna, zachowuje kopię i listę naruszeń, a kolejne
-`finish` ponawia kontrolę. Dopiero pełna kontrola bez błędów utrwala końcowy wynik,
+Przy błędzie naprawy migawka pozostaje aktywna, zachowuje kopię i listę naruszeń.
+Zapis `step.finished` nie dezaktywuje migawki z niedokończoną naprawą. Odzyskiwanie
+(`recover_network`, także bez proxy) ponawia taką kontrolę w kolejnych tickach z oryginalnej
+kopii, aż odczyt i naprawa zakończą się bez błędów; kolejne wyniki zapisuje jako `refs.guard`.
+W tym czasie inne karty nadal czekają, a nowy krok tej samej karty nie może przyjąć obcych
+zmian jako punktu przywracania. Anulowanie bez kontroli dotyczy wyłącznie nieudanego startu
+bez wpisu uruchomionego kroku.
+Dopiero pełna kontrola bez błędów utrwala końcowy wynik,
 który pozwala ponowić zakończenie bez ponownego cofania refów.
+
+Tryb `--demo` również wykonuje kontrolę po potwierdzeniu nieaktywnej jednostki i zwraca
+kod 1 po naruszeniu. Przy nieznanym stanie jednostki lub błędzie naprawy zachowuje migawkę
+i wypisuje identyfikator próby. Ponowienie samej kontroli, bez ponownego uruchomienia polecenia:
+`python3 -m tide_daemon.box.runner --demo <slug> --worktree <W> --branch <gałąź>
+[--card K-N] --finish-guard <demo-id>` (te same projekt, worktree i karta).
+Naprawa korzysta z pierwotnej kopii; wykryte wcześniej naruszenie nadal daje kod 1 także
+po skutecznej naprawie. Czysta próba zwalnia strażnika i zachowuje kod klienta Incusa.
+
 `HostRunner` nie zakłada migawek i nie uruchamia kontroli. Każde wywołanie gita usługi,
 w tym `Git`, `FlowGit`, `StepGit`, odczyty koordynacji i runnera, przechodzi przez
 `gitcommand.git_argv`, które dopisuje `-c core.hooksPath=/dev/null -c core.fsmonitor=false`.
@@ -2967,7 +2982,7 @@ niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko prz
 nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
 
 **Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W]
-[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
+[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>-<losowy-sufiks>.step` z poleceniem zamiast agenta i znacznikiem
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
 

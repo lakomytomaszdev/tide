@@ -775,15 +775,36 @@ def demo_args(argv: list):
     parser.add_argument("--worktree", default=os.getcwd(), help="worktree w <repo>-worktrees (domyślnie bieżący)")
     parser.add_argument("--card", default="", help="kopia pudełka karty (box: per-card)")
     parser.add_argument("--branch", required=True, help="oczekiwana gałąź kroku (bez refs/heads/)")
+    parser.add_argument("--finish-guard", default="", metavar="DEMO-ID",
+                        help="ponów kontrolę zakończonej próby z oryginalnej migawki, bez uruchamiania polecenia")
     parser.add_argument("--push-tide-step", action="store_true",
                         help="wgraj tide-step do pudełka (/opt/tide/tide-step) — pudełko prototypowe bez obrazu #16")
-    if "--" not in argv:
-        parser.error("polecenie po `--`: --demo <slug> [opcje] -- <polecenie>")
-    cut = argv.index("--")
+    cut = argv.index("--") if "--" in argv else len(argv)
     args, command = parser.parse_args(argv[:cut]), list(argv[cut + 1:])
-    if not command:
+    if args.finish_guard:
+        if not re.fullmatch(r"demo-[0-9]{14}(?:-[a-f0-9]{8})?", args.finish_guard):
+            parser.error("niepoprawny identyfikator próby")
+        if command or args.push_tide_step:
+            parser.error("--finish-guard nie uruchamia polecenia ani nie wgrywa tide-step")
+    elif not command:
         parser.error("brak polecenia po `--`")
     return args, command
+
+
+def _demo_finish(runner, repo: str, card: str, step_id: str) -> int:
+    from . import refguard
+    # Koniec klienta incus nie dowodzi zakończenia jednostki, także przy ponowieniu po awarii.
+    if runner.step_state({"unit": "tide-step-" + step_id, "box": runner.box}) != "inactive":
+        print(f"nie potwierdzono końca próby; ponów --finish-guard {step_id}", flush=True)
+        return 1
+    report = refguard.finish(repo, card, step_id)
+    if report:
+        print("refs.guard: " + json.dumps(report, ensure_ascii=False), flush=True)
+        if report.get("errors"):
+            print(f"naprawa oczekuje; ponów --finish-guard {step_id} z tym samym projektem, worktree i kartą",
+                  flush=True)
+        return 1
+    return 0
 
 
 def _demo(argv: list) -> int:
@@ -794,7 +815,7 @@ def _demo(argv: list) -> int:
                             capture_output=True, text=True, check=True).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")
-    step_id = f"demo-{stamp}"
+    step_id = args.finish_guard or f"demo-{stamp}-{secrets.token_hex(4)}"
     step_dir = f"{worktree}.{step_id}.step"
     # Znacznik ze zmiennej środowiska (nie z argv — ten widać w `ps`), żeby skrypt próby mógł go szukać.
     marker = os.environ.get("TIDE_DEMO_MARKER") or "tide-demo-" + secrets.token_hex(8)
@@ -807,6 +828,8 @@ def _demo(argv: list) -> int:
         tide_step = ("/bin/sh", remote)
     runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step,
                        step_env=lambda _s: {"TIDE_DEMO_SECRET": marker})
+    if args.finish_guard:
+        return _demo_finish(runner, repo, args.card, step_id)
     step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
                          step_id=step_id, branch=args.branch)
 
@@ -817,6 +840,7 @@ def _demo(argv: list) -> int:
     print(f"pudełko: {runner.box}\njednostka: {runner.unit_for(bg)}\nkatalog kroku: {step_dir}\n"
           f"znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET={marker}", flush=True)
     code = proc.wait()
+    guard_code = _demo_finish(runner, repo, args.card, step_id)
     for title, path in (("step.log", bg.log_file), (EXEC_LOG, os.path.join(step_dir, "out", EXEC_LOG))):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
@@ -824,7 +848,7 @@ def _demo(argv: list) -> int:
         except OSError:
             print(f"--- {title}: brak")
     print(f"[kod klienta incus {code}, exit-code kroku: {_read(bg.exit_file)}]")
-    return code
+    return guard_code or code
 
 
 def _read(path: str) -> str:

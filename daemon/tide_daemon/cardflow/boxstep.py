@@ -387,15 +387,18 @@ def recover_network(engine) -> None:
     """Uzgadnia zwolnienia oraz polityki/K3; obejmuje oba okna awarii startu i końca kroku."""
     proxy = proxy_of(engine)
     active, ended = [], []
+    failed_starts = set()
     for card in engine.journal.cards():
         st = fold(engine.journal.read(card))
         active.extend((card, s) for s in st.running() if s.get("runner") == RUNNER)
         active.extend((card, {**i, "step": i["key"]}) for i in st.open_intents(include_background=True)
                       if i.get("action") == "step-start" and i.get("runner") == RUNNER and i["key"] not in st.steps)
         ended.extend((card, s) for name, s in st.steps.items() if name in st.finished and s.get("runner") == RUNNER)
-        ended.extend((card, {**i, "step": key}) for (action, key), i in st.intents.items()
-                     if action == "step-start" and i.get("runner") == RUNNER and key not in st.steps
-                     and (action, key) in st.results and not st.results[(action, key)].get("ok"))
+        for (action, key), intent in st.intents.items():
+            if (action == "step-start" and intent.get("runner") == RUNNER and key not in st.steps
+                    and (action, key) in st.results and not st.results[(action, key)].get("ok")):
+                ended.append((card, {**intent, "step": key}))
+                failed_starts.add((card, key))
     signature = (proxy, tuple(sorted(s["step"] for _card, s in active)),
                  tuple(sorted(s["step"] for _card, s in ended)))
     if getattr(engine, "_box_network_state", None) == signature:
@@ -403,12 +406,25 @@ def recover_network(engine) -> None:
     released = True
     for card, step in ended:
         try:
-            _release_resources(engine, step)
-            # Także awaria między zapisaniem migawki a uruchomieniem procesu/step.started.
             from ..box import refguard
             repo = step.get("repo") or (fold(engine.journal.read(card)).started or {}).get("repo")
             if repo:
-                refguard.cancel(repo, card, step["step"])
+                if (card, step["step"]) in failed_starts:
+                    # Tylko start bez procesu można anulować bez kontroli końcowej.
+                    refguard.cancel(repo, card, step["step"])
+                else:
+                    guarded = refguard.finish(repo, card, step["step"], branch=step.get("branch") or "",
+                                              active_only=True)
+                    if guarded:
+                        engine.journal.append(card, "refs.guard", step=step["step"],
+                                              ticket=step.get("ticket") or "", **guarded)
+                        if guarded.get("errors"):
+                            released = False  # Zachowujemy oryginalną migawkę i ponawiamy w każdym ticku.
+        except (OSError, ValueError) as exc:
+            released = False
+            print(f"tide-daemon: przepływ karty {card}: kontrola refów po {step['step']}: {exc!r}", flush=True)
+        try:
+            _release_resources(engine, step)
         except (OSError, ValueError) as exc:
             released = False  # Nie zapamiętujemy sukcesu: następny tick ponawia także bez nowych zdarzeń.
             print(f"tide-daemon: przepływ karty {card}: zwolnienie pudełka po {step['step']}: {exc!r}", flush=True)
