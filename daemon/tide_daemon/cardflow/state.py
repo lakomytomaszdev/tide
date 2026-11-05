@@ -240,6 +240,11 @@ def fold(events: list[dict]) -> FlowState:
                 st.plan_review_wait = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            if e.get("ticket") and e.get("kind") in ("ticket", "fix"):
+                # Krok autora ruszył — każde inne czekanie autora tego ticketu jest nieaktualne (05.11, K-37/PT-147:
+                # poprawki szły na Codexie, a kafelek dalej pisał „czeka na limit” z wpisu sprzed przepięcia).
+                for other in ("ticket", "fix"):
+                    st.waiting.pop((e.get("ticket"), other), None)
             if e.get("kind") == "plan-review":
                 # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
                 # na zawsze pokazywała „czeka na limit” i chowała decyzję Ponów / Zmień wykonawcę).
