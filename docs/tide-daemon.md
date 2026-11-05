@@ -2476,15 +2476,17 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
    zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
    (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
    `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
-   w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
-   initial.mode=0750` — pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root` i agent nie mógłby w nim
-   pisać (istniejący wolumen nie jest zmieniany; `chown` istniejących danych to sprawa #16).
+   w puli jako urządzenie dyskowe na `/home/agent`, tworzony ze znacznikiem `user.tide.home-init=pending`.
+   Incus 6.0 nie przyjmuje `initial.uid/gid/mode`; właściciel i tryb nowego katalogu są ustawiane po starcie.
 2. Filtrowanie NIC (niżej).
 3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
    budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
    `$XDG_STATE_HOME/tide/box/<slug>/build-denied.log`.
 4. Kontrola braku swapu: pierwszy `incus exec` sprawdza `/sys/fs/cgroup/memory.swap.max=0`.
    Brak pliku (wymagane cgroup v2), błąd odczytu albo inna wartość przerywa budowę przed szablonami i migawką.
+   Dla wolumenu `pending`: `install -d -m 0750 -o <agent-uid> -g <agent-gid> /home/agent` jako root pudełka,
+   potem `user.tide.home-init=ready` w metadanych wolumenu. Polecenie zmienia tylko katalog główny, bez rekursji.
+   Błąd pozostawia `pending` do ponowienia; gotowe wolumeny i istniejące bez znacznika pozostają bez zmian.
    Następnie szablony stosów wg `stacks`: `incus file push box/stacks/lib.sh` i `box/stacks/<stos>.sh` do
    `<slug>/opt/tide/stacks/`, potem `bash /opt/tide/stacks/<stos>.sh` w kolejności `stacks` (niżej, „Szablony stosów
    w pudełku (PT-192)”; brak skryptu albo `lib.sh` = błąd przed `incus`).
@@ -2532,12 +2534,15 @@ nie startuje (#18).
 
 **Kopia per karta** (`box: per-card`): `copy_for_card(slug, card)` → `incus copy <slug>/clean <slug>-<karta>`
 (nazwa wyłącznie z `card_box_name(slug, card)`, np. `plasma-tide-k-38`), `user.tide.copy-of=<slug>`,
-`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent` (z tym samym właścicielem `initial.*`),
+`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent` (inicjalizowany tak samo jak przy budowie),
 filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
 migawek; migawka po podpięciu wolumenu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
 z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
 Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
-Kopia startuje dopiero z pierwszym krokiem (#18/#19).
+Nowy wolumen `pending` wymaga krótkiego startu kopii do ustawienia właściciela katalogu. Filtrowanie NIC jest
+ustawione przed startem; kopia nie dostaje polityki domen proxy, a polecenie metadanych nie korzysta z sieci.
+Następnie kopia jest zatrzymywana i dostaje migawkę `clean`. Błąd inicjalizacji usuwa częściową instancję,
+zostawiając wolumen `pending` do ponowienia. Kolejny start do pracy prowadzi #18/#19.
 
 **Dziennik i stany.** `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, `flock`): `box.build`
 (`phase: start|end`, `result`, `steps`, `hash`), `box.ready`, `box.verify` (`result`, `failed`), `box.reset`,

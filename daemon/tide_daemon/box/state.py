@@ -39,7 +39,7 @@ COPY_OF_KEY = "user.tide.copy-of"    # kopia per karta: nazwa pudełka projektu
 CARD_KEY = "user.tide.card"
 SNAPSHOT = "clean"
 HOME_PATH = "/home/agent"
-HOME_MODE = "0750"                   # `initial.mode` wolumenu `/home/agent` (właściciel: agent-uid/gid z ustawień)
+HOME_MODE = "0750"                   # tryb katalogu głównego nowego `/home/agent` (właściciel: agent-uid/gid)
 
 _NAME_BAD = re.compile(r"[^a-z0-9-]+")
 

@@ -42,6 +42,7 @@ SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
 STACKS_LIB = "lib.sh"                    # wspólne funkcje szablonów, wypychane obok `<stos>.sh` (PT-192)
 BUILD_NO_PROXY = netenv.BOX_NO_PROXY     # jedno NO_PROXY dla budowy, obrazu bazowego i kroku (P-6)
+HOME_INIT_KEY = "user.tide.home-init"    # stan trwały w wolumenie: pending → ready, także po przerwanej budowie
 # Incus 6.0 przy twardym limits.memory i pominiętym limits.memory.swap ustawia swap na 0.
 # Jawny klucz swap (także false) jest zabroniony w projekcie ograniczonym. Sprawdzamy efekt w jądrze,
 # zamiast włączać restricted.containers.lowlevel. Brak cgroup v2 albo inny limit przerywa budowę.
@@ -192,7 +193,7 @@ class Builder:
             config["security.nesting"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
-        self._attach_home(name)
+        home_pending = self._attach_home(name)
         # 2. filtrowanie NIC przed startem
         steps.append("nic")
         self.apply_nic_filter(name)
@@ -206,12 +207,12 @@ class Builder:
         os.chmod(denied, 0o600)
         self.policy.set_box_policy(ip, domains, bool(full["network"].get("host-ollama")), denied)
         try:
-            return self._provision(slug, name, full, proxy, steps)
+            return self._provision(slug, name, full, proxy, steps, home_pending)
         finally:
             # polityka budowy nie zostaje w proxy po budowie (kroki dostaną politykę karty, #18)
             self.policy.clear_box_policy(ip)
 
-    def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
+    def _provision(self, slug, name, full, proxy, steps, home_pending) -> BuildResult:
         # Szablony (lib.sh) sprawdzają, że HTTP(S)_PROXY wywołania = TIDE_BOX_PROXY, a drop-in dockerd (docker.sh)
         # dostaje NO_PROXY wyłącznie z TIDE_BOX_NO_PROXY — obie wartości tylko stąd.
         env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive",
@@ -222,6 +223,9 @@ class Builder:
             env["TIDE_DOTNET_SDK"] = " ".join(full["dotnet"]["sdk"])
         steps.append("swap")
         self._run(name, NO_SWAP_CHECK, env, "brak potwierdzenia memory.swap.max=0 (wymagane cgroup v2 bez swapu)")
+        if home_pending:
+            steps.append("home")
+            self._initialize_home(name, env)
         # 4. szablony stosów (z lib.sh obok)
         if full["stacks"]:
             self.incus.file_push(os.path.join(self.scripts_dir, STACKS_LIB), name, f"{REMOTE_STACKS}/{STACKS_LIB}")
@@ -281,19 +285,29 @@ class Builder:
             self.sleep(0.5)
 
     def _attach_home(self, name):
-        """Wolumen `<pudełko>-home` na `/home/agent`; nowy wolumen od razu należy do użytkownika `agent`
-        (`initial.uid/gid/mode`), bo pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root`."""
+        """Podłącza trwały wolumen; zwraca, czy trzeba dokończyć inicjalizację jego katalogu głównego.
+
+        Incus 6.0 nie obsługuje `initial.uid/gid/mode`. Znacznik w nowym wolumenie pozwala dokończyć ustawienie
+        właściciela po starcie (także po błędzie). Wolumeny gotowe i istniejące bez znacznika zostają bez zmian.
+        """
         volume = bs.home_volume(name)
-        if not self.incus.volume_exists(self.settings.pool, volume):
-            self.incus.volume_create(self.settings.pool, volume, {
-                "initial.uid": self.settings.agent_uid, "initial.gid": self.settings.agent_gid,
-                "initial.mode": bs.HOME_MODE})
+        created = not self.incus.volume_exists(self.settings.pool, volume)
+        if created:
+            self.incus.volume_create(self.settings.pool, volume, {HOME_INIT_KEY: "pending"})
+        pending = created or self.incus.volume_get(self.settings.pool, volume, HOME_INIT_KEY) == "pending"
         devices = self.incus.device_show(name)
         values = {"pool": self.settings.pool, "source": volume, "path": bs.HOME_PATH}
         if "home" in devices:
             self.incus.device_set(name, "home", values)
         else:
             self.incus.device_add(name, "home", "disk", values)
+        return pending
+
+    def _initialize_home(self, name, env=None):
+        # install -d zmienia tylko katalog główny nowego wolumenu; bez rekursji i bez ścieżek hosta.
+        self._run(name, ["install", "-d", "-m", bs.HOME_MODE, "-o", str(self.settings.agent_uid),
+                         "-g", str(self.settings.agent_gid), bs.HOME_PATH], env, "inicjalizacja /home/agent")
+        self.incus.volume_set(self.settings.pool, bs.home_volume(name), {HOME_INIT_KEY: "ready"})
 
     def apply_nic_filter(self, name):
         """Filtrowanie NIC na karcie pudełka: `set`, gdy karta jest lokalna, `override`, gdy z profilu."""
@@ -320,8 +334,21 @@ class Builder:
         started = self.clock()
         self.incus.copy(f"{source}/{bs.SNAPSHOT}", target)
         self.incus.config_set(target, {bs.COPY_OF_KEY: source, bs.CARD_KEY: str(card).upper()})
-        self._attach_home(target)
+        home_pending = self._attach_home(target)
         self.apply_nic_filter(target)
+        if home_pending:
+            # Kopia powstaje zatrzymana. Krótki start tylko do metadanych wolumenu, z filtrowaniem NIC;
+            # polecenie install nie używa sieci, a kopia nie dostaje polityki domen w proxy.
+            try:
+                self.incus.start(target)
+                try:
+                    self._initialize_home(target)
+                finally:
+                    self.incus.stop(target, force=True)
+            except Exception:
+                # Częściowa kopia nie może udawać gotowej przy idempotentnym ponowieniu. Wolumen pending zostaje.
+                self.incus.delete(target, force=True)
+                raise
         self.incus.snapshot_create(target, bs.SNAPSHOT)
         stamp = bs.parse_stamp(self.incus.config_get(target, bs.RECIPE_KEY))
         recipe = stamp.get("hash", "") if isinstance(stamp, dict) else (stamp or "")

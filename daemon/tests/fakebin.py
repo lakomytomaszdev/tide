@@ -65,8 +65,9 @@ exec /usr/bin/python3 -s {FAKE_INCUS} "$@"
 # żeby polecenia budowy (apt-get, docker pull) nigdy nie dotknęły hosta.
 BOX_LOG_ONLY = """#!/bin/bash
 echo "box[$TIDE_FAKE_BOX] $(basename "$0") HTTPS_PROXY=${HTTPS_PROXY:-} $*" >> "$TIDE_FAKE_LOG"
+if [[ ${TIDE_FAKE_BOX_FAIL:-} == "$(basename "$0")" ]]; then exit 9; fi
 """
-BOX_FAKES = ("apt-get", "apt", "docker", "systemctl", "npm", "npx", "dotnet", "pip", "pip3", "curl", "wget")
+BOX_FAKES = ("apt-get", "apt", "docker", "systemctl", "npm", "npx", "dotnet", "pip", "pip3", "curl", "wget", "install")
 
 
 def make_env(tmp: str) -> dict:

@@ -217,8 +217,12 @@ def main(argv):
         if action == "create":
             if key in data["volumes"]:
                 die(f"Volume by that name already exists: {key}")
+            config = kv(args[5:])
+            for option in config:
+                if option in ("initial.uid", "initial.gid", "initial.mode"):
+                    die(f'Invalid option for volume "{volume}" option "{option}"')
             data["volumes"].append(key)
-            data.setdefault("volume_config", {})[key] = kv(args[5:])
+            data.setdefault("volume_config", {})[key] = config
         elif action == "delete":
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
@@ -228,6 +232,14 @@ def main(argv):
             if key not in data["volumes"]:
                 die(f"Storage volume not found: {key}")
             print(json.dumps({"name": volume, "pool": pool}))
+        elif action in ("get", "set"):
+            if key not in data["volumes"]:
+                die(f"Storage volume not found: {key}")
+            config = data.setdefault("volume_config", {}).setdefault(key, {})
+            if action == "get":
+                print(config.get(args[5], ""))
+            else:
+                config.update(kv(args[5:]))
         else:
             die(f"atrapa: nieznane storage volume {action}", 2)
     elif cmd == "file":
