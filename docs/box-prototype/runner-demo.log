@@ -1,0 +1,27 @@
+# PT-169 runner-demo 2026-11-05T02:04:00+01:00, pudełko tide-proto, worktree /home/user/DevWorkspace/plasma-tide-worktrees/pt-169-boxrunner-argv-incus-exec
+pudełko: tide-proto
+jednostka: tide-step-demo-20261105020400.service
+katalog kroku: /home/user/DevWorkspace/plasma-tide-worktrees/pt-169-boxrunner-argv-incus-exec.demo-20261105020400.step
+znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET=tide-demo-cb29ad8b90f3e1ae
+WYNIK ps-bez-in-env: ok (0 procesów ze znacznikiem w argv, krok w trakcie)
+--- step.log
+== git status
+## ticket/pt-169-boxrunner-argv-incus-exec
+?? docs/box-prototype/runner-demo.log
+kod 0
+== in/env (same klucze)
+HOME USER PATH LANG GIT_TERMINAL_PROMPT GIT_ASKPASS SSH_ASKPASS SSH_ASKPASS_REQUIRE GIT_SSH_COMMAND GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_GLOBAL GH_CONFIG_DIR DBUS_SESSION_BUS_ADDRESS CLAUDE_CODE_TMPDIR HTTPS_PROXY HTTP_PROXY https_proxy http_proxy NO_PROXY no_proxy TIDE_CWD TIDE_DEMO_SECRET 
+== znacznik w in/env: 1 wiersz, w środowisku: tak
+== tryb in/env: 600 1000, id: 1000
+NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1
+HTTPS_PROXY=http://10.173.184.1:18080
+WYNIK zapis-tide-pt169-probe: ok (/bin/sh: 9: cannot create /home/user/DevWorkspace/plasma-tide/.git/hooks/tide-pt169-probe: Read-only file system)
+WYNIK zapis-config: ok (/bin/sh: 9: cannot create /home/user/DevWorkspace/plasma-tide/.git/config: Read-only file system)
+  * Uses proxy env variable no_proxy == 'localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1'
+  * Connected to 127.0.0.1 (127.0.0.1) port 8765
+  < HTTP/1.0 200 OK
+WYNIK curl-bez-proxy: fail (kod 0)
+# [uwaga PT-169, ocena logu] fałszywe „fail”: skrypt dopasował wiersz „Uses proxy env variable no_proxy”, który curl pisze zawsze; połączenie poszło wprost do 127.0.0.1:8765 (HTTP 200), nie do proxy 10.173.184.1:18080 — wynik: ok. Warunek poprawiony w runner-demo.sh.
+--- box-exec.log
+[kod klienta incus 0, exit-code kroku: 0]
+WYNIK demo: kod 0

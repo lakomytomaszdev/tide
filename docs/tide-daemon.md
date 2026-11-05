@@ -2798,6 +2798,129 @@ K1: jedyną granicą dla poświadczeń jest pudełko, a lista domen proxy ograni
 **Domeny modeli.** Lista `MODEL_DOMAINS` się nie zmienia w PT-175 (`chatgpt.com`, `auth.openai.com` nadal na niej,
 choć z K3 Codex ich nie potrzebuje) — usunięcie to zmiana listy domen, osobna decyzja.
 
+### Krok w pudełku: BoxRunner (PT-169)
+
+`box/runner.py` — `BoxRunner`, drugi `Runner` obok `HostRunner` (`tasks/runner.py`, ta sama umowa `start`, `kill`,
+`env`). Uruchamia program agenta kroku w pudełku projektu (`box_name(slug)`) albo w kopii karty (`per_card=True` →
+`card_box_name(slug, card)`) jako użytkownik `agent` (uid/gid `box.agent-uid`/`agent-gid`) pod tymi samymi ścieżkami
+co na hoście. Wyboru runnera w silniku jeszcze nie ma (#18): silnik dalej dostaje `HostRunner`.
+
+**Polecenie.** Na hoście (widoczne w `ps`) jest tylko:
+
+```
+incus exec <pudełko> --project <p> -T --user 1000 --group 1000 --cwd <worktree> --
+  /usr/bin/env -i TIDE_STEP=<katalog kroku> XDG_RUNTIME_DIR=/run/user/1000
+  /usr/bin/systemd-run --user --unit=tide-step-<id>.service --collect --wait --quiet -p CPUWeight=40 -p IOWeight=40
+    --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> -- /usr/local/bin/tide-step <argv agenta>
+```
+
+Krok jest usługą użytkownika `agent`, a nie scope — decyzja `krok-jako-usluga-user` (P-9): proces w scope ginie
+razem z klientem `incus exec`, czyli z restartem usługi Tide; usługa przeżywa, a klient z `--wait` kończy się kodem
+jednostki. Nic z `in/env` nie trafia do argv ani do `--env` `incus exec`; klient `incus` dostaje tylko `HOME`,
+`PATH`, `LANG`, `USER`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `INCUS_DIR` i `INCUS_CONF` usługi (oraz haki testowe
+`TIDE_FAKE*`/`TIDE_INCUS_BIN` atrapy). Wyjście klienta: `out/box-exec.log`.
+
+**Zapis do katalogu kroku.** `<repo>-worktrees` jest w pudełku rw, więc katalog kroku, `in`, `out` i każdy plik mogą
+być w chwili startu dowiązaniem podłożonym z pudełka (agent, Codex, root pudełka). Runner nie woła
+`Background.prepare()`: `StepDir` otwiera każdy składnik od `<repo>-worktrees` w dół przez `dir_fd` z `O_NOFOLLOW`
+(katalogi zakłada `mkdir` bez podążania), pliki kroku (`settings.json`, `gitconfig`, `ignore`, `prompt.txt`) otwiera
+z `O_NOFOLLOW|O_NONBLOCK` i przed obcięciem sprawdza `fstat`: zwykły plik, jedno dowiązanie, właściciel — usługa;
+`out/box-exec.log` tak samo, dopisywany; `in/env` i `in/local-token` zakłada świeże (`unlink` + `O_EXCL`) przez ten
+sam łańcuch; `in/exit-code` usuwa przez `dir_fd`. Dowiązanie, katalog, FIFO albo twarde dowiązanie w drodze →
+odmowa kroku, cel nietknięty. Sam `lstat` przed zapisem nie wystarczy (wyścig z procesem w pudełku).
+
+**`in/env` i `tide-step`.** `start` zapisuje `<krok>/in/env` (świeży plik `O_EXCL|O_NOFOLLOW`, 0600, właściciel —
+usługa; stary plik albo dowiązanie najpierw usuwa) w wierszach `KLUCZ=wartość` (nowa linia w wartości → odmowa):
+całe środowisko programu z `agentcmd.background` (`HOME=/home/agent`, `USER=agent`, `PATH` pudełka, `LANG`,
+zmienne gita i martwy D-Bus jak na hoście), sekrety punktu lokalnego (`secret_env`), `HTTPS_PROXY`, `HTTP_PROXY`
+(i małymi literami) na `http://<adres mostka>:<box.proxy-port>`, `NO_PROXY`/`no_proxy` = `box_no_proxy(<mostek>)`,
+`TIDE_CWD` i zmienne z `step_env(step)` (porty #8, atrapy K3 #18). Adres proxy: jawny `proxy_base`, inaczej proxy
+uruchomione w tym procesie, inaczej `incus network get <box.bridge> ipv4.address`; brak — krok odmówiony.
+`env(step)` zwraca to samo bez sekretów. Token Claude Code dla punktu lokalnego: kopia 0600 w `in/local-token`
+czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku). Node (nvm) i Chromium Playwrighta pochodzą z obrazu
+pudełka, nie z hosta: `box_step` zeruje `node_home` i `chrome_bin` kroku (silnik ustawia je z `~` hosta), więc `PATH`
+zaczyna się od `BOX_PATH`, a `CHROME_BIN` nie trafia do `in/env` ani `env(step)`.
+
+Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh; obraz bazowy #16 instaluje je jako
+`/usr/local/bin/tide-step`): czyści środowisko, sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
+użytkownik — inaczej kod 125; `PATH` = `BOX_PATH` ustawiane jawnie przed pierwszym poleceniem), eksportuje wiersze
+bez `eval`, przechodzi do `TIDE_CWD`, zakłada
+`CLAUDE_CODE_TMPDIR` w `/tmp` pudełka, uruchamia agenta z `in/prompt.txt` na stdin i wyjściem dopisywanym do
+`out/step.log`, zapisuje kod atomowo w `in/exit-code` (jak `EXIT_WRAPPER` hosta; SIGTERM przeczekuje) i kończy się nim.
+
+**`BOX_NO_PROXY`** — jedna stała w `box/runner.py`: `localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal`,
+a `box_no_proxy(adres)` dokleja adres mostka (nigdy `*`). Używają jej: `in/env` i `env(step)` (tu),
+`/etc/environment` obrazu bazowego (#16) i drop-in `dockerd` szablonu `docker.sh` (#29). Sam adres mostka nie
+wystarczy: e2e Playwright, Karma i serwery testowe na `localhost` oraz kontenery Testcontainers poszłyby przez proxy
+(403). Klienci bez CIDR w `NO_PROXY` i tak trafiają w `localhost`, bo Testcontainers mapują porty na localhost (P-6).
+
+**Montowania** (`ensure_devices`, przy każdym starcie; dodaje tylko brakujące, pod blokadą plikową
+`$XDG_STATE_HOME/tide/box/<slug>/devices.lock` — dwa pierwsze kroki naraz dodają je raz):
+
+| Urządzenie | Źródło = ścieżka w pudełku | Tryb |
+| --- | --- | --- |
+| `tide-git` | `<repo>/.git` | rw |
+| `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, nad `tide-git` |
+| `tide-wtcfg-<nazwa>` | `.git/worktrees/<nazwa>/config.worktree` — **tylko przy `extensions.worktreeConfig=true`** w `.git/config` hosta | ro, nad `tide-git` |
+| `tide-worktrees` | `<repo>-worktrees` (worktree i katalogi kroku obok niego) | rw |
+| `tide-home` | `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już wolumen `<pudełko>-home` na `/home/agent` | rw |
+
+Kolejność montowania: Incus montuje urządzenia `disk` posortowane po `path` (`/` pierwsze, dalej leksykograficznie),
+nie w kolejności `device add` — nakładki leżą nad `.git`, bo ich ścieżki mają `<repo>/.git/` jako przedrostek. Nie
+„poprawiać” kolejności dodawania; test sprawdza przedrostki ścieżek.
+
+**`config.worktree` (D7).** Git czyta `.git/worktrees/<wt>/config.worktree` tylko przy włączonym
+`extensions.worktreeConfig`. Runner czyta flagę z `.git/config` **hosta** (`git config --file`, plik pod nakładką ro —
+agent jej nie włączy; błąd odczytu → odmowa kroku). Wyłączona (stan plasma-tide): żadnych nakładek `tide-wtcfg-*` —
+nowy worktree ticketu nie wymaga zatrzymania pudełka, kroki projektu startują równolegle. Włączona: nakładka na każdy
+istniejący plik, a dla worktree kroku usługa najpierw zakłada pusty `config.worktree` (wskaźnik `<worktree>/.git`
+musi prowadzić bezpośrednio do `.git/worktrees/<nazwa>`; dowiązanie albo katalog zamiast pliku → odmowa; plik
+zakładany przez `dir_fd` z `O_NOFOLLOW` od `<repo>/.git`, bo `.git/worktrees/<nazwa>` może zostać podmienione
+na dowiązanie po sprawdzeniu `realpath`). Nakładka
+chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
+krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
+`core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
+`gitops.HARDENED` (`core.hooksPath=/dev/null`).
+
+Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
+`raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
+dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dodania i startuje z powrotem — a gdy według
+dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Z tej listy runner wyklucza własny `step_id`, więc
+silnik (#18, PT-181) musi zapisać `box.use` (`state.mark_in_use`) **przed** `runner.start` każdego kroku — inaczej
+biegnący krok drugiego worktree, którego wpisu jeszcze nie ma, zginąłby przy zatrzymaniu pudełka. Po takim restarcie runner czeka (najwyżej
+`box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
+bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
+menedżera krok jest odmówiony. Worktree albo katalog kroku spoza `<repo>-worktrees` → odmowa. Zatrzymane pudełko →
+odmowa z czytelnym błędem (start pudełka należy do #18). Błąd `incus` przy montowaniu → `StepError`. Źródło
+równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
+poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Źródło w repozytorium albo
+w `<repo>-worktrees`, którego `realpath` różni się od ścieżki (składnik-dowiązanie, np. `.git/hooks` → `~/.ssh`
+podłożone przez rw `.git`) → odmowa, bo Incus dostaje literalne `source`. Kopia karty dostaje urządzenia
+we własnej konfiguracji, pudełko projektu zostaje bez zmian.
+
+**Ustawienia agentów w pudełku.** Claude Code: plik `<krok>/in/settings.json` (katalog kroku — ustawienia hosta bez
+zmian) z `sandbox.enabled` = `BOX_SANDBOX` (wynik P-2, decyzja `bwrap-profil-w-pudelku`: `true`, z
+`failIfUnavailable`), `filesystem.denyRead: ["~/.claude", "~/.codex", "/packs", "<krok>/in/env"]` (+ `in/local-token`),
+`allowWrite: [<krok>/out, <repo>/.git]` (nakładki ro pilnują haków i konfiguracji), `network.allowedDomains: []`
+(granicą sieci jest proxy Tide), `autoAllowBashIfSandboxed: true`; `--allowedTools` bez list poleceń (`Bash(…)`
+wypadają, dochodzi `Bash`; zakazy projektu zostają wskazówkami w prompcie, `--disallowedTools` bez zmian). Wariant
+`sandbox=False`: `sandbox.enabled=false` i jeden wpis `box.risk` („ryzyko K1”) przez `journal(kind, fields)`
+w dzienniku karty. Codex: `--sandbox workspace-write` bez zmian, serwery MCP hosta nie są pytane
+(`codex_mcp=()`).
+
+**Zatrzymanie.** `kill(step)` woła przez `incus exec … --user <agent>` `systemctl --user kill --signal=SIGTERM
+tide-step-<id>.service` w pudełku z wpisu (`box`, domyślnie pudełko runnera), czeka `grace` na `is-active`, potem
+SIGKILL; klient `incus exec` kończy się razem z jednostką. Nazwy jednostki i pudełka są sprawdzane wzorcem. Stan
+jednostki (`unit_state`) ma trzy wartości jak `stepstop.unit_state`: `active` (kod 0), `inactive` (kody 3 i 4
+`systemctl is-active`, przekazane przez `incus exec`) i `unknown` (każdy inny kod: błąd klienta `incus exec`,
+niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko przy `inactive` — z `unknown` `stepstop`
+nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
+
+**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> [--worktree W]
+[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem
+`TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
+Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
+
 ## Uruchamianie
 
 ```bash

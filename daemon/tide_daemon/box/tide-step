@@ -1,0 +1,81 @@
+#!/bin/sh
+# tide-step — opakowanie kroku w pudełku karty (PT-169, #6; instaluje je obraz bazowy #16 w /usr/local/bin).
+#
+# Uruchamiane przez BoxRunner jako usługa użytkownika `agent` (systemd-run --user … -- tide-step <argv agenta>)
+# z jedną zmienną TIDE_STEP=<katalog kroku>. Kolejno:
+#  1. czyści środowisko (env -i): zostaje tylko to, co jest w <krok>/in/env,
+#  2. sprawdza <krok>/in/env: zwykły plik (nie dowiązanie), tryb 0600, właściciel = bieżący użytkownik — inaczej
+#     odmawia (kod 125), bo tokeny punktu lokalnego nie mogą leżeć w pliku czytelnym dla innych,
+#  3. eksportuje wiersze KLUCZ=wartość bez `eval` (wartości nigdy nie trafiają do argv — `ps` hosta widzi argv
+#     procesów pudełka), pomija puste wiersze i komentarze, odmawia przy niepoprawnej nazwie,
+#  4. przechodzi do TIDE_CWD z in/env (katalog roboczy kroku), zakłada CLAUDE_CODE_TMPDIR, gdy jest,
+#  5. uruchamia polecenie z <krok>/in/prompt.txt na stdin i wyjściem dopisywanym do <krok>/out/step.log,
+#  6. zapisuje kod wyjścia atomowo w <krok>/in/exit-code (jak EXIT_WRAPPER hosta) i kończy się nim.
+# SIGTERM (systemctl --user kill) dostaje cała jednostka; opakowanie go przeczekuje, żeby zapisać kod.
+set -u
+umask 077
+
+if [ "${TIDE_STEP_CLEAN:-}" != 1 ]; then
+    step=${TIDE_STEP:-}
+    [ -n "$step" ] || { echo "tide-step: brak TIDE_STEP" >&2; exit 125; }
+    exec /usr/bin/env -i TIDE_STEP_CLEAN=1 TIDE_STEP="$step" /bin/sh "$0" "$@"
+fi
+step=$TIDE_STEP
+unset TIDE_STEP_CLEAN
+# Po `env -i` jawnie (ta sama wartość co BOX_PATH w runner.py) — domyślna ścieżka powłoki nie jest pewna;
+# in/env może ją potem nadpisać.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+envfile="$step/in/env"
+
+if [ ! -f "$envfile" ] || [ -L "$envfile" ]; then
+    echo "tide-step: brak pliku $envfile" >&2
+    exit 125
+fi
+mode=$(stat -c %a -- "$envfile") || exit 125
+owner=$(stat -c %u -- "$envfile") || exit 125
+if [ "$mode" != 600 ]; then
+    echo "tide-step: $envfile ma tryb $mode zamiast 600 — odmowa" >&2
+    exit 125
+fi
+if [ "$owner" != "$(id -u)" ]; then
+    echo "tide-step: właścicielem $envfile nie jest bieżący użytkownik — odmowa" >&2
+    exit 125
+fi
+
+while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+        '' | '#'*) continue ;;
+    esac
+    key=${line%%=*}
+    case $key in
+        '' | [0-9]* | *[!A-Za-z0-9_]*)
+            echo "tide-step: niepoprawny wiersz w in/env" >&2
+            exit 125 ;;
+    esac
+    if [ "$key" = "$line" ]; then
+        echo "tide-step: wiersz bez '=' w in/env" >&2
+        exit 125
+    fi
+    export "$line"
+done < "$envfile"
+unset line key mode owner
+
+if [ -n "${TIDE_CWD:-}" ]; then
+    cd -- "$TIDE_CWD" || { echo "tide-step: brak katalogu roboczego $TIDE_CWD" >&2; exit 125; }
+fi
+if [ -n "${CLAUDE_CODE_TMPDIR:-}" ]; then
+    mkdir -p -- "$CLAUDE_CODE_TMPDIR" || exit 125
+fi
+[ "$#" -gt 0 ] || { echo "tide-step: brak polecenia" >&2; exit 125; }
+
+status="$step/in/exit-code"
+rm -f -- "$status" "$status.tmp"
+mkdir -p -- "$step/out"
+prompt="$step/in/prompt.txt"
+[ -f "$prompt" ] || prompt=/dev/null
+trap : TERM
+"$@" < "$prompt" >> "$step/out/step.log" 2>&1
+code=$?
+printf '%s\n' "$code" > "$status.tmp" && mv -f -- "$status.tmp" "$status"
+exit "$code"
