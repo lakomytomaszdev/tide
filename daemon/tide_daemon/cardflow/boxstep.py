@@ -199,6 +199,10 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         except (bb.BuildError, IncusError, OSError) as exc:
             raise BoxWaiting(f"czeka na pudełko (kopia karty: {exc})") from None
         _require_compatible(engine, card_id, builder, builder.status(slug, card=card_id, profile=profile))
+    try:
+        builder.ensure_home(slug, card_id if per_card else "")
+    except (bb.BuildError, IncusError, OSError, ValueError) as exc:
+        raise BoxWaiting(f"czeka na pudełko (dom: {exc})") from None
     runner = runner_of(engine, settings, slug, card_id, per_card)
     ip = _ready(engine, card_id, builder, runner, settings, name)
     if boxwait.card_box_wait(fold(engine.journal.read(card_id))) in (boxwait.START, boxwait.REBUILD):

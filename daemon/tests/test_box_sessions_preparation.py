@@ -70,6 +70,18 @@ class BoxSessionTest(LogFixture):
         os.symlink(os.path.join(self.codex, "sessions"), os.path.join(self.home, ".codex", "sessions"))
         self.assertEqual(SessionIndex("/missing", "/missing").refresh(NOW), [])
 
+    def test_logs_from_card_home_are_discovered(self):
+        wt = "/srv/proj-worktrees/pt-189"
+        source = self.claude_session("card-session", wt, NOW - DAY)
+        target = os.path.join(os.path.dirname(self.home), "cards", "k-38", "home", ".claude",
+                              os.path.relpath(source, self.claude))
+        os.makedirs(os.path.dirname(target))
+        shutil.copyfile(source, target)
+        os.unlink(source)
+        index = SessionIndex("/missing", "/missing")
+        self.assertEqual([s.session_id for s in index.refresh(NOW)], ["card-session"])
+        self.assertEqual(index.link([(wt, wt)])[wt].session_id, "card-session")
+
 
 class PreparationTest(unittest.TestCase):
     def setUp(self):

@@ -22,7 +22,13 @@ def homes(env=None):
     env = os.environ if env is None else env
     data = env.get("XDG_DATA_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local", "share")
     root = os.path.join(data, "tide", "box")
-    return [home for project in directories(root) if (home := safe_child(project, "home"))]
+    found = []
+    for project in directories(root):
+        if home := safe_child(project, "home"):
+            found.append(home)
+        if cards := safe_child(project, "cards"):
+            found.extend(home for card in directories(cards) if (home := safe_child(card, "home")))
+    return found
 
 
 def claude_projects(env=None):

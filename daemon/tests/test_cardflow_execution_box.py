@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import unittest
 from unittest import mock
 
@@ -839,6 +840,17 @@ class BoxStepInProcessTest(BoxFlow):
         from tide_daemon.tasks import stepstop
         log = stepstop.find_claude_log(os.path.join(home, ".claude", "projects"), first["session"])
         self.assertTrue(log)
+        # Kopia w korzeniu hosta nie tworzy drugiej sesji ani innego przypisania do karty/kroku.
+        from tide_daemon.worktrees import SessionIndex
+        host_claude = os.path.join(self.base, "home", ".claude")
+        host_log = os.path.join(host_claude, os.path.relpath(log, os.path.join(home, ".claude")))
+        os.makedirs(os.path.dirname(host_log), exist_ok=True)
+        shutil.copyfile(log, host_log)
+        index = SessionIndex(host_claude, "/missing")
+        sessions = index.refresh(self.engine.clock())
+        self.assertEqual(len([s for s in sessions if s.session_id == first["session"]]), 1)
+        session = index.link([(first["worktree"], first["worktree"])])[first["worktree"]]
+        self.assertEqual((first["card"], session.session_id), (card_id, first["session"]))
         home_device = self.builder().incus.device_show(SLUG)["home"]
         before = len(self.incus_calls())
         self.builder().reset(SLUG)

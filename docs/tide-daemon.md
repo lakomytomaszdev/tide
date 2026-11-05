@@ -2461,7 +2461,7 @@ dokładnej nazwie w `incus list --format json` (filtr `incus list <nazwa>` dopas
 **Ustawienia** — ta sama sekcja `box` w `$XDG_CONFIG_HOME/tide/cardflow.json` i ten sam moduł `box/settings.py`
 (`BoxSettings`) co proxy (niżej, „Proxy wyjściowe”); klucze buildera, wszystkie opcjonalne: `project`
 (`user-<uid>`), `base-image` (`tide-base`), `pool` (`tide`), `nic` (`eth0`), `ipv6-filtering` (`false`),
-`agents-version`, `ip-wait-seconds` (30), `agent-uid`/`agent-gid` (1000 — właściciel wolumenu `/home/agent`;
+`agents-version`, `ip-wait-seconds` (30), `agent-uid`/`agent-gid` (1000 — użytkownik domu `/home/agent`;
 ostateczną wartość ustala obraz bazowy #16). Zła wartość → ostrzeżenie na stderr `tide box` i wartość domyślna.
 Adresu proxy w ustawieniach nie ma: builder bierze adres i port z **uruchomionego proxy** (`box.proxy.running()`:
 nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źródło dla proxy i budowy.
@@ -2471,10 +2471,10 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
    zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=… -c limits.memory.swap=false` z profilu
    (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
-   `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
-   w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
-   initial.mode=0750` — pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root` i agent nie mógłby w nim
-   pisać (istniejący wolumen nie jest zmieniany; `chown` istniejących danych to sprawa #16).
+   `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); prywatny katalog hosta
+   `~/.local/share/tide/box/<slug>/home` (0700) jako urządzenie dyskowe na `/home/agent`.
+   `raw.idmap` mapuje UID/GID użytkownika hosta na `agent-uid/gid`, tak samo jak BoxRunner.
+   Dawny wolumen jest wcześniej migrowany bez usuwania danych (PT-189, niżej).
 2. Filtrowanie NIC (niżej).
 3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
    budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
@@ -2501,7 +2501,7 @@ własne proxy na czas polecenia (decyzja `base-wlasne-proxy-cli`), a przy dział
 (`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
 Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
 `type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy
-budowie usuwane i tworzone od nowa (wolumen `/home/agent` zostaje); budowa odmawia, gdy w pudełku biegną kroki.
+budowie usuwane i tworzone od nowa (dom `/home/agent` zostaje); budowa odmawia, gdy w pudełku biegną kroki.
 
 **Filtrowanie NIC — dlaczego.** Proxy Tide (#5) rozpoznaje pudełko po adresie IP, a agent w grupie `docker`
 ma w pudełku prawa roota i mógłby zmienić adres IP albo MAC, żeby dostać politykę innego pudełka. Na karcie
@@ -2516,9 +2516,9 @@ nie startuje (#18).
 
 **Kopia per karta** (`box: per-card`): `copy_for_card(slug, card)` → `incus copy <slug>/clean <slug>-<karta>`
 (nazwa wyłącznie z `card_box_name(slug, card)`, np. `plasma-tide-k-38`), `user.tide.copy-of=<slug>`,
-`user.tide.card=K-38`, własny wolumen `<kopia>-home` na `/home/agent` (z tym samym właścicielem `initial.*`),
+`user.tide.card=K-38`, własny katalog `<slug>/cards/k-38/home` na `/home/agent` (0700, to samo mapowanie UID/GID),
 filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
-migawek; migawka po podpięciu wolumenu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
+migawek; migawka po podpięciu domu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
 z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
 Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę).
 Kopia startuje dopiero z pierwszym krokiem (#18/#19).
@@ -2540,8 +2540,8 @@ filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i brak
 | --- | --- |
 | `build <slug>` | budowa jak wyżej |
 | `status <slug> [--card K-38] [--json]` | stan, stan w dzienniku, hash migawki i profilu, różnice, filtrowanie NIC, kroki w pudełku |
-| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean` (kopia karty ma własną migawkę `clean`); odmawia (kod 3), gdy według dziennika biegnie krok; `/home/agent` to osobny wolumen — reset go nie dotyka |
-| `destroy <slug> --yes` | usuwa pudełko i wszystkie kopie per karta (`user.tide.copy-of`) z ich wolumenami `/home/agent`; odmawia, gdy biegnie krok |
+| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean`; odmawia (kod 3), gdy biegnie krok; dom hosta zostaje, a stara migawka dostaje ponownie właściwe montowanie |
+| `destroy <slug> --yes` | usuwa instancje projektu i kopii (`user.tide.copy-of`); zachowuje domy, eksporty i stare wolumeny do osobnego sprzątania; odmawia, gdy biegnie krok |
 | `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
 | `base` | buduje obraz bazowy Tide (`make box-base`) — niżej, „Obraz bazowy Tide” |
 | `login [<slug>]` | logowanie agentów bez K3 (K1) w pudełku projektu; przy K3 dla obu programów — „nic do zalogowania” |
@@ -2592,7 +2592,7 @@ base`, bez sudo — projekt ograniczony Incusa). Moduły: `box/base.py` (budowa 
    | `fonts` | `fonts.tar` do `/usr/local/share/fonts/tide`, `fc-cache` |
    | `tide-step` | `/usr/local/bin/tide-step` (niżej) |
    | `apparmor` | profil `bwrap` (ten sam co `scripts/sandbox/check.py profile` na hoście) w `/etc/apparmor.d/bwrap-userns-restrict`, `apparmor_parser -r`, usługa `apparmor` włączona — wczytuje go przy każdym starcie pudełka (decyzja `bwrap-profil-w-pudelku`) |
-   | `claude` | instalator natywny `https://claude.ai/install.sh` pobrany do pliku (bez potoku do powłoki) i uruchomiony z dokładną wersją w katalogu tymczasowym; program do `/usr/local/bin/claude` (poza `/home/agent`, który w pudełku projektu przykrywa wolumen); `claude --version` jako `agent` |
+   | `claude` | instalator natywny `https://claude.ai/install.sh` pobrany do pliku (bez potoku do powłoki) i uruchomiony z dokładną wersją w katalogu tymczasowym; program do `/usr/local/bin/claude` (poza `/home/agent`, który w pudełku projektu przykrywa dom hosta); `claude --version` jako `agent` |
    | `codex` | `npm install -g @openai/codex@<wersja>`; `codex --version` jako `agent` |
    | `cleanup` | `apt-get clean`, pamięć npm, listy apt, `/opt/tide` |
 
@@ -2629,9 +2629,9 @@ kończy się instrukcją „zaloguj: `tide box login` <projekt>” (kod 0, nie b
 `incus exec -t <pudełko> --user 1000 --cwd /home/agent -- claude login` (i `codex login`) z proxy Tide i polityką
 projektu (`compose_policy`) na czas logowania. Poświadczenia z `~/.claude`/`~/.codex` hosta nigdy nie są kopiowane.
 
-**Co jest trwałe.** `/home/agent` pudełka projektu to wolumen `<pudełko>-home` w puli `tide` (#4) — przeżywa reset
+**Co jest trwałe.** `/home/agent` pudełka projektu to katalog hosta `<slug>/home` (PT-189) — przeżywa reset
 z migawki `clean` i przebudowę pudełka (logowanie K1, `~/.npm`, `~/.nuget/packages`, `~/.cache/ms-playwright`);
-znika z `tide box destroy`. Obraz bazowy (instancja `tide-base` z migawką `clean` i obraz `tide-base`) żyje do
+pozostaje również po `tide box destroy` do osobnego sprzątania. Obraz bazowy (instancja `tide-base` z migawką `clean` i obraz `tide-base`) żyje do
 następnego `make box-base`; reszta systemu plików pudełka wraca do `clean` przy resecie. Programy agentów,
 czcionki i konfiguracja proxy są w obrazie, nie w `/home/agent`.
 
@@ -2863,7 +2863,7 @@ wystarczy: e2e Playwright, Karma i serwery testowe na `localhost` oraz kontenery
 | `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, nad `tide-git` |
 | `tide-wtcfg-<nazwa>` | `.git/worktrees/<nazwa>/config.worktree` — **tylko przy `extensions.worktreeConfig=true`** w `.git/config` hosta | ro, nad `tide-git` |
 | `tide-worktrees` | `<repo>-worktrees` (worktree i katalogi kroku obok niego) | rw |
-| `tide-home` | `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już wolumen `<pudełko>-home` na `/home/agent` | rw |
+| `tide-home` | zapasowe `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już dom projektu lub karty (urządzenie `home`) | rw |
 
 Kolejność montowania: Incus montuje urządzenia `disk` posortowane po `path` (`/` pierwsze, dalej leksykograficznie),
 nie w kolejności `device add` — nakładki leżą nad `.git`, bo ich ścieżki mają `<repo>/.git/` jako przedrostek. Nie
@@ -2921,20 +2921,30 @@ nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True
 `TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
 Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
 
-### Dzienniki i przygotowanie zależności (PT-189, praca w toku)
+### Dzienniki i przygotowanie zależności (PT-189)
 
 `worktrees/sessions.py` oprócz korzeni hosta czyta domy projektów w
 `$XDG_DATA_HOME/tide/box/<slug>/home` (domyślnie `~/.local/share/tide/box/<slug>/home`):
 `.claude/projects`, `.codex` i `.codex/steps/*` dla sesji K3. Odkrywanie jest ponawiane przy odświeżeniu.
+Kopie per-card mają osobne domy `<slug>/cards/<karta>/home`, skanowane na tych samych zasadach.
 Skaner pomija dowiązania w korzeniach pudełek; kopie Claude łączy po identyfikatorze, a Codexa po względnej
 ścieżce pliku dziennika, zachowując osobne segmenty. Katalog roboczy sesji pozostaje ścieżką worktree,
 więc powiązanie z krokiem karty nie wymaga przepisywania ścieżek. Wyszukiwanie dziennika do przekazania
 (`tasks/stepstop.py`) korzysta z tych samych dodatkowych korzeni.
 
-**Nierozstrzygnięta rozbieżność:** obecny `Builder._attach_home` tworzy osobny wolumen Incusa
-`<pudełko>-home`. `BoxRunner` zachowuje ten wolumen, zamiast montować powyższy katalog hosta.
-Skaner nie widzi zawartości takiego wolumenu. PT-189 czeka na decyzję o ujednoliceniu domu lub odczycie
-dzienników z wolumenu; samo dodanie korzeni nie zamyka tego wymagania.
+**Przejście ze starego wolumenu.** `Builder.ensure_home`, przed krokiem, przebudową i resetem, sprawdza
+montowanie domu. Dla dawnego `<pudełko>-home` zatrzymuje instancję (bez czynnych kroków) i wykonuje
+[`incus storage volume export`](https://linuxcontainers.org/incus/docs/main/howto/storage_backup_volume/)
+z `--volume-only --compression=none`. Inna instancja korzystająca z tego wolumenu blokuje migrację.
+Eksport pozostaje w prywatnym `.home-migration-*` obok domu. Rozpakowanie przyjmuje tylko `backup/volume`,
+odrzuca ścieżki wychodzące poza kopię, dowiązania jako rodziców plików i pliki specjalne.
+Symlinki są tworzone na końcu, bez podążania za nimi. Właścicielem kopii jest użytkownik usługi;
+zachowane są treść, symlinki, czasy plików i zwykłe bity uprawnień, bez UID/GID, suid i atrybutów specjalnych.
+Zapis `home-migration.json` pozwala wznowić publikację po awarii; opublikowany dom nie jest nadpisywany ponownym
+eksportem. Niepusty dom bez tego zapisu oznacza konflikt i odmowę. Zmiana urządzenia jest atomowa;
+błąd nie usuwa starego montowania. Przy błędzie migracji instancja może pozostać zatrzymana.
+Stary wolumen, eksport i dom pozostają także po `destroy`. Reset starej migawki ponownie podpina dom hosta,
+bez cofania nowych dzienników. `BoxRunner` i `engine._launch` nie uczestniczą w migracji.
 
 `tasks/preparation.py` jest wołane przez `boxstep.configure_background`, po montowaniach i konfiguracji proxy.
 `node.install` i `dotnet.restore` otrzymują runner z istniejącego `Placement`; polecenia wykonuje `incus exec`
@@ -2947,7 +2957,7 @@ atrap `subprocess.run` pozostaje zgodne z wcześniejszym interfejsem.
 
 K3 Codexa zapisuje sesje w `/home/agent/.codex/steps/<hash katalogu pierwotnego kroku>`;
 wznowienie korzysta z tego samego domu. Reset rootfs nie usuwa danych urządzenia domowego.
-Prawdziwy test widoczności Sesji i zrzut ekranu pozostają do wykonania po rozstrzygnięciu domu i #28.
+Prawdziwy test widoczności Sesji i zrzut ekranu pozostają do wykonania po #28.
 
 ### Krok w pudełku w silniku (PT-181)
 

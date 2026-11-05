@@ -3,7 +3,7 @@
 Kolejność budowy (`build`):
  1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`,
     `limits.memory.swap=false` z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
-    `security.privileged`; rozmiar dysku głównego `resources.disk`; wolumen `<pudełko>-home` na `/home/agent`
+    `security.privileged`; rozmiar dysku głównego `resources.disk`; prywatny katalog hosta na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
     ustawień) — zanim pudełko wystartuje i wyśle pierwszy pakiet,
@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import agents
+from . import home as boxhome
 from . import netenv
 from . import profile as bp
 from . import state as bs
@@ -169,6 +170,7 @@ class Builder:
 
     def _build(self, slug, name, full, proxy, domains, steps) -> BuildResult:
         if self.incus.instance(name) is not None:
+            self.ensure_home(slug)  # eksport starych danych przed usunięciem starej instancji
             self.incus.delete(name, force=True)
         # 1. kopia obrazu bazowego z limitami z profilu
         steps.append("base")
@@ -178,7 +180,7 @@ class Builder:
             config["security.nesting"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
-        self._attach_home(name)
+        self._attach_home(name, slug)
         # 2. filtrowanie NIC przed startem
         steps.append("nic")
         self.apply_nic_filter(name)
@@ -255,20 +257,16 @@ class Builder:
                 raise BuildError(f"pudełko {name} nie dostało adresu IPv4 na {self.settings.nic}")
             self.sleep(0.5)
 
-    def _attach_home(self, name):
-        """Wolumen `<pudełko>-home` na `/home/agent`; nowy wolumen od razu należy do użytkownika `agent`
-        (`initial.uid/gid/mode`), bo pusty wolumen w pudełku nieuprzywilejowanym byłby `root:root`."""
-        volume = bs.home_volume(name)
-        if not self.incus.volume_exists(self.settings.pool, volume):
-            self.incus.volume_create(self.settings.pool, volume, {
-                "initial.uid": self.settings.agent_uid, "initial.gid": self.settings.agent_gid,
-                "initial.mode": bs.HOME_MODE})
-        devices = self.incus.device_show(name)
-        values = {"pool": self.settings.pool, "source": volume, "path": bs.HOME_PATH}
-        if "home" in devices:
-            self.incus.device_set(name, "home", values)
-        else:
-            self.incus.device_add(name, "home", "disk", values)
+    def _attach_home(self, name, slug=None, card=""):
+        try:
+            boxhome.attach(self, name, slug or name, card)
+        except boxhome.HomeError as exc:
+            raise BuildError(str(exc)) from exc
+
+    def ensure_home(self, slug, card=""):
+        """Przed krokiem/resetem migracja starych domów; czynne kroki blokują zmianę urządzenia."""
+        name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
+        self._attach_home(name, slug, card)
 
     def apply_nic_filter(self, name):
         """Filtrowanie NIC na karcie pudełka: `set`, gdy karta jest lokalna, `override`, gdy z profilu."""
@@ -288,6 +286,7 @@ class Builder:
         source = bs.box_name(slug)
         target = bs.card_box_name(slug, card)
         if self.incus.instance(target) is not None:
+            self.ensure_home(slug, card)
             return target
         snaps = [s.get("name") for s in self.incus.snapshot_list(source)] if self.incus.instance(source) else []
         if bs.SNAPSHOT not in snaps:
@@ -295,7 +294,7 @@ class Builder:
         started = self.clock()
         self.incus.copy(f"{source}/{bs.SNAPSHOT}", target)
         self.incus.config_set(target, {bs.COPY_OF_KEY: source, bs.CARD_KEY: str(card).upper()})
-        self._attach_home(target)
+        self._attach_home(target, slug, card)
         self.apply_nic_filter(target)
         self.incus.snapshot_create(target, bs.SNAPSHOT)
         stamp = bs.parse_stamp(self.incus.config_get(target, bs.RECIPE_KEY))
@@ -359,13 +358,15 @@ class Builder:
         if self.incus.instance(name) is None:
             raise BuildError(f"pudełko {name} nie istnieje")
         started = self.clock()
+        self.ensure_home(slug, card or "")
         self.incus.snapshot_restore(name, bs.SNAPSHOT)
+        self.ensure_home(slug, card or "")  # stara migawka może przywrócić konfigurację wolumenu
         duration = round(self.clock() - started, 3)
         bs.record(slug, "box.reset", name, self.wall, result="ok", duration=duration)
         return duration
 
     def destroy(self, slug: str) -> list:
-        """Usuwa pudełko projektu i wszystkie jego kopie per karta (z wolumenami `/home/agent`)."""
+        """Usuwa instancje projektu i kopii; zachowuje domy, eksporty i stare wolumeny."""
         source = bs.box_name(slug)
         victims = [inst["name"] for inst in self.incus.list()
                    if inst.get("name") == source
@@ -376,7 +377,7 @@ class Builder:
         victims.sort(key=lambda v: v == source)      # najpierw kopie, potem pudełko projektu
         for victim in victims:
             self.incus.delete(victim, force=True)
-            self.incus.volume_delete(self.settings.pool, bs.home_volume(victim), check=False)
+            # Dom hosta, kopia eksportu i dawny wolumen zostają do osobnego, jawnego sprzątania.
             bs.record(slug, "box.destroy", victim, self.wall)
         return victims
 
