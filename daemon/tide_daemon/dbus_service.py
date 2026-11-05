@@ -143,6 +143,10 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
   recentBases: do 10 różnych istniejących pełnych refów z udanych startów/korekt w dziennikach Tablicy,
   wspólnych dla worktrees repozytorium; skrót zawiera aktualny SHA i wymaga jawnego wyboru.
   Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
+- SuggestCardBase(s id, s json) -> s  {text, revision: int, scope: text|files|links}; opis czytany z karty.
+  Odczyt bez sieci i zapisu. Odpowiedź: ok, revision, card, project, repo, candidates, warnings.
+  Kandydat: ref, name, commit, source, evidence [{field,line,text,match,start,end}], strength, selectable, reason.
+  Obecnie source=text, strength=explicit; files i links zwracają ostrzeżenie bez kandydatów.
 - StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
                              worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
@@ -478,6 +482,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <method name="ListCardBranches">
+    <arg direction="in" type="s" name="id"/>
+    <arg direction="in" type="s" name="request"/>
+    <arg direction="out" type="s" name="reply"/>
+  </method>
+  <method name="SuggestCardBase">
     <arg direction="in" type="s" name="id"/>
     <arg direction="in" type="s" name="request"/>
     <arg direction="out" type="s" name="reply"/>
@@ -960,6 +969,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
         self.monitor.list_card_branches(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def SuggestCardBase(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.suggest_card_base(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)

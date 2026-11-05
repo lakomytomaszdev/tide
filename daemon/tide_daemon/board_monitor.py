@@ -237,6 +237,12 @@ class BoardMonitor(QObject):
             return
         self.flow.list_card_branches(card_id, request, reply)
 
+    def suggest_card_base(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.suggest_card_base(card_id, request, reply)
+
     def enter_step(self, card_id: str, step_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))

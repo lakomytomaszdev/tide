@@ -44,8 +44,22 @@ class Scripted(module.Backend):
         self.replies = []
         self.branch_replies = []
         self.branch_calls = []
+        self.suggestion_replies = []
+        self.suggestion_calls = []
 
     def _write(self, tag, member, args):
+        if member == "SuggestCardBase":
+            self.suggestion_calls.append([tag, *args])
+            request = json.loads(args[1])
+            card = next(c for c in json.loads(self._snapshot)["cards"] if c["id"] == args[0])
+            snap = json.loads(self._snapshot)
+            project = next(p for p in snap["projects"] if p["slug"] == card["project"])
+            reply = {"ok": True, "revision": request["revision"], "card": args[0],
+                     "project": project["slug"], "repo": project["repo"], "candidates": [], "warnings": []}
+            if self.suggestion_replies:
+                reply.update(self.suggestion_replies.pop(0))
+            QTimer.singleShot(10, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            return
         if member == "ListCardBranches":
             # Odczyty nie zużywają scenariuszy zapisów istniejących testów formularza.
             self.branch_calls.append([member, *args])

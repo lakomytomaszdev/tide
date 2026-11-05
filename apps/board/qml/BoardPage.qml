@@ -101,6 +101,7 @@ Rectangle {
     signal startRequested(string tag, string request)                   // /Tasks Start
     signal flowRequested(string tag, string cardId, string request)     // /Board StartCard (przepływ karty, „Od razu”)
     signal branchesRequested(string tag, string cardId, string request)
+    signal suggestionsRequested(string tag, string cardId, string request)
     signal enterStepRequested(string tag, string cardId, string stepId) // /Board EnterStep
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
@@ -617,6 +618,10 @@ Rectangle {
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
+        if (tag.indexOf("base-suggestions:") === 0) {
+            launchDialog.baseSuggestions.receive(tag, reply)
+            return
+        }
         if (tag.indexOf("branches:") === 0) {
             launchDialog.basePicker.receive(tag, reply)
             return
@@ -1766,6 +1771,11 @@ Rectangle {
             const tag = page.nextTag("branches:" + page.launchCardId)
             launchDialog.basePicker.pendingTag = tag
             page.branchesRequested(tag, page.launchCardId, JSON.stringify({purpose: "base", text: text, limit: 50}))
+        }
+        onSuggestionsRequested: request => {
+            const tag = page.nextTag("base-suggestions:" + page.launchCardId)
+            launchDialog.baseSuggestions.pendingTag = tag
+            page.suggestionsRequested(tag, page.launchCardId, JSON.stringify(request))
         }
         onLaunchRequested: (choice, description, changed) => page.startLaunch(choice, description, changed)
         onCancelRequested: page.cancelLaunch()
