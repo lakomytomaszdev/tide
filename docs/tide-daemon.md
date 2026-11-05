@@ -894,6 +894,9 @@ do PT-210 zawsze `readyToMerge: false`, `localCollisions: unassessed` i ostrzeż
 Nie ma tokenu wykonania. Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
 dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
 wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
+Własny sterownik merge wymagający plików `.merge_file_*` w katalogu roboczym jest w podglądzie
+odrzucany jako `git-error`: odczytowy mount blokuje już przygotowanie tych plików, przed uruchomieniem
+sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy zapisu w worktree.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`

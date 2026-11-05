@@ -168,6 +168,16 @@ class PreviewScenarios:
             self.assertFalse(r["ok"])
             self.assertEqual(r["error"], "bad-request")
 
+    def custom_driver_conflict(self, driver):
+        self.write(self.repo, ".gitattributes", "conflict.txt merge=probe\n")
+        self.commit(self.repo, "attributes")
+        git(self.card_tree, "merge", "--no-edit", "master")
+        self.write(self.repo, "conflict.txt", "cel\n")
+        self.commit(self.repo, "target")
+        self.write(self.card_tree, "conflict.txt", "źródło\n")
+        self.commit(self.card_tree, "source")
+        git(self.repo, "config", "merge.probe.driver", driver)
+
 
 class LocalPreviewTest(PreviewScenarios, FlowInProcess):
     """Prawdziwy git przez publiczny monitor również tam, gdzie host blokuje zagnieżdżony bwrap."""
@@ -189,6 +199,34 @@ class LocalPreviewTest(PreviewScenarios, FlowInProcess):
             self.assertTrue(r["ok"], r)
             self.assertFalse(r["canMerge"])
             self.assertEqual(r["reason"], expected)
+
+    @unittest.skipIf(os.geteuid() == 0, "root omija uprawnienia katalogu w lokalnej reprodukcji")
+    def test_custom_driver_tempfile_failure_is_a_tool_error_without_mutation(self):
+        self.custom_driver_conflict("exit 1")
+        results = []
+        original = LocalStepGit.run
+
+        def record(runner, *args, **kwargs):
+            result = original(runner, *args, **kwargs)
+            if args[:2] == ("merge-tree", "--write-tree"):
+                results.append(result)
+            return result
+
+        mode = Path(self.repo).stat().st_mode
+        Path(self.repo).chmod(0o555)
+        try:
+            with mock.patch.object(LocalStepGit, "run", record):
+                r = self.preview()
+        finally:
+            Path(self.repo).chmod(mode)
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(r["canMerge"])
+        self.assertEqual(r["reason"], "git-error")
+        self.assertEqual((r["resultTree"], r["conflicts"]), ("", []))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].code, 128)
+        self.assertIn(".merge_file_", results[0].err)
+        self.assertIn("Permission denied", results[0].err)
 
     def test_no_sandbox_is_explicit_and_never_falls_back_to_local_merge(self):
         with mock.patch.object(gitops, "sandbox_available", return_value=False):
@@ -214,20 +252,30 @@ class LocalPreviewTest(PreviewScenarios, FlowInProcess):
 
 @unittest.skipUnless(sandbox_available(), "brak zagnieżdżonej piaskownicy gita")
 class SandboxedPreviewTest(PreviewScenarios, FlowInProcess):
-    def test_merge_driver_cannot_write_worktree_index_head_or_refs(self):
-        self.write(self.repo, ".gitattributes", "conflict.txt merge=probe\n")
-        self.commit(self.repo, "attributes")
-        git(self.card_tree, "merge", "--no-edit", "master")
-        self.write(self.repo, "conflict.txt", "cel\n")
-        self.commit(self.repo, "target")
-        self.write(self.card_tree, "conflict.txt", "źródło\n")
-        self.commit(self.card_tree, "source")
+    def test_custom_merge_driver_is_refused_without_writing_worktree_index_head_or_refs(self):
         # Złośliwy sterownik próbuje pisać wszędzie, gdzie normalny StepGit ma zapis.
+        # Git przygotowuje dla niego .merge_file_* w cwd, więc odczytowy mount odmawia już przed sterownikiem.
         driver = "for f in conflict.txt .git/HEAD .git/index .git/refs/heads/master; do echo BAD > \"$f\"; done; exit 1"
-        git(self.repo, "config", "merge.probe.driver", driver)
-        r = self.preview()
+        self.custom_driver_conflict(driver)
+        results = []
+        original = StepGit.run
+
+        def record(runner, *args, **kwargs):
+            result = original(runner, *args, **kwargs)
+            if args[:2] == ("merge-tree", "--write-tree"):
+                results.append(result)
+            return result
+
+        with mock.patch.object(StepGit, "run", record):
+            r = self.preview()
+        self.assertTrue(r["ok"], r)
         self.assertFalse(r["canMerge"])
-        self.assertEqual(r["reason"], "conflict")
+        self.assertEqual(r["reason"], "git-error")
+        self.assertEqual((r["resultTree"], r["conflicts"]), ("", []))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].code, 128)
+        self.assertIn(".merge_file_", results[0].err)
+        self.assertIn("Read-only file system", results[0].err)
 
 
 @unittest.skipUnless(sandbox_available(), "brak zagnieżdżonej piaskownicy gita")
