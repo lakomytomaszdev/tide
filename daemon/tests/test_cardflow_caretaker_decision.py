@@ -204,6 +204,40 @@ class DecisionActionsTest(EngineOnJournal):
                 self.assertFalse(st.caretaker_escalations)
                 self.assertEqual(caretaker.owned(st, run["problem"])["count"], 0)
 
+    def test_user_resolves_final_review_while_caretaker_runs(self):
+        for choice in ("retry", "reject", "accept"):
+            with self.subTest(choice=choice):
+                self.reset_scenario()
+                self.add("K-1", "step.started", step="review", kind="review", ticket="PT-7", round=3)
+                self.add("K-1", "step.finished", step="review", result="done")
+                self.add("K-1", "review.verdict", ticket="PT-7", round=3, verdict="REQUEST_CHANGES")
+                self.add("K-1", "review.question", ticket="PT-7", round=3, question="Pozostały uwagi.")
+                self.now += 601
+                run = self.caretaker_run()
+                self.add("K-1", "step.started", step=run["step"], kind="caretaker", ticket="PT-7")
+                self.assertIn("review:PT-7:3", [d["id"] for d in decisions.build_decisions(self.state())])
+                result = self.engine.resolve_review("K-1", choice)
+                self.assertTrue(result["ok"])
+                self.assertIn(run["step"], [s["step"] for s in self.state().running()])
+                st, outcome = self.act(run, "escalate", summary="Spóźniona analiza.", recommendation="Spóźniona rada.")
+                self.assertEqual(st.review_decisions[("PT-7", 3)]["choice"], choice)
+                self.assertTrue(outcome["stale"])
+                self.assertFalse(st.caretaker_escalations)
+                self.assertEqual(caretaker.owned(st, run["problem"])["count"], 0)
+
+    def test_running_ticket_still_blocks_final_review_resolution(self):
+        self.add("K-1", "step.started", step="review", kind="review", ticket="PT-7", round=3)
+        self.add("K-1", "step.finished", step="review", result="done")
+        self.add("K-1", "review.verdict", ticket="PT-7", round=3, verdict="REQUEST_CHANGES")
+        self.add("K-1", "review.question", ticket="PT-7", round=3, question="Pozostały uwagi.")
+        self.add("K-1", "step.started", step="fix", kind="fix", ticket="PT-7")
+        for choice in ("retry", "reject", "accept"):
+            with self.subTest(choice=choice):
+                with self.assertRaises(FlowError) as raised:
+                    self.engine.resolve_review("K-1", choice)
+                self.assertEqual(raised.exception.code, "no-review-question")
+        self.assertFalse(self.state().review_decisions)
+
     def test_another_ticket_does_not_close_the_plan_recommendation_after_restart(self):
         self.protected("plan-approval")
         run = self.caretaker_run()

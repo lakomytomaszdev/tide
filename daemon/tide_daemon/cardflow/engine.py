@@ -3211,7 +3211,9 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
             return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice,
                     "already": True}
-        if st.card_finished or any(s.get("ticket") == ticket for s in st.running()) or step.get("kind") != "review" or round_no < 3 or \
+        # Opiekun analizuje widoczną decyzję, ale nie blokuje jej rozstrzygnięcia przez użytkownika.
+        ticket_running = any(s.get("ticket") == ticket and s.get("kind") != "caretaker" for s in st.running())
+        if st.card_finished or ticket_running or step.get("kind") != "review" or round_no < 3 or \
                 verdict.get("verdict") != "REQUEST_CHANGES" or \
                 (ticket, round_no) not in st.review_questions or \
                 previous:
