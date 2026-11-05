@@ -553,6 +553,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="CardBranchDiff">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="targetRef" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="MergeCardToMain">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
@@ -1133,10 +1138,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)
-    def CardBranchDiff(self, card_id: str, message: QDBusMessage) -> str:
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def CardBranchDiff(self, card_id: str, target_ref, message: QDBusMessage = None) -> str:
+        if message is None:
+            message, target_ref = target_ref, ""
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
-        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])))
+        self.monitor.card_branch_diff(card_id, lambda value: self.bus.send(pending.createReply([value])), target_ref)
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)

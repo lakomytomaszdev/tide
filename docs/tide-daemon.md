@@ -875,7 +875,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
-| `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
+| `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
 | `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); do PT-205 wyłącznie nazwana główna z istniejącym checkoutem; używa trwałej operacji PT-212 |
 | `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
@@ -1941,7 +1941,7 @@ Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.p
 `apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
 
 - `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
-  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie; po sukcesie pełna nazwa zapisanego celu). `state`:
   `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
   `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
   wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
@@ -2534,7 +2534,7 @@ przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowa
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
 Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
-`card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
+`card.merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
 gałęzi głównej.
 
 PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
@@ -2543,8 +2543,24 @@ z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`request
 i początkowe drzewo materializacji (`materializationBaseTree`). Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
 dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
 `main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
-i `projected`. Wynik zawiera pola potrzebne przyszłemu ogólnemu zakończeniu scalenia;
-obecnie nadal powstają pojedyncze `card.main-merged` i `card.finished`.
+i `projected`. PT-205: nowe sukcesy obu metod (`MergeCard` i zgodnego wstecz `MergeCardToMain`)
+zapisują pojedyncze `card.merged` z `operationId`, `targetRef`/`targetBranch`, `sourceCommit`,
+`targetCommitBefore`, `resultCommit` i `baseVersion` ze wspólnego zamiaru, a następnie `card.finished`.
+Stare `card.main-merged` nadal oznacza zakończenie do zapisanego `main`; dzienniki nie są przepisywane.
+Mieszany zapis zakończenia w jednym zleceniu daje jeden wynik, jedną pozycję historii i raportu.
+Przepływ zachowuje `derived.flow` również w Gotowych/Archiwum: `merged` to znacznik zakończenia,
+`merge` zawiera zapisany wynik (stare pola `main`/`commit` odczytywane jako cel i wynik).
+`mainMerged` pozostaje aliasem znacznika dla dawnych klientów. Snapshot, Sesje, historia, faza scalenia
+i raport pokazują rzeczywisty pełny cel. Raport wykazuje zakończenie karty w okresie zdarzenia,
+nie zalicza jej do otwartych kart. Zgłoszenie kolejnego błędu nie dopisuje wystąpienia do scalonej karty.
+`MergeCardToMain` nadal zwraca `{ok, id, main, already}`; historyczny sukces używa zapisanego celu,
+nie dzisiejszej głównej. Przyjmowanie innych celów przez `MergeCard` pozostaje zakresem PT-200.
+
+`CardBranchDiff` bez celu używa bieżącego refu zapisanej bazy (bez zastępowania przypiętego SHA).
+Przeciążenie z `targetRef` przyjmuje `refs/heads/…` albo znany lokalnie `refs/remotes/…`;
+krótkie nazwy, refy symboliczne i nieistniejące są odrzucane. Przy bazie `unknown` wymagany jest jawny ref.
+Odpowiedź zawiera `targetRef`, `targetBranch`, `branch`, `diff` oraz dawny klucz `main` jako nazwę porównania.
+Sam odczyt nie zapisuje zdarzeń, nie zmienia bazy ani nie stanowi zgody na merge.
 
 Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
 na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Nierozstrzygnięte pytanie o bazę

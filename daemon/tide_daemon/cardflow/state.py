@@ -10,7 +10,9 @@ Typy zdarzeń (schemat 1, PT-58):
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
 - `card.moved` (to, from — kolumna, w której kartę widać), `card.paused`, `card.finished` (column),
-  `ticket.rejected` (ticket).
+  `ticket.rejected` (ticket),
+- `card.merged` — zakończone scalenie: operationId, targetRef/targetBranch, sourceCommit,
+  targetCommitBefore, resultCommit i baseVersion; stare `card.main-merged` odczytujemy z zapisanym main.
 
 Kolumna (ręczne kolumny wygrywają z dziennikiem):
 - Gotowe i Archiwum w pliku karty — bez stanu z dziennika (karta stoi tam, gdzie ją postawiono);
@@ -97,6 +99,7 @@ class FlowState:
     card_finished: bool = False
     closed: dict | None = None
     main_merged: dict | None = None
+    merged: dict | None = None                       # ogólny wynik, także ze starego card.main-merged
     merge_waiting: dict | None = None
     abandoned_main_merges: set = field(default_factory=set)
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
@@ -194,17 +197,20 @@ def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
+        duplicate_merge = kind in ("card.merged", "card.main-merged") and st.merged is not None
         if kind != "card.stalled":
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
-        if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
+        if not duplicate_merge and (kind in (
+                    "card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
                     "step.decision", "step.transfer_requested", "step.wip", "step.limit",
-                    "plan.approved", "card.paused", "card.resumed", "plan.finished") or (
-                    kind == "result" and e.get("action") == "merge"):
+                    "plan.approved", "card.paused", "card.resumed", "plan.finished",
+                    "card.merged", "card.main-merged") or (
+                    kind == "result" and e.get("action") == "merge")):
             st.timeline.append({key: e[key] for key in (
                 "seq", "ts", "type", "step", "ticket", "executor", "kind", "result", "reason", "verdict",
-                "action", "key", "ok") if key in e})
-        if kind in HISTORY_LOGGED:
+                "action", "key", "ok", "targetRef", "targetBranch", "main", "operationId") if key in e})
+        if kind in HISTORY_LOGGED and not duplicate_merge:
             st.log.append(e)
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "step.base-wait":
@@ -219,7 +225,7 @@ def fold(events: list[dict]) -> FlowState:
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
             st.superseded.update(st.steps)
             st.started, st.paused, st.card_finished, st.moved_to = e, False, False, ""
-            st.closed = st.main_merged = None
+            st.closed = st.main_merged = st.merged = None
             st.merge_waiting = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
@@ -407,6 +413,13 @@ def fold(events: list[dict]) -> FlowState:
             st.closed = e
         elif kind == "card.main-merged":
             st.main_merged = e
+            if st.merged is None:
+                st.merged = merge_of(e)
+            st.merge_waiting = None
+        elif kind == "card.merged":
+            if st.merged is None:
+                st.merged = merge_of(e)
+            st.merge_waiting = None
         elif kind == "main-merge.waiting":
             st.merge_waiting = e
         elif kind == "main-merge.resumed":
@@ -452,6 +465,14 @@ def _base(data: dict) -> dict:
              and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit))
     return {"status": "known" if valid else "unknown", "baseRef": ref if valid else "",
             "baseBranch": branch if valid else "", "baseCommit": commit if valid else ""}
+
+
+def merge_of(event: dict) -> dict:
+    """Odczyt zapisanego celu bez zgadywania dzisiejszej głównej i bez migracji dziennika."""
+    branch = event.get("targetBranch") or event.get("main") or ""
+    return {**event, "targetBranch": branch,
+            "targetRef": event.get("targetRef") or ("refs/heads/" + branch if branch else ""),
+            "resultCommit": event.get("resultCommit") or event.get("commit") or ""}
 
 
 def base_of(st: FlowState) -> dict:
@@ -651,7 +672,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if st.started is None:
         return None
     column = card.get("column") or "backlog"
-    if column in ("done", "archived") and not (st.merge_waiting and not st.card_finished):
+    if column in ("done", "archived") and not st.merged and not (st.merge_waiting and not st.card_finished):
         return None
     from .decisions import build_decisions
     decisions = build_decisions(st)
@@ -682,7 +703,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                         "base": base_of(st), "initialBase": dict(st.initial_base), "baseVersion": st.base_version,
                         "stalledSince": st.stalled_since,
                         "closed": bool(st.closed), "summary": (st.closed or {}).get("summary") or "",
-                        "mainMerged": bool(st.main_merged),
+                        "mainMerged": bool(st.merged),  # zgodność dawnych klientów
+                        "merged": bool(st.merged), "merge": dict(st.merged or {}),
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
     out["flow"]["baseDecisionPending"] = bool(pending(st))
@@ -707,11 +729,19 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
-    if st.merge_waiting:
+    if st.merge_waiting and not st.card_finished:
         return _fill(out, "waiting", "Scalenie czeka: " + st.merge_waiting["reason"])
     plan_entry = st.started.get("entry") in ("plan", "planning")
     if plan_entry:
         rows, finished_ids = _plan_view(st, out)
+    if st.merged:
+        out["flow"]["decisions"] = []
+        for item in out["flow"]["steps"]:
+            item["canTransfer"] = False
+        out["done"] = out["total"]
+        target = st.merged["targetBranch"]
+        return _fill(out, column if column in ("done", "archived") else "done",
+                     "Karta scalona" + (f" do {target}" if target else ""))
     if pending(st):
         for item in out["flow"]["steps"]:
             item["canEnter"] = False

@@ -29,7 +29,7 @@ class DurableMergeFixture:
 
     def setUp(self):
         super().setUp()
-        self.flow.stop()
+        self.flow._timer.stop()
 
         class ObjectGit(LocalStepGit):
             def __init__(self, *args, objects_only=False):
@@ -100,7 +100,7 @@ class DurableMergeFixture:
     def restart_stopped(self):
         self.flow.stop()
         self.flow = self.make_flow()
-        self.flow.stop()
+        self.flow._timer.stop()
 
     def intent(self):
         return next(e for e in self.flow.engine.journal.read(self.card_id)
@@ -122,7 +122,7 @@ class DurableMergeFixture:
         self.assertEqual(self.sha(self.target), intent["resultCommit"])
         self.assertEqual(git(self.repo, "rev-list", "--merges", self.before + ".." + self.target).splitlines(),
                          [intent["resultCommit"]])
-        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.merged"]), 1)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
         self.assertEqual(next(e for e in events if e["type"] == "card.finished")["operationId"], intent["key"])
         self.assertEqual({e["stage"] for e in events if e["type"] == "main-merge.checkpoint"},
@@ -228,7 +228,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
     def test_ref_moved_before_result_is_recovered_by_tick_then_public_retry(self):
         self.crash_after("main-merge.checkpoint", stage="ref-moved")
         self.assertEqual(self.sha(self.target), self.intent()["resultCommit"])
-        self.assertFalse(fold(self.flow.engine.journal.read(self.card_id)).main_merged)
+        self.assertFalse(fold(self.flow.engine.journal.read(self.card_id)).merged)
         self.restart_stopped()
         self.flow.engine.tick()
         self.assert_success()
@@ -244,7 +244,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.assert_success()
 
     def test_success_event_before_column_projection_recovers_once(self):
-        self.crash_after("card.main-merged")
+        self.crash_after("card.merged")
         self.restart_stopped()
         self.assertTrue(self.merge()["already"])
         self.assert_success()
@@ -422,7 +422,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(self.store.load().cards[1].column, "archived")
         events = self.flow.engine.journal.read(self.card_id)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
-        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.merged"]), 1)
         self.assertEqual(self.sha(self.target), self.intent()["resultCommit"])
 
     def test_return_after_materialization_abandons_intent_and_merges_new_close_once(self):
@@ -528,7 +528,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         events = engine.journal.read(self.card_id)
         self.assertEqual([e["key"] for e in events if e["type"] == "main-merge.abandoned"], [intent["key"]])
         self.assertFalse(any(e["type"] == "result" and e.get("action") == "main-merge" for e in events))
-        self.assertFalse(any(e["type"] == "card.main-merged" for e in events))
+        self.assertFalse(any(e["type"] == "card.merged" for e in events))
         st = fold(events)
         self.assertEqual(st.open_intents(), [])
         self.assertEqual(st.busy_reason(), "")
@@ -592,7 +592,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         events = self.flow.engine.journal.read(self.card_id)
         self.assertFalse(any(e["type"] == "main-merge.abandoned" for e in events))
         self.assertEqual(len([e for e in events if e["type"] == "result" and e.get("action") == "main-merge"]), 1)
-        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.merged"]), 1)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
         self.assertEqual(self.sha(self.target), later)
         self.assertEqual(self.store.load().cards[1].column, "archived")
@@ -718,7 +718,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(self.intent()["resultCommit"], head)
         self.assertTrue(self.intent()["already"])
         events = self.flow.engine.journal.read(self.card_id)
-        self.assertEqual(len([e for e in events if e["type"] == "card.main-merged"]), 1)
+        self.assertEqual(len([e for e in events if e["type"] == "card.merged"]), 1)
         self.assertEqual(len([e for e in events if e["type"] == "card.finished"]), 1)
 
     def test_no_explicit_merge_does_not_create_an_intent_on_tick(self):

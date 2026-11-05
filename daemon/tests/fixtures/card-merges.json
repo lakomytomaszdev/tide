@@ -1,0 +1,14 @@
+{
+  "legacy": [
+    {"seq": 1, "ts": "2026-11-01T10:00:00+01:00", "type": "card.started", "entry": "now"},
+    {"seq": 2, "ts": "2026-11-01T10:01:00+01:00", "type": "card.closed", "summary": "Gotowe"},
+    {"seq": 3, "ts": "2026-11-01T10:02:00+01:00", "type": "card.main-merged", "main": "release/old-main", "commit": "abc"},
+    {"seq": 4, "ts": "2026-11-01T10:02:01+01:00", "type": "card.finished", "column": "done"}
+  ],
+  "feature": [
+    {"seq": 1, "ts": "2026-11-01T10:00:00+01:00", "type": "card.started", "entry": "now"},
+    {"seq": 2, "ts": "2026-11-01T10:01:00+01:00", "type": "card.closed", "summary": "Gotowe"},
+    {"seq": 3, "ts": "2026-11-01T10:02:00+01:00", "type": "card.merged", "targetRef": "refs/heads/feature/full/path", "targetBranch": "feature/full/path", "sourceCommit": "abc", "targetCommitBefore": "def", "resultCommit": "fed", "baseVersion": 1, "operationId": "feature-merge"},
+    {"seq": 4, "ts": "2026-11-01T10:02:01+01:00", "type": "card.finished", "column": "done", "operationId": "feature-merge"}
+  ]
+}

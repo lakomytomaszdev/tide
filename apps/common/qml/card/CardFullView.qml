@@ -85,7 +85,7 @@ Rectangle {
     readonly property string shownColumn: derived && derived.column ? derived.column : (card ? card.column : "")
     readonly property bool paused: !!(flow && flow.paused)
     readonly property bool canPause: !!(derived && (!flow || !flow.plan || flow.plan.status !== "done")
-                                        && derived.column !== "review")
+                                        && derived.column !== "review" && !(flow && flow.merged))
     property bool menuOpen: false
     property string settingError: ""
     // Pytanie o potwierdzenie: null albo {kind, params, title, effect, yes}.

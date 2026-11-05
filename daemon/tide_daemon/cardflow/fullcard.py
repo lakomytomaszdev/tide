@@ -31,7 +31,7 @@ from .state import FlowState
 
 PHASES = (("order", "Zlecenie"), ("planning", "Planowanie"), ("plan-review", "Review planu"),
           ("plan-approval", "Zatwierdzenie planu"), ("tickets", "Tickety"), ("closing", "Domknięcie"),
-          ("main-merge", "Scalenie do master"))
+          ("main-merge", "Scalenie"))
 STATES = ("done", "now", "you", "hold", "todo", "skipped")
 USER = "user"
 PLAN_ENTRIES = ("plan", "planning")
@@ -179,7 +179,7 @@ def phases(st: FlowState, out: dict) -> list[dict]:
         result.append(phase("tickets", state, "" if plan else first.get("executor"), first.get("ts"),
                             flow.get("waveLabel") or ""))
 
-    # Domknięcie i scalenie do master.
+    # Domknięcie i scalenie do zapisanego celu (ID fazy zachowane dla dotychczasowych widoków).
     close_step = last(("close",))
     if st.closed:
         result.append(phase("closing", "done", close_step.get("executor"), st.closed.get("ts")))
@@ -187,8 +187,11 @@ def phases(st: FlowState, out: dict) -> list[dict]:
         result.append(phase("closing", asked("closing") or "now", close_step.get("executor"), close_step.get("ts")))
     else:
         result.append(phase("closing", "todo"))
-    if st.main_merged:
-        result.append(phase("main-merge", "done", USER, st.main_merged.get("ts")))
+    if st.merged:
+        merged = phase("main-merge", "done", USER, st.merged.get("ts"))
+        if st.merged["targetBranch"]:
+            merged["label"] = "Scalenie do " + st.merged["targetBranch"]
+        result.append(merged)
     else:
         result.append(phase("main-merge", "you" if st.closed else "todo", USER))
 
@@ -370,10 +373,11 @@ def headline(st: FlowState, out: dict) -> str:
     hold = next((p for p in out.get("phases") or [] if p["state"] == "hold"), None)
     if st.paused:
         return "Karta jest wstrzymana: trwające kroki kończą pracę, nowe nie wystartują, dopóki jej nie wznowisz."
-    if st.main_merged:
-        return "Karta jest scalona do master; nic już na Ciebie nie czeka."
+    if st.merged:
+        target = st.merged["targetBranch"]
+        return "Karta jest scalona" + (f" do {target}" if target else "") + "; nic już na Ciebie nie czeka."
     if st.closed:
-        return "Praca jest na gałęzi karty i czeka, aż ją sprawdzisz i scalisz do master."
+        return "Praca jest na gałęzi karty i czeka, aż ją sprawdzisz i wybierzesz cel scalenia."
     if hold and not count:
         until = next((t["waitingOn"].get("until") for t in out.get("tickets") or []
                       if t.get("waitingOn") and t["waitingOn"]["kind"] == "limit" and t["waitingOn"].get("until")), "")

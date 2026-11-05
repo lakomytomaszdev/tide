@@ -309,11 +309,11 @@ class BoardMonitor(QObject):
             return
         self.flow.approve_plan(card_id, reply)
 
-    def card_branch_diff(self, card_id: str, reply) -> None:
+    def card_branch_diff(self, card_id: str, reply, target_ref: str = "") -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
             return
-        self.flow.card_diff(card_id, reply)
+        self.flow.card_diff(card_id, reply, target_ref)
 
     def merge_card_to_main(self, card_id: str, reply) -> None:
         if self.flow is None:

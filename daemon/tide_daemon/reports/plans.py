@@ -19,7 +19,7 @@ YouTracka, gdy repozytorium ma plany lokalne; każdy błąd tylko pomija dodatek
 import os
 
 from ..cardflow.journal import Journal
-from ..cardflow.state import _epoch
+from ..cardflow.state import _epoch, merge_of
 from ..coordination import actions, ids, repoplans
 from ..coordination import plan as plan_mod
 from ..coordination.board import STATE_WORDS
@@ -65,16 +65,29 @@ def _attach_flow(projects: list, start: float, end: float, root: str) -> None:
     for card in journal.cards():
         events = journal.read(card)
         repo, rows, steps, completed = "", {}, {}, {}
+        merged = False
         for event in events:
             kind = event.get("type")
             if kind == "card.started":
                 repo, rows, steps = os.path.realpath(event.get("repo") or "/"), {}, {}
+                merged = False
             elif kind == "plan.approved":
                 rows = {r.get("id"): r for r in event.get("rows") or [] if r.get("id")}
             elif event.get("type") == "plan.revision-approved":
                 rows.update({r.get("id"): r for r in (event.get("plan") or {}).get("rows") or [] if r.get("id")})
             elif kind == "step.started" and event.get("kind") in ("ticket", "fix") and event.get("ticket"):
                 steps[event["ticket"]] = event
+            elif kind in ("card.merged", "card.main-merged") and not merged:
+                merged = True
+                when = _epoch(event.get("ts"))
+                if start <= when <= end and repo in by_repo:
+                    result = merge_of(event)
+                    target = result["targetBranch"]
+                    title = "Karta scalona" + (f" do {target}" if target else " (cel niezapisany)")
+                    entry = _entry(f"{card} · {title}", card, "card-merge",
+                                   [{"id": card, "title": title, "state": "gotowe"}], last=when)
+                    entry.update(card=card, merge=result)
+                    by_repo[repo].plans.append(entry)
             if kind != "result" or event.get("action") != "merge" or not event.get("ok"):
                 continue
             when = _epoch(event.get("ts"))
