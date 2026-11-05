@@ -1909,6 +1909,13 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-flow", "karta nie ma trwającego przepływu")
         if st.paused != paused:
             self.journal.append(card_id, "card.paused" if paused else "card.resumed")
+        if not paused and st.store_column == "backlog":
+            # Wznowiona karta wraca z Backlogu do pracy (06.11, K-55: wznowiona po ustawianiu kolejności w Backlogu
+            # pracowała dalej, a Tablica pokazywała ją w Backlogu, bo zapisana kolumna została „backlog”).
+            with self.journal.lock:
+                self.store.move_card(card_id, "todo", -1, from_column="backlog")
+            moved = self.store.load().cards.get(card_num(card_id))
+            self.moved(card_id, "todo", "backlog", getattr(moved, "move_id", "") or "")
         return {"ok": True, "id": card_id, "paused": paused}
 
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
