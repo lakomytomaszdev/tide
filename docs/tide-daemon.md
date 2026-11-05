@@ -309,6 +309,36 @@ Model idzie jednym argumentem (`--model=<model>`), więc nazwa z „-” na pocz
 
 - polecenie idzie przez stdin (plik `<krok>/in/prompt.txt` otwarty jako stdin programu), nigdy w argv; Claude Code: `-p --setting-sources= --settings <krok>/in/settings.json --permission-prompts none --strict-mcp-config --output-format stream-json --verbose --session-id <uuid>` (albo `--resume`), ustawienia piaskownicy (`failIfUnavailable`, `allowUnsandboxedCommands: false`, `denyRead: ["~"]` z `allowRead` dla worktree, wspólnego `.git`, `in` i `out`, `allowWrite` tylko `out`, `allowedDomains: []`); Codex: `exec --json --cd <worktree> --sandbox workspace-write -c sandbox_workspace_write.writable_roots=[<.git/worktrees/wt>, objects, refs, logs, <krok>/out] -c approval_policy="never" -`,
 - środowisko budowane od zera (nic się nie dziedziczy): `HOME`, `USER`, `PATH`, `LANG`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` i `SSH_ASKPASS` na `/bin/false`, `GIT_SSH_COMMAND` bez agenta i kluczy, pusty `credential.helper` i `core.askPass`, `GH_CONFIG_DIR` na pusty katalog, martwy `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_GLOBAL=<krok>/in/gitconfig` (autor „Krok”, `core.excludesFile` z atrapami piaskownicy), Claude: `CLAUDE_CODE_TMPDIR` poza `~`, Codex: `GIT_CONFIG_NOSYSTEM=1`. Katalog kroku nie leży w `/tmp` ani w `~/.local/share` (Codex ze snapa ich nie widzi), Codex: ani w ukrytym katalogu domowym; worktree nie pod `/tmp/claude-<uid>`. To druga warstwa — twardą granicą jest piaskownica,
+- **skille użytkownika (PT-216):** `tasks/skills.py` szuka `SKILL.md` w `~/.claude/skills` dla Claude
+  oraz `~/.agents/skills` i `~/.codex/skills` dla Codexa (pierwsze źródło wygrywa przy powtórzonej nazwie).
+  Obsługuje symlinki, także gdy cały katalog skilli wskazuje poza `~/.claude`, i katalogi zagnieżdżone.
+  `in/skills.json` zapisuje listę nazw i rzeczywistych ścieżek. Ta sama lista trafia na koniec polecenia
+  kroku, także przy wznowieniu. Brak skilla wymaganego przez polecenie kończy się jawnym `result=error`
+  z jego nazwą, zamiast udawania wykonania procedury,
+- Claude zachowuje `--setting-sources=` i `--strict-mcp-config`. Samo `--add-dir` nie przywraca skilli:
+  ich ładowanie z dodatkowych katalogów zależy od źródła ustawień `project`.
+  Tide generuje pod `in/skills-plugin-<odcisk>` lokalny plugin i podaje go przez `--plugin-dir`.
+  Zawiera wyłącznie nazwę, opis oraz instrukcję odczytania oryginalnego `SKILL.md`; nie kopiuje
+  hooków, `allowed-tools`, `context: fork`, plików ustawień, MCP ani pluginów użytkownika.
+  W `init`/liście poleceń skille mają nazwy `tide-user-skills:to-spec`, `tide-user-skills:tdd` itd.;
+  polecenie kroku wskazuje to mapowanie. Cele symlinków dostają `sandbox.filesystem.allowRead`,
+  `denyWrite` i reguły narzędzi `Read`/zakaz `Edit`; nie są dodawane do zapisywalnych katalogów sesji.
+  Zasoby względne skilla należy czytać przy oryginalnym `SKILL.md`, a zasady kroku mają pierwszeństwo,
+- Codex wykrywa natywnie skille z `~/.agents/skills`; zgodność ze starszym `~/.codex/skills` zapewnia
+  jawna lista ścieżek w poleceniu. Wersja bez natywnego wykrywania ma przeczytać wskazany `SKILL.md`
+  i jego zasoby bezpośrednio. Nie dodajemy katalogów skilli do `writable_roots`, nie włączamy MCP
+  ani dodatkowych źródeł konfiguracji. Nie zakładamy zdarzenia `init` z listą skilli w `codex exec --json`:
+  dowodem przekazanej listy są `in/skills.json` i `in/prompt.txt`.
+  Natywne ładowanie Claude sprawdza opcjonalny test
+  `TIDE_SKILLS_CLAUDE_BIN=/ścieżka/do/claude python3 -m unittest daemon.tests.test_background_skills_cli.NativeSkillsTest -v`:
+  używa atrap HOME, hooka i MCP, nie łączy się z modelem, kończy proces po `init`,
+  zapisuje surowy `step.log` w `build/test-results/skills-init/` i sprawdza pięć wymaganych skilli.
+  Domyślne testy `test_background_skills.py` nie wymagają programu ani modelu.
+  Źródła mechanizmów: [źródła skilli Claude](https://code.claude.com/docs/en/skills#load-skills-from-a-directory-outside-the-project),
+  [lokalny plugin w CLI Claude](https://code.claude.com/docs/en/cli-reference),
+  [katalogi skilli Codexa](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+  Na tej bazie nie ma jeszcze pudełka testowego K-38: zmiana obejmuje aktualną piaskownicę kroków;
+  ewentualne późniejsze pudełko musi zachować odczyt wskazanych instrukcji i zasobów,
 - token punktu (decyzja 70) jak w oknie zadań: Claude Code przez `apiKeyHelper` dopisany do pliku ustawień kroku, Codex przez `secret_env` (zmienna → plik), który `Background.start()` czyta dopiero przy starcie i wstawia wyłącznie do środowiska programu; w złożonym poleceniu (`argv`, `env`, pliki) tokena nie ma,
 - `Background.prepare()` zakłada katalogi i pliki kroku, `start()` uruchamia program w jednostce `systemd-run --user --scope --unit=tide-step-<id>` (`/usr/bin/env -u XDG_RUNTIME_DIR -u INVOCATION_ID <program>`; `XDG_RUNTIME_DIR` tylko dla `systemd-run`, D-Bus niepotrzebny): krok przeżywa restart usługi, token zostaje w środowisku procesu (nie we właściwościach jednostki), wyjście idzie do `<krok>/out/step.log`, nie do rury usługi. `tasks/stepstop.py`: `stop_step()` zatrzymuje jednostkę (`systemctl --user kill` SIGTERM, po `grace` SIGKILL całej cgroup — także wnuki po `setsid`), robi commit WIP na gałęzi kroku i zwraca ostatnie wiadomości z dziennika sesji (Claude Code `projects/*/<id>.jsonl`, Codex najnowszy `rollout-*.jsonl` z `cwd` kroku). Git usługi działa na treści napisanej przez agenta, więc **w piaskownicy `bwrap`** (decyzja 8): `--ro-bind / /`, pusty `tmpfs` na `$HOME` i `/tmp`, zapis tylko w worktree i w `.git/worktrees/<wt>`, `objects`, `refs`, `logs` (katalog gita worktree ustala usługa przed krokiem z repozytorium, nie z pliku `.git` w worktree), reszta `<repo>/.git` do odczytu, bez sieci, IPC i cudzych procesów, czyste środowisko; bez `bwrap` `git_snapshot` odmawia (`no-sandbox`) i zmiany zostają w worktree. Dodatkowo `--git-dir`/`--work-tree`/`GIT_COMMON_DIR`, `core.hooksPath=/dev/null`, bez atrybutów systemu i użytkownika, przywrócony plik `commondir` worktree (git bierze z niego ścieżkę refów mimo `GIT_COMMON_DIR`); odmawia też, gdy HEAD nie jest gałęzią kroku (`wrong-branch`), jest odłączony albo to gałąź główna. Zagnieżdżone repozytoria w worktree są pomijane z notatką, bity `assume-unchanged`/`skip-worktree` na istniejących plikach zdejmowane, po zabitym kroku usuwane są jego blokady (`index.lock`, `HEAD.lock`, `refs/heads/<gałąź>.lock`), pliki z `.gitignore` trafiają do `notes`. Zatrzymanie bez pewności (`systemctl` nie odpowiada) to `not-stopped`, bez ruszania worktree. `step_id`: `[A-Za-z0-9_-]{1,64}`. Krok Codexa: wszystkie serwery MCP z `codex mcp list --json` wyłączone (`-c mcp_servers.<nazwa>.enabled=false`; błąd odczytu listy odmawia startu), opcje przed `resume <id>`. Bez D-Bus i bez Tablicy — to podłączy PT-58.
 
