@@ -2696,11 +2696,25 @@ wystarczy: e2e Playwright, Karma i serwery testowe na `localhost` oraz kontenery
 | Urządzenie | Źródło = ścieżka w pudełku | Tryb |
 | --- | --- | --- |
 | `tide-git` | `<repo>/.git` | rw |
-| `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, po `tide-git` |
-| `tide-wtcfg-<nazwa>` | istniejące `.git/worktrees/<nazwa>/config.worktree` | ro |
+| `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, nad `tide-git` |
+| `tide-wtcfg-<nazwa>` | `.git/worktrees/<nazwa>/config.worktree` — **tylko przy `extensions.worktreeConfig=true`** w `.git/config` hosta | ro, nad `tide-git` |
 | `tide-worktrees` | `<repo>-worktrees` (worktree i katalogi kroku obok niego) | rw |
 | `tide-home` | `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już wolumen `<pudełko>-home` na `/home/agent` | rw |
-| `tide-step-<id>` | katalog kroku — tylko gdy leży poza `<repo>-worktrees` | rw |
+
+Kolejność montowania: Incus montuje urządzenia `disk` posortowane po `path` (`/` pierwsze, dalej leksykograficznie),
+nie w kolejności `device add` — nakładki leżą nad `.git`, bo ich ścieżki mają `<repo>/.git/` jako przedrostek. Nie
+„poprawiać” kolejności dodawania; test sprawdza przedrostki ścieżek.
+
+**`config.worktree` (D7).** Git czyta `.git/worktrees/<wt>/config.worktree` tylko przy włączonym
+`extensions.worktreeConfig`. Runner czyta flagę z `.git/config` **hosta** (`git config --file`, plik pod nakładką ro —
+agent jej nie włączy; błąd odczytu → odmowa kroku). Wyłączona (stan plasma-tide): żadnych nakładek `tide-wtcfg-*` —
+nowy worktree ticketu nie wymaga zatrzymania pudełka, kroki projektu startują równolegle. Włączona: nakładka na każdy
+istniejący plik, a dla worktree kroku usługa najpierw zakłada pusty `config.worktree` (wskaźnik `<worktree>/.git`
+musi prowadzić bezpośrednio do `.git/worktrees/<nazwa>`; dowiązanie albo katalog zamiast pliku → odmowa). Nakładka
+chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
+krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
+`core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
+`gitops.HARDENED` (`core.hooksPath=/dev/null`).
 
 Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
 `raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
@@ -2708,7 +2722,8 @@ dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dod
 dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Po takim restarcie runner czeka (najwyżej
 `box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
 bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
-menedżera krok jest odmówiony. Worktree spoza `<repo>-worktrees` → odmowa. Źródło
+menedżera krok jest odmówiony. Worktree albo katalog kroku spoza `<repo>-worktrees` → odmowa. Zatrzymane pudełko →
+odmowa z czytelnym błędem (start pudełka należy do #18). Błąd `incus` przy montowaniu → `StepError`. Źródło
 równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
 poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Kopia karty dostaje urządzenia
 we własnej konfiguracji, pudełko projektu zostaje bez zmian.
@@ -2725,7 +2740,11 @@ w dzienniku karty. Codex: `--sandbox workspace-write` bez zmian, serwery MCP hos
 
 **Zatrzymanie.** `kill(step)` woła przez `incus exec … --user <agent>` `systemctl --user kill --signal=SIGTERM
 tide-step-<id>.service` w pudełku z wpisu (`box`, domyślnie pudełko runnera), czeka `grace` na `is-active`, potem
-SIGKILL; klient `incus exec` kończy się razem z jednostką. Nazwy jednostki i pudełka są sprawdzane wzorcem.
+SIGKILL; klient `incus exec` kończy się razem z jednostką. Nazwy jednostki i pudełka są sprawdzane wzorcem. Stan
+jednostki (`unit_state`) ma trzy wartości jak `stepstop.unit_state`: `active` (kod 0), `inactive` (kody 3 i 4
+`systemctl is-active`, przekazane przez `incus exec`) i `unknown` (każdy inny kod: błąd klienta `incus exec`,
+niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko przy `inactive` — z `unknown` `stepstop`
+nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
 
 **Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> [--worktree W]
 [--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>.step` z poleceniem zamiast agenta i znacznikiem

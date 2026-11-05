@@ -23,9 +23,12 @@ w `in/exit-code` — jak `EXIT_WRAPPER` na hoście.
 oraz zmienne z `step_env` (porty #8, atrapy K3 #18). Żadna z tych wartości nie trafia do argv ani `--env`.
 
 Urządzenia dyskowe (`ensure_devices`, pod blokadą plikową na projekt — dwa pierwsze kroki naraz dodają je raz):
-`<repo>/.git` rw, nakładki ro na `.git/hooks`, `.git/config`, `.git/info` i istniejące
-`.git/worktrees/*/config.worktree`, `<repo>-worktrees` rw (worktree i katalogi kroku), `/home/agent`
+`<repo>/.git` rw, nakładki ro na `.git/hooks`, `.git/config`, `.git/info`, a przy włączonym
+`extensions.worktreeConfig` (czytanym z `.git/config` hosta) także na `.git/worktrees/*/config.worktree` (pusty plik
+dla worktree kroku zakłada usługa), `<repo>-worktrees` rw (worktree i katalogi kroku), `/home/agent`
 (`~/.local/share/tide/box/<slug>/home`, 0700 — chyba że builder już podpiął tam wolumen `<pudełko>-home`).
+Incus montuje urządzenia `disk` w kolejności posortowanej po `path`, nie po kolejności dodawania — nakładki leżą
+nad `.git`, bo ich ścieżki są dłuższe (mają `.git/` jako przedrostek).
 Bez `shift=true` — `raw.idmap` uid/gid usługi ↔ agent (P-4, decyzja `raw-idmap-zamiast-shift`); pojedynczego pliku
 nie da się dołączyć do działającego kontenera, więc zmiana `raw.idmap` albo nowa nakładka-plik zatrzymuje pudełko
 na czas dodania (odmowa, gdy biegną w nim inne kroki). Główny worktree projektu i katalog domowy hosta nigdy.
@@ -49,7 +52,7 @@ from typing import Callable
 from ..tasks import agentcmd, launch
 from ..tasks.runner import Started
 from . import state as bs
-from .incus import Incus
+from .incus import Incus, IncusError
 from .settings import BoxSettings
 
 # Pełne NO_PROXY pudełka (jedno źródło): `in/env` i `env(step)` tutaj, `/etc/environment` obrazu bazowego (#16)
@@ -115,6 +118,26 @@ def lock_path(slug: str, env=None) -> str:
 def worktrees_root(repo: str) -> str:
     """`<repo>-worktrees` — ta sama reguła co `cardflow.gitops.worktrees_dir`."""
     return os.path.normpath(repo) + "-worktrees"
+
+
+def worktree_config_enabled(git_dir: str) -> bool:
+    """`extensions.worktreeConfig` z `<repo>/.git/config` **hosta** (plik pod nakładką ro — agent go nie włączy).
+
+    Tylko przy włączonym rozszerzeniu git czyta `.git/worktrees/<wt>/config.worktree`; bez niego nakładki na te pliki
+    nic nie chronią, a każda nowa (plik) wymaga zatrzymania pudełka. `git config --file` czyta wyłącznie ten plik
+    (bez `include`, bez konfiguracji systemowej i użytkownika). Błąd odczytu → StepError (nie „wyłączone”)."""
+    path = os.path.join(git_dir, "config")
+    run = subprocess.run(["git", "config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig"],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                         env={"PATH": os.environ.get("PATH") or "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1",
+                              "LC_ALL": "C"})
+    value = run.stdout.strip()
+    if run.returncode == 1 and not value:
+        return False                       # klucza nie ma
+    if run.returncode == 0 and value in ("true", "false"):
+        return value == "true"
+    raise agentcmd.StepError(f"nie da się odczytać extensions.worktreeConfig z {path}: "
+                             f"{(run.stderr or value).strip()[:200]}")
 
 
 def _within(path: str, folder: str) -> bool:
@@ -281,7 +304,8 @@ class BoxRunner:
         return f"uid {uid} {au}\ngid {gid} {ag}"
 
     def devices_for(self, step: agentcmd.Step) -> list:
-        """Urządzenia dyskowe kroku w kolejności montowania: `.git` przed nakładkami, potem worktrees i dom."""
+        """Urządzenia dyskowe kroku. Kolejność listy nie decyduje o montowaniu (Incus sortuje po `path`) — nakładki ro
+        są nad `.git`, bo ich ścieżki leżą pod `.git/`."""
         repo = os.path.realpath(step.repo)
         git = os.path.join(repo, ".git")
         if not os.path.isdir(git):
@@ -290,6 +314,9 @@ class BoxRunner:
         worktree, step_dir = os.path.realpath(step.worktree), os.path.realpath(step.step_dir)
         if not _within(worktree, root) or worktree == root:
             raise agentcmd.StepError(f"worktree kroku w pudełku musi leżeć w {root}: {step.worktree}")
+        if not _within(step_dir, root) or step_dir == root:
+            # gitops zawsze daje `<worktree>.<krok>.step` obok worktree — montuje się razem z `<repo>-worktrees`.
+            raise agentcmd.StepError(f"katalog kroku w pudełku musi leżeć w {root}: {step.step_dir}")
         for sub in ("hooks", "info"):
             # Pusty katalog też dostaje nakładkę ro — inaczej agent założyłby `.git/hooks/*` uruchamiane na hoście.
             os.makedirs(os.path.join(git, sub), exist_ok=True)
@@ -297,16 +324,41 @@ class BoxRunner:
                    Device(_device_name("git-hooks"), os.path.join(git, "hooks"), readonly=True),
                    Device(_device_name("git-config"), os.path.join(git, "config"), readonly=True, is_file=True),
                    Device(_device_name("git-info"), os.path.join(git, "info"), readonly=True)]
-        for cfg in sorted(glob.glob(os.path.join(git, "worktrees", "*", "config.worktree"))):
-            if os.path.isfile(cfg) and not os.path.islink(cfg):
-                name = os.path.basename(os.path.dirname(cfg))
-                devices.append(Device(_device_name("wtcfg", name), cfg, readonly=True, is_file=True))
+        if worktree_config_enabled(git):
+            # Nakładka chroni tylko plik istniejący w chwili montowania: dla worktree kroku usługa zakłada pusty
+            # `config.worktree`; inne worktree bez tego pliku pilnuje strażnik sum #7 (PT-170) i `gitops.HARDENED`.
+            self._ensure_worktree_config(git, worktree)
+            for cfg in sorted(glob.glob(os.path.join(git, "worktrees", "*", "config.worktree"))):
+                if os.path.isfile(cfg) and not os.path.islink(cfg):
+                    name = os.path.basename(os.path.dirname(cfg))
+                    devices.append(Device(_device_name("wtcfg", name), cfg, readonly=True, is_file=True))
         devices.append(Device(_device_name("worktrees"), root))
         devices.append(Device(_device_name("home"), host_home_dir(self.slug, self.host_env), path=BOX_HOME))
-        if not _within(step_dir, root):
-            devices.append(Device(_device_name("step", step.step_id), step_dir))
         self._check_sources(devices, repo)
         return devices
+
+    @staticmethod
+    def _ensure_worktree_config(git: str, worktree: str) -> str:
+        """Pusty `.git/worktrees/<wt>/config.worktree` worktree kroku (gdy go nie ma), żeby nakładka ro objęła go przed
+        pierwszym krokiem. Katalog administracyjny ze wskaźnika `<worktree>/.git` musi leżeć bezpośrednio
+        w `.git/worktrees` (po rozwinięciu dowiązań); dowiązanie albo katalog w miejscu pliku → StepError."""
+        pointer = os.path.join(worktree, ".git")
+        if os.path.islink(pointer) or not os.path.isfile(pointer):
+            raise agentcmd.StepError(f"worktree kroku bez pliku .git: {worktree}")
+        with open(pointer, encoding="utf-8", errors="replace") as fh:
+            line = fh.readline().strip()
+        if not line.startswith("gitdir:"):
+            raise agentcmd.StepError(f"niepoprawny wskaźnik {pointer}")
+        admin = os.path.realpath(os.path.join(worktree, line[len("gitdir:"):].strip()))
+        if os.path.dirname(admin) != os.path.realpath(os.path.join(git, "worktrees")) or not os.path.isdir(admin):
+            raise agentcmd.StepError(f"wskaźnik {pointer} nie prowadzi do {git}/worktrees/<nazwa>")
+        cfg = os.path.join(admin, "config.worktree")
+        if os.path.lexists(cfg):
+            if os.path.islink(cfg) or not os.path.isfile(cfg):
+                raise agentcmd.StepError(f"{cfg} nie jest zwykłym plikiem — krok w pudełku odmówiony")
+            return cfg
+        os.close(os.open(cfg, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644))
+        return cfg
 
     def _check_sources(self, devices: list, repo: str) -> None:
         """Ani główny worktree projektu, ani katalog domowy hosta (ani nic nad nimi) nie trafiają do pudełka."""
@@ -327,6 +379,8 @@ class BoxRunner:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 return self._ensure_locked(step, wanted)
+            except IncusError as exc:
+                raise agentcmd.StepError(f"montowania pudełka {self.box}: {exc}") from exc
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -342,13 +396,14 @@ class BoxRunner:
             missing.append(dev)
         idmap = self.idmap()
         idmap_ok = self.incus.config_get(self.box, "raw.idmap") == idmap
-        if not missing and idmap_ok:
-            return []
-        stop = not idmap_ok or any(d.is_file for d in missing)
         inst = self.incus.instance(self.box)
         if inst is None:
             raise agentcmd.StepError(f"pudełko {self.box} nie istnieje")
         running = str(inst.get("status", "")).lower() == "running"
+        if not missing and idmap_ok:
+            self._require_running(running)
+            return []
+        stop = not idmap_ok or any(d.is_file for d in missing)
         if stop and running:
             busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
             if busy:
@@ -368,7 +423,12 @@ class BoxRunner:
                 self.incus.start(self.box)
         if stop and running:
             self.wait_user_manager(self.box)
+        self._require_running(running)
         return [d.name for d in missing]
+
+    def _require_running(self, running: bool) -> None:
+        if not running:
+            raise agentcmd.StepError(f"pudełko {self.box} jest zatrzymane — uruchomienie pudełka należy do #18")
 
     def wait_user_manager(self, box: str = "") -> None:
         """Po (re)starcie pudełka `systemd-run --user` działa dopiero, gdy wstanie menedżer usług użytkownika `agent`
@@ -376,7 +436,7 @@ class BoxRunner:
         ręcznej PT-169 menedżer wstawał ~2 s po starcie pudełka."""
         box = box or self.box
         deadline = time.monotonic() + max(1.0, float(self.settings.ip_wait_seconds))
-        while self._systemctl(box, "show-environment") != 0:
+        while self._systemctl(box, "show-environment").returncode != 0:
             if time.monotonic() >= deadline:
                 raise agentcmd.StepError(f"menedżer usług użytkownika agent w pudełku {box} nie wstał po starcie")
             self._sleep(0.5)
@@ -441,15 +501,26 @@ class BoxRunner:
                                                                 "XDG_RUNTIME_DIR", "INCUS_DIR", "INCUS_CONF")
                 or k.startswith("TIDE_FAKE") or k == "TIDE_INCUS_BIN"}
 
-    def _systemctl(self, box: str, *args) -> int:
+    def _systemctl(self, box: str, *args) -> subprocess.CompletedProcess:
         argv = [*self.exec_prefix(box), "/usr/bin/env", "-i", f"XDG_RUNTIME_DIR=/run/user/{self.settings.agent_uid}",
                 self.systemctl, "--user", *args]
-        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              env=self._client_env()).returncode
+        try:
+            return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  env=self._client_env(), timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(argv, -1, "", str(exc))
+
+    def unit_state(self, box: str, unit: str) -> str:
+        """"active", "inactive" (kody 3 i 4 `systemctl is-active`, które `incus exec` przekazuje) albo "unknown" —
+        błąd klienta `incus exec` (incusd niedostępny, pudełko zatrzymane, kody 1/125–127), timeout, brak magistrali.
+        Z "unknown" nie wolno wnosić, że krok się zatrzymał (ta sama semantyka co `stepstop.unit_state`)."""
+        code = self._systemctl(box, "is-active", "--quiet", unit).returncode
+        return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
     def alive(self, step: dict) -> bool:
+        """False tylko przy pewnym „nieaktywna”; nieznany stan liczy się jako żywy."""
         unit, box = self._unit_box(step)
-        return self._systemctl(box, "is-active", "--quiet", unit) == 0
+        return self.unit_state(box, unit) != "inactive"
 
     def _unit_box(self, step: dict) -> tuple:
         unit = str(step.get("unit") or "")
@@ -464,20 +535,21 @@ class BoxRunner:
 
     def kill(self, step: dict, *, proc: object = None, grace: float = 10.0) -> bool:
         """`systemctl --user kill <jednostka>` w pudełku (SIGTERM do całej cgroup; `tide-step` zapisze kod), po
-        `grace` SIGKILL. Klient `incus exec` (`proc`) kończy się razem z jednostką (`--wait`). True, gdy nic nie żyje."""
+        `grace` SIGKILL. Klient `incus exec` (`proc`) kończy się razem z jednostką (`--wait`). True tylko, gdy jednostka
+        jest na pewno nieaktywna — błąd klienta `incus exec` daje False (`stepstop` nie commituje wtedy WIP)."""
         if not step.get("unit"):
             return proc is None or _stop_client(proc, grace)
         unit, box = self._unit_box(step)
         self._systemctl(box, "kill", "--signal=SIGTERM", unit)
         deadline = time.monotonic() + max(0.0, grace)
         while True:
-            if self._systemctl(box, "is-active", "--quiet", unit) != 0:
+            if self.unit_state(box, unit) != "active":
                 break
             if time.monotonic() >= deadline:
                 self._systemctl(box, "kill", "--signal=SIGKILL", unit)
                 break
             self._sleep(0.2)
-        dead = self._systemctl(box, "is-active", "--quiet", unit) != 0
+        dead = self.unit_state(box, unit) == "inactive"
         if proc is not None:
             _stop_client(proc, 2.0)
         return dead

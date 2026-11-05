@@ -215,6 +215,7 @@ class DevicesTest(BoxRunnerCase):
         return {a[7]: (a[8], dict(x.split("=", 1) for x in a[9:])) for a in self.adds(box)}
 
     def test_first_step_adds_git_overlays_worktrees_home_and_raw_idmap(self):
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
         cfg = os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree")
         with open(cfg, "w", encoding="utf-8") as fh:
             fh.write("[core]\n")
@@ -244,11 +245,84 @@ class DevicesTest(BoxRunnerCase):
         for _kind, values in devices.values():
             self.assertNotEqual(values["source"], self.repo)
             self.assertNotEqual(values["source"], self.home)
-        # Nakładki po `.git` (kolejność dodawania), raw.idmap ustawione.
-        order = [a[7] for a in self.adds()]
-        self.assertLess(order.index("tide-git"), order.index("tide-git-hooks"))
-        self.assertLess(order.index("tide-git"), order.index("tide-git-config"))
+        # Incus montuje `disk` posortowane po `path` (nie po kolejności `device add`): nakładki są nad `.git`, bo ich
+        # ścieżki w pudełku leżą pod `.git/`. raw.idmap ustawione.
+        for name in ("tide-git-hooks", "tide-git-config", "tide-git-info", "tide-wtcfg-pt-1"):
+            self.assertTrue(devices[name][1]["path"].startswith(git + os.sep), name)
+            self.assertGreater(devices[name][1]["path"], devices["tide-git"][1]["path"])
         self.assertEqual(self.incus.config_get("proj", "raw.idmap"), self.runner().idmap())
+
+    def test_without_worktree_config_extension_no_config_worktree_overlays_and_no_restart(self):
+        """MAJOR-1 (review runda 1): bez `extensions.worktreeConfig` git nie czyta `config.worktree` — nakładki zbędne,
+        a nowy worktree z tym plikiem nie zatrzymuje pudełka (kroki projektu biegną równolegle)."""
+        self.assertFalse(br.worktree_config_enabled(os.path.join(self.repo, ".git")))
+        cfg = os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree")
+        with open(cfg, "w", encoding="utf-8") as fh:
+            fh.write("[core]\n")
+        self.runner().start(self.step())
+        self.assertFalse([n for n in self.device_map() if n.startswith("tide-wtcfg")])
+        bs.mark_in_use("proj", "proj", "s1")
+        other = os.path.join(self.wt_root, "pt-2")
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "feat/pt-2", other)
+        with open(os.path.join(self.repo, ".git", "worktrees", "pt-2", "config.worktree"), "w") as fh:
+            fh.write("[core]\n")
+        self.runner().start(self.step(worktree=other, step_dir=other + ".step", step_id="s2"))
+        self.assertEqual(len([line for line in calls(self.env) if line.startswith("incus stop")]), 1)
+        self.assertEqual(len(self.popen_calls), 2)
+
+    def test_with_extension_step_worktree_gets_an_empty_config_worktree_under_overlay(self):
+        """MAJOR-1: przy włączonym rozszerzeniu agent mógłby założyć `config.worktree` (np. z `core.hooksPath`) dla
+        worktree kroku — usługa zakłada pusty plik przed montowaniem, więc nakładka ro go obejmuje."""
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        self.assertTrue(br.worktree_config_enabled(os.path.join(self.repo, ".git")))
+        cfg = os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree")
+        self.assertFalse(os.path.exists(cfg))
+        self.runner().start(self.step())
+        self.assertTrue(os.path.isfile(cfg))
+        self.assertEqual(os.path.getsize(cfg), 0)
+        values = self.device_map()["tide-wtcfg-pt-1"][1]
+        self.assertEqual(values["source"], cfg)
+        self.assertEqual(values["readonly"], "true")
+
+    def test_with_extension_symlinked_config_worktree_is_refused(self):
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        target = os.path.join(self.worktree, "evil.cfg")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("[core]\n\thooksPath = /tmp/x\n")
+        os.symlink(target, os.path.join(self.repo, ".git", "worktrees", "pt-1", "config.worktree"))
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().start(self.step())
+        self.assertEqual(self.popen_calls, [])
+
+    def test_with_extension_pointer_outside_git_worktrees_is_refused(self):
+        gitrepos.git(self.repo, "config", "extensions.worktreeConfig", "true")
+        fake_admin = os.path.join(self.wt_root, "admin")
+        os.makedirs(fake_admin)
+        with open(os.path.join(self.worktree, ".git"), "w", encoding="utf-8") as fh:
+            fh.write(f"gitdir: {fake_admin}\n")
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().devices_for(self.step())
+        self.assertFalse(os.path.exists(os.path.join(fake_admin, "config.worktree")))
+
+    def test_step_dir_outside_worktrees_root_is_refused(self):
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().start(self.step(step_dir=os.path.join(self.tmp, "elsewhere.step")))
+        self.assertEqual(self.adds(), [])
+        self.assertEqual(self.popen_calls, [])
+
+    def test_stopped_box_refuses_the_step_with_a_clear_error(self):
+        self.runner().start(self.step())
+        self.incus.stop("proj")
+        with self.assertRaisesRegex(agentcmd.StepError, "zatrzymane"):
+            self.runner().start(self.step(step_id="s2"))
+        self.assertEqual(len(self.popen_calls), 1)
+
+    def test_incus_error_while_adding_devices_is_a_step_error(self):
+        runner = self.runner()
+        with mock.patch.object(runner.incus, "device_add", side_effect=br.IncusError(["incus"], 1, "boom")):
+            with self.assertRaises(agentcmd.StepError):
+                runner.start(self.step())
+        self.assertEqual(self.popen_calls, [])
 
     def test_box_is_stopped_while_file_overlays_are_added(self):
         self.runner().start(self.step())
@@ -447,7 +521,8 @@ class KillTest(BoxRunnerCase):
         self.log_line = f'#!/bin/sh\necho "box-systemctl $*" >> {shlex.quote(self.env["TIDE_FAKE_LOG"])}\n'
         box_ctl = os.path.join(self.tmp, "fakebin", "box", "systemctl-unit")
         with open(box_ctl, "w", encoding="utf-8") as fh:
-            fh.write(self.log_line + f'case "$*" in *is-active*) [ -f {shlex.quote(self.state_file)} ]; exit $? ;; '
+            # is-active jak prawdziwy systemctl: 0 — aktywna, 3 — nieaktywna (`incus exec` przekazuje kod).
+            fh.write(self.log_line + f'case "$*" in *is-active*) [ -f {shlex.quote(self.state_file)} ] || exit 3 ;; '
                                      f'*kill*) rm -f {shlex.quote(self.state_file)} ;; esac\n')
         os.chmod(box_ctl, 0o755)
         self.box_ctl = box_ctl
@@ -473,6 +548,29 @@ class KillTest(BoxRunnerCase):
         runner = self.runner(systemctl=self.box_ctl, sleep=lambda s: None)
         self.assertFalse(runner.kill({"unit": "tide-step-s1"}, grace=0))
         self.assertIn("box-systemctl --user kill --signal=SIGKILL tide-step-s1.service", calls(self.env))
+
+    def test_client_error_is_not_taken_for_a_stopped_unit(self):
+        """MAJOR-2 (review runda 1): kod 1 z `incus exec` (błąd klienta, incusd niedostępny) to stan nieznany —
+        `kill` nie może zgłosić zatrzymania, `alive` nie może zgłosić końca."""
+        with open(self.box_ctl, "w", encoding="utf-8") as fh:
+            fh.write(self.log_line + 'exit 1\n')
+        runner = self.runner(systemctl=self.box_ctl)
+        self.assertEqual(runner.unit_state("proj", "tide-step-s1.service"), "unknown")
+        self.assertFalse(runner.kill({"unit": "tide-step-s1"}, grace=0))
+        self.assertTrue(runner.alive({"unit": "tide-step-s1"}))
+
+    def test_box_stopped_before_kill_is_unknown_not_dead(self):
+        open(self.state_file, "w").close()
+        runner = self.runner(systemctl=self.box_ctl)
+        self.incus.stop("proj")
+        self.assertFalse(runner.kill({"unit": "tide-step-s1"}, grace=0))
+        self.assertTrue(runner.alive({"unit": "tide-step-s1"}))
+
+    def test_inactive_unit_is_dead_and_not_alive(self):
+        runner = self.runner(systemctl=self.box_ctl)
+        self.assertEqual(runner.unit_state("proj", "tide-step-s1.service"), "inactive")
+        self.assertFalse(runner.alive({"unit": "tide-step-s1"}))
+        self.assertTrue(runner.kill({"unit": "tide-step-s1"}, grace=0))
 
     def test_kill_uses_box_from_step_entry_and_validates_names(self):
         runner = self.runner(systemctl=self.box_ctl)
