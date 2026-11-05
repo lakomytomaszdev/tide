@@ -58,6 +58,7 @@ class LinkIdentityTest(unittest.TestCase):
             links.metadata(parsed, "/repo")
 
     def test_custom_refspec_negative_and_foreign_ref_collision(self):
+        self.assertEqual(links.tracking_refs({"fetch": ["refs/heads/a*abc:refs/remotes/custom/*"]}, "abc"), [])
         meta = {"host": "github.com", "project": "team/proj", "sourceProject": "user/proj",
                 "sourceBranch": "feature/base", "sourceCommit": "a" * 40, "targetBranch": "main", "link": "link"}
         config = {"identity": ("github.com", "user/proj"),

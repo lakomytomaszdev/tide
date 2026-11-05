@@ -180,10 +180,9 @@ def tracking_refs(config, branch):
         if "*" not in src and src == source:
             refs.append(dst)
         elif src.count("*") == dst.count("*") == 1:
-            before, after = src.split("*")
-            if source.startswith(before) and source.endswith(after):
-                middle = source[len(before):len(source) - len(after) if after else None]
-                refs.append(dst.replace("*", middle))
+            match = re.fullmatch(re.escape(src).replace(r"\*", "(.*)"), source)
+            if match:
+                refs.append(dst.replace("*", match.group(1)))
     return [ref for ref in refs if ref.startswith("refs/remotes/")]
 
 
