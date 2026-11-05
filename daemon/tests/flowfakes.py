@@ -315,6 +315,8 @@ elif word in ("pytanie-opcje", "pytanie-zle-opcje"):
     else:
         finish("question", question="Który format daty?", options=[
             {"title": "A", "recommended": True}, {"title": "B", "recommended": True}])
+elif word == "odmowa-opiekun":
+    finish("denied", command="make install", reason="ATRAPA-OPIEKUN: retry")
 elif word == "zgoda":
     if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
         finish("done")

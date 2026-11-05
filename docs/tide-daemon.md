@@ -1821,7 +1821,8 @@ Dwa wpisy `TRIGGERS` (`_repeat_trigger`, `_noprogress_trigger`) po `error`. Kole
 2. **`repeat` (wyzwalacz 2)** — dwa kolejne `step.finished` w tym samym tickecie (albo tym samym rodzaju kroku
    planu, gdy krok nie ma ticketu) z tym samym `result` i tą samą przyczyną: `faultCause`/`reason` przez
    `faults.of_finished` (swobodny powód agenta liczy się jako ta sama przyczyna tylko przy identycznym tekście,
-   `other-<skrót>`), a dla `denied` — to samo polecenie po automatycznej odmowie łańcucha (`_auto_deny`). Nie
+   `other-<skrót>`), a dla `denied` — to samo polecenie po automatycznej odmowie łańcucha (`_auto_deny`) albo po
+   `step.retry` opiekuna tego problemu. Kolejne odmowy po jego instrukcjach pozostają w tym samym limicie. Nie
    dotyczy `login`, limitu dostawcy i winy `user`. Kandydat nie ma decyzji (`decision` puste), więc `retry` idzie
    ścieżką bez decyzji (`step.retry` z `caretaker` i `instruction`), a `stale` — regułą `watermark`.
    Id: `problem_id("repeat", …)` → `repeat:<ticket>:<przyczyna>`, dla kroków planu `repeat:<rodzaj kroku>:<przyczyna>`
@@ -1839,9 +1840,11 @@ Dwa wpisy `TRIGGERS` (`_repeat_trigger`, `_noprogress_trigger`) po `error`. Kole
    `resolve_step` i powiadomieniach), z `caretaker{…}` jak przy `error`. Decyzja użytkownika zamyka problem (licznik
    od zera, to samo id).
 5. **`no-progress` (wyzwalacz 6)** — krok zatrzymany przez strażnika (`reason: no-progress`, bez zmiany
-   `stepGuardMinutes` i `stepstop`) po automatycznym ponowieniu. Dołącza do problemu `error:` tego łańcucha
-   (`triggers: ["error", "no-progress"]`) i dokłada do kartki sekcję „Krok bez postępu”: czas zastoju (od
+   `stepGuardMinutes` i `stepstop`) po automatycznym ponowieniu, także dla `planning` i `plan-review`.
+   Kontekst dostaje też powtórzony zastój próby zerowej przejętej przez `repeat`; pierwsze automatyczne
+   ponowienie zostaje. Dołącza do problemu tego łańcucha i dokłada do kartki sekcję „Krok bez postępu”: czas zastoju (od
    `stalledSince` do zatrzymania) i końcówkę zdarzeń sesji (ostatnie 5 z `messages` wyniku kroku, po 300 znaków).
+   Wiadomości sesji i odmówione polecenie są maskowane przed normalizacją i skracaniem.
    Dziennik kroku po ludzku jest w plikach kontekstu.
 
 Kartka (`BRIEF_SECTIONS`, `BRIEF_DETAILS`): problem `repeat` ma opis błędu kroku i sekcję „Ten sam powód drugi raz”

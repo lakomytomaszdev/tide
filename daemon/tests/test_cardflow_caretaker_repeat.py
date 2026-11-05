@@ -212,6 +212,62 @@ class TakesOverTest(unittest.TestCase):
 
 
 class BriefTest(unittest.TestCase):
+    def test_first_no_progress_keeps_the_automatic_retry_for_tickets_and_plans(self):
+        for kind, ticket in (("ticket", "PT-7"), ("planning", ""), ("plan-review", "")):
+            with self.subTest(kind=kind):
+                j = Journal()
+                j.step("step-0", 0, kind=kind, ticket=ticket)
+                j.add("step.finished", step="step-0", ticket=ticket, result="error", reason="no-progress")
+                self.assertEqual(caretaker.problems(j.st), [])
+
+    def test_no_progress_context_for_plan_steps_and_repeated_attempt_zero(self):
+        for kind, ticket, reasons in (("planning", "", ["exit", "no-progress"]),
+                                      ("plan-review", "", ["exit", "no-progress"]),
+                                      ("ticket", "PT-7", ["no-progress", "no-progress"])):
+            with self.subTest(kind=kind):
+                j = Journal()
+                for n, reason in enumerate(reasons):
+                    name = f"step-{n}"
+                    j.step(name, 0 if ticket else n, "step-0" if n else "", kind=kind, ticket=ticket)
+                    j.add("step.finished", step=name, ticket=ticket, result="error", reason=reason,
+                          stalledSince="2026-11-03T10:00:00+00:00",
+                          messages=[{"role": "assistant", "text": "Sprawdzam plan."}])
+                    if n == 0:
+                        j.add("step.decision", step=name, ticket=ticket, choice="retry")
+                j.events[-1]["ts"] = "2026-11-03T10:25:30+00:00"
+                found = caretaker.problems(j.st)
+                self.assertEqual(len(found), 1)
+                text = caretaker.brief(found[0], j.st, card="K-1", out_dir="/o", worktree="/w")
+                self.assertIn("## Krok bez postępu", text)
+                self.assertIn("Czas zastoju: 25 min 30 s.", text)
+                self.assertIn("- assistant: Sprawdzam plan.", text)
+
+    def test_secrets_are_masked_before_normalizing_and_truncating_brief_fields(self):
+        for source, limit in (("messages", caretaker.SESSION_CHARS), ("command", 600)):
+            for secret, prefix in (("abcdefgh\nijklmnop", ""),
+                                   ("ghp_" + "A1b2" * 10, "x" * (limit - 12) + " ")):
+                with self.subTest(source=source, multiline="\n" in secret):
+                    with mock.patch.dict(os.environ, {"PRIVATE_SECRET": secret if "\n" in secret else "unused-test-value"}):
+                        j = Journal()
+                        if source == "command":
+                            for n in (1, 2):
+                                name = f"step-{n}"
+                                j.step(name, 0, "step-1" if n == 2 else "")
+                                j.add("step.finished", step=name, ticket="PT-7", result="denied",
+                                      command=prefix + secret + " && b")
+                                if n == 1:
+                                    j.add("step.decision", step=name, choice="deny", auto=True)
+                        else:
+                            j.step("step-1", 1)
+                            j.error("step-1", "no-progress", messages=[{"role": "assistant",
+                                                                        "text": prefix + secret}])
+                        text = caretaker.brief(caretaker.problems(j.st)[0], j.st,
+                                               card="K-1", out_dir="/o", worktree="/w")
+                        self.assertIn("•••", text)
+                        self.assertNotIn("abcdefgh", text)
+                        self.assertNotIn("ijklmnop", text)
+                        self.assertNotIn("ghp_A1b2", text)
+
     def test_repeat_brief_names_both_steps_cause_and_blind_retry_warning(self):
         j = chain(["no-result", "no-result"])
         last = user_retry_then_fail(j)
@@ -401,6 +457,30 @@ class RepeatRetryFlowTest(FlowInProcess):
     def prompt(self, step):
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             return fh.read()
+
+    def test_denials_after_caretaker_retries_stay_in_one_problem_until_the_action_limit(self):
+        import json
+        changed = json.loads(self.board.upsert_project(json.dumps({"slug": "proj", "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"], changed)
+        card_id = self.card(description="Eksport.\n\nATRAPA: odmowa-opiekun")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.action"), timeout=60), self.events(card_id))
+        first = self.of(card_id, "caretaker.action")[0]
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(wait_until(lambda: [e for e in self.of(card_id, "caretaker.escalated") if e.get("limit")]
+                                  or len(self.of(card_id, "step.decision")) > 1, timeout=60), self.events(card_id))
+        self.assertEqual(len(self.of(card_id, "step.decision")), 1, "tylko pierwsza automatyczna odmowa")
+        runs = self.of(card_id, "caretaker.started")
+        self.assertEqual([r["n"] for r in runs], [1, 2, 3])
+        self.assertEqual({r["problem"] for r in runs}, {first["problem"]})
+        self.assertEqual(len([e for e in self.of(card_id, "step.retry") if e.get("caretaker")]), 3)
+        st = fold(self.events(card_id))
+        self.assertEqual([p["id"] for p in caretaker.problems(st)], [first["problem"]])
+        self.assertTrue(caretaker.owned(st, first["problem"])["handed"])
+        escalation = next(e for e in self.of(card_id, "caretaker.escalated") if e.get("limit"))
+        self.assertEqual(escalation["count"], 3)
+        self.assertTrue(escalation["summary"])
+        self.assertEqual(len([s for s in self.of(card_id, "step.started") if s["kind"] != "caretaker"]), 5)
 
     def test_retry_without_a_decision_resumes_with_the_instruction_and_the_limit_escalates(self):
         with mock.patch.object(caretaker, "TRIGGERS", [caretaker._repeat_trigger]):

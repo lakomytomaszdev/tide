@@ -46,7 +46,7 @@ sprawdza to jeszcze raz wprost).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import faults
 from .labels import kind_label, step_name
@@ -140,7 +140,7 @@ HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku"}
 def _latest_errors(st) -> list[tuple[str, dict, dict]]:
     """Ostatni krok każdego ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error` po automatycznym
     ponowieniu (`attempt ≥ 1`), bez decyzji, następcy i odrzucenia ticketu; bez wygasłego logowania, limitu dostawcy
-    i winy użytkownika: tam zostaje dzisiejsza decyzja. Wspólne dla `error` i `no-progress`."""
+    i winy użytkownika: tam zostaje dzisiejsza decyzja. Dobór wyłącznie dla wyzwalacza `error`."""
     latest: dict = {}
     for name, item in st.steps.items():
         latest[item.get("ticket") or ""] = name
@@ -176,11 +176,24 @@ REPEAT_RESULTS = ("error", "denied")
 
 
 def _noprogress_trigger(st) -> list[dict]:
-    """Wyzwalacz 6 (PT-148): krok zatrzymany przez strażnika kroku (`reason: no-progress`) i nadal czekający na
-    decyzję. Strażnika nie zmienia — dokłada przesłankę (czas zastoju, końcówka zdarzeń sesji) do problemu, który
-    otwiera też `error` (ten sam łańcuch → jeden problem, `triggers[]`)."""
-    return [{"trigger": NO_PROGRESS, "step": name, "ticket": step.get("ticket") or "", "decision": f"step:{name}"}
-            for name, step, done in _latest_errors(st) if done.get("reason") == NO_PROGRESS]
+    """Wyzwalacz 6 (PT-148): zastój ticketu albo kroku planu. Pierwsze automatyczne ponowienie zostaje;
+    powtórzony zastój ma kontekst także przy próbie zerowej przejętej przez `repeat`."""
+    latest = {_scope(step): name for name, step in st.steps.items() if step.get("kind") != KIND}
+    found = []
+    for name in latest.values():
+        step, done = st.steps[name], st.finished.get(name) or {}
+        if done.get("result") != "error" or done.get("reason") != NO_PROGRESS or not _error_cause(done):
+            continue
+        if name in st.step_decisions or name in st.superseded or step.get("ticket") in st.rejected:
+            continue
+        if any(other.get("parentStep") == name for other in st.steps.values()):
+            continue
+        repeat = repeat_of(st, name)
+        if int(step.get("attempt") or 0) < 1 and not repeat:
+            continue
+        found.append({"trigger": NO_PROGRESS, "step": name, "ticket": step.get("ticket") or "",
+                      "decision": "" if repeat else f"step:{name}"})
+    return found
 
 
 def _hash(text: str) -> str:
@@ -213,7 +226,8 @@ def repeat_of(st, name: str) -> dict | None:
     """Powtórzony powód kroku `name`: `{step, previous, cause, ticket, kind, result}` albo None. Krok musi być
     ostatnim zakończonym krokiem swojego zakresu (ticket albo rodzaj kroku planu), a poprzedni zakończony krok tego
     zakresu ma ten sam `result` i tę samą przyczynę. `denied` liczy się, gdy poprzednią odmowę z tym samym
-    poleceniem dała sama usługa (`_auto_deny`). Bez kroku opiekuna, decyzji, następcy i odrzuconego ticketu."""
+    poleceniem dała sama usługa (`_auto_deny`) albo ponowił ją opiekun tego łańcucha. Bez kroku opiekuna,
+    decyzji, następcy i odrzuconego ticketu."""
     step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
     if not step or not done or step.get("kind") == KIND or done.get("result") not in REPEAT_RESULTS:
         return None
@@ -236,8 +250,11 @@ def repeat_of(st, name: str) -> dict | None:
             return None
     else:
         command, asked = _command_of(done), st.step_decisions.get(previous) or {}
-        if not command or _command_of(before) != command or asked.get("choice") != "deny" or \
-                not asked.get("auto") or "caretaker" in asked:
+        retry = st.step_retries.get(previous) or {}
+        by_caretaker = bool(retry.get("caretaker")) and \
+            retry["caretaker"] == _known_id(st, chain_root(st, name))
+        auto_denied = asked.get("choice") == "deny" and asked.get("auto") and "caretaker" not in asked
+        if not command or _command_of(before) != command or not (auto_denied or by_caretaker):
             return None
         cause = f"denied-{_hash(command)}"
     return {"step": name, "previous": previous, "cause": cause, "ticket": step.get("ticket") or "",
@@ -271,7 +288,10 @@ def _error_section(problem: dict, st) -> str:
     próby są w plikach kontekstu (`caretakerctx`, PT-153)."""
     name = problem.get("step") or ""
     step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
-    decision = _decision_of(st, name) or {}
+    # Opis decyzji też normalizuje polecenie. Dla kartki budujemy go z zamaskowanego wyniku,
+    # zanim ta normalizacja zgubi oryginalną wartość wielowierszowego sekretu.
+    safe = replace(st, finished={**st.finished, name: faults.mask_json(done)})
+    decision = _decision_of(safe, name) or {}
     lines = ["## Problem: błąd kroku", "",
              f"Krok: {name} ({step_name(step.get('kind'), step.get('ticket'))}), wykonawca: "
              f"{step.get('executor') or '?'}, próba {int(step.get('attempt') or 0) + 1}.",
@@ -301,7 +321,8 @@ def _repeat_detail(problem: dict, st) -> str:
              f"({done.get('result')}) i tę samą przyczynę: {label}.",
              f"Poprzedni krok: {found['previous']}, ten krok: {found['step']}."]
     if found["result"] == "denied":
-        lines.append(f"Polecenie odmówione dwa razy: {_command_of(done)[:600]}")
+        command = " ".join(faults.mask(str(done.get("command") or "")).split())[:600]
+        lines.append(f"Polecenie odmówione dwa razy: {command}")
     else:
         lines.append(f"Powód poprzedniego kroku: {previous.get('reason') or '(brak)'}; tego kroku: "
                      f"{done.get('reason') or '(brak)'}.")
@@ -330,7 +351,8 @@ def _noprogress_detail(problem: dict, st) -> str:
     if not messages:
         lines.append("(wynik kroku nie ma zdarzeń sesji; końcówka dziennika kroku jest w plikach kontekstu)")
     for message in messages:
-        text = " ".join(str(message.get("text") or "").split())[:SESSION_CHARS]
+        # Maskowanie surowej wartości musi poprzedzać zmianę białych znaków i przecięcie tokenu.
+        text = " ".join(faults.mask(str(message.get("text") or "")).split())[:SESSION_CHARS]
         lines.append(f"- {message.get('role') or '?'}: {text}")
     return "\n".join(lines)
 
