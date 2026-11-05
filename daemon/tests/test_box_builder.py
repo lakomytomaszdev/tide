@@ -357,7 +357,7 @@ class BuildTest(BoxCase):
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
-                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB", "-c", "limits.memory.swap=false",
+                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
                                 "-c", "security.nesting=true"])
         self.assertIn(["config", "device", "override", "--project", "user-1000", "plasma-tide", "root", "size=25GB"],
                       self.incus_calls())
@@ -366,7 +366,7 @@ class BuildTest(BoxCase):
         self.approve({k: v for k, v in PROFILE.items() if k != "docker"})
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
-        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB", "-c", "limits.memory.swap=false"])
+        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB"])
         self.assertIn("size=60GB", [a for a in self.incus_calls() if "root" in a][0])
 
     def test_vm_is_refused_without_incus(self):

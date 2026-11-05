@@ -1902,7 +1902,7 @@ Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta w
 | `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
 | `docker.enabled` / `docker.images` | bool / lista | |
 | `resources.cpu/memory/disk` | liczba / `24GiB` / `60GB` | domyślnie 8 / 24GiB / 60GB |
-| `resources.swap` | bool | domyślnie false; aktualizowane przy starcie, poza hashem przepisu |
+| `resources.swap` | bool | domyślnie false; true odmawia startu w projekcie ograniczonym, poza hashem przepisu |
 | `packs`, `accepted_red` | listy | tylko profil karty |
 | `box` | `per-project` \| `per-card` | domyślnie `per-project` |
 | `notes` | napis | |
@@ -2470,7 +2470,7 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 **Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
 
 1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
-   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=… -c limits.memory.swap=false` z profilu
+   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
    (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
    `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); wolumen `<slug>-home`
    w puli jako urządzenie dyskowe na `/home/agent`, tworzony z `initial.uid=<agent-uid> initial.gid=<agent-gid>
@@ -2560,11 +2560,19 @@ zdarzenia nie pozwala zatrzymać pudełka. Rezerwacje `box.use`, `procs` i stan 
 `systemctl --user is-active` wewnątrz pudełka blokują stop, reset i przebudowę. Po restarcie usługi stan
 jednostek pochodzi z trwałych wpisów kroków; nieznany stan również blokuje operację. CLI sprawdza te same
 dzienniki i jednostki. Krok trwający dłużej niż limit bezczynności nie zostaje zatrzymany.
+Kontrola aktywności i cała operacja destrukcyjna biegną pod wspólną blokadą projektu (`flock`),
+używaną również przy rezerwacji kroku. Przed `box.use` krok ponownie sprawdza zgodność i gotowość
+pudełka pod tą blokadą. Blokada obejmuje też przebudowę, reset, kopiowanie i usuwanie kopii.
 
 Przy każdym starcie istniejącego pudełka limity są odświeżane przez `incus config set`: `limits.cpu`
-z `resources.cpu`, `limits.memory` z `resources.memory`, `limits.memory.swap` z opcjonalnego
-`resources.swap` (bool, domyślnie false). Zmiana tych wartości nie zmienia hasha przepisu i nie wymaga
-przebudowy. Start nie usuwa ani nie wyłącza filtrowania NIC.
+z `resources.cpu`, `limits.memory` z `resources.memory`. Dotyczy to też restartu na nowe montowania:
+wywołujący odświeża limity przed `ensure_devices` i sprawdza swap po przygotowaniu montowań.
+Zgodnie z regułą PT-192 `swap-zero-bez-lowlevel` nie wysyłamy zabronionego `limits.memory.swap`,
+także false; twardy limit RAM ma dawać `memory.swap.max=0` w cgroup v2, co sprawdzamy po starcie
+oraz przed uruchomieniem agenta. Brak potwierdzenia odmawia wykonania kroku. `resources.swap=true`
+jest jawnie odrzucane w ograniczonym projekcie. Zmiana zasobów nie zmienia hasha przepisu i nie wymaga
+przebudowy. Start nie usuwa ani nie wyłącza filtrowania NIC. Instalator ustawia
+`restricted.snapshots=allow` także przy aktualizacji projektu, zachowując pozostałe ograniczenia.
 
 Pudełko projektu resetuje się na żądanie użytkownika lub przy jawnej przebudowie zmienionego przepisu
 (`box.reset`, powód `zmiana przepisu`). Bezczynność i domknięcie karty nie resetują pudełka projektu.

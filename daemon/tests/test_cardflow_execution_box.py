@@ -247,6 +247,27 @@ class PlacementTest(BoxFlow):
         self.assertEqual(fold(self.events_now()).box_wait, "")
         self.assertEqual(self.incus().instance(SLUG)["status"], "Running")
 
+    def test_stop_between_placement_and_reservation_rechecks_readiness(self):
+        from tide_daemon.box.lifecycle import Lifecycle
+        self.build_box()
+        placement = self.place()
+        Lifecycle(self.builder()).stop(SLUG)
+        boxstep.before_start(self.engine, placement, self.card_id, "racing-start")
+        self.assertEqual(self.incus().instance(SLUG)["status"], "Running")
+        self.assertIn("racing-start", bs.running_steps(SLUG, SLUG))
+        self.assertEqual(fold(self.events_now()).box_wait, "")
+        with self.assertRaises(bb.BoxBusy):
+            Lifecycle(self.builder()).stop(SLUG)
+
+    def test_delete_between_placement_and_reservation_refuses_start(self):
+        from tide_daemon.tasks import agentcmd
+        self.build_box()
+        placement = self.place()
+        self.builder().destroy(SLUG)
+        with self.assertRaises(agentcmd.StepError):
+            boxstep.before_start(self.engine, placement, self.card_id, "deleted-box")
+        self.assertEqual(bs.running_steps(SLUG, SLUG), [])
+
     def test_per_card_copies_once_and_runs_in_the_copy(self):
         self.build_box({"tide-box": 1, "box": "per-card"}, running=False)
         first = self.place()

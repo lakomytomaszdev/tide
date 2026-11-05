@@ -117,6 +117,7 @@ def project_config():
     return {
         "features.images": "true", "features.profiles": "true", "features.storage.volumes": "true",
         "features.networks": "false", "restricted": "true", "restricted.containers.nesting": "allow",
+        "restricted.snapshots": "allow",
         "restricted.devices.disk": "allow", "restricted.devices.disk.paths": entry.pw_dir,
         "restricted.idmap.uid": str(entry.pw_uid), "restricted.idmap.gid": str(entry.pw_gid),
         "restricted.networks.access": "incusbr0",
@@ -207,6 +208,7 @@ class InstallDryRunTest(FakeHost):
         self.assertIn("/home/tide-incus-pool.img", result.stdout)
         self.assertIn(f"incus project create {self.project}", result.stdout)
         self.assertIn("restricted.containers.nesting=allow", result.stdout)
+        self.assertIn("restricted.snapshots=allow", result.stdout)
         self.assertEqual(self.files(), before)
         apt = [c for c in self.calls() if c.startswith("apt-get")]
         self.assertEqual(apt, ["apt-get -s install incus btrfs-progs"])
@@ -234,6 +236,15 @@ class InstallDryRunTest(FakeHost):
         result = self.run_script("install.sh")
         self.assertEqual([s[1] for s in self.steps(result.stdout) if s[2]], ["projekt"])
         self.assertIn("restricted.containers.nesting=allow", result.stdout)
+
+    def test_existing_project_gets_snapshots_without_lowlevel(self):
+        self.installed()
+        del self.state["projects"][self.project]["config"]["restricted.snapshots"]
+        result = self.run_script("install.sh")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([s[1] for s in self.steps(result.stdout) if s[2]], ["projekt"])
+        self.assertIn("restricted.snapshots=allow", result.stdout)
+        self.assertNotIn("restricted.containers.lowlevel=allow", result.stdout)
 
     def test_missing_root_subid_lines_plan_only_the_project_for_raw_idmap(self):
         # PT-164 (P-4): raw.idmap „both <uid> <uid>” wymaga root:<uid>:1 w /etc/subuid i root:<gid>:1 w /etc/subgid.

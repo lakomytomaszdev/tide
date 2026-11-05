@@ -300,6 +300,40 @@ def _apply_policy(engine, slug: str, box: str, ip: str, cards: list, contexts=()
 
 def before_start(engine, placement: Placement, card_id: str, step_id: str, program: str = "claude") -> str:
     """`set_box_policy` przed startem kroku; zwraca ścieżkę dziennika odmów kroku."""
+    try:
+        return _reserve_start(engine, placement, card_id, step_id, program)
+    except BoxWaiting as exc:
+        # Po zapisaniu intent trzeba utrwalić także nieudany start przez standardową ścieżkę _act.
+        raise agentcmd.StepError(exc.reason) from exc
+
+
+def _reserve_start(engine, placement, card_id, step_id, program):
+    with bs.lifecycle_lock(placement.slug):
+        # Od wyboru miejsca CLI mogło zatrzymać/resetować/usunąć pudełko. Ponowna kontrola
+        # i gotowość są atomowe względem operacji destrukcyjnych aż do trwałego box.use.
+        builder = builder_of(engine, settings_of(engine))
+        _require_compatible(engine, card_id, builder,
+                            builder.status(placement.slug, card_id if placement.per_card else None))
+        placement.ip = _ready(engine, card_id, builder, placement.runner, settings_of(engine),
+                              placement.box, placement.slug, placement.per_card)
+        if boxwait.card_box_wait(fold(engine.journal.read(card_id))) == boxwait.START:
+            boxwait.set_box_wait(engine.journal, card_id, "", box=placement.box)
+        return _before_start(engine, placement, card_id, step_id, program)
+
+
+def prepare_runner(engine, placement, step):
+    """Limity z aktualnego profilu przed ewentualnym restartem na montowania, kontrola swapu po nim."""
+    with bs.lifecycle_lock(placement.slug):
+        builder = builder_of(engine, settings_of(engine))
+        try:
+            builder.incus.config_set(placement.box, lifecycle.limits(builder.load_profile(placement.slug)))
+            placement.runner.ensure_devices(step)
+            lifecycle.require_no_swap(builder.incus, placement.box)
+        except (bb.BuildError, IncusError) as exc:
+            raise agentcmd.StepError(f"przygotowanie pudełka {placement.box}: {exc}") from exc
+
+
+def _before_start(engine, placement, card_id, step_id, program):
     log_path = denied_log_path(placement.slug, step_id)
     os.makedirs(os.path.dirname(log_path), mode=0o700, exist_ok=True)
     try:

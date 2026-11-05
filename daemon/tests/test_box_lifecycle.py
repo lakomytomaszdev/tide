@@ -1,6 +1,8 @@
 """Cykl życia pudełka z atrapą Incusa; aktywność niezależna od czasu ostatniego zdarzenia."""
 import dataclasses
 import time
+import threading
+import os
 from types import SimpleNamespace
 from unittest import mock
 
@@ -10,8 +12,11 @@ from tide_daemon.box import profile as bp
 from tide_daemon.box import settings as bset
 from tide_daemon.box import state as bs
 from tide_daemon.cardflow.journal import Journal
+from tide_daemon.cardflow import boxstep
+from tide_daemon.box.incus import IncusError
 
 from .test_box_builder import BoxCase, PROFILE
+from .test_box_runner import BoxRunnerCase
 
 
 class LifecycleTest(BoxCase):
@@ -22,10 +27,74 @@ class LifecycleTest(BoxCase):
         self.b.build("plasma-tide")
         self.life = lc.Lifecycle(self.b)
 
+    def test_destructive_operations_exclude_a_concurrent_reservation(self):
+        for operation in ("stop", "reset", "close"):
+            with self.subTest(operation=operation):
+                name = self.b.copy_for_card("plasma-tide", "K-38") if operation == "close" else "plasma-tide"
+                attempted, reserved = threading.Event(), threading.Event()
+                errors = []
+
+                def reserve():
+                    attempted.set()
+                    try:
+                        bs.mark_in_use("plasma-tide", name, "racing")
+                        reserved.set()
+                    except BaseException as exc:
+                        errors.append(exc)
+
+                original = self.b.require_idle
+                threads = []
+
+                def checked(slug, box):
+                    original(slug, box)
+                    thread = threading.Thread(target=reserve)
+                    threads.append(thread)
+                    thread.start()
+                    self.assertTrue(attempted.wait(2))
+                    self.assertFalse(reserved.wait(0.1), "rezerwacja weszła między kontrolę a operację")
+
+                with mock.patch.object(self.b, "require_idle", side_effect=checked):
+                    if operation == "stop":
+                        self.life.stop("plasma-tide")
+                    elif operation == "reset":
+                        self.b.reset("plasma-tide")
+                    else:
+                        self.life.close_card("plasma-tide", "K-38")
+                for thread in threads:
+                    thread.join(3)
+                    self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertTrue(reserved.is_set())
+                # Odwrotna kolejność: rezerwacja już istnieje, więc operacja musi odmówić.
+                if operation != "close":
+                    with self.assertRaises(bb.BoxBusy):
+                        self.life.stop("plasma-tide")
+                    with self.assertRaises(bb.BoxBusy):
+                        self.b.reset("plasma-tide")
+                bs.mark_released("plasma-tide", name, "racing")
+
+    def test_restricted_swap_key_is_refused_but_lifecycle_starts_without_it(self):
+        with self.assertRaises(IncusError):
+            self.b.incus.config_set("plasma-tide", {"limits.memory.swap": False})
+        self.life.stop("plasma-tide")
+        self.life.start("plasma-tide")
+        ready = [e for e in bs.events("plasma-tide") if e["type"] == "box.ready"]
+        with mock.patch.dict(os.environ, {"TIDE_FAKE_SWAP_MAX": "max"}):
+            with self.assertRaisesRegex(bb.BuildError, "memory.swap.max=0"):
+                self.life.start("plasma-tide")
+        self.assertEqual([e for e in bs.events("plasma-tide") if e["type"] == "box.ready"], ready)
+
+    def test_swap_enabled_is_refused_instead_of_silently_ignored(self):
+        self.life.stop("plasma-tide")
+        self.approve({**PROFILE, "resources": {"swap": True}})
+        with self.assertRaisesRegex(bb.BuildError, "resources.swap=true"):
+            self.life.start("plasma-tide")
+        self.assertEqual(self.b.incus.instance("plasma-tide")["status"], "Stopped")
+
     def test_cli_stop_start_readiness_limits_and_status_duration(self):
         code, _, err = self.run_cli("stop", "plasma-tide", builder=self.b)
         self.assertEqual(code, 0, err)
-        profile = {**PROFILE, "resources": {"cpu": 3, "memory": "7GiB", "swap": True}}
+        profile = {**PROFILE, "resources": {"cpu": 3, "memory": "7GiB", "swap": False}}
         self.approve(profile)
         before = len(self.incus_calls())
         code, _, err = self.run_cli("start", "plasma-tide", builder=self.b)
@@ -34,7 +103,8 @@ class LifecycleTest(BoxCase):
         start = next(i for i, a in enumerate(calls) if a[0] == "start")
         limits = next(i for i, a in enumerate(calls) if a[:2] == ["config", "set"])
         self.assertLess(limits, start)
-        self.assertTrue({"limits.cpu=3", "limits.memory=7GiB", "limits.memory.swap=true"}.issubset(calls[limits]))
+        self.assertTrue({"limits.cpu=3", "limits.memory=7GiB"}.issubset(calls[limits]))
+        self.assertFalse(any("limits.memory.swap=" in arg for call in calls for arg in call))
         self.assertTrue(any(a[0] == "exec" and a[-2:] == ["--", "true"] for a in calls[start:]))
         self.assertFalse(any(a[:3] in (["config", "device", "unset"], ["config", "device", "set"],
                                       ["config", "device", "override"]) for a in calls))
@@ -190,3 +260,24 @@ class LifecycleTest(BoxCase):
             self.assertTrue(settings.warnings)
         with self.assertRaises(bp.ProfileError):
             bp.validate({"tide-box": 1, "resources": {"swap": "false"}})
+
+
+class LifecycleMountTest(BoxRunnerCase):
+    def test_running_box_gets_new_limits_before_mount_restart_and_swap_check_after(self):
+        bp.save_project("proj", {"tide-box": 1, "resources": {"cpu": 3, "memory": "7GiB"}})
+        self.incus.config_set("proj", {"limits.cpu": 1, "limits.memory": "2GiB"})
+        builder = bb.Builder(self.settings, self.incus)
+        engine = SimpleNamespace(box_settings_source=lambda: self.settings, box_builder=lambda: builder)
+        placement = boxstep.Placement("proj", "proj", "10.0.0.2", False, {}, self.runner())
+        bs.mark_in_use("proj", "proj", "s1")
+        boxstep.prepare_runner(engine, placement, self.step())
+        self.assertEqual(self.incus.config_get("proj", "limits.cpu"), "3")
+        self.assertEqual(self.incus.config_get("proj", "limits.memory"), "7GiB")
+        import shlex
+        from .fakebin import calls
+        argv = [shlex.split(line)[1:] for line in calls(self.env) if line.startswith("incus ")]
+        start = next(i for i, a in enumerate(argv) if a[0] == "start")
+        config = next(i for i, a in enumerate(argv) if "limits.cpu=3" in a)
+        check = next(i for i, a in enumerate(argv) if "tide-no-swap" in a)
+        self.assertLess(config, start)
+        self.assertLess(start, check)

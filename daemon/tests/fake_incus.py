@@ -116,6 +116,8 @@ def main(argv):
                 config.update(kv([opts[j + 1]]))
         if config.get("security.privileged") == "true":
             die("atrapa: security.privileged jest zabronione w projekcie ograniczonym")
+        if "limits.memory.swap" in config:
+            die("atrapa: limits.memory.swap jest zabronione w projekcie ograniczonym")
         config["image.source"] = image
         data["instances"][name] = new_instance(data, config, {}, "Running" if cmd == "launch" else "Stopped")
     elif cmd == "copy":
@@ -197,6 +199,8 @@ def main(argv):
             inst = inst_or_die(data, name)
             if action == "set":
                 values = kv(args[3:])
+                if "limits.memory.swap" in values:
+                    die("atrapa: limits.memory.swap jest zabronione w projekcie ograniczonym")
                 if values.get("security.privileged") == "true":
                     die("atrapa: security.privileged jest zabronione w projekcie ograniczonym")
                 inst["config"].update(values)
@@ -256,6 +260,9 @@ def run_exec(data, opts, command):
     inst = inst_or_die(data, name)
     if inst["status"] != "Running":
         die(f"Instance is not running: {name}")
+    if "tide-no-swap" in command:
+        # Cgroup należy do pudełka, nigdy do hosta uruchamiającego test.
+        return 0 if os.environ.get("TIDE_FAKE_SWAP_MAX", "0") == "0" else 1
     env = dict(os.environ)
     box_bin = os.environ.get("TIDE_FAKE_BOX_BIN", "")
     if not box_bin or not os.path.isdir(box_bin):

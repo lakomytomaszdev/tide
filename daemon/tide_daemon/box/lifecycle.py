@@ -8,8 +8,19 @@ from . import state as bs
 
 def limits(profile):
     resources = bp.with_defaults(profile)["resources"]
-    return {"limits.cpu": resources["cpu"], "limits.memory": resources["memory"],
-            "limits.memory.swap": resources["swap"]}
+    if resources["swap"]:
+        from .builder import BuildError
+        raise BuildError("resources.swap=true jest niedostępne w ograniczonym projekcie Incusa")
+    return {"limits.cpu": resources["cpu"], "limits.memory": resources["memory"]}
+
+
+NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/sys/fs/cgroup/memory.swap.max"]
+
+
+def require_no_swap(incus, name, env=None):
+    from .builder import BuildError
+    if incus.exec(name, NO_SWAP_CHECK, env) != 0:
+        raise BuildError(f"{name}: brak potwierdzenia memory.swap.max=0 (wymagane cgroup v2 bez swapu)")
 
 
 def active_steps(builder, slug, name, engine=None):
@@ -53,6 +64,7 @@ class Lifecycle:
         self.builder = builder
         self.incus = builder.incus
 
+    @bs.serialized
     def start(self, slug, card=None):
         from .builder import BuildError
         b = self.builder
@@ -69,11 +81,13 @@ class Lifecycle:
             if b.clock() >= deadline:
                 raise BuildError(f"pudełko {name} nie odpowiada po starcie")
             b.sleep(0.5)
+        require_no_swap(self.incus, name)
         duration = round(b.clock() - started, 3)
         bs.record(slug, "box.ready", name, b.wall, duration=duration, hash=st.recipe_hash,
                   warning=st.warning, reason="start")
         return duration
 
+    @bs.serialized
     def stop(self, slug, card=None, reason="użytkownik"):
         from .builder import BuildError
         b = self.builder
@@ -89,6 +103,7 @@ class Lifecycle:
         bs.record(slug, "box.stop", name, b.wall, duration=duration, reason=reason)
         return duration
 
+    @bs.serialized
     def close_card(self, slug, card):
         from .builder import BoxBusy, BuildError
         b = self.builder
@@ -114,6 +129,7 @@ class Lifecycle:
         bs.record(slug, "box.reset", name, b.wall, duration=round(b.clock() - started, 3),
                   result="ok", reason="karta domknięta", removed=True)
 
+    @bs.serialized
     def idle(self, slug, card=None):
         b = self.builder
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)

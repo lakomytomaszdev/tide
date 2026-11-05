@@ -1,8 +1,8 @@
 """Budowa pudełka projektu z zatwierdzonego profilu, kopia per karta, status, reset, usunięcie i zatwierdzenie.
 
 Kolejność budowy (`build`):
- 1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`,
-    `limits.memory.swap=false` z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
+ 1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
+    z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
     `security.privileged`; rozmiar dysku głównego `resources.disk`; wolumen `<pudełko>-home` na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
@@ -143,6 +143,7 @@ class Builder:
 
     # --- budowa ----------------------------------------------------------------------------------
 
+    @bs.serialized
     def build(self, slug: str, profile: dict | None = None) -> BuildResult:
         profile = self.load_profile(slug) if profile is None else bp.validate(profile, "project")
         full = bp.with_defaults(profile)
@@ -210,7 +211,9 @@ class Builder:
             self.policy.clear_box_policy(ip)
 
     def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
+        from .lifecycle import require_no_swap
         env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive"}
+        require_no_swap(self.incus, name, env)
         if full.get("node", {}).get("version"):
             env["TIDE_NODE_VERSION"] = full["node"]["version"]
         if full.get("dotnet", {}).get("sdk"):
@@ -296,6 +299,7 @@ class Builder:
 
     # --- kopia per karta -------------------------------------------------------------------------
 
+    @bs.serialized
     def copy_for_card(self, slug: str, card: str) -> str:
         """Kopia `<slug>-<karta>` z migawki `clean` pudełka projektu (idempotentna).
 
@@ -380,6 +384,7 @@ class Builder:
 
     # --- reset i usunięcie -----------------------------------------------------------------------
 
+    @bs.serialized
     def reset(self, slug: str, card: str | None = None) -> float:
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
         self.require_idle(slug, name)
@@ -391,6 +396,7 @@ class Builder:
         bs.record(slug, "box.reset", name, self.wall, result="ok", duration=duration)
         return duration
 
+    @bs.serialized
     def destroy(self, slug: str) -> list:
         """Usuwa pudełko projektu i wszystkie jego kopie per karta (z wolumenami `/home/agent`)."""
         source = bs.box_name(slug)
