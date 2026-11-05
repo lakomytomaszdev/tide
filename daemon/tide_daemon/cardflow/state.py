@@ -101,6 +101,9 @@ class FlowState:
     # Strażnik kroku opiekuna (PT-158): ostatni stan bazowy `caretaker.guard` i powody wykrytych po drodze zmian.
     caretaker_guards: dict = field(default_factory=dict)      # krok opiekuna → ostatnie caretaker.guard
     caretaker_wrote: dict = field(default_factory=dict)       # krok opiekuna → [powód zmiany]
+    # Nie z dziennika (PT-151): ustawienia opiekuna przy tej karcie (`caretaker.setup`), które silnik dokłada przed
+    # widokami (`derived`); pusty — wartości domyślne bez katalogu wykonawców.
+    caretaker_setup: dict = field(default_factory=dict)
 
     def running(self) -> list[dict]:
         return [s for name, s in self.steps.items() if name not in self.finished] + \

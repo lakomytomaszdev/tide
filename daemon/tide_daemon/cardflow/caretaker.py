@@ -13,6 +13,10 @@ Publiczny interfejs (silnik i widoki wołają tylko te funkcje):
 - `brief(problem, st, ...)` — kartka kroku opiekuna (pierwsza linia „Jesteś opiekunem karty …”),
 - `parse_result(data, problem, st)` — walidacja pliku wyniku opiekuna; granica uprawnień jest tu, nie w kartce.
   Przed nią silnik sprawdza strażnikiem (`guard.py`, PT-158), czy krok nie pisał poza `out` — inaczej `WROTE`.
+- `settings_of(data)`, `setting_problem(key, value, catalog)` — ustawienia opiekuna w `cardflow.json` (PT-151),
+- `executor_name(catalog, st, preferred)` — jedyny wybór wykonawcy opiekuna z regułą „Tylko lokalnie”,
+- `setup(st, settings, catalog)` — opiekun przy karcie: włączony, wykonawca, powód niedostępności, dopisek, limit;
+  silnik dokłada wynik do stanu (`FlowState.caretaker_setup`) przed widokami.
 
 Rejestry (kolejne tickety tylko dopisują wpisy, bez edycji wspólnych gałęzi):
 - `TRIGGERS` — funkcje `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`,
@@ -67,9 +71,18 @@ QUESTION, OTHER_RESULT, NOT_STARTED, STOPPED = ("caretaker-question", "caretaker
 WROTE = "caretaker-wrote"
 # PT-150: akcja nieaktualna (nie liczy się do limitu), `retry` na krok spoza problemu (liczy się), wyczerpany limit.
 STALE, NOT_PROBLEM_STEP, LIMIT = "stale", "not-problem-step", "caretaker-limit"
-# Kroki opiekuna na problem, udane i nieudane (`caretakerActionLimit`; ustawialną wartość dokłada #9).
+# Kroki opiekuna na problem, udane i nieudane — wartość domyślna `caretakerActionLimit` (PT-151).
 ACTION_LIMIT = 3
 STEP_MAX = 200
+
+# Ustawienia opiekuna (PT-151) w `cardflow.json`, przez `GetCardFlowSettings`/`SetCardFlowSettings`:
+# klucz → (wartość domyślna, najmniejsza, największa); liczby całkowite, bez `bool`.
+SETTINGS_DEFAULTS = {"caretakerEnabled": True, "caretakerExecutor": "", "caretakerActionLimit": ACTION_LIMIT,
+                     "caretakerDecisionMinutes": 10}
+SETTINGS_RANGES = {"caretakerActionLimit": (1, 10), "caretakerDecisionMinutes": (1, 1440)}
+EXECUTOR_NAME_MAX = 60
+DISABLED_NOTE = "opiekun wyłączony w ustawieniach"
+LOCAL = "local"
 
 TICKET_KINDS = ("ticket", "fix", "review", "conflict")
 
@@ -369,38 +382,111 @@ def problem_steps(problem: dict, st) -> list[str]:
 
 def local_only(st) -> bool:
     started = st.started or {}
-    return started.get("preferredProvider") == "local" or (
-        not started.get("preferredProvider") and started.get("provider") == "local")
+    return started.get("preferredProvider") == LOCAL or (
+        not started.get("preferredProvider") and started.get("provider") == LOCAL)
 
 
-def unavailable(st, column: str) -> str:
-    """Dlaczego opiekun nie ruszy przy tej karcie (pusty napis — ruszy). Do #9 opiekun jest włączony na stałe."""
-    if st.started is None or st.card_finished:
-        return "karta zakończona"
-    if column in ("backlog", "done", "archived"):
-        return f"karta w kolumnie {column}"
-    if st.paused:
-        return "karta wstrzymana"
+# --- ustawienia i wybór wykonawcy (PT-151) -------------------------------------------------------
+
+def settings_of(data: dict) -> dict:
+    """Ustawienia opiekuna z pliku `cardflow.json` z wartościami domyślnymi; wartość złego typu albo spoza zakresu
+    (np. ręczna edycja pliku) — domyślna."""
+    data = data if isinstance(data, dict) else {}
+    out = dict(SETTINGS_DEFAULTS)
+    if isinstance(data.get("caretakerEnabled"), bool):
+        out["caretakerEnabled"] = data["caretakerEnabled"]
+    executor = data.get("caretakerExecutor")
+    if isinstance(executor, str) and len(executor.strip()) <= EXECUTOR_NAME_MAX:
+        out["caretakerExecutor"] = executor.strip()
+    for key, (low, high) in SETTINGS_RANGES.items():
+        if _whole(data.get(key)) and low <= data[key] <= high:
+            out[key] = data[key]
+    return out
+
+
+def setting_problem(key: str, value, catalog) -> tuple[str, str] | None:
+    """Walidacja jednego ustawienia opiekuna w `SetCardFlowSettings` (w usłudze, nie tylko w UI): `(kod, komunikat)`
+    albo None. Zły typ albo zakres — `bad-request`; wykonawca spoza katalogu — `bad-executor` (pusty napis —
+    „domyślny”: najmocniejsza klasa preferowanego dostawcy karty)."""
+    if key == "caretakerEnabled":
+        return None if isinstance(value, bool) else ("bad-request", "caretakerEnabled musi być true albo false")
+    if key == "caretakerExecutor":
+        if not isinstance(value, str) or len(value.strip()) > EXECUTOR_NAME_MAX:
+            return "bad-request", "caretakerExecutor musi być nazwą wykonawcy albo pustym napisem"
+        name = value.strip()
+        if name and (catalog is None or catalog.get(name) is None):
+            return "bad-executor", f"nieznany wykonawca opiekuna „{name[:EXECUTOR_NAME_MAX]}”"
+        return None
+    low, high = SETTINGS_RANGES[key]
+    if not _whole(value) or not low <= value <= high:
+        return "bad-request", f"{key} musi być liczbą całkowitą od {low} do {high}"
+    return None
+
+
+def _whole(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def executor_name(catalog, st, preferred: str = "") -> str:
+    """Jedyne miejsce wyboru wykonawcy opiekuna (PT-151) — także dla rozmowy z opiekunem i zmiany wykonawcy przez
+    opiekuna. Pusty napis — opiekun nie ma wykonawcy.
+
+    - Karta „Tylko lokalnie”: wykonawca lokalny z katalogu — `preferred`, gdy sam jest lokalny, inaczej pierwszy
+      lokalny w kolejności katalogu; chmurowy `preferred` jest pomijany (kontekst karty nie wychodzi z komputera).
+    - Inna karta: `preferred` (`caretakerExecutor`), jeśli jest w katalogu, inaczej najmocniejsza klasa
+      preferowanego dostawcy karty (w trybie mieszanym — dostawcy wykonawcy karty)."""
+    executors = list(getattr(catalog, "executors", ()) or ())
+    chosen = next((e for e in executors if preferred and e.name == preferred), None)
     if local_only(st):
-        return LOCAL_ONLY_NOTE
-    return ""
-
-
-def executor_name(catalog, st) -> str:
-    """Wykonawca opiekuna do #9: najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym — dostawcy
-    wykonawcy karty)."""
+        if chosen is not None and chosen.provider == LOCAL:
+            return chosen.name
+        return next((e.name for e in executors if e.provider == LOCAL), "")
+    if chosen is not None:
+        return chosen.name
     started = st.started or {}
     provider = started.get("preferredProvider") or ""
     if provider in ("", "mixed"):
         provider = started.get("provider") or ""
     best, rank = "", -1
-    for executor in getattr(catalog, "executors", ()) or ():
+    for executor in executors:
         if executor.provider != provider or not executor.program or not executor.model:
             continue
         mine = max((CLASS_RANK.get(c, -1) for c in executor.classes), default=-1)
         if mine > rank:
             best, rank = executor.name, mine
     return best
+
+
+def setup(st, settings: dict | None = None, catalog=None) -> dict:
+    """Opiekun przy tej karcie według ustawień i katalogu: `{enabled, executor, reason, note, limit,
+    decisionMinutes}`. `reason` — dlaczego opiekun nie ruszy (wyłączony albo karta „Tylko lokalnie” bez wykonawcy
+    lokalnego), `note` — dopisek do decyzji (tylko brak wykonawcy lokalnego; wyłączony opiekun daje dzisiejszą
+    decyzję bez dopisku). Bez katalogu (czyste funkcje w testach) karta „Tylko lokalnie” nie ma wykonawcy."""
+    conf = settings_of(settings or {})
+    executor = executor_name(catalog, st, conf["caretakerExecutor"]) if catalog is not None else ""
+    reason = note = ""
+    if not conf["caretakerEnabled"]:
+        reason = DISABLED_NOTE
+    elif local_only(st) and not executor:
+        reason = note = LOCAL_ONLY_NOTE
+    return {"enabled": conf["caretakerEnabled"], "executor": executor, "reason": reason, "note": note,
+            "limit": conf["caretakerActionLimit"], "decisionMinutes": conf["caretakerDecisionMinutes"]}
+
+
+def _setup(st) -> dict:
+    """Ustawienia opiekuna dołożone do stanu przez silnik (`FlowState.caretaker_setup`), inaczej domyślne."""
+    return getattr(st, "caretaker_setup", None) or setup(st)
+
+
+def unavailable(st, column: str, conf: dict | None = None) -> str:
+    """Dlaczego opiekun nie ruszy przy tej karcie (pusty napis — ruszy); `conf` — wynik `setup()`."""
+    if st.started is None or st.card_finished:
+        return "karta zakończona"
+    if column in ("backlog", "done", "archived"):
+        return f"karta w kolumnie {column}"
+    if st.paused:
+        return "karta wstrzymana"
+    return (conf or _setup(st))["reason"]
 
 
 # --- kartka --------------------------------------------------------------------------------------
@@ -603,11 +689,13 @@ def annotate(st, decision: dict) -> dict:
 
 
 def unavailable_note(st, step: str) -> str:
-    """Dopisek do decyzji, gdy problem tego kroku byłby dla opiekuna, ale opiekun przy tej karcie nie działa."""
-    if not local_only(st):
+    """Dopisek do decyzji, gdy problem tego kroku byłby dla opiekuna, ale karta „Tylko lokalnie” nie ma wykonawcy
+    lokalnego (PT-151; wyłączony w ustawieniach opiekun nie dopisuje niczego)."""
+    note = _setup(st)["note"]
+    if not note:
         return ""
     # Same wyzwalacze, nie `problems()`: problem liczy możliwości z decyzji, a decyzja woła tę funkcję.
-    return LOCAL_ONLY_NOTE if any(candidate.get("step") == step for trigger in TRIGGERS
+    return note if any(candidate.get("step") == step for trigger in TRIGGERS
                                   for candidate in trigger(st) or []) else ""
 
 
@@ -629,7 +717,8 @@ def working(st) -> list[dict]:
 
 
 def view(st) -> dict:
-    """`derived.flow.caretaker`: `enabled`, `working[]` (jak `working`), `escalated[]` — problemy oddane
+    """`derived.flow.caretaker`: `enabled` (opiekun włączony w ustawieniach i ma wykonawcę przy tej karcie — PT-151),
+    `working[]` (jak `working`), `escalated[]` — problemy oddane
     użytkownikowi, które nadal są otwarte według `owned()`: `{problem, step, target, ticket, summary,
     recommendation, optionId, failed, error}`."""
     escalated = []
@@ -637,7 +726,7 @@ def view(st) -> dict:
         escalated.append({key: event.get(key) or "" for key in
                           ("problem", "step", "target", "ticket", "summary", "recommendation", "optionId", "error")}
                          | {"failed": bool(event.get("failed"))})
-    return {"enabled": not local_only(st), "working": working(st), "escalated": escalated}
+    return {"enabled": not _setup(st)["reason"], "working": working(st), "escalated": escalated}
 
 
 def running_entries(st) -> list[dict]:
