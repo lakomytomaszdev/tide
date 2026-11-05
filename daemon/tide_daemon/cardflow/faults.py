@@ -476,7 +476,9 @@ def _short(value, env: dict | None = None) -> str:
 def card_title(step_kind: str, fault: str, cause: str, reason_labels: dict | None = None,
                env: dict | None = None) -> str:
     what = mask(cause_label(cause, reason_labels), env) or "błąd"
-    if fault == "tide":
+    if step_kind == "flow" and fault == "tide":
+        title = f"Błąd Tide w przepływie: {what}"
+    elif fault == "tide":
         title = f"Błąd Tide w kroku {kind_label(step_kind)}: {what}"
     else:
         title = f"Błąd kroku {kind_label(step_kind)} ({FAULT_LABELS.get(fault, fault)}): {what}"
@@ -504,10 +506,12 @@ def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, 
     return "\n".join(lines) + "\n"
 
 
-def card_body(*, card: str, sig: str, happened: str, first: str, env: dict | None = None) -> str:
+def card_body(*, card: str, sig: str, happened: str, first: str, env: dict | None = None,
+              caretaker: bool = False) -> str:
     happened = mask(happened, env)   # „co się stało” przy `unknown` cytuje powód wyniku pisany przez agenta
     return "\n".join([
-        f"Błąd zgłoszony z karty {card} przyciskiem „Opisz problem i ponów”.", "",
+        f"Błąd zgłoszony z karty {card} " + ("przez opiekuna." if caretaker else
+                                           "przyciskiem „Opisz problem i ponów”."), "",
         f"{SIGNATURE_PREFIX}`{sig}`", "",
         "## Co się stało", "", happened, "",
         "## Wystąpienia", "", first,

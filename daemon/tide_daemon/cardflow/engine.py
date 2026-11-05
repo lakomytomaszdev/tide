@@ -2634,11 +2634,13 @@ class FlowEngine(PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "problem"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "problem", "description"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie id problemu")
         choice = request.get("choice")
-        if choice not in ("retry-stage", "dismiss"):
-            raise FlowError("bad-choice", "wybierz retry-stage albo dismiss")
+        if choice not in ("retry-stage", "dismiss", "report"):
+            raise FlowError("bad-choice", "wybierz retry-stage, dismiss albo report")
+        if choice == "report":
+            self._caretaker_description(request)
         st = fold(self.journal.read(card))
         waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
         wanted = request.get("problem")
@@ -2647,11 +2649,15 @@ class FlowEngine(PlanEditing):
             raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
         ident = decision["technical"]["problem"]
         problem = next(p for p in caretaker.problems(st) if p["id"] == ident)
+        reported = {}
+        if choice == "report":
+            reported = self._save_fault_report(card, st, problem.get("step") or "",
+                                               request["description"].strip(), problem=problem)
         event = self.journal.append(card, "caretaker.decision", problem=ident, choice=choice)
         if choice == "retry-stage":
             self._retry_stage(card, {"problem": ident, "step": f"user:{event['seq']}",
                                      "trigger": problem["trigger"], "ticket": problem.get("ticket") or ""}, problem)
-        return {"ok": True, "id": card, "choice": choice, "problem": ident}
+        return {"ok": True, "id": card, "choice": choice, "problem": ident, **reported}
 
     def resolve_step(self, card_id: str, request: dict, *, caretaker_problem: str = "",
                      caretaker_step: str = "") -> dict:
@@ -2779,6 +2785,21 @@ class FlowEngine(PlanEditing):
 
     def preview_step_fault(self, card_id: str, request: dict) -> dict:
         """PreviewStepFault: treść karty z błędem, która powstanie albo zostanie dopisana — bez zapisu."""
+        if isinstance(request, dict) and "problem" in request:
+            self._caretaker_description(request)
+            if set(request) - {"problem", "choice", "description"}:
+                raise FlowError("bad-request", "oczekiwano problemu i opisu")
+            try:
+                card = f"K-{card_num(card_id)}"
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            st = fold(self.journal.read(card))
+            waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
+            if not any(d["technical"]["problem"] == request["problem"] for d in waiting):
+                raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
+            problem = next(p for p in caretaker.problems(st) if p["id"] == request["problem"])
+            return {"ok": True, "id": card, "preview": True,
+                    **self._fault_plan(card, st, "", request["description"].strip(), problem=problem)}
         card, st, name = self._fault_request(card_id, request)
         plan = self._fault_plan(card, st, name, str(request.get("description") or "").strip())
         return {"ok": True, "id": card, "step": name, "preview": True, **plan}
@@ -2795,22 +2816,10 @@ class FlowEngine(PlanEditing):
         reported = next((e for e in reversed(self.journal.read(card))
                          if e.get("type") == "step.reported" and e.get("step") == name), None)
         if reported is None:
-            plan = self._fault_plan(card, st, name, description)
-            try:
-                with self.journal.lock:   # repozytorium tablicy commituje też wątek główny
-                    if plan["action"] == "append":
-                        board = self.store.load()
-                        target = board.cards[card_num(plan["card"])]
-                        saved = self.store.update_card(target.id, {
-                            "description": target.description.rstrip("\n") + "\n\n" + plan["occurrence"]})
-                    else:
-                        saved = self.store.create_card({"title": plan["title"], "description": plan["description"],
-                                                        "project": faults.REPORT_PROJECT, "column": "backlog"})
-            except BoardError as exc:
-                raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
+            plan = self._save_fault_report(card, st, name, description)
             reported = self.journal.append(card, "step.reported", step=name,
                                            ticket=(st.steps.get(name) or {}).get("ticket") or "",
-                                           reported=saved.get("id") or plan["card"], action=plan["action"],
+                                           reported=plan["reported"], action=plan["action"],
                                            project=faults.REPORT_PROJECT, signature=plan["signature"],
                                            fault=plan["fault"])
         resumed = self.resolve_step(card, {"choice": "retry", "step": name})
@@ -2841,11 +2850,39 @@ class FlowEngine(PlanEditing):
             raise FlowError("not-waiting", f"krok {name or '?'} nie czeka na decyzję po błędzie")
         return card, st, name
 
-    def _fault_plan(self, card: str, st: FlowState, name: str, description: str) -> dict:
+    @staticmethod
+    def _caretaker_description(request: dict) -> None:
+        value = request.get("description")
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= faults.DESCRIPTION_LIMIT:
+            raise FlowError("bad-request", "opis problemu musi mieć od 1 do 4000 znaków")
+
+    def _save_fault_report(self, card, st, name, description, *, problem=None):
+        """Wspólny zapis zgłoszenia; wybór karty i zapis pod jedną blokadą, bez ponawiania pracy."""
+        try:
+            with self.journal.lock:
+                plan = self._fault_plan(card, st, name, description, problem=problem)
+                if plan["action"] == "append":
+                    target = self.store.load().cards[card_num(plan["card"])]
+                    saved = self.store.update_card(target.id, {
+                        "description": target.description.rstrip("\n") + "\n\n" + plan["occurrence"]})
+                else:
+                    saved = self.store.create_card({"title": plan["title"], "description": plan["description"],
+                                                    "project": faults.REPORT_PROJECT, "column": "backlog"})
+        except BoardError as exc:
+            raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
+        return {**plan, "reported": saved.get("id") or plan["card"]}
+
+    def _fault_plan(self, card: str, st: FlowState, name: str, description: str, *, problem=None) -> dict:
         """Co zapisze zgłoszenie: nowa karta albo wystąpienie dopisane do otwartej karty o tym samym podpisie."""
         from .decisions import build_decisions
         step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
         found = faults.of_finished(done)
+        if not name and problem:
+            stage = problem.get("stage") or "stalled"
+            source = (st.flow_errors.get(stage) or {}).get("event") or {}
+            step = {"kind": "flow", "ticket": problem.get("ticket") or ""}
+            done = {**source, "result": "error", "reason": source.get("error") or "karta stoi"}
+            found = {"fault": "tide", "cause": stage}
         sig = faults.signature(step.get("kind") or "", found["fault"], found["cause"])
         # Wycinek wyłącznie z dziennika tego kroku (bez dowiązań), po zamaskowaniu sekretów.
         step_dir = step.get("stepDir") or ""
@@ -2882,10 +2919,12 @@ class FlowEngine(PlanEditing):
                     description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False)
                 plan["occurrence"] = occurrence
             return {**plan, "action": "append", "card": target.id, "title": target.title, "description": occurrence}
-        decision = next((d for d in build_decisions(st) if d.get("step") == name), None) or {}
+        decision = next((d for d in build_decisions(st) if (
+            (d.get("technical") or {}).get("problem") == problem.get("id") if problem and not name
+            else d.get("step") == name)), None) or {}
         happened = decision.get("happened") or "Krok zakończył się błędem."
         title = faults.card_title(step.get("kind") or "", found["fault"], found["cause"], REASON_LABELS)
-        body = faults.card_body(card=card, sig=sig, happened=happened, first=occurrence)
+        body = faults.card_body(card=card, sig=sig, happened=happened, first=occurrence, caretaker=problem is not None)
         return {**plan, "action": "create", "card": "", "title": title, "description": body}
 
     def _card_merged(self, card_id: str) -> bool:
@@ -4101,6 +4140,21 @@ class FlowEngine(PlanEditing):
                                  outcome.get("error") or "nieudane działanie opiekuna",
                                  action=outcome.get("action") or "", summary=outcome.get("summary") or "")
             return
+        if outcome.get("report") and not any(e.get("type") == "caretaker.reported" and e.get("step") == step
+                                              for e in self.journal.read(card)):
+            problem = self._caretaker_problem(st, run)
+            reason = faults.mask((outcome.get("params") or {}).get("reason") or
+                                 (outcome.get("params") or {}).get("summary") or outcome["report"]["description"])
+            try:
+                made = self._save_fault_report(card, st, run.get("target") or "",
+                                               outcome["report"]["description"], problem=problem)
+                self.journal.append(card, "caretaker.reported", step=step, target=run.get("target") or "",
+                                    problem=run.get("problem") or "", ok=True, reported=made["reported"],
+                                    signature=made["signature"], reason=reason)
+            except FlowError as exc:
+                self.journal.append(card, "caretaker.reported", step=step, target=run.get("target") or "",
+                                    problem=run.get("problem") or "", ok=False, code=exc.code,
+                                    error=faults.mask(str(exc)), reason=reason)
         self._caretaker_act(card, run, outcome["action"], outcome.get("params") or {})
 
     def _caretaker_act(self, card: str, run: dict, name: str, params: dict) -> None:

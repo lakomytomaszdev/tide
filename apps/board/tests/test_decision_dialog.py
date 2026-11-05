@@ -615,6 +615,28 @@ class DecisionDialogCaretakerTest(ProbeCase):
     def scenario(self, with_tried=True):
         return scenario_f(self.data, decisions_caretaker(with_tried))
 
+    def test_caretaker_report_previews_then_sends_description_without_retry(self):
+        preview = {"ok": True, "action": "create", "project": "plasma-tide", "title": "Błąd Tide",
+                   "description": "Podpis błędu: `flow/tide/advance`"}
+        out = self.probe(STATE_PY + '''
+replies.append(json.loads(%r))
+click(card("K-8"))
+click(named("decisionOther", 0.5, 0.2))
+type_text("Etap nadal nie działa")
+key(Qt.Key.Key_Return)
+wait(150)
+out["preview"] = calls()
+out["label"] = js("(function () { return (" + ALL + ")(page.decisionDialog, 'decisionChoose')[0].text })()")
+key(Qt.Key.Key_Return)
+wait(150)
+out["sent"] = calls()
+''' % json.dumps(preview), scenario_f(self.data, decisions(journal_caretaker_card())))
+        self.assertEqual(out["preview"][0][:2], ["PreviewStepFault", "K-8"])
+        self.assertEqual(out["sent"][1][:2], ["ResolveCardCaretaker", "K-8"])
+        self.assertEqual(json.loads(out["sent"][1][2]), {"choice": "report", "problem": "flow-error:advance",
+                                                        "description": "Etap nadal nie działa"})
+        self.assertEqual(out["label"], "Zgłoś błąd  ↵")
+
     def test_card_problem_has_recommendation_and_both_buttons_send_the_new_method(self):
         for index, choice in enumerate(("retry-stage", "dismiss")):
             with self.subTest(choice=choice):

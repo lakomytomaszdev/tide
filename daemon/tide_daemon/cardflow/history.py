@@ -21,7 +21,7 @@ from .labels import result_label, step_name
 
 LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
-          "ticket.rejected", "result", "caretaker.escalated", "caretaker.action")
+          "ticket.rejected", "result", "caretaker.escalated", "caretaker.action", "caretaker.reported")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "step.decision", "plan.approved",
                "ticket.rejected", "review.decision")
 RESUMABLE = ("question", "denied", "stopped")
@@ -107,7 +107,7 @@ def _step_label(st, name) -> str:
 def _event_entry(e: dict, st=None) -> dict | None:
     kind, ticket = e.get("type"), e.get("ticket") or ""
     who = e.get("executor") or e.get("reviewer") or ""
-    if kind in ("caretaker.escalated", "caretaker.action"):
+    if kind in ("caretaker.escalated", "caretaker.action", "caretaker.reported"):
         # Opiekun karty (PT-143): tekst z rejestru etykiet opiekuna, aktor `caretaker`.
         from .caretaker import ACTOR, history_text
         text = history_text(e)

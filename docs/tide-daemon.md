@@ -1915,6 +1915,28 @@ Kartka (sekcje `flow-error` i `stalled` w `BRIEF_SECTIONS`): tekst błędu, etap
 użytkownika (`flow_error_hint`) albo od kiedy karta stoi i ostatni krok, ostatnie 15 zdarzeń karty (bez pracy
 opiekuna) i otwarte pary „zamiar → wynik”.
 
+### Zgłoszenie błędu Tide
+
+Wynik opiekuna może przy każdej akcji i każdym wyzwalaczu zawierać opcjonalne
+`"report": {"description": "opis błędu Tide"}` (1–4000 znaków). Zgłoszenie zapisuje kartę w Backlogu
+projektu `plasma-tide` albo dopisuje wystąpienie do otwartej, niescalonej karty o tym samym podpisie.
+Karta zarchiwizowana lub scalona nie przyjmuje kolejnego wystąpienia. Wspólny kod z `ReportStepFault`
+wylicza podpis, wybiera kartę i maskuje opis oraz ograniczony wycinek dziennika przez `faults.mask`.
+Dla problemu bez kroku podpis ma postać `flow/tide/<przyczyna>`: przyczyną jest etap `flow.error`
+(np. `flow/tide/advance`), a dla zastoju `stalled`. Tekst błędu pozostaje zamaskowany w treści.
+
+Samo `report` nie ponawia kroku ani etapu (A7). Osobny wpis `caretaker.reported` daje historię
+„Opiekun: zgłosił błąd Tide (K-<n>) — <powód>”. Brak projektu daje wpis niepowodzenia
+`no-report-project`; akcja główna nadal się wykonuje. Powtórne zastosowanie zapisanego wyniku
+nie dodaje zgłoszenia drugi raz.
+
+Decyzja `caretaker` udostępnia pole „Zgłoś błąd Tide”. `PreviewStepFault` z `problem`, `description`
+i opcjonalnym `choice` pokazuje kartę bez zapisu. `ResolveCardCaretaker` z
+`{"choice":"report","problem":"flow-error:advance","description":"…"}` zapisuje zgłoszenie i zamyka
+problem bez ponawiania etapu. Pusty lub za długi opis daje `bad-request`. Dotychczasowe żądania
+`PreviewStepFault` i `ReportStepFault` z `step` zachowują swoje działanie, w tym retry po ręcznym
+`ReportStepFault`.
+
 ### Akcje
 
 `ACTIONS` to `nazwa → Action(kinds, params, apply, description)`; `kinds` — wyzwalacze, przy których akcja jest

@@ -63,7 +63,7 @@ ColumnLayout {
     readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== ""
                                                                          : choice !== "" && (!picksCommands || checks.length > 0))
     // Napis przycisku wyboru w oknie i w pełnej karcie.
-    readonly property string chooseLabel: needsPreview ? (preview ? "Zapisz i ponów" : "Pokaż podgląd") : "Wybierz"
+    readonly property string chooseLabel: needsPreview ? (preview ? (decision.reply.confirmLabel || "Zapisz i ponów") : "Pokaż podgląd") : "Wybierz"
     readonly property alias answerField: answer
 
     signal answered(string decisionId, string method, var params)

@@ -1051,6 +1051,8 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         "## Dostępne akcje",
         "",
         *listed,
+        'Opcjonalnie przy każdej akcji i wyzwalaczu dodaj "report": {"description": "opis błędu Tide"} '
+        '(1–4000 znaków). Tide zgłosi błąd do Backlogu plasma-tide; samo zgłoszenie nie ponawia pracy.',
         "",
         "## Zakazy",
         "",
@@ -1133,7 +1135,14 @@ def parse_result(data, problem: dict, st) -> dict:
         if param.choices is not None and value not in param.choices(problem):
             return _failed(BAD_RESULT, f"pole {name}: nieznana wartość „{value[:60]}”", action=action)
         params[name] = value
-    return {"ok": True, "action": action, "params": params}
+    report = data.get("report")
+    if report is not None:
+        if not isinstance(report, dict) or set(report) != {"description"} or \
+                not isinstance(report.get("description"), str) or \
+                not 1 <= len(report["description"].strip()) <= faults.DESCRIPTION_LIMIT:
+            return _failed(BAD_RESULT, "report wymaga opisu od 1 do 4000 znaków", action=action)
+        report = {"description": report["description"].strip()}
+    return {"ok": True, "action": action, "params": params, **({"report": report} if report else {})}
 
 
 # --- widoki: decyzja, derived, historia ----------------------------------------------------------
@@ -1253,6 +1262,10 @@ def history_text(event: dict) -> str:
     """Wpis historii karty dla zdarzenia opiekuna (pusty napis — zdarzenie bez wpisu)."""
     kind = event.get("type")
     action = event.get("action") or ""
+    if kind == "caretaker.reported":
+        if event.get("ok"):
+            return f"Opiekun: zgłosił błąd Tide ({event.get('reported')}) — {event.get('reason') or ''}"
+        return f"Opiekun: nie zgłosił błędu Tide ({event.get('code')}) — {event.get('error') or ''}"
     if kind == ESCALATED and event.get("limit"):
         summary = _text(event.get("summary"))
         return f"Opiekun: oddaje decyzję po {_actions(int(event.get('count') or 0))} (limit)" + \
