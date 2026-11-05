@@ -4476,19 +4476,27 @@ class FlowEngine(PlanEditing):
         text, limit = request.get("text", ""), request.get("limit", 50)
         if not isinstance(text, str) or type(limit) is not int or not 1 <= limit <= 100:
             raise FlowError("bad-request", "tekst musi być napisem, limit liczbą od 1 do 100")
+        st = fold(self.journal.read(card_id)) if request["purpose"] == "merge" else None
+        if st is not None and st.started:
+            # Zmiana projektu karty nie zmienia repozytorium rozpoczętego zlecenia.
+            # Lista i kwalifikacja celu muszą używać tego samego repo co podgląd i zgoda.
+            repo = self._repo(card_id)
+            if not repo or not os.path.isdir(repo):
+                raise FlowError("no-repo", "zlecenie karty nie ma dostępnego repozytorium")
+        else:
+            try:
+                _, project = self._project(card_id)
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            repo = project.repo
+            if not repo or project.repo_missing or not os.path.isdir(repo):
+                raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
         try:
-            _, project = self._project(card_id)
-        except BoardError as exc:
-            raise FlowError(exc.code, str(exc)) from None
-        if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
-            raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
-        try:
-            result = self.git.list_branches(project.repo, text, limit if request["purpose"] == "base" else 2**31,
+            result = self.git.list_branches(repo, text, limit if request["purpose"] == "base" else 2**31,
                                             request["purpose"])
             if request["purpose"] == "merge":
-                st = fold(self.journal.read(card_id))
-                protected = self._protected_merge_targets(card_id, project.repo)
-                checkouts = self.git.branch_checkouts(project.repo)
+                protected = self._protected_merge_targets(card_id, repo)
+                checkouts = self.git.branch_checkouts(repo)
                 source_ref = "refs/heads/" + ticket_of(st)["cardBranch"]
                 for item in result["branches"]:
                     path = checkouts.get(item["ref"], "")

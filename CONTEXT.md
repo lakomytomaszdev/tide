@@ -140,6 +140,7 @@ Jawnie wybrana lokalna gałąź (`targetRef`, pełne `refs/heads/…`) i jej bie
 odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej albo nieznanej użytkownik
 wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
 Wybór celu nie zmienia bazy i nie jest zgodą na scalenie. Zgoda dotyczy refu i SHA z aktualnego podglądu.
+Lista celów, podgląd i scalenie używają repozytorium zapisanego przy starcie zlecenia, także po zmianie projektu karty.
 _Avoid_: główna jako nazwa każdego celu, krótka nazwa zdalnej bazy jako domyślny lokalny cel
 
 **Domknięcie**:

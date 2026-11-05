@@ -35,6 +35,66 @@ class MergeTargetsTest(DurableMergeFixture, FlowInProcess):
     def consent(preview):
         return {key: preview[key] for key in ("targetRef", "previewToken")}
 
+    def change_project(self):
+        other_repo = Path(self.base, "ws", "other")
+        other_repo.mkdir()
+        git(other_repo, "init", "-q", "-b", self.target)
+        self.write(other_repo, "other.txt", "inne repozytorium\n")
+        self.commit(other_repo, "other repository")
+        git(other_repo, "branch", "other-only")
+        result = json.loads(self.board.upsert_project(json.dumps({"repo": str(other_repo)})))
+        self.assertTrue(result["ok"], result)
+        result = json.loads(self.board.update_card(self.card_id, json.dumps({"project": "other"})))
+        self.assertTrue(result["ok"], result)
+        return other_repo
+
+    def test_reopened_merge_menu_after_project_change_uses_order_repository(self):
+        ref = "refs/heads/" + self.target
+        [initial] = self.listed(text=ref)["branches"]
+        other_repo = self.change_project()
+        other_before = fingerprint(other_repo)
+        other_sha = git(other_repo, "rev-parse", ref).strip()
+        self.assertNotEqual(initial["commit"], other_sha)
+        # Ponowne otwarcie menu: lista, kwalifikacja i podgląd dotyczą zlecenia w A.
+        listing = self.listed(text=ref)
+        self.assertEqual(listing["mainRef"], ref)
+        [reopened] = listing["branches"]
+        self.assertEqual(reopened["commit"], initial["commit"])
+        self.assertTrue(reopened["selectable"], reopened)
+        self.assertEqual(self.listed(text="other-only")["branches"], [])
+        # Wybór bazy nowego zlecenia nadal korzysta z bieżącego projektu B.
+        [base] = self.call("list_card_branches", {"purpose": "base", "text": ref})["branches"]
+        self.assertEqual(base["commit"], other_sha)
+        # Ochrona aktywnych kroków także pochodzi z A, mimo bieżącego projektu B.
+        other = self.card()
+        journal = self.flow.engine.journal
+        journal.append(other, "card.started", entry="now", repo=self.repo)
+        journal.append(other, "step.started", step="active", kind="ticket", branch=self.target,
+                       repo=self.repo, worktree=self.repo)
+        [blocked] = self.listed(text=ref)["branches"]
+        self.assertFalse(blocked["selectable"])
+        self.assertEqual(blocked["reason"], self.preview(ref)["message"])
+        self.assertIn(other, blocked["reason"])
+        journal.append(other, "step.finished", step="active", result="done")
+        preview = self.preview(reopened["ref"])
+        self.assertTrue(preview["canMerge"], preview)
+        self.assertEqual(preview["targetCommit"], reopened["commit"])
+        self.assertEqual(preview["targetWorktree"], self.repo)
+        merged = self.call("merge_card", self.consent(preview))
+        self.assertTrue(merged["ok"], merged)
+        self.assertEqual(self.sha(ref), merged["resultCommit"])
+        self.assertEqual(fingerprint(other_repo), other_before)
+
+    def test_missing_order_repository_does_not_list_current_project_targets(self):
+        other_repo = self.change_project()
+        other_before = fingerprint(other_repo)
+        Path(self.repo).rename(self.repo + "-unavailable")
+        result = self.call("list_card_branches", {"purpose": "merge"})
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error"], "no-repo")
+        self.assertNotIn("branches", result)
+        self.assertEqual(fingerprint(other_repo), other_before)
+
     def test_full_search_before_limit_and_shared_target_exclusions(self):
         for index in range(110):
             git(self.repo, "branch", f"aaa/{index:03}")
