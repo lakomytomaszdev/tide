@@ -110,11 +110,10 @@ class MergeTargetsTest(DurableMergeFixture, FlowInProcess):
         [item] = found["branches"]
         self.assertEqual((item["ref"], item["name"], item["commit"]),
                          ("refs/heads/zzz/full/feature", "zzz/full/feature", self.before))
-        self.assertFalse(item["selectable"])
-        self.assertIn("checkoutu", item["reason"])
+        self.assertTrue(item["selectable"])
         p = self.preview(item["ref"])
-        self.assertEqual(p["reason"], "no-target-worktree")
-        self.assertFalse(self.call("merge_card", self.consent(p))["ok"])
+        self.assertTrue(p["canMerge"], p)
+        self.assertTrue(p["targetPreparation"]["createWorktree"])
         [own] = self.listed(text=self.source)["branches"]
         self.assertFalse(own["selectable"])
         self.assertEqual(own["reason"], self.preview(own["ref"])["message"])

@@ -203,12 +203,13 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertIn("local-collision", [r["reason"] for r in p["blockedReasons"]])
         self.assert_refused(self.request(p), p["reason"])
 
-    def test_no_checkout_is_refused_but_legacy_provisions_as_before(self):
+    def test_no_checkout_is_provisioned_by_shared_transaction(self):
         git(self.repo, "checkout", "-qb", "feature/elsewhere")
         p = self.preview()
-        self.assert_refused(self.request(p), "no-target-worktree")
-        self.assertTrue(self.merge()["ok"])
-        self.assert_success()
+        self.assertTrue(p["canMerge"], p)
+        self.assertFalse(os.path.exists(p["targetWorktree"]))
+        self.assertTrue(self.call("merge_card", self.request(p))["ok"])
+        self.assertTrue(self.merge()["already"])
 
     def test_feature_target_uses_existing_transaction_without_moving_main(self):
         git(self.repo, "branch", "feature/target")

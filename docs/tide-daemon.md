@@ -876,8 +876,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
-| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
-| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel z istniejącym checkoutem; używa trwałej operacji PT-212 |
+| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
+| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel, w razie potrzeby ref/worktree tworzone po zgodzie; używa trwałej operacji PT-212 |
 | `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -906,7 +906,8 @@ Kolizja obejmuje usunięcia i relację plik–katalog w obu kierunkach, z granic
 Konflikt drzew (`conflict`) i kolizja pracy lokalnej (`local-collision`) pozostają odrębne, również gdy
 wystąpią równocześnie. Niezwiązane staged, unstaged i untracked nie blokują podglądu (K-43, PT-207).
 Plik z jednoczesnymi staged i unstaged zachowuje oba poziomy pracy po scaleniu.
-Cel bez checkoutu ma `no-target-worktree`; metoda niczego nie zakłada. Błąd odczytu checkoutu blokuje
+Cel bez checkoutu ma plan własnego worktree; metoda niczego nie zakłada. Zarejestrowany, niedostępny
+checkout ma `no-target-worktree`. Błąd odczytu checkoutu blokuje
 kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localCollisions` może pozostać `unassessed`.
 
 `previewToken` jest HMAC od karty, zlecenia, `baseVersion` (także stabilnego 0 dla legacy/unknown),
@@ -929,9 +930,9 @@ sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy z
 
 PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
 checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
-Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`;
-brak checkoutu odmawia do PT-206. PT-200 dopuszcza jawnie wybrany lokalny
-cel przez tę samą operację. Nie powstają nowe checkouty, refy ani zasoby.
+Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`.
+PT-200 dopuszcza jawnie wybrany lokalny cel przez tę samą operację. PT-206 dodaje przygotowanie
+brakującego lokalnego refu i checkoutu po zgodzie, opisane poniżej.
 
 Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
 baseVersion, operationId, already}` z istniejącej operacji. `already` oznacza źródło już zawarte w celu.
@@ -949,11 +950,36 @@ PT-200: przy znanej lokalnej bazie przycisk pokazuje „Scal do <pełna nazwa ba
 korzysta z `ListCardBranches(purpose=merge)`: wyłącznie pełne lokalne refy, bez duplikatów, z bazą
 i nazwaną główną na początku pasujących wyników. Wyszukiwanie obejmuje cały zbiór przed limitem
 50 (maks. 100); `hasMore` oznacza konieczność zawężenia. Lista współdzieli z podglądem kontrolę
-gałęzi karty, chronionych refów/worktrees innych kart i braku checkoutu (`selectable: false`, `reason`).
+gałęzi karty i chronionych refów/worktrees innych kart (`selectable: false`, `reason`).
 Ocena kolizji treści pozostaje w podglądzie. `recentTargets` jest puste do PT-214.
-Dla bazy zdalnej i nieznanej nie ma automatycznego lokalnego celu; główna jest propozycją wymagającą
-wyboru. Wybór zmienia jedynie kontekst podglądu, bez zapisu bazy ani zgody. Zmiana projektu lub
+Dla bazy nieznanej główna jest propozycją wymagającą wyboru. Wybór zmienia jedynie kontekst podglądu,
+bez zapisu bazy ani zgody. Zmiana projektu lub
 repozytorium karty zamyka wybór i podgląd oraz odrzuca ich spóźnione odpowiedzi.
+
+PT-206: lista celów ma dodatkowo `defaultTargetRef`, `trackingTargets` i `createTarget` (obiekt albo null).
+Dla zdalnej bazy tylko jedna lokalna gałąź z dokładnym pełnym upstreamem tej bazy jest domyślna;
+zgodność SHA lub krótkiej nazwy nie wystarcza. Kilku kandydatów wymaga jawnego wyboru (`target-required`
+przy podglądzie bez celu). Przy braku śledzącego celu menu proponuje „Utwórz lokalną <pełna nazwa>
+od <remote/nazwa>”. Zajęta nazwa nigdy nie jest nadpisywana: menu pozwala wpisać inną albo jawnie wybrać
+istniejący lokalny cel. Nowa nazwa trafia jako pełne `targetRef`; punkt startu pochodzi wyłącznie ze znanej
+zdalnej bazy tego zlecenia, nigdy z dowolnego refu podanego przez klienta.
+
+`targetPreparation` podglądu opisuje `createRef`, `createWorktree`, `path`, `startCommit`,
+`remoteRef`, `remoteCommit`, dostępność nazwy i katalogu. Token obejmuje cały plan, nieistnienie refu
+i checkoutu oraz SHA remote. Ruch remote, zajęcie nazwy/katalogu albo nowy checkout po podglądzie daje
+`stale-preview` przed zapisaniem zamiaru i tworzeniem. Istniejący checkout ma pierwszeństwo; cudzy katalog
+nie jest przełączany. Brakujący worktree ma nazwę `merge-target-<skrót>` niezależną od znaków refu.
+Podgląd, lista i anulowanie nie tworzą zasobów; nie ma fetch, push, zmiany refs/remotes ani konfiguracji remote.
+
+Pełny zamiar PT-212 powstaje przed zasobami. Dodatkowe checkpointy to `target-ref-created`,
+`target-directory` (urządzenie/inode) i `target-worktree-created`. Atomowa transakcja refów tworzy cel
+i dowód własności `refs/tide/merge-targets/<operationId>`; ten dowód pozostaje z zapisaną operacją.
+Worktree ma podczas przygotowania blokadę opisaną ID operacji. Checkout początkowego drzewa działa
+w StepGit; po zakończeniu gita własna blokada jest zwalniana. Recovery rozpoznaje zasoby także po awarii
+przed checkpointem refu/worktree i kontynuuje ten sam wynik bez drugiego merge. Obcy ref (także zgodny SHA),
+zmieniony inode, checkout albo commit dają oczekiwanie bez nadpisania. Awaria między `mkdir` a utrwaleniem
+inode również bezpiecznie czeka. Zasoby nie są automatycznie usuwane przy porzuceniu zamiaru.
+`card.merged` wskazuje rzeczywisty lokalny ref; projekcje i przyszłe ostatnie cele używają tego wyniku.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
@@ -2645,5 +2671,5 @@ konwertuje jego indeksu do split-index, więc nie unieważnia zgody własnym odc
 Recovery przyjmuje wyłącznie zapisany indeks początkowy lub wynikowy; nowe obce staged powodują oczekiwanie.
 Częściowy zapis plików z niezmienionym indeksem i kolizją pozostaje w jawnym oczekiwaniu, bez nadpisywania.
 Starsze zamiary bez `resultIndexTree` nadal używają `resultTree` jako oczekiwanego indeksu.
-Brak checkoutu głównej nadal uruchamia dotychczasową ścieżkę utworzenia worktree, przed trwałym
-przygotowaniem; wspólna własność nowych zasobów należy do PT-206.
+Brak checkoutu celu korzysta z etapu PT-206: plan i pełny zamiar przed tworzeniem,
+własność zasobów w checkpointach i przekazanie do tego samego wykonawcy. Dotyczy także starego API głównej.

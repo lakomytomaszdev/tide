@@ -12,6 +12,7 @@ ColumnLayout {
     property string contextKey: ""
     property var branches: []
     property var recentBases: []
+    property var createTarget: null
     property var selected: null
     property var pinned: null
     property var initialSelection: null
@@ -30,6 +31,7 @@ ColumnLayout {
         refreshRef = ""
         branches = []
         recentBases = []
+        createTarget = null
         selected = pinned || initialSelection
         mainRef = ""
         message = ""
@@ -46,6 +48,8 @@ ColumnLayout {
         status.text = ""
         branches = []
         recentBases = []
+        createTarget = null
+        newTargetName.text = ""
         if (purpose === "merge") selected = null
         requested(search.text)
     }
@@ -59,6 +63,7 @@ ColumnLayout {
             return
         }
         branches = reply.branches || []
+        createTarget = purpose === "merge" ? reply.createTarget || null : null
         recentBases = purpose === "base" ? reply.recentBases || [] : []
         mainRef = reply.mainRef || ""
         if (refreshRef) {
@@ -73,6 +78,8 @@ ColumnLayout {
         // Domyślna baza jest nazwanym refem głównej, nigdy bieżącym HEAD.
         if (purpose === "base" && !selected && search.text === "")
             selected = branches.find(b => b.ref === mainRef && b.selectable) || null
+        if (purpose === "merge" && baseRef.indexOf("refs/remotes/") === 0 && !selected && search.text === "")
+            selected = branches.find(b => b.ref === reply.defaultTargetRef && b.selectable) || null
         message = ""
         status.text = (reply.hasMore ? "Zawęź wyszukiwanie — lista ma więcej wyników. " : "")
                     + (reply.warnings || []).join(" ")
@@ -80,7 +87,10 @@ ColumnLayout {
     }
     function choose(index) {
         const item = branches[index]
-        if (item && item.selectable) selected = item
+        if (item && item.selectable) {
+            newTargetName.text = ""
+            selected = item
+        }
     }
     onActiveChanged: reset()
     onContextKeyChanged: reset()
@@ -90,8 +100,8 @@ ColumnLayout {
     FieldLabel { text: picker.purpose === "merge" ? "Lokalny cel scalenia" : picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
     Text {
         Layout.fillWidth: true
-        text: picker.purpose === "merge" ? "Wybór celu nie zmienia bazy karty. Wymagany jest istniejący checkout. "
-              + (picker.baseRef.indexOf("refs/remotes/") === 0 ? "Baza jest zdalna — wybierz jawnie lokalny cel."
+        text: picker.purpose === "merge" ? "Wybór celu nie zmienia bazy karty. Brakujący checkout powstanie dopiero po potwierdzeniu podglądu. "
+              + (picker.baseRef.indexOf("refs/remotes/") === 0 ? "Baza jest zdalna — cel domyślny wymaga jednoznacznego śledzenia tej bazy."
                  : !picker.baseRef ? "Baza jest nieznana. Nazwana główna jest tylko propozycją celu." : "Baza: " + picker.baseRef)
               : "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy i odczyt. "
               + (picker.readOnlyRevision ? "Kod wybranej rewizji tylko do odczytu; bez gałęzi i worktree karty. " : "")
@@ -218,7 +228,7 @@ ColumnLayout {
                         anchors.verticalCenter: parent.verticalCenter
                         text: (picker.purpose === "merge" ? (modelData.ref === picker.baseRef ? "Baza karty · " : "")
                                + (modelData.ref === picker.mainRef ? "Główna · " : "") : "")
-                              + (modelData.kind === "remote" ? modelData.ref : modelData.name)
+                              + (modelData.label || (modelData.kind === "remote" ? modelData.ref : modelData.name))
                               + (modelData.selectable ? "" : " — " + modelData.reason)
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
@@ -229,6 +239,30 @@ ColumnLayout {
                     MouseArea { anchors.fill: parent; onClicked: picker.choose(index) }
                 }
             }
+        }
+    }
+    Text {
+        Layout.fillWidth: true
+        visible: picker.active && picker.createTarget !== null
+        text: picker.createTarget ? picker.createTarget.label + ". " + picker.createTarget.reason
+              + " Możesz podać inną nazwę lokalnej gałęzi poniżej." : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WrapAnywhere
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.uiFamily
+        font.pixelSize: 12
+    }
+    LineInput {
+        id: newTargetName
+        objectName: picker.purpose === "merge" ? "mergeNewTargetName" : ""
+        Layout.fillWidth: true
+        visible: picker.active && picker.createTarget !== null
+        enabled: !picker.loading
+        placeholder: "Inna pełna nazwa lokalnej gałęzi, np. release/wynik"
+        onEdited: {
+            if (picker.createTarget && text.length > 0)
+                picker.selected = {ref: "refs/heads/" + text, name: text, commit: picker.createTarget.commit}
+            else picker.selected = null
         }
     }
     Text {

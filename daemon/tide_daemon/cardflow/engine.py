@@ -4516,6 +4516,7 @@ class FlowEngine(PlanEditing):
             result = self.git.list_branches(repo, text, limit if request["purpose"] == "base" else 2**31,
                                             request["purpose"])
             if request["purpose"] == "merge":
+                from . import targetprep
                 protected = self._protected_merge_targets(card_id, repo)
                 checkouts = self.git.branch_checkouts(repo)
                 source_ref = "refs/heads/" + ticket_of(st)["cardBranch"]
@@ -4525,8 +4526,17 @@ class FlowEngine(PlanEditing):
                                                        bool(path) and os.path.isdir(path), protected)
                     item.update(selectable=not blocks, reason=blocks[0][1] if blocks else "")
                 base = base_of(st)
+                choices = targetprep.remote_choices(self.git, repo, base)
+                result.update(choices)
+                proposal = choices["createTarget"]
+                if proposal and text.casefold() in (proposal["ref"] + proposal["label"]).casefold():
+                    # Kolizja nazwy pozostawia istniejący cel na liście, z osobnym wyjaśnieniem propozycji.
+                    if not any(b["ref"] == proposal["ref"] for b in result["branches"]):
+                        result["branches"].append(proposal)
                 base_ref = base["baseRef"] if base["status"] == "known" else ""
-                result["branches"].sort(key=lambda b: (b["ref"] != base_ref, b["ref"] != result["mainRef"]))
+                result["branches"].sort(key=lambda b: (b["ref"] != choices["defaultTargetRef"],
+                    b["ref"] != base_ref, b["ref"] not in choices["trackingTargets"],
+                    b["ref"] != (proposal or {}).get("ref"), b["ref"] != result["mainRef"]))
                 result["hasMore"] = len(result["branches"]) > limit
                 result["branches"] = result["branches"][:limit]
         except FlowGitError as exc:
@@ -4580,8 +4590,8 @@ class FlowEngine(PlanEditing):
                     (exists and item["worktree"] and os.path.realpath(item["worktree"]) == os.path.realpath(path))):
                 reasons.append(("protected-target", "Cel należy do karty " + item["card"] + " lub jej czynnego kroku."))
                 break
-        if not exists:
-            reasons.append(("no-target-worktree", "Cel nie ma checkoutu. Przygotowanie celu wymaga osobnej zgody i obsługi."))
+        if path and not exists:
+            reasons.append(("no-target-worktree", "Zarejestrowany checkout celu jest niedostępny."))
         return reasons
 
     def _recent_bases(self, repo: str) -> list[dict]:
@@ -4751,16 +4761,31 @@ class FlowEngine(PlanEditing):
         branch = ticket_of(st)["cardBranch"]
         if not branch:
             raise FlowError("no-base", "brak gałęzi karty")
+        from . import targetprep
         try:
             repo = self._repo(card)
             target_ref = request.get("targetRef")
             if "targetRef" in request and (not isinstance(target_ref, str) or
                     not target_ref.startswith("refs/heads/") or
                     not self.git.run(repo, "check-ref-format", target_ref).ok or
-                    self.git.run(repo, "symbolic-ref", "--quiet", target_ref).ok or
-                    not self.git.sha(repo, target_ref)):
-                raise FlowError("bad-request", "cel musi być istniejącym pełnym lokalnym refem refs/heads/…")
-            preview = self.git.preview_merge(repo, branch, target_ref)
+                    self.git.run(repo, "symbolic-ref", "--quiet", target_ref).ok):
+                raise FlowError("bad-request", "cel musi być pełnym lokalnym refem refs/heads/…")
+            base = base_of(st)
+            remote_ref = base["baseRef"] if base["status"] == "known" and base["baseRef"].startswith("refs/remotes/") else ""
+            if not target_ref:
+                choices = targetprep.remote_choices(self.git, repo, base)
+                target_ref = choices["defaultTargetRef"]
+                if not target_ref and remote_ref:
+                    raise FlowError("target-required", "Wybierz lokalny cel lub utworzenie gałęzi od zdalnej bazy.")
+                target_ref = target_ref or "refs/heads/" + self.git.main_branch(repo)
+            if not targetprep.ref_exists(self.git, repo, target_ref) and not remote_ref:
+                raise FlowError("bad-request", "brak lokalnego celu i zdalnej bazy do jego utworzenia")
+            preparation = targetprep.plan(self.git, repo, target_ref, remote_ref)
+            preview = self.git.preview_merge(repo, branch, target_ref, preparation=preparation)
+            preview["targetPreparation"] = preparation
+            # Ponowny odczyt obejmuje nieistnienie refu/katalogu i zdalny SHA.
+            if targetprep.plan(self.git, repo, target_ref, remote_ref) != preparation:
+                preview.update(reason="state-changed", message="Stan celu zmienił się podczas odczytu.")
             if not request:
                 self._main_branches[repo] = preview["targetBranch"]
         except FlowGitError as exc:
@@ -4778,9 +4803,14 @@ class FlowEngine(PlanEditing):
             block(reason, message)
         protected = self._protected_merge_targets(card, repo)
         for reason, message in self._merge_target_blocks(
-                preview["sourceRef"], preview["targetRef"], preview["targetWorktree"],
+                preview["sourceRef"], preview["targetRef"],
+                "" if preparation["createWorktree"] else preview["targetWorktree"],
                 bool(snapshots and snapshots["target"]["exists"]), protected):
             block(reason, message)
+        if preparation["pathOccupied"] or preparation["parentSymlink"]:
+            block("target-path-occupied", "Planowany katalog celu jest zajęty lub jego rodzic jest dowiązaniem.")
+        if preparation["nameConflict"]:
+            block("target-name-occupied", "Lokalna nazwa koliduje z istniejącą gałęzią. Wybierz inną nazwę lub lokalny cel.")
         if snapshots:
             source, target = snapshots["source"], snapshots["target"]
             if not source["exists"] or source_dirty(source):
@@ -4910,6 +4940,7 @@ class FlowEngine(PlanEditing):
         return True
 
     def _merge_card_to_main_locked(self, card: str, repo: str, *, preview: dict | None = None) -> dict:
+        legacy = preview is None
         st = fold(self.journal.read(card))
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
@@ -4935,33 +4966,25 @@ class FlowEngine(PlanEditing):
             # Podgląd czyta rekordy NUL i zachowuje również ścieżki z tabulatorem lub nową linią.
             main_tree = preview["targetWorktree"] if preview["targetWorktreeExists"] else ""
         else:
-            listed = self.git.run(repo, "worktree", "list", "--porcelain")
-            main_tree = next((part.get("worktree") for part in
-                              (dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
-                               for block in listed.out.split("\n\n"))
-                              if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
+            main_tree = self.git.branch_checkouts(repo).get(f"refs/heads/{main}", "")
         if not main_tree:
-            if preview is not None:
-                raise FlowError("stale-preview", "Checkout celu zmienił się. Przygotuj nowy podgląd.")
-            # Gałąź główna nie jest nigdzie otwarta (K-15: główny katalog stał na innej gałęzi z lokalnymi
-            # zmianami) — Tide zakłada na nią własny worktree zamiast odsyłać użytkownika do terminala.
-            from .gitops import worktrees_dir
-            path = os.path.join(worktrees_dir(repo), f"{main}-main")
-            if os.path.exists(path):
-                raise FlowError("no-main-worktree", f"katalog {path} już istnieje — otwórz w nim gałąź {main}")
-            added = self.git.run(repo, "worktree", "add", path, main, timeout=600)
-            if not added.ok:
-                raise FlowError("no-main-worktree", "nie udało się otworzyć gałęzi głównej w worktree: "
-                                + ((added.err or "").splitlines() or ["błąd gita"])[0])
-            main_tree = path
+            # Stare API ma własną jawną zgodę, ale używa tego samego planu zasobów i recovery.
+            if preview is None:
+                preview = self.preview_card_merge(card, {"targetRef": "refs/heads/" + main})
+                if not preview["canMerge"]:
+                    raise FlowError(preview["reason"], preview["message"])
+            main_tree = preview["targetWorktree"]
         try:
             tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
-            prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
-                f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}",
-                abandoned=next((i for i in reversed(list(st.intents.values()))
-                                if i.get("action") == "main-merge" and i["key"] in st.abandoned_main_merges and
-                                i.get("requestSeq") == (st.started or {}).get("seq") and
-                                i.get("targetRef") == f"refs/heads/{main}"), None))
+            if preview is not None and preview.get("targetPreparation", {}).get("createWorktree"):
+                prepared = MergeWorktree.prepare_fresh(self.git, repo, preview, f"Merge card {card} into {main}")
+            else:
+                prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
+                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}",
+                    abandoned=next((i for i in reversed(list(st.intents.values()))
+                                    if i.get("action") == "main-merge" and i["key"] in st.abandoned_main_merges and
+                                    i.get("requestSeq") == (st.started or {}).get("seq") and
+                                    i.get("targetRef") == f"refs/heads/{main}"), None))
         except FlowGitError as exc:
             if preview is not None:
                 raise FlowError("stale-preview", "Stan przygotowania zmienił się. Potwierdź nowy podgląd: " + str(exc)) from None
@@ -4983,7 +5006,7 @@ class FlowEngine(PlanEditing):
         intent = self.journal.append(card, "intent", action="main-merge", key=ident, operationId=ident,
                                      requestSeq=(st.started or {}).get("seq"), baseVersion=st.base_version,
                                      repo=repo, sourceWorktree=info["cardWorktree"],
-                                     **({"previewToken": preview["previewToken"]} if preview is not None else {}), **prepared)
+                                     **({"previewToken": preview["previewToken"]} if not legacy else {}), **prepared)
         self._resume_main_merge(card, intent)
         return {"ok": True, "id": card, "main": main, "already": False}
 
@@ -4993,9 +5016,9 @@ class FlowEngine(PlanEditing):
         stages = {e.get("stage") for e in self.journal.read(card)
                   if e["type"] == "main-merge.checkpoint" and e.get("key") == key}
 
-        def checkpoint(stage):
+        def checkpoint(stage, **data):
             if stage not in stages:
-                self.journal.append(card, "main-merge.checkpoint", key=key, stage=stage)
+                self.journal.append(card, "main-merge.checkpoint", key=key, stage=stage, **data)
                 stages.add(stage)
 
         try:
@@ -5005,8 +5028,18 @@ class FlowEngine(PlanEditing):
                 return
             checkpoint("prepared")
             branch = intent["sourceRef"][len("refs/heads/"):]
+            if self.git.run(intent["repo"], "symbolic-ref", "--quiet", intent["targetRef"]).ok:
+                raise FlowGitError("cel stał się refem symbolicznym — scalenie czeka")
             current = self.git.sha(intent["repo"], intent["targetRef"])
-            if self._result_in_target(intent, current):
+            if intent.get("targetPreparation", {}).get("createRef") and current:
+                owner = "refs/tide/merge-targets/" + key
+                if (self.git.run(intent["repo"], "symbolic-ref", "--quiet", owner).ok or
+                        self.git.sha(intent["repo"], owner) != intent["targetCommitBefore"]):
+                    raise FlowGitError("obcy ref celu — brak dowodu własności operacji")
+            # Przy already == before sam obecny ref nie dowodzi wykonania obiecanego etapu zasobów.
+            needs_worktree = (intent.get("already") and current == intent["targetCommitBefore"] and
+                              intent.get("targetPreparation", {}).get("createWorktree"))
+            if self._result_in_target(intent, current) and not needs_worktree:
                 tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{intent['resultCommit']}^{{tree}}")
                 if not tree.ok or tree.out.strip() != intent["resultTree"]:
                     raise FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
@@ -5027,13 +5060,20 @@ class FlowEngine(PlanEditing):
                     raise FlowGitError(blocks[0][1])
                 if intent.get("previewToken"):
                     blocks = self._merge_target_blocks(
-                        intent["sourceRef"], intent["targetRef"], intent["targetWorktree"],
+                        intent["sourceRef"], intent["targetRef"],
+                        ("" if intent.get("targetPreparation", {}).get("createWorktree") and
+                         not os.path.isdir(intent["targetWorktree"]) else intent["targetWorktree"]),
                         os.path.isdir(intent["targetWorktree"]), self._protected_merge_targets(card, intent["repo"]))
                     if blocks:
                         raise FlowGitError(blocks[0][1])
-                self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
+                if self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"]) != intent["sourceCommit"]:
+                    raise FlowGitError("gałąź karty zmieniła się po przygotowaniu operacji")
+                from .targetprep import provision
+                provision(self.git, intent, self.journal.read(card), checkpoint)
                 worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
                 result = worktree.execute(intent, checkpoint)
+            from .targetprep import release
+            release(self.git, intent)
             if st.merge_waiting:
                 self.journal.append(card, "main-merge.resumed", key=key)
             if ("main-merge", key) not in st.results:

@@ -137,8 +137,10 @@ _Avoid_: domyślna baza historyczna
 
 **Cel scalenia karty**:
 Jawnie wybrana lokalna gałąź (`targetRef`, pełne `refs/heads/…`) i jej bieżący commit (`targetCommit`)
-odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej albo nieznanej użytkownik
-wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
+odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej domyślna jest wyłącznie
+jedna lokalna gałąź śledząca dokładnie ten pełny remote/ref; kilku kandydatów wymaga wyboru.
+Bez kandydata można wybrać utworzenie lokalnego celu od bieżącego SHA zdalnej bazy. Dla bazy nieznanej
+użytkownik wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
 Wybór celu nie zmienia bazy i nie jest zgodą na scalenie. Zgoda dotyczy refu i SHA z aktualnego podglądu.
 Lista celów, podgląd i scalenie używają repozytorium zapisanego przy starcie zlecenia, także po zmianie projektu karty.
 _Avoid_: główna jako nazwa każdego celu, krótka nazwa zdalnej bazy jako domyślny lokalny cel
