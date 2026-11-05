@@ -544,7 +544,10 @@ class LiveTest(unittest.TestCase):
         config = os.path.join(self.tmp, "gitconfig")
         with open(config, "w", encoding="utf-8") as fh:
             fh.write("[user]\n\tname = Tester\n\temail = tester@example.com\n[init]\n\tdefaultBranch = master\n")
-        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1"})
+        # Własny katalog stanu: bez niego monitor czytał i nadpisywał podręczny stan tablicy działającej usługi
+        # (05.11: atrapa K-1 w ~/.local/state/tide/board-derived.json i test zależny od cudzych danych).
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1",
+                                               "XDG_STATE_HOME": os.path.join(self.tmp, "state")})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.repo = os.path.join(self.tmp, "dom")

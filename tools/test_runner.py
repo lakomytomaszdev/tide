@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -108,15 +109,20 @@ def run_module(module, output, root=ROOT):
     started = time.monotonic()
     stem = module.replace("/", "__").removesuffix(".py")
     log, report = output / (stem + ".log"), output / (stem + ".json")
+    # Każdy moduł dostaje własny katalog stanu: test bez izolacji nie czyta ani nie nadpisuje stanu działającej
+    # usługi użytkownika (05.11: test tablicy zapisał atrapę K-1 do ~/.local/state/tide/board-derived.json).
+    state = tempfile.mkdtemp(prefix="tide-test-state-")
+    env = {**os.environ, "XDG_STATE_HOME": state}
     with log.open("w", encoding="utf-8") as stream:
         try:
             proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,
                                    "--worker-report", str(report)], cwd=root, stdout=stream,
-                                  stderr=subprocess.STDOUT)
+                                  stderr=subprocess.STDOUT, env=env)
             returncode = proc.returncode
         except OSError as exc:
             stream.write(f"Nie można uruchomić procesu: {exc}\n")
             returncode = 1
+    shutil.rmtree(state, ignore_errors=True)
     try:
         data = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, ValueError):
