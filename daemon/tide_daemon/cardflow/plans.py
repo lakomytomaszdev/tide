@@ -30,6 +30,16 @@ NUMBERED = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)-[1-9][0-9]*$")
 PLAN_PROJECTS_MAX = PROJECTS_MAX + 1
 
 
+
+def independent_reviewer(author, reviewer) -> bool:
+    """Recenzent niezależny od autora: inny model albo ten sam model z inną siłą myślenia (05.11, decyzja
+    użytkownika: Codex mocny może recenzować Codexa standard — przy kończącym się limicie Claude jedyną inną
+    opcją był drogi Codex Astra)."""
+    if author.model.lower() != reviewer.model.lower():
+        return True
+    return (getattr(author, "effort", "") or "") != (getattr(reviewer, "effort", "") or "")
+
+
 def source_label(info: dict) -> str:
     """Źródło numerów projektu: „lokalny PT” albo „YouTrack APP5”."""
     if info.get("tracker") == "youtrack":

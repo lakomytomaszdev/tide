@@ -187,6 +187,29 @@ class FlowQuotaContractTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card, "step.started"), timeout=20), self.events(card))
         self.wait_column(card, "review", timeout=40)
 
+    def test_waiting_review_can_be_reassigned_to_another_provider(self):
+        # 05.11: okno tygodniowe Claude na 10% — review Opusa czekało do soboty; użytkownik przepina je na Codexa.
+        now = self.flow.engine.clock()
+        metric = {"remaining": 50, "readTs": now, "resetTs": now + 100000}
+        self.flow.engine.limits_source = lambda: {"available": True,
+                                                  "services": {"claude": {"session": metric}}}
+        card = self.card(description="Test.\n\nATRAPA: powoli 2")
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "step.started"), timeout=20))
+        metric["remaining"] = 7
+        self.assertTrue(wait_until(lambda: any(w.get("kind") == "review" for w in self.of(card, "step.waiting")),
+                                   timeout=30), self.events(card))
+        with self.assertRaises(FlowError):
+            self.flow.engine.resolve_step(card, {"choice": "reassign-reviewer", "ticket": "PT-1", "executor": "Nikt"})
+        ticket = self.of(card, "step.started")[0]["ticket"]
+        done = self.flow.engine.resolve_step(card, {"choice": "reassign-reviewer", "ticket": ticket,
+                                                    "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" for s in self.of(card, "step.started")),
+                                   timeout=30), self.events(card))
+        review = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertEqual(review["executor"], "Codex standard")
+
 
 class LimitProjectionTest(unittest.TestCase):
     def test_finished_limit_step_is_actionable_before_automatic_retry(self):

@@ -77,6 +77,7 @@ class FlowState:
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
     reviewer_overrides: dict = field(default_factory=dict)  # ticket → recenzent po ręcznym transferze
+    author_overrides: dict = field(default_factory=dict)  # ticket → autor kolejnych poprawek po przepięciu
     transfer_requests: dict = field(default_factory=dict)  # krok → trwała intencja przekazania
     inputs: dict = field(default_factory=dict)
     waiting: dict = field(default_factory=dict)
@@ -345,6 +346,8 @@ def fold(events: list[dict]) -> FlowState:
             st.assignments[e.get("ticket")] = e
         elif kind == "reviewer.reassigned":
             st.reviewer_overrides[e.get("ticket")] = e
+        elif kind == "author.reassigned":
+            st.author_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
             st.flow_error_action = st.last_failed_action

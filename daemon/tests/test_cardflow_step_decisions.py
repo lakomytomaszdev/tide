@@ -524,6 +524,23 @@ class StepDecisionTest(FlowInProcess):
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
                           ("close", "Sonnet")])
 
+    def test_fix_author_can_be_reassigned_to_another_executor(self):
+        # 05.11: poprawki po review czekały na limit Claude — autor kolejnych poprawek przepięty na Codexa.
+        card_id = self.card(description="Test.\n\nATRAPA: review-requests 1")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" for s in self.of(card_id, "step.started")),
+                                   timeout=20), self.events(card_id))
+        ticket = self.of(card_id, "step.started")[0]["ticket"]
+        with self.assertRaises(Exception):
+            self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket, "executor": "Nikt"})
+        done = self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket,
+                                                       "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "fix" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
+        fix = next(s for s in self.of(card_id, "step.started") if s["kind"] == "fix")
+        self.assertEqual(fix["executor"], "Codex standard")
+
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"stepGuardMinutes": 15, "stepTimeoutMinutes": 0.02, "escalateErrors": False}, fh)

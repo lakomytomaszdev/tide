@@ -2300,7 +2300,7 @@ class FlowEngine(PlanEditing):
                                              probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            if selected.model.lower() == reviewer.model.lower() or selected.local != reviewer.local:
+            if not flow_plans.independent_reviewer(selected, reviewer) or selected.local != reviewer.local:
                 raise FlowError("bad-reviewer", f"{ticket}: recenzent nie spełnia warunku innego modelu")
             slug = slug_from_prompt(row["title"], words=4, length=32)
             branch = f"ticket/{ticket.lower()}-{slug}"
@@ -2568,7 +2568,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
-                                                            "card"}:
+                                                            "card", "ticket"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2577,6 +2577,10 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         if choice in ("transfer", "wait-limit"):
             return self._resolve_transfer(card, st, request)
+        if choice == "reassign-reviewer":
+            return self._reassign_waiting_reviewer(card, st, request)
+        if choice == "reassign-author":
+            return self._reassign_fix_author(card, st, request)
         if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
@@ -2921,6 +2925,48 @@ class FlowEngine(PlanEditing):
                 return candidate
         raise FlowError("no-reviewer", "nie ma dostępnego recenzenta u innego dostawcy")
 
+    def _reassign_waiting_reviewer(self, card: str, st: FlowState, request: dict) -> dict:
+        """Recenzent review, które czeka przed startem (limit dostawcy, kolejka), przepięty na innego wykonawcę
+        (05.11: okno tygodniowe Claude na 10% — recenzje Opusa stały do soboty, użytkownik chciał Codexa).
+        Wybór użytkownika: reguła „inny model niż autor” daje tylko notkę w historii, jak przy przekazaniu."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if ("review" not in {kind for (t, kind) in st.waiting if t == ticket} or
+                any(s.get("ticket") == ticket for s in st.running())):
+            raise FlowError("not-waiting", f"{card}: review ticketu {ticket or '?'} nie czeka na start")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz recenzenta z katalogu wykonawców")
+        try:
+            candidate = execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        source = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket), None)
+        if source is None:
+            raise FlowError("not-waiting", f"{card}: ticket {ticket} nie ma jeszcze kroku")
+        self._save_transfer_reviewer(card, source, candidate)
+        return {"ok": True, "id": card, "ticket": ticket, "reviewer": candidate.name}
+
+    def _reassign_fix_author(self, card: str, st: FlowState, request: dict) -> dict:
+        """Autor kolejnych poprawek ticketu przepięty na innego wykonawcę (05.11: poprawki po review czekały na limit
+        Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if not any(s.get("ticket") == ticket for s in st.steps.values()) or \
+                any(s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix") for s in st.running()):
+            raise FlowError("not-waiting", f"{card}: autor ticketu {ticket or '?'} właśnie pracuje")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz autora z katalogu wykonawców")
+        try:
+            execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        event = self.journal.append(card, "author.reassigned", ticket=ticket, executor=executor)
+        return {"ok": True, "id": card, "ticket": ticket, "executor": executor, "seq": event["seq"]}
+
     def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
         if candidate is None:
             return
@@ -3183,13 +3229,16 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
         round_no = int(review_step.get("round") or 1)
         escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
+        override = st.author_overrides.get(ticket) or {}
+        reassigned = bool(override) and override.get("seq", 0) > author.get("seq", 0)
         try:
-            executor = execution.resolve((review_step.get("executor") if escalate else None) or
+            executor = execution.resolve(override["executor"] if reassigned else
+                                         (review_step.get("executor") if escalate else None) or
                                          author.get("executor") or assigned.get("executor") or "", catalog,
                                          config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if escalate:
+        if escalate or reassigned:
             pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
         elif executor.tool != (author.get("program") or assigned.get("program")) or \
                 executor.model != (author.get("model") or assigned.get("model")) or \
