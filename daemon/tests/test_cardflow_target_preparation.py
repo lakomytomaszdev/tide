@@ -85,6 +85,74 @@ class TargetPreparationTest(DurableMergeFixture, FlowInProcess):
         self.assertTrue(Path(p["targetWorktree"], "result.txt").exists())
         self.assertEqual(git(p["targetWorktree"], "status", "--porcelain"), "")
 
+    def check_already_merged_recovery_after_release(self, boundary):
+        git(self.repo, "branch", "local/contains-card", self.source_commit)
+        p = self.preview("refs/heads/local/contains-card")
+        request = self.consent(p)
+        if boundary == "worktree-unlocked":
+            run = self.flow.engine.git.run
+
+            def crash(cwd, *args, **kwargs):
+                result = run(cwd, *args, **kwargs)
+                if result.ok and args[:2] == ("worktree", "unlock"):
+                    raise PowerLoss()
+                return result
+
+            with mock.patch.object(self.flow.engine.git, "run", crash), self.assertRaises(PowerLoss):
+                self.flow.engine.merge_card(self.card_id, request)
+        else:
+            self.crash_at(request, boundary)
+        intent = self.intent()
+        events = self.events(self.card_id)
+        self.assertTrue(any(e["type"] == "main-merge.checkpoint" and e.get("key") == intent["key"] and
+                            e.get("stage") == "ref-moved" for e in events))
+        self.assertFalse(any(e["type"] in ("card.merged", "card.finished") for e in events))
+        self.assertNotIn("locked", git(self.repo, "worktree", "list", "--porcelain"))
+        # Po zwolnieniu zasobów użytkownik może już pracować w celu; recovery ma tylko dokończyć projekcję.
+        self.write(p["targetWorktree"], "local.txt", "praca po odblokowaniu\n")
+        before_recovery = fingerprint(self.repo)
+        self.restart_stopped()
+        with mock.patch("tide_daemon.cardflow.targetprep.provision", side_effect=AssertionError("ponowne zasoby")), \
+                mock.patch("tide_daemon.cardflow.mergeop.MergeWorktree.execute", side_effect=AssertionError("drugi merge")):
+            result = self.call("merge_card", request)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(self.call("merge_card", {**request, "operationId": intent["key"]}), result)
+        self.assertTrue(result["already"])
+        self.assertEqual(result["operationId"], intent["key"])
+        self.assertEqual(result["targetRef"], p["targetRef"])
+        self.assertEqual(result["resultCommit"], self.source_commit)
+        self.assertEqual(self.sha(p["targetRef"]), self.source_commit)
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(fingerprint(self.repo), before_recovery)
+        events = self.events(self.card_id)
+        for kind, action in (("intent", "main-merge"), ("result", "main-merge"),
+                             ("card.merged", None), ("card.finished", None)):
+            matching = [e for e in events if e["type"] == kind and (action is None or e.get("action") == action)]
+            self.assertEqual(len(matching), 1, (kind, matching))
+            self.assertEqual(matching[0]["operationId"], intent["key"])
+        self.assertEqual(self.store.load().cards[int(self.card_id[2:])].column, "done")
+
+    def test_already_merged_recovery_immediately_after_worktree_unlock(self):
+        self.check_already_merged_recovery_after_release("worktree-unlocked")
+
+    def test_already_merged_recovery_after_result_saved_before_projection(self):
+        self.check_already_merged_recovery_after_release("result-saved")
+
+    def test_already_merged_unlocked_worktree_before_git_completion_is_not_adopted(self):
+        git(self.repo, "branch", "local/contains-card", self.source_commit)
+        p = self.preview("refs/heads/local/contains-card")
+        request = self.consent(p)
+        self.crash_at(request, "target-worktree-created")
+        git(self.repo, "worktree", "unlock", p["targetWorktree"])
+        before = fingerprint(p["targetWorktree"])
+        self.restart_stopped()
+        result = self.call("merge_card", request)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("nie należy", result["message"])
+        self.assertEqual(fingerprint(p["targetWorktree"]), before)
+        self.assertEqual(self.sha(p["targetRef"]), self.source_commit)
+        self.assertFalse(any(e["type"] in ("card.merged", "card.finished") for e in self.events(self.card_id)))
+
     def test_remote_only_menu_preview_cancel_and_merge_use_remote_start(self):
         remote, start = self.remote_base()
         before = fingerprint(self.repo)
