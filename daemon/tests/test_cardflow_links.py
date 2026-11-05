@@ -139,57 +139,135 @@ class LinkIdentityTest(unittest.TestCase):
 
 
 class GatewayTest(unittest.TestCase):
-    def handler(self, path="http://git.example.org/api/v4/projects/1"):
+    def handler(self, path="git.example.org:443"):
         handler = cli._Gateway.__new__(cli._Gateway)
         handler.path = path
         handler.headers = {"Host": "git.example.org", "Authorization": "Bearer FAKE_SECRET"}
-        handler.server = SimpleNamespace(host="git.example.org", path="/api/v4/projects/1", failure="", requested=False,
+        handler.server = SimpleNamespace(host="git.example.org", program="glab", failure="",
                                          streams=set(), stream_lock=threading.Lock(), stopping=False)
         handler.wfile = io.BytesIO()
         handler.send_error, handler.send_response = Mock(), Mock()
         handler.send_header, handler.end_headers = Mock(), Mock()
         return handler
 
-    def test_redirect_any_host_never_causes_second_request_or_returns_location(self):
-        for target in ("https://evil.example/", "http://127.0.0.1/secret", "https://git.example.org/another"):
-            with self.subTest(target=target), patch.object(cli.http.client, "HTTPSConnection") as connection:
-                response = connection.return_value.getresponse.return_value
-                response.status = 302
-                response.getheader.return_value = target
-                handler = self.handler()
-                handler.do_GET()
-                connection.assert_called_once_with("git.example.org", timeout=10)
-                connection.return_value.request.assert_called_once_with(
-                    "GET", "/api/v4/projects/1", headers={"Authorization": "Bearer FAKE_SECRET"})
-                response.read.assert_not_called()
-                self.assertIn("przekierowanie", handler.server.failure)
-                self.assertEqual(handler.wfile.getvalue(), b"")
-                handler.send_header.assert_not_called()
-
-    def test_foreign_host_or_endpoint_and_body_rejected_before_network(self):
-        for path in ("http://evil.example/api/v4/projects/1", "http://git.example.org/api/v4/projects/2",
-                     "http://git.example.org/api/v4/projects/1?token=secret"):
-            with patch.object(cli.http.client, "HTTPSConnection") as connection:
+    def test_foreign_redirect_host_port_and_connect_body_never_open_network(self):
+        for path in ("evil.example:443", "git.example.org:80", "git.example.org:444",
+                     "127.0.0.1:443", "git.example.org.evil:443", "git.example.org:443/secret"):
+            with self.subTest(path=path), patch.object(cli.socket, "create_connection") as connection:
                 handler = self.handler(path)
-                handler.do_GET()
+                handler.do_CONNECT()
                 connection.assert_not_called()
+                handler.send_error.assert_called_once_with(403)
+        for headers in ({"Content-Length": "1"}, {"Transfer-Encoding": "chunked"}):
+            with patch.object(cli.socket, "create_connection") as connection:
+                handler = self.handler()
+                handler.headers.update(headers)
+                handler.do_CONNECT()
+                connection.assert_not_called()
+
+    def test_http_downgrade_is_rejected_without_network(self):
+        with patch.object(cli.socket, "create_connection") as connection:
+            handler = self.handler("http://git.example.org/api/v4/projects/1")
+            handler.do_GET()
+            connection.assert_not_called()
+            handler.send_error.assert_called_once_with(403)
+            self.assertIn("HTTP", handler.server.failure)
+
+    def test_gh_redirects_and_unknown_paths_never_trigger_another_read(self):
+        for status in (200, 302):
+            with self.subTest(status=status), patch.object(cli.http.client, "HTTPSConnection") as connect:
+                handler = self.handler("/api/v3/repos/team/proj/pulls/17")
+                handler.server.program, handler.server.path, handler.server.requested = "gh", handler.path, False
+                response = connect.return_value.getresponse.return_value
+                response.status, response.read.return_value = status, b'{"ok": true}'
+                handler.do_GET()
+                connect.assert_called_once_with("git.example.org", timeout=10)
+                if status == 302:
+                    response.read.assert_not_called()
+                    handler.send_header.assert_not_called()
+                    self.assertIn("przekierowanie", handler.server.failure)
+                else:
+                    response.read.assert_called_once_with(cli.MAX_OUTPUT + 1)
+                handler.path = "http://127.0.0.1/secret"
+                handler.do_GET()
+                self.assertEqual(connect.call_count, 1)
                 handler.send_error.assert_called_with(403)
 
-    def test_gateway_bounds_body_and_keeps_only_authenticated_get(self):
-        with patch.object(cli.http.client, "HTTPSConnection") as connection:
-            response = connection.return_value.getresponse.return_value
+    def test_gh_still_limits_upstream_response_to_one_mib(self):
+        with patch.object(cli.http.client, "HTTPSConnection") as connect:
+            handler = self.handler("/api/v3/repos/team/proj/pulls/17")
+            handler.server.program, handler.server.path, handler.server.requested = "gh", handler.path, False
+            response = connect.return_value.getresponse.return_value
             response.status, response.read.return_value = 200, b"x" * (cli.MAX_OUTPUT + 1)
-            handler = self.handler()
             handler.do_GET()
-            self.assertIn("1 MiB", handler.server.failure)
             response.read.assert_called_once_with(cli.MAX_OUTPUT + 1)
+            self.assertIn("1 MiB", handler.server.failure)
             self.assertEqual(handler.wfile.getvalue(), b"")
+
+    def test_tunnel_bounds_encrypted_transport_without_inspecting_credentials(self):
+        handler = self.handler()
+        handler.connection = Mock()
+        with patch.object(cli.socket, "create_connection") as connect, \
+                patch.object(cli.selectors, "DefaultSelector") as selector:
+            upstream = connect.return_value
+            upstream.recv.return_value = b"x" * 65536
+            selector.return_value.__enter__.return_value.select.return_value = [
+                (SimpleNamespace(fileobj=upstream, data=handler.connection), None)]
+            handler.do_CONNECT()
+            connect.assert_called_once_with(("git.example.org", 443), timeout=10)
+            self.assertEqual(handler.connection.sendall.call_count, 32)
+            self.assertIn("limit", handler.server.failure)
+            self.assertEqual(handler.server.streams, set())
+            upstream.close.assert_called_once()
 
 
 class CliReadTest(unittest.TestCase):
     @contextmanager
     def fake_gateway(self, *args):
-        yield SimpleNamespace(failure=""), "/unused-proxy"
+        yield SimpleNamespace(failure=""), "http://127.0.0.1:1"
+
+    def test_cli_always_uses_https_and_a_valid_proxy_url(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(cli, "host_gateway", self.fake_gateway), \
+                patch.dict(os.environ, GLAB_API_PROTOCOL="http", API_PROTOCOL="http", NO_PROXY="*"), \
+                patch.object(cli.subprocess, "Popen", side_effect=OSError) as process:
+            for program in ("gh", "glab"):
+                with self.subTest(program=program), self.assertRaises(cli.HostingError):
+                    cli.read_json(program, "git.example.org", "endpoint", folder)
+                env = process.call_args.kwargs["env"]
+                self.assertEqual(env["GLAB_API_PROTOCOL"], "https")
+                self.assertEqual(env["API_PROTOCOL"], "https")
+                self.assertEqual(env["NO_PROXY"], "")
+                self.assertEqual(env["GLAB_SKIP_TLS_VERIFY"], "false")
+                self.assertEqual(env["SKIP_TLS_VERIFY"], "false")
+                self.assertTrue(env["HTTPS_PROXY"].startswith("http://"))
+                self.assertNotIn("GH_HTTP_UNIX_SOCKET", env)
+
+    def test_gh_socket_config_links_existing_hosts_without_reading_or_copying_credentials(self):
+        with tempfile.TemporaryDirectory() as source:
+            for config_env in ({"GH_CONFIG_DIR": source}, {"XDG_CONFIG_HOME": source}):
+                with self.subTest(config_env=config_env), cli.cli_environment("gh", "/tmp/api.sock", config_env) as env:
+                    folder = env["GH_CONFIG_DIR"]
+                    hosts = os.path.join(folder, "hosts.yml")
+                    self.assertTrue(os.path.islink(hosts))
+                    expected = source if "GH_CONFIG_DIR" in config_env else os.path.join(source, "gh")
+                    self.assertEqual(os.readlink(hosts), os.path.join(expected, "hosts.yml"))
+                    with open(os.path.join(folder, "config.yml")) as fh:
+                        self.assertEqual(fh.read(), 'http_unix_socket: "/tmp/api.sock"\n')
+                self.assertFalse(os.path.exists(folder))
+
+    def test_success_does_not_kill_reaped_process_group_but_timeout_does(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(cli, "host_gateway", self.fake_gateway):
+            hostingfakes.install(folder, {"responses": {"endpoint": {"ok": True}}})
+            binary = os.path.join(folder, "gh")
+            with patch.object(cli.os, "killpg") as kill:
+                cli.read_json(binary, "github.com", "endpoint", folder)
+                kill.assert_not_called()
+            hostingfakes.install(folder, {"mode": "timeout"})
+            killpg = os.killpg
+            with patch.object(cli.os, "killpg", wraps=killpg) as kill, patch.object(cli, "TIMEOUT", .1):
+                with self.assertRaises(cli.HostingTimeout):
+                    cli.read_json(binary, "github.com", "endpoint", folder)
+                kill.assert_called_once()
 
     def test_real_process_output_errors_timeout_limits_and_missing_cli(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(cli, "host_gateway", self.fake_gateway):
@@ -228,7 +306,7 @@ class GatewayTransportTest(unittest.TestCase):
         except OSError:
             self.skipTest("piaskownica blokuje lokalne gniazda; test wymaga wykonania poza nią")
 
-    def test_both_cli_transports_use_fixed_tls_api_and_stop_foreign_redirects(self):
+    def test_both_cli_transports_reach_only_fixed_https_host(self):
         with tempfile.TemporaryDirectory() as folder:
             hostingfakes.install(folder, {"mode": "transport"})
             with patch.dict(os.environ, PATH=folder + os.pathsep + os.environ.get("PATH", "")):
@@ -237,18 +315,62 @@ class GatewayTransportTest(unittest.TestCase):
                         ("gh", "github.example.org", "github.example.org", "/api/v3/repos/team/proj/pulls/17"),
                         ("glab", "git.example.org", "git.example.org", "/api/v4/projects/team%2Fsub%2Fproj/merge_requests/17")):
                     endpoint = expected_path.removeprefix("/api/v3").removeprefix("/api/v4").lstrip("/")
-                    for status in (200, 302):
-                        with self.subTest(program=program, host=host, status=status), \
-                                patch.object(cli.http.client, "HTTPSConnection") as connection:
-                            response = connection.return_value.getresponse.return_value
-                            response.status = status
-                            response.read.return_value = b'{"ok": true}'
-                            response.getheader.return_value = "http://127.0.0.1/secret"
-                            if status == 200:
-                                self.assertEqual(cli.read_json(program, host, endpoint, folder), {"ok": True})
-                            else:
-                                with self.assertRaisesRegex(cli.HostingError, "przekierowanie"):
-                                    cli.read_json(program, host, endpoint, folder)
-                            connection.assert_called_once_with(expected_host, timeout=10)
-                            connection.return_value.request.assert_called_once_with(
-                                "GET", expected_path, headers={"Authorization": "Bearer FAKE_SECRET"})
+                    if program == "gh":
+                        for status in (200, 302):
+                            with self.subTest(program=program, host=host, status=status), \
+                                    patch.object(cli.http.client, "HTTPSConnection") as connection:
+                                response = connection.return_value.getresponse.return_value
+                                response.status, response.read.return_value = status, b'{"ok": true}'
+                                if status == 200:
+                                    self.assertEqual(cli.read_json(program, host, endpoint, folder), {"ok": True})
+                                else:
+                                    with self.assertRaisesRegex(cli.HostingError, "przekierowanie"):
+                                        cli.read_json(program, host, endpoint, folder)
+                                connection.assert_called_once_with(expected_host, timeout=10)
+                                connection.return_value.request.assert_called_once_with(
+                                    "GET", expected_path, headers={"Authorization": "Bearer FAKE_SECRET"})
+                        continue
+                    client, peer = socket.socketpair()
+                    requests = []
+
+                    def respond():
+                        with peer:
+                            request = bytearray()
+                            while b"\r\n\r\n" not in request:
+                                chunk = peer.recv(65536)
+                                if not chunk:
+                                    return
+                                request.extend(chunk)
+                            requests.append(bytes(request))
+                            peer.sendall(b'HTTP/1.0 200 OK\r\nContent-Length: 12\r\n\r\n{"ok": true}')
+
+                    worker = threading.Thread(target=respond, daemon=True)
+                    worker.start()
+                    with self.subTest(program=program, host=host), \
+                            patch.object(cli.socket, "create_connection", return_value=client) as connection:
+                        self.assertEqual(cli.read_json(program, host, endpoint, folder), {"ok": True})
+                        connection.assert_called_once_with((expected_host, 443), timeout=10)
+                    worker.join(2)
+                    self.assertFalse(worker.is_alive())
+                    self.assertIn(("GET " + expected_path + " HTTP/1.1").encode(), requests[0])
+
+    def test_foreign_connect_or_http_downgrade_never_reaches_upstream(self):
+        import http.client
+        from urllib.parse import urlsplit
+
+        for program in ("glab",):
+            with self.subTest(program=program), cli.host_gateway(program, "git.example.org", "endpoint") as (guard, proxy), \
+                    patch.object(cli.socket, "create_connection") as upstream:
+                url = urlsplit(proxy)
+                # Połączenie z proxy tworzymy ręcznie: mock dotyczy wyłącznie wyjścia bramki.
+                for target, method in (("evil.example:443", "CONNECT"), ("git.example.org:80", "CONNECT"),
+                                       ("http://git.example.org/api/v4/endpoint", "GET")):
+                    sock = socket.socket()
+                    sock.connect((url.hostname, url.port))
+                    conn = http.client.HTTPConnection(url.hostname, url.port)
+                    conn.sock = sock
+                    conn.request(method, target)
+                    self.assertEqual(conn.getresponse().status, 403)
+                    conn.close()
+                upstream.assert_not_called()
+                self.assertTrue(guard.failure)

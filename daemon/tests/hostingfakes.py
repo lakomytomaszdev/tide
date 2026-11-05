@@ -26,18 +26,23 @@ if mode == 'transport':
     from urllib.parse import urlsplit
     host = sys.argv[sys.argv.index('--hostname') + 1]
     endpoint = sys.argv[-1]
-    if os.path.basename(sys.argv[0]) == 'gh':
+    github = os.path.basename(sys.argv[0]) == 'gh'
+    api_host = 'api.github.com' if github and host == 'github.com' else host
+    if github:
+        with open(os.path.join(os.environ['GH_CONFIG_DIR'], 'config.yml')) as f:
+            socket_path = json.loads(f.read().split(': ', 1)[1])
         class UnixHTTP(http.client.HTTPConnection):
             def connect(self):
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.sock.connect(os.environ['GH_HTTP_UNIX_SOCKET'])
-        api_host = 'api.github.com' if host == 'github.com' else host
+                self.sock.connect(socket_path)
         conn = UnixHTTP(api_host)
-        path = ('/' if host == 'github.com' else '/api/v3/') + endpoint
     else:
         proxy = urlsplit(os.environ['GLAB_PROXY'])
         conn = http.client.HTTPConnection(proxy.hostname, proxy.port)
-        path = 'http://' + host + '/api/v4/' + endpoint
+        conn.set_tunnel(scenario.get('connect_host', api_host), scenario.get('connect_port', 443))
+    path = ('/' if host == 'github.com' else '/api/v3/') if github else '/api/v4/'
+    path += endpoint
+    # Atrapa sprawdza ramkowanie CONNECT glab, bez udawania testu TLS prawdziwego CLI.
     conn.request('GET', path, headers={'Authorization': 'Bearer FAKE_SECRET'})
     response = conn.getresponse()
     body = response.read()

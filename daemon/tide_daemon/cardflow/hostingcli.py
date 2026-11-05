@@ -1,7 +1,8 @@
-"""CLI uwierzytelnia odczyt; bramka wykonuje jeden ustalony GET HTTPS bez przekierowań.
+"""CLI uwierzytelnia odczyt HTTPS przez lokalną bramkę.
 
-Poświadczenia z nagłówków istnieją tylko podczas przekazania żądania, nigdy w plikach,
-dzienniku ani wyniku. Nie wywołujemy auth token, nie czytamy konfiguracji logowania.
+gh używa http_unix_socket z konfiguracji, glab jawnego proxy CONNECT do hosta:443.
+Tunel glab nie odszyfrowuje TLS; przekierowania na ten sam host obsługuje CLI.
+Nie wywołujemy auth token, nie czytamy konfiguracji logowania.
 """
 from contextlib import contextmanager
 import http.client
@@ -39,11 +40,53 @@ class _Gateway(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_CONNECT(self):
-        self.send_error(403)
+        # Nie używamy hosta z żądania do zestawienia połączenia.
+        if (self.server.program != "glab" or self.path != self.server.host + ":443" or self.headers.get("Transfer-Encoding") or
+                self.headers.get("Content-Length", "0") != "0"):
+            self.server.failure = "Proxy odrzuciło połączenie poza ustalonym hostem HTTPS."
+            self.send_error(403)
+            return
+        upstream = None
+        try:
+            upstream = socket.create_connection((self.server.host, 443), timeout=TIMEOUT)
+            with self.server.stream_lock:
+                if self.server.stopping:
+                    return
+                self.server.streams.update((upstream, self.connection))
+            self.send_response(200, "Connection established")
+            self.end_headers()
+            self.wfile.flush()
+            # Limit transportu uwzględnia narzut TLS; JSON/stdout/stderr mają osobno 1 MiB.
+            total = 0
+            with selectors.DefaultSelector() as streams:
+                streams.register(self.connection, selectors.EVENT_READ, upstream)
+                streams.register(upstream, selectors.EVENT_READ, self.connection)
+                while not self.server.stopping:
+                    for key, _ in streams.select(0.1):
+                        chunk = key.fileobj.recv(65536)
+                        if not chunk:
+                            return
+                        total += len(chunk)
+                        if total > 2 * MAX_OUTPUT:
+                            self.server.failure = "Transport hostingu przekracza limit 2 MiB TLS."
+                            return
+                        key.data.sendall(chunk)
+        except OSError:
+            # Bez danych wyjątku: mogą zawierać konfigurację sieci użytkownika.
+            return
+        finally:
+            if upstream is not None:
+                with self.server.stream_lock:
+                    self.server.streams.difference_update((upstream, self.connection))
+                upstream.close()
 
     def do_GET(self):
-        # gh używa lokalnego gniazda UNIX; glab jawnego proxy HTTP.
-        # Bramka sama zestawia TLS do ustalonego API, więc CLI nie zobaczy Location.
+        if self.server.program == "gh":
+            return self.github_get()
+        self.server.failure = "Proxy odrzuciło nieszyfrowane żądanie HTTP."
+        self.send_error(403)
+
+    def github_get(self):
         try:
             url = urlsplit(self.path)
             path = url.path + ("?" + url.query if url.query else "")
@@ -54,8 +97,7 @@ class _Gateway(http.server.BaseHTTPRequestHandler):
                 return
             self.server.requested = True
             headers = {k: v for k, v in self.headers.items()
-                       if k.lower() in ("authorization", "private-token", "job-token", "accept", "user-agent",
-                                        "x-github-api-version")}
+                       if k.lower() in ("authorization", "accept", "user-agent", "x-github-api-version")}
             conn = http.client.HTTPSConnection(self.server.host, timeout=TIMEOUT)
             stream = None
             try:
@@ -86,7 +128,6 @@ class _Gateway(http.server.BaseHTTPRequestHandler):
                 conn.close()
         except (OSError, http.client.HTTPException):
             self.send_error(502)
-            return
 
 
 class _Proxy(socketserver.ThreadingTCPServer):
@@ -107,11 +148,12 @@ class _UnixProxy(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 @contextmanager
 def host_gateway(program, host, endpoint):
     api_host = "api.github.com" if program == "gh" and host == "github.com" else host
-    prefix = ("/" if host == "github.com" else "/api/v3/") if program == "gh" else "/api/v4/"
     with tempfile.TemporaryDirectory(prefix="tide-hosting-") as folder:
         address = os.path.join(folder, "api.sock") if program == "gh" else ("127.0.0.1", 0)
         server = (_UnixProxy if program == "gh" else _Proxy)(address, _Gateway)
-        server.host, server.path, server.failure, server.requested = api_host, prefix + endpoint, "", False
+        prefix = ("/" if host == "github.com" else "/api/v3/") if program == "gh" else "/api/v4/"
+        server.host, server.path, server.program = api_host, prefix + endpoint, program
+        server.failure, server.requested = "", False
         server.streams, server.stream_lock, server.stopping = set(), threading.Lock(), False
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         thread.start()
@@ -130,6 +172,22 @@ def host_gateway(program, host, endpoint):
             thread.join()
 
 
+@contextmanager
+def cli_environment(program, proxy, env):
+    if program != "gh":
+        yield env
+        return
+    # gh rozpoznaje klucz konfiguracji, nie GH_HTTP_UNIX_SOCKET. Hosts pozostaje
+    # w istniejącym magazynie; dowiązanie nie odczytuje ani nie kopiuje sekretów.
+    config = env.get("GH_CONFIG_DIR") or os.path.join(
+        env.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "gh")
+    with tempfile.TemporaryDirectory(prefix="tide-gh-") as folder:
+        os.symlink(os.path.abspath(os.path.join(config, "hosts.yml")), os.path.join(folder, "hosts.yml"))
+        with open(os.path.join(folder, "config.yml"), "w", encoding="utf-8") as fh:
+            fh.write("http_unix_socket: " + json.dumps(proxy) + "\n")
+        yield {**env, "GH_CONFIG_DIR": folder}
+
+
 def read_json(program, host, endpoint, cwd, *, deadline=None):
     """Tylko względny, zbudowany przez adapter endpoint. Stderr nigdy nie opuszcza tej funkcji."""
     deadline = min(deadline, time.monotonic() + TIMEOUT) if deadline is not None else time.monotonic() + TIMEOUT
@@ -142,14 +200,16 @@ def read_json(program, host, endpoint, cwd, *, deadline=None):
             env = dict(os.environ)
             for key in ("GH_DEBUG", "DEBUG", "GLAB_DEBUG", "ALL_PROXY", "all_proxy", "GH_HTTP_UNIX_SOCKET"):
                 env.pop(key, None)
-            env.update(HTTPS_PROXY=proxy, https_proxy=proxy, HTTP_PROXY=proxy, http_proxy=proxy,
+            # Awaria obsługi gniazda gh nie może skutkować odczytem bezpośrednim.
+            proxy_url = "http://127.0.0.1:1" if program == "gh" else proxy
+            env.update(HTTPS_PROXY=proxy_url, https_proxy=proxy_url, HTTP_PROXY=proxy_url, http_proxy=proxy_url,
                        NO_PROXY="", no_proxy="", GLAB_PROXY=proxy, GH_PROMPT_DISABLED="1",
                        GLAB_CHECK_UPDATE="false", GH_NO_UPDATE_NOTIFIER="1", GLAB_SEND_TELEMETRY="false",
-                       GITLAB_API_HOST=host, GLAB_API_HOST=host, GLAB_API_PROTOCOL="http", API_PROTOCOL="http")
-            if program == "gh":
-                env["GH_HTTP_UNIX_SOCKET"] = proxy
+                       GITLAB_API_HOST=host, GLAB_API_HOST=host, GLAB_API_PROTOCOL="https", API_PROTOCOL="https",
+                       GLAB_SKIP_TLS_VERIFY="false", SKIP_TLS_VERIFY="false", GLAB_DEBUG_HTTP="false")
             argv = [program, "api", "--hostname", host, "--method", "GET", endpoint]
-            with subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            with cli_environment(program, proxy, env) as env, \
+                    subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as proc:
                 try:
                     output = bytearray()
@@ -189,11 +249,13 @@ def read_json(program, host, endpoint, cwd, *, deadline=None):
                     except (ValueError, UnicodeError, RecursionError):
                         raise HostingError("CLI zwrócił niepoprawny JSON metadanych.") from None
                 finally:
-                    # Cała grupa, również gdy potomek nadal trzyma otwarte stdout/stderr.
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    # Grupa może przetrwać timeout/limit, gdy potomek nadal trzyma strumienie.
+                    # Po sukcesie wait zebrał lidera, więc nie ryzykujemy użycia jego PGID.
+                    if proc.returncode is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                     proc.wait()
     except OSError:
         raise HostingError("Nie można uruchomić CLI hostingu lub tunelu HTTPS. Wybierz bazę lokalnie.") from None

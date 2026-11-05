@@ -1726,6 +1726,8 @@ nie odpytuje hostingu. Adaptery `gh api` i `glab api` korzystają z istniejąceg
 integracji w Tide. Rozpoznają wyłącznie HTTPS `/owner/repo/pull/N` i `/grupa/podgrupa/repo/-/merge_requests/N`
 na hoście i w projekcie zgodnym ze skonfigurowanym remote (SSH/scp/HTTPS oznaczają tę samą tożsamość).
 Userinfo, query, obce projekty/hosty i inne rodzaje URL są odrzucane przed uruchomieniem CLI.
+Aliasy remote przez `url.<base>.insteadOf` nie są rozwijane: np. `gh:team/proj` wymaga remote
+z pełnym adresem SSH/HTTPS, inaczej link dostanie ostrzeżenie o niezgodności z remote.
 Najwyżej 4 różne linki na analizę, wspólny termin 10 sekund dla wszystkich odczytów (także projektów
 źródłowych/docelowych GitLaba) i 1 MiB łącznego stdout/stderr na wywołanie CLI. Po upływie terminu
 wraca dotychczasowy wynik z ostrzeżeniem. Migawka karty, gałęzi i remote powstaje w szeregowym wątku
@@ -1740,11 +1742,18 @@ lokalnej gałęzi z forkiem nie wystarcza. Brak źródła daje niewybieralną po
 Nie wykonuje się fetch. Rozbieżne SHA API i lokalnego refu są widoczne razem; „Użyj stanu lokalnego
 <pełny ref>” przekazuje lokalny SHA do istniejącego wyboru bazy i `StartCard`.
 
-Bramka odczytu wykonuje tylko jeden ustalony GET HTTPS na wywołanie. `gh` łączy się z nią przez własne
-tymczasowe gniazdo UNIX, `glab` przez lokalne proxy HTTP. Bramka nie przekazuje CLI nagłówka Location:
-każde przekierowanie kończy odczyt ostrzeżeniem, również na ten sam host. Połączenie z hostingiem zawsze
-używa TLS z weryfikacją certyfikatu. Poświadczenia są tylko przekazywane w pamięci, nie są odczytywane
-przez `auth token`, zapisywane ani zwracane. Wynik zawiera tylko dozwolone pola metadanych; stderr i surowy
+Bramka `gh` wykonuje jeden ustalony GET HTTPS na wywołanie i odrzuca wszystkie przekierowania.
+CLI używa klucza `http_unix_socket` z tymczasowego `GH_CONFIG_DIR/config.yml`; `hosts.yml` jest wyłącznie
+dowiązaniem do istniejącego pliku konfiguracji użytkownika (bez kopiowania i odczytu sekretów przez Tide).
+Nieobsługiwany transport kończy się błędem przez zastępcze proxy bez dostępu do hostingu.
+`glab` dostaje jawne `GLAB_PROXY` wskazujące lokalne proxy TCP oraz `GLAB_API_PROTOCOL=https`
+i `API_PROTOCOL=https`. Proxy przyjmuje tylko `CONNECT` do ustalonego hosta na porcie 443; odrzuca obcy
+host, inny port i zwykły HTTP bez połączenia wychodzącego. Nie odszyfrowuje TLS ani nie widzi tokena.
+Przekierowanie HTTPS na tym samym hoście może być obsłużone przez `glab` wewnątrz tunelu; przekierowanie
+na obcy host lub HTTP zatrzymuje proxy. TLS weryfikuje CLI (wymuszone `skip_tls_verify=false`).
+Transport ma limit 2 MiB na tunel z narzutem TLS, niezależnie od limitu 1 MiB stdout/stderr i terminu analizy.
+Poświadczenia nie są odczytywane przez `auth token`, zapisywane ani zwracane. Wynik zawiera tylko
+dozwolone pola metadanych; stderr i surowy
 JSON CLI nie trafiają do odpowiedzi ani dziennika. Opis i polecenie służą wyłącznie wyodrębnieniu linków,
 nie są wysyłane do hostingu. Brak CLI, logowania, sieci, PR/MR, błędny JSON, limit lub timeout daje ostrzeżenie;
 ręczny lokalny start pozostaje dostępny. Dla hostów z wymaganym zewnętrznym proxy należy wybrać bazę lokalnie;
