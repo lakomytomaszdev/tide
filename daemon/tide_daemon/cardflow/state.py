@@ -52,6 +52,8 @@ class FlowState:
     initial_base: dict = field(default_factory=dict)
     base_version: int = 0
     base_change: dict = field(default_factory=dict)
+    base_validation_required: bool = False
+    base_generation_wait: dict = field(default_factory=dict)
     base_waits: dict = field(default_factory=dict)
     base_request: dict = field(default_factory=dict)  # decyzja użytkownika niezwiązana z krokiem
     intents: dict = field(default_factory=dict)     # (action, key) → intent
@@ -145,6 +147,8 @@ class FlowState:
 
         Karta przeniesiona ręcznie do Do zrobienia po ostatnim wyniku stoi na Tablicy bez stanu (`derived`), więc
         stare pytanie, błąd, review albo plan nie blokują nowego zlecenia — blokuje tylko to, co naprawdę trwa."""
+        if self.base_validation_required or self.base_generation_wait:
+            return "generacja karty czeka na walidację kontekstu albo odzyskanie zasobów"
         if self.running():
             return "krok tej karty jeszcze trwa"
         if self.open_consoles():
@@ -221,6 +225,8 @@ def fold(events: list[dict]) -> FlowState:
             version = e.get("baseVersion", 0)
             st.base_version = version if type(version) is int and version >= 0 else 0
             st.base_change = {}
+            st.base_validation_required = False
+            st.base_generation_wait = {}
             st.base_request = {}
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
@@ -250,8 +256,20 @@ def fold(events: list[dict]) -> FlowState:
             candidate = _base(e.get("base") or e)
             if (e.get("ok", True) is True and type(previous) is int and type(version) is int
                     and previous == st.base_version and version == previous + 1
-                    and candidate["status"] == "known"):
+                    and candidate["status"] == "known" and _valid_generation(st, e, candidate)):
                 st.base, st.base_version, st.base_change = candidate, version, e
+                st.base_validation_required = e.get("validationRequired") is True
+                st.base_generation_wait = {}
+                if "generation" in e:
+                    # Jeden fold wybiera kompletną mapę. Historyczne step.started pozostają dowodami
+                    # starych procesów; bieżące ścieżki pochodzą wyłącznie z wyników tej generacji.
+                    for row in e["generation"]:
+                        key = (row["action"], row["key"])
+                        st.results[key] = {**st.results[key], "branch": row["branch"],
+                                           "worktree": row["worktree"], "base": row["base"],
+                                           "seq": e["seq"], "existing": False}
+        elif kind == "base-change.waiting":
+            st.base_generation_wait = e
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -465,6 +483,49 @@ def base_of(st: FlowState) -> dict:
     return dict(st.base or _base({}))
 
 
+def _valid_generation(st, event, base):
+    """Nieprawidłowa/częściowa mapa nie zmienia ani bazy, ani jednego ticketu."""
+    if "generation" not in event:
+        return True  # kontrakt historycznych zdarzeń PT-194
+    rows = event["generation"]
+    intent = st.intents.get(("change-base", event.get("operationId"))) or {}
+    if (event.get("validationRequired") is not True or intent.get("generation") != rows or
+            intent.get("requestSeq") != (st.started or {}).get("seq") or
+            intent.get("previousBaseVersion") != st.base_version or
+            intent.get("baseVersion") != event.get("baseVersion") or
+            intent.get("newBase") != {k: base[k] for k in ("baseRef", "baseBranch", "baseCommit")}):
+        return False
+    expected = {key for key, res in st.results.items() if res.get("ok") and
+                key[0] in ("card-branch", "ticket-branch", "review-branch", "step-reopen")}
+    if not isinstance(rows, list) or not rows or not expected:
+        return False
+    mapped = set()
+    resources = {}
+    old_branches = {st.results[k].get("branch") for k in expected}
+    old_paths = {st.results[k].get("worktree") for k in expected}
+    for row in rows:
+        if not isinstance(row, dict) or not all(isinstance(row.get(k), str) and row[k]
+                for k in ("action", "key", "branch", "worktree", "base", "oldBranch", "oldWorktree", "oldCommit")):
+            return False
+        key = (row["action"], row["key"])
+        old = st.results.get(key) or {}
+        if (key in mapped or key not in expected or row["oldBranch"] != old.get("branch") or
+                row["oldWorktree"] != old.get("worktree") or row["oldCommit"] != old.get("base") or
+                row["base"] != base["baseCommit"] or row["branch"] in old_branches or
+                row["worktree"] in old_paths):
+            return False
+        resource = (row["branch"], row["worktree"])
+        source = (row["oldBranch"], row["oldWorktree"])
+        if resource in resources and resources[resource] != source:
+            return False
+        if any(resource != target and (resource[0] == target[0] or resource[1] == target[1] or source == origin)
+               for target, origin in resources.items()):
+            return False
+        resources[resource] = source
+        mapped.add(key)
+    return mapped == expected
+
+
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
     """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
     out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
@@ -543,6 +604,8 @@ def guard_reason(st: FlowState) -> str | None:
     """None = praca lub koniec; napis = nazwany powód czekania; pusty napis = możliwy postój."""
     if not st.started or st.card_finished or st.paused or st.running() or st.open_intents() or st.open_consoles():
         return None
+    if st.base_validation_required or st.base_generation_wait:
+        return "generacja czeka na walidację kontekstu albo odzyskanie zasobów"
     if st.outside_started:
         return None     # trwa polecenie poza piaskownicą — to praca, nie postój (K-31, 03.11: fałszywy alarm)
     waits = card_waits(st)
@@ -658,7 +721,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if st.started is None:
         return None
     column = card.get("column") or "backlog"
-    if column in ("done", "archived") and not (st.merge_waiting and not st.card_finished):
+    if column in ("done", "archived") and not (st.merge_waiting and not st.card_finished) and not (
+            st.base_validation_required or st.base_generation_wait):
         return None
     from .decisions import build_decisions
     decisions = build_decisions(st)
@@ -693,6 +757,10 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                         "waiting": [{"ticket": ticket, "kind": kind, "reason": item["reason"]}
                                     for (ticket, kind), item in st.waiting.items()]})
     out["flow"]["baseDecisionPending"] = bool(pending(st))
+    out["flow"].update(baseValidationRequired=st.base_validation_required,
+                       generation=(st.base_change or {}).get("generation") or [],
+                       generationWaiting=st.base_generation_wait,
+                       preservedGenerations=[i for i in st.intents.values() if i.get("action") == "change-base"])
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -714,6 +782,14 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                              and not other.get("consoleClosed") for other in st.steps.values())}
         for name, item in st.steps.items()
     ]
+    if st.base_validation_required or st.base_generation_wait:
+        if st.started.get("entry") in ("plan", "planning"):
+            _plan_view(st, out)
+        out["flow"]["decisions"] = []
+        for item in out["flow"]["steps"]:
+            item["canEnter"] = item["canTransfer"] = False
+        return _fill(out, "waiting", st.base_generation_wait.get("reason") or
+                     "Nowa generacja czeka na walidację kontekstu (PT-213).")
     if st.merge_waiting:
         return _fill(out, "waiting", "Scalenie czeka: " + st.merge_waiting["reason"])
     plan_entry = st.started.get("entry") in ("plan", "planning")

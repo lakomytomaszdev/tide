@@ -535,6 +535,9 @@ class FlowEngine(PlanEditing):
         busy = set()
         for card in self.journal.cards():
             st = fold(self.journal.read(card))
+            for intent in st.intents.values():
+                if intent.get("action") == "change-base":
+                    busy.update(r[p] for r in intent["generation"] for p in ("worktree", "oldWorktree"))
             busy.update(step["worktree"] for step in st.running() if step.get("worktree"))
             busy.update(step["worktree"] for step in st.steps.values() if step.get("worktree") and
                         step.get("mode") == "interactive" and not step.get("consoleClosed"))
@@ -611,7 +614,7 @@ class FlowEngine(PlanEditing):
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if baseproposal.pending(fold(self.journal.read(card_id))):
+        if baseproposal.blocked(fold(self.journal.read(card_id))):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
@@ -1024,7 +1027,7 @@ class FlowEngine(PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip=""):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
-        if baseproposal.pending(fold(self.journal.read(item.id))):
+        if baseproposal.blocked(fold(self.journal.read(item.id))):
             raise FlowDeferred("decyzja o bazie karty")
         prompt += baseproposal.context(base_of(fold(self.journal.read(item.id))))
         worktree = made["worktree"]
@@ -1274,7 +1277,7 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
         st = fold(self.journal.read(card_id))
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
         if source_step is None or st.card_finished:
@@ -1457,6 +1460,7 @@ class FlowEngine(PlanEditing):
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
+        self._require_base_context(card_id)
         board = self.store.load()
         item = board.cards.get(card_num(card_id))
         project = board.projects.get(item.project) if item else None
@@ -1554,6 +1558,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card_id))
+        self._require_base_context(card_id)
         if st.plan_revision and st.plan_revision.get("pending"):
             return self._approve_revision(card_id, st)
         if st.plan_proposed and not st.plan_reviewed and not st.plan_approved:
@@ -1673,7 +1678,7 @@ class FlowEngine(PlanEditing):
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = fold(self.journal.read(card))
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             raise FlowDeferred("decyzja o bazie karty")
         reason = "karta wstrzymana" if st.paused else self._wait_reason(selected)
         if not reason and selected.local:
@@ -1838,7 +1843,7 @@ class FlowEngine(PlanEditing):
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
         st = fold(self.journal.read(card))
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             raise FlowDeferred("decyzja o bazie karty")
         done = st.results.get((action, key))
         if done is not None:
@@ -1892,6 +1897,8 @@ class FlowEngine(PlanEditing):
     def _complete_manual_finish(self, card: str, column: str) -> bool:
         """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
         st = fold(self.journal.read(card))
+        if baseproposal.generation_blocked(st):
+            return False
         if st.card_finished:
             return True
         for step in st.running():
@@ -1932,9 +1939,16 @@ class FlowEngine(PlanEditing):
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
 
     def tick(self) -> None:
+        from .basegeneration import BaseGeneration
         for card in self.journal.cards():
+            try:
+                BaseGeneration(self).recover(card)
+            except Exception as exc:
+                print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
             self._project_base(card)
-            self._recover_started_steps(card, fold(self.journal.read(card)))
+            current = fold(self.journal.read(card))
+            if not baseproposal.blocked(current):
+                self._recover_started_steps(card, current)
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
                          for s in fold(self.journal.read(card)).running() if s.get("local")}
@@ -1984,7 +1998,7 @@ class FlowEngine(PlanEditing):
         self._busy = tuple(sorted(busy))
 
     def _tick_card(self, card: str, st: FlowState) -> None:
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             for step in st.running():
                 self._poll(card, step)
             self._queue_notices(card)
@@ -2024,7 +2038,7 @@ class FlowEngine(PlanEditing):
             pass
         st = fold(self.journal.read(card))
         for intent in st.open_intents(include_background=True):
-            if baseproposal.pending(st):
+            if baseproposal.blocked(st):
                 break
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
@@ -2042,7 +2056,7 @@ class FlowEngine(PlanEditing):
                 continue
             self._poll(card, step)
         # Zbieramy wyniki procesów, ale nie oceniamy ani nie integrujemy ich w czasie decyzji.
-        if baseproposal.pending(fold(self.journal.read(card))):
+        if baseproposal.blocked(fold(self.journal.read(card))):
             return
         self._advance_user_revision(card, fold(self.journal.read(card)))
         current = fold(self.journal.read(card))
@@ -2215,7 +2229,7 @@ class FlowEngine(PlanEditing):
 
     def _advance(self, card: str, st: FlowState) -> None:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             return
         if st.open_intents():
             return
@@ -2375,7 +2389,7 @@ class FlowEngine(PlanEditing):
 
     def _plan_next(self, card: str, st: FlowState) -> None:
         """Uruchamia gotowe tickety w granicach slotów, po scaleniu wszystkich ich blokerów."""
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             return
         approved = st.plan_approved or {}
         if not approved or st.plan_finished or st.paused or st.open_intents():
@@ -2683,13 +2697,19 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
-                                                            "card", "baseDecision"}:
+                                                            "card", "baseDecision", "baseRef", "baseCommit", "previewId"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
             raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if choice == "change-base":
+            from .basegeneration import BaseGeneration
+            return BaseGeneration(self).resolve(card, request)
+        self._require_base_context(card)
+        if set(request) & {"baseRef", "baseCommit", "previewId"}:
+            raise FlowError("bad-request", "parametry wykonania bazy wymagają choice=change-base")
         if st.base_request and request.get("step") == st.base_request["decision"]:
             if choice != "answer" or request.get("baseDecision") not in ("keep", "change"):
                 raise FlowError("base-decision", "wybierz strukturalnie Zachowaj albo Zmień bazę")
@@ -3182,6 +3202,7 @@ class FlowEngine(PlanEditing):
         if choice not in ("retry", "reject", "accept"):
             raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
         st = fold(self.journal.read(card))
+        self._require_base_context(card)
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
         if step.get("kind") != "review" and choice == "reject":
@@ -3999,7 +4020,7 @@ class FlowEngine(PlanEditing):
         return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
 
     def _merge(self, card: str, st: FlowState, step: dict, retry: bool = False) -> None:
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             return
         ticket = step.get("ticket") or ""
         info = ticket_of(st)
@@ -4539,7 +4560,7 @@ class FlowEngine(PlanEditing):
     def _card_merge_blocks(st: FlowState, *, operation_id: str = "") -> list[tuple[str, str]]:
         """Jedna polityka domknięcia dla podglądu i wykonania rozpoczętej operacji."""
         reasons = []
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             reasons.append(("base-decision", "Najpierw rozstrzygnij pytanie o bazę karty; wyniki pozostają niescalone."))
         if not st.closed:
             reasons.append(("not-closed", "Karta nie ma aktualnego domknięcia."))
@@ -4567,6 +4588,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card))
+        self._require_base_context(card)
         if not st.started or st.card_finished:
             raise FlowError("no-order", "karta nie ma otwartego zlecenia")
         if baseproposal.pending(st):
@@ -4598,6 +4620,11 @@ class FlowEngine(PlanEditing):
                               "processAlive": process, "finished": name in st.finished,
                               "worktree": step.get("worktree") or ""})
         return processes
+
+    def _require_base_context(self, card):
+        st = fold(self.journal.read(card))
+        if baseproposal.generation_blocked(st):
+            raise FlowError("base-validation", "Generacja czeka na odzyskanie lub walidację kontekstu (PT-213).")
 
     def preview_card_base_change(self, card_id: str, request: dict) -> dict:
         """Odcisk całej mapy i dowody kwalifikacji; brak zdarzeń i brak mutacji gita."""
@@ -4739,6 +4766,7 @@ class FlowEngine(PlanEditing):
         repo = self._repo(card)
         with lock_for(repo), self.journal.lock:
             st = fold(self.journal.read(card))
+            self._require_base_context(card)
             intent = self._main_merge_intent(st)
             if (intent and intent.get("previewToken") == request["previewToken"] and
                     intent["targetRef"] == request["targetRef"] and
@@ -4835,7 +4863,7 @@ class FlowEngine(PlanEditing):
 
     def _merge_card_to_main_locked(self, card: str, repo: str, *, preview: dict | None = None) -> dict:
         st = fold(self.journal.read(card))
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         intent = self._main_merge_intent(st)
         if intent and self._abandon_main_merge(card, intent):
@@ -4980,7 +5008,7 @@ class FlowEngine(PlanEditing):
 
     def _advance_close(self, card: str, st: FlowState) -> None:
         """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
-        if baseproposal.pending(st):
+        if baseproposal.blocked(st):
             return
         if (st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or
                 st.moved_to == "todo" or st.open_intents()):

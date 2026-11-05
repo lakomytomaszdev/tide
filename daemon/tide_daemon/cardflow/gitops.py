@@ -436,6 +436,10 @@ class FlowGit:
                 return {"removed": True, "already": True}
             if found.get("branch") != f"refs/heads/{branch}":
                 raise FlowGitError("worktree należy do innej gałęzi — nie usuwam")
+            if any(line == "locked" or line.startswith("locked ") for line in
+                   next(block for block in listed.out.split("\n\n") if
+                        f"worktree {os.path.realpath(path)}" in block.splitlines()).splitlines()):
+                raise FlowGitError("worktree jest zachowany pod blokadą — nie przenoszę ani nie usuwam danych")
             if not sandbox_available():
                 raise FlowGitError("piaskownica gita ticketu jest niedostępna")
             try:

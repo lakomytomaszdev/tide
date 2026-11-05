@@ -49,6 +49,16 @@ def pending(st):
             and name in st.steps and name not in st.superseded and name not in st.step_decisions]
 
 
+def blocked(st):
+    """Jedna zapora kontekstu także dla starych API i recovery zwykłych operacji."""
+    return bool(pending(st) or generation_blocked(st))
+
+
+def generation_blocked(st):
+    return bool(st.base_validation_required or st.base_generation_wait or
+                any(i.get("action") == "change-base" for i in st.open_intents()))
+
+
 def context(base):
     ref, sha = base.get("baseRef") or "unknown", base.get("baseCommit") or "unknown"
     return (f"\nBieżąca baza karty: {ref}\nPrzypięty SHA bazy: {sha}\n"
