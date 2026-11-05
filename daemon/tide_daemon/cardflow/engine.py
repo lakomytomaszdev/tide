@@ -55,9 +55,9 @@ from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
-from .gitops import FlowGit, FlowGitError, worktree_for
+from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
 from .journal import Journal
-from .state import (REASON_LABELS, FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step,
+from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, _epoch)
 from .tracker import TrackerOutbox
 
@@ -89,7 +89,7 @@ HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
 REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode",
-                  "projects")
+                  "projects", "baseRef", "baseCommit")
 # Zatwierdzenie planu z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); do tego czasu odmowa.
 GROUP_APPROVAL = "zatwierdzanie grupy kart — w następnej wersji"
 
@@ -459,6 +459,15 @@ class FlowEngine(PlanEditing):
         flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
                                                         settings["limitThresholdPercent"], pick)
 
+    def card_base(self, card_id: str) -> dict:
+        """Baza migawki niezależna od tego, czy karta ma wyliczany stan przepływu."""
+        st = fold(self.journal.read(card_id))
+        if not st.started:
+            return {}
+        base = base_of(st)
+        return {**{key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")},
+                "baseVersion": st.base_version}
+
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
         out = derived(st, card)
@@ -624,16 +633,40 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
-        try:
-            if not project.youtrack:
-                reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
-        except reservations.ReservationError as exc:
-            raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
-
-        started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
+        slug = slug_from_prompt(card.title, words=4, length=32)
+        previous_branch = ticket_of(st)["cardBranch"]
+        card_branch = previous_branch or f"card/{card.id.lower()}-{slug}"
+        with lock_for(project.repo):
+            # Kolejne zlecenie bez wyboru bazy dziedziczy dziennik, nie dzisiejszą główną.
+            # Legacy unknown może kontynuować pracę na istniejącej gałęzi karty, bez zgadywania bazy.
+            if _resume or (previous_branch and request.get("baseRef") is None):
+                base = base_of(st)
+                if base["status"] != "known":
+                    if not previous_branch or not self.git.sha(project.repo, f"refs/heads/{previous_branch}"):
+                        raise FlowError("no-base", "historyczna baza jest nieznana i nie ma gałęzi karty — "
+                                        "przywróć gałąź karty albo rozpocznij nową kartę z wybraną bazą")
+                if not _resume and request.get("baseCommit") is not None and (
+                        base["status"] != "known" or request["baseCommit"] != base["baseCommit"]):
+                    raise FlowError("base-mismatch", "oczekiwany commit różni się od zapisanej bazy karty")
+            else:
+                try:
+                    base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))
+                except FlowGitError as exc:
+                    raise FlowError("no-base", str(exc)) from None
+                # Wynik card-branch jest wspólny dla kolejnych zleceń. Nie wolno zapisać
+                # nowej bazy, gdy ponownie użyjemy gałęzi utworzonej od innej lub nieznanej bazy.
+                if previous_branch or self.git.sha(project.repo, f"refs/heads/{card_branch}"):
+                    recorded = base_of(st)
+                    if (recorded["status"] != "known" or
+                            any(recorded[key] != base[key] for key in ("baseRef", "baseBranch", "baseCommit"))):
+                        raise FlowError("base-mismatch", "gałąź karty ma inną lub nieznaną bazę — "
+                                        "zmiana bazy wymaga osobnej korekty karty")
+            try:
+                if not project.youtrack:
+                    reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
+            except reservations.ReservationError as exc:
+                raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
+            started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
                                       program=selected.tool, model=selected.model, provider=selected.provider,
                                       executorRouteUrl=selected.route.url if selected.route else "",
                                       executorRouteKind=selected.route.kind if selected.route else "",
@@ -648,7 +681,10 @@ class FlowEngine(PlanEditing):
                                       preferredProvider=preferred or selected.provider, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id, request=request, trackerProject=project.youtrack,
-                                      trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images)
+                                      trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images,
+                                      baseRef=base["baseRef"], baseBranch=base["baseBranch"],
+                                      baseCommit=base["baseCommit"], baseVersion=1)
+        self._project_base(card.id)
         launch = f"launch-{started['seq']}"
         request_key = f"{card.id}:{launch}"
         if project.youtrack:
@@ -663,12 +699,11 @@ class FlowEngine(PlanEditing):
                                  lambda: self._reserve(project.repo, card.title, request_key),
                                  repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
-        slug = slug_from_prompt(card.title, words=4, length=32)
-        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.id.lower()}-{slug}"
         card_worktree = worktree_for(project.repo, card_branch)
         made = self._act(card.id, "card-branch", card_branch,
-                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
-                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
+                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, base["baseCommit"]),
+                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=base["baseCommit"],
+                         baseRef=base["baseRef"], baseBranch=base["baseBranch"])
         ticket_branch = f"ticket/{ticket.lower()}-{slug}"
         ticket_worktree = worktree_for(project.repo, ticket_branch)
         made_ticket = self._act(card.id, "ticket-branch", ticket, lambda: {
@@ -1831,8 +1866,19 @@ class FlowEngine(PlanEditing):
         if claim is not None:
             model_queue.shared().release_step(claim)
 
+    def _project_base(self, card: str) -> None:
+        """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól."""
+        st = fold(self.journal.read(card))
+        if st.started:
+            try:
+                with self.journal.lock:
+                    self.store.project_card_base(card, base_of(st))
+            except Exception as exc:
+                print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
+
     def tick(self) -> None:
         for card in self.journal.cards():
+            self._project_base(card)
             self._recover_started_steps(card, fold(self.journal.read(card)))
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()

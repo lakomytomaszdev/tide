@@ -176,6 +176,24 @@ class FlowGit:
             out["canMerge"] = not out["reason"]
             return out
 
+    def resolve_base(self, repo: str, ref=None, expected=None) -> dict:
+        """Lokalna baza startu; wywołujący trzyma lock_for aż do zapisu card.started."""
+        if ref is not None and (not isinstance(ref, str) or not ref.startswith("refs/heads/")):
+            raise FlowGitError("baza musi być pełnym lokalnym refem refs/heads/…")
+        if ref is None:
+            branch = self.main_branch(repo)
+            if not branch:
+                raise FlowGitError("nie ma gałęzi głównej — wybierz lokalną bazę")
+            ref = f"refs/heads/{branch}"
+        if not self.run(repo, "check-ref-format", ref).ok:
+            raise FlowGitError("niepoprawny lokalny ref bazy")
+        commit = self.sha(repo, ref)
+        if not commit:
+            raise FlowGitError("lokalna gałąź bazy nie istnieje")
+        if expected is not None and (not isinstance(expected, str) or expected != commit):
+            raise FlowGitError("baza zmieniła się — odśwież wybór i uruchom kartę ponownie")
+        return {"baseRef": ref, "baseBranch": ref[len("refs/heads/"):], "baseCommit": commit}
+
     def branch_worktree(self, repo: str, branch: str, path: str, base: str) -> dict:
         """Gałąź `branch` od `base` w worktree `path`; już jest (ta gałąź w tym worktree) — bez zmian."""
         with lock_for(repo):
@@ -198,7 +216,7 @@ class FlowGit:
                 start = self.sha(repo, base)
                 if not start:
                     raise FlowGitError(f"nie ma gałęzi {base}")
-                added = self.run(repo, "worktree", "add", "-b", branch, path, start, timeout=600)
+                added = self.run(repo, "worktree", "add", "--no-track", "-b", branch, path, start, timeout=600)
             if not added.ok:
                 raise FlowGitError("git worktree add: " + (added.err.splitlines() or ["błąd"])[0])
             return {"branch": branch, "worktree": path, "base": self.sha(repo, branch), "existing": False}

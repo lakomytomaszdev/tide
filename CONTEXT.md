@@ -109,6 +109,26 @@ _Avoid_: zależność w tekstach dla użytkownika
 Gałąź, do której trafiają tickety karty po review; do gałęzi głównej przenosi ją tylko użytkownik.
 _Avoid_: gałąź koordynatora, gałąź integracyjna
 
+**Baza karty**:
+Zapisany w dzienniku punkt wyjścia zlecenia: pełny lokalny ref (`baseRef`, `refs/heads/…`), nazwa gałęzi
+(`baseBranch`) i przypięty commit (`baseCommit`, SHA). Ruch lub usunięcie refu nie zmienia zapisanej bazy.
+_Avoid_: bieżący HEAD, dzisiejsza główna jako domysł historycznej bazy
+
+**Pierwotna baza**:
+Opis bazy w chwili startu zlecenia (`initialBase`); późniejsza korekta go nie zmienia.
+_Avoid_: aktualna baza
+
+**Wersja bazy**:
+Nieujemna liczba całkowita `baseVersion` z dziennika, osobna dla każdego zlecenia. Nowy start ma 1;
+historyczny bez zapisanej wersji ma 0. Wyłącznie skuteczne `card.base-changed` zwiększa ją o jeden.
+Wartość 0 nie dowodzi znajomości bazy ani nie uprawnia do korekty.
+_Avoid_: SHA jako wersja, osobne liczniki operacji
+
+**Nieznana baza**:
+Brak wiarygodnego refu lub SHA w dzienniku (`status: unknown`). Nie odgadujemy jej z obecnego gita;
+historyczny zamiar i wynik utworzenia gałęzi muszą dowodzić obu wartości.
+_Avoid_: domyślna baza historyczna
+
 **Domknięcie**:
 Ostatni krok karty: podsumowanie pracy i lista rzeczy do sprawdzenia przez użytkownika.
 _Avoid_: finalizacja, merge

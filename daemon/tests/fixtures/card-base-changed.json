@@ -1,0 +1,13 @@
+[
+  [
+    {"seq": 1, "type": "card.started", "entry": "now"},
+    {"seq": 2, "type": "card.base-changed", "previousBaseVersion": 0, "baseVersion": 1,
+     "base": {"baseRef": "refs/heads/feature/next", "baseBranch": "feature/next", "baseCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "map": {}}
+  ],
+  [
+    {"seq": 1, "type": "card.started", "entry": "now", "baseVersion": 1,
+     "baseRef": "refs/heads/master", "baseBranch": "master", "baseCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    {"seq": 2, "type": "card.base-changed", "previousBaseVersion": 1, "baseVersion": 2,
+     "base": {"baseRef": "refs/heads/feature/next", "baseBranch": "feature/next", "baseCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "map": {}}
+  ]
+]

@@ -1619,6 +1619,50 @@ wraz z wykonawcą.
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+
+**Baza startu „Od razu” (PT-194).** Żądanie może zawierać `baseRef` (wyłącznie pełny lokalny
+`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy
+`FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
+Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
+rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgodny oczekiwany SHA
+odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
+wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
+Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
+Ponowny start wykorzystuje dotychczasową gałąź karty. Bez `baseRef` dziedziczy bazę zapisaną
+w dzienniku, nawet po ruchu lub usunięciu refu; nie rozwiązuje ponownie głównej. Ticket wychodzi
+z aktualnego stanu gałęzi karty, zachowując dotychczasową pracę. Dla legacy z bazą unknown
+start bez wyboru bazy jest dozwolony, jeśli gałąź karty istnieje; baza i `initialBase` pozostają
+unknown, bez zgadywania historycznego SHA. Brak takiej gałęzi daje `no-base` z instrukcją jej
+przywrócenia lub założenia nowej karty z wybraną bazą. Nowe zlecenie ma własne `baseVersion: 1`
+także dla unknown; historyczne zdarzenia i ich wersja 0 pozostają bez zmian.
+Jawny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Sam `baseCommit`
+bez refu musi odpowiadać zapisanemu SHA znanej bazy. Inna lub nieznana baza przy jawnym wyborze
+powoduje `base-mismatch` przed rezerwacją numeru i zapisem zlecenia. Zmiana bazy należy do osobnej korekty.
+
+Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
+`baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
+i `initialBase` o kształcie `{status: "known"|"unknown", baseRef, baseBranch, baseCommit}` oraz
+liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są puste. Model i plik karty
+mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
+UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
+zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+Projekcja nie dopisuje brakujących pustych pól ani nie zmienia plików kart w Gotowych i Archiwum.
+Gdy karta nie ma wyliczanego stanu (np. wróciła ręcznie do Do zrobienia albo jest w Gotowych/Archiwum),
+zachowuje `derived: null`. Jej pola `baseRef`, `baseBranch`, `baseCommit` i `baseVersion` na karcie
+w Snapshot nadal pochodzą z dziennika, niezależnie od powodzenia zapisu projekcji.
+
+Historyczne zlecenie bez wersji zawsze ma `baseVersion: 0`. Znana historyczna baza wymaga zamiaru
+utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing: false`, z tego zlecenia.
+Wynik zastanej gałęzi nie dowodzi SHA pierwotnego startu. Bez dowodu baza jest unknown; nie czytamy
+dzisiejszej głównej i nie dopisujemy pól do starych zdarzeń.
+
+Kontrakt odczytu przyszłej korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
+(ten sam kształt trzech pól), `map` (mapa zasobów korekty), `previousBaseVersion` i
+`baseVersion: previousBaseVersion + 1`. Replay przyjmuje przejście tylko z bieżącej wersji i znaną
+nową bazą; powtórzenie tego samego zdarzenia nie zwiększa licznika. `initialBase` zachowuje start.
+Nowe zlecenie ma własne 1. Podgląd, odmowa, błąd, ruch refu i naprawa projekcji nie zmieniają wersji.
+Tokeny i przyszłe operacje scalenia/korekty korzystają wyłącznie z tego `baseVersion`. Wykonanie
+korekty, mapowanie zasobów oraz testy odmów należą do PT-202; tutaj dostarczono odczyt zdarzenia.
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
 

@@ -567,6 +567,9 @@ class BoardMonitor(QObject):
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
                     derived = self.flow.derived(card)
+                    if derived is None and hasattr(self.flow, "card_base"):
+                        # Ręczna kolumna ma derived: null; jej baza nadal pochodzi z dziennika.
+                        card.update(self.flow.card_base(card.get("id") or ""))
                     if hasattr(self.flow, 'tracker_tickets'):
                         card['flowTickets'] = self.flow.tracker_tickets(card)
                 elif derive is not None:
@@ -580,6 +583,10 @@ class BoardMonitor(QObject):
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
             card["derived"] = derived
+            flow = (derived or {}).get("flow") or {}
+            if "base" in flow:
+                card.update({key: flow["base"][key] for key in ("baseRef", "baseBranch", "baseCommit")})
+                card["baseVersion"] = flow["baseVersion"]
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
         snapshot["cards"] = cards
