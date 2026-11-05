@@ -83,6 +83,7 @@ REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
 OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
 OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
 HANDOFF_DIFF_MAX = 64 * 1024
@@ -313,6 +314,7 @@ class FlowEngine(PlanEditing):
         self.store = store
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
+        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
@@ -4004,8 +4006,9 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
-            if self._outside_busy(card):
+            if self._outside_busy(card) or self._outside_behind(card, name, decision):
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
+            self._outside_waiting.pop(name, None)
             self._start_outside(card, step, done.get("command") or "")
             return None
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
@@ -4270,6 +4273,23 @@ class FlowEngine(PlanEditing):
             return True
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
+
+    def _outside_behind(self, card: str, name: str, decision: dict) -> bool:
+        """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
+        projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
+        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
+        now = time.time()
+        slug = self._project(card)[1].slug
+        previous = self._outside_waiting.get(name)
+        queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
+        self._outside_waiting[name] = (card, slug, queued, now)
+        self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
+        for other, (other_card, other_slug, other_queued, _) in self._outside_waiting.items():
+            if other == name or (other_queued, other) >= (queued, name):
+                continue
+            if other_slug == slug or not self._outside_busy(other_card):
+                return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
+        return False
 
     def _outside_exit(self, card: str, name: str) -> str:
         found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
