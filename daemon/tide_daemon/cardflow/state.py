@@ -87,12 +87,9 @@ class FlowState:
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
-    flow_error: str = ""
-    # Błąd Tide (PT-147): zdarzenie bieżącego `flow.error`, czy utrzymał się w kolejnym przebiegu
-    # (`flow.error-persisted`) i czy ten sam tekst już kiedyś był (`flow_error_texts` od `card.started`).
-    flow_error_event: dict | None = None
-    flow_error_persisted: bool = False
-    flow_error_repeated: bool = False
+    # Błędy Tide (PT-147): etap → {event, persisted, repeated}. Teksty pamiętamy w obrębie etapu,
+    # od `card.started`; równoległe tickety mają niezależne problemy i limity działań opiekuna.
+    flow_errors: dict = field(default_factory=dict)
     flow_error_texts: set = field(default_factory=set)
     last_seq: int = 0
     # Opiekun karty (PT-143): kroki `caretaker` nie są krokami ticketów — osobno od `steps`, żeby żaden wyzwalacz,
@@ -107,6 +104,16 @@ class FlowState:
     # Strażnik kroku opiekuna (PT-158): ostatni stan bazowy `caretaker.guard` i powody wykrytych po drodze zmian.
     caretaker_guards: dict = field(default_factory=dict)      # krok opiekuna → ostatnie caretaker.guard
     caretaker_wrote: dict = field(default_factory=dict)       # krok opiekuna → [powód zmiany]
+
+    @property
+    def flow_error_event(self) -> dict:
+        """Ostatni otwarty błąd do dzisiejszego znacznika karty; opiekun czyta błędy według etapu."""
+        return max((item["event"] for item in self.flow_errors.values()),
+                   key=lambda e: int(e.get("seq") or 0), default={})
+
+    @property
+    def flow_error(self) -> str:
+        return self.flow_error_event.get("error") or ""
 
     def running(self) -> list[dict]:
         return [s for name, s in self.steps.items() if name not in self.finished] + \
@@ -228,6 +235,7 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaking = {}
             st.caretaker_escalations = {}
             st.caretaker_limits = {}
+            st.flow_errors = {}
             st.flow_error_texts = set()
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
@@ -264,6 +272,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "result":
             st.results[(e.get("action"), e.get("key"))] = e
             st.tracker_retries.pop((e.get('action'), e.get('key')), None)
+            if e.get("action") == "plan-commit" and e.get("ok"):
+                st.flow_errors.pop("plan-commit", None)
         elif kind == "card.inputs":
             st.inputs = e
         elif kind == "step.waiting":
@@ -286,8 +296,13 @@ def fold(events: list[dict]) -> FlowState:
             if not (st.plan_approved and e.get("kind") in ("plan-amend", "plan-review", "plan-revise")):
                 st.last_step = e.get("step") or ""
             st.moved_to = ""
-            st.flow_error = ""
-            st.flow_error_event, st.flow_error_persisted, st.flow_error_repeated = None, False, False
+            # Start kroku rozwiązuje błąd jego etapu, nie błędy równoległych ticketów.
+            st.flow_errors.pop("advance", None)
+            if e.get("ticket"):
+                st.flow_errors.pop(f"advance:{e['ticket']}", None)
+                st.flow_errors.pop("plan-next", None)
+            if e.get("kind") == "close":
+                st.flow_errors.pop("close", None)
         elif kind == "step.entered" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
@@ -387,18 +402,20 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "reviewer.reassigned":
             st.reviewer_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
-            st.flow_error = e.get("error") or ""
-            st.flow_error_event, st.flow_error_persisted = e, False
-            st.flow_error_repeated = st.flow_error in st.flow_error_texts
-            st.flow_error_texts.add(st.flow_error)
+            stage, error = e.get("stage") or "advance", e.get("error") or ""
+            st.flow_errors[stage] = {"event": e, "persisted": False,
+                                     "repeated": (stage, error) in st.flow_error_texts}
+            st.flow_error_texts.add((stage, error))
         elif kind == "flow.error-persisted":
-            if st.flow_error and e.get("error") == st.flow_error:
-                st.flow_error_persisted = True
+            item = st.flow_errors.get(e.get("stage") or "advance")
+            if item and e.get("error") == item["event"].get("error"):
+                item["persisted"] = True
         elif kind == "flow.error-cleared":
-            # Udane ponowienie etapu przez opiekuna (PT-147): błąd już nie występuje.
-            if st.flow_error and e.get("error") == st.flow_error:
-                st.flow_error = ""
-                st.flow_error_event, st.flow_error_persisted, st.flow_error_repeated = None, False, False
+            # Stary zapis bez etapu dotyczył jedynego bieżącego błędu.
+            stage = e.get("stage") or st.flow_error_event.get("stage") or "advance"
+            item = st.flow_errors.get(stage)
+            if item and e.get("error") == item["event"].get("error"):
+                st.flow_errors.pop(stage, None)
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.resumed":

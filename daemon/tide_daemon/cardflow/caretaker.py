@@ -41,7 +41,8 @@ Zdarzenia dziennika:
   (`error: "stale"`) — akcja nieaktualna, nic nie wykonano i działanie nie liczy się do limitu.
 - PT-147: `flow.error-persisted` (`{error, stage, step, ticket, since}`, zapis silnika — błąd Tide utrzymał się
   w kolejnym przebiegu), `stage.retry` (`{problem, stage, ticket, caretaker, caretakerStep}` — przebieg etapu akcji
-  `retry-stage`) i `flow.error-cleared` (`{error, caretaker, caretakerStep}` — udane ponowienie zdjęło błąd).
+  `retry-stage`) i `flow.error-cleared` (`{error, stage, caretaker?, caretakerStep?}` — etap już nie ma błędu,
+  w zwykłym przebiegu albo po ponowieniu).
 
 Bez rekursji: krok `caretaker` nie trafia do `st.steps`, więc żaden wyzwalacz go nie widzi (i wyzwalacz `error`
 sprawdza to jeszcze raz wprost).
@@ -184,15 +185,15 @@ def _error_trigger(st) -> list[dict]:
 def _flow_error_trigger(st) -> list[dict]:
     """Wyzwalacz 4 (PT-147): błąd Tide (`flow.error`), który się utrzymał — ten sam tekst w kolejnym przebiegu co
     najmniej 10 s po pierwszym (`flow.error-persisted`, zapisuje silnik) albo powtórzony z tym samym tekstem po
-    zniknięciu (`flow_error_repeated`). Jednorazowy błąd, który w następnym przebiegu już nie wystąpił, nie jest
+    zniknięciu. Obserwacje i powtórzenia dotyczą tego samego etapu. Jednorazowy błąd, który już nie wystąpił, nie jest
     problemem. Bez kroku-sprawcy i bez decyzji: id `flow-error:<etap>` (etap z `flow.error`)."""
-    if not st.flow_error or not (st.flow_error_persisted or st.flow_error_repeated):
-        return []
-    event = st.flow_error_event or {}
-    ticket = event.get("ticket") or ""
-    if ticket and ticket in st.rejected:
-        return []
-    return [{"trigger": "flow-error", "stage": event.get("stage") or "advance", "ticket": ticket}]
+    found = []
+    for stage, item in st.flow_errors.items():
+        event = item["event"]
+        ticket = event.get("ticket") or ""
+        if event.get("error") and (item["persisted"] or item["repeated"]) and ticket not in st.rejected:
+            found.append({"trigger": "flow-error", "stage": stage, "ticket": ticket})
+    return found
 
 
 def _without_caretaker(st):
@@ -267,14 +268,16 @@ def _flow_error_section(problem: dict, st) -> str:
     """Przesłanka błędu Tide (PT-147): tekst błędu, etap, krok i ticket, przy którym wystąpił, podpowiedź Tide,
     ostatnie zdarzenia i otwarte pary. Pełny dziennik karty jest w kontekście (`journal.jsonl`)."""
     from .state import flow_error_hint
-    event = st.flow_error_event or {}
-    how = "utrzymał się w kolejnym przebiegu" if st.flow_error_persisted else "powtórzył się z tym samym tekstem"
+    item = st.flow_errors.get(problem.get("stage")) or {}
+    event = item.get("event") or {}
+    error = event.get("error") or ""
+    how = "utrzymał się w kolejnym przebiegu" if item.get("persisted") else "powtórzył się z tym samym tekstem"
     lines = ["## Problem: błąd Tide (`flow.error`)", "",
-             f"Tekst błędu: {st.flow_error or event.get('error') or '(brak)'}",
+             f"Tekst błędu: {error or '(brak)'}",
              f"Etap: {problem.get('stage') or event.get('stage') or '?'}"
              + (f", krok {event['step']}" if event.get("step") else "")
              + (f", ticket {event['ticket']}" if event.get("ticket") else "") + f"; błąd {how}.",
-             f"Podpowiedź Tide dla użytkownika: {flow_error_hint(st.flow_error)}",
+             f"Podpowiedź Tide dla użytkownika: {flow_error_hint(error)}",
              "Tide ponawia ten etap sam w każdym przebiegu; `retry-stage` ponawia go od razu, raz. Jeśli przyczyna "
              "wymaga ruchu użytkownika (pliki w worktree, brak gałęzi, za duże zmiany), oddaj decyzję (`escalate`) "
              "z diagnozą i rekomendacją."]
@@ -437,7 +440,8 @@ def stale(st, run: dict, events: list) -> str:
       `caretaker` albo problem ma inną decyzję (albo go nie ma),
     - bez decyzji: `problems()` nie zwraca już problemu albo po `watermark` jest zdarzenie spoza opiekuna — w łańcuchu
       problemu `step.started`, `step.retry` albo `step.decision`, w całej karcie wstrzymanie, przeniesienie karty,
-      `plan.returned` albo `plan.edited`. Zdarzenia opiekuna (`caretaker.*`, krok `caretaker`, zapisy jego akcji)
+      `plan.returned` albo `plan.edited`; dla `flow-error` także rozwiązanie jego etapu (`flow.error-cleared`
+      albo udany wynik `plan-commit`), nawet jeśli błąd potem wrócił. Zdarzenia opiekuna (jego kroki i akcje)
       nie czynią działania nieaktualnym."""
     ident = run.get("problem") or ""
     found = next((p for p in problems(st) if p["id"] == ident), None)
@@ -451,10 +455,14 @@ def stale(st, run: dict, events: list) -> str:
             return "decyzja problemu już nie czeka"
         return ""
     watermark = int(run.get("watermark") or 0)
+    stage = ident.split(":", 1)[1] if ident.startswith("flow-error:") else ""
     for event in events:
         if int(event.get("seq") or 0) <= watermark or _own_event(event):
             continue
         kind = event.get("type")
+        if stage and ((kind == "flow.error-cleared" and event.get("stage") == stage) or
+                      (kind == "result" and event.get("ok") and event.get("action") == stage == "plan-commit")):
+            return f"po starcie opiekuna: {kind}"
         if kind in CARD_WIDE or (kind in IN_CHAIN and _in_problem(st, run, event)):
             return f"po starcie opiekuna: {kind}"
     return "problem już nie występuje" if found is None else ""

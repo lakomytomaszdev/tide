@@ -9,10 +9,12 @@ cytuje) albo w sekcji kartki dopisanej w teście. Karta, która stoi, to luka w 
 pierwszym kroku i zegar silnika przesunięty o 3 minuty.
 """
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 from tide_daemon.cardflow import caretaker
+from tide_daemon.cardflow.engine import FlowEngine
 from tide_daemon.cardflow.gitops import FlowGitError
 from tide_daemon.cardflow.state import derived, fold, guard_reason
 
@@ -66,7 +68,7 @@ class FlowErrorTriggerTest(unittest.TestCase):
 
     def test_same_text_repeated_after_it_disappeared_is_a_problem(self):
         flow_error(self.j)
-        self.j.step("K-1-PT-8-1", ticket="PT-8")          # krok rusza: błąd znika
+        self.j.step("K-1-PT-7-2", ticket="PT-7")          # krok tego etapu rusza: błąd znika
         self.assertEqual(ids(self.j), [])
         flow_error(self.j)
         self.assertEqual(ids(self.j), [FLOW_PROBLEM])
@@ -277,6 +279,145 @@ class ViewAndBriefTest(unittest.TestCase):
         self.assertEqual(caretaker.history_text({**base, "ok": True}), "Opiekun: ponowił etap „advance:PT-7”")
         self.assertEqual(caretaker.history_text({**base, "ok": False, "error": "stage-failed: FlowGitError: x"}),
                          "Opiekun: nie udało się (ponowienie etapu) — stage-failed: FlowGitError: x")
+
+
+class StageObservationTest(unittest.TestCase):
+    """Rzeczywiste przejścia silnika z dziennikiem w pamięci, bez procesów i piaskownicy gita."""
+
+    def setUp(self):
+        self.j = Journal()
+        self.engine = FlowEngine.__new__(FlowEngine)
+        self.engine.journal = SimpleNamespace(read=lambda card: self.j.events,
+                                             append=lambda card, kind, **fields: self.j.add(kind, **fields))
+        self.engine.clock = mock.Mock(return_value=100.0)
+        self.engine.git = mock.Mock()
+        self.engine.git.commit_plan.return_value = {"commit": "abc"}
+        for name in ("_advance", "_plan_next", "_advance_close", "_guard_watched", "_guard_freeze",
+                     "_guard_check", "_guard_rebase", "_guard_thaw", "_caretaker_launch"):
+            setattr(self.engine, name, mock.Mock())
+        self.engine._repo = mock.Mock(return_value="/r")
+        self.engine._plan_files = mock.Mock(return_value={})
+        self.engine._card_column = mock.Mock(return_value="todo")
+
+    def observe(self, ticket, error=None):
+        self.engine._flow_error("K-1", {"error": error or f"FlowGitError: brak {ticket}",
+                                       "stage": f"advance:{ticket}", "ticket": ticket})
+
+    def failing_pair(self, same_text=False):
+        for now in (100.0, 111.0):
+            self.engine.clock.return_value = now
+            for ticket in ("PT-7", "PT-8"):
+                self.observe(ticket, "OSError: Permission denied" if same_text else None)
+
+    def test_parallel_errors_are_independent_even_with_the_same_text(self):
+        for same_text in (False, True):
+            with self.subTest(same_text=same_text):
+                self.j = Journal()
+                self.failing_pair(same_text)
+                self.assertEqual(set(ids(self.j)), {FLOW_PROBLEM, "flow-error:advance:PT-8"})
+                errors = [e for e in self.j.events if e["type"] == "flow.error"]
+                markers = [e for e in self.j.events if e["type"] == "flow.error-persisted"]
+                self.assertEqual(len(errors), 2, "deduplikacja w obrębie etapu")
+                self.assertEqual({e["stage"] for e in markers}, {"advance:PT-7", "advance:PT-8"})
+
+    def test_identical_text_at_another_stage_does_not_borrow_persistence_or_repetition(self):
+        self.observe("PT-7", "OSError: Permission denied")
+        self.engine.clock.return_value = 111.0
+        self.observe("PT-8", "OSError: Permission denied")
+        self.assertEqual(ids(self.j), [], "każdy etap potrzebuje własnej drugiej obserwacji")
+        self.engine.clock.return_value = 122.0
+        self.observe("PT-8", "OSError: Permission denied")
+        self.assertEqual(ids(self.j), ["flow-error:advance:PT-8"])
+
+    def test_two_actual_stage_failures_persist_across_engine_passes(self):
+        for ticket in ("PT-7", "PT-8"):
+            done_step(self.j, name=f"K-1-{ticket}-1", ticket=ticket)
+        self.engine._advance.side_effect = FlowGitError("ten sam błąd przygotowania review")
+        for now in (100.0, 111.0):
+            self.engine.clock.return_value = now
+            found = self.engine._advance_card("K-1")
+            self.assertEqual({e["stage"] for e in found}, {"advance:PT-7", "advance:PT-8"})
+            for item in found:
+                self.engine._flow_error("K-1", item)
+        self.assertEqual(set(ids(self.j)), {FLOW_PROBLEM, "flow-error:advance:PT-8"})
+
+    def test_resolved_stage_without_a_new_step_invalidates_action_even_if_the_error_recurs(self):
+        done_step(self.j)
+        self.observe("PT-7")
+        self.engine.clock.return_value = 111.0
+        self.observe("PT-7")
+        run = care(self.j, FLOW_PROBLEM, "flow-error", ticket="PT-7")
+        self.assertEqual(self.engine._advance_card("K-1"), [])
+        self.assertEqual(ids(self.j), [])
+        self.observe("PT-7")
+        self.assertEqual(ids(self.j), [FLOW_PROBLEM], "nawrót w obrębie tego samego etapu")
+        self.assertEqual(caretaker.stale(self.j.st, run, self.j.events),
+                         "po starcie opiekuna: flow.error-cleared")
+
+    def test_retry_of_a_does_not_take_the_failure_of_b_or_clear_it(self):
+        for ticket in ("PT-7", "PT-8"):
+            done_step(self.j, name=f"K-1-{ticket}-1", ticket=ticket)
+        self.failing_pair()
+        run = care(self.j, FLOW_PROBLEM, "flow-error", ticket="PT-7")
+
+        def advance(card, st):
+            if st.steps[st.last_step]["ticket"] == "PT-8":
+                raise FlowGitError("brak PT-8")
+
+        self.engine._advance.side_effect = advance
+        self.engine._caretaker_act("K-1", run, "retry-stage", {})
+        [action] = [e for e in self.j.events if e["type"] == caretaker.ACTION]
+        self.assertTrue(action["ok"], action)
+        self.assertEqual(ids(self.j), ["flow-error:advance:PT-8"])
+        self.assertEqual(caretaker.owned(self.j.st, FLOW_PROBLEM)["count"], 1)
+
+    def test_escalating_b_does_not_hide_a(self):
+        self.failing_pair()
+        care(self.j, "flow-error:advance:PT-8", "flow-error", ticket="PT-8")
+        self.j.add(caretaker.ESCALATED, problem="flow-error:advance:PT-8", step="K-1-care-1", ticket="PT-8")
+        self.engine._caretake("K-1", self.j.st)
+        [call] = self.engine._caretaker_launch.call_args_list
+        self.assertEqual(call.args[2]["problem"], FLOW_PROBLEM)
+
+    def test_brief_uses_its_stage_error_instead_of_the_last_error(self):
+        self.failing_pair()
+        problem = next(p for p in caretaker.problems(self.j.st) if p["id"] == FLOW_PROBLEM)
+        text = caretaker.brief(problem, self.j.st, card="K-1", out_dir="/o", worktree="/w")
+        self.assertIn("Tekst błędu: FlowGitError: brak PT-7", text)
+        self.assertIn("ticket PT-7; błąd utrzymał się", text)
+
+    def test_successful_normal_plan_commit_makes_late_retry_stale_without_spending_limit(self):
+        self.j.add("result", action="card-branch", key="K-1", ok=True, branch="card/k-1", worktree="/w")
+        self.j.add("plan.approved", rows=[])
+        self.engine.git.commit_plan.side_effect = FlowGitError("chwilowy błąd commita")
+        for now in (100.0, 111.0):
+            self.engine.clock.return_value = now
+            for found in self.engine._advance_card("K-1"):
+                self.engine._flow_error("K-1", found)
+        [problem] = caretaker.problems(self.j.st)
+        self.assertEqual(problem["id"], "flow-error:plan-commit")
+        run = care(self.j, problem["id"], "flow-error")
+        self.engine.git.commit_plan.side_effect = None
+        self.assertEqual(self.engine._advance_card("K-1"), [])
+        self.assertFalse(any(e["type"] == "step.started" for e in self.j.events))
+        done = self.j.add("step.finished", step=run["step"], result="done",
+                          outcome={"ok": True, "action": "retry-stage", "params": {}})
+        self.engine._caretaker_apply("K-1", self.j.st, run, done)
+        [action] = [e for e in self.j.events if e["type"] == caretaker.ACTION]
+        self.assertEqual((action["ok"], action["error"], action["stale"]), (False, "stale", True))
+        self.assertFalse(any(e["type"] == caretaker.STAGE_RETRY for e in self.j.events))
+        self.assertEqual(caretaker.owned(self.j.st, problem["id"])["count"], 0)
+        self.assertEqual(ids(self.j), [])
+
+    def test_resolving_one_ticket_does_not_clear_another_ticket_error(self):
+        self.failing_pair(same_text=True)
+        self.j.step("K-1-PT-8-2", ticket="PT-8")
+        self.assertEqual(ids(self.j), [FLOW_PROBLEM])
+
+    def test_clearing_one_stage_with_identical_text_leaves_the_other(self):
+        self.failing_pair(same_text=True)
+        self.j.add("flow.error-cleared", stage="advance:PT-8", error="OSError: Permission denied")
+        self.assertEqual(ids(self.j), [FLOW_PROBLEM])
 
 
 class StageEngineTest(FlowInProcess):

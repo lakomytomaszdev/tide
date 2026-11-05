@@ -1816,16 +1816,19 @@ odrzucenia ticketu; bez `login`, limitu dostawcy i winy `user`. Id: `error:<korz
 Dwa wyzwalacze bez kroku-sprawcy i bez decyzji (`caretaker.started` z pustym `target` i `decision`):
 
 - **`flow-error`** (wyzwalacz 4) — błąd Tide (`flow.error`), który się utrzymał. Silnik zapisuje błędy jednego
-  przebiegu przez `FlowEngine._flow_error`: `flow.error` raz dla tego samego tekstu, teraz z polami `stage`, `step`,
+  przebiegu przez `FlowEngine._flow_error`: `flow.error` raz dla tego samego etapu i tekstu, z polami `stage`, `step`,
   `ticket` i `at` (zegar silnika); ten sam tekst w kolejnym przebiegu co najmniej 10 s po pierwszym
   (`FLOW_ERROR_PERSIST`) dopisuje jeden `flow.error-persisted` (`error`, `stage`, `since` — `seq` pierwszego).
   Problemem jest też błąd powtórzony z tym samym tekstem po zniknięciu (nowy `flow.error` z tekstem, który już był od
-  `card.started`). Jednorazowy błąd, który w następnym przebiegu nie wystąpił, problemem nie jest. Etap (`stage`):
+  `card.started` w tym samym etapie). Obserwacje, utrzymanie i powtórzenia są liczone osobno dla każdego etapu:
+  równoległe błędy A/B są dwoma problemami, także przy identycznym tekście; eskalacja B nie ukrywa A.
+  Jednorazowy błąd, który w następnym przebiegu nie wystąpił, problemem nie jest. Etap (`stage`):
   `advance:<ticket>` — dalszy etap ticketu po jego ostatnim kroku, `plan-next` — start kolejnego ticketu planu,
   `advance` — pierwszy krok, `close` — domknięcie karty, `plan-commit` — commit planu. Id:
   `flow-error:<etap>` (np. `flow-error:advance:PT-7`); opiekun pracuje w worktree ticketu z `flow.error`, a bez
-  ticketu — w katalogu karty. Błąd znika, gdy rusza krok (`step.started`, jak dotąd) albo udane ponowienie etapu
-  zapisze `flow.error-cleared`.
+  ticketu — w katalogu karty. Błąd znika, gdy rusza krok jego etapu (`step.started`) albo etap wykona się bez błędu
+  w zwykłym przebiegu lub po ponowieniu (`flow.error-cleared` z `stage`; udany `result` akcji `plan-commit`
+  zdejmuje błąd commita bez startu kroku). Rozwiązanie jednego etapu nie zdejmuje błędów innych ticketów.
 - **`stalled`** (wyzwalacz 5) — karta stoi (`card.stalled`: 3 minuty bez kroku, akcji i nazwanego powodu czekania)
   i nadal nie ma nazwanego powodu (`guard_reason` liczony bez pracy opiekuna: jego kroku, czekania na slot i par
   „zamiar → wynik”). Limit, slot dostawcy, wstrzymanie, decyzja, plan do zatwierdzenia, trwający krok albo zaczęta
@@ -1891,12 +1894,11 @@ nieaktualność): `apply` → `_CaretakerPort.retry_stage` → `FlowEngine._retr
 `_tick_card` przechodzi etapy w każdym przebiegu (ostatnie kroki ticketów, kolejny ticket planu, domknięcie karty,
 commit planu), z własną parą akcji opiekuna wyłączoną z „zaczętych akcji karty”. Wynik:
 
-- błąd Tide w tym przebiegu — nieudane działanie `stage-failed` z tekstem błędu (błąd zapisuje zwykły
-  `_flow_error`; ten sam tekst nie daje nowego zdarzenia),
+- błąd Tide ponawianego etapu (przy `stalled`: dowolnego etapu) — nieudane działanie `stage-failed` z tekstem
+  błędu (błąd zapisuje zwykły `_flow_error`; ten sam etap i tekst nie daje nowego zdarzenia),
 - przebieg bez żadnego zdarzenia poza pracą opiekuna — nieudane działanie `stage-no-change`,
 - udany przebieg — `caretaker.action` z `ok: true` i `label` etapu („Opiekun: ponowił etap „advance:PT-7””); przy
-  `flow-error`, którego błąd nadal jest zapisany, także `flow.error-cleared`, żeby rozwiązany problem nie uruchamiał
-  kolejnych kroków opiekuna,
+  `flow-error` rozwiązanie etapu zdejmuje jego błąd tak samo jak zwykły przebieg; błędy innych etapów pozostają,
 - `stage.retry` tego kroku opiekuna już jest (restart między zamiarem a wynikiem) — `stage-interrupted` bez drugiego
   przebiegu: etap ponawia się dokładnie raz, a dalej i tak ponawia go zwykły przebieg.
 
@@ -1904,7 +1906,9 @@ Nieudane działania liczą się do limitu: problem `flow-error`/`stalled` ma id 
 samego etapu to ten sam problem; po trzech działaniach `caretaker.escalated` z `limit: true` i kolejny opiekun nie
 startuje. Nieaktualność — reguła bez decyzji (niżej): problem zniknął (błąd zniknął, karta ruszyła) albo po
 `watermark` jest `step.started`, `step.retry` albo `step.decision` w tickecie problemu (bez ticketu — w karcie)
-albo zdarzenie karty z listy; wtedy `caretaker.action` z `ok: false, error: "stale"`, bez `stage.retry`.
+albo zdarzenie karty z listy. Rozwiązanie danego etapu po `watermark` (`flow.error-cleared` lub udany wynik
+`plan-commit`) też unieważnia akcję, nawet jeśli błąd potem wrócił; wtedy `caretaker.action` ma
+`ok: false, error: "stale"`, bez `stage.retry` i bez zwiększenia licznika działań.
 
 ### Ponowienie, limit i nieaktualne akcje (PT-150)
 
