@@ -61,6 +61,7 @@ class World:
         with open(config, "w", encoding="utf-8") as fh:
             fh.write("[user]\n\tname = Tester\n\temail = tester@example.com\n[init]\n\tdefaultBranch = master\n")
         patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1",
+                                               "XDG_CONFIG_HOME": os.path.join(self.tmp, "config"),
                                                "TIDE_BOARD_DIR": os.path.join(self.tmp, "ws", "tide-board")})
         patcher.start()
         case.addCleanup(patcher.stop)
@@ -430,7 +431,8 @@ class StickyMonitorTest(unittest.TestCase):
         monitor = self.start()
         wait_until(lambda: False, timeout=0.5)
         self.assertEqual(self.file_session(), "claude:recznie")
-        self.assertEqual(git(w.store.root, "rev-parse", "HEAD").strip(), head, "bez commita")
+        self.assertEqual(git(w.store.root, "rev-parse", "HEAD").strip(), head,
+                         "bez commita: " + git(w.store.root, "show", "--stat", "--oneline", "HEAD"))
         self.assertIsNotNone(monitor)
 
     def test_link_session_store_method(self):
