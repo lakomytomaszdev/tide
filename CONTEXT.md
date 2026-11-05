@@ -124,6 +124,12 @@ istniejącego refu; nie zmienia domyślnej głównej ani utrwalonej bazy wznowie
 Opis bazy w chwili startu zlecenia (`initialBase`); późniejsza korekta go nie zmienia.
 _Avoid_: aktualna baza
 
+**Ostatnie cele scalenia repozytorium**:
+Do 10 różnych istniejących lokalnych pełnych refów od najnowszego `card.merged` lub starego
+`card.main-merged` ze znanym celem. Projekcja dzienników Tablicy jest wspólna dla worktrees jednego
+repozytorium. Skrót otwiera podgląd z bieżącym SHA i tymi samymi ograniczeniami co lista celów;
+nie zastępuje bazy jako domyślnego celu ani nie daje zgody na scalenie.
+
 **Wersja bazy**:
 Nieujemna liczba całkowita `baseVersion` z dziennika, osobna dla każdego zlecenia. Nowy start ma 1;
 historyczny bez zapisanej wersji ma 0. Wyłącznie skuteczne `card.base-changed` zwiększa ją o jeden.

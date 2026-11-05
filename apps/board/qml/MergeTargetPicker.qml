@@ -36,6 +36,10 @@ QQC2.Popup {
             baseRef: menu.baseRef
             purpose: "merge"
             onRequested: text => menu.requested(text)
+            onShortcutChosen: target => {
+                menu.close()
+                menu.previewRequested(target)
+            }
         }
         Tide.TextButton {
             objectName: "mergeTargetPreview"

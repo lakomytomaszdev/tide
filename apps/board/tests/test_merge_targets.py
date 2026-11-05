@@ -17,6 +17,56 @@ class MergeTargetViewTest(ProbeCase):
                 phase["state"] = "you"
         return data
 
+    def test_recent_shortcuts_order_dedup_blocked_and_explicit_preview_keep_default(self):
+        name = "feature/<b>" + "long-target/" * 5 + "end"
+        out = self.probe(STATE_PY + FIND_PY + "\nlong_name = " + repr(name) + r'''
+click(card("K-8"))
+out["default"] = obj("fullMergeMain").property("text")
+def branch(name, selectable=True):
+    return {"ref": "refs/heads/" + name, "name": name, "commit": "a" * 40, "kind": "local",
+            "selectable": selectable, "reason": "Cel należy do innej karty" if not selectable else ""}
+base, main, blocked, recent, manual = [branch("feature/base"), branch("master"), branch("card/other", False),
+                                       branch(long_name), branch("manual")]
+backend.branch_replies.append({"ok": True, "branches": [base, main, blocked, recent, manual],
+                              "mainRef": main["ref"], "recentTargets": [main, base, blocked, recent],
+                              "warnings": [], "hasMore": False})
+click(named("fullMergeChoose"))
+assert until(lambda: not obj("mergeBranchPicker").property("loading"))
+engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
+out["shortcuts"] = js("targetPicker.mergeShortcuts.map(b => b.ref)")
+out["searchResults"] = js("targetPicker.searchBranches.map(b => b.ref)")
+out["unselected"] = obj("mergeTargetPreview").property("enabled")
+out["positions"] = [js(FIND + "(targetPicker, 'mergeTargetShortcut0').mapToItem(targetPicker, 0, 0).y"),
+                    js(FIND + "(targetPicker, 'mergeTargetSearch').mapToItem(targetPicker, 0, 0).y")]
+click(at(FIND + "(targetPicker, 'mergeTargetShortcut2')"))
+out["blocked"] = [obj("mergeTargetPreview").property("enabled"), calls()]
+out["rendered"] = js("(function () { const row = " + FIND + "(targetPicker, 'mergeTargetShortcut3'); "
+                     "return [row.children[0].text, row.children[0].textFormat, row.children[0].truncated] })()")
+replies.append({"ok": True, "canMerge": True, "targetRef": recent["ref"],
+                "targetBranch": long_name, "targetCommit": "a" * 40, "previewToken": "recent-token"})
+click(at(FIND + "(targetPicker, 'mergeTargetShortcut3')"))
+assert until(lambda: not obj("mergePreview").property("busy"))
+out["menuClosed"] = not obj("mergeTargetMenu").property("visible")
+out["confirmation"] = obj("mergePreviewConfirm").property("text")
+out["calls"] = calls()
+click(named("mergePreviewClose"))
+out["defaultAfter"] = obj("fullMergeMain").property("text")
+''', self.closed({"status": "known", "baseRef": "refs/heads/feature/base"}))
+        self.assertEqual(out["shortcuts"], ["refs/heads/feature/base", "refs/heads/master",
+                                            "refs/heads/card/other", "refs/heads/" + name])
+        self.assertEqual(out["searchResults"], ["refs/heads/manual"])
+        self.assertLess(*out["positions"])
+        self.assertFalse(out["unselected"])
+        self.assertEqual(out["blocked"], [False, []])
+        self.assertEqual(out["rendered"], ["Ostatni cel · refs/heads/" + name, 0, False])
+        self.assertTrue(out["menuClosed"])
+        self.assertEqual(out["confirmation"], "Scal do " + name)
+        self.assertEqual(len(out["calls"]), 1)
+        self.assertEqual(out["calls"][0][:2], ["PreviewCardMerge", "K-8"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/" + name})
+        self.assertEqual(out["defaultAfter"], "Scal do feature/base")
+        self.assertEqual(out["default"], out["defaultAfter"])
+
     def test_local_base_default_menu_search_keyboard_long_name_and_explicit_preview(self):
         name = "feature/<b>" + "very-long-name/" * 14 + "target"
         data = self.closed({"status": "known", "baseRef": "refs/heads/feature/base"})
@@ -34,7 +84,7 @@ assert until(lambda: not obj("mergeBranchPicker").property("loading"))
 out["menu"] = obj("mergeTargetMenu").property("visible")
 out["unselected"] = obj("mergeTargetPreview").property("enabled")
 engine.rootContext().setContextProperty("targetPicker", obj("mergeBranchPicker"))
-click(at(FIND + "(targetPicker, 'mergeTargetResult2')"))
+click(at(FIND + "(targetPicker, 'mergeTargetResult0')"))
 out["excluded"] = obj("mergeTargetPreview").property("enabled")
 backend.branch_replies.extend([{**listing, "branches": [branch("feature/first"), branch(long_name)], "hasMore": False}] * len("feature"))
 click(named("mergeTargetSearch"))

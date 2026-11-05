@@ -12,6 +12,19 @@ ColumnLayout {
     property string contextKey: ""
     property var branches: []
     property var recentBases: []
+    property var recentTargets: []
+    readonly property var mergeShortcuts: {
+        if (purpose !== "merge") return []
+        const all = branches.concat(recentTargets)
+        const ordered = [all.find(b => b.ref === baseRef), all.find(b => b.ref === mainRef)].concat(recentTargets)
+        const seen = new Set()
+        return ordered.filter(b => {
+            if (!b || seen.has(b.ref)) return false
+            seen.add(b.ref)
+            return true
+        })
+    }
+    readonly property var searchBranches: branches.filter(b => !mergeShortcuts.some(s => s.ref === b.ref))
     property var selected: null
     property var pinned: null
     property var initialSelection: null
@@ -23,6 +36,7 @@ ColumnLayout {
     property bool loading: false
     property int currentIndex: 0
     signal requested(string text)
+    signal shortcutChosen(var target)
     readonly property bool ready: active && selected !== null && !loading && message === ""
 
     function reset() {
@@ -30,6 +44,7 @@ ColumnLayout {
         refreshRef = ""
         branches = []
         recentBases = []
+        recentTargets = []
         selected = pinned || initialSelection
         mainRef = ""
         message = ""
@@ -46,6 +61,7 @@ ColumnLayout {
         status.text = ""
         branches = []
         recentBases = []
+        recentTargets = []
         if (purpose === "merge") selected = null
         requested(search.text)
     }
@@ -60,6 +76,7 @@ ColumnLayout {
         }
         branches = reply.branches || []
         recentBases = purpose === "base" ? reply.recentBases || [] : []
+        recentTargets = purpose === "merge" ? reply.recentTargets || [] : []
         mainRef = reply.mainRef || ""
         if (refreshRef) {
             selected = branches.find(b => b.ref === refreshRef && b.selectable) || null
@@ -79,7 +96,7 @@ ColumnLayout {
                     + (branches.length === 0 ? " Brak pasujących gałęzi." : "")
     }
     function choose(index) {
-        const item = branches[index]
+        const item = searchBranches[index]
         if (item && item.selectable) selected = item
     }
     onActiveChanged: reset()
@@ -112,6 +129,61 @@ ColumnLayout {
         font.family: Tide.Theme.uiFamily
         font.pixelSize: 12
     }
+    FieldLabel {
+        visible: picker.active && picker.mergeShortcuts.length > 0
+        text: "Skróty celów repozytorium"
+    }
+    QQC2.ScrollView {
+        Layout.fillWidth: true
+        Layout.preferredHeight: Math.min(targetShortcuts.implicitHeight, 200)
+        visible: picker.active && picker.mergeShortcuts.length > 0
+        contentWidth: availableWidth
+        clip: true
+        ColumnLayout {
+            id: targetShortcuts
+            width: parent.width
+            Repeater {
+                model: picker.mergeShortcuts
+                delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+                    objectName: "mergeTargetShortcut" + index
+                    Layout.fillWidth: true
+                    implicitHeight: targetName.implicitHeight + 16
+                    color: Tide.Tokens.backgroundCard
+                    radius: Tide.Tokens.radiusTile
+                    activeFocusOnTab: true
+                    signal clicked()
+                    onClicked: {
+                        if (!modelData.selectable || picker.loading) return
+                        picker.selected = modelData
+                        picker.shortcutChosen(modelData)
+                    }
+                    Accessible.role: Accessible.Button
+                    Accessible.name: targetName.text
+                    Accessible.onPressAction: clicked()
+                    Keys.onReturnPressed: clicked()
+                    Keys.onSpacePressed: clicked()
+                    Text {
+                        id: targetName
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.margins: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: (modelData.ref === picker.baseRef ? "Baza karty · "
+                               : modelData.ref === picker.mainRef ? "Główna · " : "Ostatni cel · ")
+                              + modelData.ref + (modelData.selectable ? "" : " — " + modelData.reason)
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WrapAnywhere
+                        color: modelData.selectable ? Tide.Tokens.textPrimary : Tide.Tokens.textMuted
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 12
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: parent.clicked() }
+                }
+            }
+        }
+    }
     RowLayout {
         Layout.fillWidth: true
         visible: !picker.pinned
@@ -123,7 +195,7 @@ ColumnLayout {
             placeholder: "Szukaj po dowolnym fragmencie nazwy…"
             onEdited: picker.refresh()
             onAccepted: picker.choose(picker.currentIndex)
-            Keys.onDownPressed: picker.currentIndex = Math.min(picker.branches.length - 1, picker.currentIndex + 1)
+            Keys.onDownPressed: picker.currentIndex = Math.min(picker.searchBranches.length - 1, picker.currentIndex + 1)
             Keys.onUpPressed: picker.currentIndex = Math.max(0, picker.currentIndex - 1)
         }
         PillButton {
@@ -184,7 +256,7 @@ ColumnLayout {
     QQC2.ScrollView {
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(results.implicitHeight, 160)
-        visible: picker.active && picker.branches.length > 0
+        visible: picker.active && picker.searchBranches.length > 0
         contentWidth: availableWidth
         clip: true
         ColumnLayout {
@@ -193,7 +265,7 @@ ColumnLayout {
             spacing: 2
             Repeater {
                 id: resultRepeater
-                model: picker.branches
+                model: picker.searchBranches
                 delegate: Rectangle {
                     required property var modelData
                     required property int index
@@ -208,7 +280,7 @@ ColumnLayout {
                     Accessible.onPressAction: picker.choose(index)
                     Keys.onReturnPressed: picker.choose(index)
                     Keys.onSpacePressed: picker.choose(index)
-                    Keys.onDownPressed: { picker.currentIndex = Math.min(picker.branches.length - 1, index + 1); resultRepeater.itemAt(picker.currentIndex).forceActiveFocus() }
+                    Keys.onDownPressed: { picker.currentIndex = Math.min(picker.searchBranches.length - 1, index + 1); resultRepeater.itemAt(picker.currentIndex).forceActiveFocus() }
                     Keys.onUpPressed: { picker.currentIndex = Math.max(0, index - 1); resultRepeater.itemAt(picker.currentIndex).forceActiveFocus() }
                     Text {
                         id: branchName

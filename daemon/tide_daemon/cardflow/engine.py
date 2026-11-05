@@ -4513,7 +4513,8 @@ class FlowEngine(PlanEditing):
             if not repo or project.repo_missing or not os.path.isdir(repo):
                 raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
         try:
-            result = self.git.list_branches(repo, text, limit if request["purpose"] == "base" else 2**31,
+            result = self.git.list_branches(repo, text if request["purpose"] == "base" else "",
+                                            limit if request["purpose"] == "base" else 2**31,
                                             request["purpose"])
             if request["purpose"] == "merge":
                 protected = self._protected_merge_targets(card_id, repo)
@@ -4524,6 +4525,11 @@ class FlowEngine(PlanEditing):
                     blocks = self._merge_target_blocks(source_ref, item["ref"], path,
                                                        bool(path) and os.path.isdir(path), protected)
                     item.update(selectable=not blocks, reason=blocks[0][1] if blocks else "")
+                try:
+                    result["recentTargets"] = self._recent_targets(repo, result["branches"])
+                except Exception:
+                    result["warnings"].append("Nie można odczytać ostatnich celów. Wybierz cel z listy.")
+                result["branches"] = [b for b in result["branches"] if text.casefold() in b["ref"].casefold()]
                 base = base_of(st)
                 base_ref = base["baseRef"] if base["status"] == "known" else ""
                 result["branches"].sort(key=lambda b: (b["ref"] != base_ref, b["ref"] != result["mainRef"]))
@@ -4583,6 +4589,45 @@ class FlowEngine(PlanEditing):
         if not exists:
             reasons.append(("no-target-worktree", "Cel nie ma checkoutu. Przygotowanie celu wymaga osobnej zgody i obsługi."))
         return reasons
+
+    def _recent_targets(self, repo: str, branches: list[dict]) -> list[dict]:
+        """Historia ukończonych scaleń; kwalifikacja i dzisiejszy SHA pochodzą ze wspólnej listy."""
+        key = self.git.repository_key(repo)
+        identities = {os.path.realpath(repo): key}
+        choices = []
+        for card in self.journal.cards():
+            events = self.journal.read(card)
+            for index, event in enumerate(events):
+                if event.get("type") not in ("card.merged", "card.main-merged"):
+                    continue
+                state = fold(events[:index + 1])
+                merged = state.merged or {}
+                # Mieszane dzienniki mogą powtarzać wynik jednej operacji.
+                if merged.get("seq") != event.get("seq"):
+                    continue
+                ref = merged.get("targetRef") or ""
+                source = (state.started or {}).get("repo")
+                if not source or not ref.startswith("refs/heads/"):
+                    continue
+                source = os.path.realpath(source)
+                if source not in identities:
+                    try:
+                        identities[source] = self.git.repository_key(source)
+                    except FlowGitError:
+                        identities[source] = ""
+                if identities[source] == key:
+                    choices.append((datetime.fromisoformat(merged["ts"]).timestamp(), card,
+                                    merged.get("seq", 0), ref))
+        available = {b["ref"]: b for b in branches}
+        seen, recent = set(), []
+        for _, _, _, ref in sorted(choices, reverse=True):
+            if ref in seen or ref not in available:
+                continue
+            seen.add(ref)
+            recent.append(dict(available[ref]))
+            if len(recent) == 10:
+                break
+        return recent
 
     def _recent_bases(self, repo: str) -> list[dict]:
         """Skróty są projekcją udanych zdarzeń, wspólną dla worktrees rzeczywistego repozytorium."""

@@ -142,6 +142,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
   base obejmuje lokalne refs/heads i znane refs/remotes (bez symbolicznych); merge tylko refs/heads.
   recentBases: do 10 różnych istniejących pełnych refów z udanych startów/korekt w dziennikach Tablicy,
   wspólnych dla worktrees repozytorium; skrót zawiera aktualny SHA i wymaga jawnego wyboru.
+  recentTargets (merge): do 10 różnych istniejących lokalnych pełnych refów od najnowszego card.merged
+  lub card.main-merged ze znanym main, wspólnych dla worktrees repozytorium, z tym samym selectable/reason.
   Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
 - SuggestCardBase(s id, s json) -> s  {text, revision: int, scope: text|files|links}; opis czytany z karty.
   Odczyt bez zapisu. Tylko scope=links odpytuje hosting na żądanie. Odpowiedź: ok, revision, card, project, repo, candidates, warnings.

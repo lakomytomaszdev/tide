@@ -950,7 +950,15 @@ korzysta z `ListCardBranches(purpose=merge)`: wyłącznie pełne lokalne refy, b
 i nazwaną główną na początku pasujących wyników. Wyszukiwanie obejmuje cały zbiór przed limitem
 50 (maks. 100); `hasMore` oznacza konieczność zawężenia. Lista współdzieli z podglądem kontrolę
 gałęzi karty, chronionych refów/worktrees innych kart i braku checkoutu (`selectable: false`, `reason`).
-Ocena kolizji treści pozostaje w podglądzie. `recentTargets` jest puste do PT-214.
+Ocena kolizji treści pozostaje w podglądzie.
+PT-214: `recentTargets` zwraca do 10 różnych istniejących lokalnych pełnych refów, od najnowszego
+udanego `card.merged` lub starego `card.main-merged` ze znanym `main`. Nieznany cel nie jest zgadywany.
+Lista jest odtwarzana z dzienników Tablicy po restarcie, wspólna dla worktrees rzeczywistego repozytorium
+i odseparowana od innych repozytoriów; bez nowego magazynu. Usunięty ref znika ze skrótów, a historia
+pozostaje. Skróty mają aktualny SHA oraz te same `selectable` i `reason` co wyniki wyszukiwania;
+nie zależą od filtra i limitu wyników. Błąd historii daje ostrzeżenie i pozostawia ręczne wyszukiwanie.
+Menu pokazuje bazę, nazwaną główną, ostatnie cele i wyszukiwarkę, bez powtarzania refów. Kliknięcie
+skrótu otwiera jedynie podgląd, nie zmienia bazy ani domyślnego celu i nie daje zgody na scalenie.
 Dla bazy zdalnej i nieznanej nie ma automatycznego lokalnego celu; główna jest propozycją wymagającą
 wyboru. Wybór zmienia jedynie kontekst podglądu, bez zapisu bazy ani zgody. Zmiana projektu lub
 repozytorium karty zamyka wybór i podgląd oraz odrzuca ich spóźnione odpowiedzi.
@@ -1694,7 +1702,8 @@ wraz z wykonawcą.
 `commit` jest pełnym SHA, `reason` zawiera powód ewentualnej odmowy. Filtr `text` dopasowuje dowolny
 fragment bez rozróżniania wielkości liter. `mainRef` jest pełnym refem według wspólnej polityki
 głównej lub pustym napisem z ostrzeżeniem. Główna jest pierwsza, jeśli pasuje do filtra.
-`recentBases` i `recentTargets` są obecnie puste. `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
+`recentBases` zawiera skróty udanych startów i korekt, a `recentTargets` dla celu merge — udanych scaleń
+(opis PT-214 powyżej). `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
 Okno startu pozwala wybrać bazę w „Od razu”, „Mam plan” i Planowaniu, wysyła pełny ref i SHA z wyniku listy oraz osobną
 nazwę nowej gałęzi karty `cardBranch`. Niepoprawna lub zajęta nazwa jest odrzucana. Brak pola zachowuje
 automatyczną nazwę starszych klientów. Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują
