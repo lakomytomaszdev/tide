@@ -1180,9 +1180,13 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
-                          "preferredProvider": "anthropic", "images": [], "projects": []})
+                          "preferredProvider": "anthropic", "images": [], "projects": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
+        self.assertEqual(json.loads(out["calls2"][0][2]), json.loads(out["calls1"][2][2]),
+                         "ponowienie zachowuje pełny ref, SHA i nazwę gałęzi karty")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("ruszyło w Konsoli", out["toast"][0])
