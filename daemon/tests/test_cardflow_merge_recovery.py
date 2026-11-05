@@ -128,7 +128,8 @@ class DurableMergeFixture:
         self.assertEqual(Path(intent["targetWorktree"], "result.txt").read_text(), "wynik karty\n")
         self.assertEqual(self.store.load().cards[int(self.card_id[2:])].column, "done")
         self.assertEqual(self.shown(self.card_id)["boardColumn"], "done")
-        self.assertEqual(git(intent["targetWorktree"], "write-tree").strip(), intent["resultTree"])
+        self.assertEqual(git(intent["targetWorktree"], "write-tree").strip(),
+                         intent.get("resultIndexTree", intent["resultTree"]))
 
 class DurableMergeTest(DurableMergeFixture, FlowInProcess):
     def test_intent_before_any_mutation_and_public_retry_after_restart(self):
@@ -618,14 +619,13 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(Path(self.repo, "local.txt").read_text(), "nowa praca staged\n")
         self.assertEqual(self.sha(self.target), self.before)
 
-    def test_initial_staged_work_is_refused_without_expanding_supported_scope(self):
+    def test_initial_unrelated_staged_work_is_preserved(self):
         self.write(self.repo, "local.txt", "wcześniejsza praca staged\n")
         git(self.repo, "add", "local.txt")
-        index = git(self.repo, "write-tree")
-        self.assertFalse(self.merge()["ok"])
-        self.assertEqual(git(self.repo, "write-tree"), index)
-        self.assertEqual(self.sha(self.target), self.before)
-        self.assertFalse(any(e.get("action") == "main-merge" for e in self.flow.engine.journal.read(self.card_id)))
+        self.assertTrue(self.merge()["ok"])
+        self.assert_success()
+        self.assertEqual(git(self.repo, "show", ":local.txt"), "wcześniejsza praca staged\n")
+        self.assertEqual(git(self.repo, "show", "HEAD:local.txt"), "baza lokalnej pracy\n")
 
     def test_source_change_during_recovery_does_not_merge_another_commit(self):
         self.crash_after("intent", action="main-merge")

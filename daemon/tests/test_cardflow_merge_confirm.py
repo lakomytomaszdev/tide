@@ -193,11 +193,11 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertTrue(r["ok"], r)
         self.assert_success()
 
-    def test_staged_and_local_collision_are_refused_without_intent(self):
+    def test_unrelated_staged_is_allowed_but_local_collision_is_refused_without_intent(self):
         self.write(self.repo, "notes.txt", "staged\n")
         git(self.repo, "add", "notes.txt")
         p = self.preview()
-        self.assert_refused(self.request(p), "staged-not-supported")
+        self.assertTrue(p["canMerge"], p)
         self.write(self.repo, "result.txt", "kolizja\n")
         p = self.preview()
         self.assertIn("local-collision", [r["reason"] for r in p["blockedReasons"]])

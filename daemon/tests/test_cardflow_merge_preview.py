@@ -93,7 +93,7 @@ class PreviewScenarios:
         self.assertFalse(r["canMerge"], r)
         self.assertFalse(r["readyToMerge"])
         self.assertEqual(r["localCollisionCount"], 0)
-        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"source-dirty", "staged-not-supported"})
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"source-dirty"})
         self.assertTrue(r["previewToken"])
         self.assertTrue(r["warnings"])
         self.assertEqual((r["sourceRef"], r["sourceCommit"], r["targetRef"], r["targetCommit"]),
@@ -209,23 +209,22 @@ class PreviewScenarios:
         self.assertEqual(r["localCollisionCount"], 0)
         self.assertFalse(r["readyToMerge"])
 
-    def test_unrelated_staged_is_a_temporary_refusal_not_a_collision(self):
+    def test_unrelated_staged_is_allowed_without_a_collision(self):
         self.source_change("added.txt")
         self.write(self.repo, "conflict.txt", "indeks\n")
         git(self.repo, "add", "conflict.txt")
         r = self.preview()
-        self.assertFalse(r["canMerge"])
-        self.assertEqual(r["reason"], "staged-not-supported")
+        self.assertTrue(r["canMerge"], r)
+        self.assertEqual(r["reason"], "")
         self.assertEqual(r["localCollisionCount"], 0)
-        self.assertIn("PT-207", r["message"])
 
-    def test_unrelated_staged_refusal_is_kept_alongside_unstaged_collision(self):
+    def test_unrelated_staged_does_not_hide_unstaged_collision(self):
         self.source_change()
         self.write(self.repo, "note.txt", "indeks\n")
         git(self.repo, "add", "note.txt")
         self.write(self.repo, "conflict.txt", "praca\n")
         r = self.preview()
-        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"local-collision", "staged-not-supported"})
+        self.assertEqual({b["reason"] for b in r["blockedReasons"]}, {"local-collision"})
         self.assertEqual(r["localCollisions"]["staged"], [])
         self.assertEqual(r["localCollisionCount"], 1)
 
