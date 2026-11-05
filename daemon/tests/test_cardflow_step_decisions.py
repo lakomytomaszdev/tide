@@ -330,7 +330,7 @@ class StepDecisionTest(FlowInProcess):
                 # Pierwsze odmowy same uruchamiają kolejną próbę. Decyzję użytkownika
                 # sprawdzamy dopiero po wyczerpaniu limitu, nie w przejściowej kolumnie.
                 self.assertTrue(wait_until(lambda: len([e for e in self.of(card_id, "step.finished")
-                                                        if e.get("result") == "denied"]) > self.engine.AUTO_DENY_LIMIT,
+                                                        if e.get("result") == "denied"]) > self.flow.engine.AUTO_DENY_LIMIT,
                                            timeout=20), self.events(card_id))
                 card = self.wait_column(card_id, "waiting")
                 self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
