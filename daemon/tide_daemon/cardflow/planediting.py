@@ -252,7 +252,11 @@ class PlanEditing:
             raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
         return feedback
 
-    def edit_plan(self, card, request):
+    def edit_plan(self, card, request, *, caretaker_problem="", caretaker_step="", caretaker_from=""):
+        """Zmiany planu z okna (EditCardPlan). `caretaker_*` — odesłanie planu przez akcję `return-plan` opiekuna
+        (PT-146, tylko z silnika, nie z D-Bus): ta sama walidacja i te same zapisy, `plan.returned` dostaje pola
+        `caretaker`/`caretakerStep`/`caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
+        (`_advance_user_revision`), poza parą „zamiar → wynik” akcji opiekuna."""
         from .engine import FlowError
         if request.get("action") == "return":
             self._returned_feedback(request)
@@ -311,6 +315,11 @@ class PlanEditing:
             baseline = (st.plan_approved or proposal)["rows"]
             # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
             baseline = [{**r, "workId": r.get("id") or r["workId"]} for r in baseline]
+            if caretaker_problem:
+                self.journal.append(card, "plan.returned", feedback=feedback, baseline=baseline,
+                                    caretaker=caretaker_problem, caretakerStep=caretaker_step,
+                                    caretakerFrom=caretaker_from)
+                return {"ok": True, "id": card}
             self.journal.append(card, "plan.returned", feedback=feedback, baseline=baseline)
             self._advance_user_revision(card, fold(self.journal.read(card)))
             return {"ok": True, "id": card}

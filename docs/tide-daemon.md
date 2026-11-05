@@ -1953,6 +1953,64 @@ albo zdarzenie karty z listy. Rozwiązanie danego etapu po `watermark` (`flow.er
 `plan-commit`) też unieważnia akcję, nawet jeśli błąd potem wrócił; wtedy `caretaker.action` ma
 `ok: false, error: "stale"`, bez `stage.retry` i bez zwiększenia licznika działań.
 
+#### `return-plan` (PT-146)
+
+Odsyła plan planującemu z uwagą opiekuna; dozwolona tylko przy wyzwalaczu `plan-fix` (patrz „Odesłanie planu”).
+Pola: `feedback` (wymagane, 1–4000 znaków — wiersz planu, bloker i błąd standardu planu 1.2; prośbę „odrocz tę
+uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły rozpoznawania odroczeń), `findings`
+(opcjonalne, numery uwag ostatniego review od 1, po przecinku) i `reason` (wymagane, 1–600, do historii).
+
+### Odesłanie planu (PT-146)
+
+**Wyzwalacz 3** (`caretaker._plan_fix_trigger`, id problemu `plan-fix:<korzeń łańcucha kroków poprawy>`):
+
+- `plan.revision-failed` — krok `plan-amend` zakończył się, ale poprawiony plan nie przeszedł sprawdzenia formatu.
+  Problem ma decyzję `plan-revision-failed:<seq>`, którą `build_decisions` ukrywa na czas pracy opiekuna (jak decyzję
+  kroku); po jego wyniku decyzja wraca z `caretaker{summary, recommendation, tried[]}` (`annotate(st, plan, target)`),
+- druga nieudana poprawa formatu planu (`plan-fix`, runda ≥ 2, `plan.checked` z `valid: false`, brak propozycji):
+  problem bez decyzji; `retry` opiekuna na kroku `plan-fix` (`problem_steps` dopuszcza krok zakończony `done`, raz)
+  daje kolejny krok poprawy z instrukcją — `_planning_result` wznawia go przez `_caretaker_resume`. Gdy opiekun
+  odda problem (`escalate`, nieudany wynik albo limit działań), `build_decisions` pokazuje decyzję `plan-fix-failed`
+  (`decisions._plan_fix_decisions`) z `caretaker{summary, recommendation, tried[]}`, błędami formatu w `technical`
+  i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
+  z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
+  pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
+
+Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3), a lukę
+w zatwierdzonym, działającym planie obsługuje #13. Opiekun nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
+akcji (`approve-plan` to `bad-caretaker-action`), a `return-plan` nie woła `approve_plan`.
+
+**Akcja.** `_CaretakerPort.return_plan` woła istniejące `FlowEngine.edit_plan` z `action: return` (ta sama walidacja,
+idempotencja i ochrona ticketów, które ruszyły; `no-plan` przy braku propozycji). Parametry `caretaker_problem`,
+`caretaker_step` i `caretaker_from` są tylko po stronie silnika (nie ma ich w D-Bus): `plan.returned` dostaje
+`caretaker`, `caretakerStep` i `caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
+(`_advance_user_revision`), z uwagą opiekuna dosłownie w kartce („Uwagi: …”). Numer w `findings` spoza listy uwag
+review (`caretaker.review_items`, numeracja od 1 — ta sama w kartce i w `plan-fix/review-findings.md`) to nieudane
+działanie `bad-findings` z powodem; tak samo traktowane są znaki, których nie można odczytać jako indeks
+(np. `²`), bez pozostawienia otwartego zamiaru akcji. Wynik w `caretaker.action` (`ok: false`) liczy się do limitu.
+Powtórka po restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` nie powstaje).
+
+**Limit.** Każde działanie (udane i nieudane) liczy się do limitu z #8 (`ACTION_LIMIT`). Żeby kolejne odesłania nie
+zaczynały limitu od zera, `plan-amend` po odesłaniu opiekuna dziedziczy łańcuch nieudanej poprawki
+(`caretaker.chain_root` → `caretakerFrom`), a zakończony `done` krok poprawy planu nie zamyka problemu. Problem zamyka
+dopiero decyzja użytkownika: odesłanie planu bez pola `caretaker` lub odrzucenie poprawki (`plan.revision-discarded`)
+przez `FlowState.plan_user_seq`, a także jawne ponowienie kroku z tego łańcucha (`step.retry` z `user: true`, bez
+`caretaker`). Po ponowieniu użytkownika kolejne odrzucenie formatu ponownie uruchamia opiekuna z nowym limitem
+działań; numery jego kroków pozostają ciągłe. Po limicie decyzja wraca do użytkownika ze streszczeniem.
+
+**Nieaktualność.** Odesłanie albo edycja planu przez użytkownika w czasie pracy opiekuna kończy jego akcję jako
+`stale` (`plan.returned` bez `caretaker`, `plan.ticket-edited`, `plan.revision-discarded`): nic nie jest wykonane,
+nie powstaje drugie `plan.returned`, a działanie nie liczy się do limitu.
+
+**Kontekst i kartka.** Sekcja `BRIEF_SECTIONS["plan-fix"]` podaje błędy sprawdzania formatu, odesłane wcześniej uwagi
+i uwagi review z numerami oraz każe wskazać w `feedback` wiersz, bloker i błąd standardu. Źródło `SOURCES["plan-fix"]`
+dokłada do `in/context/` pliki `plan-fix/errors.md`, `previous-proposal.md`, `failed-plan.md` (plan.md odrzuconej
+próby), `returned-feedback.md` i `review-findings.md`; standard planu to `docs/agent-plan-standard.md` z migawek
+dokumentów. Dostawcę opiekuna karty bez dostawcy w `card.started` („Mam plan”) wskazuje planujący z propozycji.
+
+**Historia.** „Opiekun: odesłał plan z uwagą — <powód>” z `caretaker.action`; samo `plan.returned` nie ma wpisu
+w historii, więc nic się nie dubluje.
+
 ### Ponowienie, limit i nieaktualne akcje (PT-150)
 
 **Wspólna ścieżka akcji** (`FlowEngine._caretaker_act`, także z `_reconcile`): wynik kroku opiekuna (`outcome`

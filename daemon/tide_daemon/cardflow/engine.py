@@ -231,6 +231,40 @@ class _CaretakerPort:
         karty od razu, raz (`FlowEngine._retry_stage`)."""
         return self.engine._retry_stage(self.card, self.run, problem)
 
+    def return_plan(self, problem: dict, params: dict) -> dict:
+        """Akcja `return-plan` (PT-146), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`: odesłanie planu
+        istniejącym `edit_plan` (`action: return`) — bez kopii walidacji. Powtórzona po restarcie nie zapisuje
+        drugiego `plan.returned` (rozpoznaje własny zapis po `caretakerStep`). Numery `findings` (od 1) to uwagi
+        ostatniego review (`caretaker.review_items`); numer spoza listy to nieudane działanie z powodem."""
+        engine, run = self.engine, self.run
+        st = fold(engine.journal.read(self.card))
+        own, ident = run.get("step") or "", run.get("problem") or problem.get("id") or ""
+        target = problem.get("step") or run.get("target") or ""
+        if own and any(e.get("caretakerStep") == own for e in st.plan_returns):
+            return {"target": target, "label": "plan"}
+        items, chosen = caretaker.review_items(st), []
+        for part in (params.get("findings") or "").replace(";", ",").replace(" ", ",").split(","):
+            if not part:
+                continue
+            try:
+                index = int(part) if part.isdigit() else 0
+            except ValueError:
+                # `isdigit()` dopuszcza też np. „²”, którego `int()` nie umie odczytać.
+                index = 0
+            if not 1 <= index <= len(items):
+                return {"failed": "bad-findings", "target": target,
+                        "error": f"bad-findings: uwaga {part[:20]} spoza listy uwag review ({len(items)})"}
+            if items[index - 1] not in chosen:
+                chosen.append(items[index - 1])
+        request = {"action": "return", "feedback": params.get("feedback") or ""}
+        if chosen:
+            request["findings"] = chosen
+        try:
+            engine.edit_plan(self.card, request, caretaker_problem=ident, caretaker_step=own, caretaker_from=target)
+        except FlowError as exc:
+            return {"failed": exc.code, "target": target, "error": f"{exc.code}: {exc}"[:caretaker.REASON_MAX]}
+        return {"target": target, "label": "plan"}
+
     @staticmethod
     def _label(st: FlowState, name: str) -> str:
         step = st.steps.get(name) or {}
@@ -1024,6 +1058,8 @@ class FlowEngine(PlanEditing):
     def _planning_result(self, card, st, step):
         if st.plan_proposed is not None:
             return
+        if self._caretaker_resume(card, st, step):
+            return          # `retry` opiekuna po drugiej nieudanej poprawce formatu (PT-146), z jego instrukcją
         frozen = (st.finished.get(step["step"]) or {}).get("snapshotDir") or ""
         path = os.path.join(frozen or os.path.join(step["stepDir"], "out"), "plan.md")
         if (st.plan_checked or {}).get("step") != step["step"] or (st.plan_checked or {}).get("valid"):
@@ -2598,6 +2634,15 @@ class FlowEngine(PlanEditing):
                 not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
+        if choice == "retry" and wanted and not caretaker_problem and wanted in caretaker.plan_fix_waiting(st) \
+                and not st.card_finished and not st.running():
+            # Druga nieudana poprawa formatu planu (PT-146): ponowienie z instrukcją użytkownika, bez opiekuna.
+            instruction = str(request.get("answer") or "").strip()
+            if len(instruction) > 4000:
+                raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
+            event = self.journal.append(card, "step.retry", step=wanted, ticket="", reason="", user=True,
+                                        instruction=instruction)
+            return {"ok": True, "id": card, "step": wanted, "choice": choice, "seq": event["seq"]}
         focus = decision_step(st)
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
@@ -2965,10 +3010,10 @@ class FlowEngine(PlanEditing):
         ticketów (`_advance`), planowania (`_advance_planning`) i review/poprawek planu (`_plan_step_decision`)."""
         name = step.get("step") or ""
         retried = st.step_retries.get(name) or {}
-        if not retried.get("caretaker") or name in st.step_decisions:
+        if not (retried.get("caretaker") or retried.get("user")) or name in st.step_decisions:
             return False
         self._resume_step(card, st, step, {"choice": "retry", "answer": retried.get("instruction") or "",
-                                           "caretaker": retried["caretaker"]}, attempt=1)
+                                           "caretaker": retried.get("caretaker") or ""}, attempt=1)
         return True
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:

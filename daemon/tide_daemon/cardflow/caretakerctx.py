@@ -344,9 +344,47 @@ def _docs(ctx: Ctx) -> list[File]:
     return out
 
 
+def _plan_fix(ctx: Ctx) -> list[File]:
+    """Wyzwalacz `plan-fix` (PT-146): błędy sprawdzania formatu, poprzednia propozycja planu, odrzucony plik
+    `plan.md` kroku problemu, odesłane uwagi i uwagi review (numerowane od 1, jak w polu `findings` akcji
+    `return-plan`). Standard planu 1.2 (`docs/agent-plan-standard.md`) dają migawki dokumentów (`_docs`)."""
+    from .caretaker import plan_fix_errors, review_items
+    st, problem = ctx.st, ctx.problem
+    errors = plan_fix_errors(st, problem)
+    out = [File("plan-fix/errors.md", "błędy sprawdzania formatu planu",
+                text="# Błędy sprawdzania formatu planu\n\n" +
+                     "".join(f"- {error}\n" for error in errors or ["(brak zapisanych błędów)"]))]
+    proposal = st.plan_proposed
+    out.append(File("plan-fix/previous-proposal.md", "poprzednia propozycja planu (z dziennika karty)",
+                    text="# Poprzednia propozycja planu\n\n" + (
+                        "```json\n" + json.dumps(faults.mask_json(proposal, env=ctx.env), ensure_ascii=False, indent=2, default=str) + "\n```\n"
+                        if proposal else "Plan nie ma jeszcze żadnej propozycji, która przeszła sprawdzenie "
+                                         "formatu — patrz plan-fix/failed-plan.md.\n")))
+    step = st.steps.get(problem.get("step") or "") or {}
+    done = st.finished.get(step.get("step") or "") or {}
+    for folder in (done.get("snapshotDir") or "", os.path.join(step.get("stepDir") or "", "out")):
+        text = ctx.read_text(os.path.join(folder, "plan.md")) if folder else None
+        if text is not None:
+            out.append(File("plan-fix/failed-plan.md", f"plan.md odrzuconej próby {step.get('step')}", text=text))
+            break
+    revision = st.plan_revision or {}
+    if problem.get("decision") and revision.get("feedback"):
+        out.append(File("plan-fix/returned-feedback.md", "uwagi odesłane planującemu przed odrzuconą poprawką",
+                        text="# Uwagi odesłane planującemu\n\n" + str(revision["feedback"]) + "\n"))
+    items = review_items(st)
+    lines = [f"{n}. [{item.get('severity')}] {item.get('text')}" +
+             (f" (tickety: {', '.join(item.get('tickets') or [])})" if item.get("tickets") else "")
+             for n, item in enumerate(items, 1)]
+    out.append(File("plan-fix/review-findings.md", "uwagi review planu (numery do pola `findings`)",
+                    text="# Uwagi review planu (numerowane od 1)\n\n" + ("\n".join(lines) + "\n" if lines else
+                                                                       "(brak uwag review)\n")))
+    return out
+
+
 SOURCES: dict[str, list[Source]] = {
     "*": [Source("history", _history), Source("journal", _journal), Source("plan", _plan),
           Source("steps", _steps), Source("attempts", _attempts), Source("docs", _docs)],
+    "plan-fix": [Source("plan-fix", _plan_fix)],
 }
 
 

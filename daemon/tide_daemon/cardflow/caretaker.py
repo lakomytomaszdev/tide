@@ -24,6 +24,9 @@ Rejestry (kolejne tickety tylko dopisują wpisy, bez edycji wspólnych gałęzi)
 - `HISTORY_LABELS` — akcja → tekst po ludzku do historii karty,
 - `BRIEF_SECTIONS` — wyzwalacz → funkcja `(problem, st) -> str` z przesłanką w kartce.
 
+Wyzwalacze: `error` (PT-143) i `plan-fix` (PT-146: `plan.revision-failed` albo druga nieudana poprawa formatu planu;
+akcja `return-plan` odsyła plan przez `edit_plan`, `retry` ponawia krok `plan-fix`; opiekun nie zatwierdza planu).
+
 Id problemu: wyzwalacz z krokiem — `<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`); powtórzenie
 przyczyny — `repeat:<ticket>:<przyczyna>`; bez kroku — `<wyzwalacz>:<etap>` (`flow-error:<etap>`, `stalled:card`);
 czekająca decyzja — `waiting:<id decyzji>`.
@@ -54,6 +57,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from . import faults
+from . import findings as review_findings
 from .labels import kind_label, step_name
 
 KIND = "caretaker"
@@ -66,6 +70,7 @@ CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
 # Długości pól wyniku (US 19): instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600, streszczenie do 1200.
 TEXT_MAX, REASON_MAX, SUMMARY_MAX = 4000, 600, 1200
 OPTION_ID_MAX = 60
+FINDINGS_MAX = 200
 
 BAD_ACTION, BAD_RESULT = "bad-caretaker-action", "bad-caretaker-result"
 QUESTION, OTHER_RESULT, NOT_STARTED, STOPPED = ("caretaker-question", "caretaker-result", "caretaker-not-started",
@@ -120,6 +125,10 @@ def _retry_stage(port, problem: dict, params: dict) -> dict:
     return port.retry_stage(problem, params)
 
 
+def _return_plan(port, problem: dict, params: dict) -> dict:
+    return port.return_plan(problem, params)
+
+
 ACTIONS: dict[str, Action] = {
     "escalate": Action(
         kinds=("*",),
@@ -149,9 +158,25 @@ ACTIONS: dict[str, Action] = {
         apply=_retry_stage,
         description="ponów etap karty od razu, jeden raz (Tide sam powtarza go w każdym przebiegu — użyj, gdy "
                     "przyczyna błędu albo zastoju już minęła albo była chwilowa)"),
+    # PT-146: odesłanie planu planującemu z uwagą opiekuna — tą samą ścieżką co przycisk „Odeślij” (`EditCardPlan`
+    # z `action: return`), więc walidacja, idempotencja i ochrona ticketów, które ruszyły, są te same. Zatwierdzenia
+    # planu ani różnicy opiekun nie ma w ogóle.
+    "return-plan": Action(
+        kinds=("plan-fix",),
+        params={
+            "feedback": Param(True, 1, TEXT_MAX, "uwaga dla planującego: wskaż wiersz planu (numer ticketu), bloker "
+                                                 "i błąd standardu planu 1.2; odroczenie uwagi do ticketu #n podaj "
+                                                 "tu dosłownie"),
+            "findings": Param(False, 1, FINDINGS_MAX, "numery uwag review do odesłania (od 1, po przecinku, np. "
+                                                       "`1,3`), z listy „Uwagi review”"),
+            "reason": Param(True, 1, REASON_MAX, "dlaczego to odesłanie naprawi plan (do historii karty)"),
+        },
+        apply=_return_plan,
+        description="odeślij plan planującemu z precyzyjną uwagą (bez zatwierdzania planu)"),
 }
 
-HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku", "retry-stage": "ponowienie etapu"}
+HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku",
+                  "retry-stage": "ponowienie etapu", "return-plan": "odesłanie planu"}
 
 
 # --- wyzwalacze ----------------------------------------------------------------------------------
@@ -338,7 +363,62 @@ def _stalled_trigger(st) -> list[dict]:
     return [{"trigger": "stalled", "stage": "card"}]
 
 
-TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger, _flow_error_trigger, _stalled_trigger]
+PLAN_FIX_KINDS = ("planning", "plan-fix", "plan-import")
+PLAN_STEP_KINDS = (*PLAN_FIX_KINDS, "plan-amend")
+
+
+def revision_step(st) -> str:
+    """Ostatni krok `plan-amend` (poprawa planu po odesłaniu) — cel problemu nieudanej poprawki planu."""
+    return next((name for name in reversed(list(st.steps)) if st.steps[name].get("kind") == "plan-amend"), "")
+
+
+def _plan_fix_trigger(st) -> list[dict]:
+    """Wyzwalacz 3 (PT-146): poprawa planu nie przeszła sprawdzenia formatu, a karta dziś czeka z błędami.
+    - `plan.revision-failed`: krok `plan-amend` zakończony, ale poprawiony plan jest błędny (decyzja
+      `plan-revision-failed:<seq>` jest ukryta na czas pracy opiekuna),
+    - druga nieudana poprawa formatu (`plan-fix`, runda ≥ 2): plan nadal bez propozycji, bez decyzji w panelu.
+    Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (to rekomendacja po N minutach, #3)."""
+    found = []
+    revision = st.plan_revision or {}
+    name = revision_step(st)
+    if revision.get("failed") and name and (st.finished.get(name) or {}).get("result") == "done" \
+            and name not in st.step_decisions:
+        found.append({"trigger": "plan-fix", "step": name, "decision": f"plan-revision-failed:{revision.get('seq') or 0}"})
+    elif st.plan_proposed is None and (st.started or {}).get("entry") in ("planning", "plan") and \
+            st.plan_approved is None:
+        steps = [item for item in st.steps.values() if item.get("kind") in PLAN_FIX_KINDS and
+                 int(item.get("seq") or 0) > int((st.started or {}).get("seq") or 0)]
+        last = steps[-1] if steps else {}
+        checked = st.plan_checked or {}
+        if last and (st.finished.get(last["step"]) or {}).get("result") == "done" and \
+                checked.get("step") == last["step"] and checked.get("valid") is False and \
+                int(last.get("round") or 0) >= 2 and last["step"] not in st.step_decisions:
+            found.append({"trigger": "plan-fix", "step": last["step"], "decision": ""})
+    return found
+
+
+TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger, _flow_error_trigger, _stalled_trigger,
+            _plan_fix_trigger]
+
+
+def plan_fix_waiting(st) -> list[str]:
+    """Kroki `plan-fix` po drugiej nieudanej poprawie formatu, które czekają na ponowienie (bez decyzji, bez
+    ponowienia i bez następcy) — wspólne dla akcji `retry` opiekuna i ponowienia przez użytkownika (PT-146)."""
+    return [item["step"] for item in _plan_fix_trigger(st) if not item.get("decision")
+            and item["step"] not in st.step_retries
+            and not any(other.get("parentStep") == item["step"] for other in st.steps.values())]
+
+
+def review_items(st) -> list[dict]:
+    """Uwagi ostatniego review planu w kolejności zapisu; ich numeracja (od 1) jest wszędzie ta sama: w kartce,
+    w pliku kontekstu i w polu `findings` akcji `return-plan`."""
+    return review_findings.lenient((st.plan_reviewed or {}).get("findings"))
+
+
+def plan_fix_errors(st, problem: dict) -> list[str]:
+    revision = st.plan_revision or {}
+    errors = revision.get("errors") if problem.get("decision") else None
+    return [str(e) for e in (errors or (st.plan_checked or {}).get("errors") or [])]
 
 
 def _error_section(problem: dict, st) -> str:
@@ -483,18 +563,66 @@ def _stalled_section(problem: dict, st) -> str:
     return "\n".join(lines + _recent_and_open(st))
 
 
+def _plan_fix_section(problem: dict, st) -> str:
+    """Przesłanka wyzwalacza 3 (PT-146): błędy sprawdzania formatu, odesłane uwagi, uwagi review (numerowane od 1)
+    i polecenie precyzji. Poprzednia propozycja, odrzucony plik i standard planu 1.2 są w plikach kontekstu."""
+    revision = st.plan_revision or {}
+    returnable = bool(problem.get("decision"))
+    errors = plan_fix_errors(st, problem)
+    lines = ["## Problem: poprawa planu nie przeszła sprawdzenia formatu", ""]
+    if returnable:
+        lines.append("Planujący poprawił plan po odesłaniu, ale poprawka została odrzucona; obowiązuje poprzednia, "
+                     "poprawna propozycja. Odeślij plan z precyzyjną uwagą (`return-plan`) albo oddaj decyzję.")
+    else:
+        lines.append("Plan nadal ma błędny format po dwóch poprawach i nie ma żadnej propozycji do odesłania, więc "
+                     "`return-plan` się nie powiedzie. Ponów krok `plan-fix` z instrukcją (`retry`) albo oddaj "
+                     "decyzję (`escalate`).")
+    lines += ["", "Błędy sprawdzania formatu:"]
+    # Maskujemy pełne wartości przed normalizacją i skracaniem, które mogłyby zniszczyć dopasowanie sekretu.
+    lines += [f"- {_text(faults.mask(error))[:300]}" for error in errors[:20]] or ["- (brak zapisanych błędów)"]
+    if len(errors) > 20:
+        lines.append(f"- … i {len(errors) - 20} kolejnych (plik kontekstu plan-fix/errors.md)")
+    if returnable and revision.get("feedback"):
+        lines += ["", "Uwagi odesłane planującemu przed tą poprawką:", faults.mask(revision["feedback"])[:1500]]
+    items = review_items(st)
+    lines += ["", "Uwagi review (numery do pola `findings`):"]
+    lines += [f"{n}. [{item.get('severity')}] {_text(faults.mask(item.get('text')))[:300]}" +
+              (f" (tickety: {', '.join(item.get('tickets') or [])})" if item.get("tickets") else "")
+              for n, item in enumerate(items, 1)] or ["(brak uwag review)"]
+    lines += ["", "Zasady uwagi (`feedback`): wskaż wiersz planu (numer ticketu z tabeli), bloker (co nie pozwala "
+                  "ruszyć) i błąd standardu planu 1.2 (`docs/agent-plan-standard.md` w kontekście), który trzeba "
+                  "poprawić. Prośbę „odrocz tę uwagę do ticketu #n” przekaż planującemu w `feedback` dosłownie. "
+                  "Nie zatwierdzasz planu ani różnicy."]
+    return "\n".join(lines)
+
+
 BRIEF_SECTIONS = {"error": _error_section, "repeat": _with_detail(_repeat_detail),
                   NO_PROGRESS: _with_detail(_noprogress_detail),
-                  "flow-error": _flow_error_section, "stalled": _stalled_section}
+                  "flow-error": _flow_error_section, "stalled": _stalled_section,
+                  "plan-fix": _plan_fix_section}
 
 
 # --- problemy i liczenie działań -----------------------------------------------------------------
+
+def _parent(st, name: str) -> str:
+    """Poprzednik kroku w łańcuchu: `parentStep`; poprawa planu (`plan-amend`) odesłana przez opiekuna (PT-146,
+    `plan.returned` z `caretakerFrom`) dziedziczy łańcuch nieudanej poprawki — kolejne odesłania liczą się do jednego
+    limitu działań, a nie zaczynają go od zera."""
+    step = st.steps.get(name) or {}
+    if step.get("parentStep"):
+        return step["parentStep"]
+    if step.get("kind") == "plan-amend":
+        before = [e for e in st.plan_returns if int(e.get("seq") or 0) < int(step.get("seq") or 0)]
+        if before:
+            return before[-1].get("caretakerFrom") or ""
+    return ""
+
 
 def chain_root(st, name: str) -> str:
     """Pierwszy krok łańcucha `parentStep` (wszystkie rodzaje kroków); pętla w dzienniku nie zawiesza liczenia."""
     seen = {name}
     while True:
-        parent = (st.steps.get(name) or {}).get("parentStep") or ""
+        parent = _parent(st, name)
         if not parent or parent in seen or parent not in st.steps:
             return name
         seen.add(parent)
@@ -553,7 +681,7 @@ def _known_id(st, root: str) -> str:
 
 def owned(st, ident: str) -> dict:
     """Jedyne liczenie działań opiekuna przy problemie: kroki opiekuna z tym id od ostatniego zamknięcia problemu
-    (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
+    (decyzja lub jawne ponowienie użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
     z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
 
     `count` — działania od zamknięcia (udane i nieudane; nieaktualne `stale` się nie liczą — PT-150), `runs` — te
@@ -578,9 +706,19 @@ def owned(st, ident: str) -> dict:
             continue
         if in_scope(name):
             closed = max(closed, int(decision.get("seq") or 0))
+    for name, retry in st.step_retries.items():
+        # Ponowienie użytkownika po oddaniu problemu jest nową decyzją (PT-146).
+        # Automatyczne ponowienia i akcje opiekuna zachowują wspólny limit łańcucha.
+        if retry.get("user") and "caretaker" not in retry and in_scope(name):
+            closed = max(closed, int(retry.get("seq") or 0))
     for name, done in st.finished.items():
-        if done.get("result") == "done" and in_scope(name):
+        # Krok poprawy planu zakończony `done` nie rozwiązuje problemu (PT-146): plik planu mógł znów nie przejść
+        # sprawdzenia, a limit działań opiekuna (PT-79/#8) ma obowiązywać także przez kolejne poprawki.
+        if done.get("result") == "done" and in_scope(name) and \
+                (st.steps.get(name) or {}).get("kind") not in PLAN_STEP_KINDS:
             closed = max(closed, int(done.get("seq") or 0))
+    if runs_all and runs_all[0].get("trigger") == "plan-fix":
+        closed = max(closed, st.plan_user_seq)       # odesłanie albo odrzucenie poprawki przez użytkownika
     runs = [run for run in runs_all if int(run.get("seq") or 0) > closed and
             not (st.caretaker_outcomes.get(run.get("step")) or {}).get("stale")]
     open_run = next((run for run in runs_all if run.get("step") not in st.caretaker_outcomes), None)
@@ -597,7 +735,7 @@ def owned(st, ident: str) -> dict:
 # Zdarzenia spoza opiekuna, po których działanie problemu bez decyzji jest nieaktualne: w łańcuchu problemu
 # (`IN_CHAIN`) albo w całej karcie (`CARD_WIDE` — wstrzymanie, przeniesienie, zmiana planu).
 IN_CHAIN = ("step.started", "step.retry", "step.decision")
-CARD_WIDE = ("card.paused", "card.moved", "plan.returned", "plan.edited")
+CARD_WIDE = ("card.paused", "card.moved", "plan.returned", "plan.edited", "plan.ticket-edited")
 
 
 def _own_event(event: dict) -> bool:
@@ -657,6 +795,13 @@ def problem_steps(problem: dict, st) -> list[str]:
     """Kroki, które `retry` może ponowić: problem z decyzją — tylko krok tej decyzji; bez decyzji — kroki łańcucha
     problemu zakończone wynikiem innym niż `done`, bez kroku-następcy, bez decyzji i bez ponowienia (problem bez
     kroku: jego ticketu, a bez ticketu — całej karty)."""
+    if problem.get("trigger") == "plan-fix":
+        # PT-146: druga nieudana poprawa formatu — krok `plan-fix` jest `done` (zły plik), więc tylko on, raz.
+        # Przy nieudanej poprawce zatwierdzanej różnicy (z decyzją) ponawia się planem, nie krokiem: `return-plan`.
+        name = problem.get("step") or ""
+        waiting = name in st.steps and not problem.get("decision") and name not in st.step_retries and \
+            not any(item.get("parentStep") == name for item in st.steps.values())
+        return [name] if waiting else []
     if problem.get("decision"):
         return [problem["step"]] if problem.get("step") in st.steps else []
     root, ticket = problem.get("root") or "", problem.get("ticket") or ""
@@ -721,6 +866,10 @@ def executor_name(catalog, st) -> str:
     provider = started.get("preferredProvider") or ""
     if provider in ("", "mixed"):
         provider = started.get("provider") or ""
+    if not provider and (st.plan_proposed or {}).get("planner"):
+        # Karta z gotowym planem („Mam plan”) nie ma dostawcy w `card.started` — dostawca planującego (PT-146).
+        planner = catalog.get(st.plan_proposed["planner"]) if hasattr(catalog, "get") else None
+        provider = getattr(planner, "provider", "") or ""
     best, rank = "", -1
     for executor in getattr(catalog, "executors", ()) or ():
         if executor.provider != provider or not executor.program or not executor.model:
@@ -903,11 +1052,12 @@ def _escalations(st):
             yield event
 
 
-def annotate(st, decision: dict) -> dict:
+def annotate(st, decision: dict, target: str = "") -> dict:
     """Decyzja wracająca od opiekuna dostaje `caretaker{summary, recommendation, tried[], optionId, failed}`;
-    możliwość z `optionId` jest polecona i pierwsza, a żadna nie jest wybrana (D10)."""
-    escalated = next((event for event in _escalations(st)
-                      if decision.get("step") and event.get("target") == decision["step"]), None)
+    możliwość z `optionId` jest polecona i pierwsza, a żadna nie jest wybrana (D10). `target` — krok problemu dla
+    decyzji planu, która nie ma własnego kroku (`plan-revision-failed`, PT-146)."""
+    target = target or decision.get("step") or ""
+    escalated = next((event for event in _escalations(st) if target and event.get("target") == target), None)
     if not escalated:
         return decision
     run = st.caretaker_runs.get(escalated.get("step") or "") or {}
@@ -1003,6 +1153,9 @@ def history_text(event: dict) -> str:
             (f" — {reason}" if reason else "")
     if kind == ACTION and action == "retry-stage" and event.get("ok"):
         return f"Opiekun: ponowił etap {event.get('label') or event.get('retried') or 'karty'}"
+    if kind == ACTION and action == "return-plan" and event.get("ok"):
+        reason = _text((event.get("params") or {}).get("reason"))
+        return "Opiekun: odesłał plan z uwagą" + (f" — {reason}" if reason else "")
     if kind == ESCALATED and not event.get("failed"):
         summary = _text(event.get("summary"))
         return f"Opiekun: {HISTORY_LABELS.get('escalate')}" + (f" — {summary}" if summary else "")

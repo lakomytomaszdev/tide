@@ -39,10 +39,15 @@ class LightPlanningTest(FlowInProcess):
         shown = self.wait_column(card, "waiting")
         self.assertIn("dwóch poprawach", shown["derived"]["question"])
         self.assertEqual(self.of(card, "plan.proposed"), [])
-        self.assertEqual(len(self.of(card, "step.started")), 3)
+
+        def planning_steps():
+            # PT-146: po drugiej nieudanej poprawce formatu sprawdza kartę opiekun (tu oddaje decyzję `escalate`).
+            return [s for s in self.of(card, "step.started") if s["kind"] != "caretaker"]
+
+        self.assertEqual(len(planning_steps()), 3)
         self.restart()
         wait_until(lambda: False, timeout=0.4)
-        self.assertEqual(len(self.of(card, "step.started")), 3)
+        self.assertEqual(len(planning_steps()), 3)
 
     def test_assignment_rules_are_common_and_overridden_per_project(self):
         self.store.upsert_project({"globalAssignmentRules": "mocny: reguła wspólna"})

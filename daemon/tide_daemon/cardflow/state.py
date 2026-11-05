@@ -68,6 +68,10 @@ class FlowState:
     plan_reviewer: str = ""  # ręczny wybór modelu do niezależnego review planu
     plan_review_wait: dict | None = None  # blokada limitu pozostaje po restarcie i próbie review
     plan_revision: dict | None = None
+    # PT-146: odesłania planu (`plan.returned`) w kolejności i seq ostatniej zmiany planu zrobionej przez użytkownika
+    # (odesłanie bez `caretaker`, odrzucenie poprawki) — łańcuch kroków poprawy i zamknięcie problemu opiekuna.
+    plan_returns: list = field(default_factory=list)
+    plan_user_seq: int = 0
     plan_finished: bool = False
     plan_change_seq: int = 0
     plan_change_ts: str = ""
@@ -221,6 +225,7 @@ def fold(events: list[dict]) -> FlowState:
             st.imported = None
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
+            st.plan_returns, st.plan_user_seq = [], 0
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.plan_finished = False
@@ -364,9 +369,13 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "plan.returned":
             st.plan_revision = e
             st.closed = None
+            st.plan_returns.append(e)
+            if "caretaker" not in e:
+                st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-discarded":
             st.plan_revision = None
             st.plan_checked = None
+            st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-failed":
             st.plan_revision = e
         elif kind == "plan.revision-ready":
