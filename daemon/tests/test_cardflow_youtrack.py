@@ -220,6 +220,8 @@ class YouTrackFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))['ok'])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        'kończymy tick monitora przed bezpośrednim zatwierdzaniem planu')
         self.flow.engine.approve_plan(card)
         self.approve_environment(card)
         # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.

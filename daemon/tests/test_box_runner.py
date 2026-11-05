@@ -268,7 +268,8 @@ class ProxyEnvTest(BoxRunnerCase):
         self.check(env)
         self.assertEqual(env["HOME"], "/home/agent")
         self.assertEqual(env["USER"], "agent")
-        self.assertNotIn(self.home, env["PATH"])
+        self.assertEqual(env["PATH"].split(os.pathsep),
+                         [os.path.join(self.step_dir, "in", "bin"), *br.BOX_PATH.split(os.pathsep)])
         runner.start(self.step())
         self.check(self.env_file())
         self.assertEqual(self.env_file()["TIDE_CWD"], self.worktree)
@@ -291,7 +292,8 @@ class ProxyEnvTest(BoxRunnerCase):
                             self.assertTrue(piece.startswith((self.repo, self.wt_root)),
                                             f"{key}={value} wskazuje katalog domowy hosta")
                 self.assertNotIn(node_home, values["PATH"])
-                self.assertTrue(values["PATH"].startswith(br.BOX_PATH), values["PATH"])
+                self.assertEqual(values["PATH"].split(os.pathsep),
+                                 [os.path.join(self.step_dir, "in", "bin"), *br.BOX_PATH.split(os.pathsep)])
         bstep = runner.box_step(step)
         self.assertEqual((bstep.node_home, bstep.chrome_bin), ("", ""))
 
