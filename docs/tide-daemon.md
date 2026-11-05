@@ -1882,8 +1882,9 @@ idempotencja i ochrona ticketów, które ruszyły; `no-plan` przy braku propozyc
 `caretaker`, `caretakerStep` i `caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
 (`_advance_user_revision`), z uwagą opiekuna dosłownie w kartce („Uwagi: …”). Numer w `findings` spoza listy uwag
 review (`caretaker.review_items`, numeracja od 1 — ta sama w kartce i w `plan-fix/review-findings.md`) to nieudane
-działanie `bad-findings` z powodem; wynik w `caretaker.action` (`ok: false`) liczy się do limitu. Powtórka po
-restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` nie powstaje).
+działanie `bad-findings` z powodem; tak samo traktowane są znaki, których nie można odczytać jako indeks
+(np. `²`), bez pozostawienia otwartego zamiaru akcji. Wynik w `caretaker.action` (`ok: false`) liczy się do limitu.
+Powtórka po restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` nie powstaje).
 
 **Limit.** Każde działanie (udane i nieudane) liczy się do limitu z #8 (`ACTION_LIMIT`). Żeby kolejne odesłania nie
 zaczynały limitu od zera, `plan-amend` po odesłaniu opiekuna dziedziczy łańcuch nieudanej poprawki

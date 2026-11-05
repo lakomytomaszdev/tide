@@ -356,20 +356,72 @@ class ActionOnJournalTest(EngineOnJournal):
 
     def test_findings_outside_the_review_list_fail_with_a_reason(self):
         events = []
-        for n, findings in enumerate(("9", "0", "x", "1,4"), 1):
+        invalid = ("9", "0", "x", "1,4", "²", "①", "1,²")
+        for n, findings in enumerate(invalid, 1):
             with self.subTest(findings=findings):
                 run = self.run_event if n == 1 else self.add(
                     "K-1", caretaker.STARTED, problem=PLAN_PROBLEM, key=f"caretaker:{PLAN_PROBLEM}:{n}", n=n,
                     step=f"K-1-care-{n}", target="K-1-plan-amend-4", root="K-1-plan-amend-4", ticket="",
                     trigger="plan-fix", triggers=["plan-fix"], decision=self.run_event["decision"],
                     watermark=len(self.journal.read("K-1")))
-                events = self.act({"feedback": "Wiersz #1.", "findings": findings, "reason": "Powód."}, run=run)
+                st = fold(self.journal.read("K-1"))
+                parsed = caretaker.parse_result(
+                    {"result": "done", "action": "return-plan", "feedback": "Wiersz #1.",
+                     "findings": findings, "reason": "Powód."}, caretaker.problems(st)[0], st)
+                self.assertTrue(parsed["ok"])
+                events = self.act(parsed["params"], run=run)
                 self.assertFalse([e for e in events if e["type"] == "plan.returned" and e.get("caretaker")])
                 last = [e for e in events if e["type"] == caretaker.ACTION][-1]
                 self.assertEqual((last["ok"], last["code"]), (False, "bad-findings"))
                 self.assertIn("spoza listy uwag review (3)", last["error"])
-        self.assertEqual(caretaker.owned(fold(events), PLAN_PROBLEM)["count"], 4, "nieudane działania liczą się do limitu")
+                st = fold(events)
+                self.assertEqual(st.results[("caretaker-action", run["step"])]["failed"], "bad-findings")
+                self.assertEqual(st.open_intents(include_background=True), [])
+        self.assertEqual(caretaker.owned(fold(events), PLAN_PROBLEM)["count"], len(invalid),
+                         "nieudane działania liczą się do limitu")
         self.assertFalse([e for e in events if e["type"] in ("plan.approved", "plan.revision-approved")])
+
+    def test_unicode_findings_reconcile_closes_intent_and_reaches_the_action_limit(self):
+        run = self.run_event
+        limit = self.engine._caretaker_limit()
+        for n in range(1, limit + 1):
+            st = fold(self.journal.read("K-1"))
+            parsed = caretaker.parse_result(
+                {"result": "done", "action": "return-plan", "feedback": "Wiersz #1.",
+                 "reason": "Powód.", "findings": "²"}, caretaker.problems(st)[0], st)
+            self.assertTrue(parsed["ok"])
+            self.add("K-1", "step.finished", step=run["step"], result="done", outcome=parsed)
+            # Restart między zamiarem a wynikiem: odtworzenie musi zamknąć także niepoprawną akcję.
+            intent = self.add("K-1", "intent", action="caretaker-action", key=run["step"],
+                              problem=PLAN_PROBLEM, caretakerAction="return-plan", params=parsed["params"])
+            with mock.patch.object(self.engine, "_guard_check", return_value=None), \
+                    mock.patch.object(self.engine, "_guard_rebase", return_value=None):
+                self.engine._reconcile("K-1", intent)
+                self.engine._reconcile("K-1", intent)
+            st = fold(self.journal.read("K-1"))
+            self.assertEqual(st.open_intents(include_background=True), [])
+            self.assertEqual(st.results[("caretaker-action", run["step"])]["failed"], "bad-findings")
+            self.assertEqual((st.caretaker_outcomes[run["step"]]["ok"],
+                              st.caretaker_outcomes[run["step"]]["code"]), (False, "bad-findings"))
+            self.assertEqual(len(st.caretaker_outcomes), n, "odtwarzanie nie dubluje wyniku")
+            self.assertEqual(caretaker.owned(st, PLAN_PROBLEM)["count"], n)
+            with mock.patch.object(self.engine, "_caretaker_launch") as launch:
+                self.engine._caretake("K-1", st)
+            if n < limit:
+                launch.assert_called_once()
+                run = launch.call_args.args[2]
+                self.assertEqual(run["n"], n + 1)
+            else:
+                launch.assert_not_called()
+        events = self.journal.read("K-1")
+        escalated = [e for e in events if e["type"] == caretaker.ESCALATED]
+        self.assertEqual([(e["code"], e["count"]) for e in escalated], [(caretaker.LIMIT, limit)])
+        shown = decisions.build_decisions(fold(events))
+        self.assertEqual([d["kind"] for d in shown], ["plan-revision-failed"])
+        self.assertTrue(shown[0]["caretaker"]["summary"].startswith(f"Opiekun wykonał {limit} z {limit}"))
+        self.assertEqual(len(shown[0]["caretaker"]["tried"]), limit)
+        self.assertFalse([e for e in events if e["type"] in ("plan.approved", "plan.revision-approved")
+                          or e["type"] == "plan.returned" and e.get("caretaker")])
 
     def test_no_plan_to_return_fails_with_a_reason_and_approves_nothing(self):
         # Druga nieudana poprawa formatu: planowanie bez propozycji planu.

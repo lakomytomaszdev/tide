@@ -240,11 +240,16 @@ class _CaretakerPort:
         for part in (params.get("findings") or "").replace(";", ",").replace(" ", ",").split(","):
             if not part:
                 continue
-            if not part.isdigit() or not 1 <= int(part) <= len(items):
+            try:
+                index = int(part) if part.isdigit() else 0
+            except ValueError:
+                # `isdigit()` dopuszcza też np. „²”, którego `int()` nie umie odczytać.
+                index = 0
+            if not 1 <= index <= len(items):
                 return {"failed": "bad-findings", "target": target,
                         "error": f"bad-findings: uwaga {part[:20]} spoza listy uwag review ({len(items)})"}
-            if items[int(part) - 1] not in chosen:
-                chosen.append(items[int(part) - 1])
+            if items[index - 1] not in chosen:
+                chosen.append(items[index - 1])
         request = {"action": "return", "feedback": params.get("feedback") or ""}
         if chosen:
             request["findings"] = chosen
