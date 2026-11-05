@@ -81,15 +81,18 @@ class PackageTest(unittest.TestCase):
 
 
 class LogicTest(unittest.TestCase):
-    def test_exact_base_only_for_now(self):
+    def test_exact_base_for_all_flow_entries(self):
         state = {"entry": "now", "executor": "Sonnet", "baseRef": "refs/heads/feature/a/b",
                  "baseCommit": "b" * 40, "cardBranch": "card/custom"}
         reply = self.js(f"startCardRequest({json.dumps(state)}, [])")
         for key in ("baseRef", "baseCommit", "cardBranch"):
             self.assertEqual(reply[key], state[key])
-        for entry in ("planning", "plan", "spec"):
-            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry))}, [])")
-            self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
+        for entry, mode in (("planning", "light"), ("planning", "full"), ("plan", "")):
+            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry, mode=mode))}, [])")
+            for key in ("baseRef", "baseCommit", "cardBranch"):
+                self.assertEqual(request[key], state[key])
+        request = self.js(f"startCardRequest({json.dumps(dict(state, entry='spec'))}, [])")
+        self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
 
     @classmethod
     def setUpClass(cls):
@@ -1177,9 +1180,13 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
-                          "preferredProvider": "anthropic", "images": [], "projects": []})
+                          "preferredProvider": "anthropic", "images": [], "projects": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
+        self.assertEqual(json.loads(out["calls2"][0][2]), json.loads(out["calls1"][2][2]),
+                         "ponowienie zachowuje pełny ref, SHA i nazwę gałęzi karty")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("ruszyło w Konsoli", out["toast"][0])

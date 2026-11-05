@@ -712,7 +712,7 @@ function startCardRequest(state, images) {
     if (state.entry === "planning") request.mode = state.mode
     if (state.entry === "plan") request.planPath = state.planPath
     if (state.reviewer && state.entry === "now") request.reviewer = state.reviewer
-    if (state.entry === "now") {
+    if (isFlowEntry(state.entry, state.mode)) {
         if (state.baseRef) { request.baseRef = state.baseRef; request.baseCommit = state.baseCommit }
         if (state.cardBranch) request.cardBranch = state.cardBranch
     }

@@ -1650,12 +1650,16 @@ wraz z wykonawcą.
 fragment bez rozróżniania wielkości liter. `mainRef` jest pełnym refem według wspólnej polityki
 głównej lub pustym napisem z ostrzeżeniem. Główna jest pierwsza, jeśli pasuje do filtra.
 `recentBases` i `recentTargets` są obecnie puste. `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
-Okno startu pozwala wybrać bazę tylko w „Od razu”, wysyła pełny ref i SHA z wyniku listy oraz osobną
+Okno startu pozwala wybrać bazę w „Od razu”, „Mam plan” i Planowaniu, wysyła pełny ref i SHA z wyniku listy oraz osobną
 nazwę nowej gałęzi karty `cardBranch`. Niepoprawna lub zajęta nazwa jest odrzucana. Brak pola zachowuje
-automatyczną nazwę starszych klientów. Pozostałe wejścia jawnie odmawiają przyjęcia pól wyboru bazy
-i gałęzi do czasu ich obsługi; formularz pokazuje wyjaśnienie i nieaktywny wybór.
+automatyczną nazwę starszych klientów. Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują
+dotychczasowe bazy i odczyt. „Tylko specyfikacja” ma nieaktywny wybór do czasu obsługi wybranej rewizji.
+Review, poprawki i zatwierdzanie planu używają tej samej gałęzi karty; kolejna fala wychodzi z jej aktualnego
+stanu po integracji blokerów. Przejęcie planu kopiuje artefakty do dziennika, bez zmiany źródła i jego numerów.
 
-**Baza startu „Od razu” (PT-194).** Żądanie może zawierać `baseRef` (wyłącznie pełny lokalny
+**Baza startu karty (PT-194, PT-211).** Od razu, Mam plan (`entry: import`), propozycja z Konsoli
+(`entry: plan`) i oba istniejące tryby Planowania korzystają z jednego rozstrzygnięcia bazy.
+Żądanie każdego z tych wejść może zawierać `baseRef` (wyłącznie pełny lokalny
 `refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy
 `FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
 Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
@@ -1670,7 +1674,9 @@ start bez wyboru bazy jest dozwolony, jeśli gałąź karty istnieje; baza i `in
 unknown, bez zgadywania historycznego SHA. Brak takiej gałęzi daje `no-base` z instrukcją jej
 przywrócenia lub założenia nowej karty z wybraną bazą. Nowe zlecenie ma własne `baseVersion: 1`
 także dla unknown; historyczne zdarzenia i ich wersja 0 pozostają bez zmian.
-Jawny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Sam `baseCommit`
+Jawny inny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Formularz wznowienia
+pokazuje utrwalony ref i SHA bez odpytywania listy; przekazanie tego samego refu zachowuje zapisany SHA,
+nawet po ruchu albo usunięciu refu. Sam `baseCommit`
 bez refu musi odpowiadać zapisanemu SHA znanej bazy. Inna lub nieznana baza przy jawnym wyborze
 powoduje `base-mismatch` przed rezerwacją numeru i zapisem zlecenia. Zmiana bazy należy do osobnej korekty.
 
