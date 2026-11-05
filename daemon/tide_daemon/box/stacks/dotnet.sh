@@ -2,9 +2,9 @@
 # Szablon stosu dotnet (PT-192, #29): SDK .NET w wersjach z profilu (`dotnet.sdk`) przez dotnet-install.sh
 # z dot.net, do /usr/share/dotnet; NuGet.Config agenta wyłącznie z nuget.org (bez rejestrów wewnętrznych).
 #
-# Wersje: `TIDE_DOTNET_SDK` z profilu, rozdzielone spacją — `8` albo `8.0` (kanał: najnowsza poprawka kanału
-# w chwili budowy) albo dokładna wersja SDK `8.0.415`. Skrypt instalatora jest pobierany do pliku (bez potoku
-# do powłoki) i uruchamiany z jawnym kanałem albo wersją.
+# Wersje: `TIDE_DOTNET_SDK` z profilu, rozdzielone spacją — tylko dokładne wersje SDK, np. `8.0.415`.
+# Skróty `8` i `8.0` są odrzucane: wybór poprawki w chwili budowy omijałby hash przepisu.
+# Skrypt instalatora jest pobierany do pliku (bez potoku do powłoki) i uruchamiany wyłącznie z --version.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -18,22 +18,11 @@ NUGET_SOURCE=https://api.nuget.org/v3/index.json
 
 sdk_args() {  # sdk_args <wersja z profilu> — argumenty dotnet-install.sh
     local want=$1
-    if [[ $want =~ ^[0-9]+$ ]]; then
-        echo "--channel $want.0"
-    elif [[ $want =~ ^[0-9]+\.[0-9]+$ ]]; then
-        echo "--channel $want"
-    elif [[ $want =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ $want =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "--version $want"
     else
-        die "dotnet.sdk '$want': oczekiwano 8, 8.0 albo dokładnej wersji SDK 8.0.415"
+        die "dotnet.sdk '$want': podaj dokładną wersję SDK x.y.z, np. 8.0.415 (skróty i kanały są niedozwolone)"
     fi
-}
-
-sdk_prefix() {  # sdk_prefix <wersja z profilu> — początek wiersza `dotnet --list-sdks`
-    local want=$1
-    [[ $want =~ ^[0-9]+$ ]] && want=$want.0
-    [[ $want =~ ^[0-9]+\.[0-9]+$ ]] && want=$want.
-    echo "$want"
 }
 
 nuget_config() {  # nuget_config — treść NuGet.Config agenta: tylko nuget.org
@@ -74,7 +63,7 @@ install_sdks() {
     ln -sfn "$DOTNET_DIR/dotnet" /usr/local/bin/dotnet
     listed=$(DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 "$DOTNET_DIR/dotnet" --list-sdks)
     for want in "${versions[@]}"; do
-        grep -q "^$(sdk_prefix "$want")" <<< "$listed" || die "SDK $want nie jest zainstalowane: $listed"
+        grep -q "^${want//./\\.} " <<< "$listed" || die "SDK $want nie jest zainstalowane: $listed"
     done
     echo "dotnet: $listed"
 }

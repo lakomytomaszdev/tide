@@ -240,7 +240,7 @@ B=$(profile_file tide-stacks-test "tide-box: 1
 project: tide-stacks-test
 stacks: [dotnet, docker]
 dotnet:
-  sdk: ['8.0']
+  sdk: ['8.0.415']
 docker:
   enabled: true
 verify:

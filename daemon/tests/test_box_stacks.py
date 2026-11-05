@@ -121,6 +121,7 @@ class StackScriptTextTest(unittest.TestCase):
             self.assertRegex(version, rf"^{major}\.\d+\.\d+$")
         self.assertIn('npx --yes "playwright@$PLAYWRIGHT_VERSION"', read(script("playwright")))
         self.assertRegex(read(script("docker")), r"(?m)^RUNC_SHA256_AMD64=[0-9a-f]{64}$")
+        self.assertNotIn("--channel", code_of(read(script("dotnet"))))
 
     def test_runc_checksum_is_the_one_from_prototype_p1(self):
         proto = re.search(r"^RUNC_126_SHA256=([0-9a-f]{64})$",
@@ -372,14 +373,61 @@ class StackFunctionsTest(unittest.TestCase):
         self.assertIn("install --with-deps chromium", read(script("playwright")))
 
     def test_dotnet_versions_from_the_profile(self):
-        for want, args, prefix in (("8", "--channel 8.0", "8.0."), ("8.0", "--channel 8.0", "8.0."),
-                                   ("10.0", "--channel 10.0", "10.0."), ("8.0.415", "--version 8.0.415", "8.0.415")):
-            proc = bash(sourced("dotnet", f"sdk_args {want}; sdk_prefix {want}"), case=self)
-            self.assertEqual(proc.stdout.split("\n")[:2], [args, prefix], want)
-        for bad in ("latest", "8.0.x", "net8.0", "8.0.415.1"):
+        for want in ("6.0.428", "8.0.415", "10.0.100"):
+            proc = bash(sourced("dotnet", f"sdk_args {want}"), case=self)
+            self.assertEqual(proc.stdout.strip(), f"--version {want}")
+        for bad in ("", "8", "8.0", "10.0", "latest", "8.0.x", "net8.0", "8.0.415.1"):
             proc = bash(sourced("dotnet", f"sdk_args {shlex.quote(bad)}"))
             self.assertNotEqual(proc.returncode, 0, bad)
             self.assertIn("dotnet.sdk", proc.stderr)
+
+    def dotnet_install(self, versions, listed):
+        # Uruchamiamy prawdziwe install_sdks z atrapami operacji systemowych i sieci.
+        # Cały zapis jest w katalogu tymczasowym; nie dotykamy /usr/local/bin ani apt hosta.
+        tmp = tempfile.mkdtemp(prefix="tide-dotnet-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        log = os.path.join(tmp, "calls")
+        installer = os.path.join(tmp, "installer.sh")
+        with open(installer, "w", encoding="utf-8") as fh:
+            fh.write('printf "install %s\\n" "$*" >> "$TIDE_DOTNET_CALLS"\n')
+        dotnet = os.path.join(tmp, "dotnet")
+        with open(dotnet, "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/bash\nprintf "%s\\n" "$TIDE_DOTNET_LISTED"\n')
+        os.chmod(dotnet, 0o755)
+        body = f"""
+DOTNET_DIR={shlex.quote(tmp)}
+apt_install() {{ echo apt >> "$TIDE_DOTNET_CALLS"; }}
+fetch() {{
+    echo fetch >> "$TIDE_DOTNET_CALLS"
+    cp {shlex.quote(installer)} "$2"
+}}
+ln() {{ :; }}
+install_sdks
+"""
+        proc = bash(sourced("dotnet", body), env={"TIDE_DOTNET_SDK": versions, "TIDE_DOTNET_LISTED": listed,
+                                                  "TIDE_DOTNET_CALLS": log})
+        return proc, read(log).splitlines() if os.path.exists(log) else [], tmp
+
+    def test_dotnet_installs_each_exact_version_without_a_channel(self):
+        proc, calls, tmp = self.dotnet_install("8.0.415 10.0.100", "8.0.415 [/sdk]\n10.0.100 [/sdk]")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(calls, ["apt", "fetch", f"install --version 8.0.415 --install-dir {tmp} --no-path",
+                                 f"install --version 10.0.100 --install-dir {tmp} --no-path"])
+
+    def test_dotnet_rejects_unpinned_versions_before_apt_or_download(self):
+        for versions in ("", "8", "8.0", "8.0.415 10.0"):
+            with self.subTest(versions=versions):
+                proc, calls, _ = self.dotnet_install(versions, "")
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("dotnet.sdk", proc.stderr)
+                self.assertEqual(calls, [])
+
+    def test_dotnet_verification_requires_the_exact_installed_version(self):
+        for wrong in ("8.0.416", "8.0.4150", "8x0x415"):
+            with self.subTest(installed=wrong):
+                proc, _, _ = self.dotnet_install("8.0.415", f"{wrong} [/sdk]")
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("SDK 8.0.415 nie jest zainstalowane", proc.stderr)
 
     def test_nuget_config_has_only_nuget_org(self):
         proc = bash(sourced("dotnet", "nuget_config"), case=self)
@@ -765,7 +813,10 @@ bash "$TRIAL"
         self.assertEqual(a["stacks"], ["python-qt"])
         self.assertTrue(a["verify"])
         b = bp.parse(profiles["tide-stacks-test"], "project")
-        self.assertEqual((b["stacks"], b["dotnet"]["sdk"], b["docker"]["enabled"]), (["dotnet", "docker"], ["8.0"], True))
+        self.assertEqual((b["stacks"], b["dotnet"]["sdk"], b["docker"]["enabled"]),
+                         (["dotnet", "docker"], ["8.0.415"], True))
+        proc = bash(sourced("dotnet", f"sdk_args {shlex.quote(b['dotnet']['sdk'][0])}"), case=self)
+        self.assertEqual(proc.stdout.strip(), "--version 8.0.415")
         for profile in (a, b):
             self.assertEqual(bp.red_items(profile, templates.known_domains()), [])
 

@@ -2679,7 +2679,7 @@ builder (#4) i konfiguracja Dockera w pudełku (#8/PT-171), nie szablon; domeny 
 | --- | --- | --- |
 | `node.sh` | Node z `nodejs.org/dist` (archiwum `.tar.gz` ze sprawdzoną sumą z `SHASUMS256.txt` tej wersji) do `/usr/local` (wygrywa w PATH z Node 18 z apt obrazu, którego potrzebuje Codex); npm z tej dystrybucji; `CHROME_BIN=/usr/local/bin/tide-chrome` dla Karmy (opakowanie uruchamiające Chromium z `/opt/ms-playwright`, bez niego kod 127 z podpowiedzią „dodaj stos playwright”); `NODE_USE_ENV_PROXY=1` (Node ≥ 24 `fetch` przez proxy, P-6) | `node.version`: dokładne `x.y.z` albo numer główny przypięty w `NODE_PINS` (18, 20, 22, 24); bez wersji — `NODE_DEFAULT_MAJOR` (22); `x.y` = błąd |
 | `playwright.sh` | `npx --yes playwright@<PLAYWRIGHT_VERSION> install --with-deps chromium` przez proxy (zależności systemowe przez apt obrazu), przeglądarki w `/opt/ms-playwright` (w migawce `clean`, właściciel `agent` — projekt z inną wersją Playwrighta dociąga w kroku swoją rewizję), `PLAYWRIGHT_BROWSERS_PATH`; wymaga Node ≥ 20, czyli stosu `node` wcześniej w `stacks` | — (wersja przypięta w skrypcie) |
-| `dotnet.sh` | `dotnet-install.sh` z `dot.net` pobrany do pliku, SDK do `/usr/share/dotnet` (dowiązanie `/usr/local/bin/dotnet`), zależności (`libicu74`…) z apt, `DOTNET_ROOT`, telemetria wyłączona; `~/.nuget/NuGet/NuGet.Config` agenta z `<clear />` i **wyłącznie `nuget.org`** — bez rejestrów wewnętrznych (zapis jako `agent`, bo `/home/agent` to wolumen agenta) | `dotnet.sdk`: `8`/`8.0` (kanał — najnowsza poprawka w chwili budowy) albo dokładna wersja SDK `8.0.415`; brak = błąd |
+| `dotnet.sh` | `dotnet-install.sh` z `dot.net` pobrany do pliku, SDK do `/usr/share/dotnet` (dowiązanie `/usr/local/bin/dotnet`), zależności (`libicu74`…) z apt, `DOTNET_ROOT`, telemetria wyłączona; `~/.nuget/NuGet/NuGet.Config` agenta z `<clear />` i **wyłącznie `nuget.org`** — bez rejestrów wewnętrznych (zapis jako `agent`, bo `/home/agent` to wolumen agenta) | `dotnet.sdk`: wyłącznie dokładne wersje SDK `x.y.z`, np. `['8.0.415']`; instalacja przez `--version` i kontrola dokładnego numeru; brak albo skróty `8`/`8.0` = błąd przed pobieraniem |
 | `docker.sh` | `docker.io` z Ubuntu, **runc 1.2.6** z wydań GitHub (suma SHA-256 przypięta, ta sama co w P-1; tylko amd64) jako domyślny runtime w `/etc/docker/daemon.json` (decyzja `runc-1-2-6-w-pudelku`), drop-in **`/etc/systemd/system/docker.service.d/proxy.conf`** z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami) = `TIDE_BOX_PROXY` i `NO_PROXY`/`no_proxy` = `TIDE_BOX_NO_PROXY` (`BOX_NO_PROXY` wstrzyknięte przez builder — skrypt odmawia przy pustym), `agent` w grupie `docker`, restart `dockerd` i sprawdzenie `systemctl show docker -p Environment`, domyślnego runtime'u i `docker info` jako `agent`. `DOCKER_HOST` nie jest ustawiany | `docker.enabled` (nesting ustawia builder) |
 | `python-qt.sh` | Python 3, `python3-venv`, `pip`, PyQt6 z QML (`python3-pyqt6`, `python3-pyqt6.qtquick`, moduły `qml6-module-qtquick*`) z archiwum Ubuntu, `QT_QPA_PLATFORM=offscreen`; `xvfb` i czcionki są w obrazie bazowym; sprawdzenie `QGuiApplication` offscreen. PySide6 z PyPI nie jest instalowane (projekt dopisuje przypiętą wersję w `setup`) | — |
 
@@ -2704,8 +2704,10 @@ szablonu (np. podbicie `PLAYWRIGHT_VERSION` albo przypięcia Node) robi zbudowan
 przechodzi testów. Po zmianie: nowa suma do `STACKS_VERSION`, potem `tide box build <slug>`.
 
 **Ograniczenia.** Archiwum Node i `dotnet-install.sh` są sprawdzane sumą z tego samego źródła (integralność, nie
-niezależne przypięcie); runc ma sumę przypiętą w repozytorium. Kanał SDK .NET (`8.0`) daje najnowszą poprawkę
-w chwili budowy — dokładną wersję daje `dotnet.sdk: 8.0.415`. `verify` z profilu biegnie po szablonach, `apt`,
+niezależne przypięcie); runc ma sumę przypiętą w repozytorium. SDK .NET wymaga dokładnego numeru w profilu
+(np. `dotnet.sdk: ['8.0.415']`); profile ze skrótami `8`/`8.0` trzeba uzupełnić i ponownie zatwierdzić przez
+`tide box approve`. Zmiana numeru SDK zmienia hash przepisu, a zmiana szablonu — `STACKS_VERSION`.
+`verify` z profilu biegnie po szablonach, `apt`,
 `setup` i `docker pull` (krok 8 budowy).
 
 Testy: `daemon/tests/test_box_stacks.py` — tekst skryptów (reguły wyżej, `shellcheck`, jeśli jest), funkcje plików
