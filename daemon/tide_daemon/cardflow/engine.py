@@ -997,6 +997,8 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif self._caretaker_resume(card, st, step):
+                pass
             elif result == "denied":
                 self._consent_recheck(card, step, done)
             elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
@@ -1486,10 +1488,13 @@ class FlowEngine(PlanEditing):
         z `step.waiting`; krok jeszcze nieczekający przychodzi po wszystkich czekających). Liczą się jak trwające
         kroki, więc zwolnione miejsce bierze najpierw wcześniej czekająca karta. Pomijane są karty zakończone,
         wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
-        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga się na korzyść innej karty."""
+        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga jeden porządek wspólny dla wszystkich kart:
+        (`since`, identyfikator karty, ticket, rodzaj kroku) — dwaj opiekunowie z równym `since` nie czekają na
+        siebie nawzajem (PT-150, runda 2)."""
         if kind != caretaker.KIND or selected.local:
             return 0
-        mine = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
+        since = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
+        mine = (since, card, ticket or "", kind)
         count = 0
         for other in self.journal.cards():
             if other == card:
@@ -1501,7 +1506,7 @@ class FlowEngine(PlanEditing):
             count += sum(1 for key, wait in ost.waiting.items()
                          if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
                          key[0] not in ost.rejected and key not in running and
-                         (not mine or (wait.get("since") or "") <= mine))
+                         (not since or ((wait.get("since") or ""), other, key[0] or "", key[1] or "") < mine))
         return count
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
@@ -2111,12 +2116,7 @@ class FlowEngine(PlanEditing):
             if st.plan_approved is not None:
                 self._plan_next(card, st)
             return
-        retried = st.step_retries.get(st.last_step) or {}
-        if retried.get("caretaker") and st.last_step not in st.step_decisions:
-            # `retry` opiekuna przy problemie bez decyzji (PT-150): wewnętrzna ścieżka automatycznego ponowienia
-            # (`step.retry` → wznowienie z `attempt: 1`), z instrukcją opiekuna w kartce wznowienia.
-            self._resume_step(card, st, step, {"choice": "retry", "answer": retried.get("instruction") or "",
-                                               "caretaker": retried["caretaker"]}, attempt=1)
+        if self._caretaker_resume(card, st, step):
             return
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
@@ -2908,6 +2908,18 @@ class FlowEngine(PlanEditing):
                             reviewerRouteKind=route.kind if route else "",
                             reviewerRouteTokenFile=route.token_file if route else "",
                             reviewerEffort=candidate.effort)
+
+    def _caretaker_resume(self, card: str, st: FlowState, step: dict) -> bool:
+        """`retry` opiekuna przy problemie bez decyzji (PT-150): wewnętrzna ścieżka automatycznego ponowienia
+        (`step.retry` → wznowienie z `attempt: 1`), z instrukcją opiekuna w kartce wznowienia. Wspólne dla kroków
+        ticketów (`_advance`), planowania (`_advance_planning`) i review/poprawek planu (`_plan_step_decision`)."""
+        name = step.get("step") or ""
+        retried = st.step_retries.get(name) or {}
+        if not retried.get("caretaker") or name in st.step_decisions:
+            return False
+        self._resume_step(card, st, step, {"choice": "retry", "answer": retried.get("instruction") or "",
+                                           "caretaker": retried["caretaker"]}, attempt=1)
+        return True
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""

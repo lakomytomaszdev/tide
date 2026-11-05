@@ -1895,11 +1895,20 @@ jest dopisany do `detail`. Wyzwalacze #5, #6 i #13 testują regułę na swoich p
 karty (`_caretaker_reserved`: rezerwacja liczy się w `_wait_reason` jak trwający krok), więc nowy ticket karty czeka,
 a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, nie omija limitu slotów ani okna
 limitu dostawcy (D3 — czeka jak inne kroki). Krok opiekuna nie wyprzedza kroków innych kart (`_earlier_waiters`):
-kroki innych kart czekające na miejsce u tego samego dostawcy (`step.waiting` z `cause: slots`) od chwili nie
-późniejszej niż on (`since` — początek czekania, zachowany przy zmianie powodu; remis w obrębie sekundy na korzyść
-innej karty) zajmują miejsca w jego `_wait_reason` (licznik w powodzie najwyżej `limit/limit`). Zwolnione miejsce
-bierze więc wcześniej czekająca karta niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty
-zakończone, wstrzymane, przeniesione do Gotowe, Archiwum albo Backlogu i odrzucone tickety.
+kroki innych kart czekające na miejsce u tego samego dostawcy (`step.waiting` z `cause: slots`) wcześniej niż on
+(`since` — początek czekania, zachowany przy zmianie powodu) zajmują miejsca w jego `_wait_reason` (licznik
+w powodzie najwyżej `limit/limit`). Kolejność to jeden porządek wspólny dla wszystkich kart: (`since`, identyfikator
+karty, ticket, rodzaj kroku) — remis w obrębie sekundy rozstrzyga identyfikator karty, więc dwaj opiekunowie
+czekający od tej samej chwili nie czekają na siebie nawzajem. Zwolnione miejsce bierze więc wcześniej czekająca karta
+niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty zakończone, wstrzymane, przeniesione do
+Gotowe, Archiwum albo Backlogu i odrzucone tickety. Opiekun zakończony przed startem (np. `stale` po decyzji
+użytkownika, gdy czekał na slot) traci czekanie: wynik (`caretaker.action`/`caretaker.escalated`) zdejmuje jego
+`step.waiting` w `fold`, więc nie blokuje kroków innych kart.
+
+**Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
+i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu
+(`_advance_planning`) i w review/poprawkach planu (`_plan_step_decision`), z instrukcją w kartce wznowienia, także
+przy próbie zerowej (zamiast automatycznego ponowienia bez instrukcji).
 
 **Decyzja użytkownika przy pracującym opiekunie:** trwający krok opiekuna nie czyni ticketu „zajętym” w
 `resolve_step`, więc decyzję przyjmuje zwykłe API (StepResolve); krok wznawia `_advance`, a wynik opiekuna jest potem

@@ -237,6 +237,12 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaker_escalations[e.get("problem")] = e
         elif kind in ("caretaker.escalated", "caretaker.action"):
             st.caretaker_outcomes[e.get("step")] = e
+            # Opiekun zakończony bez startu (np. `stale`, gdy czekał na slot): jego czekanie nie zajmuje już miejsca
+            # w kolejce dostawcy (PT-150) — chyba że na ten sam ticket czeka jeszcze inny niewystartowany opiekun.
+            if e.get("step") not in st.caretakers and not any(
+                    name != e.get("step") and run.get("ticket") == e.get("ticket") and name not in st.caretakers
+                    and name not in st.caretaker_outcomes for name, run in st.caretaker_runs.items()):
+                st.waiting.pop((e.get("ticket"), "caretaker"), None)
             if st.caretaking.get(e.get("target")) == e.get("step"):
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":

@@ -432,6 +432,112 @@ class SlotPriorityTest(EngineOnJournal):
             json.dump({"providerSlots": {"anthropic": 2}}, fh)
         self.assertEqual(self.round()[:2], ["K-2-PT-2-1", "K-3-PT-4-1"])
 
+    def second_caretaker(self, card="K-5"):
+        """Druga karta z gotowym krokiem opiekuna (błąd PT-5) u tego samego dostawcy."""
+        self.add(card, "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.add(card, "step.started", step=f"{card}-PT-5-1", kind="ticket", ticket="PT-5", provider="anthropic",
+                 attempt=1)
+        self.add(card, "step.finished", step=f"{card}-PT-5-1", ticket="PT-5", result="error", reason="x")
+        run = self.add(card, caretaker.STARTED, problem=f"error:{card}-PT-5-1", key=f"caretaker:error:{card}-PT-5-1:1",
+                       n=1, step=f"{card}-care-1", target=f"{card}-PT-5-1", root=f"{card}-PT-5-1", ticket="PT-5",
+                       trigger="error", triggers=["error"], decision=f"step:{card}-PT-5-1",
+                       watermark=fold(self.journal.read(card)).last_seq)
+        return run, (card, self.opus, "PT-5", caretaker.KIND, f"{card}-care-1")
+
+    def test_equal_wait_timestamps_do_not_deadlock_caretakers(self):
+        """Review R2-M1: dwaj opiekunowie zaczynają czekać w tej samej sekundzie — remis ma jeden porządek."""
+        _, k5 = self.second_caretaker()
+        k3 = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        clock = self.journal.clock
+        self.journal.clock = lambda: 1_850_000_000.0
+        self.assertEqual(self.round(only=[k3, k5]), [])
+        self.journal.clock = clock
+        since = {fold(self.journal.read(c)).waiting[(t, caretaker.KIND)]["since"] for c, _, t, _, _ in (k3, k5)}
+        self.assertEqual(len(since), 1, "oba czekają od tej samej chwili")
+        self.finish("K-1", "K-1-PT-1-1")
+        # K-5 jest pierwsza w obrocie, ale remis rozstrzyga wspólny porządek (K-3 < K-5) — nie kolejność pętli.
+        self.assertEqual(self.round(only=[k5, k3]), ["K-3-care-1"], "remis: porządek identyfikatorów kart")
+        self.assertEqual(self.round(only=[k5, k3]), [], "limit dostawcy nadal obowiązuje")
+        self.finish("K-3", "K-3-care-1")
+        self.assertEqual(self.round(only=[k5, k3]), ["K-5-care-1"])
+
+    def test_stale_waiter_does_not_hold_another_cards_caretaker(self):
+        """Review R2-M2: opiekun K-5 czeka na slot pierwszy, użytkownik decyduje, `_caretaker_launch` kończy go
+        jako `stale` przed startem — jego czekanie nie blokuje już opiekuna K-3."""
+        run, k5 = self.second_caretaker()
+        k3 = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        self.assertEqual(self.round(only=[k5]), [])
+        self.assertEqual(self.round(only=[k3]), [])
+        self.add("K-5", "step.decision", step="K-5-PT-5-1", ticket="PT-5", kind="ticket", choice="retry",
+                 answer="", command="", executor="")
+        self.engine._caretaker_launch("K-5", fold(self.journal.read("K-5")), run)
+        st = fold(self.journal.read("K-5"))
+        self.assertTrue(st.caretaker_outcomes["K-5-care-1"].get("stale"))
+        self.assertNotIn(("PT-5", caretaker.KIND), st.waiting)
+        self.finish("K-1", "K-1-PT-1-1")
+        self.assertEqual(self.round(only=[k3]), ["K-3-care-1"])
+
+    def test_outcome_of_a_started_caretaker_does_not_drop_a_newer_wait(self):
+        """Zdjęcie czekania dotyczy tylko opiekuna bez startu; inny niewystartowany opiekun tego ticketu czeka dalej."""
+        self.add("K-3", caretaker.STARTED, problem="other", key="caretaker:other:1", n=1, step="K-3-care-2",
+                 target="K-3-PT-3-1", root="K-3-PT-3-1", ticket="PT-3", trigger="error", triggers=["error"])
+        self.add("K-3", "step.waiting", ticket="PT-3", kind=caretaker.KIND, provider="anthropic",
+                 reason="limit kroków dostawcy anthropic: 1/1", cause="slots", until="")
+        self.add("K-3", caretaker.ACTION, problem="error:K-3-PT-3-1", step="K-3-care-1", target="K-3-PT-3-1",
+                 ticket="PT-3", ok=False, error="stale", code="stale", stale=True)
+        self.assertIn(("PT-3", caretaker.KIND), fold(self.journal.read("K-3")).waiting)
+        self.add("K-3", caretaker.ACTION, problem="other", step="K-3-care-2", target="K-3-PT-3-1",
+                 ticket="PT-3", ok=False, error="stale", code="stale", stale=True)
+        self.assertNotIn(("PT-3", caretaker.KIND), fold(self.journal.read("K-3")).waiting)
+
+
+class PlanStepRetryTest(EngineOnJournal):
+    """Review R2-M3: `retry` opiekuna bez decyzji wznawia także kroki planowania i review planu, z instrukcją."""
+
+    def retried(self, card, step):
+        self.add(card, "step.retry", step=step, ticket="", reason="x", caretaker=f"repeat:{step}",
+                 caretakerStep=f"{card}-care-1", instruction="Popraw format planu.")
+
+    def resumed(self, card):
+        with mock.patch.object(self.engine, "_resume_step") as resume:
+            self.engine._advance(card, fold(self.journal.read(card)))
+        self.assertEqual(resume.call_count, 1)
+        args, kwargs = resume.call_args
+        self.assertEqual(args[3], {"choice": "retry", "answer": "Popraw format planu.",
+                                   "caretaker": f"repeat:{args[2]['step']}"})
+        self.assertEqual(kwargs, {"attempt": 1})
+        return args[2]["step"]
+
+    def test_retry_without_decision_resumes_planning_with_instruction(self):
+        self.add("K-1", "card.started", entry="planning", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.add("K-1", "step.started", step="K-1-plan-1", kind="planning", ticket="", attempt=1,
+                 provider="anthropic", executor="Sonnet")
+        self.add("K-1", "step.finished", step="K-1-plan-1", ticket="", result="error", reason="x")
+        self.retried("K-1", "K-1-plan-1")
+        self.assertEqual(self.resumed("K-1"), "K-1-plan-1")
+
+    def test_retry_without_decision_at_attempt_zero_keeps_the_instruction(self):
+        """Próba zerowa: zamiast automatycznego ponowienia (bez instrukcji) idzie ponowienie opiekuna."""
+        self.add("K-1", "card.started", entry="planning", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.add("K-1", "step.started", step="K-1-plan-1", kind="planning", ticket="", attempt=0,
+                 provider="anthropic", executor="Sonnet")
+        self.add("K-1", "step.finished", step="K-1-plan-1", ticket="", result="error", reason="x")
+        self.retried("K-1", "K-1-plan-1")
+        self.assertEqual(self.resumed("K-1"), "K-1-plan-1")
+
+    def test_retry_without_decision_resumes_plan_review_with_instruction(self):
+        self.add("K-1", "card.started", entry="planning", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.add("K-1", "plan.proposed", rows=[{"ticket": "PT-1", "executor": "Sonnet"}], planner="Sonnet")
+        self.add("K-1", "step.started", step="K-1-plan-review-2", kind="plan-review", ticket="", attempt=1,
+                 provider="anthropic", executor="Opus")
+        self.add("K-1", "step.finished", step="K-1-plan-review-2", ticket="", result="error", reason="x")
+        self.retried("K-1", "K-1-plan-review-2")
+        self.assertEqual(self.resumed("K-1"), "K-1-plan-review-2")
+
 
 class RetryFlowTest(FlowInProcess):
     """Przebiegi przez FlowEngine z atrapą `claude`."""
