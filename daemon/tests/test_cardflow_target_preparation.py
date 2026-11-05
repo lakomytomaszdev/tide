@@ -85,7 +85,53 @@ class TargetPreparationTest(DurableMergeFixture, FlowInProcess):
         self.assertTrue(Path(p["targetWorktree"], "result.txt").exists())
         self.assertEqual(git(p["targetWorktree"], "status", "--porcelain"), "")
 
-    def check_already_merged_recovery_after_release(self, boundary):
+    def check_already_merged_descendant_before_preparation(self, boundary):
+        if boundary == "target-ref-created":
+            remote, start = self.remote_base()
+            git(self.repo, "update-ref", remote, self.source_commit, start)
+            ref = "refs/heads/new/contains-card"
+        else:
+            git(self.repo, "branch", "local/contains-card", self.source_commit)
+            ref = "refs/heads/local/contains-card"
+        p = self.preview(ref)
+        self.assertTrue(p["canMerge"], p)
+        self.assertEqual(p["commitCount"], 0)
+        self.assertTrue(p["targetPreparation"]["createWorktree"])
+        request = self.consent(p)
+        self.crash_at(request, boundary)
+        intent = self.intent()
+        self.assertTrue(intent["already"])
+        # Potomek wyniku nie dowodzi wykonania zasobów przed trwałym ref-moved.
+        descendant = git(self.repo, "commit-tree", self.source_commit + "^{tree}",
+                         "-p", self.source_commit, "-m", "user continuation").strip()
+        git(self.repo, "update-ref", ref, descendant, self.source_commit)
+        self.write(self.repo, "local.txt", "praca użytkownika\n")
+        before_recovery = fingerprint(self.repo)
+        column = self.store.load().cards[int(self.card_id[2:])].column
+        self.assertFalse(Path(p["targetWorktree"]).exists())
+        self.restart_stopped()
+        with mock.patch("tide_daemon.cardflow.mergeop.MergeWorktree.execute", side_effect=AssertionError("drugi merge")):
+            result = self.call("merge_card", request)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error"], "main-merge")
+        self.assertIn("ref celu zmienił commit", result["message"])
+        self.assertFalse(Path(p["targetWorktree"]).exists())
+        self.assertEqual(self.sha(ref), descendant)
+        self.assertEqual(fingerprint(self.repo), before_recovery)
+        events = self.events(self.card_id)
+        self.assertTrue(any(e["type"] == "main-merge.waiting" and e.get("key") == intent["key"] for e in events))
+        self.assertFalse(any(e["type"] in ("card.merged", "card.finished") or
+                             e["type"] == "result" and e.get("action") == "main-merge" or
+                             e["type"] == "main-merge.checkpoint" and e.get("stage") == "ref-moved" for e in events))
+        self.assertEqual(self.store.load().cards[int(self.card_id[2:])].column, column)
+
+    def test_already_merged_descendant_after_intent_waits_before_worktree_creation(self):
+        self.check_already_merged_descendant_before_preparation("intent")
+
+    def test_already_merged_descendant_after_owned_ref_creation_waits(self):
+        self.check_already_merged_descendant_before_preparation("target-ref-created")
+
+    def check_already_merged_recovery_after_release(self, boundary, *, advance_target=False):
         git(self.repo, "branch", "local/contains-card", self.source_commit)
         p = self.preview("refs/heads/local/contains-card")
         request = self.consent(p)
@@ -109,6 +155,10 @@ class TargetPreparationTest(DurableMergeFixture, FlowInProcess):
         self.assertFalse(any(e["type"] in ("card.merged", "card.finished") for e in events))
         self.assertNotIn("locked", git(self.repo, "worktree", "list", "--porcelain"))
         # Po zwolnieniu zasobów użytkownik może już pracować w celu; recovery ma tylko dokończyć projekcję.
+        target_commit = self.source_commit
+        if advance_target:
+            self.write(p["targetWorktree"], "continuation.txt", "dalsza praca użytkownika\n")
+            target_commit = self.commit(p["targetWorktree"], "user continuation")
         self.write(p["targetWorktree"], "local.txt", "praca po odblokowaniu\n")
         before_recovery = fingerprint(self.repo)
         self.restart_stopped()
@@ -121,7 +171,7 @@ class TargetPreparationTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(result["operationId"], intent["key"])
         self.assertEqual(result["targetRef"], p["targetRef"])
         self.assertEqual(result["resultCommit"], self.source_commit)
-        self.assertEqual(self.sha(p["targetRef"]), self.source_commit)
+        self.assertEqual(self.sha(p["targetRef"]), target_commit)
         self.assertEqual(self.sha(self.target), self.before)
         self.assertEqual(fingerprint(self.repo), before_recovery)
         events = self.events(self.card_id)
@@ -137,6 +187,9 @@ class TargetPreparationTest(DurableMergeFixture, FlowInProcess):
 
     def test_already_merged_recovery_after_result_saved_before_projection(self):
         self.check_already_merged_recovery_after_release("result-saved")
+
+    def test_already_merged_descendant_after_result_saved_only_finishes_projection(self):
+        self.check_already_merged_recovery_after_release("result-saved", advance_target=True)
 
     def test_already_merged_unlocked_worktree_before_git_completion_is_not_adopted(self):
         git(self.repo, "branch", "local/contains-card", self.source_commit)

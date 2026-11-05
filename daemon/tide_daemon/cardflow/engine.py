@@ -5036,9 +5036,9 @@ class FlowEngine(PlanEditing):
                 if (self.git.run(intent["repo"], "symbolic-ref", "--quiet", owner).ok or
                         self.git.sha(intent["repo"], owner) != intent["targetCommitBefore"]):
                     raise FlowGitError("obcy ref celu — brak dowodu własności operacji")
-            # Przy already == before sam obecny ref nie dowodzi wykonania obiecanego etapu zasobów.
+            # Przy already ani wynik, ani jego potomek nie dowodzi wykonania obiecanego etapu zasobów.
             # Trwałe ref-moved dowodzi zakończenia tego etapu także bez zmiany SHA, przed zwolnieniem blokady.
-            needs_worktree = (intent.get("already") and current == intent["targetCommitBefore"] and
+            needs_worktree = (intent.get("already") and
                               intent.get("targetPreparation", {}).get("createWorktree") and "ref-moved" not in stages)
             if self._result_in_target(intent, current) and not needs_worktree:
                 tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{intent['resultCommit']}^{{tree}}")
