@@ -63,7 +63,7 @@ from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
 from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step,
-                    guard_reason, _epoch)
+                    guard_reason, _epoch, _bookkeeping)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -90,6 +90,7 @@ OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym pro
 OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
+FLOW_ERROR_PERSIST = 10.0       # s: ten sam błąd Tide w kolejnym przebiegu po tylu sekundach — wyzwalacz opiekuna
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
@@ -224,6 +225,11 @@ class _CaretakerPort:
                                   reason=done.get("reason") or "", caretaker=ident,
                                   caretakerStep=run.get("step") or "", instruction=instruction)
         return {"target": name, "label": self._label(st, name)}
+
+    def retry_stage(self, problem: dict, params: dict) -> dict:
+        """Akcja `retry-stage` (PT-147), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`: przebieg etapu
+        karty od razu, raz (`FlowEngine._retry_stage`)."""
+        return self.engine._retry_stage(self.card, self.run, problem)
 
     @staticmethod
     def _label(st: FlowState, name: str) -> str:
@@ -1925,14 +1931,34 @@ class FlowEngine(PlanEditing):
         if current.running() and (current.plan_revision or {}).get("pending"):
             self._advance_plan_review(card, current)
         self._queue_notices(card)
-        st = fold(self.journal.read(card))
+        for found in self._advance_card(card):
+            self._flow_error(card, found)
+        # Opiekun karty (PT-143) po istniejących automatach (ponowienie, mocniejszy wykonawca, odpowiedź
+        # o środowisko, auto-odmowa) i przed powiadomieniami (`_queue_notices` w `tick`).
+        self._caretake(card, fold(self.journal.read(card)))
+
+    def _advance_card(self, card: str, *, own: tuple | None = None) -> list[dict]:
+        """Przebieg etapów karty: ostatnie kroki ticketów, kolejny ticket planu, domknięcie karty i commit planu.
+        Zwraca błędy Tide z tego przebiegu (`{error, stage, step, ticket}`), nie zapisuje ich — zapisuje
+        `_flow_error` w zwykłym przebiegu, a ponowienie etapu opiekuna (`retry-stage`, PT-147) ocenia nimi swój
+        wynik. `own` — para „zamiar → wynik” akcji opiekuna, w której ten przebieg się wykonuje: nie blokuje go
+        jako zaczęta akcja karty. Wyjątki spoza błędów Tide (poza izolowanymi przy krokach) przechodzą dalej."""
+        found: list[dict] = []
+
+        def fresh() -> FlowState:
+            current = fold(self.journal.read(card))
+            if own is not None:
+                current.intents.pop(own, None)
+            return current
+
+        st = fresh()
         if not st.card_finished:
             try:
                 latest = {}
                 for name, step in st.steps.items():
                     latest[step.get("ticket")] = name
                 for name in latest.values():
-                    current = fold(self.journal.read(card))
+                    current = fresh()
                     step = current.steps[name]
                     open_same = [s for s in current.open_consoles()
                                  if s.get("ticket") == step.get("ticket")]
@@ -1950,8 +1976,8 @@ class FlowEngine(PlanEditing):
                     except Exception as exc:
                         # Izolacja (03.11, „błędy koordynacji to rak”): błąd przy jednym tickecie zatrzymuje tylko
                         # ten ticket — pozostałe tickety, start nowych i domknięcie karty idą dalej.
-                        self._isolated_fault(card, name, exc)
-                current = fold(self.journal.read(card))
+                        found.append(self._isolated_fault(card, current, name, exc))
+                current = fresh()
                 try:
                     if current.plan_approved is not None:
                         self._plan_next(card, current)
@@ -1960,15 +1986,14 @@ class FlowEngine(PlanEditing):
                 except FlowDeferred:
                     pass
                 except Exception as exc:
-                    self._isolated_fault(card, "", exc)
-                self._advance_close(card, fold(self.journal.read(card)))
+                    found.append(self._isolated_fault(card, current, "", exc))
+                self._advance_close(card, fresh())
             except FlowDeferred:
                 pass
             except (FlowError, FlowGitError) as exc:
-                problem = f"{exc.__class__.__name__}: {exc}"
-                if st.flow_error != problem:
-                    self.journal.append(card, "flow.error", error=problem)
-        st = fold(self.journal.read(card))
+                found.append({"error": f"{exc.__class__.__name__}: {exc}", "stage": "close", "step": "",
+                              "ticket": ""})
+        st = fresh()
         if st.plan_approved is not None and not st.card_finished and not st.open_intents() and not any(
                 s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend")
                 and s["step"] not in st.finished for s in st.steps.values()) and not any(
@@ -1983,24 +2008,42 @@ class FlowEngine(PlanEditing):
                     try:
                         self._plan_commit(card, st, self._repo(card), info["cardBranch"], info["cardWorktree"])
                     except (FlowError, FlowGitError) as exc:
-                        problem = f"{exc.__class__.__name__}: {exc}"
-                        if st.flow_error != problem:
-                            self.journal.append(card, "flow.error", error=problem)
-        # Opiekun karty (PT-143) po istniejących automatach (ponowienie, mocniejszy wykonawca, odpowiedź
-        # o środowisko, auto-odmowa) i przed powiadomieniami (`_queue_notices` w `tick`).
-        self._caretake(card, fold(self.journal.read(card)))
+                        found.append({"error": f"{exc.__class__.__name__}: {exc}", "stage": "plan-commit",
+                                      "step": "", "ticket": ""})
+        return found
 
-    def _isolated_fault(self, card: str, step_name: str, exc: Exception) -> None:
-        """Błąd koordynacji jednego kroku: zapis w dzienniku (raz dla tego samego tekstu) i ślad w dzienniku usługi."""
+    def _isolated_fault(self, card: str, st: FlowState, step_name: str, exc: Exception) -> dict:
+        """Błąd koordynacji jednego kroku (albo kolejnego ticketu planu): opis do `_flow_error` i ślad w dzienniku
+        usługi. Etap (`stage`, część id problemu opiekuna `flow-error:<etap>`, PT-147): `advance:<ticket>` — dalszy
+        etap ticketu po jego ostatnim kroku, `plan-next` — start kolejnego ticketu planu, `advance` — pierwszy krok."""
         import traceback
-        problem = f"{exc.__class__.__name__}: {exc}"
-        st = fold(self.journal.read(card))
         step = st.steps.get(step_name) or {}
-        if st.flow_error != problem:
-            self.journal.append(card, "flow.error", error=problem, step=step_name, ticket=step.get("ticket") or "")
+        ticket = step.get("ticket") or ""
+        stage = (f"advance:{ticket}" if ticket else "advance") if step_name else \
+            "plan-next" if st.plan_approved is not None else "advance"
         if not isinstance(exc, (FlowError, FlowGitError)):
             print(f"tide-daemon: przepływ karty {card}, krok {step_name or '-'}: "
                   + "".join(traceback.format_exception_only(type(exc), exc)).strip(), flush=True)
+        return {"error": f"{exc.__class__.__name__}: {exc}", "stage": stage, "step": step_name, "ticket": ticket}
+
+    def _flow_error(self, card: str, found: dict) -> None:
+        """Zapis błędu Tide: `flow.error` raz dla tego samego tekstu (z etapem i chwilą `at` z zegara silnika); ten sam
+        tekst w kolejnym przebiegu co najmniej `FLOW_ERROR_PERSIST` s po pierwszym — jeden `flow.error-persisted`
+        (wyzwalacz opiekuna, PT-147). Błąd, który w następnym przebiegu już nie wystąpił, zostaje jednorazowy."""
+        st = fold(self.journal.read(card))
+        error = found["error"]
+        if st.flow_error != error:
+            self.journal.append(card, "flow.error", error=error, stage=found.get("stage") or "",
+                                step=found.get("step") or "", ticket=found.get("ticket") or "", at=self.clock())
+            return
+        first = st.flow_error_event or {}
+        if st.flow_error_persisted or not first:
+            return
+        at = float(first.get("at") or _epoch(first.get("ts")) or 0.0)
+        if self.clock() - at >= FLOW_ERROR_PERSIST:
+            self.journal.append(card, "flow.error-persisted", error=error, stage=first.get("stage") or "",
+                                step=first.get("step") or "", ticket=first.get("ticket") or "",
+                                since=first.get("seq") or 0)
 
     @staticmethod
     def _wip_for(st: FlowState, step_id: str) -> dict:
@@ -3987,6 +4030,48 @@ class FlowEngine(PlanEditing):
         failed = made.get("failed") or ""
         self._caretaker_record(card, run, name, params, ok=not failed, error=made.get("error") or "",
                                code=failed, label=made.get("label") or "", retried=made.get("target") or "")
+
+    def _retry_stage(self, card: str, run: dict, problem: dict) -> dict:
+        """Ponowienie etapu karty od razu, raz (akcja opiekuna `retry-stage`, PT-147): `stage.retry` (zapis opiekuna,
+        pole `caretaker`) i jeden przebieg `_advance_card` — ta sama ścieżka co zwykły przebieg, z parą akcji
+        opiekuna wyłączoną z „zaczętych akcji karty”. Wynik:
+        - błąd Tide w tym przebiegu → `stage-failed` (błąd zapisuje zwykły `_flow_error`, ten sam tekst nie daje
+          nowego zdarzenia), etap, który niczego nie zmienił (żadnego zdarzenia poza pracą opiekuna) →
+          `stage-no-change`; oba to nieudane działania liczone do limitu,
+        - udany przebieg przy problemie `flow-error` zdejmuje jego błąd (`flow.error-cleared`), żeby rozwiązany
+          problem nie uruchamiał kolejnych kroków opiekuna,
+        - `stage.retry` tego kroku opiekuna już jest (restart między zamiarem a wynikiem) → `stage-interrupted`
+          bez drugiego przebiegu: etap ponawia się dokładnie raz, a dalej i tak ponawia go zwykły przebieg."""
+        ident = run.get("problem") or problem.get("id") or ""
+        own = run.get("step") or ""
+        stage = problem.get("stage") or (ident.split(":", 1)[1] if ":" in ident else "")
+        label = f"„{stage}”" if stage else "karty"
+        events = self.journal.read(card)
+        if any(e.get("type") == caretaker.STAGE_RETRY and e.get("caretakerStep") == own for e in events):
+            return {"failed": caretaker.STAGE_INTERRUPTED, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_INTERRUPTED}: ponowienie etapu {label} przerwał restart usługi"}
+        before = fold(events)
+        mark = self.journal.append(card, caretaker.STAGE_RETRY, problem=ident, stage=stage,
+                                   ticket=run.get("ticket") or "", caretaker=ident, caretakerStep=own)
+        try:
+            found = self._advance_card(card, own=("caretaker-action", own))
+        except Exception as exc:        # jak w `tick`: błąd przebiegu nie zatrzymuje opiekuna ani karty
+            found = [{"error": f"{exc.__class__.__name__}: {exc}", "stage": stage, "step": "", "ticket": ""}]
+        for item in found:
+            self._flow_error(card, item)
+        if found:
+            error = next((f["error"] for f in found if f.get("stage") == stage), found[0]["error"])
+            return {"failed": caretaker.STAGE_FAILED, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_FAILED}: {error}"}
+        after = self.journal.read(card)
+        now = fold(after)
+        changed = [e for e in after if int(e.get("seq") or 0) > mark["seq"] and not _bookkeeping(now, e)]
+        if not changed:
+            return {"failed": caretaker.STAGE_NO_CHANGE, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_NO_CHANGE}: ponowienie etapu {label} niczego nie zmieniło"}
+        if run.get("trigger") == "flow-error" and now.flow_error and now.flow_error == before.flow_error:
+            self.journal.append(card, "flow.error-cleared", error=now.flow_error, caretaker=ident, caretakerStep=own)
+        return {"target": stage, "label": label}
 
     def _finish_caretaker(self, card: str, step: dict, forced: dict | None, exit_code) -> None:
         """Koniec kroku opiekuna: wynik sprawdza `caretaker.parse_result` (granica uprawnień w Tide), w dzienniku

@@ -88,6 +88,12 @@ class FlowState:
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
     rejected: set = field(default_factory=set)
     flow_error: str = ""
+    # Błąd Tide (PT-147): zdarzenie bieżącego `flow.error`, czy utrzymał się w kolejnym przebiegu
+    # (`flow.error-persisted`) i czy ten sam tekst już kiedyś był (`flow_error_texts` od `card.started`).
+    flow_error_event: dict | None = None
+    flow_error_persisted: bool = False
+    flow_error_repeated: bool = False
+    flow_error_texts: set = field(default_factory=set)
     last_seq: int = 0
     # Opiekun karty (PT-143): kroki `caretaker` nie są krokami ticketów — osobno od `steps`, żeby żaden wyzwalacz,
     # „ostatni krok ticketu” ani decyzja ich nie widziały (bez rekursji). Ich `step.finished` trafia do `finished`.
@@ -183,7 +189,7 @@ def fold(events: list[dict]) -> FlowState:
     st = FlowState()
     for e in events:
         kind = e.get("type")
-        if kind != "card.stalled":
+        if kind != "card.stalled" and not _bookkeeping(st, e):
             st.last_activity_ts = _epoch(e.get("ts")) or st.last_activity_ts
             st.stalled_since = ""
         if kind in ("card.started", "card.stalled", "step.started", "step.finished", "step.waiting", "review.verdict",
@@ -222,6 +228,7 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaking = {}
             st.caretaker_escalations = {}
             st.caretaker_limits = {}
+            st.flow_error_texts = set()
         elif kind == "step.started" and e.get("kind") == "caretaker":
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
@@ -280,6 +287,7 @@ def fold(events: list[dict]) -> FlowState:
                 st.last_step = e.get("step") or ""
             st.moved_to = ""
             st.flow_error = ""
+            st.flow_error_event, st.flow_error_persisted, st.flow_error_repeated = None, False, False
         elif kind == "step.entered" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
@@ -380,6 +388,17 @@ def fold(events: list[dict]) -> FlowState:
             st.reviewer_overrides[e.get("ticket")] = e
         elif kind == "flow.error":
             st.flow_error = e.get("error") or ""
+            st.flow_error_event, st.flow_error_persisted = e, False
+            st.flow_error_repeated = st.flow_error in st.flow_error_texts
+            st.flow_error_texts.add(st.flow_error)
+        elif kind == "flow.error-persisted":
+            if st.flow_error and e.get("error") == st.flow_error:
+                st.flow_error_persisted = True
+        elif kind == "flow.error-cleared":
+            # Udane ponowienie etapu przez opiekuna (PT-147): błąd już nie występuje.
+            if st.flow_error and e.get("error") == st.flow_error:
+                st.flow_error = ""
+                st.flow_error_event, st.flow_error_persisted, st.flow_error_repeated = None, False, False
         elif kind == "card.paused":
             st.paused = True
         elif kind == "card.resumed":
@@ -416,6 +435,24 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_change_seq = int(e.get("seq") or 0)
             st.plan_change_ts = e.get("ts") or ""
     return st
+
+
+# PT-147: zdarzenia, które nie są pracą karty — nie przesuwają `last_activity_ts` i nie zdejmują „stoi”.
+BOOKKEEPING = ("flow.error-persisted", "stage.retry")
+
+
+def _bookkeeping(st: FlowState, e: dict) -> bool:
+    """Zdarzenie opiekuna karty (`caretaker.*`, krok i czekanie rodzaju `caretaker`, para `step-start` jego kroku,
+    para `caretaker-action`), znacznik utrzymującego się błędu Tide i zapis ponowienia etapu. Bez tego praca opiekuna nad kartą, która stoi, sama zdejmowałaby „stoi”, a problem
+    `stalled:card` znikałby, zanim opiekun skończy (PT-147). Skutki akcji opiekuna (np. `step.started` po
+    ponowieniu etapu) są zwykłą pracą."""
+    kind = e.get("type") or ""
+    if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") == "caretaker":
+        return True
+    if kind in ("intent", "result"):
+        return e.get("action") == "caretaker-action" or (
+            e.get("action") == "step-start" and e.get("key") in st.caretaker_runs)
+    return bool(e.get("step")) and e.get("step") in st.caretaker_runs
 
 
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
@@ -619,6 +656,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                                     for (ticket, kind), item in st.waiting.items()]})
     from .caretaker import view as caretaker_view
     out["flow"]["caretaker"] = caretaker_view(st)
+    # PT-147: opiekun pracuje nad kartą, która stoi (albo ma błąd Tide) — znacznik opiekuna zamiast „stoi”.
+    caring = out["flow"]["caretaker"]["working"] if not attention else []
     out['flow']['trackerQueue'] = [
         {key: e.get(key) for key in ('action', 'key', 'after', 'error')} for e in st.tracker_retries.values()]
     tracker_reason = next(reversed(list(st.tracker_retries.values())), {}).get('error') or ''
@@ -693,6 +732,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             result["nextStep"] = "wybierz model do review planu"
             return result
         if st.stalled_since:
+            if caring:
+                return _fill(out, "progress", caring[0]["label"])
             return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
         focus = decision_step(st)
         focus_step = st.steps.get(focus) or {}
@@ -747,6 +788,8 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         out["done"] = 1
         return _fill(out, "review", f"✓ {ident} na gałęzi karty — do sprawdzenia")
     if st.stalled_since:
+        if caring:
+            return _fill(out, "progress", caring[0]["label"])
         return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if st.started.get('trackerProject') and st.started.get('entry') == 'now' and not st.steps:
         return _fill(out, 'backlog' if st.paused else 'progress',
@@ -769,8 +812,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     failed = [r for (a, _k), r in st.results.items() if not r.get("ok") and a != "merge"]
     if st.waiting and not st.running() and not attention:
         return _fill(out, "progress", f"{ident} · {next(reversed(st.waiting.values()))['reason']}")
-    caring = out["flow"]["caretaker"]["working"]
-    if caring and not attention:
+    if caring:
         # Opiekun sprawdza problem (PT-143): decyzja jest ukryta, karta „W toku” bez powiadomienia.
         return _fill(out, "progress", caring[0]["label"])
     if st.running() and not attention:

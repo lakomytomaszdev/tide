@@ -279,14 +279,16 @@ class NoCaretakerTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_only_escalate_and_retry_are_registered(self):
-        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry"})      # `retry` — PT-150
+    def test_only_escalate_retry_and_retry_stage_are_registered(self):
+        # `retry` — PT-150, `retry-stage` i wyzwalacze błędu Tide i zastoju — PT-147.
+        self.assertEqual(set(caretaker.ACTIONS), {"escalate", "retry", "retry-stage"})
         for name in ("approve-plan", "approve", "allow", "run", "run-always", "outside", "merge", "push", "reject",
                      "reject-ticket"):
             self.assertNotIn(name, caretaker.ACTIONS)
-        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry"})
-        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error"})
-        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS], ["_error_trigger"])
+        self.assertEqual(set(caretaker.HISTORY_LABELS), {"escalate", "retry", "retry-stage"})
+        self.assertEqual(set(caretaker.BRIEF_SECTIONS), {"error", "flow-error", "stalled"})
+        self.assertEqual([t.__name__ for t in caretaker.TRIGGERS],
+                         ["_error_trigger", "_flow_error_trigger", "_stalled_trigger"])
 
 
 class ParseResultTest(unittest.TestCase):
