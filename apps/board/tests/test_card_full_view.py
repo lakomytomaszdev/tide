@@ -92,6 +92,32 @@ class FixtureTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FullViewTest(ProbeCase):
+    def test_talk_button_and_escalated_decision_call_the_service(self):
+        from unittest import mock
+        from tide_daemon.cardflow.engine import FlowEngine
+        from tide_daemon.cardflow import caretaker
+        events = self.caretaker_events(escalated=True)
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = mock.Mock()
+        engine.journal.read.return_value = events
+        engine._caretaker_setup = lambda st: caretaker.setup(st)
+        engine._limit_view = lambda *args: None
+        computed = engine.derived({"id": "K-8", "column": "todo"})
+        data = full_card(self.data, events)
+        data["cardOpen"] = "full"
+        next(c for c in data["cards"] if c["id"] == "K-8")["derived"] = computed
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(named("talkToCaretaker"))
+out["button"] = calls()
+js("page.cardFullView.form.pick('talk-to-caretaker')")
+click(named("fullChoose"))
+out["option"] = calls()
+""", data)
+        self.assertEqual(out["button"][-1], ["TalkToCaretaker", "K-8", "{}"])
+        self.assertEqual(out["option"][-1][0:2], ["TalkToCaretaker", "K-8"])
+        self.assertEqual(json.loads(out["option"][-1][2]), {"problem": "error:K-8-PT-2-1"})
+
     def test_scenario_e_lists_stopped_steps_and_moves_them_to_codex_after_showing_the_cost(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))

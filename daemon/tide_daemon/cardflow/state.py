@@ -99,6 +99,9 @@ class FlowState:
     # Opiekun karty (PT-143): kroki `caretaker` nie są krokami ticketów — osobno od `steps`, żeby żaden wyzwalacz,
     # „ostatni krok ticketu” ani decyzja ich nie widziały (bez rekursji). Ich `step.finished` trafia do `finished`.
     caretakers: dict = field(default_factory=dict)            # krok opiekuna → step.started (kind caretaker)
+    caretaker_chats: dict = field(default_factory=dict)       # rozmowa → kontekst jej otwarcia
+    caretaker_chat_actions: dict = field(default_factory=dict)  # plik akcji → utrwalony wynik walidacji i kontekst
+    caretaker_chat_files: dict = field(default_factory=dict)    # niepełny JSON → metadane ostatniego odczytu
     caretaker_runs: dict = field(default_factory=dict)        # krok opiekuna → caretaker.started
     caretaker_outcomes: dict = field(default_factory=dict)    # krok opiekuna → caretaker.escalated / caretaker.action
     caretaker_escalations: dict = field(default_factory=dict)  # id problemu → ostatnie caretaker.escalated
@@ -247,9 +250,15 @@ def fold(events: list[dict]) -> FlowState:
             st.caretaker_limits = {}
             st.flow_errors = {}
             st.flow_error_texts = set()
-        elif kind == "step.started" and e.get("kind") == "caretaker":
+        elif kind == "step.started" and e.get("kind") in ("caretaker", "caretaker-chat"):
             st.waiting.pop((e.get("ticket"), "caretaker"), None)
             st.caretakers[e.get("step")] = e
+        elif kind == "caretaker.chat":
+            st.caretaker_chats[e["step"]] = e
+        elif kind == "caretaker.chat-action":
+            st.caretaker_chat_actions[e["step"]] = e
+        elif kind == "caretaker.chat-file":
+            st.caretaker_chat_files[e["step"]] = e
         elif kind == "caretaker.decision":
             st.caretaker_decisions[e.get("problem")] = e
             st.stalled_since = ""
@@ -319,17 +328,18 @@ def fold(events: list[dict]) -> FlowState:
                 st.flow_errors.pop("plan-next", None)
             if e.get("kind") == "close":
                 st.flow_errors.pop("close", None)
-        elif kind == "step.entered" and e.get("step") in st.steps:
-            st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
+        elif kind == "step.entered" and e.get("step") in {**st.steps, **st.caretakers}:
+            steps = st.caretakers if e["step"] in st.caretakers else st.steps
+            steps[e["step"]] = {**steps[e["step"]], "mode": "interactive",
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",
                                    "source": e.get("source") or "", "taskFile": e.get("taskFile") or "",
                                    "consoleClosed": False, "consoleOpened": False}
-        elif kind == "step.console_opened" and e.get("step") in st.steps:
-            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleOpened": True}
-        elif kind == "step.console_closed" and e.get("step") in st.steps:
-            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleClosed": True}
+        elif kind in ("step.console_opened", "step.console_closed") and e.get("step") in {**st.steps, **st.caretakers}:
+            steps = st.caretakers if e["step"] in st.caretakers else st.steps
+            field = "consoleOpened" if kind == "step.console_opened" else "consoleClosed"
+            steps[e["step"]] = {**steps[e["step"]], field: True}
         elif kind == "step.transfer_requested":
             st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":
@@ -488,12 +498,12 @@ def _bookkeeping(st: FlowState, e: dict) -> bool:
     kind = e.get("type") or ""
     if kind == "flow.notice" and (e.get("key") or "").startswith("caretaker:"):
         return True
-    if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") == "caretaker":
+    if kind.startswith("caretaker.") or kind in BOOKKEEPING or e.get("kind") in ("caretaker", "caretaker-chat"):
         return True
     if kind in ("intent", "result"):
         return e.get("action") == "caretaker-action" or (
             e.get("action") == "step-start" and e.get("key") in st.caretaker_runs)
-    return bool(e.get("step")) and e.get("step") in st.caretaker_runs
+    return bool(e.get("step")) and (e.get("step") in st.caretaker_runs or e.get("step") in st.caretaker_chats)
 
 
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:

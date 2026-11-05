@@ -157,6 +157,50 @@ class FlowCase(unittest.TestCase):
             return json.load(fh)
 
 
+class CaretakerChatDbusTest(FlowCase):
+    def spawn(self):
+        service = "org.kde.konsole.tide_caretaker_test"
+        fake = os.path.join(os.path.dirname(__file__), "fake_konsole.py")
+        if not getattr(self, "fake_console", None):
+            self.fake_console = self.service.spawn(["/usr/bin/python3", fake, service, "1"], service)
+        self.env.update(TIDE_FAKE_KONSOLE_SERVICE=service, TIDE_FAKE_KONSOLE=fake)
+        return super().spawn()
+
+    def console_tasks(self):
+        reply = self.service.call("org.kde.konsole.tide_caretaker_test", "/Windows/1",
+                                  "org.kde.konsole.Window", "Tasks")
+        return json.loads(reply.arguments()[0])
+
+    def test_talk_opens_console_with_chat_context_and_only_one_session(self):
+        card = self.card(description="Eksport.\n\nATRAPA: blad-opiekun\nATRAPA-POWOD: test pada ATRAPA-OPIEKUN: escalate")
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=30))
+        problem = self.of(card, "caretaker.started")[0]["problem"]
+        reply = self.call("TalkToCaretaker", card, json.dumps({"problem": problem}))
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: self.console_tasks(), timeout=5))
+        [task] = self.console_tasks()
+        self.assertIn("rozmowa z opiekunem", task["title"])
+        started = next(s for s in self.of(card, "step.started") if s["step"] == reply["step"])
+        self.assertEqual(started["kind"], "caretaker-chat")
+        self.assertTrue(os.path.isdir(os.path.join(started["stepDir"], "in", "context")))
+        self.assertEqual(task["workdir"], os.path.join(started["stepDir"], "out"))
+        self.assertIn("Tryb rozmowy", task["argv"][-1])
+        self.assertEqual(self.call("TalkToCaretaker", card, "{}")["error"], "console-open")
+        self.assertEqual(self.call("TalkToCaretaker", card, "[]")["error"], "bad-request")
+        path = os.path.join(started["stepDir"], "out", "action-1.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"result": "done", "action": "retry", "step": self.of(card, "caretaker.started")[0]["target"],
+                       "instruction": "Sprawdź format.", "reason": "Format daty."}, fh)
+        def actions():
+            return [e for e in self.of(card, "caretaker.action") if e.get("mode") == "chat"]
+        self.assertTrue(wait_until(actions, timeout=5))
+        self.assertTrue(actions()[0]["ok"], actions())
+        self.restart()
+        self.call("GetCardFlowSettings")
+        self.assertEqual(len(actions()), 1)
+
+
 class PlanDbusTest(FlowCase):
     def test_full_planning_finds_claude_in_local_bin_without_service_path(self):
         local_bin = os.path.join(self.env["HOME"], ".local", "bin")

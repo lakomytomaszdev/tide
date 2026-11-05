@@ -100,6 +100,7 @@ Item {
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)
         onFlowRequested: (tag, id, request) => view.backend.startCard(tag, id, request)
         onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
+        onCaretakerTalkRequested: (tag, id, request) => view.backend.talkToCaretaker(tag, id, request)
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)

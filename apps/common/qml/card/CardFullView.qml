@@ -69,6 +69,7 @@ Rectangle {
     // kind: move {column} | update {field, value} | pause {paused} | archive {}; params.effect — zdanie o skutku.
     signal settingRequested(string kind, var params)
     signal enterStepRequested(string stepId)
+    signal caretakerTalkRequested()
 
     // --- rzadkie ustawienia (PT-134) -----------------------------------------------------------------
     readonly property string storedBranch: card && card.branch ? card.branch : ""
@@ -470,6 +471,14 @@ Rectangle {
                     Accessible.name: "Menu karty: ustawienia i akcje"
                     onClicked: view.menuOpen = !view.menuOpen
                 }
+            }
+
+            Tide.TextButton {
+                objectName: "talkToCaretaker"
+                visible: !!(view.flow && view.flow.canTalkToCaretaker)
+                text: "Porozmawiaj z opiekunem"
+                variant: "outline"
+                onClicked: view.caretakerTalkRequested()
             }
 
             RowLayout {

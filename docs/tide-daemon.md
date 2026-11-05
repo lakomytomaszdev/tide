@@ -1894,8 +1894,8 @@ eskalacji; bez dostępnego opiekuna zostaje przy `card.stalled`.
 Eskalacja problemu `flow-error:<etap>` lub `stalled:card`, także po limicie działań, daje rodzaj `caretaker`
 w `decisions.KINDS` i `derived.flow.decisions[]` (PT-154). Niepuste `happened` i `why` opisują zatrzymanie
 karty i potrzebę decyzji. Pole `caretaker{summary, recommendation, tried[], optionId, failed}` zasila wspólny
-blok „Opiekun poleca” oraz zwijane „Co próbowano”. Okna Tablicy i Sesji pokazują dwie możliwości: „Ponów etap”
-oraz „Zamknij”; nie wybierają żadnej domyślnie. Powiadomienie o tej decyzji powstaje raz, z zapisem `flow.notice`
+blok „Opiekun poleca” oraz zwijane „Co próbowano”. Okna Tablicy i Sesji pokazują „Ponów etap”, „Zamknij”
+oraz „Porozmawiaj z opiekunem”; nie wybierają żadnej domyślnie. Powiadomienie o tej decyzji powstaje raz, z zapisem `flow.notice`
 w dzienniku, także po restarcie usługi. Dotychczasowe decyzje kroków nadal korzystają ze swoich metod.
 
 `ResolveCardCaretaker(s id, s request) → s json` na `/Board` (`org.tide.Daemon.Board`) przyjmuje obiekt JSON:
@@ -1910,6 +1910,36 @@ zamknięcie błędu usuwa jego bieżący znacznik, więc kolejne wystąpienie je
 
 Pole `caretaker` jest wyłącznie wewnętrznym oznaczeniem akcji opiekuna: `ResolveCardStep` z tym polem
 w żądaniu D-Bus zwraca `bad-request`. Sygnatury istniejących metod pozostają bez zmian.
+
+### Rozmowa z opiekunem
+
+`/Board TalkToCaretaker(s id, s request) → s json` przyjmuje `{}` albo `{"problem":"<id problemu>"}`
+i zwraca `{ok: true, step}`. Pełna karta z dziennikiem, przed zakończeniem, daje przycisk „Porozmawiaj
+z opiekunem” (`derived.flow.canTalkToCaretaker`). Ta sama możliwość w decyzji `caretaker` i w decyzjach
+eskalowanych przekazuje id konkretnego problemu. Bez id rozmowa wybiera pierwszy otwarty problem;
+gdy żadnego nie ma, służy omówieniu stanu karty, a akcje wymagające problemu są nieaktualne.
+
+Tide otwiera nadzorowaną kartę Konsoli w kontekście worktree karty. Krok `caretaker-chat` („rozmowa
+z opiekunem”) pozostaje osobno od kroków ticketów. Ma kartkę w trybie rozmowy, zamaskowane
+`in/context/` (ten sam limit 400 kB), tę samą piaskownicę i oczyszczone środowisko co opiekun w tle.
+Program działa w swoim `out/`, z zapisem wyłącznie tam; worktree i gałęzie są pod strażnikiem PT-158.
+Obowiązuje wybór wykonawcy opiekuna i „Tylko lokalnie”. Brak Konsoli daje `no-terminal`, brak przepływu
+lub zakończona karta — `no-step`, druga otwarta rozmowa tej karty — `console-open`.
+
+Rozmowa zapisuje kolejne `out/action-1.json`, `action-2.json` itd., bez nadpisywania wcześniejszych
+plików. Każdy plik stosuje kontrakt wyniku kroku opiekuna w tle (`result: done`, `action` i parametry).
+Cały JSON należy zapisać jednym wywołaniem narzędzia zapisu. Niepełny JSON jest odrzucany dopiero, gdy
+metadane pliku nie zmienią się między dwoma przebiegami; odczyt w trakcie zapisu nie zużywa nazwy akcji.
+`_poll_interactive` odczytuje pliki w kolejności numerów, utrwala zwalidowany wynik wraz z kontekstem
+w `caretaker.chat-action` i wykonuje przez wspólną ścieżkę PT-150. Klucz pary „zamiar → wynik” zawiera
+id rozmowy i nazwę pliku. Restart między zamiarem, skutkiem i wynikiem nie wykonuje akcji drugi raz;
+podmiana lub usunięcie obsłużonego pliku nie zmienia utrwalonego zlecenia.
+
+Te same rejestry, zakazy i kontrola `stale` chronią każdą akcję. Próba `approve-plan`, zgody albo scalenia
+jest odrzucona z powodem w historii. Zapis w worktree lub przesunięcie gałęzi kończy rozmowę
+z `caretaker-wrote`; do potwierdzenia zatrzymania żadne kolejne pliki akcji nie są wykonywane.
+Historia używa podpisu „Opiekun (rozmowa): …” i `mode: chat`. Rozmowa oraz jej akcje nie zwiększają
+licznika działań problemu. Zamknięcie Konsoli kończy rozmowę; nie tworzy zwykłej decyzji o wznowieniu ticketu.
 
 Kartka (sekcje `flow-error` i `stalled` w `BRIEF_SECTIONS`): tekst błędu, etap, krok i ticket, podpowiedź Tide dla
 użytkownika (`flow_error_hint`) albo od kiedy karta stoi i ostatni krok, ostatnie 15 zdarzeń karty (bez pracy

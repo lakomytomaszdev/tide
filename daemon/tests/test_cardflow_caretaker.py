@@ -412,7 +412,8 @@ class DecisionAndViewTest(unittest.TestCase):
                                                  "recommendation": "Zmień wykonawcę.", "tried": [],
                                                  "optionId": "change-executor", "failed": False})
         self.assertEqual([(o["id"], o["recommended"]) for o in decision["options"]],
-                         [("change-executor", True), ("retry", False), ("reject", False)])
+                         [("change-executor", True), ("retry", False), ("reject", False),
+                          ("talk-to-caretaker", False)])
         self.assertTrue(all("selected" not in o for o in decision["options"]))
         self.assertEqual(out["column"], "waiting")
         self.assertEqual([e["target"] for e in out["flow"]["caretaker"]["escalated"]], ["K-1-PT-7-2"])

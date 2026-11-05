@@ -237,6 +237,12 @@ class BoardMonitor(QObject):
             return
         self.flow.enter_step(card_id, step_id, reply)
 
+    def talk_to_caretaker(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.talk_to_caretaker(card_id, request, reply)
+
     def abandon_step(self, card_id: str, step_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))

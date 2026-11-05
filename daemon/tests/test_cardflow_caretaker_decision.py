@@ -39,7 +39,8 @@ class CaretakerDecisionTest(unittest.TestCase):
                         self.assertEqual(decision["kind"], "caretaker")
                         self.assertTrue(decision["happened"] and decision["why"])
                         self.assertTrue(decision["caretaker"]["summary"] and decision["caretaker"]["recommendation"])
-                        self.assertEqual([o["title"] for o in decision["options"]], ["Ponów etap", "Zamknij"])
+                        self.assertEqual([o["title"] for o in decision["options"]],
+                                         ["Ponów etap", "Zamknij", "Porozmawiaj z opiekunem"])
                         engine._queue_notices("K-8")
                     self.assertEqual(len(engine.take_notices()), 1)
                     engine._queue_notices("K-8")

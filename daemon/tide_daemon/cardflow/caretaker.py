@@ -750,7 +750,8 @@ def owned(st, ident: str) -> dict:
     open_run = next((run for run in runs_all if run.get("step") not in st.caretaker_outcomes), None)
     last = st.caretaker_outcomes.get(runs[-1].get("step")) if runs else None
     limited = st.caretaker_limits.get(ident) or {}
-    handed = bool(last and last.get("type") == ESCALATED) or bool(
+    chat_escalation = st.caretaker_escalations.get(ident) or {}
+    handed = bool(chat_escalation.get("mode") == "chat" and int(chat_escalation.get("seq") or 0) > closed) or bool(last and last.get("type") == ESCALATED) or bool(
         runs and limited and int(limited.get("seq") or 0) > int(runs[-1].get("seq") or 0))
     return {"count": len(runs), "runs": runs, "next": 1 + max([int(r.get("n") or 0) for r in runs_all], default=0),
             "open": open_run, "handed": handed, "closedSeq": closed}
@@ -768,7 +769,7 @@ def _own_event(event: dict) -> bool:
     """Zdarzenie samego opiekuna: `caretaker.*`, krok rodzaju `caretaker` i zdarzenia z polem `caretaker`
     (decyzja albo ponowienie zapisane przez akcję opiekuna)."""
     kind = event.get("type") or ""
-    return kind.startswith("caretaker.") or event.get("kind") == KIND or "caretaker" in event
+    return kind.startswith("caretaker.") or event.get("kind") in (KIND, "caretaker-chat") or "caretaker" in event
 
 
 def _in_problem(st, run: dict, event: dict) -> bool:
@@ -1000,7 +1001,7 @@ def _commands_section(worktree: str, commands: bool) -> list[str]:
 
 
 def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands: bool = True,
-          context: list | None = None, context_dir: str = "", limit: int = ACTION_LIMIT) -> str:
+          context: list | None = None, context_dir: str = "", limit: int = ACTION_LIMIT, chat: bool = False) -> str:
     """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), pliki kontekstu (PT-153, `context` —
     `[{path, title, trimmed}]` z `caretakerctx.build`), dostępne akcje z parametrami, zakazy, polecenia tylko do
     odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu pochodzi
@@ -1073,6 +1074,20 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         "użytkownika.",
         "",
     ])
+    if chat:
+        text = text.replace("Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
+                            "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.",
+                            "Tryb rozmowy: rozmawiaj z użytkownikiem o stanie karty i dostępnych akcjach.")
+        text = text.replace("- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.",
+                            "- Możesz zadawać pytania w rozmowie. Zgody, zatwierdzenia i scalenie pozostają w panelu Tide.")
+        start = text.index("- Przy jednym problemie")
+        text = text[:start] + "\n## Akcje rozmowy\n\n" + (
+            "Rozmowa nie zużywa limitu działań problemu. Każdą uzgodnioną akcję zapisz osobno jako "
+            f"{out_dir}/action-<n>.json (n = 1, 2, …), tym samym kontraktem JSON:\n" +
+            json.dumps(example, ensure_ascii=False) + "\n" +
+            "Zapisz cały JSON jednym wywołaniem narzędzia zapisu; nie nadpisuj gotowych akcji. "
+            "Tide wykonuje każdą od razu i raz, a wynik zapisuje w historii karty. "
+            "Nie zapisuj result.json. Po zakończeniu rozmowy zamknij kartę Konsoli.\n")
     return text
 
 
@@ -1147,7 +1162,8 @@ def _escalations(st):
     """Aktualne eskalacje według wspólnego cyklu życia problemu w `owned()`, także bez kroku-sprawcy."""
     for ident, event in st.caretaker_escalations.items():
         own = owned(st, ident)
-        if own["handed"] and own["runs"][-1].get("step") == event.get("step"):
+        if own["handed"] and (event.get("mode") == "chat" or
+                              own["runs"] and own["runs"][-1].get("step") == event.get("step")):
             yield event
 
 
@@ -1188,6 +1204,11 @@ def annotate_escalation(st, decision: dict, escalated: dict) -> dict:
     made = dict(decision)
     made["caretaker"] = {"summary": summary, "recommendation": escalated.get("recommendation") or "",
                          "tried": tried, "optionId": option, "failed": failed}
+    made["options"] = [*(made.get("options") or []), {
+        "id": "talk-to-caretaker", "title": "Porozmawiaj z opiekunem",
+        "effect": "Otworzy rozmowę o tym problemie w Konsoli.", "recommended": False,
+        "choice": "talk-to-caretaker", "method": "TalkToCaretaker",
+        "params": {"problem": escalated.get("problem") or ""}}]
     options = made.get("options") or []
     if option and any(o.get("id") == option for o in options):
         chosen = [{**o, "recommended": True} for o in options if o.get("id") == option]
@@ -1242,15 +1263,19 @@ def running_entries(st) -> list[dict]:
     for name, step in st.caretakers.items():
         if name in st.finished:
             continue
-        out.append({"id": name, "ticket": step.get("ticket") or "", "kind": KIND, "executor": step.get("executor") or "",
-                    "mode": "background", "startedTs": _epoch(step.get("ts")),
+        kind = step.get("kind") or KIND
+        out.append({"id": name, "ticket": step.get("ticket") or "", "kind": kind, "executor": step.get("executor") or "",
+                    "mode": step.get("mode") or "background", "startedTs": _epoch(step.get("ts")),
                     "lastActivityTs": _epoch((st.activity.get(name) or step).get("ts")), "canEnter": False,
-                    "kindLabel": kind_label(KIND)})
+                    "kindLabel": kind_label(kind)})
     return out
 
 
 def history_text(event: dict) -> str:
     """Wpis historii karty dla zdarzenia opiekuna (pusty napis — zdarzenie bez wpisu)."""
+    if event.get("mode") == "chat":
+        text = history_text({**event, "mode": "background"}).replace("Opiekun:", "Opiekun (rozmowa):", 1)
+        return text.replace(" z instrukcją", "", 1) if event.get("action") == "retry" and event.get("ok") else text
     kind = event.get("type")
     action = event.get("action") or ""
     if kind == ESCALATED and event.get("limit"):

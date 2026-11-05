@@ -45,6 +45,7 @@ TICKET_STATUS = {"planned": "w planie", "queued": "w kolejce", "running": "pracu
 def enrich(st: FlowState, out: dict) -> dict:
     """Dokłada pola pełnej karty do gotowego `derived` (ten sam słownik)."""
     flow = out["flow"]
+    flow["canTalkToCaretaker"] = bool(st.started and not st.card_finished)
     decisions = flow.get("decisions") or []
     rows = {(r.get("id") or r.get("workId")): r for r in (flow.get("plan") or {}).get("rows") or []}
     merged = {t["id"] for t in out["tickets"] if t.get("state") == "gotowe"}
