@@ -174,6 +174,10 @@ class BaseGeneration:
                 self.git.sha(repo, row["archiveRef"]) != row["oldCommit"]):
             raise FlowGitError("Niepewna własność albo mapa nowego worktree: " + row["worktree"])
         snapshot = basechange.local_snapshot(self.git, repo, row["worktree"])
+        if any(entry and (entry[0].islower() or entry[0] == "S")
+               for entry in snapshot["indexEntries"].split("\0")):
+            raise FlowGitError("Indeks nowego worktree ukrywa stan plików przez "
+                               "assume-unchanged/skip-worktree: " + row["worktree"])
         if (snapshot["branch"] != ref or snapshot["head"] != sha or any(snapshot["changes"].values()) or
                 any(snapshot["operations"].values()) or snapshot["ignored"]):
             raise FlowGitError("Niepewny lub zmieniony nowy worktree: " + row["worktree"])

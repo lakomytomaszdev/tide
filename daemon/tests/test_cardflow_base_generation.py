@@ -263,6 +263,46 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(git(self.repo, "rev-parse", row["branch"]).strip(), changed)
         self.assertEqual(Path(row["worktree"], "new-work.txt").read_text(), "wkład\n")
 
+    def test_hidden_index_work_after_preparation_refuses_activation(self):
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            for resource in (0, 1):
+                with self.subTest(flag=flag, resource=resource):
+                    if flag != "--assume-unchanged" or resource:
+                        self.new_card()
+                    request = self.request(self.preview())
+                    self.crash(request, "base-change.checkpoint", stage="prepared")
+                    generation = self.intent()["generation"]
+                    row = generation[resource]
+                    git(row["worktree"], "update-index", flag, "feature.txt")
+                    path = Path(row["worktree"], "feature.txt")
+                    content = "nieujawniona praca po przygotowaniu\n"
+                    path.write_text(content)
+                    self.assertEqual(git(row["worktree"], "status", "--porcelain"), "")
+                    index = git(row["worktree"], "ls-files", "-v", "-z")
+                    for _ in range(2):
+                        self.restart()
+                        self.flow.engine.tick()
+                        self.assert_waiting()
+                        self.assertFalse(self.of(self.ident, "card.base-changed"))
+                        self.assertFalse(self.results(self.ident, "change-base"))
+                        st = fold(self.events(self.ident))
+                        self.assertEqual(st.base["baseCommit"], self.master)
+                        info = ticket_of(st)
+                        self.assertEqual(info["cardBranch"], self.started["cardBranch"])
+                        self.assertEqual(info["cardWorktree"], self.started["cardWorktree"])
+                        self.assertEqual(info["worktree"], self.started["worktree"])
+                        self.assertEqual(path.read_text(), content)
+                        self.assertEqual(git(row["worktree"], "ls-files", "-v", "-z"), index)
+                        for saved in generation:
+                            self.assertTrue(Path(saved["worktree"]).is_dir())
+                            self.assertEqual(git(self.repo, "rev-parse", saved["branch"]).strip(),
+                                             self.feature_sha)
+                            self.assertTrue(Path(saved["oldWorktree"]).is_dir())
+                            self.assertEqual(git(self.repo, "rev-parse", saved["oldBranch"]).strip(),
+                                             self.master)
+                            self.assertEqual(git(self.repo, "rev-parse", saved["archiveRef"]).strip(),
+                                             self.master)
+
     def test_process_becomes_active_after_intent_without_new_journal_event(self):
         self.ask()
         request = self.request(self.preview(step="ask"))
