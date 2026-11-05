@@ -1224,7 +1224,8 @@ out["calls"] = calls()
         self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
         self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual",
+                                                       "baseRef": "refs/heads/master", "baseCommit": "a" * 40})
         start = json.loads(out["calls"][1][1])
         self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
                          (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))

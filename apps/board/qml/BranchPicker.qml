@@ -12,6 +12,9 @@ ColumnLayout {
     property var recentBases: []
     property var selected: null
     property var pinned: null
+    property var initialSelection: null
+    property bool readOnlyRevision: false
+    property string refreshRef: ""
     property string mainRef: ""
     property string pendingTag: ""
     property string message: ""
@@ -22,9 +25,10 @@ ColumnLayout {
 
     function reset() {
         pendingTag = ""
+        refreshRef = ""
         branches = []
         recentBases = []
-        selected = pinned
+        selected = pinned || initialSelection
         mainRef = ""
         message = ""
         loading = false
@@ -54,6 +58,14 @@ ColumnLayout {
         branches = reply.branches || []
         recentBases = reply.recentBases || []
         mainRef = reply.mainRef || ""
+        if (refreshRef) {
+            selected = branches.find(b => b.ref === refreshRef && b.selectable) || null
+            refreshRef = ""
+            if (!selected) {
+                message = "Wybranej rewizji nie ma na liście — wyszukaj i wybierz ją ponownie."
+                return
+            }
+        }
         currentIndex = 0
         // Domyślna baza jest nazwanym refem głównej, nigdy bieżącym HEAD.
         if (!selected && search.text === "") selected = branches.find(b => b.ref === mainRef && b.selectable) || null
@@ -69,11 +81,13 @@ ColumnLayout {
     onActiveChanged: reset()
     onContextKeyChanged: reset()
     onPinnedChanged: reset()
+    onInitialSelectionChanged: reset()
     spacing: 8
-    FieldLabel { text: "Gałąź bazowa" }
+    FieldLabel { text: picker.readOnlyRevision ? "Rewizja do specyfikacji" : "Gałąź bazowa" }
     Text {
         Layout.fillWidth: true
         text: "Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują swoje bazy i odczyt. "
+              + (picker.readOnlyRevision ? "Kod wybranej rewizji tylko do odczytu; bez gałęzi i worktree karty. " : "")
               + (picker.pinned ? "Baza karty jest utrwalona." : picker.mainRef ? "Główna: " + picker.mainRef.substring(11) : "")
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
@@ -84,7 +98,7 @@ ColumnLayout {
     Text {
         Layout.fillWidth: true
         visible: !picker.active
-        text: "Tylko specyfikacja czeka na obsługę wybranej rewizji."
+        text: "Wybór rewizji wymaga projektu z repozytorium."
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Tide.Tokens.textMuted
@@ -105,7 +119,11 @@ ColumnLayout {
             Keys.onDownPressed: picker.currentIndex = Math.min(picker.branches.length - 1, picker.currentIndex + 1)
             Keys.onUpPressed: picker.currentIndex = Math.max(0, picker.currentIndex - 1)
         }
-        PillButton { text: "Odśwież"; onClicked: picker.refresh() }
+        PillButton {
+            objectName: "baseRefresh"
+            text: "Odśwież"
+            onClicked: { picker.refreshRef = picker.selected ? picker.selected.ref : ""; picker.refresh() }
+        }
     }
     FieldLabel {
         visible: picker.active && !picker.pinned && picker.recentBases.length > 0

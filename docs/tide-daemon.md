@@ -1382,6 +1382,18 @@ przez `UpdateCard`, tylko jeśli dane różnią się od zapisanych. Następnie P
 wywołują `/Board StartCard`: krok biegnie w tle w przepływie karty, bez otwierania Konsoli. „Mam plan”
 przekazuje `entry: import` i `planPath`; usługa zapisuje migawkę źródła bez edycji pliku projektu, zachowuje
 istniejące ID i stany ticketów, uzupełnia niepełny plan w tle i kieruje propozycję do review oraz zatwierdzenia.
+Tylko specyfikacja (PT-203) przekazuje do `RenderLaunch` parę `baseRef` (pełne
+`refs/heads/…` albo `refs/remotes/…`) i `baseCommit` (oczekiwany SHA) projektu karty.
+Wspólna polityka baz odmawia po ruchu/usunięciu refu oraz dla refów symbolicznych;
+okno wymaga odświeżenia wyboru. Polecenie zawiera ref/SHA oraz instrukcje `git show`
+i `git ls-tree` do czytania także plików nieobecnych w checkoutcie. Dodatkowe projekty
+zachowują swoje bazy i odczyt. Karta przechowuje osobne `spec-revision-repo`,
+`spec-revision-ref`, `spec-revision-commit`, widoczne w migawce i odpowiedzi jako
+`specRevision: {repo, ref, commit}`. To kontekst wejścia, bez initialBase,
+`card.started`, numeracji ticketów, gałęzi/worktree i przełączania checkoutu.
+Powtórne RenderLaunch bez jawnego wyboru waliduje zapisany kontekst; starsze wywołania
+bez kontekstu zachowują dotychczasowe działanie. Sposób zapisu specyfikacji pozostaje ten sam.
+
 Pełne planowanie i Tylko specyfikacja używają dotychczasowej ścieżki Konsoli: `RenderLaunch` → `/Tasks Start`
 → zapis gałęzi, worktree i sesji na karcie przez `UpdateCard`. Pełny proces planowania w przepływie karty
 należy do drugiego etapu. Karta uruchomiona z Backlogu przez popup idzie do Do zrobienia; błąd odpowiedzi

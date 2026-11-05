@@ -161,6 +161,9 @@ class Card:
     base_ref: str = ""
     base_branch: str = ""
     base_commit: str = ""
+    spec_revision_ref: str = ""
+    spec_revision_commit: str = ""
+    spec_revision_repo: str = ""
     check: str = DEFAULT_CHECK
     mode: str = ""            # tryb Planowania (full, light); przy wejściu spec pusty
     entry: str = ""           # wejście ostatniego uruchomienia; pusty — karta nie była uruchamiana
@@ -270,7 +273,7 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
-    for key in ("base-ref", "base-branch", "base-commit"):
+    for key in ("base-ref", "base-branch", "base-commit", "spec-revision-ref", "spec-revision-commit", "spec-revision-repo"):
         setattr(card, key.replace("-", "_"), doc.get(key).strip())
     card.plan = doc.get("plan").strip()
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)

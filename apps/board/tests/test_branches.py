@@ -5,6 +5,46 @@ from . import test_view as view
 
 
 class BranchPickerTest(view.ProbeCase):
+    def test_spec_revision_uses_render_launch_and_restores_separate_read_context(self):
+        out = self.probe(view.FIND_PY + '''
+out["requests"] = []
+for ref in ("refs/heads/feature", "refs/remotes/team/feature"):
+    js("page.openLaunch('K-15', false)")
+    js("page.launchDialog.entry = 'spec'")
+    wait(80)
+    js("page.launchDialog.basePicker.selected = ({ref: " + json.dumps(ref) + ", commit: '" + 'b' * 40 + "'})")
+    replies.append({"ok": False, "message": "baza zmieniła się — odśwież wybór"})
+    js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+    wait(50)
+    out["requests"].append(json.loads(next(c[2] for c in reversed(calls()) if c[0] == 'RenderLaunch')))
+out["launchError"] = js("page.launchDialog.error")
+out["noFlow"] = not any(c[0] == 'StartCard' for c in calls())
+out["noStart"] = not any(c[0] == 'Start' for c in calls())
+changed = json.loads(js("JSON.stringify(page.snapshot)"))
+c = next(c for c in changed["cards"] if c["id"] == 'K-15')
+repo = next(p['repo'] for p in changed['projects'] if p['slug'] == c['project'])
+c.update(entry='spec', specRevision={"repo": repo, "ref": "refs/remotes/team/feature", "commit": 'b' * 40},
+         baseRef='refs/heads/flow', baseCommit='c' * 40)
+backend.set_snapshot(changed)
+js("page.closeLaunch(true); page.openLaunch('K-15', false); page.launchDialog.entry = 'spec'")
+wait(80)
+out["restored"] = js("[page.launchDialog.basePicker.selected.ref, page.launchDialog.basePicker.selected.commit, page.launchDialog.basePicker.pinned]")
+out["scope"] = js("page.launchDialog.basePicker.children.some(c => c.text && c.text.indexOf('tylko do odczytu') >= 0)")
+backend.branch_replies.append({"ok": True, "branches": [{"ref": "refs/remotes/team/feature", "name": "team/feature", "kind": "remote", "commit": 'd' * 40, "selectable": True}], "mainRef": "refs/heads/master"})
+js(FIND + "(page.launchDialog, 'baseRefresh').clicked()")
+wait(80)
+out["refreshed"] = js("[page.launchDialog.basePicker.selected.ref, page.launchDialog.basePicker.selected.commit]")
+''')
+        for ref, request in zip(("refs/heads/feature", "refs/remotes/team/feature"), out["requests"]):
+            self.assertEqual(request, {"entry": "spec", "tool": "claude", "check": "auto",
+                                       "baseRef": ref, "baseCommit": "b" * 40})
+        self.assertTrue(out["noFlow"])
+        self.assertTrue(out["noStart"])
+        self.assertIn("odśwież", out["launchError"])
+        self.assertEqual(out["restored"], ["refs/remotes/team/feature", "b" * 40, None])
+        self.assertTrue(out["scope"])
+        self.assertEqual(out["refreshed"], ["refs/remotes/team/feature", "d" * 40])
+
     def test_remote_and_recent_are_explicit_choices_and_never_default(self):
         local = {"ref": "refs/heads/master", "name": "master", "commit": "a" * 40,
                  "kind": "local", "selectable": True}
@@ -124,7 +164,7 @@ out["inactive"] = js("[page.launchDialog.basePicker.active, page.launchDialog.ba
         self.assertEqual(out["late"], 0)
         self.assertEqual(out["project"], "mobileapp")
         self.assertEqual(out["failure"], ["Usługa nie odpowiada", False, False])
-        self.assertEqual(out["inactive"], [False, None])
+        self.assertEqual(out["inactive"], [True, None])
 
     def test_form_sends_exact_ref_commit_and_separate_card_branch(self):
         out = self.probe('''

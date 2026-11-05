@@ -520,6 +520,7 @@ Rectangle {
         const c = launchChoice
         launchDialog.busyText = "Przygotowuję polecenie…"
         const request = { entry: c.entry, tool: c.tool, check: c.check }
+        if (c.entry === "spec") { request.baseRef = c.baseRef; request.baseCommit = c.baseCommit }
         if (c.entry === "planning") request.preferredProvider = c.preferredProvider
         if (c.entry !== "spec") request.mode = c.mode   // tryb dotyczy tylko Planowania
         if (c.entry !== "spec" && c.newWorktree && c.branch) request.branch = c.branch
@@ -571,7 +572,8 @@ Rectangle {
         } else if (tag.indexOf("launch-render:") === 0) {
             if (error) return failLaunch("Nie przygotowano polecenia: " + error)
             launchFlow = reply
-            launchDialog.busyText = "Zakładam worktree i otwieram kartę Konsoli z agentem…"
+            launchDialog.busyText = launchChoice.entry === "spec" ? "Otwieram Konsolę ze wskazaną rewizją…"
+                                                                  : "Zakładam worktree i otwieram kartę Konsoli z agentem…"
             startRequested(nextTag("launch-start:" + launchCardId), JSON.stringify(Logic.launchStartRequest(reply, launchChoice)))
         } else if (tag.indexOf("launch-start:") === 0) {
             if (error && (!reply || reply.error === "no-service")) launchUncertain = true

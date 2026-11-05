@@ -88,7 +88,7 @@ Rectangle {
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
     readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
                                       && (entry !== "plan" || planPath !== "")
-                                      && (!flowEntry || (basePicker.ready && cardBranch.trim() !== ""))
+                                      && basePicker.ready && (!flowEntry || cardBranch.trim() !== "")
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, planPath: planPath, tool: agentTool, branch: branch, newWorktree: newWorktree,
@@ -1052,10 +1052,14 @@ Rectangle {
                     id: basePicker
                     objectName: "basePicker"
                     Layout.fillWidth: true
-                    active: dialog.visible && dialog.flowEntry && dialog.workProject !== null
-                    pinned: dialog.card && dialog.card.baseRef && dialog.card.baseCommit
+                    active: dialog.visible && dialog.workProject !== null
+                    readOnlyRevision: dialog.entry === "spec"
+                    initialSelection: readOnlyRevision && dialog.card && dialog.card.specRevision
+                                      && dialog.workProject && dialog.card.specRevision.repo === dialog.workProject.repo
+                                      ? dialog.card.specRevision : null
+                    pinned: dialog.flowEntry && dialog.card && dialog.card.baseRef && dialog.card.baseCommit
                             ? ({ref: dialog.card.baseRef, commit: dialog.card.baseCommit, name: dialog.card.baseBranch}) : null
-                    contextKey: dialog.cardId + ":" + (dialog.workProject ? dialog.workProject.slug + ":" + dialog.workProject.repo : "")
+                    contextKey: dialog.cardId + ":" + (dialog.entry === "spec" ? "spec" : "flow") + ":" + (dialog.workProject ? dialog.workProject.slug + ":" + dialog.workProject.repo : "")
                     onRequested: text => dialog.branchesRequested(text)
                 }
                 ColumnLayout {
