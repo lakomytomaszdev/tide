@@ -204,6 +204,17 @@ class WaitingOnTest(unittest.TestCase):
 
 
 class BackgroundTest(unittest.TestCase):
+    def test_ticket_phase_separates_user_resource_and_work(self):
+        # 05.11: pomarańczowy pasek znaczył naraz „czeka na Ciebie”, „w kolejce” i „limit”.
+        events = approved().step("K-1-PT-1-1", ticket="PT-1", result="question")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "ty")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="answer", answer="tak")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "kolejka")
+        events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "pracuje")
+        events.add("step.waiting", ticket="PT-1", kind="fix", cause="quota", reason="czeka na limit Claude")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "kolejka")
+
     def test_now_in_background_lists_only_running_steps(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
         events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")
@@ -218,12 +229,15 @@ class BackgroundTest(unittest.TestCase):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="denied", outside=True, command="make test")
         events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="run", command="make test")
         tickets = {t["id"]: t for t in view(events)["tickets"]}
-        self.assertEqual(tickets["PT-1"]["statusLabel"], "polecenie w kolejce")
+        self.assertEqual(tickets["PT-1"]["statusLabel"], "w kolejce: make test")
+        self.assertEqual((tickets["PT-1"]["phase"], tickets["PT-1"]["why"]),
+                         ("kolejka", "w kolejce poza piaskownicą: make test"))
         events.add("outside.started", step="K-1-PT-1-1", command="make test")
         out = view(events)
         tickets = {t["id"]: t for t in out["tickets"]}
         self.assertEqual((tickets["PT-1"]["status"], tickets["PT-1"]["statusLabel"]),
-                         ("running", "polecenie poza piaskownicą"))
+                         ("running", "pracuje: make test"))
+        self.assertEqual(tickets["PT-1"]["phase"], "pracuje")
         self.assertEqual([(s["id"], s["kindLabel"]) for s in out["flow"]["running"]],
                          [("K-1-PT-1-1", "polecenie poza piaskownicą")])
         events.add("outside.finished", step="K-1-PT-1-1", ok=True)

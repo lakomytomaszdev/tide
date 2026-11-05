@@ -344,11 +344,17 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
     if done.get("result") == "denied" and latest.get("step") in st.outside_started:
         # Polecenie poza piaskownicą trwa (np. `make test`) — to praca, nie czekanie (04.11, K-37/PT-153: kafelek
         # „czeka” i „Nic nie pracuje teraz w tle”, gdy testy szły od kwadransa).
-        return status("running", "polecenie poza piaskownicą")
+        return status("running", "pracuje: " + _command(done))
     if done.get("result") == "denied" and (st.step_decisions.get(latest.get("step")) or {}).get("choice") in \
             ("run", "run-always", "run-ticket"):
-        return status("queued", "polecenie w kolejce")
+        return status("queued", "w kolejce: " + _command(done))
     return status("waiting")
+
+
+def _command(done: dict) -> str:
+    """Krótka nazwa polecenia poza piaskownicą na kartkę ticketu (05.11: „polecenie w kolejce” nic nie mówiło)."""
+    text = " ".join(str(done.get("command") or "polecenie poza piaskownicą").split())
+    return text if len(text) <= 40 else text[:39] + "…"
 
 
 # --- Teraz w tle i jedno zdanie ------------------------------------------------------------------
