@@ -184,6 +184,91 @@ class BaseContextTest(StartBaseSetup):
         with self.assertRaises(FlowError):
             engine.enter(self.ident, "old")
 
+    def test_reviewed_uncommitted_plan_requires_new_planning_and_review_after_restart(self):
+        self.ident = self.card(description="ATRAPA: planowanie")
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+        self.assertTrue(self.start(self.ident, entry="planning", mode="light")["ok"])
+
+        def reviewed(count):
+            self.flow.engine.tick()
+            return len(self.of(self.ident, "plan.reviewed")) == count
+
+        self.assertTrue(wait_until(lambda: reviewed(1), timeout=10), self.events(self.ident))
+        old_steps = self.of(self.ident, "step.started")
+        old_proposal = self.of(self.ident, "plan.proposed")[0]
+        old_review = self.of(self.ident, "plan.reviewed")[0]
+        self.assertEqual(old_review["verdict"], "APPROVE")
+        artifacts = {str(p): p.read_bytes() for step in old_steps
+                     for p in Path(step["stepDir"], "out").iterdir() if p.is_file()}
+        for step in old_steps:
+            self.assertEqual(git(step["worktree"], "rev-parse", "HEAD").strip(), self.master)
+            self.assertEqual(git(step["worktree"], "status", "--porcelain"), "")
+        self.assertFalse(self.of(self.ident, "plan.approved"))
+        self.assertFalse(fold(self.events(self.ident)).running())
+        self.change()
+        self.restart()
+        self.board.publish()
+        flow = self.shown(self.ident)["derived"]["flow"]
+        self.assertEqual(flow["plan"]["rows"], [])
+        self.assertFalse(flow["plan"]["review"].get("verdict"))
+        self.assertTrue(any(h["old"] and h["id"] == f"plan.reviewed#{old_review['seq']}"
+                            for h in flow["history"]))
+        box = []
+        self.flow.approve_plan(self.ident, box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertEqual(json.loads(box[0])["error"], "no-plan")
+        self.assertFalse(self.of(self.ident, "plan.approved"))
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+        # Nowa propozycja sama nie wystarcza: obowiązuje dotychczasowa bramka review.
+        engine.tick()
+
+        def proposed():
+            engine.tick()
+            return len(self.of(self.ident, "plan.proposed")) == 2
+
+        self.assertTrue(wait_until(proposed, timeout=10))
+        with self.assertRaises(FlowError) as error:
+            engine.approve_plan(self.ident)
+        self.assertEqual(error.exception.code, "review-pending")
+        self.assertTrue(wait_until(lambda: reviewed(2), timeout=10))
+        new_review = [s for s in self.of(self.ident, "step.started") if s["kind"] == "plan-review"][-1]
+        self.assertEqual((new_review["baseCommit"], new_review["baseVersion"]), (self.feature_sha, 2))
+        self.assertGreater(self.of(self.ident, "plan.proposed")[-1]["seq"], old_proposal["seq"])
+        self.assertTrue(engine.approve_plan(self.ident)["ok"])
+        for path, content in artifacts.items():
+            self.assertEqual(Path(path).read_bytes(), content)
+
+    def test_new_question_has_separate_resumable_history_after_base_change_and_restart(self):
+        self.seed_question()
+        self.change()
+        self.restart()
+        engine = self.flow.engine
+        engine._launch = FlowEngine._launch.__get__(engine)
+
+        def asked():
+            engine.tick()
+            return any(e.get("result") == "question" for e in self.of(self.ident, "step.finished"))
+
+        self.assertTrue(wait_until(asked, timeout=10))
+        new = self.of(self.ident, "step.started")[-1]
+        self.assertEqual(new["parentStep"], "old")  # dowód dla promptu pozostaje
+        for restart in (False, True):
+            if restart:
+                self.restart()
+            self.board.publish()
+            flow = self.shown(self.ident)["derived"]["flow"]
+            lines = [h for h in flow["history"] if h["kind"] == "step"]
+            self.assertEqual([h["step"] for h in lines], ["old", new["step"]])
+            self.assertTrue(lines[0]["old"])
+            self.assertEqual(lines[0]["result"], "error")
+            self.assertFalse(lines[0]["canResume"])
+            self.assertFalse(lines[1]["old"])
+            self.assertEqual(lines[1]["result"], "question")
+            self.assertTrue(lines[1]["canResume"])
+            self.assertEqual(len(lines[1]["attempts"]), 1)
+
     def test_empty_planning_question_restarts_on_new_base_with_fresh_step_after_restart(self):
         self.ident = self.card(description="ATRAPA: plan-question")
         engine = self.flow.engine

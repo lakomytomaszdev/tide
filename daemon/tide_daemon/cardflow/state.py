@@ -286,6 +286,13 @@ def fold(events: list[dict]) -> FlowState:
                     st.superseded.update(st.steps)
                     st.last_step = ""
                     st.moved_to = ""
+                    # Propozycja i review planu także dotyczą dawnego kodu, nawet jeśli
+                    # powstały wyłącznie poza repo i nie ma jeszcze commitu planu.
+                    st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+                    st.plan_reviewed = st.plan_revision = None
+                    st.plan_reviewer = ""
+                    st.plan_review_wait = None
+                    st.plan_change_seq, st.plan_change_ts = 0, ""
                     st.plan_finished = False
                     # Jeden fold wybiera kompletną mapę. Historyczne step.started pozostają dowodami
                     # starych procesów; bieżące ścieżki pochodzą wyłącznie z wyników tej generacji.

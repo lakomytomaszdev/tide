@@ -63,12 +63,17 @@ def build(st, steps: list[dict]) -> list[dict]:
 
 
 def _root(st, name: str) -> str:
-    """Pierwsza próba kroku: łańcuch `parentStep` w obrębie tego samego rodzaju kroku."""
+    """Pierwsza próba kroku tego samego rodzaju, w obrębie jednej generacji."""
     kind = (st.steps.get(name) or {}).get("kind")
     seen = {name}
     while True:
         parent = (st.steps.get(name) or {}).get("parentStep")
         if not parent or parent in seen or (st.steps.get(parent) or {}).get("kind") != kind:
+            return name
+        step, previous = st.steps[name], st.steps[parent]
+        # Powiązanie z dawnym wynikiem służy promptowi; nie scala prób różnych baz/zleceń.
+        if ((name in st.superseded) != (parent in st.superseded)
+                or step.get("baseVersion") != previous.get("baseVersion")):
             return name
         seen.add(parent)
         name = parent
