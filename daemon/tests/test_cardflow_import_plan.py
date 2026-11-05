@@ -75,6 +75,7 @@ class PlanImportTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=10))
         approved = json.loads(box[0])
         self.assertEqual(approved["map"], {"PT-7": "PT-7", "PT-8": "PT-8"})
+        self.approve_environment(card)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
         self.assertEqual([(e["ticket"], e["state"]) for e in self.of(card, "ticket.imported")], [("PT-7", "gotowe")])
         self.assertEqual([e["ticket"] for e in self.of(card, "step.started") if e["kind"] == "ticket"], ["PT-8"])
@@ -154,6 +155,7 @@ class PlanImportTest(FlowInProcess):
         self.assertEqual([r["workId"] for r in self.shown(card)["derived"]["flow"]["plan"]["rows"]], ["PT-7", "PT-8"])
         approved = self.flow.engine.approve_plan(card)
         self.assertEqual(approved["map"], {"PT-7": "PT-7", "PT-8": "PT-8"})
+        self.approve_environment(card)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
         self.assertEqual([e["ticket"] for e in self.of(card, "step.started") if e["kind"] == "ticket"], ["PT-8"])
         with open(path, "rb") as fh:
@@ -173,6 +175,7 @@ class PlanImportTest(FlowInProcess):
         self.flow.approve_plan(card, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"])
+        self.approve_environment(card)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
         self.assertEqual([(e["ticket"], e["state"]) for e in self.of(card, "ticket.imported")],
                          [("PT-7", "odrzucone")])

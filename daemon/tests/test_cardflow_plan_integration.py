@@ -3,6 +3,9 @@ import json
 import os
 from unittest import mock
 
+from tide_daemon.cardflow import boxwait
+from tide_daemon.cardflow.state import fold
+
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 
@@ -34,21 +37,32 @@ class PlanFlowTest(FlowInProcess):
             self.assertTrue(wait_until(lambda: self.of(card_id, "plan.reviewed"), timeout=20), self.events(card_id))
         return reply
 
-    def approve(self, card_id):
+    def approve(self, card_id, *, environment=True):
+        """Testy wykonania zatwierdzają plan i środowisko; sam plan wymaga `environment=False`."""
         box = []
         self.flow.approve_plan(card_id, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        return json.loads(box[0])
+        reply = json.loads(box[0])
+        if environment and reply.get("ok") and not reply.get("queued"):
+            state = fold(self.flow.engine.journal.read(card_id))
+            if boxwait.card_box_wait(state) == boxwait.ENVIRONMENT:
+                self.approve_environment(card_id)
+        return reply
 
     def test_plain_plan_approval_leaves_the_card_waiting_for_the_environment(self):
         # PT-172: zatwierdzenie z okna decyzji (ApproveCardPlan) nie omija pakietu zgód.
-        from tide_daemon.cardflow import boxwait
-        from tide_daemon.cardflow.state import fold
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.assertTrue(self.approve(card)["ok"])
+        self.assertTrue(self.approve(card, environment=False)["ok"])
         st = fold(self.flow.engine.journal.read(card))
         self.assertEqual(boxwait.card_box_wait(st), boxwait.ENVIRONMENT)
+        self.restart()
+        self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5), self.events(card))
+        self.assertFalse(any(s.get("kind") == "ticket" for s in self.of(card, "step.started")))
+        self.assertEqual(boxwait.card_box_wait(fold(self.flow.engine.journal.read(card))), boxwait.ENVIRONMENT)
+        self.approve_environment(card)
+        self.assertTrue(wait_until(lambda: any(s.get("kind") == "ticket" for s in self.of(card, "step.started")),
+                                   timeout=10), self.events(card))
 
     def test_partial_reservation_failure_can_resume_without_duplicate_numbers(self):
         from tide_daemon.cardflow.engine import FlowError

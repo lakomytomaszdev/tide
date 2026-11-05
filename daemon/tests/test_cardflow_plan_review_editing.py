@@ -110,6 +110,7 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.flow.stop()
         approved = self.flow.engine.approve_plan(card)
+        self.approve_environment(card)
         ident = approved["map"]["#2"]
         self.flow.engine.edit_plan(card, {"action": "edit", "ticket": ident, "executor": "Opus", "reviewer": "Sonnet"})
         self.assertEqual(self.of(card, "plan.ticket-edited")[-1]["ticket"], ident)

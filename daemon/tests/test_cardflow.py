@@ -43,6 +43,7 @@ class FlowInProcess(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "HOME": os.path.join(self.base, "home"), "XDG_RUNTIME_DIR": self.runtime,
             "XDG_STATE_HOME": os.path.join(self.base, "state"), "XDG_CONFIG_HOME": os.path.join(self.base, "config"),
+            "TIDE_BOARD_DIR": os.path.join(self.base, "boxboard"),
             "PATH": os.path.dirname(self.fakes["claude"]) + os.pathsep + "/usr/bin:/bin",
             "GIT_CONFIG_GLOBAL": gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "TIDE_FAKE_LOG": os.path.join(self.base, "calls.log")})
         patcher.start()
@@ -100,6 +101,16 @@ class FlowInProcess(unittest.TestCase):
         self.board.start_card(card_id, json.dumps({"entry": "now", "executor": "Sonnet", **extra}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=60), "StartCard bez odpowiedzi")
         return json.loads(box[0])
+
+    def approve_environment(self, card_id) -> dict:
+        """Jawna zgoda na minimalne środowisko; budowa jest atrapą, runner hostowy zostaje bez Incusa."""
+        box = []
+        with mock.patch.object(self.flow.engine, "box_launcher", lambda *_args: None):
+            self.flow.approve_environment(card_id, "tide-box: 1\n", False, box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=10), "ApproveCardEnvironment bez odpowiedzi")
+        reply = json.loads(box[0])
+        self.assertTrue(reply["ok"], reply)
+        return reply
 
     def shown(self, card_id) -> dict:
         return next(c for c in json.loads(self.board.snapshot_json())["cards"] if c["id"] == card_id)

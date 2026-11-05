@@ -221,6 +221,7 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertTrue(self.submit(card, self.proposal(card))['ok'])
         self.flow.stop()
         self.flow.engine.approve_plan(card)
+        self.approve_environment(card)
         # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.
         self.fake.comment_status = 503
         self.flow = self.make_flow()
@@ -277,6 +278,9 @@ class YouTrackFlowTest(FlowInProcess):
                 result = self.flow.engine.resolve_step(card, {'choice': 'retry'})
                 self.assertTrue(result['ok'], result)
                 self.flow = self.make_flow()
+                if entry == 'plan':
+                    self.assertTrue(wait_until(lambda: self.of(card, 'plan.approved'), timeout=10))
+                    self.approve_environment(card)
                 self.wait_column(card, 'review')
 
     def test_retry_after_permanent_lookup_error_keeps_uncertain_create_read_only(self):
@@ -307,5 +311,7 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertFalse(self.fake.issues)
         self.fake.projects = {'LOG'}
         self.assertTrue(self.flow.engine.resolve_step(card, {'choice': 'retry'})['ok'])
+        self.assertTrue(wait_until(lambda: self.of(card, 'plan.approved'), timeout=10))
+        self.approve_environment(card)
         self.wait_column(card, 'review')
         self.assertEqual(len(self.fake.issues), 2)

@@ -92,6 +92,7 @@ class FlowCase(unittest.TestCase):
         self.call("UpsertProject", json.dumps({"repo": self.repo}))
 
     def spawn(self):
+        self.env.setdefault("TIDE_BOARD_DIR", os.path.join(self.base, "boxboard"))
         return self.service.spawn_daemon(
             "--claude-dir", os.path.join(self.base, "home", ".claude"),
             "--codex-dir", os.path.join(self.base, "codex"), "--no-processes", "--no-notifications",
@@ -187,6 +188,8 @@ class PlanDbusTest(FlowCase):
         self.assertTrue(approved["ok"], approved)
         self.assertIn("#1", approved["map"])
         self.assertEqual(self.call("ApproveCardPlan", card)["map"], approved["map"])
+        environment = self.call("ApproveCardEnvironment", card, "tide-box: 1\n", False)
+        self.assertTrue(environment["ok"], environment)
         self.wait_column(card, "review", timeout=40)
         self.assertEqual([r["ticket"] for r in self.results(card, "reserve")], [approved["map"]["#1"]])
 
