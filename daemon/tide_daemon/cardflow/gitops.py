@@ -206,6 +206,15 @@ class FlowGit:
             raise FlowGitError("nie można ustalić repozytorium gita")
         return os.path.realpath(result.out.strip())
 
+    def branch_checkouts(self, repo: str) -> dict[str, str]:
+        listed = self.run(repo, "worktree", "list", "--porcelain", "-z")
+        if not listed.ok:
+            raise FlowGitError("nie można odczytać worktree celu")
+        entries = [dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+                   for block in listed.out.split("\0\0")]
+        return {entry["branch"]: entry["worktree"] for entry in entries
+                if entry.get("branch") and entry.get("worktree")}
+
     def list_branches(self, repo: str, text: str, limit: int, purpose: str = "base") -> dict:
         """Cały lokalny zbiór przed filtrem i limitem; bez operacji sieciowych."""
         with lock_for(repo):

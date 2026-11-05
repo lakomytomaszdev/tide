@@ -210,12 +210,16 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertTrue(self.merge()["ok"])
         self.assert_success()
 
-    def test_feature_target_is_not_yet_supported(self):
+    def test_feature_target_uses_existing_transaction_without_moving_main(self):
         git(self.repo, "branch", "feature/target")
         git(self.repo, "checkout", "-q", "feature/target")
         p = self.call("preview_card_merge", {"targetRef": "refs/heads/feature/target"})
         self.assertTrue(p["canMerge"], p)
-        self.assert_refused(self.request(p), "unsupported-target")
+        result = self.call("merge_card", self.request(p))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["targetRef"], "refs/heads/feature/target")
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(self.sha("feature/target"), result["resultCommit"])
 
     def test_already_merged_records_one_result_without_new_commit(self):
         git(self.repo, "merge", "--ff-only", self.source)

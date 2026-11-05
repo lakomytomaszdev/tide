@@ -44,6 +44,7 @@ class Scripted(module.Backend):
         self.replies = []
         self.branch_replies = []
         self.branch_calls = []
+        self.branch_delay = 10
         self.suggestion_replies = []
         self.suggestion_calls = []
         self.suggestion_delay = 10
@@ -68,7 +69,7 @@ class Scripted(module.Backend):
                 "ok": True, "branches": [{"ref": "refs/heads/master", "name": "master", "kind": "local",
                                            "remote": "", "commit": "a" * 40, "selectable": True, "reason": ""}],
                 "mainRef": "refs/heads/master", "recentBases": [], "recentTargets": [], "warnings": [], "hasMore": False}
-            QTimer.singleShot(10, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
+            QTimer.singleShot(self.branch_delay, lambda: self.replied.emit(tag, json.dumps(reply, ensure_ascii=False)))
             return
         self._calls.append([member, *args])
         self.callsChanged.emit()

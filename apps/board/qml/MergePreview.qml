@@ -15,6 +15,8 @@ QQC2.Popup {
     property string requestTag: ""
     property string cardId: ""
     property string targetBranch: ""
+    property string targetRef: ""
+    property string contextKey: ""
     property bool busy: false
     property string error: ""
     property var result: null

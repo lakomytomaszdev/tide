@@ -868,7 +868,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `ListCardBranches(s id, s request)` | `→ s` | lokalne gałęzie repozytorium projektu karty: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
+| `ListCardBranches(s id, s request)` | `→ s` | bazy lokalne i znane lokalnie zdalne albo wyłącznie lokalne cele scalenia: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
 | `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tekst i historia plików lokalnie, linki PR/MR przez CLI; files/links wyłącznie na żądanie |
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
@@ -877,7 +877,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
-| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); do PT-205 wyłącznie nazwana główna z istniejącym checkoutem; używa trwałej operacji PT-212 |
+| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel z istniejącym checkoutem; używa trwałej operacji PT-212 |
 | `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -930,20 +930,30 @@ sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy z
 PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
 checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
 Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`;
-brak checkoutu odmawia do PT-206. Cel inny niż `FlowGit.main_branch`
-daje `unsupported-target` do PT-205. Nie powstają nowe checkouty, refy ani zasoby.
+brak checkoutu odmawia do PT-206. PT-200 dopuszcza jawnie wybrany lokalny
+cel przez tę samą operację. Nie powstają nowe checkouty, refy ani zasoby.
 
 Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
 baseVersion, operationId, already}` z istniejącej operacji. `already` oznacza źródło już zawarte w celu.
 Opcjonalne `operationId` wskazuje wyłącznie rozpoczętą operację tego samego zlecenia, refu i tokenu;
 nie jest zgodą na rozpoczęcie nowej. Ponowienie pierwotnego żądania również odnajduje zapisane ID
 po przypisanym tokenie, więc utrata odpowiedzi i restart nie powodują drugiego scalenia. Wznowienie
-korzysta z kontroli recovery PT-212. Oba API kończą kartę dotychczasowym `card.main-merged` do PT-205;
+korzysta z kontroli recovery PT-212. Oba API kończą kartę zdarzeniem `card.merged` z rzeczywistym celem (PT-205);
 stare `MergeCardToMain(id)` nadal wybiera główną i zwraca `main`, także gdy musi otworzyć własny checkout.
 
 W Tablicy zarówno panel, jak i pełna karta otwierają podgląd po „Scal do <pełna nazwa>”. Potwierdzenie
 pokazuje pełny ref i SHA źródła oraz celu. Zamknięcie, Escape, odświeżenie i `check: auto` nie wywołują
 `MergeCard`. Po błędzie stary przycisk zostaje zablokowany; odświeżenie wymaga kolejnego potwierdzenia.
+
+PT-200: przy znanej lokalnej bazie przycisk pokazuje „Scal do <pełna nazwa bazy>”. Menu „Scal…”
+korzysta z `ListCardBranches(purpose=merge)`: wyłącznie pełne lokalne refy, bez duplikatów, z bazą
+i nazwaną główną na początku pasujących wyników. Wyszukiwanie obejmuje cały zbiór przed limitem
+50 (maks. 100); `hasMore` oznacza konieczność zawężenia. Lista współdzieli z podglądem kontrolę
+gałęzi karty, chronionych refów/worktrees innych kart i braku checkoutu (`selectable: false`, `reason`).
+Ocena kolizji treści pozostaje w podglądzie. `recentTargets` jest puste do PT-214.
+Dla bazy zdalnej i nieznanej nie ma automatycznego lokalnego celu; główna jest propozycją wymagającą
+wyboru. Wybór zmienia jedynie kontekst podglądu, bez zapisu bazy ani zgody. Zmiana projektu lub
+repozytorium karty zamyka wybór i podgląd oraz odrzuca ich spóźnione odpowiedzi.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
