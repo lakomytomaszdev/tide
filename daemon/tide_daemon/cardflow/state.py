@@ -721,7 +721,12 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     if caretaker_decision:
         # Decyzja samej karty nie ma kroku dla attention_step; inne tickety mogą nadal pracować.
         out["question"] = caretaker_decision["why"]
-        return _fill(out, "waiting", "opiekun czeka na Twoją decyzję: " + caretaker_decision["happened"])
+        if caretaker_decision["technical"]["problem"].startswith("flow-error:"):
+            error = caretaker_decision["happened"]
+            out["flow"]["flowError"] = error
+            out["flow"]["flowErrorHint"] = flow_error_hint(error)
+            return _fill(out, "waiting", f"{ident}: {flow_error_text(error)}")
+        return _fill(out, "waiting", "stoi — nie ma pracującego kroku ani nazwanego powodu czekania")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

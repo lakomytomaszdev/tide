@@ -99,7 +99,8 @@ class CaretakerDecisionTest(unittest.TestCase):
                 [decision] = shown["flow"]["decisions"]
                 self.assertEqual(decision["kind"], "caretaker")
                 self.assertEqual(decision["happened"], "Nie udało się przygotować etapu karty.")
-                self.assertIn("opiekun", shown["note"].lower())
+                self.assertEqual(shown["flow"]["flowError"], decision["happened"])
+                self.assertIn("flowErrorHint", shown["flow"])
                 self.assertEqual([s["step"] for s in fold(events).running()], ["PT-99-ticket"])
                 [running] = [s for s in shown["flow"]["steps"] if s["id"] == "PT-99-ticket"]
                 self.assertEqual(running["result"], "")
