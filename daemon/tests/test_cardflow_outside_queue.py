@@ -8,6 +8,7 @@ from tide_daemon.cardflow import engine as flow_engine
 def stub(projects, busy=()):
     eng = flow_engine.FlowEngine.__new__(flow_engine.FlowEngine)
     eng._outside_waiting = {}
+    eng._outside_seeded = True
     eng._project = lambda card: (None, types.SimpleNamespace(slug=projects[card]))
     eng._outside_busy = lambda card: card in busy
     return eng
@@ -32,6 +33,23 @@ class OutsideQueueTest(unittest.TestCase):
         eng._outside_waiting["K-38-PT-1-4"] = ("K-38", "plasma-tide", 0.0, 0.0)
         self.assertFalse(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": "2026-11-05T15:42:00+01:00"}))
 
+
+    def test_queue_is_rebuilt_from_journals_after_restart(self):
+        import time
+        from datetime import datetime, timedelta
+        ts = lambda minutes: (datetime.now().astimezone() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        journals = {
+            "K-38": [{"type": "step.finished", "step": "K-38-PT-1-4", "outside": True, "ts": ts(70)},
+                     {"type": "step.decision", "step": "K-38-PT-1-4", "choice": "run", "ts": ts(70)}],
+            "K-37": [{"type": "step.finished", "step": "K-37-PT-2-1", "outside": True, "ts": ts(5)},
+                     {"type": "step.decision", "step": "K-37-PT-2-1", "choice": "run", "ts": ts(5)}],
+        }
+        eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
+        eng._outside_seeded = False
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card])
+        # K-37 jest sprawdzana pierwsza po restarcie, ale starsza zgoda K-38 z dziennika idzie przed nią
+        self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
+        self.assertFalse(eng._outside_behind("K-38", "K-38-PT-1-4", {"ts": ts(70)}))
 
 if __name__ == "__main__":
     unittest.main()

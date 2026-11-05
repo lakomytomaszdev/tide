@@ -4523,6 +4523,9 @@ class FlowEngine(PlanEditing):
         projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
         przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
         now = time.time()
+        if not getattr(self, "_outside_seeded", False):
+            self._outside_seeded = True
+            self._seed_outside_waiting(now)
         slug = self._project(card)[1].slug
         previous = self._outside_waiting.get(name)
         queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
@@ -4534,6 +4537,26 @@ class FlowEngine(PlanEditing):
             if other_slug == slug or not self._outside_busy(other_card):
                 return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
         return False
+
+    def _seed_outside_waiting(self, now: float) -> None:
+        """Po restarcie usługi: zgody na polecenia poza piaskownicą, które jeszcze nie ruszyły, z czasem zgody
+        z dziennika — inaczej pierwsza sprawdzona karta wyprzedza starsze zgody (05.11, K-37 przed K-38)."""
+        for other in self.journal.cards():
+            try:
+                events = self.journal.read(other)
+                slug = self._project(other)[1].slug
+            except Exception:
+                continue
+            started = {e.get("step") for e in events if e.get("type") == "outside.started"}
+            resumed = {e.get("parentStep") for e in events if e.get("type") == "step.started" and e.get("parentStep")}
+            outside = {e.get("step") for e in events if e.get("type") == "step.finished" and e.get("outside")}
+            for e in events:
+                name = e.get("step")
+                queued = _epoch(e.get("ts")) if e.get("ts") else now
+                # Stara zgoda (karta porzucona) nie blokuje kolejki nawet przez OUTSIDE_QUEUE_STALE.
+                if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
+                        name in outside and name not in started and name not in resumed and now - queued < 86400:
+                    self._outside_waiting.setdefault(name, (other, slug, queued, now))
 
     def _outside_exit(self, card: str, name: str) -> str:
         found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
