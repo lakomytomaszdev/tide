@@ -267,9 +267,28 @@ class DurableMergeTest(FlowInProcess):
     def assert_waiting(self, intent):
         events = self.flow.engine.journal.read(self.card_id)
         self.assertEqual([e["key"] for e in events if e["type"] == "intent" and e.get("action") == "main-merge"], [intent["key"]])
+        self.assertFalse(any(e["type"] == "result" and e.get("action") == "main-merge" for e in events))
         self.assertFalse(any(e["type"] == "card.finished" for e in events))
         self.assertEqual(self.shown(self.card_id)["boardColumn"], "waiting")
         self.assertIn("Scalenie czeka", self.shown(self.card_id)["derived"]["note"])
+
+    def test_waiting_ticks_then_public_retry_record_one_success_after_local_collision_is_removed(self):
+        self.crash_after("main-merge.checkpoint", stage="materialized")
+        intent = self.intent()
+        self.write(self.repo, "result.txt", "cudza praca po awarii\n")
+        self.restart_stopped()
+        for _ in range(2):
+            self.flow.engine.tick()
+        self.assert_waiting(intent)
+        self.assertEqual(self.sha(self.target), self.before)
+        self.assertEqual(Path(self.repo, "result.txt").read_text(), "cudza praca po awarii\n")
+        self.write(self.repo, "result.txt", "wynik karty\n")
+        self.restart_stopped()
+        self.assertTrue(self.merge()["ok"])
+        self.flow.engine.tick()
+        self.assert_success()
+        self.assertTrue(self.merge()["already"])
+        self.assert_success()
 
     def test_new_local_edits_after_materialization_wait_and_keep_every_byte(self):
         self.crash_after("main-merge.checkpoint", stage="materialized")
@@ -370,10 +389,13 @@ class DurableMergeTest(FlowInProcess):
         self.source_commit = self.commit(self.source_tree, "revision")
         self.restart_stopped()
         self.assertFalse(self.merge()["ok"])
+        self.flow.engine.tick()
+        self.assert_waiting(abandoned)
         self.store.move_card(self.card_id, "todo", -1, from_column="waiting")
         self.flow.engine.tick()
         st = fold(self.flow.engine.journal.read(self.card_id))
         self.assertFalse(st.busy_reason())
+        self.assertIn(abandoned["key"], st.abandoned_main_merges)
         events = self.flow.engine.journal.read(self.card_id)
         self.assertEqual(len([e for e in events if e["type"] == "main-merge.abandoned"]), 1)
         self.assertEqual(self.sha(self.target), self.before)

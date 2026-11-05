@@ -3304,6 +3304,9 @@ class FlowEngine(PlanEditing):
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
         action, key = intent.get("action"), intent.get("key")
+        if action == "main-merge":
+            # Właścicielem jest _recover_main_merge; oczekiwanie nie jest końcowym wynikiem.
+            return
         if intent.get('youtrack'):
             try:
                 self.tracker.run(card, action, key, intent['payload'])
