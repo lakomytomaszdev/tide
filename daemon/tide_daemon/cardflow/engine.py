@@ -598,6 +598,10 @@ class FlowEngine(PlanEditing):
         item, _ = self._project(card)
         branch = (ticket_of(st)["cardBranch"] or st.started.get("cardBranch")
                   or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}")
+        for row in st.base_change.get("generation", []):
+            if row["action"] == "card-branch" and row["branch"] == branch:
+                # Aktywacja już przygotowała ten zasób; nie zakładamy nowej operacji pod nowym refem.
+                return st.results[(row["action"], row["key"])]
         base = base_of(st)
         start = (f"refs/heads/{branch}" if self.git.sha(project.repo, f"refs/heads/{branch}") else
                  base["baseCommit"] if base["status"] == "known" else self.git.main_branch(project.repo))
@@ -988,7 +992,9 @@ class FlowEngine(PlanEditing):
         branch, worktree = made["branch"], made["worktree"]
         importing = st.started.get("entry") == "plan"
         kind = "plan-import" if importing else "plan-fix" if round_no else "planning"
-        step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
+        # Granica generacji jest trwała: restart zachowuje klucz, korekta dostaje nowy.
+        boundary = max(st.started["seq"], st.base_change.get("seq", 0))
+        step_id = f"{card}-plan-{boundary}-{round_no}"
         out = worktree + f".{kind}-{step_id}.step/out"
         shots = [os.path.join(os.path.dirname(out), "in", "images", f"{i + 1}-{os.path.basename(p)}")
                  for i, p in enumerate(images)]
@@ -1027,9 +1033,11 @@ class FlowEngine(PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip=""):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
-        if baseproposal.blocked(fold(self.journal.read(item.id))):
+        context_state = fold(self.journal.read(item.id))
+        if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
-        prompt += baseproposal.context(base_of(fold(self.journal.read(item.id))))
+        context_prompt, base_context = self._step_base_context(context_state)
+        prompt += context_prompt
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
@@ -1095,7 +1103,7 @@ class FlowEngine(PlanEditing):
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip)
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip, **base_context)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -1181,7 +1189,7 @@ class FlowEngine(PlanEditing):
         if st.paused or st.plan_proposed is not None:
             return True
         steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix", "plan-import")
-                 and step.get("seq", 0) > st.started["seq"]]
+                 and step.get("seq", 0) > st.started["seq"] and step["step"] not in st.superseded]
         if not steps:
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
             cfg = self.models_config() if self.models_config else None
@@ -1280,6 +1288,8 @@ class FlowEngine(PlanEditing):
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
+        if step_id in st.superseded:
+            raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy.")
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
         if self.terminal is None or not self.terminal.available():
@@ -1378,6 +1388,8 @@ class FlowEngine(PlanEditing):
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
+                                baseVersion=current.get("baseVersion", 0),
+                                baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
@@ -1708,6 +1720,18 @@ class FlowEngine(PlanEditing):
             name = step.get("parentStep") or ""
         return found
 
+    @staticmethod
+    def _step_base_context(st) -> tuple[str, dict]:
+        """Ten sam kontekst generacji w poleceniu i metadanych kroku w tle oraz Konsoli."""
+        prompt = baseproposal.context(base_of(st))
+        prompt += f"\nWersja bazy karty: {st.base_version}\n"
+        if st.base_change:
+            prompt += ("\nNotka korekty bazy: uruchomiono nową sesję na nowej pustej generacji. "
+                       "Poprzednie review, zgody i domknięcie są historyczne. Sprawdź bieżący kod "
+                       "i wykonaj wymagane testy; wynik pracy przejdzie zwykłe review.\n")
+        return prompt, {"baseVersion": st.base_version, "baseRef": st.base.get("baseRef", ""),
+                        "baseCommit": st.base.get("baseCommit", "")}
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
@@ -1723,7 +1747,8 @@ class FlowEngine(PlanEditing):
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots)
-        prompt += baseproposal.context(base_of(fold(self.journal.read(card.id))))
+        context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
+        prompt += context_prompt
         read_dirs, context_dirs = [], []
         order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
                  if kind in ("planning", "plan-fix") else [])
@@ -1824,7 +1849,7 @@ class FlowEngine(PlanEditing):
                               routeKind=selected.route.kind if selected.route else "",
                               routeTokenFile=selected.route.token_file if selected.route else "",
                               local=selected.local, branch=made_ticket["branch"],
-                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
+                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt, **base_context)
         except (agentcmd.StepError, OSError) as exc:
             self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
@@ -1838,7 +1863,7 @@ class FlowEngine(PlanEditing):
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
-                                   repo=project.repo)
+                                   repo=project.repo, **base_context)
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
@@ -2068,6 +2093,8 @@ class FlowEngine(PlanEditing):
             try:
                 latest = {}
                 for name, step in st.steps.items():
+                    if name in st.superseded:
+                        continue
                     latest[step.get("ticket")] = name
                 for name in latest.values():
                     current = fold(self.journal.read(card))
@@ -2245,6 +2272,8 @@ class FlowEngine(PlanEditing):
             if st.started and st.started.get("entry") == "now" and st.started.get("executor") and not st.paused:
                 item, project = self._project(card)
                 info = ticket_of(st)
+                if info["id"] in st.rejected:
+                    return
                 cfg = self.models_config() if self.models_config else None
                 catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
                 selected = execution.resolve(st.started["executor"], catalog, config=cfg,
@@ -2252,7 +2281,11 @@ class FlowEngine(PlanEditing):
                 self._launch(item, project, selected, info["id"],
                              {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                              {"branch": info["branch"], "worktree": info["worktree"]},
-                             self._next_step_id(card, info["id"], st), st.inputs.get("images", st.started.get("images") or []))
+                             self._next_step_id(card, info["id"], st), st.inputs.get("images", st.started.get("images") or []),
+                             parent_step=next((name for name, old in reversed(list(st.steps.items()))
+                                               if name in st.superseded and st.base_change and
+                                               old.get("ticket") == info["id"] and
+                                               old.get("kind") in ("ticket", "fix")), ""))
             return
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
@@ -2372,7 +2405,8 @@ class FlowEngine(PlanEditing):
             "konflikt" not in (previous_merge.get("error") or "").lower() and \
             self.clock() - _epoch(previous_merge.get("ts")) >= 60
         if previous_merge is None or retry_merge:
-            source = next((s for s in st.steps.values() if s.get("ticket") == ticket and
+            source = next((s for name, s in st.steps.items() if name not in st.superseded and
+                           s.get("ticket") == ticket and
                            s.get("kind") == "ticket"), None)
             if source is not None:
                 self._merge(card, st, source, retry=retry_merge)
@@ -2727,6 +2761,8 @@ class FlowEngine(PlanEditing):
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
         focus = decision_step(st)
         wanted = str(request.get("step") or "")
+        if wanted in st.superseded:
+            raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy; zgody utraciły ważność.")
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
             # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
@@ -3105,6 +3141,8 @@ class FlowEngine(PlanEditing):
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
+        if step.get("step") in st.superseded:
+            raise FlowError("stale-context", "Nie można wznowić sesji poprzedniego kontekstu.")
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
         done = st.finished.get(step.get("step")) or {}
@@ -3136,6 +3174,8 @@ class FlowEngine(PlanEditing):
                                 routeTokenFile=step.get("routeTokenFile") or "",
                                 parentStep=step.get("step") or "", attempt=attempt, session=step.get("session") or "",
                                 worktree=step.get("worktree") or "", branch=step.get("branch") or "",
+                                baseRef=step.get("baseRef") or "", baseCommit=step.get("baseCommit") or "",
+                                baseVersion=step.get("baseVersion", 0),
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "")
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
@@ -3380,6 +3420,11 @@ class FlowEngine(PlanEditing):
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         info = ticket_of(st, ticket)
         repo = self._repo(card)
+        if any(row["worktree"] == info["worktree"] for row in st.base_change.get("generation", [])):
+            # Zasoby korekty pozostają pod ochroną PT-202, także po zakończeniu nowej pracy.
+            self._act(card, "cleanup", ticket, lambda: {"removed": False, "preserved": True,
+                                                        "reason": "base-generation"})
+            return
         # Sprzątanie jest powtarzalne: nieudane (np. pliki w worktree, K-15/LEGAL-60) ponawia się przy każdym
         # przebiegu, zamiast na zawsze zatrzymać kartę.
         self._act(card, "cleanup", ticket,
@@ -3390,7 +3435,7 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         for name, finished in st.finished.items():
             step = st.steps.get(name) or {}
-            if step.get("kind") != "review" or finished.get("result") != "done" or \
+            if name in st.superseded or step.get("kind") != "review" or finished.get("result") != "done" or \
                     (step.get("ticket"), step.get("round")) in st.verdicts:
                 continue
             path = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
@@ -3403,7 +3448,8 @@ class FlowEngine(PlanEditing):
                 tip = ""
             if verdict and tip and tip == step.get("reviewTip"):
                 self.journal.append(card, "review.verdict", step=name, ticket=step["ticket"],
-                                    round=step["round"], reviewer=step.get("executor") or "", **verdict)
+                                    round=step["round"], reviewer=step.get("executor") or "",
+                                    baseVersion=step.get("baseVersion", 0), reviewTip=tip, **verdict)
 
     def _recover_review_rejections(self, card: str) -> None:
         """Decyzja reject i zdarzenie odrzucenia mogą zostać rozdzielone restartem usługi."""
@@ -3482,6 +3528,8 @@ class FlowEngine(PlanEditing):
             if action != "step-start" or not result.get("ok") or key in st.steps:
                 continue
             intent = st.intents.get((action, key)) or {}
+            if intent.get("seq", 0) < st.base_change.get("seq", 0):
+                continue
             self.journal.append(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
                                 ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
                                 executor=intent.get("executor") or (st.started or {}).get("executor") or "",
@@ -3497,7 +3545,9 @@ class FlowEngine(PlanEditing):
                                 branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
-                                gitDir=result.get("gitDir") or "", repo=self._repo(card))
+                                gitDir=result.get("gitDir") or "", repo=self._repo(card),
+                                baseVersion=intent.get("baseVersion", 0),
+                                baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""))
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))
@@ -3873,7 +3923,8 @@ class FlowEngine(PlanEditing):
                                 ok=True, commit=merged_tip, resolved=True)
         if verdict is not None:
             self.journal.append(card, "review.verdict", step=name, ticket=step.get("ticket") or "",
-                                round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
+                                round=step.get("round") or 1, reviewer=step.get("executor") or "",
+                                baseVersion=step.get("baseVersion", 0), reviewTip=step.get("reviewTip", ""), **verdict)
         self._queue_notices(card)
         self._release_local(name)
         self.procs.pop(name, None)
@@ -4023,6 +4074,8 @@ class FlowEngine(PlanEditing):
         if baseproposal.blocked(st):
             return
         ticket = step.get("ticket") or ""
+        if step.get("step") in st.superseded:
+            raise FlowError("stale-context", "Scalenie wymaga kroku z bieżącego kontekstu bazy.")
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
         # Zatwierdzony commit: APPROVE recenzenta albo świadoma decyzja użytkownika „scal mimo uwag” po 3. rundzie
@@ -4365,7 +4418,9 @@ class FlowEngine(PlanEditing):
         return better[0].name if better else ""
 
     def _ticket_consent(self, card: str, ticket: str) -> bool:
+        boundary = fold(self.journal.read(card)).base_change.get("seq", 0)
         return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
+                                    and e.get("seq", 0) > boundary
                                     for e in self.journal.read(card))
 
     def _outside_busy(self, card: str) -> bool:
@@ -4753,7 +4808,7 @@ class FlowEngine(PlanEditing):
     def _require_base_context(self, card):
         st = fold(self.journal.read(card))
         if baseproposal.generation_blocked(st):
-            raise FlowError("base-validation", "Generacja czeka na odzyskanie lub walidację kontekstu (PT-213).")
+            raise FlowError("base-validation", "Generacja czeka na odzyskanie lub walidację kontekstu.")
 
     def preview_card_base_change(self, card_id: str, request: dict) -> dict:
         """Odcisk całej mapy i dowody kwalifikacji; brak zdarzeń i brak mutacji gita."""
@@ -4997,7 +5052,7 @@ class FlowEngine(PlanEditing):
             already = bool(st.merged)
             self._resume_main_merge(card, intent)
             return {"ok": True, "id": card, "main": intent["targetBranch"], "already": already}
-        if not st.closed or st.plan_revision:
+        if self._card_merge_blocks(st):
             raise FlowError("not-closed", "karta nie jest jeszcze gotowa do scalenia")
         info = ticket_of(st)
         if st.merged:
@@ -5183,6 +5238,7 @@ class FlowEngine(PlanEditing):
             return
         last_return = max((int(e.get("seq") or 0) for e in self.journal.read(card)
                            if e.get("type") == "plan.returned"), default=0)
+        last_return = max(last_return, st.base_change.get("seq", 0))
         closings = [s for s in st.steps.values() if s.get("kind") == "close" and
                     int(s.get("seq") or 0) > last_return]
         if closings:
@@ -5193,7 +5249,8 @@ class FlowEngine(PlanEditing):
                 with open(path, encoding="utf-8") as fh:
                     summary = fh.read(OUTPUT_MAX)
                 self.journal.append(card, "card.closed", step=latest["step"], summary=summary,
-                                    check=(st.started or {}).get("check") or "auto")
+                                    check=(st.started or {}).get("check") or "auto",
+                                    baseVersion=st.base_version, baseCommit=st.base.get("baseCommit", ""))
                 if st.plan_approved and not st.plan_finished:
                     self.journal.append(card, "plan.finished", merged=sum(1 for t in tickets if t["state"] == "gotowe"),
                                         rejected=sum(1 for t in tickets if t["state"] == "odrzucone"))

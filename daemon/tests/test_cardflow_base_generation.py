@@ -90,7 +90,7 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(st.base_version, 2)
         self.assertEqual(st.base["baseCommit"], self.feature_sha)
         self.assertEqual(st.initial_base["baseCommit"], self.master)
-        self.assertTrue(st.base_validation_required)
+        self.assertFalse(st.base_validation_required)
         self.assertEqual(len(intent["generation"]), count)
         self.assertEqual(len(self.of(self.ident, "card.base-changed")), 1)
         self.assertEqual(len(self.results(self.ident, "change-base")), 1)
@@ -115,8 +115,8 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(flow["cardBranch"], info["cardBranch"])
         self.assertEqual(flow["branch"], info["branch"])
         self.assertEqual(flow["generation"], intent["generation"])
-        self.assertTrue(flow["baseValidationRequired"])
-        self.assertEqual(shown["derived"]["column"], "waiting")
+        self.assertFalse(flow["baseValidationRequired"])
+        self.assertFalse(flow["closed"])
         self.assertEqual(flow["decisions"], [])
         self.assertEqual(shown["baseCommit"], self.feature_sha)
         self.assertEqual(shown["baseVersion"], 2)
@@ -139,7 +139,7 @@ class EmptyGenerationTest(StartBaseSetup):
             Path(path, "cache", "keep.bin").write_bytes(b"dane wewnatrz")
             Path(path, "ignored.bin").write_bytes(b"dane")
         preview = self.preview(step="ask")
-        self.assertFalse(preview["canExecute"], "UI czeka na PT-213")
+        self.assertTrue(preview["canExecute"])
         # Dowiedzione granice, bez zaakceptowanego ticketu ani review nieistniejącej pracy.
         for row in preview["branches"]:
             self.assertEqual(row["startCommit"], self.master)
@@ -184,7 +184,7 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(old.read_text(), "ignorowane dane użytkownika")
         self.assertEqual(fold(self.events(self.ident)).base["baseRef"], "refs/remotes/team/topic")
 
-    def test_plan_metadata_and_not_started_ticket_remain_in_snapshot(self):
+    def test_plan_approval_becomes_history_without_starting_old_pending_ticket(self):
         journal = self.flow.engine.journal
         started = fold(self.events(self.ident)).started
         journal.append(self.ident, "card.started", **{k: v for k, v in started.items()
@@ -193,15 +193,25 @@ class EmptyGenerationTest(StartBaseSetup):
                 {"id": "PT-999", "title": "Nierozpoczęty", "blockers": [self.started["ticket"]]}]
         journal.append(self.ident, "plan.approved", rows=rows, path="plan.md")
         before = fold(self.events(self.ident)).plan_approved
+        reservations = self.results(self.ident, "reserve")
         self.assertTrue(self.call("resolve_card_step", self.request(self.preview()))["changed"])
-        st = fold(self.events(self.ident))
-        self.assertEqual(st.plan_approved, before)
-        self.assertEqual(ticket_of(st, "PT-999")["branch"], "")
-        self.assertNotEqual(ticket_of(st, "PT-999")["cardBranch"], self.started["cardBranch"])
-        self.board.publish()
-        shown = self.shown(self.ident)["derived"]
-        self.assertEqual([row["id"] for row in shown["tickets"]], [r["id"] for r in rows])
-        self.assertEqual([row["blockers"] for row in shown["flow"]["plan"]["rows"]], [r["blockers"] for r in rows])
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                if restart:
+                    self.restart()
+                st = fold(self.events(self.ident))
+                # PT-213 unieważnia zgodę, zachowując oryginalny plan i rezerwacje w dzienniku.
+                self.assertIsNone(st.plan_approved)
+                self.assertEqual(self.of(self.ident, "plan.approved"), [before])
+                self.assertEqual(self.results(self.ident, "reserve"), reservations)
+                self.assertEqual(ticket_of(st, "PT-999")["branch"], "")
+                self.assertNotEqual(ticket_of(st, "PT-999")["cardBranch"], self.started["cardBranch"])
+                self.board.publish()
+                shown = self.shown(self.ident)["derived"]
+                self.assertEqual(shown["tickets"], [])
+                self.assertEqual(shown["flow"]["plan"]["rows"], [])
+                self.assertTrue(any(h["old"] and h["id"] == f"plan.approved#{before['seq']}"
+                                    for h in shown["flow"]["history"]))
 
     def test_crashes_at_durable_boundaries_recover_exactly_once(self):
         cases = [("intent", None, "change-base", False),
@@ -410,15 +420,14 @@ class EmptyGenerationTest(StartBaseSetup):
             self.assertTrue(self.call("resolve_card_step", request)["changed"])
         self.restart()
         engine = self.flow.engine
-        # Znacznik blokuje samodzielnie, także bez starego pytania i przy historycznym domknięciu.
+        # Zgoda ze starego kontekstu nie wraca nawet po późnym zapisie.
         engine.journal.append(self.ident, "step.decision", step="ask", choice="answer", baseDecision="keep")
         with mock.patch.object(BaseGeneration, "prepare", side_effect=AssertionError("ponowny git")), \
-                mock.patch.object(engine, "_advance_close", side_effect=AssertionError("domknięcie")), \
+                mock.patch.object(engine, "_advance_close"), \
                 mock.patch.object(engine, "_merge", side_effect=AssertionError("integracja")):
             engine.tick()
             engine.tick()
-        for operation in (lambda: engine.start(self.ident, {"entry": "now", "executor": "Sonnet"}),
-                          lambda: engine.resolve_step(self.ident, {"choice": "answer", "step": "ask", "baseDecision": "keep"}),
+        for operation in (lambda: engine.resolve_step(self.ident, {"choice": "answer", "step": "ask", "baseDecision": "keep"}),
                           lambda: engine.resolve_review(self.ident, "accept"),
                           lambda: engine.enter(self.ident, "ask"),
                           lambda: engine.approve_plan(self.ident),
@@ -426,10 +435,6 @@ class EmptyGenerationTest(StartBaseSetup):
                           lambda: engine.merge_card_to_main(self.ident)):
             with self.assertRaises(FlowError):
                 operation()
-        self.assert_active()
-        engine.moved(self.ident, "done", "waiting", "manual-move")
-        self.assertFalse(fold(self.events(self.ident)).card_finished)
-        engine.tick()
         self.assert_active()
         # Zwykły cleanup nie może nawet przenieść plików w starym worktree.
         row = self.intent()["generation"][1]
@@ -451,7 +456,7 @@ class EmptyGenerationTest(StartBaseSetup):
 
         def failing_restore(card):
             nonlocal failed
-            if fold(journal.read(card)).base_validation_required and not failed:
+            if fold(journal.read(card)).base_change and not failed:
                 failed = True
                 raise OSError("zapis pliku dziennika tablicy")
             return restore(card)

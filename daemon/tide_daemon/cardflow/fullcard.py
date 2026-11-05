@@ -97,7 +97,7 @@ def phases(st: FlowState, out: dict) -> list[dict]:
     started = st.started or {}
     plan = started.get("entry") in PLAN_ENTRIES
     approved = st.plan_approved is not None
-    steps = list(st.steps.values())
+    steps = [s for name, s in st.steps.items() if name not in st.superseded]
     running = {s.get("step") for s in st.running()}
     flow = out["flow"]
     by_phase: dict[str, list[dict]] = {}
@@ -367,7 +367,7 @@ def headline(st: FlowState, out: dict) -> str:
     """Zdanie do „Twój ruch”, gdy nic nie czeka na użytkownika (przy decyzjach — pusty napis)."""
     flow = out["flow"]
     if st.base_validation_required or st.base_generation_wait:
-        return st.base_generation_wait.get("reason") or "Nowa generacja czeka na walidację kontekstu (PT-213)."
+        return st.base_generation_wait.get("reason") or "Nowa generacja czeka na walidację kontekstu."
     if flow.get("decisions"):
         return ""
     count = len(flow.get("running") or [])

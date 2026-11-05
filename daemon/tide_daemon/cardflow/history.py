@@ -38,6 +38,7 @@ VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 def build(st, steps: list[dict]) -> list[dict]:
     """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`)."""
     last_started = max((int(e.get("seq") or 0) for e in st.log if e.get("type") == "card.started"), default=0)
+    last_started = max(last_started, st.base_change.get("seq", 0))
     enter = {item.get("id"): item.get("canEnter") is True for item in steps}
     roots = {name: _root(st, name) for name in st.steps}
     chains: dict[str, list[str]] = {}
@@ -62,12 +63,17 @@ def build(st, steps: list[dict]) -> list[dict]:
 
 
 def _root(st, name: str) -> str:
-    """Pierwsza próba kroku: łańcuch `parentStep` w obrębie tego samego rodzaju kroku."""
+    """Pierwsza próba kroku tego samego rodzaju, w obrębie jednej generacji."""
     kind = (st.steps.get(name) or {}).get("kind")
     seen = {name}
     while True:
         parent = (st.steps.get(name) or {}).get("parentStep")
         if not parent or parent in seen or (st.steps.get(parent) or {}).get("kind") != kind:
+            return name
+        step, previous = st.steps[name], st.steps[parent]
+        # Powiązanie z dawnym wynikiem służy promptowi; nie scala prób różnych baz/zleceń.
+        if ((name in st.superseded) != (parent in st.superseded)
+                or step.get("baseVersion") != previous.get("baseVersion")):
             return name
         seen.add(parent)
         name = parent

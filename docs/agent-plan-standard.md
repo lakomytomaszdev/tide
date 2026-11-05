@@ -241,7 +241,10 @@ Panel pokazuje najwyżej 10 i liczbę pozostałych. Nie jest to liczba plików w
 Dowody, powody odmowy i procesy poprzednich zleceń mają `previousOrder: true`; kontrola pozostaje zachowawcza.
 PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
 wymagać `canChange: true` i równości identyfikatora; każda wykryta różnica wymaga świeżej decyzji. Identyfikator
-sam w sobie nie jest zgodą. `canExecute` pozostaje fałszem do dostarczenia potwierdzenia w PT-213.
+sam w sobie nie jest zgodą. `canExecute: true` udostępnia osobne końcowe potwierdzenie pustej korekty;
+panel wysyła `choice: change-base` z dokładnym ref/SHA i `previewId`. Aktywacja unieważnia stare
+zgody, sesje i domknięcie; nowy krok rusza w nowym katalogu i świeżej sesji. Nowa praca podlega
+zwykłym testom i review, a karta wymaga nowego podsumowania. Historyczne dane pozostają do odczytu.
 Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
 commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.
 

@@ -56,6 +56,7 @@ class FlowState:
     base_change: dict = field(default_factory=dict)
     base_validation_required: bool = False
     base_generation_wait: dict = field(default_factory=dict)
+    base_restart_ticket: str = ""
     base_waits: dict = field(default_factory=dict)
     base_request: dict = field(default_factory=dict)  # decyzja użytkownika niezwiązana z krokiem
     intents: dict = field(default_factory=dict)     # (action, key) → intent
@@ -135,7 +136,8 @@ class FlowState:
         for (ticket, _round), verdict in self.verdicts.items():
             if verdict.get("verdict") == "APPROVE" and ("merge", ticket) not in self.results \
                     and ticket not in self.rejected:
-                step = next((s for s in self.steps.values() if s.get("ticket") == ticket and
+                step = next((s for name, s in self.steps.items() if name not in self.superseded and
+                             s.get("ticket") == ticket and
                              s.get("kind") == "ticket"), None)
                 if step is not None:
                     out.append(step)
@@ -233,6 +235,7 @@ def fold(events: list[dict]) -> FlowState:
             st.base_change = {}
             st.base_validation_required = False
             st.base_generation_wait = {}
+            st.base_restart_ticket = ""
             st.base_request = {}
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
@@ -267,6 +270,30 @@ def fold(events: list[dict]) -> FlowState:
                 st.base_validation_required = e.get("validationRequired") is True
                 st.base_generation_wait = {}
                 if "generation" in e:
+                    # Dowiedziona pusta generacja nie ma wkładu do ponownego review. Zgody i
+                    # domknięcie poprzedniego kodu pozostają w dzienniku, ale nie autoryzują nowego.
+                    st.base_validation_required = False
+                    st.base_restart_ticket = ticket_of(st)["id"]
+                    st.closed = None
+                    st.verdicts = {}
+                    st.review_questions = {}
+                    st.review_decisions = {}
+                    st.step_decisions = {}
+                    st.base_request = {}
+                    st.waiting = {}
+                    st.transfer_requests = {}
+                    st.flow_error = st.flow_error_action = ""
+                    st.superseded.update(st.steps)
+                    st.last_step = ""
+                    st.moved_to = ""
+                    # Propozycja i review planu także dotyczą dawnego kodu, nawet jeśli
+                    # powstały wyłącznie poza repo i nie ma jeszcze commitu planu.
+                    st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+                    st.plan_reviewed = st.plan_revision = None
+                    st.plan_reviewer = ""
+                    st.plan_review_wait = None
+                    st.plan_change_seq, st.plan_change_ts = 0, ""
+                    st.plan_finished = False
                     # Jeden fold wybiera kompletną mapę. Historyczne step.started pozostają dowodami
                     # starych procesów; bieżące ścieżki pochodzą wyłącznie z wyników tej generacji.
                     for row in e["generation"]:
@@ -346,7 +373,11 @@ def fold(events: list[dict]) -> FlowState:
             if st.moved_to not in ("done", "archived"):
                 st.moved_to = ""
         elif kind == "review.verdict":
-            st.verdicts[(e.get("ticket"), e.get("round"))] = e
+            source = st.steps.get(e.get("step")) or {}
+            if e.get("step") not in st.superseded and (not st.base_change or
+                    (source.get("baseVersion") == e.get("baseVersion") == st.base_version and
+                     bool(source.get("reviewTip")) and source["reviewTip"] == e.get("reviewTip"))):
+                st.verdicts[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.question":
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.decision":
@@ -354,7 +385,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.retry":
             st.step_retries[e.get("step")] = e
         elif kind == "step.decision":
-            st.step_decisions[e.get("step")] = e
+            if e.get("step") not in st.superseded:
+                st.step_decisions[e.get("step")] = e
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
@@ -435,7 +467,9 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.closed":
-            st.closed = e
+            if e.get("step") not in st.superseded and (not st.base_change or
+                    e.get("baseVersion") == st.base_version and e.get("baseCommit") == st.base.get("baseCommit")):
+                st.closed = e
         elif kind == "card.main-merged":
             st.main_merged = e
             if st.merged is None:
@@ -550,7 +584,7 @@ def _valid_generation(st, event, base):
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
     """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
     out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
-    wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or ""
+    wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or st.base_restart_ticket
     for (action, _key), res in st.results.items():
         if not res.get("ok"):
             continue
@@ -780,6 +814,9 @@ def _derived(st: FlowState, card: dict) -> dict | None:
                                     for (ticket, kind), item in st.waiting.items()]})
     out["flow"]["baseDecisionPending"] = bool(pending(st))
     out["flow"].update(baseValidationRequired=st.base_validation_required,
+                       approvals=list(st.verdicts.values()),
+                       historicalApprovals=[e for e in st.log if e.get("type") == "review.verdict" and
+                                            e.get("seq", 0) < st.base_change.get("seq", 0)],
                        generation=(st.base_change or {}).get("generation") or [],
                        generationWaiting=st.base_generation_wait,
                        preservedGenerations=[i for i in st.intents.values() if i.get("action") == "change-base"])
@@ -794,11 +831,14 @@ def _derived(st: FlowState, card: dict) -> dict | None:
          "lastActivityTs": _epoch((st.activity.get(name) or item).get("ts")),
          "kind": item.get("kind") or "", "executor": item.get("executor") or "",
          "provider": item.get("provider") or "",
-         "canTransfer": (name not in st.finished or
+         "historical": name in st.superseded,
+         "baseVersion": item.get("baseVersion", 0),
+         "canTransfer": name not in st.superseded and (name not in st.finished or
                          ((st.finished.get(name) or {}).get("reason") == "transfer" and
                           name not in st.step_decisions)) and
                         bool(item.get("provider")) and not st.card_finished,
-         "canEnter": not any(other.get("worktree") == item.get("worktree") and other.get("step") != name
+         "canEnter": name not in st.superseded and not any(other.get("worktree") == item.get("worktree") and
+                             other.get("step") != name
                              for other in st.running()) and
                      not any(other.get("worktree") == item.get("worktree") and other.get("mode") == "interactive"
                              and not other.get("consoleClosed") for other in st.steps.values())}
@@ -811,7 +851,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         for item in out["flow"]["steps"]:
             item["canEnter"] = item["canTransfer"] = False
         return _fill(out, "waiting", st.base_generation_wait.get("reason") or
-                     "Nowa generacja czeka na walidację kontekstu (PT-213).")
+                     "Nowa generacja czeka na walidację kontekstu.")
     if st.merge_waiting and not st.card_finished:
         return _fill(out, "waiting", "Scalenie czeka: " + st.merge_waiting["reason"])
     plan_entry = st.started.get("entry") in ("plan", "planning")

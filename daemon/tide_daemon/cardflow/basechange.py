@@ -120,7 +120,7 @@ def preview(git, repo, card, events, st, new, processes, *, operation=None):
     if st.open_intents():
         block("pending-action", "Dziennik zawiera niedokończoną operację; granice nie są dowiedzione.")
     if st.base_validation_required:
-        block("base-validation", "Nowa generacja czeka na walidację kontekstu (PT-213).")
+        block("base-validation", "Nowa generacja czeka na walidację kontekstu.")
 
     # Nie wyznaczamy zakresu z nazw, dat, reflogu ani wiadomości commitów.
     creations = [e for e in events if e.get("type") == "result" and e.get("ok") and
@@ -227,7 +227,7 @@ def preview(git, repo, card, events, st, new, processes, *, operation=None):
     sketch = followup()
     result = {"ok": True, "id": card, "oldBase": old, "oldRefCommit": old_ref_sha, "newBase": new,
               "baseVersion": st.base_version, "branches": branches, "processes": processes,
-              "blockedReasons": reasons, "canChange": not reasons, "canExecute": False,
+              "blockedReasons": reasons, "canChange": not reasons, "canExecute": not reasons,
               "invalidations": INVALIDATIONS, "scope": baseproposal.LIMITS, "followup": sketch,
               "instruction": "Zachowaj bazę, aby kontynuować, albo pozostaw kartę w oczekiwaniu i zaplanuj "
               "przeniesienie z zapisanego szkicu K-50-replay-code. Bez ręcznego reset/rebase zarządzanych "
@@ -235,8 +235,8 @@ def preview(git, repo, card, events, st, new, processes, *, operation=None):
               "bez automatycznego kopiowania pracy.",
               "ignoredPolicy": "Ignorowane dane pozostają w starym worktree; bez przenoszenia i kasowania.",
               "localStatePolicy": LOCAL_STATE_POLICY,
-              "executionMessage": "Potwierdzenie wykonania jest niedostępne do PT-213. "
-              "Backend obsługuje wyłącznie przełączenie dowiedzionej pustej generacji."}
+              "executionMessage": "Potwierdzenie wybiera nową pustą generację. Stare zgody i domknięcie "
+              "tracą ważność; dalsza praca ruszy w nowej sesji, a karta wymaga nowego podsumowania."}
     worktree_map = worktrees.out
     if operation:
         # Recovery pomija wyłącznie własne nowe wpisy oraz własne blokady starych katalogów.
