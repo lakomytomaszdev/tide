@@ -256,6 +256,58 @@ Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 """
 
 
+def box_tests(profile: dict) -> str:
+    """Instrukcja tylko dla BoxRunner; polecenia profilu są także testami."""
+    import shlex
+    commands = profile.get("verify") or []
+    examples = "\n".join(f"- tide-test {shlex.join(['sh', '-c', command])}" for command in commands)
+    return ("\nTesty w pudełku: testy uruchamiaj przez `tide-test <polecenie> [argumenty…]`. "
+            "Dotyczy verify profilu oraz npm test, npx playwright test, dotnet test, make test, pytest "
+            "i python -m unittest. Dla złożonego polecenia użyj tide-test sh -c '…'. "
+            "Owijka zachowuje środowisko, katalog roboczy i kod wyjścia; zapisuje log i podsumowanie "
+            "w out/tests katalogu tego kroku, poza worktree.\n" +
+            ("Polecenia verify profilu:\n" + examples + "\n" if examples else ""))
+
+
+def test_evidence(step: dict) -> str:
+    """Spis istniejących artefaktów autora; HostRunner zachowuje dawne przekazanie."""
+    if step.get("runner") != "box":
+        return ""
+    import os
+    import stat
+    from ..box.runner import StepDir
+    from ..tasks.agentcmd import StepError
+    path = step.get("stepDir") or ""
+    found = []
+    tests = False
+    try:
+        fs = StepDir(os.path.dirname(path), path)
+        for parts in (("out",), ("out", "tests")):
+            try:
+                fd = fs._walk(parts, create=False)
+            except OSError:
+                continue
+            try:
+                for name in sorted(os.listdir(fd)):
+                    wanted = (name == "proxy-denied.log" if len(parts) == 1 else
+                              name == "summary.json" or bool(re.fullmatch(r"\d+\.log", name)))
+                    if not wanted:
+                        continue
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode):
+                        artifact = os.path.join(path, *parts, name)
+                        found.append(f"- `{artifact}` — {info.st_size} B")
+                        tests |= len(parts) == 2
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, StepError):
+        pass
+    return ("\nArtefakty kroku wykonawcy:\n" + "\n".join(found) + "\n" +
+            ("krok bez testów.\n" if not tests else "") +
+            "świeży artefakt = dowód; nie proś o ponowny przebieg. "
+            "Sprawdź zgodność polecenia, wyniku i czasu artefaktu z ocenianą zmianą.\n")
+
+
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
                 card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
                 diff: str, note: str, rules: str) -> str:

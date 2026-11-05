@@ -1,0 +1,5 @@
+> app@1.0.0 test
+> jest
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       2 failed, 18 passed, 20 total
+Time:        1.121 s

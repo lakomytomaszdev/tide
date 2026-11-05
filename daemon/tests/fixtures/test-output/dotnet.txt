@@ -1,0 +1,2 @@
+Test run for /src/Tests.dll (.NETCoreApp,Version=v8.0)
+Failed!  - Failed:     2, Passed:    15, Skipped:     1, Total:    18, Duration: 120 ms - Tests.dll (net8.0)

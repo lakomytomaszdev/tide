@@ -2996,6 +2996,23 @@ ponawia zwolnienie bez drugiego wyniku. Nieudane sprzątanie jest ponawiane bez 
 Polityka po odtworzeniu pochodzi z zapisanych kontekstów nadal aktywnych kroków; gdy żaden nie pozostał,
 jest zdejmowana. Zwolnienie wpisu użycia i pliku kontekstu działa również przy niedostępnym proxy.
 
+**Artefakty testów kroku (PT-174).** BoxRunner dostarcza `in/bin/tide-test` w PATH agenta.
+Prompt ticketu i poprawek każe uruchamiać testy przez `tide-test <polecenie> [argumenty…]`,
+także polecenia `verify` profilu i rodziny `npm test`, `npx playwright test`, `dotnet test`,
+`make test`, `pytest`, `python -m unittest`. Złożone polecenie: `tide-test sh -c '…'`.
+Nie ma globalnego przechwytywania poleceń; uruchomienie bez owijki nie daje artefaktu.
+Owijka dziedziczy środowisko, stdin i katalog roboczy, łączy stdout/stderr w log oraz przekazuje kod wyjścia.
+Każde wywołanie tworzy `out/tests/<n>.log` i atomowo dopisuje rekord do listy `out/tests/summary.json`:
+`command`, `argv`, `exit_code`, `started_at` (UTC), `duration` (sekundy), `log` oraz
+`passed`/`failed`, gdy parser zna format (pytest, unittest, VSTest, Playwright, Jest/Vitest/Mocha).
+Nieznany format daje rekord bez liczników, awaria parsera nie zmienia kodu wyjścia.
+Równoległe wywołania rezerwują numery i aktualizują listę pod blokadą; bez wywołań katalog testów nie powstaje.
+Artefakty leżą w katalogu kroku obok worktree. Po zakończeniu usługa kopiuje tam także
+`out/proxy-denied.log`, jeżeli istnieją odmowy, zachowując źródłowy dziennik poza pudełkiem.
+Kartka recenzenta wymienia ścieżki i rozmiary artefaktów ostatniego kroku autora oraz instrukcję
+„świeży artefakt = dowód; nie proś o ponowny przebieg”; bez testów mówi „krok bez testów”.
+Recenzent ocenia aktualność polecenia i czasu względem zmiany. Kroki HostRunner zachowują dotychczasowe prompty.
+
 **Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
 odmów kroku (wiersze `CONNECT` i `HTTP`):
 

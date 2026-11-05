@@ -471,7 +471,20 @@ def after_step(step: dict, data: dict, out_dir: str) -> tuple:
     if not slug or not name:
         return data, ""
     try:
-        entries = read_denied(denied_log_path(slug, name))
+        log_path = denied_log_path(slug, name)
+        entries = read_denied(log_path)
+        if entries:
+            # Kopia do katalogu kroku dla recenzenta; nie podążamy za dowiązaniami
+            # podłożonymi w out przez proces w pudełku.
+            from ..box.runner import StepDir
+            try:
+                fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                with os.fdopen(fd, encoding="ascii", errors="replace") as source:
+                    step_dir = os.path.dirname(out_dir)
+                    StepDir(os.path.dirname(step_dir), step_dir).write(
+                        os.path.join(out_dir, DENIED_LOG), source.read())
+            except (OSError, agentcmd.StepError) as exc:
+                print(f"tide-daemon: nie zapisano artefaktu odmów kroku {name}: {exc}", flush=True)
     except BoxError:
         return data, ""
     if not entries:

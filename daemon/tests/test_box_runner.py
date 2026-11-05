@@ -102,6 +102,20 @@ class BoxRunnerCase(unittest.TestCase):
 
 
 class ArgvTest(BoxRunnerCase):
+    def test_tide_test_is_executable_on_agent_path_and_writes_only_step_output(self):
+        bg, _ = self.runner().start(self.step())
+        env = self.env_file()
+        wrapper = shutil.which("tide-test", path=env["PATH"])
+        self.assertEqual(wrapper, os.path.join(self.step_dir, "in", "bin", "tide-test"))
+        self.assertFalse(os.path.exists(os.path.join(self.step_dir, "out", "tests")))
+        result = subprocess.run([wrapper, "/bin/sh", "-c", "echo '3 passed'; exit 7"],
+                                env=env, cwd=bg.cwd, capture_output=True)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        with open(os.path.join(self.step_dir, "out", "tests", "summary.json")) as fh:
+            row = json.load(fh)[0]
+        self.assertEqual((row["passed"], row["failed"], row["exit_code"]), (3, 0, 7))
+        self.assertFalse(os.path.exists(os.path.join(self.worktree, "tests")))
+
     def test_argv_runs_the_step_as_agent_service_without_any_in_env_value(self):
         mac = local.LocalAgent("mac", "http://mac.lan:11434", "openai", "qwen3-coder:30b", 65536, self.token_file)
         runner = self.runner(step_env=lambda s: {"E2E_PORT": "4301", "TIDE_SECRET_MARK": MARKER + "-env"})
