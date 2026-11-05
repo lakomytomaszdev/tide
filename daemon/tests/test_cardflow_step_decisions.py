@@ -541,6 +541,26 @@ class StepDecisionTest(FlowInProcess):
         fix = next(s for s in self.of(card_id, "step.started") if s["kind"] == "fix")
         self.assertEqual(fix["executor"], "Codex standard")
 
+    def test_resume_after_answer_uses_the_reassigned_author_in_a_fresh_session(self):
+        # 05.11, K-38/PT-192: wznowienie rozmowy Opusa czekało na limit Claude do soboty.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        ticket = self.of(card_id, "step.started")[0]["ticket"]
+        self.assertTrue(self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": ticket,
+                                                                "executor": "Codex standard"})["ok"])
+        self.assertTrue(self.decide(card_id, choice="answer", answer="ISO 8601")["ok"])
+        self.assertTrue(wait_until(lambda: len(self.of(card_id, "step.started")) >= 2, timeout=20))
+        first, resumed = self.of(card_id, "step.started")[:2]
+        self.assertEqual(resumed["executor"], "Codex standard")
+        self.assertNotEqual(resumed.get("session") or "", first.get("session") or "")
+        call_path = os.path.join(resumed["stepDir"], "out", "fake-call.json")
+        self.assertTrue(wait_until(lambda: os.path.exists(call_path), timeout=20))
+        with open(call_path, encoding="utf-8") as fh:
+            call = json.load(fh)
+        self.assertNotIn("--resume", call["argv"])
+        self.assertIn("Poprzedni krok tego ticketu prowadził inny wykonawca", call["prompt"])
+
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"stepGuardMinutes": 15, "stepTimeoutMinutes": 0.02, "escalateErrors": False}, fh)

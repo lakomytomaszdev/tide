@@ -110,6 +110,24 @@ class CardClosingTest(FlowInProcess):
         with open(source, encoding="utf-8") as fh:
             self.assertIn("Moja niezapisana zmiana", fh.read())
 
+    def test_conflict_uses_the_reassigned_author(self):
+        # 05.11: konflikt przy scalaniu ticketu przepiętego na Codexa czekał na limit Claude (wykonawca z planu).
+        card = self.card(description="Plan z konfliktem")
+        path = self.wave_plan(card)
+        for number, mode in ((1, "gotowe"), (2, "powoli 2")):
+            with open(os.path.join(os.path.dirname(path), "tickets", f"{number}.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"# Ticket {number}\n\nATRAPA: {mode}\nATRAPA-PLIK: same\n"
+                         "\n- [ ] Wynik.\n")
+        self.assertTrue(self.submit(card, path)["ok"])
+        approved = self.approve(card)
+        self.assertTrue(approved["ok"], approved)
+        for ticket in approved["map"].values():
+            self.flow.engine.journal.append(card, "author.reassigned", ticket=ticket, executor="Codex standard")
+        self.assertTrue(wait_until(lambda: any(s.get("kind") == "conflict" for s in self.of(card, "step.started")),
+                                   timeout=20), self.events(card))
+        conflict = next(s for s in self.of(card, "step.started") if s.get("kind") == "conflict")
+        self.assertEqual(conflict["executor"], "Codex standard")
+
     def test_conflict_is_resolved_in_card_worktree_before_next_ticket(self):
         card = self.card(description="Plan z konfliktem")
         path = self.wave_plan(card)
