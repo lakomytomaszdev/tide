@@ -5,13 +5,14 @@ from unittest import mock
 
 from tide_daemon.cardflow import caretaker, decisions
 from tide_daemon.cardflow.engine import FlowError, _CaretakerPort
-from tide_daemon.cardflow.state import derived, fold
+from tide_daemon.cardflow.state import derived, fold, ticket_of
 
 from . import test_cardflow_plan_integration as fixtures
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 from .test_cardflow_caretaker import Journal
 from .test_cardflow_caretaker_retry import EngineOnJournal
+from .test_cardflow_dbus import git
 
 TARGET, ROOT, PROBLEM = "K-1-PT-7-2", "K-1-PT-7-1", "error:K-1-PT-7-1"
 FEEDBACK = "Dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły, przepisz bez zmian."
@@ -101,6 +102,89 @@ class GapActionTest(EngineOnJournal):
         self.assertTrue(st.caretaker_limits[PROBLEM]["limit"])
         self.assertEqual(len(st.plan_returns), 1)
 
+    def test_revision_active_during_independent_review_counts_until_the_limit(self):
+        self.add("K-1", "plan.returned", baseline=ROWS, feedback="Popraw inny fragment.")
+        self.add("K-1", "plan.proposed", rows=ROWS, prefix="PT", planner="Sonnet")
+        self.add("K-1", "plan.revision-ready", pending=True, baseline=ROWS)
+        self.add("K-1", "step.started", step="review-plan", kind="plan-review", ticket="")
+        self.assertIsNone(fold(self.journal.read("K-1")).plan_reviewed)
+        self.act()  # poprzednia akcja jest stale; nowa luka powstała już podczas review poprawki
+        limit = self.engine._caretaker_limit()
+        for n in range(1, limit + 1):
+            run = self.care(n + 1)
+            st = self.act(run)
+            outcome = st.caretaker_outcomes[run["step"]]
+            self.assertEqual((outcome["ok"], outcome["code"]), (False, "revision-active"))
+            self.assertEqual(caretaker.owned(st, PROBLEM)["count"], n)
+        with mock.patch.object(self.engine, "_caretaker_launch") as launch:
+            self.engine._caretake("K-1", st)
+        launch.assert_not_called()
+        st = fold(self.journal.read("K-1"))
+        self.assertTrue(st.caretaker_limits[PROBLEM]["limit"])
+        self.assertEqual(len(st.plan_returns), 1)
+
+    def test_approved_revision_resumes_ticket_only_after_added_work_is_merged(self):
+        self.act()
+        extra = {**ROWS[0], "id": "PT-8", "workId": "#2", "title": "Migracja"}
+        self.add("K-1", "plan.revision-approved", difference={"added": ["#2"]},
+                 plan={"rows": [*ROWS, extra], "map": {"#2": "PT-8"}})
+
+        def advance():
+            # Każde wywołanie składa dziennik od nowa, tak jak po restarcie usługi.
+            st = fold(self.journal.read("K-1"))
+            self.assertEqual(decisions.build_decisions(st), [])
+            self.assertEqual(caretaker.problems(st), [])
+            st.last_step = TARGET
+            with mock.patch.object(self.engine, "_advance_plan_review", return_value=False), \
+                    mock.patch.object(self.engine, "_advance_planning", return_value=False), \
+                    mock.patch.object(self.engine, "_resume_step") as resume:
+                self.engine._advance("K-1", st)
+            return resume
+
+        advance().assert_not_called()
+        self.add("K-1", "step.started", step="migration", kind="ticket", ticket="PT-8")
+        self.add("K-1", "step.finished", step="migration", ticket="PT-8", result="done")
+        self.add("K-1", "review.verdict", ticket="PT-8", round=1, verdict="APPROVE")
+        advance().assert_not_called()  # samo review nie udostępnia pracy w gałęzi karty
+        self.add("K-1", "result", action="merge", key="PT-8", ok=True)
+        resume = advance()
+        resume.assert_called_once()
+        self.assertEqual(resume.call_args.args[2]["step"], TARGET)
+        self.assertIn("PT-8", resume.call_args.args[3]["answer"])
+        self.assertEqual(fold(self.journal.read("K-1")).plan_approved["rows"][0], ROWS[0])
+        self.add("K-1", "step.started", step="continued", kind="ticket", ticket="PT-7", parentStep=TARGET)
+        st = fold(self.journal.read("K-1"))
+        self.assertNotIn(TARGET, st.plan_resumes)
+        self.assertIn(TARGET, st.superseded, "dawny błąd pozostaje ukryty po starcie następcy")
+
+    def test_added_downstream_tickets_do_not_deadlock_the_returned_ticket(self):
+        self.act()
+        rows = [*ROWS, {**ROWS[0], "id": "PT-8", "blockers": ["PT-7"]},
+                {**ROWS[0], "id": "PT-9", "blockers": ["PT-8"]}]
+        self.add("K-1", "plan.revision-approved", plan={"rows": rows})
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(st.plan_resumes[TARGET], set())
+        st.last_step = TARGET
+        with mock.patch.object(self.engine, "_advance_plan_review", return_value=False), \
+                mock.patch.object(self.engine, "_advance_planning", return_value=False), \
+                mock.patch.object(self.engine, "_resume_step") as resume:
+            self.engine._advance("K-1", st)
+        resume.assert_called_once()
+
+    def test_unapproved_or_previous_order_steps_do_not_resume(self):
+        self.act()
+        st = fold(self.journal.read("K-1"))
+        self.assertIsNone(st.plan_resumes[TARGET])
+        self.add("K-1", "card.started", entry="planning")
+        st = fold(self.journal.read("K-1"))
+        self.assertEqual(st.plan_resumes, {})
+        st.last_step = TARGET
+        with mock.patch.object(self.engine, "_advance_plan_review", return_value=False), \
+                mock.patch.object(self.engine, "_advance_planning", return_value=False), \
+                mock.patch.object(self.engine, "_resume_step") as resume:
+            self.engine._advance("K-1", st)
+        resume.assert_not_called()
+
     def test_restart_after_plan_return_finishes_the_action_without_a_second_return(self):
         self.add("K-1", "intent", action="caretaker-action", key=self.run["step"], problem=PROBLEM,
                  caretakerAction="return-plan", params=PARAMS)
@@ -161,7 +245,7 @@ class GapFlowTest(FlowInProcess):
     def test_ticket_error_returns_approved_plan_adds_a_ticket_and_waits_for_the_user(self):
         card = self.card()
         path = self.proposal(card)
-        body = ("# Eksport\nATRAPA: blad-opiekun\n"
+        body = ("# Eksport\nATRAPA: blad-opiekun\nATRAPA-PLIK: eksport\n"
                 "ATRAPA-POWOD: Brak migracji z decyzji A. ATRAPA-OPIEKUN: return-plan-gap\n"
                 "- [ ] Eksport działa po migracji.\n## Dla recenzenta\nSprawdź eksport.\n")
         with open(os.path.join(os.path.dirname(path), "tickets", "1.md"), "w", encoding="utf-8") as fh:
@@ -215,3 +299,22 @@ class GapFlowTest(FlowInProcess):
         self.assertEqual(len(self.of(card, caretaker.STARTED)), 1)
         self.assertEqual(len(self.of(card, "plan.returned")), 1)
         self.assertEqual([d["kind"] for d in self.shown(card)["derived"]["flow"]["decisions"]], ["plan-revision"])
+        # Dopiero użytkownik zatwierdza różnicę; potem nowa praca → scalenie → wznowienie starego ticketu.
+        self.assertTrue(self.approve(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=60), self.events(card))
+        events = self.events(card)
+        st = fold(events)
+        revision = next(e for e in events if e["type"] == "plan.revision-approved")
+        added = revision["plan"]["map"]["#3"]
+        children = [s for s in st.steps.values() if s.get("parentStep") == target]
+        self.assertEqual(len(children), 1)
+        child = children[0]
+        self.assertGreater(child["seq"], st.results[("merge", added)]["seq"])
+        self.assertEqual((child["ticket"], child["worktree"]), (st.steps[target]["ticket"], st.steps[target]["worktree"]))
+        self.assertEqual(st.finished[child["step"]]["result"], "done")
+        self.assertEqual(len(st.caretaker_runs), 1, "stary błąd nie wraca do opiekuna")
+        self.assertEqual(decisions.build_decisions(st), [])
+        self.assertEqual(st.plan_approved["rows"][0]["body"], body)
+        self.assertTrue(all(st.results[("merge", row["id"])]["ok"] for row in st.plan_approved["rows"]))
+        card_branch = ticket_of(st)["cardBranch"]
+        self.assertIn("eksport po migracji: format-v2", git(self.repo, "show", f"{card_branch}:ATRAPA-eksport.md"))

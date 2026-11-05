@@ -2028,10 +2028,16 @@ Rozpoczętych ticketów nie można zmieniać ani usuwać: działa dotychczasowe 
 
 Odesłanie rozwiązuje problem kroku ticketu: projekcja `plan.returned` oznacza krok jako zastąpiony poprawą planu
 (`superseded`), więc jego błąd lub pytanie nie wraca do decyzji, automatycznego ponowienia ani kolejnego opiekuna.
-Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Jawne ponowienie użytkownika nadal korzysta
-z dotychczasowej ścieżki. Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
+Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Po jej zatwierdzeniu przez użytkownika
+czeka jeszcze na scalenie dodanej pracy do gałęzi karty (albo jej odrzucenie przez użytkownika). Nie czeka na nowe
+tickety zależne, także pośrednio, od niego samego. Potem silnik wznawia krok przez istniejące `_resume_step`,
+w tym samym worktree, z instrukcją uwzględnienia zmian z gałęzi karty i kontynuacji pierwotnego zakresu.
+Oczekiwanie odtwarza się z dziennika po restarcie, a start następcy usuwa je z projekcji `plan_resumes`;
+stary błąd nie wraca do decyzji. Jawne ponowienie użytkownika nadal korzysta z dotychczasowej ścieżki.
+Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
 
-Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu. Gdy użytkownik
+Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu, także
+podczas niezależnego review nowej propozycji (przed bramką `review-pending`). Gdy użytkownik
 odeśle plan albo ponowi krok po starcie opiekuna, wynik opiekuna jest `stale`: bez kolejnego `plan.returned`
 i bez zużycia limitu, także dla problemu z decyzją. Historia pokazuje jeden wpis
 „Opiekun: odesłał plan z uwagą — <powód>”.

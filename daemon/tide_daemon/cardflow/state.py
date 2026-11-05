@@ -50,6 +50,7 @@ class FlowState:
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
     superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
+    plan_resumes: dict = field(default_factory=dict)  # krok odesłany do planu → None przed zgodą, potem zbiór blokerów
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
     step_notices: set = field(default_factory=set)
@@ -226,6 +227,7 @@ def fold(events: list[dict]) -> FlowState:
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
             st.plan_returns, st.plan_user_seq = [], 0
+            st.plan_resumes.clear()
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.plan_finished = False
@@ -292,6 +294,7 @@ def fold(events: list[dict]) -> FlowState:
                     not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
         elif kind == "step.started":
+            st.plan_resumes.pop(e.get("parentStep"), None)
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
             if e.get("kind") == "plan-review":
                 # Review ruszyło, więc dawna blokada limitu nie obowiązuje (K-31: po nieudanym review karta
@@ -375,6 +378,7 @@ def fold(events: list[dict]) -> FlowState:
                 # PT-155: problem ticketu przejmuje poprawa planu. Sam wynik kroku i jego kartka zostają;
                 # dawny błąd/pytanie nie wraca ani nie uruchamia kolejnego opiekuna, także po restarcie.
                 st.superseded.add(target)
+                st.plan_resumes[target] = None
             if "caretaker" not in e:
                 st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-discarded":
@@ -386,7 +390,21 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "plan.revision-ready":
             st.plan_revision = e
         elif kind == "plan.revision-approved":
+            before = {r["id"] for r in (st.plan_approved or {}).get("rows", [])}
             st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            rows = (st.plan_approved or {}).get("rows", [])
+            present = {r["id"] for r in rows}
+            added = present - before
+            for target, blockers in st.plan_resumes.items():
+                # Rozpoczęta kartka jest nietykalna. Nowa praca uzupełnia lukę przed wznowieniem, ale ticket
+                # zależny (także pośrednio) od tego kroku musi móc poczekać na jego zakończenie.
+                downstream = {st.steps[target]["ticket"]}
+                while True:
+                    more = {r["id"] for r in rows if set(r.get("blockers") or []) & downstream} - downstream
+                    if not more:
+                        break
+                    downstream.update(more)
+                st.plan_resumes[target] = (((blockers or set()) | added) & present) - downstream
             # Usunięty niewystartowany ticket nie zajmie już slotu; odtworzenie dziennika usuwa też jego kolejkę.
             removed = set((e.get("difference") or {}).get("removed") or [])
             st.waiting = {key: wait for key, wait in st.waiting.items() if key[0] not in removed}

@@ -295,6 +295,8 @@ class PlanEditing:
                 self.journal.append(card, "step.decision", step=previous["step"], ticket="",
                                     choice="change-executor", executor=selected.name)
             return {"ok": True, "id": card}
+        if request.get("action") == "return" and st.plan_revision and not st.plan_revision.get("failed"):
+            raise FlowError("revision-active", "poprawa planu już trwa")
         if not st.plan_reviewed and (request.get("action") != "edit" or
                                     any(s.get("step") not in st.finished for s in review_steps)):
             raise FlowError("review-pending", "zaczekaj na review planu przed tą zmianą")
@@ -310,8 +312,6 @@ class PlanEditing:
             return {"ok": True, "id": card}
         if request.get("action") == "return":
             feedback = self._returned_feedback(request)
-            if st.plan_revision and not st.plan_revision.get("failed"):
-                raise FlowError("revision-active", "poprawa planu już trwa")
             baseline = (st.plan_approved or proposal)["rows"]
             # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
             baseline = [{**r, "workId": r.get("id") or r["workId"]} for r in baseline]

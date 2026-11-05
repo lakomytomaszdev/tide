@@ -2205,7 +2205,18 @@ class FlowEngine(PlanEditing):
         if self._caretaker_resume(card, st, step):
             return
         if st.last_step in st.superseded and st.last_step not in st.step_decisions:
-            return              # PT-155: problem ticketu przejęła poprawa planu; jawne ponowienie nadal działa
+            blockers = st.plan_resumes.get(st.last_step)
+            if blockers is not None and not st.plan_revision:
+                ready = st.imported_done | st.rejected | {
+                    ticket for (action, ticket), made in st.results.items() if action == "merge" and made.get("ok")}
+                if blockers <= ready:
+                    info = ticket_of(st, step.get("ticket") or "")
+                    answer = ("Użytkownik zatwierdził różnicę planu po odesłaniu przez opiekuna. "
+                              f"Dodatkowa praca jest zakończona: {', '.join(sorted(blockers)) or '(bez nowych blokerów)'}. "
+                              f"Uwzględnij zmiany z gałęzi karty {info['cardBranch']} w bieżącym worktree, "
+                              "zachowując dotychczasową pracę, i kontynuuj pierwotny zakres ticketu.")
+                    self._resume_step(card, st, step, {"choice": "retry", "answer": answer, "caretaker": True})
+            return              # Stary błąd nie wraca do decyzji; jawne ponowienie nadal działa.
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
             if decision:
