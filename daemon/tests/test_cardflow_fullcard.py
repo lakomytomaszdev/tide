@@ -244,6 +244,16 @@ class BackgroundTest(unittest.TestCase):
         self.assertEqual(out["column"], "progress")
         self.assertIn("PT-2: polecenie poza piaskownicą", out["note"])
 
+    def test_author_step_start_clears_stale_author_wait_of_the_ticket(self):
+        # 05.11, K-37/PT-147: wpis „czeka na limit” kroku ticket został, gdy poprawki ruszyły na innym wykonawcy.
+        events = approved()
+        events.add("step.waiting", ticket="PT-1", kind="ticket", provider="anthropic",
+                   reason="czeka na limit Claude do sobota 18:00", cause="quota", until="sobota 18:00")
+        events.step("K-1-PT-1-2", ticket="PT-1", kind="fix", executor="Codex mocny")
+        tickets = {t["id"]: t for t in view(events)["tickets"]}
+        self.assertEqual(tickets["PT-1"]["status"], "fix")
+        self.assertNotIn(("PT-1", "ticket"), events.state().waiting)
+
     def test_finish_counts_running_steps_and_unmerged_tickets(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
         events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")
