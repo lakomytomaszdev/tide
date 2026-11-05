@@ -2953,6 +2953,14 @@ class FlowEngine(PlanEditing):
             previous = {}
         return {**assigned, **override}, previous
 
+    def _resolve_reviewer(self, assigned: dict, previous: dict, catalog, cfg):
+        """Bieżący wykonawca review: historia wybiera nazwę, katalog rozwiązuje model i dostawcę."""
+        name = previous.get("executor") or assigned.get("reviewer") or ""
+        try:
+            return execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
                          transfer=False, automated=False):
         cfg = self.models_config() if self.models_config else None
@@ -2995,8 +3003,12 @@ class FlowEngine(PlanEditing):
                 other_provider = opposite.get("provider") or assigned.get("provider") or ""
             else:
                 reviewer, opposite = self._reviewer_context(st, step.get("ticket") or "")
-                other_model = opposite.get("model") or reviewer.get("reviewerModel") or ""
-                other_provider = opposite.get("provider") or reviewer.get("reviewerProvider") or ""
+                if automated:
+                    resolved = self._resolve_reviewer(reviewer, opposite, catalog, cfg)
+                    other_model, other_provider = resolved.model, resolved.provider
+                else:
+                    other_model = opposite.get("model") or reviewer.get("reviewerModel") or ""
+                    other_provider = opposite.get("provider") or reviewer.get("reviewerProvider") or ""
             # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
             # wybór użytkownika albo eskalacja Tide wygrywa (K-31/DPT-5: „Ponów innym wykonawcą” kończył się błędem
             # przepływu, bo recenzentem był ten sam model). Zostaje tylko rozdział pracy lokalnej i chmurowej.
@@ -3246,12 +3258,7 @@ class FlowEngine(PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-reviewer", f"{card}: katalog recenzentów jest niedostępny")
-        try:
-            reviewer_name = previous.get("executor") or assigned.get("reviewer") or ""
-            reviewer = execution.resolve(reviewer_name, catalog, config=cfg,
-                                         probe=self.model_probe, which=self.which)
-        except execution.ExecutionError as exc:
-            raise FlowError(exc.code, str(exc)) from None
+        reviewer = self._resolve_reviewer(assigned, previous, catalog, cfg)
         expected = {
             "program": previous.get("program") or assigned.get("reviewerProgram"),
             "model": previous.get("model") or assigned.get("reviewerModel"),
@@ -3271,7 +3278,7 @@ class FlowEngine(PlanEditing):
             # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
             # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
             self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
-                                reviewer=reviewer_name, author=source.get("executor") or source.get("model") or "")
+                                reviewer=reviewer.name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
         try:
             tip = self.git.clean_tip(project.repo, info["branch"], path)

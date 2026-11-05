@@ -1,6 +1,7 @@
 """PT-145: akcje opiekuna i decyzja po N minutach — rzeczywisty FlowEngine, kontrolowany zegar i atrapy."""
 import json
 import os
+from dataclasses import replace
 from unittest import mock
 
 from . import flowfakes
@@ -8,6 +9,7 @@ from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 from .test_cardflow_caretaker_retry import EngineOnJournal
 from tide_daemon.cardflow import caretaker, decisions
+from tide_daemon.cardflow.engine import FlowError
 from tide_daemon.cardflow.journal import Journal
 from tide_daemon.cardflow.state import attention_step, fold
 
@@ -32,7 +34,8 @@ class DecisionActionsTest(EngineOnJournal):
                                                    mirror=os.path.join(self.base, f"mirror-{self.scenario}"))
         self.journal.clock = lambda: self.now
         self.add("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic",
-                 preferredProvider="anthropic", reviewerModel="opus", reviewerProvider="anthropic", column="todo")
+                 preferredProvider="anthropic", reviewer="Opus", reviewerModel="opus",
+                 reviewerProvider="anthropic", column="todo")
 
     def target(self, result="question", kind="ticket", **extra):
         self.add("K-1", "step.started", step="target", kind=kind, ticket="PT-7" if kind in caretaker.TICKET_KINDS else "",
@@ -237,7 +240,8 @@ class DecisionActionsTest(EngineOnJournal):
                 if index:
                     self.reset_scenario()
                 if settings:
-                    self.add("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic", **settings)
+                    self.add("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                             reviewer="Opus", **settings)
                 self.target(result="error", **fields)
                 before = self.state().steps["target"]
                 st, outcome = self.act(self.caretaker_run(), "change-executor", step="target", executor=executor, reason="Powód.")
@@ -326,6 +330,49 @@ class DecisionActionsTest(EngineOnJournal):
                                        executor="Haiku", reason="Obecny recenzent jest u innego dostawcy.")
                 self.assertTrue(outcome["ok"], outcome)
                 self.assertEqual(st.step_decisions["target"]["executor"], "Haiku")
+
+    def test_change_executor_checks_the_reviewers_current_catalog_entry(self):
+        for history in ("assignment", "review", "reassignment", "later-review"):
+            for changed_field, executor, preferred, code in (
+                    ("model", "Haiku", "anthropic", "bad-executor"),
+                    ("provider", "Codex lekki", "mixed", "bad-executor-provider")):
+                with self.subTest(history=history, changed_field=changed_field):
+                    if history in ("assignment", "review"):
+                        self.reset_scenario()
+                        self.add("K-1", "ticket.assigned", ticket="PT-7", executor="Sonnet", model="sonnet",
+                                 provider="anthropic", preferredProvider=preferred, reviewer="Opus",
+                                 reviewerModel="opus", reviewerProvider="anthropic")
+                        if history == "review":
+                            self.add("K-1", "step.started", step="past-review", kind="review", ticket="PT-7",
+                                     executor="Opus", model="opus", provider="anthropic")
+                            self.add("K-1", "step.finished", step="past-review", result="done")
+                        self.target(result="error", kind="fix")
+                    else:
+                        newer = history == "reassignment"
+                        self.reviewer_history("Codex mocny" if newer else "Opus",
+                                              "Opus" if newer else "Codex mocny",
+                                              newer_override=newer, preferred=preferred)
+                    catalog = self.engine.catalog()
+                    fields = {"model": "haiku"} if changed_field == "model" else {
+                        "provider": "openai", "program": "codex"}
+                    updated = replace(catalog, executors=tuple(
+                        replace(entry, **fields) if entry.name == "Opus" else entry
+                        for entry in catalog.executors))
+                    before = self.state().steps.copy()
+                    with mock.patch.object(self.engine, "catalog", return_value=updated):
+                        # Ta sama walidacja obowiązuje przy faktycznym wznowieniu nowej sesji.
+                        with self.assertRaises(FlowError) as raised:
+                            self.engine._resume_executor("K-1", self.state(), before["target"], executor,
+                                                         changed=True, automated=True)
+                        self.assertEqual(raised.exception.code, code)
+                        st, outcome = self.act(self.caretaker_run(), "change-executor", step="target",
+                                               executor=executor, reason="Zmiana po błędzie poprawek.")
+                    self.assertFalse(outcome["ok"], outcome)
+                    self.assertEqual(outcome["code"], code)
+                    self.assertEqual(st.steps, before)
+                    self.assertEqual(st.step_decisions, {})
+                    self.assertEqual(caretaker.owned(st, outcome["problem"])["count"], 1)
+                    self.assertFalse(st.open_intents(include_background=True))
 
     def test_review_launch_uses_the_same_event_order_as_executor_validation(self):
         for newer, expected in ((True, "Codex mocny"), (False, "Haiku")):
