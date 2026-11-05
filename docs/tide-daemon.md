@@ -1888,8 +1888,10 @@ restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` ni
 **Limit.** Każde działanie (udane i nieudane) liczy się do limitu z #8 (`ACTION_LIMIT`). Żeby kolejne odesłania nie
 zaczynały limitu od zera, `plan-amend` po odesłaniu opiekuna dziedziczy łańcuch nieudanej poprawki
 (`caretaker.chain_root` → `caretakerFrom`), a zakończony `done` krok poprawy planu nie zamyka problemu. Problem zamyka
-dopiero zmiana użytkownika: odesłanie planu bez pola `caretaker`, odrzucenie poprawki (`plan.revision-discarded`)
-albo edycja ticketu (`FlowState.plan_user_seq`). Po limicie decyzja wraca do użytkownika ze streszczeniem.
+dopiero decyzja użytkownika: odesłanie planu bez pola `caretaker` lub odrzucenie poprawki (`plan.revision-discarded`)
+przez `FlowState.plan_user_seq`, a także jawne ponowienie kroku z tego łańcucha (`step.retry` z `user: true`, bez
+`caretaker`). Po ponowieniu użytkownika kolejne odrzucenie formatu ponownie uruchamia opiekuna z nowym limitem
+działań; numery jego kroków pozostają ciągłe. Po limicie decyzja wraca do użytkownika ze streszczeniem.
 
 **Nieaktualność.** Odesłanie albo edycja planu przez użytkownika w czasie pracy opiekuna kończy jego akcję jako
 `stale` (`plan.returned` bez `caretaker`, `plan.ticket-edited`, `plan.revision-discarded`): nic nie jest wykonane,

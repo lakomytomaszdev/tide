@@ -374,7 +374,7 @@ def _known_id(st, root: str) -> str:
 
 def owned(st, ident: str) -> dict:
     """Jedyne liczenie działań opiekuna przy problemie: kroki opiekuna z tym id od ostatniego zamknięcia problemu
-    (decyzja użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
+    (decyzja lub jawne ponowienie użytkownika bez pola `caretaker` albo rozwiązanie — zwykły krok zakończony `done`). Dla problemu
     z krokiem zakres to jego łańcuch, bez kroku — wskazany ticket, a bez ticketu — cała karta.
 
     `count` — działania od zamknięcia (udane i nieudane; nieaktualne `stale` się nie liczą — PT-150), `runs` — te
@@ -399,6 +399,11 @@ def owned(st, ident: str) -> dict:
             continue
         if in_scope(name):
             closed = max(closed, int(decision.get("seq") or 0))
+    for name, retry in st.step_retries.items():
+        # Ponowienie użytkownika po oddaniu problemu jest nową decyzją (PT-146).
+        # Automatyczne ponowienia i akcje opiekuna zachowują wspólny limit łańcucha.
+        if retry.get("user") and "caretaker" not in retry and in_scope(name):
+            closed = max(closed, int(retry.get("seq") or 0))
     for name, done in st.finished.items():
         # Krok poprawy planu zakończony `done` nie rozwiązuje problemu (PT-146): plik planu mógł znów nie przejść
         # sprawdzenia, a limit działań opiekuna (PT-79/#8) ma obowiązywać także przez kolejne poprawki.
@@ -406,7 +411,7 @@ def owned(st, ident: str) -> dict:
                 (st.steps.get(name) or {}).get("kind") not in PLAN_STEP_KINDS:
             closed = max(closed, int(done.get("seq") or 0))
     if runs_all and runs_all[0].get("trigger") == "plan-fix":
-        closed = max(closed, st.plan_user_seq)       # odesłanie, odrzucenie poprawki albo edycja przez użytkownika
+        closed = max(closed, st.plan_user_seq)       # odesłanie albo odrzucenie poprawki przez użytkownika
     runs = [run for run in runs_all if int(run.get("seq") or 0) > closed and
             not (st.caretaker_outcomes.get(run.get("step")) or {}).get("stale")]
     open_run = next((run for run in runs_all if run.get("step") not in st.caretaker_outcomes), None)

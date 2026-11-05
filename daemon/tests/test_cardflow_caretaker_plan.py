@@ -134,6 +134,24 @@ class PlanFixDecisionTest(unittest.TestCase):
         j.add("step.retry", step="K-1-plan-1-2", ticket="", reason="", user=True, instruction="Popraw wiersz #1.")
         self.assertEqual(decisions.build_decisions(j.st), [])
 
+    def test_user_retry_closes_the_previous_cycle_after_escalation_or_limit(self):
+        for limited in (False, True):
+            with self.subTest(limited=limited):
+                j = second_failure_journal()
+                self.escalate(j, limit=limited)
+                problem = "plan-fix:K-1-plan-1-2"
+                j.add("step.retry", step="K-1-plan-1-2", ticket="", user=True,
+                      instruction="Popraw format.")
+                j.add("step.started", step="next-fix", kind="plan-fix", ticket="", round=2,
+                      parentStep="K-1-plan-1-2", executor="Sonnet", worktree="/w", stepDir="/w.retry.step")
+                j.add("step.finished", step="next-fix", ticket="", result="done")
+                j.add("plan.checked", step="next-fix", valid=False, errors=ERRORS)
+                own = caretaker.owned(j.st, problem)
+                self.assertFalse(own["handed"])
+                self.assertEqual((own["count"], own["next"]), (0, 2))
+                self.assertEqual([(p["id"], p["step"]) for p in caretaker.problems(j.st)],
+                                 [(problem, "next-fix")])
+
 
 class ResultTest(unittest.TestCase):
     problem = {"id": PLAN_PROBLEM, "trigger": "plan-fix", "step": "K-1-plan-amend-4", "decision": "x", "options": []}
@@ -444,6 +462,16 @@ class PlanFlowTest(FlowInProcess):
         self.assertTrue(reply["ok"], reply)
         self.assertTrue(wait_until(lambda: len([s for s in self.of(card, "step.started") if s["kind"] == "plan-fix"])
                                    > before, timeout=60), self.events(card))
+        child = [s for s in self.of(card, "step.started") if s.get("parentStep") == decision[0]["step"]][0]
+        self.assertTrue(wait_until(lambda: [e for e in self.of(card, "plan.checked")
+                                           if e.get("step") == child["step"] and e.get("valid") is False], timeout=30))
+        self.assertTrue(wait_until(lambda: [d for d in self.shown(card)["derived"]["flow"]["decisions"]
+                                           if d["kind"] == "plan-fix-failed" and d["step"] != decision[0]["step"]],
+                                   timeout=90), self.events(card))
+        runs = self.of(card, "caretaker.started")
+        self.assertEqual(([r["problem"] for r in runs], [r["n"] for r in runs]),
+                         ([problem] * 6, [1, 2, 3, 4, 5, 6]))
+        self.assertEqual(len([e for e in self.of(card, "caretaker.escalated") if e.get("limit")]), 2)
 
     def test_unknown_approval_action_fails_without_any_approval(self):
         card = self.card(description="ATRAPA: plan-bad ATRAPA-OPIEKUN: approve-plan")
@@ -454,6 +482,17 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual(self.of(card, "plan.approved"), [])
         self.assertEqual(self.of(card, "plan.revision-approved"), [])
         self.assertEqual(self.of(card, "plan.proposed"), [])
+
+        reply = self.flow.engine.resolve_step(card, {"choice": "retry", "step": escalated["target"],
+                                                   "answer": "Popraw format tabeli."})
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: [e for e in self.of(card, "plan.checked")
+                                           if e.get("step") != escalated["target"] and e.get("valid") is False
+                                           and e["seq"] > reply["seq"]], timeout=30))
+        self.assertTrue(wait_until(lambda: [d for d in self.shown(card)["derived"]["flow"]["decisions"]
+                                           if d["kind"] == "plan-fix-failed" and d["step"] != escalated["target"]],
+                                   timeout=30), self.events(card))
+        self.assertEqual(len(self.of(card, "caretaker.started")), 2)
 
 
 if __name__ == "__main__":
