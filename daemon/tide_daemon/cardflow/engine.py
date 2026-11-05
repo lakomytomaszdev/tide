@@ -4502,6 +4502,28 @@ class FlowEngine(PlanEditing):
                 break
         return recent
 
+    @staticmethod
+    def _card_merge_blocks(st: FlowState, *, operation_id: str = "") -> list[tuple[str, str]]:
+        """Jedna polityka domknięcia dla podglądu i wykonania rozpoczętej operacji."""
+        reasons = []
+        if baseproposal.pending(st):
+            reasons.append(("base-decision", "Najpierw rozstrzygnij pytanie o bazę karty; wyniki pozostają niescalone."))
+        if not st.closed:
+            reasons.append(("not-closed", "Karta nie ma aktualnego domknięcia."))
+        if st.running() or st.open_consoles() or st.outside_started:
+            reasons.append(("active-step", "Krok karty jest jeszcze czynny."))
+        closed_seq = (st.closed or {}).get("seq", 0)
+        if st.plan_revision or any((e or {}).get("seq", 0) > closed_seq
+                                   for e in (st.plan_proposed, st.plan_approved)):
+            reasons.append(("plan-change", "Zmiana planu czeka na zakończenie lub decyzję."))
+        if st.base_change.get("seq", 0) > closed_seq:
+            reasons.append(("base-change", "Po korekcie bazy karta wymaga aktualnego domknięcia."))
+        pending = [i for i in st.open_intents() if not (
+            operation_id and i.get("action") == "main-merge" and i.get("key") == operation_id)]
+        if pending or st.merge_pending():
+            reasons.append(("pending-action", "Akcja karty, korekta bazy lub scalanie ticketu nie zostały zakończone."))
+        return reasons
+
     def preview_card_merge(self, card_id: str, request: dict) -> dict:
         """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
         if not isinstance(request, dict) or set(request) - {"targetRef"}:
@@ -4535,20 +4557,8 @@ class FlowEngine(PlanEditing):
 
         if preview["reason"]:
             block(preview["reason"], preview["message"])
-        if baseproposal.pending(st):
-            block("base-decision", "Najpierw rozstrzygnij pytanie o bazę karty; wyniki pozostają niescalone.")
-        if not st.closed:
-            block("not-closed", "Karta nie ma aktualnego domknięcia.")
-        if st.running() or st.open_consoles() or st.outside_started:
-            block("active-step", "Krok karty jest jeszcze czynny.")
-        closed_seq = (st.closed or {}).get("seq", 0)
-        if st.plan_revision or any((e or {}).get("seq", 0) > closed_seq
-                                   for e in (st.plan_proposed, st.plan_approved)):
-            block("plan-change", "Zmiana planu czeka na zakończenie lub decyzję.")
-        if st.base_change.get("seq", 0) > closed_seq:
-            block("base-change", "Po korekcie bazy karta wymaga aktualnego domknięcia.")
-        if st.open_intents() or st.merge_pending():
-            block("pending-action", "Akcja karty, korekta bazy lub scalanie ticketu nie zostały zakończone.")
+        for reason, message in self._card_merge_blocks(st):
+            block(reason, message)
         if preview["sourceRef"] == preview["targetRef"]:
             block("card-target", "Celem nie może być gałąź karty.")
         protected = []
@@ -4601,6 +4611,47 @@ class FlowEngine(PlanEditing):
             payload = json.dumps(context, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
             preview["previewToken"] = hmac.new(self._preview_secret, payload, hashlib.sha256).hexdigest()
         return {"ok": True, "id": card, **preview}
+
+    def merge_card(self, card_id: str, request: dict) -> dict:
+        """Zgoda dotyczy dokładnego podglądu; rozpoczętą operację ponawiamy po jej ID."""
+        if (not isinstance(request, dict) or set(request) - {"targetRef", "previewToken", "operationId"} or
+                not all(isinstance(request.get(k), str) and request[k] for k in ("targetRef", "previewToken")) or
+                ("operationId" in request and not isinstance(request["operationId"], str))):
+            raise FlowError("bad-request", "scalenie wymaga targetRef i previewToken; operationId wskazuje rozpoczętą operację")
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        repo = self._repo(card)
+        with lock_for(repo), self.journal.lock:
+            st = fold(self.journal.read(card))
+            intent = self._main_merge_intent(st)
+            if (intent and intent.get("previewToken") == request["previewToken"] and
+                    intent["targetRef"] == request["targetRef"] and
+                    request.get("operationId", intent["key"]) == intent["key"]):
+                if baseproposal.pending(st):
+                    raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+                if self._abandon_main_merge(card, intent):
+                    raise FlowError("stale-preview", "Operacja została porzucona. Przygotuj nowy podgląd i potwierdź go.")
+                self._resume_main_merge(card, intent)
+                return {"ok": True, "id": card, **MergeWorktree.result(intent)}
+            if request.get("operationId"):
+                raise FlowError("stale-preview", "Nie ma takiej rozpoczętej operacji tego podglądu.")
+            try:
+                preview = self.preview_card_merge(card, {"targetRef": request["targetRef"]})
+            except FlowError:
+                raise FlowError("stale-preview", "Cel lub kontekst zmienił się. Przygotuj nowy podgląd i potwierdź go.") from None
+            if not hmac.compare_digest(preview.get("previewToken", "").encode(), request["previewToken"].encode()):
+                raise FlowError("stale-preview", "Podgląd jest nieaktualny. Przygotuj nowy podgląd i potwierdź go.")
+            if not preview["canMerge"]:
+                raise FlowError(preview["reason"], preview["message"])
+            if request["targetRef"] != f"refs/heads/{self.git.main_branch(repo)}":
+                raise FlowError("unsupported-target", "Do czasu ogólnego zakończenia można scalać tylko do nazwanej głównej.")
+            if intent or st.main_merged:
+                raise FlowError("stale-preview", "Zlecenie ma już operację scalenia. Użyj jej ID albo nowego zlecenia.")
+            self._merge_card_to_main_locked(card, repo, preview=preview)
+            intent = self._main_merge_intent(fold(self.journal.read(card)))
+            return {"ok": True, "id": card, **MergeWorktree.result(intent)}
 
     def merge_card_to_main(self, card_id: str) -> dict:
         """Jawna zgoda po domknięciu; ponowienie odnajduje operację tego samego zlecenia."""
@@ -4668,7 +4719,7 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, "main-merge.abandoned", key=intent["key"], reason=reason)
         return True
 
-    def _merge_card_to_main_locked(self, card: str, repo: str) -> dict:
+    def _merge_card_to_main_locked(self, card: str, repo: str, *, preview: dict | None = None) -> dict:
         st = fold(self.journal.read(card))
         if baseproposal.pending(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
@@ -4686,13 +4737,21 @@ class FlowEngine(PlanEditing):
         main = self.git.main_branch(repo)
         if not main or not info["cardBranch"]:
             raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
+        if preview is not None and preview["targetRef"] != f"refs/heads/{main}":
+            raise FlowError("stale-preview", "Nazwana główna zmieniła się. Potwierdź nowy podgląd.")
         if not st.main_merged:
-            listed = self.git.run(repo, "worktree", "list", "--porcelain")
-            main_tree = next((part.get("worktree") for part in
-                              (dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
-                               for block in listed.out.split("\n\n"))
-                              if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
+            if preview is not None:
+                # Podgląd czyta rekordy NUL i zachowuje również ścieżki z tabulatorem lub nową linią.
+                main_tree = preview["targetWorktree"] if preview["targetWorktreeExists"] else ""
+            else:
+                listed = self.git.run(repo, "worktree", "list", "--porcelain")
+                main_tree = next((part.get("worktree") for part in
+                                  (dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+                                   for block in listed.out.split("\n\n"))
+                                  if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
             if not main_tree:
+                if preview is not None:
+                    raise FlowError("stale-preview", "Checkout celu zmienił się. Przygotuj nowy podgląd.")
                 # Gałąź główna nie jest nigdzie otwarta (K-15: główny katalog stał na innej gałęzi z lokalnymi
                 # zmianami) — Tide zakłada na nią własny worktree zamiast odsyłać użytkownika do terminala.
                 from .gitops import worktrees_dir
@@ -4713,11 +4772,18 @@ class FlowEngine(PlanEditing):
                                     i.get("requestSeq") == (st.started or {}).get("seq") and
                                     i.get("targetRef") == f"refs/heads/{main}"), None))
             except FlowGitError as exc:
+                if preview is not None:
+                    raise FlowError("stale-preview", "Stan przygotowania zmienił się. Potwierdź nowy podgląd: " + str(exc)) from None
                 raise FlowError("main-merge", str(exc)) from None
+            if preview is not None and any(prepared[k] != preview[v] for k, v in (
+                    ("sourceCommit", "sourceCommit"), ("targetCommitBefore", "targetCommit"),
+                    ("targetRef", "targetRef"), ("targetWorktree", "targetWorktree"), ("resultTree", "resultTree"))):
+                raise FlowError("stale-preview", "Stan zmienił się podczas przygotowania. Potwierdź nowy podgląd.")
             ident = uuid.uuid4().hex
             intent = self.journal.append(card, "intent", action="main-merge", key=ident, operationId=ident,
                                          requestSeq=(st.started or {}).get("seq"), baseVersion=st.base_version,
-                                         repo=repo, sourceWorktree=info["cardWorktree"], **prepared)
+                                         repo=repo, sourceWorktree=info["cardWorktree"],
+                                         **({"previewToken": preview["previewToken"]} if preview is not None else {}), **prepared)
             self._resume_main_merge(card, intent)
             return {"ok": True, "id": card, "main": main, "already": False}
         # Historyczny sukces bez zamiaru zachowuje dotychczasową naprawę projekcji.
@@ -4759,6 +4825,9 @@ class FlowEngine(PlanEditing):
                 if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
                         (st.started or {}).get("seq") != intent["requestSeq"]):
                     raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
+                blocks = self._card_merge_blocks(st, operation_id=key)
+                if blocks:
+                    raise FlowGitError(blocks[0][1])
                 self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"])
                 worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
                 result = worktree.execute(intent, checkpoint)

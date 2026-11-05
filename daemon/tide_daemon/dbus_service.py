@@ -560,6 +560,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="MergeCard">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <signal name="Changed"/>
   <signal name="WorkChanged"/>
 </interface>"""
@@ -1144,6 +1149,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
         self.monitor.preview_card_merge(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def MergeCard(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.merge_card(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, result=str)

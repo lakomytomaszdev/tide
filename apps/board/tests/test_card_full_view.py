@@ -324,6 +324,7 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         data = full_d(self.data)
         for item in data["cards"]:
             if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -335,7 +336,101 @@ click(named("fullMergeMain"))
 out["call"] = calls()[-1][:2]
 """, data)
         self.assertTrue(out["visible"])
-        self.assertEqual(out["call"], ["MergeCardToMain", "K-8"])
+        self.assertEqual(out["call"], ["PreviewCardMerge", "K-8"])
+
+    def test_named_main_requires_confirmation_and_cancel_is_only_a_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        names = ["master", "develop", "integration/custom-tide-main", "release/<b>" + "long-name-" * 18]
+        out = self.probe(STATE_PY + "\nnames = " + repr(names) + r'''
+click(card("K-8"))
+out["labels"], out["texts"], out["rendered"] = [], [], []
+for index, target in enumerate(names):
+    snap = json.loads(backend.snapshotJson)
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["mainBranch"] = target
+    set_snapshot(snap)
+    result = {"ok": True, "canMerge": True, "previewToken": "token-" + str(index),
+              "targetRef": "refs/heads/" + target, "targetBranch": target, "targetCommit": "b" * 40,
+              "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+              "targetWorktree": "/repo", "targetWorktreeExists": True,
+              "localCollisions": {"staged": [], "unstaged": [], "untracked": []}, "localCollisionCount": 0,
+              "commits": [], "commitCount": 0, "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0}
+    out["labels"].append(obj("fullMergeMain").property("text"))
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    # Anulowanie ani Escape nie są zgodą, nawet przy canMerge=true i check:auto.
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    button = obj("mergePreviewConfirm")
+    out["labels"].append(button.property("text"))
+    engine.rootContext().setContextProperty("probeTarget", button)
+    out["rendered"].append(json.loads(js("JSON.stringify([probeTarget.contentItem.text, "
+                                       "probeTarget.contentItem.textFormat, probeTarget.contentItem.truncated])")))
+    replies.append({"ok": True, "targetBranch": target, "operationId": "op-" + str(index)})
+    click(named("mergePreviewConfirm"))
+    until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["labels"], ["Scal do " + name for name in names for _ in range(2)])
+        for index, name in enumerate(names):
+            self.assertIn("refs/heads/" + name, out["texts"][index])
+            self.assertIn("b" * 40, out["texts"][index])
+            self.assertEqual(out["rendered"][index], ["Scal do " + name, 0, False])
+            calls = out["calls"][3 * index:3 * index + 3]
+            self.assertEqual(calls[:2], [["PreviewCardMerge", "K-8", "{}"]] * 2)
+            self.assertEqual(calls[2][:2], ["MergeCard", "K-8"])
+            self.assertEqual(json.loads(calls[2][2]), {"targetRef": "refs/heads/" + name,
+                                                     "previewToken": "token-" + str(index)})
+
+    def test_stale_preview_requires_refresh_and_another_explicit_confirmation(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "develop"
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        out = self.probe(STATE_PY + r'''
+click(card("K-8"))
+result = {"ok": True, "canMerge": True, "targetBranch": "develop", "targetRef": "refs/heads/develop",
+          "targetCommit": "b" * 40, "previewToken": "old"}
+replies.append(result)
+click(named("fullMergeMain"))
+until(lambda: not obj("mergePreview").property("busy"))
+replies.append({"ok": False, "error": "stale-preview", "message": "Potwierdź nowy podgląd"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["message"] = obj("mergePreviewText").property("text")
+out["enabled"] = obj("mergePreviewConfirm").property("enabled")
+replies.append({**result, "previewToken": "new", "targetCommit": "c" * 40})
+click(named("mergePreviewRefresh"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["beforeConfirm"] = calls()
+out["text"] = obj("mergePreviewText").property("text")
+replies.append({"ok": True, "targetBranch": "develop"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["message"], "Potwierdź nowy podgląd")
+        self.assertFalse(out["enabled"])
+        self.assertEqual([c[0] for c in out["beforeConfirm"]], ["PreviewCardMerge", "MergeCard", "PreviewCardMerge"])
+        self.assertIn("c" * 40, out["text"])
+        self.assertEqual(json.loads(out["calls"][-1][2]), {"targetRef": "refs/heads/develop", "previewToken": "new"})
 
     def test_merge_preview_button_full_lists_refusals_and_close_only_read(self):
         data = full_d(self.data)

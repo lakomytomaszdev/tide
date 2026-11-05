@@ -2217,6 +2217,7 @@ out["column"] = js("page.cardPanel.card.boardColumn")
             if card["id"] == "K-6":
                 card["derived"] = {"column": "review", "flow": {
                     "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
+                    "mainBranch": "develop",
                     "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
                 card["boardColumn"] = "review"
         out = self.probe(FIND_PY + """
@@ -2234,7 +2235,7 @@ out["mergeCall"] = calls()[-1]
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
         self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
-        self.assertEqual(out["mergeCall"], ["MergeCardToMain", "K-6"])
+        self.assertEqual(out["mergeCall"], ["PreviewCardMerge", "K-6", "{}"])
         self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["returnCall"][2])["feedback"], "Dopisz błąd eksportu")
 

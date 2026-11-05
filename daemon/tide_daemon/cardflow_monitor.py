@@ -230,6 +230,9 @@ class CardFlowMonitor(QObject):
     def preview_card_merge(self, card_id: str, request: str, reply) -> None:
         self._json_action("PreviewCardMerge", request, lambda data: self.engine.preview_card_merge(card_id, data), reply)
 
+    def merge_card(self, card_id: str, request: str, reply) -> None:
+        self._json_action("MergeCard", request, lambda data: self.engine.merge_card(card_id, data), reply)
+
     def list_card_branches(self, card_id: str, request: str, reply) -> None:
         self._json_action("ListCardBranches", request, lambda data: self.engine.list_card_branches(card_id, data), reply)
 

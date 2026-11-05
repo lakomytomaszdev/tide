@@ -547,7 +547,7 @@ Rectangle {
                 }
             }
 
-            RowLayout {
+            ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
                 visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
@@ -570,6 +570,8 @@ Rectangle {
                 }
                 Tide.TextButton {
                     objectName: "fullPreviewMerge"
+                    Layout.fillWidth: true
+                    wrapText: true
                     visible: view.mergePreviewAvailable
                     text: "Podgląd scalenia do " + (view.flow && view.flow.mainBranch || "…")
                     enabled: !!(view.flow && view.flow.mainBranch)
@@ -578,11 +580,12 @@ Rectangle {
                 }
                 Tide.TextButton {
                     objectName: "fullMergeMain"
-                    text: view.mergeBusy ? "Scalam…" : "Scal do gałęzi głównej"
-                    enabled: !view.mergeBusy
-                    Accessible.name: "Scal kartę do gałęzi głównej"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    text: "Scal do " + (view.flow && view.flow.mainBranch || "…")
+                    enabled: !view.mergeBusy && !!(view.flow && view.flow.mainBranch)
+                    Accessible.name: text
                     onClicked: {
-                        view.mergeBusy = true
                         view.mergeMainRequested()
                     }
                 }

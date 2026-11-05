@@ -877,6 +877,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera cel z `FlowGit.main_branch`, opcjonalny `targetRef` wskazuje istniejący `refs/heads/…`; zwraca odcisk `previewToken`, bez zgody na wykonanie |
+| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); do PT-205 wyłącznie nazwana główna z istniejącym checkoutem; używa trwałej operacji PT-212 |
 | `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
@@ -911,17 +912,38 @@ kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localC
 `previewToken` jest HMAC od karty, zlecenia, `baseVersion` (także stabilnego 0 dla legacy/unknown),
 przypiętych SHA i refów, odczytu worktrees, HEAD, surowego i logicznego indeksu, treści lokalnie zmienionych
 plików oraz blokad przepływu. Brak checkoutu ma osobną reprezentację. Sekret żyje wyłącznie w silniku:
-po restarcie nowy podgląd ma inny token. Token nie jest trwałą zgodą ani rozpoczętą operacją; PT-204
-musi ponownie przygotować podgląd przed wykonaniem i sprawdzić aktualność tokenu.
+po restarcie nowy podgląd ma inny token. Token nie jest trwałą zgodą ani rozpoczętą operacją.
+`MergeCard` ponownie przygotowuje podgląd i sprawdza aktualność tokenu pod blokadą repozytorium;
+blokada obejmuje również przygotowanie i zapis zamiaru PT-212. Blokada dziennika chroni w tym czasie
+stan zlecenia, domknięcia i wersję bazy przed innymi zapisami usługi.
 Odczyt checkoutów i refów jest ponawiany po przygotowaniu drzewa; zmiana podczas odczytu daje
 `state-changed`, `canMerge: false` i brak tokenu. Nieudany odczyt checkoutu również nie wystawia tokenu.
-Zawsze pozostaje `readyToMerge: false`, ostrzeżenie i wyłącznie przycisk zamknięcia w UI.
+Historyczne pole `readyToMerge: false` pozostaje dla zgodności; samo otrzymanie podglądu nigdy nie jest zgodą.
+Okno korzysta z `canMerge` i `previewToken`, aby włączyć osobny przycisk „Scal do <pełna nazwa>”.
 Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
 dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
 wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
 Własny sterownik merge wymagający plików `.merge_file_*` w katalogu roboczym jest w podglądzie
 odrzucany jako `git-error`: odczytowy mount blokuje już przygotowanie tych plików, przed uruchomieniem
 sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy zapisu w worktree.
+
+PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
+checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
+Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`;
+niezwiązane staged odmawiają do PT-207, brak checkoutu do PT-206. Cel inny niż `FlowGit.main_branch`
+daje `unsupported-target` do PT-205. Nie powstają nowe checkouty, refy ani zasoby.
+
+Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
+baseVersion, operationId, already}` z istniejącej operacji. `already` oznacza źródło już zawarte w celu.
+Opcjonalne `operationId` wskazuje wyłącznie rozpoczętą operację tego samego zlecenia, refu i tokenu;
+nie jest zgodą na rozpoczęcie nowej. Ponowienie pierwotnego żądania również odnajduje zapisane ID
+po przypisanym tokenie, więc utrata odpowiedzi i restart nie powodują drugiego scalenia. Wznowienie
+korzysta z kontroli recovery PT-212. Oba API kończą kartę dotychczasowym `card.main-merged` do PT-205;
+stare `MergeCardToMain(id)` nadal wybiera główną i zwraca `main`, także gdy musi otworzyć własny checkout.
+
+W Tablicy zarówno panel, jak i pełna karta otwierają podgląd po „Scal do <pełna nazwa>”. Potwierdzenie
+pokazuje pełny ref i SHA źródła oraz celu. Zamknięcie, Escape, odświeżenie i `check: auto` nie wywołują
+`MergeCard`. Po błędzie stary przycisk zostaje zablokowany; odświeżenie wymaga kolejnego potwierdzenia.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
