@@ -198,9 +198,13 @@ class _CaretakerPort:
         engine, run = self.engine, self.run
         st = fold(engine.journal.read(self.card))
         name, ident = params.get("step") or "", run.get("problem") or problem.get("id") or ""
-        mine = st.step_retries.get(name) or {}
-        if mine.get("caretakerStep") == run.get("step"):
-            return {"target": name, "label": self._label(st, name)}           # zapis sprzed restartu
+        # Zapis sprzed restartu (`step.retry` albo `step.decision` z `caretakerStep` tego kroku opiekuna) — przed
+        # walidacją problemu i `resolve_step`: decyzja już jest, więc krok „nie czeka” (np. inna decyzja karty
+        # w `focus`), a skutek mimo to powstał dokładnie raz.
+        own = run.get("step") or ""
+        if own and any((found.get(name) or {}).get("caretakerStep") == own
+                       for found in (st.step_retries, st.step_decisions)):
+            return {"target": name, "label": self._label(st, name)}
         if name not in caretaker.problem_steps(problem, st):
             where = "nie należy do problemu" if name not in st.steps or not self._in_chain(st, problem, name) \
                 else "nie czeka na ponowienie"
@@ -209,7 +213,7 @@ class _CaretakerPort:
         instruction = params.get("instruction") or ""
         if problem.get("decision"):
             engine.resolve_step(self.card, {"choice": "retry", "answer": instruction, "step": name},
-                                caretaker_problem=ident)
+                                caretaker_problem=ident, caretaker_step=own)
         else:
             step, done = st.steps[name], st.finished.get(name) or {}
             engine.journal.append(self.card, "step.retry", step=name, ticket=step.get("ticket") or "",
@@ -1428,9 +1432,11 @@ class FlowEngine(PlanEditing):
             return "local", ""
         return "slots", ""
 
-    def _wait_reason(self, selected, reserved: int = 0) -> str:
+    def _wait_reason(self, selected, reserved: int = 0, queued: int = 0) -> str:
         """Powód czekania kroku (pusty — może startować). `reserved` — miejsca u tego dostawcy zarezerwowane dla
-        gotowych kroków opiekuna tej samej karty (PT-150, `_caretaker_reserved`), liczone jak trwające kroki."""
+        gotowych kroków opiekuna tej samej karty (PT-150, `_caretaker_reserved`), liczone jak trwające kroki;
+        `queued` — wcześniej czekające kroki innych kart, którym ustępuje krok opiekuna (`_earlier_waiters`):
+        zajmują miejsca, ale licznik w powodzie nie przekracza limitu (miejsca są zajęte, nie przepełnione)."""
         quota = self._low_limit(selected.provider)
         if quota:
             return flow_limits.wait_reason(quota)
@@ -1450,6 +1456,8 @@ class FlowEngine(PlanEditing):
                     else step.get("provider") == provider for step in running) + reserved
         if count >= limit:
             return f"limit kroków dostawcy {provider}: {count}/{limit}"
+        if count + queued >= limit:
+            return f"limit kroków dostawcy {provider}: {limit}/{limit}"
         if selected.local and model_queue.shared().busy():
             return "czeka na modele lokalne — raport i opisy kart mają pierwszeństwo"
         return ""
@@ -1457,7 +1465,8 @@ class FlowEngine(PlanEditing):
     def _caretaker_reserved(self, card: str, st: FlowState, selected, kind: str) -> int:
         """Pierwszeństwo slotu (PT-150, US 37): gotowy krok opiekuna tej karty (`caretaker.started` bez startu,
         bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej karty. Nie dotyczy
-        innych kart ani samego kroku opiekuna, nie omija limitu slotów (rezerwacja liczy się jak trwający krok)."""
+        innych kart ani samego kroku opiekuna, nie omija limitu slotów (rezerwacja liczy się jak trwający krok);
+        wcześniej czekające kroki innych kart mają pierwszeństwo przed opiekunem (`_earlier_waiters`)."""
         if kind == caretaker.KIND or selected.local or not st.caretaker_runs:
             return 0
         pending = [name for name in st.caretaker_runs if name not in st.caretakers and
@@ -1471,11 +1480,36 @@ class FlowEngine(PlanEditing):
         found = next((e for e in getattr(catalog, "executors", ()) or () if e.name == name), None)
         return len(pending) if found is not None and found.provider == selected.provider else 0
 
+    def _earlier_waiters(self, card: str, st: FlowState, selected, ticket: str, kind: str) -> int:
+        """Krok opiekuna nie wyprzedza kroków innych kart (PT-150, US 37): liczba kroków innych kart, które czekają
+        na miejsce u tego samego dostawcy (`cause: slots`) od chwili nie późniejszej niż ten krok opiekuna (`since`
+        z `step.waiting`; krok jeszcze nieczekający przychodzi po wszystkich czekających). Liczą się jak trwające
+        kroki, więc zwolnione miejsce bierze najpierw wcześniej czekająca karta. Pomijane są karty zakończone,
+        wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
+        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga się na korzyść innej karty."""
+        if kind != caretaker.KIND or selected.local:
+            return 0
+        mine = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
+        count = 0
+        for other in self.journal.cards():
+            if other == card:
+                continue
+            ost = fold(self.journal.read(other))
+            if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
+                continue
+            running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
+            count += sum(1 for key, wait in ost.waiting.items()
+                         if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
+                         key[0] not in ost.rejected and key not in running and
+                         (not mine or (wait.get("since") or "") <= mine))
+        return count
+
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = fold(self.journal.read(card))
         reserved = self._caretaker_reserved(card, st, selected, kind)
+        queued = self._earlier_waiters(card, st, selected, ticket, kind)
         reason = "karta wstrzymana" if st.paused else (
-            self._wait_reason(selected, reserved) if reserved else self._wait_reason(selected))
+            self._wait_reason(selected, reserved, queued) if reserved or queued else self._wait_reason(selected))
         if not reason and selected.local:
             claim = model_queue.shared().claim_step(self.store.root + ":" + step_id, endpoint=selected.route.url,
                                                    model=selected.model)
@@ -2497,10 +2531,12 @@ class FlowEngine(PlanEditing):
             if opened:
                 self.journal.append(card, "step.console_opened", step=name, recovered=True)
 
-    def resolve_step(self, card_id: str, request: dict, *, caretaker_problem: str = "") -> dict:
+    def resolve_step(self, card_id: str, request: dict, *, caretaker_problem: str = "",
+                     caretaker_step: str = "") -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi.
         `caretaker_problem` — decyzję zapisuje akcja opiekuna (PT-150, tylko z silnika, nie z D-Bus): `step.decision`
-        dostaje `auto: true` i `caretaker: <problem>`, więc nie zamyka problemu ani nie zeruje licznika działań."""
+        dostaje `auto: true` i `caretaker: <problem>`, więc nie zamyka problemu ani nie zeruje licznika działań;
+        `caretaker_step` (`caretakerStep`) — krok opiekuna, po którym akcja po restarcie rozpoznaje własny zapis."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
@@ -2534,9 +2570,11 @@ class FlowEngine(PlanEditing):
         valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
                  else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
+        # Pracujący krok opiekuna nie blokuje decyzji użytkownika (PT-150): decyzja wygrywa, a spóźniona akcja
+        # opiekuna jest nieaktualna (`caretaker.stale`) i niczego nie wykonuje.
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
-                   for s in st.running())
+                   for s in st.running() if s.get("kind") != caretaker.KIND)
         if st.card_finished or busy or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login"):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
@@ -2595,7 +2633,9 @@ class FlowEngine(PlanEditing):
             extra["auto"] = True
         if caretaker_problem:
             extra["caretaker"] = caretaker_problem
-        event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
+        if caretaker_step:
+            extra["caretakerStep"] = caretaker_step
+        event =self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)

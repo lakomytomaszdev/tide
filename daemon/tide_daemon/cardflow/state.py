@@ -254,7 +254,10 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.inputs":
             st.inputs = e
         elif kind == "step.waiting":
-            st.waiting[(e.get("ticket"), e.get("kind"))] = e
+            # `since` — początek czekania (pierwszy `step.waiting` przed startem); zmiana powodu go nie przesuwa.
+            # Pierwszeństwo slotu między kartami (PT-150): krok opiekuna ustępuje wcześniej czekającym krokom.
+            prev = st.waiting.get((e.get("ticket"), e.get("kind"))) or {}
+            st.waiting[(e.get("ticket"), e.get("kind"))] = {**e, "since": prev.get("since") or e.get("ts") or ""}
             # Blokuje review planu do wyboru użytkownika tylko wyczerpany limit dostawcy; zwykła kolejka miejsc
             # („limit kroków dostawcy”) rusza sama (03.11, K-31 utknął w kolejce na zawsze).
             if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or "") and \

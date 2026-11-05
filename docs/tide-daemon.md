@@ -1855,8 +1855,8 @@ krok łańcucha problemu bez następcy, zakończony wynikiem innym niż `done`, 
 w `step.finished`) → sprawdzenie nieaktualności → `escalate` jako jedno zdarzenie `caretaker.escalated` albo, dla
 każdej innej akcji, para „zamiar → wynik” `caretaker-action` z kluczem kroku opiekuna (`_act`) i na końcu
 `caretaker.action`. Zapisany wynik pary nie wykonuje akcji drugi raz; restart między zamiarem a wynikiem dokańcza ją
-tą samą ścieżką, a `apply` jest bezpieczne do powtórzenia (`resolve_step` zwraca `already` dla tej samej decyzji
-z tym samym `caretaker`, `step.retry` z `caretakerStep` tego kroku opiekuna nie powstaje drugi raz). Akcja nieudana
+tą samą ścieżką, a `apply` jest bezpieczne do powtórzenia (`step.decision` albo `step.retry` z `caretakerStep` tego
+kroku opiekuna nie powstaje drugi raz). Akcja nieudana
 przy wykonaniu zwraca z `apply` `{failed, error}`: wynik pary jest zapisany (`ok: true`), a `caretaker.action` ma
 `ok: false`, `code` i `error`.
 
@@ -1893,8 +1893,19 @@ jest dopisany do `detail`. Wyzwalacze #5, #6 i #13 testują regułę na swoich p
 `_wait_reason`, `_admit`, `step.waiting` z powodem „limit kroków dostawcy …”). Gotowy krok opiekuna karty
 (`caretaker.started` bez startu i bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej
 karty (`_caretaker_reserved`: rezerwacja liczy się w `_wait_reason` jak trwający krok), więc nowy ticket karty czeka,
-a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, które dostają slot w dotychczasowej
-kolejności pętli (`journal.cards()`), nie omija limitu slotów ani okna limitu dostawcy (D3 — czeka jak inne kroki).
+a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, nie omija limitu slotów ani okna
+limitu dostawcy (D3 — czeka jak inne kroki). Krok opiekuna nie wyprzedza kroków innych kart (`_earlier_waiters`):
+kroki innych kart czekające na miejsce u tego samego dostawcy (`step.waiting` z `cause: slots`) od chwili nie
+późniejszej niż on (`since` — początek czekania, zachowany przy zmianie powodu; remis w obrębie sekundy na korzyść
+innej karty) zajmują miejsca w jego `_wait_reason` (licznik w powodzie najwyżej `limit/limit`). Zwolnione miejsce
+bierze więc wcześniej czekająca karta niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty
+zakończone, wstrzymane, przeniesione do Gotowe, Archiwum albo Backlogu i odrzucone tickety.
+
+**Decyzja użytkownika przy pracującym opiekunie:** trwający krok opiekuna nie czyni ticketu „zajętym” w
+`resolve_step`, więc decyzję przyjmuje zwykłe API (StepResolve); krok wznawia `_advance`, a wynik opiekuna jest potem
+nieaktualny. Decyzja zapisana akcją opiekuna ma też `caretakerStep`: dokończenie po restarcie rozpoznaje własny
+`step.decision` (jak `step.retry`) przed walidacją `focus`, więc inna oczekująca decyzja karty nie zamienia
+wykonanego ponowienia w porażkę.
 
 ### Kontekst
 

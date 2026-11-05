@@ -237,9 +237,9 @@ class LimitAndOwnershipTest(unittest.TestCase):
         self.assertFalse([h for h in entries if h["text"].startswith("Decyzja: ponowienie kroku")])
 
 
-class SlotPriorityTest(unittest.TestCase):
-    """US 37 przez `FlowEngine._admit` na złożonych dziennikach (bez procesów kroków): `providerSlots` = 1,
-    slot zajęty krokiem karty K-1; K-2 czeka na slot wcześniej; K-3 ma gotowy krok opiekuna i nowy ticket."""
+class EngineOnJournal(unittest.TestCase):
+    """Prawdziwy `FlowEngine` na złożonych dziennikach w katalogu tymczasowym (bez procesów kroków).
+    Zegar dziennika rośnie o sekundę na zdarzenie, więc `ts` porządkuje zdarzenia także między kartami."""
 
     def setUp(self):
         from tide_daemon.board.store import BoardStore
@@ -253,9 +253,69 @@ class SlotPriorityTest(unittest.TestCase):
             json.dump({"providerSlots": {"anthropic": 1}}, fh)
         store = BoardStore(os.path.join(self.base, "board"))
         journal = CardJournal(store.root, mirror=os.path.join(self.base, "mirror"))
+        ticks = iter(range(1_800_000_000, 1_900_000_000))
+        journal.clock = lambda: float(next(ticks))
         self.engine = FlowEngine(store, journal, catalog=executors.default_catalog, settings=settings,
                                  tmp_root=self.base)
         self.journal = self.engine.journal
+
+    def add(self, card, etype, **fields):
+        return self.journal.append(card, etype, **fields)
+
+
+class RestartWithParallelDecisionTest(EngineOnJournal):
+    """Review M1: restart po zapisie `step.decision` opiekuna, a przed wynikiem `caretaker-action`, gdy w karcie
+    czeka też decyzja innego ticketu (PT-8 w `focus`). Dokończenie rozpoznaje własną decyzję i zapisuje sukces."""
+
+    def test_restart_after_the_decision_with_another_waiting_decision_records_success_once(self):
+        from tide_daemon.cardflow.engine import _CaretakerPort
+        self.add("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        for ticket in ("PT-7", "PT-8"):
+            first, second = f"K-1-{ticket}-1", f"K-1-{ticket}-2"
+            self.add("K-1", "step.started", step=first, kind="ticket", ticket=ticket, attempt=0, provider="anthropic")
+            self.add("K-1", "step.finished", step=first, ticket=ticket, result="error", reason="x")
+            self.add("K-1", "step.retry", step=first, ticket=ticket)
+            self.add("K-1", "step.started", step=second, kind="ticket", ticket=ticket, attempt=1, parentStep=first,
+                     provider="anthropic")
+            self.add("K-1", "step.finished", step=second, ticket=ticket, result="error", reason="x")
+        run = self.add("K-1", caretaker.STARTED, problem=PROBLEM, key=f"caretaker:{PROBLEM}:1", n=1,
+                       step="K-1-care-1", target="K-1-PT-7-2", root="K-1-PT-7-1", ticket="PT-7", trigger="error",
+                       triggers=["error"], decision="step:K-1-PT-7-2", watermark=11)
+        self.add("K-1", "step.started", step="K-1-care-1", kind="caretaker", ticket="PT-7", provider="anthropic")
+        params = {"step": "K-1-PT-7-2", "instruction": "Popraw datę.", "reason": "Format daty."}
+        self.add("K-1", "step.finished", step="K-1-care-1", ticket="PT-7", result="done",
+                 outcome={"ok": True, "action": "retry", "params": params})
+        self.add("K-1", "intent", action="caretaker-action", key="K-1-care-1", problem=PROBLEM,
+                 caretakerAction="retry", params=params)
+        self.add("K-1", "step.decision", step="K-1-PT-7-2", ticket="PT-7", choice="retry", answer="Popraw datę.",
+                 command="", executor="", auto=True, caretaker=PROBLEM, caretakerStep="K-1-care-1")
+        # Przed poprawką: `resolve_step` brał PT-8 jako `focus` i odrzucał PT-7 („nie czeka na decyzję”).
+        self.assertEqual(_CaretakerPort(self.engine, "K-1", run).retry({"id": PROBLEM, "decision": "step:K-1-PT-7-2",
+                                                                         "step": "K-1-PT-7-2"}, params),
+                         {"target": "K-1-PT-7-2", "label": "PT-7"})
+        with mock.patch.object(self.engine, "_guard_check", return_value=None), \
+                mock.patch.object(self.engine, "_guard_rebase", return_value=None):
+            self.engine._caretaker_act("K-1", run, "retry", params)
+        events = self.journal.read("K-1")
+        actions = [e for e in events if e["type"] == caretaker.ACTION]
+        self.assertEqual([(a["ok"], a["error"], a["retried"]) for a in actions], [(True, "", "K-1-PT-7-2")])
+        self.assertEqual(len([e for e in events if e["type"] == "step.decision" and e.get("caretaker")]), 1)
+        self.assertEqual([(e["key"], e["ok"]) for e in events
+                          if e["type"] == "result" and e["action"] == "caretaker-action"], [("K-1-care-1", True)])
+        st = fold(events)
+        self.assertNotIn("K-1-PT-8-2", st.step_decisions, "decyzja PT-8 nadal czeka na użytkownika")
+        self.assertEqual(caretaker.owned(st, PROBLEM)["count"], 1)
+        tried = [h["text"] for h in history.build(st, []) if h["kind"] == "caretaker"]
+        self.assertEqual(tried, ["Opiekun: ponowił PT-7 z instrukcją — Format daty."])
+
+
+class SlotPriorityTest(EngineOnJournal):
+    """US 37 przez `FlowEngine._admit` na złożonych dziennikach (bez procesów kroków): `providerSlots` = 1,
+    slot zajęty krokiem karty K-1; K-2 czeka na slot wcześniej; K-3 ma gotowy krok opiekuna i nowy ticket."""
+
+    def setUp(self):
+        super().setUp()
         for card in ("K-1", "K-2", "K-3"):
             self.add(card, "card.started", entry="now", executor="Sonnet", provider="anthropic",
                      preferredProvider="anthropic", column="todo")
@@ -270,9 +330,6 @@ class SlotPriorityTest(unittest.TestCase):
                                             name="Sonnet")
         self.opus = types.SimpleNamespace(provider="anthropic", local=False, route=None, model="opus", name="Opus")
 
-    def add(self, card, etype, **fields):
-        return self.journal.append(card, etype, **fields)
-
     def admit(self, card, selected, ticket, kind, step):
         """Jeden start kroku jak w `_launch`: przyjęty krok dostaje `step.started` (zajmuje slot)."""
         from tide_daemon.cardflow.engine import FlowDeferred
@@ -283,13 +340,15 @@ class SlotPriorityTest(unittest.TestCase):
         self.add(card, "step.started", step=step, kind=kind, ticket=ticket, provider=selected.provider)
         return ""
 
-    def round(self):
-        """Obrót pętli w kolejności kart (`journal.cards()`); w K-3 nowy ticket celowo przed opiekunem."""
+    def round(self, *extra, only=None):
+        """Obrót pętli w kolejności kart (`journal.cards()`); w K-3 nowy ticket celowo przed opiekunem. `extra` —
+        kroki dodatkowych kart na końcu obrotu, `only` — wyłącznie te kroki (np. tylko karty sortowane po K-3)."""
         started = []
-        for card, selected, ticket, kind, step in (
-                ("K-2", self.sonnet, "PT-2", "ticket", "K-2-PT-2-1"),
-                ("K-3", self.sonnet, "PT-4", "ticket", "K-3-PT-4-1"),
-                ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")):
+        steps = only if only is not None else (
+            ("K-2", self.sonnet, "PT-2", "ticket", "K-2-PT-2-1"),
+            ("K-3", self.sonnet, "PT-4", "ticket", "K-3-PT-4-1"),
+            ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1"), *extra)
+        for card, selected, ticket, kind, step in steps:
             st = fold(self.journal.read(card))
             if step in st.steps or step in st.caretakers:
                 continue
@@ -312,6 +371,49 @@ class SlotPriorityTest(unittest.TestCase):
         self.assertEqual(self.round(), ["K-3-care-1"], "opiekun przed nowym ticketem swojej karty")
         self.finish("K-3", "K-3-care-1")
         self.assertEqual(self.round(), ["K-3-PT-4-1"])
+
+    def test_an_earlier_waiting_card_sorted_after_the_caretakers_card_still_goes_first(self):
+        """Review M3: K-4 zaczyna czekać przed opiekunem K-3, ale w obrocie pętli jest po K-3."""
+        k4 = ("K-4", self.sonnet, "PT-5", "ticket", "K-4-PT-5-1")
+        self.add("K-4", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.assertEqual(self.round(only=[k4]), [], "K-4 czeka pierwsza")
+        self.assertEqual(self.round(only=[
+            ("K-3", self.sonnet, "PT-4", "ticket", "K-3-PT-4-1"),
+            ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1"), k4]), [])
+        k3_waiting = fold(self.journal.read("K-3")).waiting
+        self.assertTrue(k3_waiting[("PT-3", caretaker.KIND)]["reason"].startswith("limit kroków dostawcy anthropic"))
+        self.finish("K-1", "K-1-PT-1-1")
+        k3_first = [("K-3", self.sonnet, "PT-4", "ticket", "K-3-PT-4-1"),
+                    ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1"), k4]
+        self.assertEqual(self.round(only=k3_first), ["K-4-PT-5-1"],
+                         "K-4 czekała wcześniej: opiekun K-3 ustępuje mimo kolejności pętli")
+        self.assertEqual(self.round(only=k3_first), [], "limit dostawcy nadal obowiązuje")
+        self.finish("K-4", "K-4-PT-5-1")
+        self.assertEqual(self.round(only=k3_first), ["K-3-care-1"], "opiekun przed nowym ticketem swojej karty")
+        self.finish("K-3", "K-3-care-1")
+        self.assertEqual(self.round(only=k3_first), ["K-3-PT-4-1"])
+
+    def test_a_card_waiting_later_than_the_caretaker_does_not_overtake_it(self):
+        """Opiekun K-3 czekał pierwszy; K-4 zaczyna czekać później i ustępuje, choć ma wcześniejszy obrót."""
+        k4 = ("K-4", self.sonnet, "PT-5", "ticket", "K-4-PT-5-1")
+        self.add("K-4", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        caretaker_step = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        self.assertEqual(self.round(only=[caretaker_step]), [])
+        self.assertEqual(self.round(only=[k4]), [])
+        self.finish("K-1", "K-1-PT-1-1")
+        self.assertEqual(self.round(only=[caretaker_step, k4]), ["K-3-care-1"])
+
+    def test_a_paused_card_does_not_hold_the_caretaker(self):
+        k4 = ("K-4", self.sonnet, "PT-5", "ticket", "K-4-PT-5-1")
+        self.add("K-4", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+                 preferredProvider="anthropic", column="todo")
+        self.assertEqual(self.round(only=[k4]), [])
+        self.add("K-4", "card.paused")
+        self.finish("K-1", "K-1-PT-1-1")
+        self.assertEqual(self.round(only=[("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")]),
+                         ["K-3-care-1"])
 
     def test_reservation_counts_as_a_running_step_and_does_not_hold_other_cards(self):
         with open(self.engine.settings, "w", encoding="utf-8") as fh:
@@ -432,9 +534,14 @@ class RetryFlowTest(FlowInProcess):
         self.assertTrue(self.start(card_id)["ok"])
         self.assertTrue(wait_until(lambda: self.caretaker_steps(card_id), timeout=30), self.events(card_id))
         run = self.of(card_id, "caretaker.started")[0]
-        # Decyzja użytkownika zapisana w trakcie pracy opiekuna (np. z okna otwartego przed jego startem).
-        self.flow.engine.journal.append(card_id, "step.decision", step=run["target"], ticket=run["ticket"],
-                                        choice="retry", answer="", command="", executor="")
+        self.assertTrue([s for s in fold(self.events(card_id)).running() if s.get("kind") == "caretaker"],
+                        "opiekun pracuje")
+        # Decyzja użytkownika w trakcie pracy opiekuna zwykłym API decyzji (review M2): krok opiekuna tego ticketu
+        # nie blokuje jej jako „zajęty”.
+        reply = self.flow.engine.resolve_step(card_id, {"choice": "retry", "step": run["target"],
+                                                        "answer": "Instrukcja użytkownika"})
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual((reply["step"], reply["choice"]), (run["target"], "retry"))
         self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.action"), timeout=30), self.events(card_id))
         late = self.of(card_id, "caretaker.action")
         self.assertEqual([(a["ok"], a["error"], a["stale"]) for a in late], [(False, "stale", True)])
@@ -446,10 +553,15 @@ class RetryFlowTest(FlowInProcess):
             self.assertIn("strażnik:", late[0]["detail"])
         self.assertEqual(self.results(card_id, "caretaker-action"), [], "nic nie wykonano")
         self.assertEqual([d for d in self.of(card_id, "step.decision") if d.get("caretaker")], [])
+        self.assertEqual([(d["choice"], d["answer"], d.get("auto")) for d in self.of(card_id, "step.decision")
+                          if d["step"] == run["target"]], [("retry", "Instrukcja użytkownika", None)])
         # Wznowienie z decyzji użytkownika (jedyne): opiekun nie dołożył drugiego.
+        self.assertTrue(wait_until(lambda: self.children(card_id, run["target"]), timeout=20))
+        wait_until(lambda: False, timeout=1.0)
         children = self.children(card_id, run["target"])
         self.assertEqual(len(children), 1)
         self.assertNotIn("Instrukcja od opiekuna", self.prompt(children[0]))
+        self.assertIn("Instrukcja użytkownika", self.prompt(children[0]))
         st = fold(self.events(card_id))
         self.assertEqual(caretaker.owned(st, run["problem"])["count"], 0)
         self.assertEqual(self.of(card_id, "caretaker.escalated"), [])
