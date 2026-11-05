@@ -33,7 +33,11 @@ python3 -m http.server '"$port"' --bind 127.0.0.1 >/dev/null 2>&1 & srv=$!
 sleep 1
 out=$(curl -sv -o /dev/null --max-time 5 http://127.0.0.1:'"$port"'/ 2>&1); code=$?
 echo "$out" | grep -E "Uses proxy|Connected to|< HTTP/" | sed "s/^/  /"
-if [ $code = 0 ] && ! echo "$out" | grep -q "Uses proxy"; then echo "WYNIK curl-bez-proxy: ok"; else echo "WYNIK curl-bez-proxy: fail (kod $code)"; fi
+# „Uses proxy env variable no_proxy == …” curl pisze zawsze, gdy czyta NO_PROXY — o ominięciu proxy świadczy
+# połączenie wprost z 127.0.0.1, nie z adresem proxy (runda 3: fałszywe „fail” przy dopasowaniu „Uses proxy”).
+proxy_host=${HTTPS_PROXY#http://}; proxy_host=${proxy_host%%:*}
+if [ $code = 0 ] && echo "$out" | grep -q "Connected to 127.0.0.1 " && ! echo "$out" | grep -q "Connected to $proxy_host "; then
+  echo "WYNIK curl-bez-proxy: ok"; else echo "WYNIK curl-bez-proxy: fail (kod $code)"; fi
 kill $srv 2>/dev/null
 sleep 6
 exit 0
