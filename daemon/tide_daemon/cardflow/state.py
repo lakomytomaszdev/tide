@@ -444,7 +444,9 @@ def fold(events: list[dict]) -> FlowState:
                 st.imported_done.add(e.get("ticket"))
             elif e.get("state") == "odrzucone":
                 st.rejected.add(e.get("ticket"))
-        if st.plan_approved is not None and (kind in (
+        # Praca opiekuna nie zmienia planu ticketów: nowy klucz commita dawałby pozorną aktywność
+        # w kolejnym przebiegu i unieważniał własny problem `stalled:card` (PT-147, review 3).
+        if st.plan_approved is not None and not _bookkeeping(st, e) and (kind in (
                 "plan.approved", "plan.ticket-edited", "plan.revision-approved", "ticket.assigned",
                 "step.started", "step.finished", "step.waiting", "review.verdict",
                 "review.question", "review.decision", "ticket.rejected", "ticket.imported") or

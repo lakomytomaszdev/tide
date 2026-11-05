@@ -433,6 +433,80 @@ class StageObservationTest(unittest.TestCase):
         self.engine.git.main_branch.return_value = "master"
         self.engine.git.branch_worktree.return_value = {"branch": "card/k-1-plan", "worktree": "/w"}
 
+    def planned_stall(self):
+        self.j.events[0]["entry"] = "plan"
+        self.j.add("plan.proposed", planner="Sonnet")
+        self.j.add("plan.reviewed", verdict="APPROVE")
+        self.j.add("plan.approved", rows=[{"id": "PT-7", "title": "Ticket", "blockers": []}])
+        done_step(self.j)
+        self.real_plan_next()
+        # Jak `idle_card`: przejście ticket -> review nic nie wykonuje, ale plan jest naprawdę zapisywany.
+        self.assertEqual(self.observe_pass(100.0), [])
+        self.engine.git.commit_plan.assert_called_once()
+        self.j.add("card.stalled", reason="brak kroku i powodu czekania")
+        self.assertEqual(ids(self.j), [STALLED])
+
+    def test_planned_stall_survives_caretaker_lifecycle_and_retries_reach_limit(self):
+        self.planned_stall()
+        stalled_since = self.j.st.stalled_since
+        last_activity = self.j.st.last_activity_ts
+        for n in range(1, 4):
+            self.engine._caretake("K-1", self.j.st)
+            run = self.j.st.caretaker_runs[f"K-1-care-{n}"]
+            events = [
+                ("step.waiting", {"ticket": "", "kind": "caretaker", "reason": "limit kroków dostawcy"}),
+                ("step.started", {"step": run["step"], "ticket": "", "kind": "caretaker", "executor": "Opus"}),
+                ("step.finished", {"step": run["step"], "ticket": "", "result": "done",
+                                   "outcome": {"ok": True, "action": "retry-stage", "params": {}}}),
+            ]
+            for kind, fields in events:
+                with self.subTest(n=n, event=kind):
+                    done = self.j.add(kind, **fields)
+                    self.assertEqual(self.observe_pass(111.0 + n), [])
+                    self.assertEqual(ids(self.j), [STALLED])
+                    self.assertEqual(self.j.st.stalled_since, stalled_since)
+                    self.assertEqual(self.j.st.last_activity_ts, last_activity)
+                    self.engine.git.commit_plan.assert_called_once()
+            self.engine._advance.reset_mock()
+            self.engine._caretaker_apply("K-1", self.j.st, run, done)
+            self.engine._advance.assert_called_once()  # dokładnie jeden przebieg ponowienia
+            action = self.j.st.caretaker_outcomes[run["step"]]
+            self.assertEqual((action["ok"], action["code"], action["stale"]),
+                             (False, caretaker.STAGE_NO_CHANGE, False))
+            self.assertEqual(caretaker.owned(self.j.st, STALLED)["count"], n)
+            self.assertEqual(ids(self.j), [STALLED])
+        self.assertEqual(len([e for e in self.j.events if e["type"] == caretaker.STAGE_RETRY]), 3)
+        self.engine._caretaker_launch.reset_mock()
+        for _ in range(2):
+            self.engine._caretake("K-1", self.j.st)
+            self.assertEqual(self.observe_pass(130.0), [])
+        self.engine._caretaker_launch.assert_not_called()
+        self.engine.git.commit_plan.assert_called_once()
+        own = caretaker.owned(self.j.st, STALLED)
+        self.assertEqual((own["count"], own["handed"]), (3, True))
+        [escalation] = [e for e in self.j.events if e["type"] == caretaker.ESCALATED]
+        self.assertEqual((escalation["problem"], escalation["limit"]), (STALLED, True))
+        out = self.engine.derived({"id": "K-1", "column": "todo"})
+        self.assertTrue(out["note"].startswith("stoi"), out["note"])
+        self.assertEqual(out["flow"]["decisions"], [])
+        self.assertEqual([e["problem"] for e in out["flow"]["caretaker"]["escalated"]], [STALLED])
+
+    def test_planned_stall_accepts_caretaker_escalation_after_normal_pass(self):
+        self.planned_stall()
+        self.engine._caretake("K-1", self.j.st)
+        run = self.j.st.caretaker_runs["K-1-care-1"]
+        self.j.add("step.started", step=run["step"], kind="caretaker", ticket="", executor="Opus")
+        self.assertEqual(self.observe_pass(111.0), [])
+        done = self.j.add("step.finished", step=run["step"], ticket="", result="done",
+                          outcome={"ok": True, "action": "escalate", "params": {
+                              "summary": "Brakuje przejścia do review.", "recommendation": "Sprawdź przepływ."}})
+        self.assertEqual(self.observe_pass(122.0), [])
+        self.engine._caretaker_apply("K-1", self.j.st, run, done)
+        escalation = self.j.st.caretaker_outcomes[run["step"]]
+        self.assertEqual(escalation["type"], caretaker.ESCALATED)
+        self.assertEqual(escalation["summary"], "Brakuje przejścia do review.")
+        self.engine.git.commit_plan.assert_called_once()
+
     def test_finished_plan_is_still_committed_without_starting_another_ticket(self):
         self.j.add("plan.approved", rows=[{"id": "PT-7", "title": "Ticket", "blockers": []}])
         self.j.add("result", action="merge", key="PT-7", ok=True)
