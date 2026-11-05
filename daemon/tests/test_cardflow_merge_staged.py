@@ -6,7 +6,8 @@ from unittest import mock
 
 from tide_daemon.cardflow import gitops
 from tide_daemon.cardflow.mergeop import MergeWorktree
-from tide_daemon.worktrees.git import Result
+from tide_daemon.tasks.stepstop import StepGit
+from tide_daemon.worktrees.git import Git, Result
 
 from .test_cardflow import FlowInProcess
 from .test_cardflow_dbus import git
@@ -74,8 +75,42 @@ class StagedMergeTest(recovery.DurableMergeFixture, FlowInProcess):
         user = self.stage_work()
         git(self.repo, "config", "core.splitIndex", "true")
         git(self.repo, "update-index", "--split-index")
-        self.assertTrue(self.call("merge_card", self.request())["ok"])
+        result = self.call("merge_card", self.request())
+        self.assertTrue(result["ok"], result)
         self.assertEqual(self.user_work(), user)
+
+    @unittest.skipIf(os.geteuid() == 0, "root omija prawa zapisu katalogu gita")
+    def test_split_index_with_stepgit_environment_preserves_read_only_checks(self):
+        case = self
+
+        class ReadOnlyObjectsGit:
+            def __init__(self, *args, objects_only=False):
+                self.sandboxed = StepGit(*args, objects_only=objects_only)
+                self.objects_only, self.git_dir, self.worktree = objects_only, args[1], args[2]
+
+            def run(self, *args, timeout=120, index_dir=None):
+                runner = Git()
+                argv = self.sandboxed.sandbox(index_dir)
+                # Prawdziwe opcje i środowisko StepGit; mounty symulujemy prawami katalogu.
+                runner.env = {argv[i + 1]: argv[i + 2] for i, arg in enumerate(argv) if arg == "--setenv"}
+                if index_dir is not None:
+                    runner.env["GIT_INDEX_FILE"] = os.path.join(index_dir, "index")
+                index = Path(self.git_dir, "index")
+                previous = index.read_bytes() if args[0] == "status" else None
+                mode = os.stat(self.git_dir).st_mode
+                if self.objects_only:
+                    os.chmod(self.git_dir, 0o555)
+                try:
+                    result = runner.run(self.worktree, *self.sandboxed.opts, *args, timeout=timeout)
+                    if previous is not None:
+                        case.assertEqual(previous, index.read_bytes(), "odczyt status zmienił indeks źródła")
+                    return result
+                finally:
+                    os.chmod(self.git_dir, mode)
+
+        with mock.patch.object(gitops, "sandbox_available", return_value=True), \
+                mock.patch.object(gitops, "StepGit", ReadOnlyObjectsGit):
+            self.test_split_index_keeps_staged_and_unstaged()
 
     def test_linked_target_worktree_preserves_both_levels(self):
         target_tree = os.path.join(self.base, "ws", "target-checkout")

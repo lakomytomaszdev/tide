@@ -252,6 +252,8 @@ class StepGit:
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
                "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
                "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+               # Kontrola statusu nie może odświeżać ani konwertować indeksu (np. do split-index).
+               "GIT_OPTIONAL_LOCKS": "0",
                "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/tide-step/bus"}
         if index_dir is not None:

@@ -2579,6 +2579,8 @@ zapis obejmuje wyłącznie obiekty i kopię indeksu. Dopiero po zapisaniu zamiar
 materializuje różnicę między początkowym i wynikowym indeksem. Niezwiązane wpisy (blob i tryb), ich delta
 względem nowego HEAD oraz bajty plików pozostają bez zmian. Nie używamy resetu, stasha ani sprzątania untracked.
 Przed zapisem zamiaru ponownie sprawdzamy token podglądu, także po przygotowaniu kopii indeksu.
+StepGit ustawia `GIT_OPTIONAL_LOCKS=0`: kontrola czystości źródła przez `status` nie odświeża ani nie
+konwertuje jego indeksu do split-index, więc nie unieważnia zgody własnym odczytem.
 Recovery przyjmuje wyłącznie zapisany indeks początkowy lub wynikowy; nowe obce staged powodują oczekiwanie.
 Częściowy zapis plików z niezmienionym indeksem i kolizją pozostaje w jawnym oczekiwaniu, bez nadpisywania.
 Starsze zamiary bez `resultIndexTree` nadal używają `resultTree` jako oczekiwanego indeksu.
