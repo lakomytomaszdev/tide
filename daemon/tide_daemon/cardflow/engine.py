@@ -1490,7 +1490,8 @@ class FlowEngine(PlanEditing):
         wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
         już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga jeden porządek wspólny dla wszystkich kart:
         (`since`, identyfikator karty, ticket, rodzaj kroku) — dwaj opiekunowie z równym `since` nie czekają na
-        siebie nawzajem (PT-150, runda 2)."""
+        siebie nawzajem (PT-150, runda 2). Krok zablokowany rezerwacją własnego opiekuna nie zajmuje miejsca
+        w tej kolejce: inaczej ticket A → opiekun B → opiekun A tworzy cykl czekania (runda 3)."""
         if kind != caretaker.KIND or selected.local:
             return 0
         since = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
@@ -1503,9 +1504,12 @@ class FlowEngine(PlanEditing):
             if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
                 continue
             running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
+            reserved = self._caretaker_reserved(other, ost, selected, "ticket")
+            blocked_by_caretaker = reserved and bool(self._wait_reason(selected, reserved))
             count += sum(1 for key, wait in ost.waiting.items()
                          if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
                          key[0] not in ost.rejected and key not in running and
+                         (key[1] == caretaker.KIND or not blocked_by_caretaker) and
                          (not since or ((wait.get("since") or ""), other, key[0] or "", key[1] or "") < mine))
         return count
 

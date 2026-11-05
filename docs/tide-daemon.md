@@ -1903,7 +1903,11 @@ czekający od tej samej chwili nie czekają na siebie nawzajem. Zwolnione miejsc
 niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty zakończone, wstrzymane, przeniesione do
 Gotowe, Archiwum albo Backlogu i odrzucone tickety. Opiekun zakończony przed startem (np. `stale` po decyzji
 użytkownika, gdy czekał na slot) traci czekanie: wynik (`caretaker.action`/`caretaker.escalated`) zdejmuje jego
-`step.waiting` w `fold`, więc nie blokuje kroków innych kart.
+`step.waiting` w `fold`, więc nie blokuje kroków innych kart. Pomijane są również zwykłe kroki, których start
+blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzięki temu kolejność czekania
+ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
+Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
+zwykłych kroków, ich wcześniejsze czekanie nadal liczy się w kolejce innych kart.
 
 **Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
 i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu

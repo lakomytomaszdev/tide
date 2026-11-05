@@ -462,6 +462,40 @@ class SlotPriorityTest(EngineOnJournal):
         self.finish("K-3", "K-3-care-1")
         self.assertEqual(self.round(only=[k5, k3]), ["K-5-care-1"])
 
+    def test_ticket_reserved_for_its_caretaker_does_not_create_a_wait_cycle(self):
+        """R3-M1: ticket A → opiekun B → opiekun A; ticket A ustępuje własnemu opiekunowi."""
+        _, k5 = self.second_caretaker()
+        ticket = ("K-3", self.sonnet, "PT-4", "ticket", "K-3-PT-4-1")
+        k3 = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        for step in (ticket, k5, k3):
+            self.assertEqual(self.round(only=[step]), [])
+        waits = [fold(self.journal.read(c)).waiting[(t, kind)]["since"]
+                 for c, _, t, kind, _ in (ticket, k5, k3)]
+        self.assertLess(waits[0], waits[1])
+        self.assertLess(waits[1], waits[2])
+        self.finish("K-1", "K-1-PT-1-1")
+        self.assertEqual(self.round(only=[ticket, k3, k5]), ["K-5-care-1"],
+                         "opiekun B czekał przed opiekunem A; ticket A nie blokuje kolejki")
+        self.assertEqual(self.round(only=[ticket, k3, k5]), [], "limit dostawcy nadal obowiązuje")
+        self.finish("K-5", "K-5-care-1")
+        self.assertEqual(self.round(only=[ticket, k3, k5]), ["K-3-care-1"])
+        self.assertEqual(self.round(only=[ticket, k3, k5]), [])
+        self.finish("K-3", "K-3-care-1")
+        self.assertEqual(self.round(only=[ticket, k3, k5]), ["K-3-PT-4-1"])
+
+    def test_reservation_does_not_hide_waiters_that_fit_in_remaining_slots(self):
+        """Rezerwacja jednego miejsca nie usuwa z kolejki zwykłych kroków, gdy mają jeszcze wolne miejsca."""
+        _, k5 = self.second_caretaker()
+        tickets = [("K-3", self.sonnet, t, "ticket", f"K-3-{t}-1") for t in ("PT-4", "PT-6")]
+        k3 = ("K-3", self.opus, "PT-3", caretaker.KIND, "K-3-care-1")
+        self.assertEqual(self.round(only=[*tickets, k5, k3]), [])
+        with open(self.engine.settings, "w", encoding="utf-8") as fh:
+            json.dump({"providerSlots": {"anthropic": 3}}, fh)
+        self.assertEqual(self.round(only=[k5]), [], "wcześniejsze tickety nadal mają miejsce obok rezerwacji")
+        self.assertEqual(self.round(only=[*tickets, k3, k5]), ["K-3-PT-4-1", "K-5-care-1"],
+                         "po starcie ticketu drugi ustępuje własnemu opiekunowi i nie blokuje opiekuna B")
+        self.assertEqual(self.round(only=[*tickets, k3, k5]), [], "trzy miejsca są zajęte")
+
     def test_stale_waiter_does_not_hold_another_cards_caretaker(self):
         """Review R2-M2: opiekun K-5 czeka na slot pierwszy, użytkownik decyduje, `_caretaker_launch` kończy go
         jako `stale` przed startem — jego czekanie nie blokuje już opiekuna K-3."""
