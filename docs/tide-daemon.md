@@ -1745,6 +1745,10 @@ Nie wykonuje się fetch. Rozbieżne SHA API i lokalnego refu są widoczne razem;
 Bramka `gh` wykonuje jeden ustalony GET HTTPS na wywołanie i odrzuca wszystkie przekierowania.
 CLI używa klucza `http_unix_socket` z tymczasowego `GH_CONFIG_DIR/config.yml`; `hosts.yml` jest wyłącznie
 dowiązaniem do istniejącego pliku konfiguracji użytkownika (bez kopiowania i odczytu sekretów przez Tide).
+Tymczasowy `config.yml` zawiera też `version: "1"`: bez niego gh uruchamia migrację konfiguracji
+i zapisuje `hosts.yml` przez dowiązanie. Gdy `hosts.yml` istnieje, a `config.yml` użytkownika nie ma
+`version: "1"` (magazyn niezmigrowany), Tide nie uruchamia gh i zwraca ostrzeżenie; Tide czyta z
+`config.yml` tylko klucz `version`.
 Nieobsługiwany transport kończy się błędem przez zastępcze proxy bez dostępu do hostingu.
 `glab` dostaje jawne `GLAB_PROXY` wskazujące lokalne proxy TCP oraz `GLAB_API_PROTOCOL=https`
 i `API_PROTOCOL=https`. Proxy przyjmuje tylko `CONNECT` do ustalonego hosta na porcie 443; odrzuca obcy

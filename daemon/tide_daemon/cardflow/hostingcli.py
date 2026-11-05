@@ -181,11 +181,33 @@ def cli_environment(program, proxy, env):
     # w istniejącym magazynie; dowiązanie nie odczytuje ani nie kopiuje sekretów.
     config = env.get("GH_CONFIG_DIR") or os.path.join(
         env.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "gh")
+    hosts = os.path.abspath(os.path.join(config, "hosts.yml"))
+    # Bez `version` gh migruje konfigurację i zapisuje hosts.yml przez dowiązanie.
+    # Niezmigrowany magazyn użytkownika zostaje nietknięty: ostrzeżenie zamiast gh.
+    if os.path.lexists(hosts) and not _gh_config_current(os.path.join(config, "config.yml")):
+        raise HostingError("Konfiguracja gh wymaga migracji; uruchom dowolne polecenie gh ręcznie.")
     with tempfile.TemporaryDirectory(prefix="tide-gh-") as folder:
-        os.symlink(os.path.abspath(os.path.join(config, "hosts.yml")), os.path.join(folder, "hosts.yml"))
+        os.symlink(hosts, os.path.join(folder, "hosts.yml"))
         with open(os.path.join(folder, "config.yml"), "w", encoding="utf-8") as fh:
-            fh.write("http_unix_socket: " + json.dumps(proxy) + "\n")
+            fh.write(f'version: "{GH_CONFIG_VERSION}"\nhttp_unix_socket: ' + json.dumps(proxy) + "\n")
         yield {**env, "GH_CONFIG_DIR": folder}
+
+
+GH_CONFIG_VERSION = "1"
+
+
+def _gh_config_current(path):
+    """Tylko klucz `version` z config.yml (bez sekretów); brak pliku = format niezmigrowany."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read(64 * 1024)
+    except (OSError, UnicodeDecodeError):
+        return False
+    for line in text.splitlines():
+        if line.startswith("version:"):
+            value = line.split(":", 1)[1].split("#", 1)[0].strip().strip("\"'")
+            return value == GH_CONFIG_VERSION
+    return False
 
 
 def read_json(program, host, endpoint, cwd, *, deadline=None):

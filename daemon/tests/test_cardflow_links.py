@@ -252,8 +252,31 @@ class CliReadTest(unittest.TestCase):
                     expected = source if "GH_CONFIG_DIR" in config_env else os.path.join(source, "gh")
                     self.assertEqual(os.readlink(hosts), os.path.join(expected, "hosts.yml"))
                     with open(os.path.join(folder, "config.yml")) as fh:
-                        self.assertEqual(fh.read(), 'http_unix_socket: "/tmp/api.sock"\n')
+                        self.assertEqual(fh.read(), 'version: "1"\nhttp_unix_socket: "/tmp/api.sock"\n')
                 self.assertFalse(os.path.exists(folder))
+
+    def test_gh_unmigrated_user_config_warns_instead_of_running_gh(self):
+        with tempfile.TemporaryDirectory() as source:
+            hosts = os.path.join(source, "hosts.yml")
+            with open(hosts, "w") as fh:
+                fh.write("github.com:\n    oauth_token: FAKE_SECRET\n")
+            for config in (None, "git_protocol: https\n", 'version: "0"\n'):
+                with self.subTest(config=config):
+                    path = os.path.join(source, "config.yml")
+                    if config is None:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    else:
+                        with open(path, "w") as fh:
+                            fh.write(config)
+                    with self.assertRaises(cli.HostingError) as caught:
+                        with cli.cli_environment("gh", "/tmp/api.sock", {"GH_CONFIG_DIR": source}):
+                            self.fail("gh nie może ruszyć z niezmigrowaną konfiguracją")
+                    self.assertNotIn("FAKE_SECRET", str(caught.exception))
+            with open(os.path.join(source, "config.yml"), "w") as fh:
+                fh.write("# komentarz\nversion: '1' # bieżący\n")
+            with cli.cli_environment("gh", "/tmp/api.sock", {"GH_CONFIG_DIR": source}) as env:
+                self.assertTrue(os.path.islink(os.path.join(env["GH_CONFIG_DIR"], "hosts.yml")))
 
     def test_success_does_not_kill_reaped_process_group_but_timeout_does(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(cli, "host_gateway", self.fake_gateway):

@@ -53,6 +53,33 @@ class RealCliTransportTest(unittest.TestCase):
                 cli.read_json("gh", "github.com", "repos/team/proj/pulls/17", folder)
             connection.assert_not_called()
 
+    def test_gh_does_not_rewrite_migrated_user_hosts_on_success_or_failure(self):
+        self.require("gh")
+        hosts_text = ('github.com:\n    users:\n        tide-test:\n            oauth_token: FAKE_SECRET\n'
+                      '    git_protocol: https\n    oauth_token: FAKE_SECRET\n    user: tide-test\n')
+        with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as cwd, \
+                patch.object(cli.http.client, "HTTPSConnection") as connection:
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")}
+            env["GH_CONFIG_DIR"] = source
+            hosts = os.path.join(source, "hosts.yml")
+            with open(hosts, "w", encoding="utf-8") as fh:
+                fh.write(hosts_text)
+            with open(os.path.join(source, "config.yml"), "w", encoding="utf-8") as fh:
+                fh.write('version: "1"\n')
+            os.utime(hosts, ns=(1_000_000_000, 1_000_000_000))
+            before = os.stat(hosts).st_mtime_ns
+            response = connection.return_value.getresponse.return_value
+            with patch.dict(os.environ, env, clear=True):
+                response.status, response.read.return_value = 200, b'{"ok": true}'
+                self.assertEqual(cli.read_json("gh", "github.com", "repos/team/proj/pulls/17", cwd), {"ok": True})
+                response.status, response.read.return_value = 404, b'{"message": "Not Found"}'
+                with self.assertRaises(cli.HostingError):
+                    cli.read_json("gh", "github.com", "repos/team/proj/pulls/18", cwd)
+            self.assertEqual(os.stat(hosts).st_mtime_ns, before)
+            with open(hosts, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), hosts_text)
+
     def test_glab_connect_carries_tls_not_plain_token_and_closed_proxy_fails(self):
         self.require("glab")
         client, peer = socket.socketpair()
