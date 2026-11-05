@@ -90,7 +90,7 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(st.base_version, 2)
         self.assertEqual(st.base["baseCommit"], self.feature_sha)
         self.assertEqual(st.initial_base["baseCommit"], self.master)
-        self.assertTrue(st.base_validation_required)
+        self.assertFalse(st.base_validation_required)
         self.assertEqual(len(intent["generation"]), count)
         self.assertEqual(len(self.of(self.ident, "card.base-changed")), 1)
         self.assertEqual(len(self.results(self.ident, "change-base")), 1)
@@ -115,8 +115,8 @@ class EmptyGenerationTest(StartBaseSetup):
         self.assertEqual(flow["cardBranch"], info["cardBranch"])
         self.assertEqual(flow["branch"], info["branch"])
         self.assertEqual(flow["generation"], intent["generation"])
-        self.assertTrue(flow["baseValidationRequired"])
-        self.assertEqual(shown["derived"]["column"], "waiting")
+        self.assertFalse(flow["baseValidationRequired"])
+        self.assertFalse(flow["closed"])
         self.assertEqual(flow["decisions"], [])
         self.assertEqual(shown["baseCommit"], self.feature_sha)
         self.assertEqual(shown["baseVersion"], 2)
@@ -139,7 +139,7 @@ class EmptyGenerationTest(StartBaseSetup):
             Path(path, "cache", "keep.bin").write_bytes(b"dane wewnatrz")
             Path(path, "ignored.bin").write_bytes(b"dane")
         preview = self.preview(step="ask")
-        self.assertFalse(preview["canExecute"], "UI czeka na PT-213")
+        self.assertTrue(preview["canExecute"])
         # Dowiedzione granice, bez zaakceptowanego ticketu ani review nieistniejącej pracy.
         for row in preview["branches"]:
             self.assertEqual(row["startCommit"], self.master)
@@ -410,15 +410,14 @@ class EmptyGenerationTest(StartBaseSetup):
             self.assertTrue(self.call("resolve_card_step", request)["changed"])
         self.restart()
         engine = self.flow.engine
-        # Znacznik blokuje samodzielnie, także bez starego pytania i przy historycznym domknięciu.
+        # Zgoda ze starego kontekstu nie wraca nawet po późnym zapisie.
         engine.journal.append(self.ident, "step.decision", step="ask", choice="answer", baseDecision="keep")
         with mock.patch.object(BaseGeneration, "prepare", side_effect=AssertionError("ponowny git")), \
-                mock.patch.object(engine, "_advance_close", side_effect=AssertionError("domknięcie")), \
+                mock.patch.object(engine, "_advance_close"), \
                 mock.patch.object(engine, "_merge", side_effect=AssertionError("integracja")):
             engine.tick()
             engine.tick()
-        for operation in (lambda: engine.start(self.ident, {"entry": "now", "executor": "Sonnet"}),
-                          lambda: engine.resolve_step(self.ident, {"choice": "answer", "step": "ask", "baseDecision": "keep"}),
+        for operation in (lambda: engine.resolve_step(self.ident, {"choice": "answer", "step": "ask", "baseDecision": "keep"}),
                           lambda: engine.resolve_review(self.ident, "accept"),
                           lambda: engine.enter(self.ident, "ask"),
                           lambda: engine.approve_plan(self.ident),
@@ -426,10 +425,6 @@ class EmptyGenerationTest(StartBaseSetup):
                           lambda: engine.merge_card_to_main(self.ident)):
             with self.assertRaises(FlowError):
                 operation()
-        self.assert_active()
-        engine.moved(self.ident, "done", "waiting", "manual-move")
-        self.assertFalse(fold(self.events(self.ident)).card_finished)
-        engine.tick()
         self.assert_active()
         # Zwykły cleanup nie może nawet przenieść plików w starym worktree.
         row = self.intent()["generation"][1]
@@ -451,7 +446,7 @@ class EmptyGenerationTest(StartBaseSetup):
 
         def failing_restore(card):
             nonlocal failed
-            if fold(journal.read(card)).base_validation_required and not failed:
+            if fold(journal.read(card)).base_change and not failed:
                 failed = True
                 raise OSError("zapis pliku dziennika tablicy")
             return restore(card)

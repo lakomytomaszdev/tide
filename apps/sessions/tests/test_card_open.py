@@ -165,6 +165,22 @@ class CardOpenTest(unittest.TestCase):
         self.assertIn("Odmowa korekty", out["text"])
         self.assertEqual(out["calls"], [])
 
+    def test_base_confirmation_uses_the_same_structured_resolve_in_sessions(self):
+        from apps.board.tests.test_base_change import PREVIEW
+        preview = {**PREVIEW, "canExecute": True, "canChange": True}
+        request = {"choice": "change-base", "step": "base-request:5", "baseRef": "refs/heads/topic",
+                   "baseCommit": "b" * 40, "previewId": "token"}
+        out = self.probe(self.waiting, "click_entry(0)\n"
+                         "js(" + repr("baseChangePreview.show('K-8', " + json.dumps(preview) + ")") + ")\n"
+                         "js(" + repr("baseChangePreview.confirmed(" + json.dumps(request) + ")") + ")\n"
+                         "QTest.qWait(200)\nresult['calls'] = calls()\n"
+                         "result['visible'] = js('baseChangePreview.visible')\n"
+                         "result['text'] = js('baseChangePreview.describe(baseChangePreview.result)')")
+        self.assertEqual(out["calls"][0][:2], ["ResolveCardStep", CARD])
+        self.assertEqual(json.loads(out["calls"][0][2]), request)
+        self.assertTrue(out["visible"], "odmowa backendu podglądu zachowuje dane")
+        self.assertIn("K-50-replay-code", out["text"])
+
 
 class SharedSettingTest(unittest.TestCase):
     def test_setting_saved_by_one_view_reaches_the_other(self):

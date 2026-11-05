@@ -135,9 +135,10 @@ Rectangle {
             else baseChangePreview.error = reply && reply.message || "Nie można odczytać podglądu."
             return
         }
-        if (tag.indexOf("base-keep:") === 0) {
+        if (tag.indexOf("base-keep:") === 0 || tag.indexOf("base-confirm:") === 0) {
             baseChangePreview.busy = false
-            if (reply && reply.ok) baseChangePreview.close()
+            if (reply && reply.ok && (tag.indexOf("base-keep:") === 0 || reply.changed)) baseChangePreview.close()
+            else if (reply && reply.ok) baseChangePreview.error = reply.reason || "Korekta czeka; zachowano dane podglądu."
             else baseChangePreview.error = reply && reply.message || "Nie zapisano decyzji."
             return
         }
@@ -674,6 +675,7 @@ Rectangle {
         parent: page
         z: 45
         onRefreshed: request => page.sendCard("base-preview", cardId, "", "PreviewCardBaseChange", request)
+        onConfirmed: request => page.sendCard("base-confirm", cardId, "", "ResolveCardStep", request)
         onKeepRequested: step => {
             busy = true
             page.sendCard("base-keep", cardId, "", "ResolveCardStep",

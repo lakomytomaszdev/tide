@@ -1848,7 +1848,9 @@ korekty oraz mapowanie zasobów opisano poniżej. Historyczne zdarzenia z pustym
 jest pełnym refem lokalnym lub znanym lokalnie remote, `previewId` pochodzi z aktualnego podglądu,
 a `step` wskazuje pytanie agenta lub decyzję `RequestCardBaseChange`, jeżeli taka istnieje.
 Sam wybór `baseDecision: "change"` nadal tylko otwiera podgląd. Odpowiedź i etykieta opcji nie są
-poleceniem Git. UI nie udostępnia potwierdzenia do PT-213 (`canExecute: false`).
+poleceniem Git. Panel Tablicy i Sesji udostępnia osobne potwierdzenie tylko dla `canExecute: true`,
+przekazując dokładny ref/SHA i identyfikator wyświetlonego podglądu. Odmowa lub oczekiwanie
+na odzyskanie zasobów pozostawia dowody i odnośnik do szkicu w otwartym panelu.
 
 Pod blokadą repozytorium usługa ponawia kwalifikację PT-201: dokładne SHA obu baz, wersję, pełną
 mapę, dowiedzione punkty startu wszystkich gałęzi, brak wkładu, lokalnych zmian oraz procesów.
@@ -1872,10 +1874,24 @@ Retry z tym samym refem/odciskiem zwraca ten sam zamiar. Snapshot udostępnia `f
 `flow.preservedGenerations`, `flow.generationWaiting` i `flow.baseValidationRequired`.
 Stare refy, archiwalne SHA i katalogi nie podlegają zwykłemu sprzątaniu; cleanup nie przenosi ich danych.
 
-Aktywacja utrwala `validationRequired: true`. Do PT-213 karta jawnie czeka na walidację kontekstu;
-nie startuje implementacji, review, integracji, domknięcia ani końcowego scalenia, również przez stare
-API. Zmiana `baseVersion` uczestniczy w istniejącym odcisku tokenów scalenia. Nie wdrażamy tu polityki
-ponownego review, celu ani menu wznowienia. Blokada repozytorium jest zwalniana przed oczekiwaniem.
+**Skutki pustej korekty (PT-213).** Aktywacja zachowuje pole `validationRequired: true` jako część
+kontraktu PT-202. Fold dowiedzionej kompletnej mapy odtwarza unieważnienia i uznaje walidację pustego
+wkładu za spełnioną (`flow.baseValidationRequired: false`). Nie wymaga review fikcyjnego commitu.
+Stare review, decyzje i domknięcie pozostają w dzienniku oraz historii, ale nie autoryzują nowego
+SHA. Snapshot wystawia bieżące `flow.approvals` oraz osobne `flow.historicalApprovals` z oryginalnymi
+SHA i wersjami. Historyczne kroki mają `historical: true`, bez EnterStep i transferu.
+
+Nieodrzucony ticket rozpoczyna nowy krok w nowym katalogu z aktualnym ref/SHA/baseVersion, notką
+korekty, dostępem do dawnych wyników i świeżą sesją CLI. Odrzucony ticket pozostaje odrzucony.
+Nowa praca przechodzi istniejące testy i review swojego rzeczywistego SHA przed integracją; zasoby
+generacji pozostają zachowane również podczas cleanup. Stara zgoda na polecenia do końca ticketu
+nie przechodzi do nowej generacji. Stare kroki i zgody nie wracają przez recovery.
+
+Karta wymaga nowego podsumowania na nowej bazie, także gdy zamknięto ją wcześniej po odrzuceniu
+ticketu bez zmian. MergeCard i MergeCardToMain stosują tę samą bramkę domknięcia. Domyślny cel
+w menu i porównaniu korzysta z bieżącej bazy, a token sprzed korekty daje `stale-preview`.
+Remote nadal wymaga jawnego istniejącego lokalnego celu według wspólnej polityki celów.
+Powtórny fold i restart nie uruchamiają przygotowania generacji ani kolejnej inkrementacji.
 
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.

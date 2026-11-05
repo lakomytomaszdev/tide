@@ -24,6 +24,30 @@ PREVIEW = {"ok": True, "id": "K-8", "oldBase": {"baseRef": "refs/heads/master", 
 
 
 class BaseChangeViewTest(ProbeCase):
+    def test_confirmation_sends_exact_preview_and_error_keeps_evidence(self):
+        preview = {**PREVIEW, "canChange": True, "canExecute": True, "blockedReasons": []}
+        out = self.probe(STATE_PY + "\npreview = " + repr(preview) + r'''
+click(card("K-8"))
+engine.rootContext().setContextProperty("probeTarget", obj("baseChangePreview"))
+js("probeTarget.show('K-8', " + json.dumps(preview) + ")")
+out["enabled"] = obj("baseChangeConfirm").property("enabled")
+replies.append({"ok": False, "error": "stale-preview", "message": "Podgląd jest nieaktualny."})
+click(named("baseChangeConfirm"))
+until(lambda: not obj("baseChangePreview").property("busy"))
+out["calls"] = calls()
+out["visible"] = obj("baseChangePreview").property("visible")
+out["text"] = obj("baseChangeText").property("text")
+''', full_d(self.data))
+        self.assertTrue(out["enabled"])
+        self.assertTrue(out["visible"])
+        self.assertIn("Podgląd jest nieaktualny", out["text"])
+        self.assertIn("cache.bin", out["text"])
+        self.assertIn("K-50-replay-code", out["text"])
+        self.assertEqual([c[0] for c in out["calls"]], ["ResolveCardStep"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {
+            "choice": "change-base", "step": "base-request:5", "baseRef": "refs/heads/topic",
+            "baseCommit": "b" * 40, "previewId": "token"})
+
     def test_user_field_selects_exact_ref_then_cancel_does_not_send_keep_or_execution(self):
         data = full_d(self.data)
         branch = {"ref": "refs/heads/topic", "name": "topic", "commit": "b" * 40, "selectable": True}

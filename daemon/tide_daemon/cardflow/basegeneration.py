@@ -12,7 +12,7 @@ from .gitops import FlowGitError, lock_for, worktree_for
 from .state import fold
 
 ACTION = "change-base"
-WAITING = "Nowa generacja czeka na walidację kontekstu (PT-213)."
+WAITING = "Przygotowanie generacji czeka na odzyskanie zasobów."
 
 
 def intent_of(st):
@@ -91,9 +91,10 @@ class BaseGeneration:
     def response(self, card, intent):
         st = fold(self.journal.read(card))
         changed = st.base_change.get("operationId") == intent["key"]
-        return {"ok": True, "id": card, "operationId": intent["key"], "changed": changed, "waiting": True,
+        return {"ok": True, "id": card, "operationId": intent["key"], "changed": changed,
+                "waiting": not changed or st.base_validation_required,
                 "baseVersion": st.base_version, "generation": intent["generation"],
-                "reason": WAITING if changed else st.base_generation_wait.get("reason", "Przygotowanie generacji.")}
+                "reason": "Wymagane nowe domknięcie karty." if changed else st.base_generation_wait.get("reason", WAITING)}
 
     def checkpoint(self, card, intent, stage, **data):
         if any(e.get("type") == "base-change.checkpoint" and e.get("key") == intent["key"] and

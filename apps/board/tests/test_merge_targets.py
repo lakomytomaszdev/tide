@@ -7,6 +7,26 @@ from .test_view import FIND_PY, ProbeCase
 
 
 class MergeTargetViewTest(ProbeCase):
+    def test_base_activation_changes_full_default_label_without_returning_to_initial_base(self):
+        data = self.closed({"status": "known", "baseRef": "refs/heads/old-base"})
+        name = "feature/nowa-baza/" + "pelna-nazwa-" * 12
+        out = self.probe(STATE_PY + "\nnew_name = " + repr(name) + r'''
+click(card("K-8"))
+out["before"] = obj("fullMergeMain").property("text")
+snap = json.loads(backend.snapshotJson)
+flow = next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]
+flow.update(initialBase=flow["base"], base={"status": "known", "baseRef": "refs/heads/" + new_name}, baseVersion=2)
+set_snapshot(snap)
+assert until(lambda: obj("fullMergeMain").property("text") == "Scal do " + new_name)
+out["after"] = obj("fullMergeMain").property("text")
+replies.append({"ok": True, "targetRef": "refs/heads/" + new_name, "targetBranch": new_name})
+click(named("fullMergeMain"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["before"], "Scal do old-base")
+        self.assertEqual(out["after"], "Scal do " + name)
+        self.assertEqual(json.loads(out["calls"][0][2]), {"targetRef": "refs/heads/" + name})
+
     def closed(self, base=None):
         data = full_d(self.data)
         card = next(c for c in data["cards"] if c["id"] == "K-8")

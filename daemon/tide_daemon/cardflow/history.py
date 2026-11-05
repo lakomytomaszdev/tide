@@ -38,6 +38,7 @@ VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 def build(st, steps: list[dict]) -> list[dict]:
     """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`)."""
     last_started = max((int(e.get("seq") or 0) for e in st.log if e.get("type") == "card.started"), default=0)
+    last_started = max(last_started, st.base_change.get("seq", 0))
     enter = {item.get("id"): item.get("canEnter") is True for item in steps}
     roots = {name: _root(st, name) for name in st.steps}
     chains: dict[str, list[str]] = {}

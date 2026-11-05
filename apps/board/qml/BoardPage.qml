@@ -683,11 +683,12 @@ Rectangle {
             baseChangePreview.busy = false
             baseChangePreview.error = error
             if (!error) baseChangePreview.show(baseChangePreview.cardId, reply.preview || reply)
-        } else if (tag.indexOf("base-keep:") === 0) {
+        } else if (tag.indexOf("base-keep:") === 0 || tag.indexOf("base-confirm:") === 0) {
             if (baseChangePreview.requestTag !== tag) return
             baseChangePreview.busy = false
             baseChangePreview.error = error
-            if (!error) baseChangePreview.close()
+            if (!error && (tag.indexOf("base-keep:") === 0 || reply.changed)) baseChangePreview.close()
+            else if (!error) baseChangePreview.error = reply.reason || "Korekta czeka; zachowano dane podglądu."
         } else if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
         } else if (tag.indexOf("setting:") === 0) {
@@ -1966,6 +1967,10 @@ Rectangle {
             requestTag = page.nextTag("base-keep:" + cardId)
             page.stepResolveRequested(requestTag, cardId,
                                       JSON.stringify({choice: "answer", step: step, baseDecision: "keep"}))
+        }
+        onConfirmed: request => {
+            requestTag = page.nextTag("base-confirm:" + cardId)
+            page.stepResolveRequested(requestTag, cardId, JSON.stringify(request))
         }
         onFileRequested: path => page.fileRequested(path, "open")
     }

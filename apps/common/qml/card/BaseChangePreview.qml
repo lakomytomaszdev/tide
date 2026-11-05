@@ -24,6 +24,7 @@ QQC2.Popup {
     signal requested(var request)
     signal refreshed(var request)
     signal keepRequested(string step)
+    signal confirmed(var request)
     signal fileRequested(string path)
     onClosed: requestTag = ""
 
@@ -68,7 +69,7 @@ QQC2.Popup {
         }
         for (const p of r.processes || [])
             lines.push((p.previousOrder ? "Proces poprzedniego zlecenia: " : "Proces: ") + p.step + " · " + p.unit + " · " + p.state)
-        lines.push("", "Wymagane unieważnienia po przyszłym wykonaniu: " + (r.invalidations || []).join(", "),
+        lines.push("", "Unieważnienia po potwierdzeniu: " + (r.invalidations || []).join(", "),
                    "", r.ignoredPolicy, r.localStatePolicy || "", r.scope, "", r.instruction,
                    r.followup && r.followup.message || "", "", r.executionMessage)
         return lines.join("\n")
@@ -112,7 +113,7 @@ QQC2.Popup {
                 readOnly: true
                 selectByMouse: true
                 textFormat: TextEdit.PlainText
-                text: preview.busy ? "Odczytuję dowody…" : preview.error || preview.describe(preview.result)
+                text: (preview.busy ? "Odczytuję dowody…\n" : "") + (preview.error ? preview.error + "\n\n" : "") + preview.describe(preview.result)
                 color: Tide.Tokens.textPrimary
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt
@@ -149,8 +150,15 @@ QQC2.Popup {
             }
             Tide.TextButton {
                 objectName: "baseChangeConfirm"
-                text: "Wykonanie korekty niedostępne"
-                enabled: false
+                text: "Potwierdź pustą korektę i unieważnij stare zgody"
+                enabled: !!(preview.result && preview.result.canExecute && preview.result.previewId) && !preview.busy
+                onClicked: {
+                    preview.busy = true
+                    preview.confirmed({choice: "change-base", step: preview.result.decisionStep || "",
+                                       baseRef: preview.result.newBase.baseRef,
+                                       baseCommit: preview.result.newBase.baseCommit,
+                                       previewId: preview.result.previewId})
+                }
             }
             Tide.TextButton {
                 objectName: "baseChangeCancel"

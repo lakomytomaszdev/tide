@@ -64,7 +64,7 @@ class BaseChangeTest(StartBaseSetup):
         ignored.write_bytes(b"1234")
         initial = self.preview(step="ask")
         self.assertTrue(initial["canChange"], initial)
-        self.assertFalse(initial["canExecute"])
+        self.assertTrue(initial["canExecute"])
         self.assertEqual(initial["oldBase"]["baseCommit"], self.master)
         self.assertEqual(initial["newBase"]["baseCommit"], self.feature_sha)
         self.assertEqual(initial["baseVersion"], 1)
