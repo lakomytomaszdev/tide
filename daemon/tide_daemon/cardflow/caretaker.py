@@ -120,6 +120,7 @@ class Action:
     params: dict = field(default_factory=dict)
     apply: object = None
     description: str = ""
+    failure_recommendation: str = ""
 
 
 def _option_ids(problem: dict) -> list[str]:
@@ -140,6 +141,24 @@ def _retry_stage(port, problem: dict, params: dict) -> dict:
 
 def _return_plan(port, problem: dict, params: dict) -> dict:
     return port.return_plan(problem, params)
+
+
+def _resolve_action(port, problem: dict, params: dict, choice: str) -> dict:
+    """Wpisy rejestru PT-145 używają istniejącego ResolveCardStep, także po restarcie między zamiarem a wynikiem."""
+    request = {"choice": choice, "step": params.get("step") or ""}
+    if choice == "answer":
+        request["answer"] = params.get("answer") or ""
+    else:
+        request.update(executor=params.get("executor") or "", answer=params.get("instruction") or "")
+    return port.resolve_step(problem, request, step_kinds=TICKET_KINDS if choice == "answer" else ())
+
+
+def _change_executor(port, problem: dict, params: dict) -> dict:
+    return _resolve_action(port, problem, params, "change-executor")
+
+
+def _answer(port, problem: dict, params: dict) -> dict:
+    return _resolve_action(port, problem, params, "answer")
 
 
 ACTIONS: dict[str, Action] = {
@@ -186,10 +205,42 @@ ACTIONS: dict[str, Action] = {
         },
         apply=_return_plan,
         description="odeślij plan planującemu z precyzyjną uwagą (bez zatwierdzania planu)"),
+    "change-executor": Action(
+        kinds=("error", "repeat", "no-progress"),
+        params={"step": Param(True, 1, STEP_MAX, "id kroku problemu"),
+                "executor": Param(True, 1, EXECUTOR_NAME_MAX, "nazwa wykonawcy z katalogu"),
+                "instruction": Param(False, 1, TEXT_MAX, "instrukcja dla nowej sesji wykonawcy"),
+                "reason": Param(True, 1, REASON_MAX, "dlaczego zmieniasz wykonawcę")},
+        apply=_change_executor, description="zmień wykonawcę kroku na wykonawcę z katalogu, w nowej sesji; "
+        "zachowaj lokalność, inny model autora i recenzenta, a w trybie mieszanym także innego dostawcę"),
+    "answer": Action(
+        kinds=("waiting",),
+        params={"step": Param(True, 1, STEP_MAX, "id kroku z pytaniem"),
+                "answer": Param(True, 1, TEXT_MAX, "odpowiedź wyłącznie techniczna albo środowiskowa"),
+                "category": Param(True, 1, 20, "kategoria odpowiedzi", lambda p: ["technical", "environment"]),
+                "reason": Param(True, 1, REASON_MAX, "dlaczego możesz odpowiedzieć bez decyzji użytkownika")},
+        apply=_answer, description="odpowiedz na techniczne lub środowiskowe pytanie kroku ticketu, review, "
+        "poprawek albo konfliktu; pytania planning i plan-* Tide odrzuca. Pytania o zakres, wymagania, wybory "
+        "biznesowe i pytania z opcjami wariantów produktu eskaluj użytkownikowi",
+        failure_recommendation="Odpowiedz na pytanie samodzielnie; opiekun może rozstrzygać wyłącznie pytania "
+        "techniczne i środowiskowe kroków ticketu, review, poprawek i konfliktu."),
 }
 
 HISTORY_LABELS = {"escalate": "oddaje decyzję", "retry": "ponowienie kroku",
-                  "retry-stage": "ponowienie etapu", "return-plan": "odesłanie planu"}
+                  "retry-stage": "ponowienie etapu", "return-plan": "odesłanie planu",
+                  "change-executor": lambda e: f"zmienił wykonawcę {e.get('label') or e.get('target')} na "
+                  f"{(e.get('params') or {}).get('executor')}",
+                  "answer": lambda e: f"odpowiedział na pytanie {e.get('label') or e.get('target')}"}
+
+# Ograniczenia wyzwalaczy też są wpisami rejestru; obowiązują w kartce i walidacji wyniku.
+ACTION_POLICIES = {"waiting": lambda p: {"escalate", "answer"} if p.get("decisionKind") == "question"
+                   else {"escalate"}}
+
+# Domyślnie problem należy do łańcucha kroków i na czas pracy ukrywa jego decyzję. Wpis może zamiast tego
+# wskazać własne zamknięcie i tożsamość oraz zachować widoczność decyzji użytkownika.
+PROBLEM_POLICIES = {"waiting": {"independent": True, "visible": True,
+                               "closed": lambda st, ident: not any(ident == f"waiting:{d['id']}"
+                                                                   for d, _ in _waiting_decisions(st))}}
 
 
 # --- wyzwalacze ----------------------------------------------------------------------------------
@@ -410,8 +461,48 @@ def _plan_fix_trigger(st) -> list[dict]:
     return found
 
 
+def _waiting_decisions(st) -> list[tuple[dict, dict]]:
+    """Surowe decyzje i zdarzenia początku czekania, bez ukrywania i adnotacji opiekuna (bez rekursji widoków)."""
+    from . import decisions
+    found = []
+    for name in decisions._latest_steps(st):
+        done = st.finished.get(name) or {}
+        if done.get("result") in ("question", "denied"):
+            decision = decisions.step_decision(st, name)
+            if decision:
+                found.append((decision, done))
+    plan = decisions._plan_decision(st)
+    if plan and plan.get("kind") in ("plan-approval", "plan-revision"):
+        found.append((plan, st.plan_reviewed or {}))
+    for (ticket, round_no), question in st.review_questions.items():
+        if (ticket, round_no) not in st.review_decisions and ticket not in st.rejected:
+            found.append((decisions._review(st, ticket, round_no, question), question))
+    return found
+
+
+def _waiting_trigger(st) -> list[dict]:
+    """Wyzwalacz 7 (PT-145): decyzja czeka dłużej niż N minut. Aktywny problem pozostaje aktualny po zmianie N."""
+    conf = _setup(st)
+    now = conf.get("now")
+    found = []
+    for decision, event in _waiting_decisions(st):
+        ident = problem_id("waiting", decision=decision["id"])
+        active = st.caretaker_runs.get(st.caretaking.get(decision.get("step"))) or {}
+        if active and active.get("problem") != ident:
+            continue
+        since = _epoch(event.get("ts"))
+        known = any(r.get("problem") == ident for r in st.caretaker_runs.values())
+        if not known and (now is None or not since or now - since <= conf["decisionMinutes"] * 60):
+            continue
+        found.append({"trigger": "waiting", "step": decision.get("step") or "",
+                      "ticket": decision.get("ticket") or "", "decision": decision["id"],
+                      "decisionKind": decision["kind"], "waitingDecision": decision,
+                      "options": [o["id"] for o in decision.get("options") or []]})
+    return found
+
+
 TRIGGERS = [_error_trigger, _repeat_trigger, _noprogress_trigger, _flow_error_trigger, _stalled_trigger,
-            _plan_fix_trigger]
+            _plan_fix_trigger, _waiting_trigger]
 
 
 def plan_fix_waiting(st) -> list[str]:
@@ -609,10 +700,21 @@ def _plan_fix_section(problem: dict, st) -> str:
     return "\n".join(lines)
 
 
+def _waiting_section(problem: dict, st) -> str:
+    decision = problem.get("waitingDecision") or {}
+    return "\n".join(["## Decyzja czeka", "", decision.get("happened") or "Decyzja użytkownika nadal czeka.",
+                      decision.get("why") or "", "Zgoda na polecenie, zatwierdzenie planu i review po ostatniej "
+                      "rundzie dopuszczają tylko `escalate`: dopisz rekomendację, bez rozstrzygania decyzji. "
+                      "Decyzja pozostaje widoczna przez cały czas.",
+                      "Odpowiadaj wyłącznie na pytania techniczne i środowiskowe. Pytania o zakres, wymagania, "
+                      "wybory biznesowe i pytania z opcjami wariantów produktu eskaluj. Nigdy nie odpowiadaj "
+                      "na pytania kroków `planning` i `plan-*` — Tide odrzuci taką akcję."])
+
+
 BRIEF_SECTIONS = {"error": _error_section, "repeat": _with_detail(_repeat_detail),
                   NO_PROGRESS: _with_detail(_noprogress_detail),
                   "flow-error": _flow_error_section, "stalled": _stalled_section,
-                  "plan-fix": _plan_fix_section}
+                  "plan-fix": _plan_fix_section, "waiting": _waiting_section}
 
 
 # --- problemy i liczenie działań -----------------------------------------------------------------
@@ -670,18 +772,21 @@ def problems(st) -> list[dict]:
             ident = problem_id(candidate["trigger"], st, step=step, ticket=candidate.get("ticket") or "",
                                cause=candidate.get("cause") or "", stage=candidate.get("stage") or "",
                                decision=candidate.get("decision") or "", kind=candidate.get("kind") or "")
-            group = f"chain:{root}" if root else ident
+            independent = (PROBLEM_POLICIES.get(candidate["trigger"]) or {}).get("independent")
+            group = f"chain:{root}" if root and not independent else ident
             if group in grouped:
                 grouped[group]["triggers"].append(candidate["trigger"])
                 known = _known_id(st, root)
                 if known:
                     grouped[group]["id"] = known
                 continue
-            grouped[group] = {"id": _known_id(st, root) or ident, "trigger": candidate["trigger"],
+            grouped[group] = {**candidate, "id": ("" if independent else _known_id(st, root)) or ident,
+                              "trigger": candidate["trigger"],
                               "triggers": [candidate["trigger"]], "step": step, "root": root,
                               "ticket": candidate.get("ticket") or "", "stage": candidate.get("stage") or "",
                               "decision": candidate.get("decision") or "",
-                              "options": [o["id"] for o in (_decision_of(st, step) or {}).get("options") or []]}
+                              "options": candidate.get("options", [o["id"] for o in
+                                          (_decision_of(st, step) or {}).get("options") or []])}
     return list(grouped.values())
 
 
@@ -689,7 +794,8 @@ def _known_id(st, root: str) -> str:
     """Id problemu już zapisanego dla łańcucha (pierwszy krok opiekuna na nim) — dołączenie do otwartego problemu."""
     if not root:
         return ""
-    return next((run.get("problem") or "" for run in st.caretaker_runs.values() if run.get("root") == root), "")
+    return next((run.get("problem") or "" for run in st.caretaker_runs.values() if run.get("root") == root and
+                 not (PROBLEM_POLICIES.get(run.get("trigger")) or {}).get("independent")), "")
 
 
 def owned(st, ident: str) -> dict:
@@ -704,16 +810,20 @@ def owned(st, ident: str) -> dict:
     runs_all = [run for run in st.caretaker_runs.values() if run.get("problem") == ident]
     roots = {run.get("root") for run in runs_all if run.get("root")}
     tickets = {run.get("ticket") for run in runs_all if run.get("ticket")}
+    policy = PROBLEM_POLICIES.get(ident.split(":", 1)[0]) or {}
 
     def in_scope(name: str) -> bool:
         # `st.steps` nie zawiera kroków opiekuna: jego wynik `done` nigdy nie rozwiązuje problemu.
-        if name not in st.steps or not runs_all:
+        # Czekająca decyzja ma własną tożsamość: wynik innego ticketu nie zamyka np. zatwierdzenia różnicy planu.
+        if policy.get("closed") or name not in st.steps or not runs_all:
             return False
         if roots:
             return chain_root(st, name) in roots
         return not tickets or st.steps[name].get("ticket") in tickets
 
     closed = 0
+    if policy.get("closed") and policy["closed"](st, ident):
+        closed = st.last_seq
     for name, decision in st.step_decisions.items():
         if decision.get("auto") or decision.get("automatic") or "caretaker" in decision:
             continue
@@ -1065,7 +1175,10 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
 
 def allowed_actions(problem: dict) -> dict:
     trigger = problem.get("trigger") or ""
-    return {name: action for name, action in ACTIONS.items() if "*" in action.kinds or trigger in action.kinds}
+    policy = ACTION_POLICIES.get(trigger)
+    permitted = policy(problem) if policy else set(ACTIONS)
+    return {name: action for name, action in ACTIONS.items() if name in permitted and
+            ("*" in action.kinds or trigger in action.kinds)}
 
 
 # --- wynik ---------------------------------------------------------------------------------------
@@ -1127,6 +1240,9 @@ def parse_result(data, problem: dict, st) -> dict:
 
 def hidden(st, name: str) -> bool:
     """Decyzja tego kroku jest ukryta, dopóki pracuje nad nim opiekun albo czeka wznowienie po jego `retry`."""
+    run = st.caretaker_runs.get(st.caretaking.get(name)) or {}
+    if (PROBLEM_POLICIES.get(run.get("trigger")) or {}).get("visible"):
+        return False
     return name in st.caretaking or bool((st.step_retries.get(name) or {}).get("caretaker"))
 
 
@@ -1143,7 +1259,10 @@ def annotate(st, decision: dict, target: str = "") -> dict:
     możliwość z `optionId` jest polecona i pierwsza, a żadna nie jest wybrana (D10). `target` — krok problemu dla
     decyzji planu, która nie ma własnego kroku (`plan-revision-failed`, PT-146)."""
     target = target or decision.get("step") or ""
-    escalated = next((event for event in _escalations(st) if target and event.get("target") == target), None)
+    escalated = next((event for event in _escalations(st)
+                      if event.get("problem") == f"waiting:{decision.get('id')}" or
+                      (target and event.get("target") == target and
+                       not (event.get("problem") or "").startswith("waiting:"))), None)
     if not escalated:
         return decision
     run = st.caretaker_runs.get(escalated.get("step") or "") or {}
@@ -1245,6 +1364,10 @@ def history_text(event: dict) -> str:
     if kind == ACTION and action == "return-plan" and event.get("ok"):
         reason = _text((event.get("params") or {}).get("reason"))
         return "Opiekun: odesłał plan z uwagą" + (f" — {reason}" if reason else "")
+    renderer = HISTORY_LABELS.get(action)
+    if kind == ACTION and event.get("ok") and callable(renderer):
+        reason = _text((event.get("params") or {}).get("reason"))
+        return f"Opiekun: {renderer(event)}" + (f" — {reason}" if reason else "")
     if kind == ESCALATED and not event.get("failed"):
         summary = _text(event.get("summary"))
         return f"Opiekun: {HISTORY_LABELS.get('escalate')}" + (f" — {summary}" if summary else "")
@@ -1252,7 +1375,7 @@ def history_text(event: dict) -> str:
         error = _text(event.get("error"))
         if event.get("code") == WROTE:          # strażnik (PT-158): akcja nie wykonana, powód z porównania stanu
             return "Opiekun: wynik odrzucony, akcja nie wykonana" + (f" — {error}" if error else "")
-        label = HISTORY_LABELS.get(action)
+        label = action if callable(renderer) else renderer
         what = f"nie udało się ({label})" if label else \
             "nie udało się wykonać działania" + (f" „{action}”" if action else "")
         return f"Opiekun: {what}" + (f" — {error}" if error else "")

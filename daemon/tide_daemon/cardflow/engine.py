@@ -231,6 +231,25 @@ class _CaretakerPort:
         karty od razu, raz (`FlowEngine._retry_stage`)."""
         return self.engine._retry_stage(self.card, self.run, problem)
 
+    def resolve_step(self, problem: dict, request: dict, *, step_kinds=()) -> dict:
+        """Wspólna decyzja kroku z rejestru: zakres problemu, ograniczenie rodzajów i idempotencja skutku."""
+        st = fold(self.engine.journal.read(self.card))
+        name, own = request["step"], self.run.get("step") or ""
+        previous = st.step_decisions.get(name) or {}
+        if own and previous.get("caretakerStep") == own and previous.get("choice") == request["choice"]:
+            return {"target": name, "label": self._label(st, name)}
+        if name not in caretaker.problem_steps(problem, st):
+            return {"failed": caretaker.NOT_PROBLEM_STEP,
+                    "error": f"krok {name[:80]} nie należy do problemu albo już nie czeka"}
+        if step_kinds and (st.steps.get(name) or {}).get("kind") not in step_kinds:
+            return {"failed": "substantive-question", "error": "pytania planowania i zakresu wymagają użytkownika"}
+        try:
+            self.engine.resolve_step(self.card, request,
+                                     caretaker_problem=self.run.get("problem") or problem["id"], caretaker_step=own)
+        except FlowError as exc:
+            return {"failed": exc.code, "error": str(exc)}
+        return {"target": name, "label": self._label(st, name)}
+
     def return_plan(self, problem: dict, params: dict) -> dict:
         """Akcja `return-plan` (PT-146), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`: odesłanie planu
         istniejącym `edit_plan` (`action: return`) — bez kopii walidacji. Powtórzona po restarcie nie zapisuje
@@ -2684,7 +2703,7 @@ class FlowEngine(PlanEditing):
                    for s in st.running() if s.get("kind") != caretaker.KIND)
         if st.card_finished or busy or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" and
-                 not caretaker.handed_repeat(st, focus)):
+                 not caretaker_problem and not caretaker.handed_repeat(st, focus)):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(focus)
         if previous:
@@ -2705,7 +2724,9 @@ class FlowEngine(PlanEditing):
         if choice == "change-executor":
             if not executor:
                 raise FlowError("bad-executor", "wybierz wykonawcę")
-            self._resume_executor(card, st, step, executor, changed=True)
+            if len(answer) > 4000:
+                raise FlowError("bad-answer", "instrukcja musi mieć do 4000 znaków")
+            self._resume_executor(card, st, step, executor, changed=True, automated=bool(caretaker_problem))
         granted, skipped = [], []
         if choice == "reject":
             # „Odrzuć ticket” przy błędzie kroku (03.11): ticket wypada z karty, zależne tickety ruszają dalej.
@@ -2744,7 +2765,7 @@ class FlowEngine(PlanEditing):
         if caretaker_step:
             extra["caretakerStep"] = caretaker_step
         event =self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry", "change-executor") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
@@ -2922,7 +2943,7 @@ class FlowEngine(PlanEditing):
         return granted, skipped
 
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
-                         transfer=False):
+                         transfer=False, automated=False):
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -2935,6 +2956,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("same-provider", "przekazanie wymaga innego dostawcy")
         if transfer and selected.local != bool(step.get("local")):
             raise FlowError("bad-executor-provider", "praca lokalna pozostaje lokalna")
+        if changed and automated and (step.get("local") or step.get("provider") == "local" or
+                                      caretaker.local_only(st)) and not selected.local:
+            raise FlowError("bad-executor-provider", "krok lokalny i karta „Tylko lokalnie” pozostają lokalne")
         if not changed and (selected.name != step.get("executor") or selected.model != step.get("model") or
                             selected.provider != step.get("provider") or selected.tool != step.get("program") or
                             selected.effort != step.get("effort", "") or
@@ -2951,18 +2975,26 @@ class FlowEngine(PlanEditing):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
             return selected
         if changed:
+            assigned = st.assignments.get(step.get("ticket") or "") or st.started or {}
+            reviewer = st.reviewer_overrides.get(step.get("ticket") or "") or assigned
             opposite_kind = ("ticket", "fix") if step.get("kind") == "review" else ("review",)
             opposite = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == step.get("ticket")
                              and s.get("kind") in opposite_kind), None) or {}
             if step.get("kind") == "review":
-                other_model = opposite.get("model") or (st.started or {}).get("model") or ""
-                other_provider = opposite.get("provider") or (st.started or {}).get("provider") or ""
+                other_model = opposite.get("model") or assigned.get("model") or ""
+                other_provider = opposite.get("provider") or assigned.get("provider") or ""
             else:
-                other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
-                other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
+                other_model = opposite.get("model") or reviewer.get("reviewerModel") or ""
+                other_provider = opposite.get("provider") or reviewer.get("reviewerProvider") or ""
             # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
             # wybór użytkownika albo eskalacja Tide wygrywa (K-31/DPT-5: „Ponów innym wykonawcą” kończył się błędem
             # przepływu, bo recenzentem był ten sam model). Zostaje tylko rozdział pracy lokalnej i chmurowej.
+            # PT-145: opiekun nie ma prawa korzystać z wyjątku dla świadomego wyboru użytkownika.
+            if automated and other_model and selected.model.lower() == other_model.lower():
+                raise FlowError("bad-executor", "autor i recenzent wymagają różnych modeli")
+            if automated and assigned.get("preferredProvider") == "mixed" and other_provider and \
+                    selected.provider == other_provider:
+                raise FlowError("bad-executor-provider", "tryb mieszany wymaga innego dostawcy autora i recenzenta")
             if selected.local != (other_provider == "local") and other_provider:
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
         return selected
@@ -3055,7 +3087,7 @@ class FlowEngine(PlanEditing):
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=choice in ("change-executor", "transfer"),
-                                             transfer=choice == "transfer")
+                                             transfer=choice == "transfer", automated=bool(decision.get("caretaker")))
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
@@ -3887,11 +3919,13 @@ class FlowEngine(PlanEditing):
 
     def _caretaker_withheld(self, card: str, st: FlowState) -> set:
         """Kroki bez powiadomienia o decyzji: sprawdza je opiekun albo zaraz zacznie (problem jeszcze nieoddany)."""
-        held = set(st.caretaking)
+        st = self._caretaker_state(st)
+        held = {name for name in st.caretaking if caretaker.hidden(st, name)}
         if st.started is None or caretaker.unavailable(st, self._card_column(card), self._caretaker_setup(st)):
             return held
         for problem in caretaker.problems(st):
-            if not caretaker.owned(st, problem["id"])["handed"]:
+            policy = caretaker.PROBLEM_POLICIES.get(problem["trigger"]) or {}
+            if not policy.get("visible") and not caretaker.owned(st, problem["id"])["handed"]:
                 held.add(problem["step"])
         return held
 
@@ -3909,7 +3943,7 @@ class FlowEngine(PlanEditing):
                 self._caretaker_apply(card, current, run, current.finished[name])
             elif name not in current.caretakers:
                 self._caretaker_launch(card, current, run)
-        st = fold(self.journal.read(card))
+        st = self._caretaker_state(fold(self.journal.read(card)))
         conf = self._caretaker_setup(st)
         if caretaker.unavailable(st, self._card_column(card), conf):
             return
@@ -3927,7 +3961,7 @@ class FlowEngine(PlanEditing):
                                     summary=caretaker.limit_summary(st, problem["id"], limit), recommendation="",
                                     optionId="", failed=True, limit=True, count=own["count"],
                                     error=f"wyczerpany limit działań opiekuna ({limit})", code=caretaker.LIMIT)
-                st = fold(self.journal.read(card))
+                st = self._caretaker_state(fold(self.journal.read(card)))
                 continue
             step_id = f"{card}-care-{len(st.caretaker_runs) + 1}"
             run = self.journal.append(card, caretaker.STARTED, problem=problem["id"],
@@ -3936,14 +3970,21 @@ class FlowEngine(PlanEditing):
                                       trigger=problem["trigger"], triggers=problem["triggers"],
                                       decision=problem.get("decision") or "", watermark=st.last_seq)
             self._caretaker_launch(card, fold(self.journal.read(card)), run)
-            st = fold(self.journal.read(card))
+            st = self._caretaker_state(fold(self.journal.read(card)))
+
+    def _caretaker_state(self, st: FlowState) -> FlowState:
+        """Migawka ustawień i zegara także dla wyzwalaczy i sprawdzania aktualności, nie tylko widoków."""
+        st.caretaker_setup = self._caretaker_setup(st)
+        return st
 
     def _caretaker_setup(self, st: FlowState, catalog=None) -> dict:
         """Opiekun przy tej karcie według `cardflow.json` i katalogu wykonawców (`caretaker.setup`, PT-151): jedno
         miejsce wyboru wykonawcy z regułą „Tylko lokalnie”, wyłącznik i limit działań."""
-        return caretaker.setup(st, self._settings_data(), catalog if catalog is not None else self._catalog_now())
+        return {**caretaker.setup(st, self._settings_data(), catalog if catalog is not None else self._catalog_now()),
+                "now": self.clock()}
 
     def _caretaker_problem(self, st: FlowState, run: dict) -> dict:
+        st = self._caretaker_state(st)
         found = next((p for p in caretaker.problems(st) if p["id"] == run.get("problem")), None)
         return found or {"id": run.get("problem") or "", "trigger": run.get("trigger") or "",
                          "triggers": [run.get("trigger") or ""], "step": run.get("target") or "",
@@ -3963,15 +4004,16 @@ class FlowEngine(PlanEditing):
                             **({"detail": detail[:caretaker.REASON_MAX]} if detail else {}))
 
     def _caretaker_fail(self, card: str, run: dict, code: str, error: str, *, action: str = "",
-                        summary: str = "") -> None:
+                        summary: str = "", recommendation: str = "") -> None:
         """Nieudany wynik kroku opiekuna (zły plik wyniku, pytanie, akcja spoza rejestru, zapis poza `out`, krok
         zatrzymany albo niewystartowany): problem od razu wraca do użytkownika (PT-143)."""
         self.journal.append(card, caretaker.ESCALATED, problem=run.get("problem") or "", step=run.get("step") or "",
                             target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
-                            summary=summary, recommendation="", optionId="", failed=True,
+                            summary=summary, recommendation=recommendation, optionId="", failed=True,
                             error=error[:caretaker.REASON_MAX], code=code)
 
     def _caretaker_launch(self, card: str, st: FlowState, run: dict) -> None:
+        st = self._caretaker_state(st)
         name = run.get("step") or ""
         target = st.steps.get(run.get("target") or "") or {}
         started = st.results.get(("step-start", name))
@@ -4057,7 +4099,7 @@ class FlowEngine(PlanEditing):
             # rozstrzygnięty w czasie pracy opiekuna (np. decyzją użytkownika) nie wraca do użytkownika drugi raz.
             # Wznowiony w tym czasie krok mógł zmienić worktree — powód strażnika zostaje w `detail`.
             events = self.journal.read(card)
-            reason = caretaker.stale(fold(events), run, events)
+            reason = caretaker.stale(self._caretaker_state(fold(events)), run, events)
             if reason:
                 if outcome.get("code") == guard.WROTE:
                     reason += f"; strażnik: {outcome.get('error') or ''}"
@@ -4081,7 +4123,7 @@ class FlowEngine(PlanEditing):
            nie wykonuje akcji drugi raz, a `apply` jest bezpieczne do powtórzenia między zamiarem a wynikiem; potem
            `caretaker.action` z wynikiem (`{failed, error}` z `apply` — nieudane działanie, liczy się do limitu)."""
         events = self.journal.read(card)
-        st = fold(events)
+        st = self._caretaker_state(fold(events))
         step = run.get("step") or ""
         if step in st.caretaker_outcomes:
             return
@@ -4094,6 +4136,11 @@ class FlowEngine(PlanEditing):
                                        code=caretaker.STALE, stale=True, detail=reason)
                 return
         port, problem = _CaretakerPort(self, card, run), self._caretaker_problem(st, run)
+        if not begun and name not in caretaker.allowed_actions(problem):
+            self._caretaker_fail(card, run, caretaker.BAD_ACTION,
+                                 f"akcja {name} niedozwolona przy tej decyzji", action=name,
+                                 recommendation="Rozstrzygnij decyzję samodzielnie; opiekun może tylko dopisać rekomendację.")
+            return
         if name == "escalate":
             spec.apply(port, problem, params)
             return
@@ -4104,6 +4151,10 @@ class FlowEngine(PlanEditing):
             self._caretaker_record(card, run, name, params, ok=False, error=str(exc), code="caretaker-action")
             return
         failed = made.get("failed") or ""
+        if failed and spec.failure_recommendation:
+            self._caretaker_fail(card, run, failed, made.get("error") or "nieudane działanie", action=name,
+                                 recommendation=spec.failure_recommendation)
+            return
         self._caretaker_record(card, run, name, params, ok=not failed, error=made.get("error") or "",
                                code=failed, label=made.get("label") or "", retried=made.get("target") or "")
 

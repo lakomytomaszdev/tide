@@ -2190,6 +2190,48 @@ wypada w całości — zamiast nich jeden `przycieto.md` („(pominięto N plik�
 budżet jest zarezerwowany z góry, więc limit obowiązuje przy dowolnej liczbie plików. Katalog kontekstu jest budowany
 od nowa przy każdym starcie.
 
+### Zmiana wykonawcy
+
+Akcja opiekuna `change-executor` (PT-145) przy błędzie, powtórzonym powodzie albo braku postępu przyjmuje
+`step`, `executor` (nazwę z katalogu), `reason` oraz opcjonalną `instruction` do 4000 znaków. Używa istniejącego
+`resolve_step` i jego `_resume_executor`, bez drugiej implementacji reguł przydziału. Krok lokalny ani karta
+„Tylko lokalnie” nie przechodzą do chmury. Opiekun musi zachować różne modele autora i recenzenta, a w trybie
+mieszanym także różnych dostawców. Istniejący wyjątek dla świadomego wyboru użytkownika pozostaje dostępny
+wyłącznie użytkownikowi. Wykonawca spoza katalogu albo naruszenie reguł daje nieudane działanie z powodem,
+liczone do limitu; krok nie jest zmieniany.
+
+Wznowienie zachowuje worktree i zmiany, ale uruchamia nową sesję. Opcjonalna instrukcja trafia do kartki nowego
+wykonawcy. Historia: „Opiekun: zmienił wykonawcę <krok> na <nazwa> — <powód>”. Akcja korzysta ze wspólnej pary
+`intent`/`result` `caretaker-action`; własny zapis `step.decision.caretakerStep` zabezpiecza restart między
+skutkiem a wynikiem pary przed drugą decyzją.
+
+### Odpowiedź na pytanie
+
+Akcja `answer` przy czekającym pytaniu przyjmuje `step`, `answer`, `reason` i `category`: `technical` albo
+`environment`. Odpowiada na pytanie kroku ticketu, review, poprawek lub konfliktu istniejącym `resolve_step`,
+a wznowiona kartka oznacza odpowiedź jako pochodzącą od opiekuna. Historia: „Opiekun: odpowiedział na pytanie
+<krok> — <powód>”. Odpowiedź ma od 1 do 4000 znaków; działanie podlega wspólnej aktualności, limitowi i parze
+„zamiar → wynik”.
+
+Tide odrzuca odpowiedzi dla `planning` i wszystkich `plan-*`, niezależnie od zadeklarowanej kategorii. Pytanie
+zostaje użytkownikowi z rekomendacją, a nieudane działanie liczy się do limitu. Kartka każe eskalować pytania
+o zakres, wymagania, wybory biznesowe oraz pytania z opcjami wariantów produktu. Kategoria nie dowodzi, że treść
+jest techniczna — rozpoznanie treści pozostaje zadaniem opiekuna; zakaz odpowiedzi przy planowaniu egzekwuje Tide.
+
+### Decyzja czeka
+
+Wyzwalacz `waiting` (PT-145) sprawdza zegar silnika i zapisany początek czekania decyzji. Po czasie **dłuższym**
+niż `caretakerDecisionMinutes` tworzy problem `waiting:<id decyzji>`. Dokładnie N minut jeszcze nie uruchamia
+opiekuna. Przy pytaniu dostępne są `answer` i `escalate`; przy zgodzie na polecenie, zatwierdzeniu planu (także
+różnicy planu) i review po ostatniej rundzie — wyłącznie `escalate`. Lista akcji jest egzekwowana przez Tide,
+także przy wykonywaniu akcji. Opiekun nie tworzy zgody, nie zatwierdza planu ani nie rozstrzyga review.
+
+Decyzja pozostaje widoczna przez cały czas pracy opiekuna; `escalate` tylko dopisuje `caretaker.recommendation`
+i streszczenie. Po eskalacji ten sam problem nie uruchamia opiekuna ponownie, również po restarcie. Tożsamość
+decyzji zapobiega przenoszeniu rekomendacji na kolejną decyzję tego samego kroku. Zmiana N nie unieważnia pracy
+już uruchomionego opiekuna. Jeśli użytkownik rozstrzygnie decyzję w trakcie jego pracy, wynik opiekuna jest
+`stale`, niczego nie zmienia i nie liczy się do limitu.
+
 ### Ustawienia
 
 #### Wyłącznik, wykonawca, limit działań i minuty czekania (PT-151)

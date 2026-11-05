@@ -514,13 +514,14 @@ def _limit_wait_only(st: FlowState, name: str) -> bool:
 def attention_step(st: FlowState, user_only: bool = False) -> str:
     """Najstarszy ostatni krok ticketu, który potrzebuje użytkownika; inne tickety pracują dalej.
     `user_only` pomija kroki czekające wyłącznie na limit (nie są ruchem użytkownika)."""
+    from .caretaker import hidden
     latest = {}
     for name, item in st.steps.items():
         latest[item.get("ticket")] = name
     for name in latest.values():
         item, done = st.steps[name], st.finished.get(name) or {}
         if item.get("ticket") in st.rejected or name in st.step_decisions or name in st.superseded or \
-                name in st.caretaking:      # nad krokiem pracuje opiekun karty (PT-143)
+                hidden(st, name):      # opiekun czekającej decyzji tylko doradza — decyzja pozostaje widoczna
             continue
         if user_only and _limit_wait_only(st, name):
             continue
