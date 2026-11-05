@@ -613,8 +613,8 @@ class MakeAndDocsTest(unittest.TestCase):
     def test_make_box_base_calls_tide_box_base(self):
         text = read(os.path.join(ROOT, "mk", "box.mk"))
         self.assertRegex(text, r"(?m)^box-base:\n\t\$\(PYTHON\) daemon/tide.py box base$")
-        proc = subprocess.run(["make", "-n", "-s", "box-base"], cwd=ROOT, capture_output=True, text=True,
-                              env={**os.environ, "PYTHON": "python3"})
+        proc = subprocess.run(["make", "-n", "-s", "--no-print-directory", "box-base"], cwd=ROOT, capture_output=True, text=True,
+                              env={**os.environ, "PYTHON": "python3", "MAKEFLAGS": "w", "MAKELEVEL": "1"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "python3 daemon/tide.py box base")
         self.assertNotRegex(text, r"(?m)^box-base:.*\n\t.*sudo")

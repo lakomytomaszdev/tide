@@ -733,6 +733,11 @@ class CliTest(BoxCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"box": {"project": "user-1000", "ip-wait-seconds": 0, "proxy-port": 18555}}, fh)
+        # Host z zainstalowanym Incusem ma prawdziwy mostek. Także zapasowy odczyt przez ip musi być atrapą.
+        ip = os.path.join(self.tmp, "fakebin", "ip")
+        with open(ip, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 1\n")
+        os.chmod(ip, 0o755)
         env = {**os.environ, "PYTHONPATH": DAEMON}
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py"), "box", "build", "plasma-tide"],
                               env=env, stdin=subprocess.PIPE, capture_output=True, text=True, timeout=60)

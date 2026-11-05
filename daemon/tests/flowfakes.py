@@ -68,7 +68,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            # Dodanie ticketu nie zmienia istniejących kartek, także przy numerach z YouTracka.
+            keep = not row["workId"].startswith("#") and ("Dodaj ticket" in prompt or row is rows[0])
+            fh.write(row["body"] + ("" if keep else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)
