@@ -96,7 +96,7 @@ def local_snapshot(git, repo, path):
     return snapshot
 
 
-def preview(git, repo, card, events, st, new, processes):
+def preview(git, repo, card, events, st, new, processes, *, operation=None):
     reasons, branches, snapshots = [], [], {}
     started_seq = int((st.started or {}).get("seq") or 0)
     previous_order = False
@@ -119,6 +119,8 @@ def preview(git, repo, card, events, st, new, processes):
               "Stop z commitem WIP nadal oznacza pracę i odmowę.")
     if st.open_intents():
         block("pending-action", "Dziennik zawiera niedokończoną operację; granice nie są dowiedzione.")
+    if st.base_validation_required:
+        block("base-validation", "Nowa generacja czeka na walidację kontekstu (PT-213).")
 
     # Nie wyznaczamy zakresu z nazw, dat, reflogu ani wiadomości commitów.
     creations = [e for e in events if e.get("type") == "result" and e.get("ok") and
@@ -234,7 +236,23 @@ def preview(git, repo, card, events, st, new, processes):
               "ignoredPolicy": "Ignorowane dane pozostają w starym worktree; bez przenoszenia i kasowania.",
               "localStatePolicy": LOCAL_STATE_POLICY,
               "executionMessage": "Potwierdzenie wykonania jest niedostępne do PT-213. "
-              "PT-202 dostarczy operację backendu wyłącznie dla pustej generacji."}
-    payload = {"events": events, "preview": result, "snapshots": snapshots, "worktrees": worktrees.out}
+              "Backend obsługuje wyłącznie przełączenie dowiedzionej pustej generacji."}
+    worktree_map = worktrees.out
+    if operation:
+        # Recovery pomija wyłącznie własne nowe wpisy oraz własne blokady starych katalogów.
+        # Każda obca zmiana mapy nadal zmienia odcisk zgody.
+        new_paths = {r["worktree"] for r in operation["generation"]}
+        old_paths = {r["oldWorktree"] for r in operation["generation"]}
+        blocks = []
+        for block in worktree_map.strip().split("\n\n"):
+            lines = block.splitlines()
+            path = next((line[9:] for line in lines if line.startswith("worktree ")), "")
+            if path in new_paths:
+                continue
+            if path in old_paths:
+                lines = [line for line in lines if line != "locked " + operation["lockReason"]]
+            blocks.append("\n".join(lines))
+        worktree_map = "\n\n".join(blocks) + "\n\n"
+    payload = {"events": events, "preview": result, "snapshots": snapshots, "worktrees": worktree_map.strip()}
     result["previewId"] = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     return result

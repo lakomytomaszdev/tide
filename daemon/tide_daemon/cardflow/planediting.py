@@ -273,6 +273,7 @@ class PlanEditing:
 
     def edit_plan(self, card, request):
         from .engine import FlowError
+        self._require_base_context(card)
         if request.get("action") == "return":
             self._returned_feedback(request)
         st = fold(self.journal.read(card))

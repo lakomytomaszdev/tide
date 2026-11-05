@@ -10,6 +10,53 @@ from .privatebus import wait_until
 
 
 class BaseChangeScenario:
+    def test_public_empty_generation_switch_and_restart(self):
+        git(self.repo, "checkout", "-qb", "generation-feature", env=self.git_env)
+        Path(self.repo, "generation-feature.txt").write_text("unikalna zawartość feature\n")
+        git(self.repo, "add", "generation-feature.txt", env=self.git_env)
+        git(self.repo, "commit", "-qm", "feature content", env=self.git_env)
+        feature = git(self.repo, "rev-parse", "HEAD").strip()
+        git(self.repo, "checkout", "-q", "master", env=self.git_env)
+        card = self.card(description="ATRAPA: pytanie-bez-pracy")
+        started = self.start(card)
+        self.assertTrue(started["ok"], started)
+        self.wait_column(card, "waiting")
+        asked = self.call("RequestCardBaseChange", card, json.dumps({
+            "baseRef": "refs/heads/generation-feature", "baseCommit": feature}))
+        preview = asked["preview"]
+        self.assertTrue(preview["canChange"], preview)
+        self.assertEqual(len(preview["branches"]), 2)
+        for row in preview["branches"]:
+            self.assertEqual((row["commit"], row["startCommit"], row["commits"]), (self.master, self.master, []))
+        self.assertFalse(any(p["active"] for p in preview["processes"]))
+        request = json.dumps({"choice": "change-base", "step": preview["decisionStep"],
+                              "baseRef": "refs/heads/generation-feature", "baseCommit": feature,
+                              "previewId": preview["previewId"]})
+        changed = self.call("ResolveCardStep", card, request)
+        self.assertTrue(changed["changed"], changed)
+        self.assertEqual(changed["baseVersion"], 2)
+        generation = changed["generation"]
+        for row in generation:
+            self.assertEqual(git(row["oldWorktree"], "rev-parse", "HEAD").strip(), self.master)
+            self.assertEqual(git(self.repo, "rev-parse", row["oldBranch"]).strip(), self.master)
+            self.assertEqual(git(row["worktree"], "rev-parse", "HEAD").strip(), feature)
+            self.assertEqual(Path(row["worktree"], "generation-feature.txt").read_text(), "unikalna zawartość feature\n")
+            self.assertFalse(Path(row["oldWorktree"], "generation-feature.txt").exists())
+        self.restart()
+        shown = self.wait_column(card, "waiting")
+        flow = shown["derived"]["flow"]
+        self.assertEqual((shown["baseCommit"], shown["baseVersion"]), (feature, 2))
+        self.assertEqual(flow["initialBase"]["baseCommit"], self.master)
+        self.assertEqual(flow["ticket"], started["ticket"])
+        self.assertTrue(flow["baseValidationRequired"])
+        self.assertEqual(flow["generation"], generation)
+        self.assertEqual(flow["decisions"], [])
+        self.assertNotEqual(flow["cardBranch"], started["cardBranch"])
+        self.assertNotEqual(flow["branch"], started["branch"])
+        self.assertTrue(self.call("ResolveCardStep", card, request)["changed"])
+        self.assertEqual(len(self.of(card, "card.base-changed")), 1)
+        self.assertEqual(len(self.results(card, "change-base")), 1)
+
     def test_user_preview_refusal_and_restart_preserve_base_question_and_files(self):
         card = self.card(description="ATRAPA: pytanie-bez-pracy")
         started = self.start(card)
@@ -78,7 +125,8 @@ class BaseChangeInProcessTest(BaseChangeScenario, FlowInProcess):
 
     def call(self, member, *args):
         methods = {"PreviewCardBaseChange": self.board.preview_card_base_change,
-                   "RequestCardBaseChange": self.board.request_card_base_change}
+                   "RequestCardBaseChange": self.board.request_card_base_change,
+                   "ResolveCardStep": self.board.resolve_card_step}
         replies = []
         methods[member](*args, replies.append)
         self.assertTrue(wait_until(lambda: replies, timeout=15), member)

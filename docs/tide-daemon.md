@@ -1825,13 +1825,48 @@ utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing:
 Wynik zastanej gałęzi nie dowodzi SHA pierwotnego startu. Bez dowodu baza jest unknown; nie czytamy
 dzisiejszej głównej i nie dopisujemy pól do starych zdarzeń.
 
-Kontrakt odczytu przyszłej korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
-(ten sam kształt trzech pól), `map` (mapa zasobów korekty), `previousBaseVersion` i
+Kontrakt korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
+(ten sam kształt trzech pól), `generation` (pełna mapa zasobów korekty PT-202), `previousBaseVersion` i
 `baseVersion: previousBaseVersion + 1`. Replay przyjmuje przejście tylko z bieżącej wersji i znaną
 nową bazą; powtórzenie tego samego zdarzenia nie zwiększa licznika. `initialBase` zachowuje start.
 Nowe zlecenie ma własne 1. Podgląd, odmowa, błąd, ruch refu i naprawa projekcji nie zmieniają wersji.
 Tokeny i przyszłe operacje scalenia/korekty korzystają wyłącznie z tego `baseVersion`. Wykonanie
-korekty, mapowanie zasobów oraz testy odmów należą do PT-202; tutaj dostarczono odczyt zdarzenia.
+korekty oraz mapowanie zasobów opisano poniżej. Historyczne zdarzenia z pustym `map` zachowują odczyt.
+
+**Pusta generacja (PT-202).** `PreviewCardBaseChange` pozostaje odczytem. Wykonanie wymaga
+`ResolveCardStep(id, {choice: "change-base", baseRef, baseCommit?, previewId, step?})`, gdzie `baseRef`
+jest pełnym refem lokalnym lub znanym lokalnie remote, `previewId` pochodzi z aktualnego podglądu,
+a `step` wskazuje pytanie agenta lub decyzję `RequestCardBaseChange`, jeżeli taka istnieje.
+Sam wybór `baseDecision: "change"` nadal tylko otwiera podgląd. Odpowiedź i etykieta opcji nie są
+poleceniem Git. UI nie udostępnia potwierdzenia do PT-213 (`canExecute: false`).
+
+Pod blokadą repozytorium usługa ponawia kwalifikację PT-201: dokładne SHA obu baz, wersję, pełną
+mapę, dowiedzione punkty startu wszystkich gałęzi, brak wkładu, lokalnych zmian oraz procesów.
+Zmiana daje `stale-preview` bez zamiaru i mutacji. Zamiar `intent(action: change-base)` przechowuje
+stały `operationId`, odcisk, granicę dziennika, `oldBase`/`newBase`, obie wersje i kompletną `generation`.
+Wiersz mapy zawiera `action`, `key`, `ticket`, `branch`, `worktree`, `base`, `oldBranch`, `oldWorktree`,
+`oldCommit`, `ownerRef`, `archiveRef` i pełną listę ignorowanych ścieżek (katalogi zbiorczo).
+
+Gałęzie/worktrees nowej generacji powstają poza starymi katalogami od przypiętego SHA. Transakcja
+CAS tworzy gałąź, ref właściciela i ref zachowujący stary SHA; obca nazwa oznacza oczekiwanie.
+Stare worktrees są blokowane, a nowe powstają z `--lock`. Ignorowane dane pozostają w starych
+katalogach. `base-change.checkpoint` zapisuje pełną mapę po przygotowaniu każdego zasobu i przed
+aktywacją. Ponowna kwalifikacja i kontrola całej nowej mapy poprzedzają jedno `card.base-changed`.
+Fold wybiera pełną mapę i zwiększa wersję raz; częściowa/nieprawidłowa mapa nie zmienia żadnego pola.
+`initialBase`, ID, treści, plan i blokery pozostają. Nie powstają puste merge ani replay commitów.
+
+Restart odnajduje ten sam zamiar. Przed aktywacją dokańcza własne zasoby albo zapisuje
+`base-change.waiting` z przyczyną i wykazem zachowanych zasobów, pozostawiając starą mapę.
+Po aktywacji ponawia wyłącznie wynik i projekcję bazy, bez gita i kolejnej inkrementacji.
+Retry z tym samym refem/odciskiem zwraca ten sam zamiar. Snapshot udostępnia `flow.generation`,
+`flow.preservedGenerations`, `flow.generationWaiting` i `flow.baseValidationRequired`.
+Stare refy, archiwalne SHA i katalogi nie podlegają zwykłemu sprzątaniu; cleanup nie przenosi ich danych.
+
+Aktywacja utrwala `validationRequired: true`. Do PT-213 karta jawnie czeka na walidację kontekstu;
+nie startuje implementacji, review, integracji, domknięcia ani końcowego scalenia, również przez stare
+API. Zmiana `baseVersion` uczestniczy w istniejącym odcisku tokenów scalenia. Nie wdrażamy tu polityki
+ponownego review, celu ani menu wznowienia. Blokada repozytorium jest zwalniana przed oczekiwaniem.
+
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
 

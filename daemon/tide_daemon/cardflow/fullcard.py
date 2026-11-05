@@ -366,6 +366,8 @@ def running_steps(steps: list[dict], st: FlowState) -> list[dict]:
 def headline(st: FlowState, out: dict) -> str:
     """Zdanie do „Twój ruch”, gdy nic nie czeka na użytkownika (przy decyzjach — pusty napis)."""
     flow = out["flow"]
+    if st.base_validation_required or st.base_generation_wait:
+        return st.base_generation_wait.get("reason") or "Nowa generacja czeka na walidację kontekstu (PT-213)."
     if flow.get("decisions"):
         return ""
     count = len(flow.get("running") or [])
