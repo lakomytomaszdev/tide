@@ -1,6 +1,6 @@
 """Krok karty w pudełku (PT-181, #18): wybór runnera, `boxWait`, polityka proxy, odmowa proxy → `denied`, zwolnienie.
 
-Silnik (`engine.py`) woła stąd pięć rzeczy, reszta to szczegóły:
+Silnik (`engine.py`) woła stąd operacje kroku, reszta to szczegóły:
 
 - `place(...)` w `_launch`, zanim cokolwiek zapisze: `None` — krok idzie na hosta (`HostRunner`, jak przed K-38),
   `Placement` — krok idzie do pudełka (`BoxRunner`), `BoxWaiting` — krok nie startuje i czeka (silnik zapisuje
@@ -13,12 +13,14 @@ Silnik (`engine.py`) woła stąd pięć rzeczy, reszta to szczegóły:
   kartę); pudełko zatrzymane → `boxWait: start`, `incus start`, `incus exec … true`, menedżer usług `agent`,
   adres IP, a potem `boxWait` czyszczone.
 - `before_start(...)` tuż przed `BoxRunner.start`: `set_box_policy` w proxy z domenami profilu projektu i profili
-  wszystkich kart z krokami w tym pudełku oraz z dziennikiem odmów **tego kroku** (`denied_log_path`). Dziennik
+  wszystkich kart z krokami w tym pudełku oraz rejestracja dziennika odmów **tego kroku** (`denied_log_path`). Dziennik
   leży w katalogu stanu usługi na hoście, nie w katalogu kroku: katalog kroku jest rw w pudełku, a proxy (proces
   usługi) dopisuje do pliku — dowiązanie podłożone z pudełka skierowałoby zapis usługi w dowolne miejsce, a wpis
   podrobiony przez agenta zmieniłby wynik kroku.
   Tu też `box.use` w dzienniku pudełka — przed startem, bo BoxRunner zatrzymuje pudełko na nowe montowania tylko,
   gdy według tego dziennika nic w nim nie biegnie (`start_failed` cofa wpis, gdy start się nie uda).
+- `configure_background(...)` przekazuje identyfikator proxy w HTTP(S)_PROXY oraz atrapy K3 i argumenty programu;
+  `recover_network(...)` odtwarza te same identyfikatory, atrapy i polityki po restarcie usługi.
 - `started(...)` po starcie: (raz na kartę) `box.risk` przy `docker.enabled` bez K3.
 - `after_step(...)` w `_finish`: wynik kroku zestawiony z jego dziennikiem odmów. Pytanie, które wymienia domenę
   z dziennika, albo błąd, którego dziennik (`step.log`, `box-exec.log`) wymienia taką domenę → `denied`
@@ -27,17 +29,16 @@ Silnik (`engine.py`) woła stąd pięć rzeczy, reszta to szczegóły:
 - `release(...)` na końcu `_finish`: `box.release` i polityka proxy przestawiona na pozostałe kroki w pudełku
   (albo zdjęta, gdy nie ma żadnego).
 
-Jedno pudełko ma jeden adres IP, a proxy jedną politykę na adres — w pudełku projektu (`box: per-project`) kroki
-kilku kart dzielą dziennik odmów ostatnio ustawionej polityki. Dlatego `denied` nigdy nie powstaje z samego wpisu:
-wynik kroku (jego pytanie albo jego dziennik) musi wskazywać tę domenę. Opis: docs/tide-daemon.md („Krok
-w pudełku w silniku”).
+Jedno pudełko ma jedną politykę domen na adres IP. Identyfikator z Proxy-Authorization rozdziela dzienniki kroków;
+ruch bez identyfikatora ma osobny dziennik pudełka i nie zmienia wyników kroków. Opis: docs/tide-daemon.md
+(„Krok w pudełku w silniku”).
 """
 from __future__ import annotations
 
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..box import builder as bb
 from ..box import k3
@@ -48,7 +49,7 @@ from ..box import state as bs
 from ..box.incus import IncusError
 from ..box.runner import BoxRunner
 from ..tasks import agentcmd
-from . import boxwait
+from . import boxaccess, boxwait
 from .state import fold
 
 RUNNER = "box"                       # wartość pola `runner` wpisu kroku (brak pola = host)
@@ -84,11 +85,10 @@ class Placement:
     profile: dict
     runner: object
     docker: bool = False
-    fields: dict = field(default_factory=dict)
 
     def entry(self) -> dict:
         """Pola wpisu kroku (`intent`, `result`, `step.started`): po nich silnik odnajduje krok po restarcie."""
-        return {"runner": RUNNER, "box": self.box, "boxSlug": self.slug, "boxIp": self.ip}
+        return {"runner": RUNNER, "box": self.box, "boxSlug": self.slug, "boxIp": self.ip, "boxAccess": 1}
 
 
 # ------------------------------------------------------------ zależności (podmieniane w testach przez silnik)
@@ -136,6 +136,8 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if parent_step:
         # Wznowienie dziedziczy runner wznawianego kroku (wpis w dzienniku), bez ponownego wyboru.
         parent = st.steps.get(parent_step) or {}
+        if not parent:
+            raise BoxError("brak wpisu wznawianego kroku")
         if parent.get("runner") != RUNNER:
             return None
         forced = True
@@ -157,7 +159,14 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if boxwait.card_box_wait(st) == boxwait.ENVIRONMENT:
         raise BoxWaiting(WAIT_ENVIRONMENT)
     builder = builder_of(engine, settings)
-    status = builder.status(slug, profile=profile)
+    full = bp.with_defaults(profile)
+    per_card = full.get("box") == "per-card"
+    if forced:
+        name = parent.get("box") or ""
+        if parent.get("boxSlug") != slug or name not in (bs.box_name(slug), bs.card_box_name(slug, card_id)):
+            raise BoxError("wznawiany krok ma niespójną tożsamość pudełka")
+        per_card = name == bs.card_box_name(slug, card_id)
+    status = builder.status(slug, card=card_id if forced and per_card else "", profile=profile)
     if status.error:
         raise BoxWaiting(f"czeka na pudełko ({status.error})")
     if status.state in (bs.BUILDING, bs.RESETTING) or status.journal_state in (bs.BUILDING, bs.RESETTING):
@@ -167,10 +176,8 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
             raise BoxWaiting(f"czeka na pudełko ({status.box} nie istnieje)")
         return None          # projekt z profilem, ale bez zbudowanego pudełka — jak dziś
     _require_compatible(engine, card_id, status)
-    full = bp.with_defaults(profile)
-    per_card = full.get("box") == "per-card"
     name = status.box
-    if per_card:
+    if per_card and not forced:
         name = bs.card_box_name(slug, card_id)
         try:
             if builder.incus.instance(name) is None:
@@ -244,25 +251,33 @@ def _box_steps(engine, box: str, exclude: str = "") -> list:
     return out
 
 
-def _apply_policy(engine, slug: str, box: str, ip: str, cards: list, log_path: str) -> None:
-    proxy = proxy_of(engine)
-    if proxy is None:
-        raise agentcmd.StepError("proxy pudełka (#5) nie działa — krok w pudełku bez proxy odmówiony")
+def _policy_for(slug: str, cards: list):
     profile = bp.load_project(slug)
     card_profiles = {}
     for card in dict.fromkeys(cards):
-        try:
-            loaded = bp.load_card(slug, card)
-        except bp.ProfileError as exc:
-            print(f"tide-daemon: profil karty {card}: {exc}", flush=True)
-            continue
-        if loaded is not None:           # karta bez własnego profilu = sam profil projektu
+        loaded = bp.load_card(slug, card)
+        if loaded is not None:
             card_profiles[card] = loaded
-    policy = bproxy.compose_policy(profile, card_profiles)
-    proxy.set_box_policy(ip, list(policy.domains), policy.ollama, log_path, full=policy.full, box=box)
+    return bproxy.compose_policy(profile, card_profiles)
 
 
-def before_start(engine, placement: Placement, card_id: str, step_id: str) -> str:
+def _apply_policy(engine, slug: str, box: str, ip: str, cards: list, contexts=()):
+    proxy = proxy_of(engine)
+    if proxy is None:
+        raise agentcmd.StepError("proxy pudełka (#5) nie działa — krok w pudełku bez proxy odmówiony")
+    if contexts:
+        domains = list(dict.fromkeys(d for ctx in contexts for d in ctx["domains"]))
+        ollama, full = any(ctx["ollama"] for ctx in contexts), any(ctx["full"] for ctx in contexts)
+    else:
+        policy = _policy_for(slug, cards)
+        domains, ollama, full = list(policy.domains), policy.ollama, policy.full
+    # Ruch bez tożsamości kroku (np. dockerd pudełka) ma osobny dziennik. Nie wolno przypisać go
+    # ostatniemu startującemu krokowi. `register_step` wybiera dziennik tylko z identyfikatora żądania.
+    log_path = os.path.join(bb.state_dir(slug), "proxy-denied.log")
+    proxy.set_box_policy(ip, domains, ollama, log_path, full=full, box=box)
+
+
+def before_start(engine, placement: Placement, card_id: str, step_id: str, program: str = "claude") -> str:
     """`set_box_policy` przed startem kroku; zwraca ścieżkę dziennika odmów kroku."""
     log_path = denied_log_path(placement.slug, step_id)
     os.makedirs(os.path.dirname(log_path), mode=0o700, exist_ok=True)
@@ -271,16 +286,29 @@ def before_start(engine, placement: Placement, card_id: str, step_id: str) -> st
     except FileNotFoundError:
         pass
     cards = [card for card, _ in _box_steps(engine, placement.box)] + [card_id]
-    _apply_policy(engine, placement.slug, placement.box, placement.ip, cards, log_path)
+    proxy = proxy_of(engine)
+    if proxy is None:
+        raise agentcmd.StepError("proxy pudełka nie działa")
+    policy = _policy_for(placement.slug, [card_id])
+    boxaccess.create(proxy, placement, step_id, program, log_path, policy)
+    _apply_policy(engine, placement.slug, placement.box, placement.ip, cards)
     # `box.use` przed `BoxRunner.start`: runner zatrzymuje pudełko na nowe montowania tylko, gdy według dziennika
     # pudełka nic w nim nie biegnie (poza własnym krokiem) — wpis musi istnieć, zanim krok naprawdę wystartuje.
     bs.mark_in_use(placement.slug, placement.box, step_id)
     return log_path
 
 
-def start_failed(placement: Placement, step_id: str) -> None:
+def start_failed(engine, placement: Placement, step_id: str) -> None:
+    boxaccess.revoke(proxy_of(engine), step_id, denied_log_path(placement.slug, step_id))
     if step_id in bs.running_steps(placement.slug, placement.box):
         bs.mark_released(placement.slug, placement.box, step_id)
+    proxy = proxy_of(engine)
+    if proxy is not None:
+        rest = _box_steps(engine, placement.box, exclude=step_id)
+        if rest:
+            _apply_policy(engine, placement.slug, placement.box, placement.ip, [card for card, _ in rest])
+        else:
+            proxy.clear_box_policy(placement.ip)
 
 
 def started(engine, placement: Placement, card_id: str, step_id: str, program: str) -> None:
@@ -298,15 +326,60 @@ def release(engine, card_id: str, step: dict) -> None:
     if name in bs.running_steps(slug, box):
         bs.mark_released(slug, box, name)
     proxy = proxy_of(engine)
+    boxaccess.revoke(proxy, name, denied_log_path(slug, name))
     if proxy is None or not ip:
         return
     rest = _box_steps(engine, box, exclude=name)
     if not rest:
         proxy.clear_box_policy(ip)
         return
-    last_card, last = rest[-1]
-    _apply_policy(engine, slug, box, ip, [card for card, _ in rest],
-                  denied_log_path(slug, last.get("step") or ""))
+    _apply_policy(engine, slug, box, ip, [card for card, _ in rest])
+
+
+def configure_background(engine, placement: Placement, card: str, step: str, parent: str, bg) -> None:
+    root = ""
+    st = fold(engine.journal.read(card))
+    # Codex zapisuje sesję w CODEX_HOME. Wznowienie zachowuje pierwotny katalog, nawet po kilku próbach.
+    while parent:
+        saved = st.steps.get(parent) or {}
+        root = saved.get("stepDir") or root
+        parent = saved.get("parentStep") or ""
+    boxaccess.configure(proxy_of(engine), placement, step, denied_log_path(placement.slug, step), bg,
+                        codex_step_dir=root)
+
+
+def recover_network(engine) -> None:
+    """Odtwarza polityki, przypisanie dzienników i atrapy K3 także w oknie przed `step.started`."""
+    proxy = proxy_of(engine)
+    if proxy is None:
+        return
+    active = []
+    for card in engine.journal.cards():
+        st = fold(engine.journal.read(card))
+        active.extend((card, s) for s in st.running() if s.get("runner") == RUNNER)
+        active.extend((card, {**i, "step": i["key"]}) for i in st.open_intents(include_background=True)
+                      if i.get("action") == "step-start" and i.get("runner") == RUNNER and i["key"] not in st.steps)
+    signature = (proxy, tuple(sorted(s["step"] for _card, s in active)))
+    if getattr(engine, "_box_network_state", None) == signature:
+        return
+    groups = {}
+    errors = {}
+    for card, step in active:
+        slug, box, ip = step["boxSlug"], step["box"], step["boxIp"]
+        cards, contexts = groups.setdefault((slug, box, ip), ([], []))
+        cards.append(card)
+        try:
+            contexts.append(boxaccess.restore(proxy, step, denied_log_path(slug, step["step"])))
+        except FileNotFoundError:
+            # Starsze kroki nie miały tego pliku. Nowego klucza nie można podmienić biegnącemu agentowi.
+            if step.get("boxAccess"):
+                errors[step["step"]] = "brak zapisanego kontekstu sieci kroku"
+        except (OSError, ValueError, KeyError) as exc:
+            errors[step["step"]] = f"nie da się odtworzyć sieci kroku: {type(exc).__name__}"
+    for (slug, box, ip), (cards, contexts) in groups.items():
+        _apply_policy(engine, slug, box, ip, cards, contexts)
+    engine._box_network_state = signature
+    engine._box_network_errors = errors
 
 
 # ------------------------------------------------------------ odmowa proxy → wynik kroku

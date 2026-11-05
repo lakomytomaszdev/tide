@@ -2933,6 +2933,9 @@ na hoście w bwrap (`HostRunner`), bo czytają repozytorium i Tablicę. Wznowien
 dziedziczy runner wznawianego kroku z jego wpisu (krok z hosta zostaje na hoście, nawet gdy pudełko jest już gotowe;
 krok z pudełka zostaje w pudełku, a gdy pudełko jest wyłączone albo projekt stracił profil — błąd karty `box`, nigdy
 cichy powrót na hosta).
+Dziedziczona jest także konkretna instancja `box`: zmiana profilu `per-project` ↔ `per-card` nie przenosi
+wznowienia. Brak zapisanej instancji oznacza czekanie, niespójna tożsamość — jawny błąd; silnik nie tworzy kopii
+zastępczej dla utraconego środowiska.
 
 **Wybór** (rodzaj z `BOX_STEP_KINDS` albo wznowienie kroku z pudełka), po kolei:
 
@@ -2952,20 +2955,34 @@ silnik, gdy pudełko znów nadaje się do kroku. Krok w pudełku nie robi na ho�
 (paczki instaluje agent w pudełku przez proxy) i nie dostaje `networkDomains`.
 
 **Wpis kroku.** `intent`/`result` akcji `step-start` i `step.started` kroku w pudełku mają pola `runner: "box"`,
-`box` (instancja), `boxSlug` i `boxIp`; krok na hoście ich nie ma (format bez zmian). Po nich silnik — także po
+`box` (instancja), `boxSlug`, `boxIp` i `boxAccess: 1` (wymagany zapis kontekstu sieci); krok na hoście ich nie ma
+(format bez zmian). Po nich silnik — także po
 restarcie usługi, gdy nie ma uchwytu procesu — sprawdza krok (`BoxRunner.step_state`: `incus exec … systemctl --user
 is-active tide-step-<id>.service`), kończy go z `result.json` i kodem z `in/exit-code` i zatrzymuje (`stepstop`:
 `BoxRunner.kill`, potem commit WIP gitem w piaskownicy na hoście jak dziś).
 
 **Polityka proxy.** Przed `BoxRunner.start`: `set_box_policy(ip pudełka, domeny, ollama, dziennik, full, box)`
 z `proxy.compose_policy(profil projektu, profile kart)` — karty to bieżąca i każda karta z trwającym krokiem w tym
-pudełku (karta bez własnego profilu nic nie dodaje). Dziennik odmów kroku:
+pudełku (karta bez własnego profilu nic nie dodaje). Każdy krok ma losowy identyfikator w adresie
+`HTTP_PROXY`/`HTTPS_PROXY` (i odpowiednikach małymi literami), przekazywany przez klienta jako
+`Proxy-Authorization: Basic`. `register_step` wiąże identyfikator z adresem IP i dziennikiem odmów kroku:
 `$XDG_STATE_HOME/tide/box/<slug>/steps/<krok>/proxy-denied.log` — poza katalogiem kroku, który jest rw w pudełku
 (proxy dopisuje do niego jako usługa, a podrobiony wpis zmieniałby wynik kroku). Zaraz potem `box.use`
 (`state.mark_in_use`) — przed startem, bo BoxRunner zatrzymuje pudełko na nowe montowania tylko, gdy według dziennika
 pudełka nic w nim nie biegnie; nieudany start zapisuje `box.release`. Po kroku: `box.release` i polityka ustawiona
-na nowo dla pozostałych kroków w pudełku (z dziennikiem najmłodszego) albo `clear_box_policy`, gdy nie ma żadnego.
+na nowo dla pozostałych kroków w pudełku albo `clear_box_policy`, gdy nie ma żadnego. Ruch bez poprawnego
+identyfikatora kroku (np. procesy wspólnego Dockera) trafia do osobnego dziennika pudełka
+`$XDG_STATE_HOME/tide/box/<slug>/proxy-denied.log` i nie zmienia wyniku żadnego kroku.
 Brak uruchomionego proxy = krok nie startuje (`StepError`).
+
+**K3 i restart.** Przed startem programu chmurowego z `k3_active(program)` silnik wydaje atrapę
+`GrantRegistry.issue` i przekazuje `step_credentials`: zmienne Claude do `in/env`, a dla Codexa argumenty trasy
+oraz plik `auth.json` w osobnym `CODEX_HOME` sesji kroku (wznowienie zachowuje ten katalog). Klucze nie trafiają
+do argv. Po końcu albo nieudanym starcie `revoke_step` unieważnia atrapę i identyfikator proxy. Prywatny plik
+`steps/<krok>/access.json` (0600, poza montowaniami pudełka) przechowuje tylko atrapy i zatwierdzony kontekst
+sieciowy; nigdy poświadczenia hosta. Nowy proces usługi odtwarza z niego polityki aktywnych pudełek i te same
+atrapy przed monitorowaniem kroków. Dotyczy to również zamiaru `step-start` bez zapisanego wyniku startu:
+jednostka jest sprawdzana we wskazanym runnerze, a nie na hoście.
 
 **Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
 odmów kroku (wiersze `CONNECT` i `HTTP`):
@@ -2976,17 +2993,17 @@ odmów kroku (wiersze `CONNECT` i `HTTP`):
 - `done` albo `error` z wpisami, których wynik nie dotyczy → bez zmiany wyniku, notka `proxy-denied.md`
   (zapisana przez usługę w `flow/<karta>/steps/<krok>/`, dopisana do `notes`).
 
-Jeden adres IP pudełka = jedna polityka, więc w pudełku projektu kroki kilku kart dzielą dziennik ostatnio ustawionej
-polityki. Dlatego `denied` nigdy nie powstaje z samego wpisu: wskazać domenę musi wynik kroku. Wpis z dziennika
-kroku innej karty nie zmienia wyniku tego kroku.
+Jeden adres IP pudełka = jedna polityka domen, ale osobne dzienniki identyfikowanych kroków. Wynik i jego
+dziennik muszą wskazywać tę samą domenę; odmowa połączenia innej karty nie zmienia wyniku tego kroku.
 
 **`box.risk`.** Pierwszy krok karty w pudełku z `docker.enabled` i `k3_active(program) == False` dopisuje do dziennika
 karty `box.risk` (`risk: "K1"`, `box`, `step`, `program`, `text`: „poświadczenia agenta czytelne dla kodu w pudełku
 (grupa docker); pełna ochrona: K3”) — raz na kartę.
 
 **Ograniczenia.** `OUTSIDE_PER_PROJECT` dotyczy wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
-tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Atrapy K3 (`GrantRegistry.issue`,
-`step_credentials`) nie są jeszcze wpięte w `step_env` kroku — do dowodu na prawdziwym pudełku (#28).
+tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Wynik `outside` kroku pudełkowego
+nie dostaje zgody na wykonanie na hoście: blokada obejmuje nowe wyniki, ponowne sprawdzanie zgód, decyzje
+oraz sam start polecenia. Dotychczasowe `outside*` kroków hostowych działają jak wcześniej.
 
 Testy: `daemon/tests/test_cardflow_execution_box.py` i `daemon/tests/test_stepstop_box.py` (baza `boxflow.py`:
 atrapa `incus` z prawdziwym `tide-step`, atrapy `systemd-run`/`systemctl --user` pudełka i proxy).

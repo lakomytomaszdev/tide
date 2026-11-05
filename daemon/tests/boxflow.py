@@ -14,6 +14,7 @@ import shlex
 from unittest import mock
 
 from tide_daemon.box import builder as bb
+from tide_daemon.box import k3
 from tide_daemon.box import profile as bp
 from tide_daemon.box import runner as br
 from tide_daemon.box import state as bs
@@ -75,6 +76,15 @@ class FakeProxy:
 
     def __init__(self):
         self.calls = []
+        self.grants = k3.GrantRegistry()
+        self.steps = {}
+
+    def register_step(self, ip, step, key, denied_log):
+        self.steps[step] = (ip, key, denied_log)
+
+    def revoke_step(self, step):
+        self.steps.pop(step, None)
+        self.grants.revoke_step(step)
 
     def set_box_policy(self, ip, domains, ollama, denied_log_path, *, full=False, box=""):
         self.calls.append(("set", ip, list(domains), ollama, denied_log_path, full, box))

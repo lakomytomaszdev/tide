@@ -285,6 +285,8 @@ class FlowEngine(PlanEditing):
         self.box_runner_factory = None   # funkcja(ustawienia, slug, karta, per_card) → BoxRunner
         self.box_sleep = None            # funkcja(sekundy) — czekanie na start pudełka
         self._box_runners: dict = {}     # pudełko → BoxRunner do sprawdzania i zatrzymywania kroków z dziennika
+        self._box_network_state = None  # proxy i zestaw kroków, których polityki oraz atrapy już odtworzono
+        self._box_network_errors = {}   # nieczytelny kontekst zatrzymuje tylko dotknięty krok
         self._env_cache: dict = {}      # karta → (klucz, sekcja „Środowisko karty”)
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
@@ -1252,7 +1254,9 @@ class FlowEngine(PlanEditing):
         box = step.get("box") or ""
         runner = self._box_runners.get(box)
         if runner is None:
-            runner = boxstep.runner_of(self, boxstep.settings_of(self), step.get("boxSlug") or "")
+            slug, card = step.get("boxSlug") or "", step.get("card") or ""
+            runner = boxstep.runner_of(self, boxstep.settings_of(self), slug, card,
+                                       bool(card) and box == boxstep.bs.card_box_name(slug, card))
             self._box_runners[box] = runner
         return runner
 
@@ -1592,14 +1596,17 @@ class FlowEngine(PlanEditing):
                     ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
                     prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
             def copy_images(_bg):
+                if placement is not None:
+                    boxstep.configure_background(self, placement, card.id, step_id, parent_step, _bg)
                 for source, target in zip(images, shots):
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     shutil.copyfile(source, target)
 
             runner = self.runner if placement is None else placement.runner
-            if placement is not None:
-                boxstep.before_start(self, placement, card.id, step_id)
             try:
+                if placement is not None:
+                    boxstep.before_start(self, placement, card.id, step_id,
+                                         selected.tool if selected.route is None else "")
                 bg, proc = runner.start(agentcmd.Step(
                     tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                     step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1615,7 +1622,7 @@ class FlowEngine(PlanEditing):
                     before_start=copy_images)
             except BaseException:
                 if placement is not None:
-                    boxstep.start_failed(placement, step_id)
+                    boxstep.start_failed(self, placement, step_id)
                 raise
             self.procs[step_id] = proc
             if placement is None:
@@ -1749,6 +1756,7 @@ class FlowEngine(PlanEditing):
     def tick(self) -> None:
         for card in self.journal.cards():
             self._recover_started_steps(card, fold(self.journal.read(card)))
+        boxstep.recover_network(self)
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
                          for s in fold(self.journal.read(card)).running() if s.get("local")}
@@ -2547,6 +2555,8 @@ class FlowEngine(PlanEditing):
                 raise FlowError("red-domain", "; ".join(exc.errors)) from None
             self.journal.append(card, "box.rebuild-requested", step=focus, domain=domain, project=slug)
         if choice in ("run", "run-always", "run-ticket"):
+            if step.get("runner") == boxstep.RUNNER:
+                raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
@@ -2848,6 +2858,8 @@ class FlowEngine(PlanEditing):
             return
         done = st.finished.get(step.get("step")) or {}
         if done.get("outside") and decision.get("choice") in ("run", "run-always", "run-ticket"):
+            if step.get("runner") == boxstep.RUNNER:
+                raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
             decision = self._outside_ready(card, step, done, decision)
             if decision is None:
                 return          # polecenie poza piaskownicą jeszcze trwa
@@ -3195,7 +3207,9 @@ class FlowEngine(PlanEditing):
         if action == "step-start":
             unit = intent.get("unit") or f"tide-step-{key}"
             result = os.path.join(intent.get("stepDir") or "", "out", handoff.RESULT_FILE)
-            state = stepstop.unit_state(unit)
+            if intent.get("runner") == boxstep.RUNNER:
+                boxstep.recover_network(self)
+            state = self._unit_state({**intent, "step": key, "unit": unit})
             code = stepstop.read_exit_code(intent.get("stepDir") or "") if state == "inactive" else None
             if state == "unknown":
                 return
@@ -3239,7 +3253,7 @@ class FlowEngine(PlanEditing):
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
-                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp") if intent.get(k)})
+                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if intent.get(k)})
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))
@@ -3250,6 +3264,9 @@ class FlowEngine(PlanEditing):
             self._poll_interactive(card, step)
             return
         name = step.get("step") or ""
+        if name in self._box_network_errors:
+            self._stop(card, step, "error", self._box_network_errors[name])
+            return
         log = os.path.join(step.get("stepDir") or "", "out", "step.log")
         if flow_limits.exhausted_log(log, step.get("program") or ""):
             if name not in fold(self.journal.read(card)).limits:
@@ -3570,7 +3587,7 @@ class FlowEngine(PlanEditing):
                 from ..board.commands import outside_allowed, outside_matches, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
-                data["canAllow"] = outside_allowed(command, project.denied_commands)
+                data["canAllow"] = step.get("runner") != boxstep.RUNNER and outside_allowed(command, project.denied_commands)
                 remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
                                                    or self._ticket_consent(card, step.get("ticket") or "")
                                                    or self._auto_outside(card) and not outside_risky(command))
@@ -3980,6 +3997,11 @@ class FlowEngine(PlanEditing):
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
         poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
+        if step.get("runner") == boxstep.RUNNER:
+            if done.get("canAllow", True):
+                self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
+                                    ticket=step.get("ticket") or "", canAllow=False)
+            return
         from ..board.commands import outside_allowed, outside_matches
         command = done.get("command") or ""
         _, project = self._project(card)
@@ -4052,6 +4074,8 @@ class FlowEngine(PlanEditing):
         return found.get("exitFile") or "/nonexistent/in/exit-code"
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
+        if step.get("runner") == boxstep.RUNNER:
+            raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
         name = step.get("step") or ""
         folder = os.path.join(step.get("stepDir") or "", "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)

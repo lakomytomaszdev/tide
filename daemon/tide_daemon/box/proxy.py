@@ -27,8 +27,9 @@ na NIC każdego pudełka `security.mac_filtering`/`ipv4_filtering`/`ipv6_filteri
 z cudzym adresem. Proxy nie umie tego sprawdzić samo; dowód (podszycie pod IP innego pudełka) jest na czerwonej
 liście #28. Nieznany adres = brak polityki = każde żądanie 403.
 
-Odmowa = 403 i wiersz TSV w dzienniku odmów pudełka (`denied_log_path`, zwykle `proxy-denied.log` w katalogu
-bieżącego kroku karty, przy budowie — ścieżka od buildera):
+Odmowa = 403 i wiersz TSV w dzienniku odmów (`denied_log_path` przy budowie, dziennik z `register_step` dla
+połączenia identyfikowanego kroku, osobny dziennik pudełka dla pozostałych połączeń). Wszystkie dzienniki kroków
+leżą poza montowaniami pudełka:
 
     czas<TAB>pudełko<TAB>adres IP<TAB>domena<TAB>port<TAB>rodzaj
 
@@ -42,6 +43,7 @@ Usługa nie woła `nft` ani `sudo`. Opis: docs/tide-daemon.md (Pudełko → Prox
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import ipaddress
 import json
@@ -52,7 +54,7 @@ import socket
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from . import k3
@@ -409,6 +411,9 @@ class ProxyService:
         self.grants = grants if grants is not None else k3.GrantRegistry()
         self.k3_connector = k3_connector or _default_k3_connector
         self._policies: dict[str, BoxPolicy] = {}
+        # Identyfikator z HTTP(S)_PROXY rozróżnia równoległe kroki jednego adresu IP.
+        # Brak identyfikatora zostaje przy dzienniku pudełka, nigdy przy ostatnim kroku.
+        self._step_logs: dict[tuple, tuple] = {}
         self._lock = threading.Lock()
         self._loop = None
         self._server = None
@@ -441,6 +446,33 @@ class ProxyService:
         key = str(_ip(str(ip)) or ip)
         with self._lock:
             self._policies = {k: v for k, v in self._policies.items() if k != key}
+            self._step_logs = {k: v for k, v in self._step_logs.items() if k[0] != key}
+
+    def register_step(self, ip: str, step: str, key: str, denied_log: str) -> None:
+        if _ip(ip) is None or not step or not key or not denied_log:
+            raise ValueError("niepełna tożsamość kroku proxy")
+        with self._lock:
+            self._step_logs = {**self._step_logs, (str(_ip(ip)), k3._digest(key)): (step, denied_log)}
+
+    def revoke_step(self, step: str) -> None:
+        self.grants.revoke_step(step)
+        with self._lock:
+            self._step_logs = {k: v for k, v in self._step_logs.items() if v[0] != step}
+
+    def _request_policy(self, client: str, headers: list) -> BoxPolicy | None:
+        policy = self.policy(client)
+        if policy is None:
+            return None
+        auth = [h.partition(":")[2].strip() for h in headers if h.partition(":")[0].lower() == "proxy-authorization"]
+        if len(auth) != 1:
+            return policy
+        scheme, _, encoded = auth[0].partition(" ")
+        try:
+            user, _, key = base64.b64decode(encoded, validate=True).decode("ascii").partition(":")
+        except (ValueError, UnicodeError):
+            return policy
+        entry = self._step_logs.get((client, k3._digest(key))) if scheme.lower() == "basic" and user == "tide" else None
+        return replace(policy, denied_log=entry[1]) if entry else policy
 
     def policy(self, ip: str) -> BoxPolicy | None:
         key = _ip(str(ip))
@@ -534,7 +566,7 @@ class ProxyService:
                 or (parts[0] != "CONNECT" and not _TARGET.fullmatch(parts[1]))):
             return await self._reply(writer, 400, "Bad Request")
         method, target, _version = parts
-        policy = self.policy(client)
+        policy = self._request_policy(client, headers)
         if method == "CONNECT":
             return await self._connect(reader, writer, client, policy, target)
         if target.startswith("/"):

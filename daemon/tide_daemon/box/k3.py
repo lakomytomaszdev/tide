@@ -258,6 +258,14 @@ class GrantRegistry:
             self._grants = kept
         return removed
 
+    def restore(self, step: str, ip: str, route: str, key: str, ttl: float) -> None:
+        """Odtwarza atrapę aktywnego kroku z prywatnego stanu usługi po restarcie, bez zmiany klucza agenta."""
+        if not step or not key or route not in self.routes or ipaddress.ip_address(ip).version != 4 or ttl <= 0:
+            raise ValueError("niepoprawny albo wygasły kontekst K3 kroku")
+        grant = Grant(step, ip, route, key, self.clock() + min(float(ttl), DEFAULT_TTL))
+        with self._lock:
+            self._grants[_digest(key)] = grant
+
     def check(self, key: str, ip: str, route: str) -> Grant | None:
         if not key:
             return None
