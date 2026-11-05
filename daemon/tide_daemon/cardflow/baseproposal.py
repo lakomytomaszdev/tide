@@ -5,8 +5,9 @@ LIMITS = ("Korekta v1 jest możliwa tylko bez commitów wkładu i bez czynnych p
           "przed pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP lub wcześniejsza praca po review "
           "(K-49) oznaczają odmowę korekty i zachowanie danych. Cel pkt 4 i historie 35–37 pozostają częściowe. "
           "Zachowaj bazę, aby kontynuować, albo pozostaw kartę w oczekiwaniu i osobno zaplanuj przeniesienie. "
-          "Wymagania wskazują szkic K-50-replay-code (followups/replay-code.md przy planie, do weryfikacji "
-          "w PT-201); replay nie jest dostępny w tej wersji. Nie wykonuj ręcznego reset/rebase zarządzanych "
+          "Zakres następczy ma stały klucz K-50-replay-code (followups/replay-code.md przy planie); "
+          "podgląd sprawdza dostępność szkicu. Nie oznacza to opublikowanej karty ani obietnicy replay "
+          "w dalszym tickecie v1. Nie wykonuj ręcznego reset/rebase zarządzanych "
           "gałęzi ani nie usuwaj katalogów.")
 
 
@@ -43,7 +44,7 @@ def validate(raw, git, repo):
 
 
 def pending(st):
-    return [name for name, done in st.finished.items()
+    return ([st.base_request["decision"]] if st.base_request else []) + [name for name, done in st.finished.items()
             if done.get("result") == "question" and (done.get("baseProposal") or {}).get("valid") is True
             and name in st.steps and name not in st.superseded and name not in st.step_decisions]
 

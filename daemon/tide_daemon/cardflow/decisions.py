@@ -95,6 +95,11 @@ def build_decisions(st: FlowState) -> list[dict]:
     def add(group: int, seq, decision: dict) -> None:
         found.append((group, int(seq or 0), decision))
 
+    if st.base_request:
+        asked = st.base_request
+        add(0, asked.get("seq"), _question(st, asked["decision"], {}, {
+            "question": "Wybrano nową bazę w pełnej karcie. Czy zachować obecną bazę?",
+            "baseProposal": asked["baseProposal"]}))
     for name in _latest_steps(st):
         if (st.steps.get(name) or {}).get("ticket") in st.rejected:
             continue        # odrzucony ticket nie czeka na nikogo (K-16/LEGAL-75, 03.11)
@@ -181,7 +186,7 @@ def _question(st, name, step, done) -> dict:
                         "Wznów krok na obecnej bazie i odblokuj ocenę oraz integrację zachowanych wyników.",
                         RESOLVE_STEP, {"choice": "answer", "step": name, "baseDecision": "keep"}, recommended=True),
                 _option("base-change", "Zmień na " + proposal["ref"],
-                        "Pozostaw kartę w oczekiwaniu na podgląd korekty. Bez operacji git i bez potwierdzenia zmiany.",
+                        "Otwórz podgląd korekty. Bez operacji git i bez potwierdzenia wykonania.",
                         RESOLVE_STEP, {"choice": "answer", "step": name, "baseDecision": "change"})]
             decision["reply"] = None
             decision["freeText"] = False

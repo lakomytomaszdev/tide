@@ -53,6 +53,7 @@ class FlowState:
     base_version: int = 0
     base_change: dict = field(default_factory=dict)
     base_waits: dict = field(default_factory=dict)
+    base_request: dict = field(default_factory=dict)  # decyzja użytkownika niezwiązana z krokiem
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
@@ -209,12 +210,18 @@ def fold(events: list[dict]) -> FlowState:
         st.last_seq = max(st.last_seq, int(e.get("seq") or 0))
         if kind == "step.base-wait":
             st.base_waits[e.get("step")] = e
+        if kind == "card.base-requested":
+            st.base_request = e
+        elif kind == "card.base-kept":
+            if st.base_request.get("decision") == e.get("decision"):
+                st.base_request = {}
         if kind == "card.started":
             st.base = _base(e)
             st.initial_base = dict(st.base)
             version = e.get("baseVersion", 0)
             st.base_version = version if type(version) is int and version >= 0 else 0
             st.base_change = {}
+            st.base_request = {}
             # Nowe zlecenie startuje tylko, gdy nic nie trwa (`busy_reason`), więc pytania, błędy i review
             # poprzedniego przepływu (np. porzuconego przeniesieniem do Do zrobienia) już na nikogo nie czekają.
             st.superseded.update(st.steps)

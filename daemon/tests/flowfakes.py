@@ -4,7 +4,9 @@
   dziennik sesji w `$HOME/.claude/projects/<katalog>/<id>.jsonl` (jak prawdziwy program) i robi to, co każe linia
   „ATRAPA: …” w opisie karty: `gotowe` (plik, commit, plik wyniku i notka), `bez-wyniku` (commit bez pliku wyniku),
   `czekaj` (plik bez commita i sen — żyje, ale nic nie robi), `powoli N` (N sekund dopisywania, potem jak `gotowe`),
-  `pytanie` (wynik „pytanie”), `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych). Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+  `pytanie` (commit i wynik „pytanie”), `pytanie-bez-pracy` (pytanie przed zmianą plików i commitem),
+  `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych).
+  Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -215,6 +217,10 @@ def finish(kind, **extra):
         fh.write("# Notka wyniku\n\nAtrapa zrobiła ticket.\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
+
+if word == "pytanie-bez-pracy" and "Odpowiedź użytkownika:" not in prompt:
+    finish("question", question="Który format daty?")
+    sys.exit(0)
 
 write("start")
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):

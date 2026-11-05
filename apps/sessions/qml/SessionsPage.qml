@@ -52,6 +52,7 @@ Rectangle {
     readonly property string openedCardId: decisionOpen ? decisionCardId : fullOpen ? fullCardId : ""
     readonly property alias decisionDialog: decisionDialog
     readonly property alias cardFullView: cardFullView
+    readonly property alias baseChangePreview: baseChangePreview
     readonly property var ticket: Logic.ticketById(board, selectedKey)
     readonly property bool youtrack: board !== null && board.tracker && board.tracker.kind === "youtrack"
 
@@ -127,6 +128,19 @@ Rectangle {
         delete tags[tag]
         cardTags = tags
         if (!sent) return
+        if (reply && reply.ok && reply.preview) baseChangePreview.show(sent[0], reply.preview)
+        if (tag.indexOf("base-preview:") === 0) {
+            baseChangePreview.busy = false
+            if (reply && reply.ok) baseChangePreview.show(sent[0], reply)
+            else baseChangePreview.error = reply && reply.message || "Nie można odczytać podglądu."
+            return
+        }
+        if (tag.indexOf("base-keep:") === 0) {
+            baseChangePreview.busy = false
+            if (reply && reply.ok) baseChangePreview.close()
+            else baseChangePreview.error = reply && reply.message || "Nie zapisano decyzji."
+            return
+        }
         const fromFull = fullOpen && !decisionOpen && sent[0] === fullCardId
         if (tag.indexOf("fault-preview:") === 0) {
             if (fromFull) cardFullView.showPreview(sent[1], reply)
@@ -654,5 +668,17 @@ Rectangle {
             page.decisionOpen = false
             page.openFull(id)
         }
+    }
+    CardUi.BaseChangePreview {
+        id: baseChangePreview
+        parent: page
+        z: 45
+        onRefreshed: request => page.sendCard("base-preview", cardId, "", "PreviewCardBaseChange", request)
+        onKeepRequested: step => {
+            busy = true
+            page.sendCard("base-keep", cardId, "", "ResolveCardStep",
+                          {choice: "answer", step: step, baseDecision: "keep"})
+        }
+        onFileRequested: path => page.urlRequested("file://" + path)
     }
 }

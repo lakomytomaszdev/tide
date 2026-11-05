@@ -29,7 +29,6 @@ class DurableMergeFixture:
 
     def setUp(self):
         super().setUp()
-        self.flow.stop()
 
         class ObjectGit(LocalStepGit):
             def __init__(self, *args, objects_only=False):
@@ -100,7 +99,6 @@ class DurableMergeFixture:
     def restart_stopped(self):
         self.flow.stop()
         self.flow = self.make_flow()
-        self.flow.stop()
 
     def intent(self):
         return next(e for e in self.flow.engine.journal.read(self.card_id)

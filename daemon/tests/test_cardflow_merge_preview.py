@@ -32,9 +32,14 @@ def fingerprint(repo):
 
 
 class PreviewScenarios:
+    def make_flow(self):
+        # Bez automatycznego ticka, ale monitor nadal przyjmuje publiczne żądania podglądu.
+        from tide_daemon.cardflow_monitor import CardFlowMonitor
+        with mock.patch.object(CardFlowMonitor, "start"):
+            return super().make_flow()
+
     def setUp(self):
         super().setUp()
-        self.flow.stop()
         self.card_id = self.card()
         self.source = "card/k-1-preview"
         self.card_tree = os.path.join(self.base, "ws", "card")

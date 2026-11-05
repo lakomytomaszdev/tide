@@ -117,6 +117,22 @@ Rectangle {
     signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
     signal mergeRequested(string tag, string cardId, string request)
+    signal previewBaseChangeRequested(string tag, string cardId, string request)
+    signal requestBaseChangeRequested(string tag, string cardId, string request)
+
+    function openBaseChange(cardId) {
+        const card = (snapshot && snapshot.cards || []).find(c => c.id === cardId)
+        if (card && card.derived && card.derived.flow && card.derived.flow.baseDecisionPending) {
+            baseChangePreview.show(cardId, null)
+            baseChangePreview.busy = true
+            const tag = nextTag("base-change:" + cardId)
+            baseChangePreview.requestTag = tag
+            previewBaseChangeRequested(tag, cardId, "{}")
+        } else {
+            baseChangePreview.select(cardId)
+            baseChangePicker.reset()
+        }
+    }
 
     function previewMerge(cardId, target) {
         const tag = nextTag("preview-merge:" + cardId)
@@ -371,6 +387,7 @@ Rectangle {
         const tags = Object.assign({}, decisionTags)
         delete tags[tag]
         decisionTags = tags
+        if (sent && !error && reply && reply.preview) baseChangePreview.show(sent[0], reply.preview)
         if (sent && !error && reply && reply.reported)
             showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported
                       + " w Backlogu " + (reply.project || "plasma-tide") + " — krok ponowiony.", "butter")
@@ -621,6 +638,10 @@ Rectangle {
 
     // Odpowiedź usługi na zapis (tag nadany przy wysyłce).
     function handleReply(tag, reply) {
+        if (tag.indexOf("base-change-branches:") === 0) {
+            baseChangePicker.receive(tag, reply)
+            return
+        }
         if (tag.indexOf("base-suggestions:") === 0) {
             launchDialog.baseSuggestions.receive(tag, reply)
             return
@@ -638,7 +659,17 @@ Rectangle {
             if (!error) showToast(settingNote, "mint")
             else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
         }
-        if (tag.indexOf("launch-") === 0) {
+        if (tag.indexOf("base-change:") === 0) {
+            if (baseChangePreview.requestTag !== tag) return
+            baseChangePreview.busy = false
+            baseChangePreview.error = error
+            if (!error) baseChangePreview.show(baseChangePreview.cardId, reply.preview || reply)
+        } else if (tag.indexOf("base-keep:") === 0) {
+            if (baseChangePreview.requestTag !== tag) return
+            baseChangePreview.busy = false
+            baseChangePreview.error = error
+            if (!error) baseChangePreview.close()
+        } else if (tag.indexOf("launch-") === 0) {
             handleLaunchReply(tag, reply)
         } else if (tag.indexOf("setting:") === 0) {
             if (notice) showToast(notice, "butter")
@@ -1838,6 +1869,8 @@ Rectangle {
         id: cardFullView
         objectName: "cardFullView"
         mergePreviewAvailable: true
+        baseChangeAvailable: true
+        onBaseChangeRequested: page.openBaseChange(page.fullCardId)
         anchors.fill: parent
         z: 35
         visible: page.fullOpen && !page.managing
@@ -1868,6 +1901,39 @@ Rectangle {
             page.mergeRequested(requestTag, cardId, JSON.stringify(request))
         }
         onRefreshRequested: page.previewMerge(cardId, targetBranch)
+    }
+    CardUi.BaseChangePreview {
+        id: baseChangePreview
+        parent: page
+        z: 65
+        selectedBase: baseChangePicker.selected
+        selectionReady: baseChangePicker.ready
+        selectionContent: BranchPicker {
+            id: baseChangePicker
+            Layout.fillWidth: true
+            active: baseChangePreview.visible && baseChangePreview.selecting
+            contextKey: baseChangePreview.cardId
+            onRequested: text => {
+                const tag = page.nextTag("base-change-branches:" + baseChangePreview.cardId)
+                pendingTag = tag
+                page.branchesRequested(tag, baseChangePreview.cardId, JSON.stringify({purpose: "base", text: text}))
+            }
+        }
+        onRequested: request => {
+            requestTag = page.nextTag("base-change:" + cardId)
+            page.requestBaseChangeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onRefreshed: request => {
+            requestTag = page.nextTag("base-change:" + cardId)
+            page.previewBaseChangeRequested(requestTag, cardId, JSON.stringify(request))
+        }
+        onKeepRequested: step => {
+            busy = true
+            requestTag = page.nextTag("base-keep:" + cardId)
+            page.stepResolveRequested(requestTag, cardId,
+                                      JSON.stringify({choice: "answer", step: step, baseDecision: "keep"}))
+        }
+        onFileRequested: path => page.fileRequested(path, "open")
     }
 
     // --- duch przeciąganej karty ----------------------------------------------------------------

@@ -56,7 +56,9 @@ def file_stamp(path: str):
         return None
 
 
-def checkout_snapshot(run, path: str) -> dict:
+def checkout_snapshot(run, path: str, *, stamp=None, untracked_files="all") -> dict:
+    # Podgląd korekty używa ograniczonego odczytu metadanych; scalenie zachowuje odcisk treści.
+    stamp = stamp or file_stamp
     if not path:
         return {"exists": False}
 
@@ -71,7 +73,7 @@ def checkout_snapshot(run, path: str) -> dict:
     symbolic = run(path, "symbolic-ref", "--quiet", "HEAD")
     if symbolic.code not in (0, 1):
         raise OSError("nie można odczytać gałęzi checkoutu")
-    changes = status_entries(read("status", "--porcelain=v1", "-z", "--untracked-files=all",
+    changes = status_entries(read("status", "--porcelain=v1", "-z", "--untracked-files=" + untracked_files,
                                   "--ignore-submodules=none"))
     index = read("rev-parse", "--path-format=absolute", "--git-path", "index").strip()
     gitdir = read("rev-parse", "--absolute-git-dir").strip()
@@ -87,15 +89,15 @@ def checkout_snapshot(run, path: str) -> dict:
             return ["outside-checkout"]
         if rel in gitlinks and os.path.isdir(full) and not os.path.islink(full):
             # Sam status „ M moduł” nie zmienia się przy kolejnej edycji wewnątrz submodułu.
-            return checkout_snapshot(run, full)
-        return file_stamp(full)
+            return checkout_snapshot(run, full, stamp=stamp, untracked_files=untracked_files)
+        return stamp(full)
 
     return {"exists": True, "path": os.path.realpath(path), "head": head,
-            "branch": symbolic.out.strip(), "index": file_stamp(index),
+            "branch": symbolic.out.strip(), "index": stamp(index),
             # Zawartość logiczna obejmuje też sharedindex oraz flagi skip-worktree/assume-unchanged.
             "indexEntries": index_entries, "changes": changes,
             "files": {p: local_stamp(p) for p in paths},
-            "operations": {name: file_stamp(os.path.join(gitdir, name))
+            "operations": {name: stamp(os.path.join(gitdir, name))
                            for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
                                         "rebase-merge", "rebase-apply", "sequencer", "index.lock")}}
 

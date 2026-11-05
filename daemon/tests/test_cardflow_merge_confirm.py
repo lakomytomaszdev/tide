@@ -163,6 +163,26 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         p = self.call("preview_card_merge", {})
         self.assertTrue(self.call("merge_card", self.request(p))["ok"])
 
+    def test_user_base_change_decision_blocks_merge_until_keep_and_fresh_confirmation(self):
+        original = self.request()
+        before = fingerprint(self.repo)
+        asked = self.call("request_card_base_change", {"baseRef": "refs/heads/" + self.target,
+                                                      "baseCommit": self.before})
+        self.assertTrue(asked["ok"], asked)
+        self.assertFalse(asked["preview"]["canChange"], "karta ma już commit wkładu")
+        self.assertEqual(fingerprint(self.repo), before)
+        self.assert_refused(original)
+        blocked = self.preview()
+        self.assertIn("base-decision", [r["reason"] for r in blocked["blockedReasons"]])
+        self.assert_refused(self.request(blocked), "base-decision")
+        kept = self.call("resolve_card_step", {"choice": "answer", "baseDecision": "keep",
+                                               "step": asked["preview"]["decisionStep"]})
+        self.assertTrue(kept["ok"], kept)
+        self.assertEqual(fingerprint(self.repo), before)
+        self.assert_refused(original)
+        self.assertTrue(self.call("merge_card", self.request())["ok"])
+        self.assert_success()
+
     def test_target_worktree_path_keeps_control_characters_from_preview(self):
         target_tree = os.path.join(self.base, "ws", "target\twith\nnewline")
         git(self.repo, "checkout", "--detach", "-q")

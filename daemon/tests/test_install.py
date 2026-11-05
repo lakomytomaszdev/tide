@@ -42,6 +42,14 @@ class DaemonInstallTest(unittest.TestCase):
         self.assertIn("tide_daemon/models/client.py", files)
         self.assertIn("tide_daemon/models_monitor.py", files)
         self.assertFalse([f for f in files if "__pycache__" in f])
+        # Szkic odmowy musi istnieć także w samodzielnej kopii usługi.
+        sketch = "docs/agents/plans/followups/replay-code.md"
+        self.assertIn(sketch, files)
+        with open(os.path.join(installed, sketch), encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertIn("K-50-replay-code", content)
+        self.assertIn("K-49", content)
+        self.assertNotIn("](../", content)
         # Paleta jedzie z usługą: z niej są kolory kart Konsole z agentem (#11).
         self.assertIn("palette.json", files)
         with open(os.path.join(installed, "palette.json"), encoding="utf-8") as fh:
