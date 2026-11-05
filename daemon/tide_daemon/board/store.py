@@ -401,10 +401,14 @@ class BoardStore:
         """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
         def plan(board):
             card = self._card(board, card_num(card_id))
+            change = Change(result={"ok": True, "id": card.id})
+            if card.column in ("done", "archived"):
+                return change
             changed = []
             for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
-                changed += _doc_set(card.doc, key, base.get(public) or "")
-            change = Change(result={"ok": True, "id": card.id})
+                value = base.get(public) or ""
+                if value or card.doc.has(key):
+                    changed += _doc_set(card.doc, key, value)
             if changed:
                 change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
             return change

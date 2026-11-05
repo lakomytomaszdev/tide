@@ -1608,6 +1608,10 @@ rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgod
 odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
 wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
 Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
+Ponowny start wykorzystuje dotychczasową gałąź karty i wymaga zgodności refu i SHA z jej bazą
+zapisaną w dzienniku. Inna albo nieznana baza powoduje `base-mismatch` przed rezerwacją numeru
+i zapisem zlecenia, także gdy przesunęła się domyślna główna. Zmiana bazy należy do osobnej
+korekty; zgodny start zachowuje gałąź i rozpoczyna własne `baseVersion: 1`.
 
 Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
 `baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
@@ -1616,6 +1620,7 @@ liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są pust
 mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
 UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
 zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+Projekcja nie dopisuje brakujących pustych pól ani nie zmienia plików kart w Gotowych i Archiwum.
 Gdy karta nie ma wyliczanego stanu (np. wróciła ręcznie do Do zrobienia albo jest w Gotowych/Archiwum),
 zachowuje `derived: null`. Jej pola `baseRef`, `baseBranch`, `baseCommit` i `baseVersion` na karcie
 w Snapshot nadal pochodzą z dziennika, niezależnie od powodzenia zapisu projekcji.

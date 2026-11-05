@@ -141,6 +141,95 @@ class StartBaseTest(FlowInProcess):
         self.assertTrue(self.start(card, baseRef="refs/heads/feature/start")["ok"])
         self.assert_base(card, "refs/heads/feature/start", commit)
 
+    def test_second_start_cannot_change_the_existing_card_branch_base(self):
+        feature = self.feature()
+        for moved_main in (False, True):
+            with self.subTest(moved_main=moved_main):
+                card = self.card(title=f"Ponowny start {moved_main}")
+                first = self.start(card)
+                self.assertTrue(first["ok"], first)
+                # Publiczne przeniesienie odblokowuje nowe zlecenie tej samej karty.
+                self.assertTrue(json.loads(self.board.move_card(card, "todo", 0))["ok"])
+                if moved_main:
+                    git(self.repo, "checkout", "-q", "feature/start")
+                    git(self.repo, "branch", "-f", "master", feature)
+                self.restart()
+                before = self.events(card)
+                branches = git(self.repo, "branch", "--format=%(refname)")
+                registry = os.path.join(self.base, "state", "tide", "ticket-ids.json")
+                with open(registry, encoding="utf-8") as fh:
+                    numbers = fh.read()
+                response = self.start(card, **({} if moved_main else {
+                    "baseRef": "refs/heads/feature/start", "baseCommit": feature}))
+                self.assertFalse(response["ok"], response)
+                self.assertEqual(response["error"], "base-mismatch")
+                self.assertEqual(self.events(card), before)
+                self.assertEqual(git(self.repo, "branch", "--format=%(refname)"), branches)
+                with open(registry, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), numbers)
+                self.assertEqual(git(first["cardWorktree"], "rev-parse", "HEAD").strip(), self.master)
+                self.assertEqual(git(first["worktree"], "rev-parse", "HEAD").strip(), self.master)
+                self.board.publish()
+                shown = self.shown(card)
+                self.assertEqual((shown["baseRef"], shown["baseCommit"], shown["baseVersion"]),
+                                 ("refs/heads/master", self.master, 1))
+                if moved_main:
+                    git(self.repo, "branch", "-f", "master", self.master)
+                    git(self.repo, "checkout", "-q", "master")
+
+    def test_second_start_with_same_base_reuses_card_branch_and_has_own_version(self):
+        card = self.card()
+        first = self.start(card)
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(json.loads(self.board.move_card(card, "todo", 0))["ok"])
+        self.restart()
+        second = self.start(card)
+        self.assertTrue(second["ok"], second)
+        self.assertNotEqual(second["ticket"], first["ticket"])
+        self.assertEqual(second["cardBranch"], first["cardBranch"])
+        self.assertEqual(git(second["worktree"], "rev-parse", "HEAD").strip(), self.master)
+        self.assertEqual([e["baseVersion"] for e in self.of(card, "card.started")], [1, 1])
+        self.assert_base(card, "refs/heads/master", self.master)
+
+    def test_second_start_with_unknown_legacy_base_is_refused(self):
+        card = self.card()
+        journal = self.flow.engine.journal
+        journal.append(card, "card.started", entry="now", repo=self.repo, column="todo")
+        journal.append(card, "intent", action="card-branch", key="card/legacy", base="master")
+        journal.append(card, "result", action="card-branch", key="card/legacy", ok=True,
+                       branch="card/legacy", base=self.master, existing=True)
+        before = self.events(card)
+        response = self.start(card)
+        self.assertEqual((response["ok"], response["error"]), (False, "base-mismatch"), response)
+        self.assertEqual(self.events(card), before)
+        self.board.publish()
+        self.assertEqual(self.shown(card)["baseVersion"], 0)
+        self.assertEqual(self.shown(card)["baseCommit"], "")
+
+    def test_unknown_projection_does_not_add_empty_fields_or_commit(self):
+        card = self.card()
+        journal = self.flow.engine.journal
+        journal.append(card, "card.started", entry="now", repo=self.repo, column="todo")
+        head = git(self.root, "rev-parse", "HEAD").strip()
+        self.flow.engine._project_base(card)
+        self.flow.engine._project_base(card)
+        self.assertEqual(git(self.root, "rev-parse", "HEAD").strip(), head)
+        model = self.store.load().cards[int(card[2:])]
+        for key in ("base-ref", "base-branch", "base-commit"):
+            self.assertFalse(model.doc.has(key))
+
+    def test_projection_skips_finished_cards(self):
+        for column in ("done", "archived"):
+            card = self.card(title=f"Zakończona {column}", column=column)
+            self.flow.engine.journal.append(card, "card.started", entry="now", repo=self.repo,
+                                           baseRef="refs/heads/master", baseBranch="master",
+                                           baseCommit=self.master, baseVersion=1)
+            head = git(self.root, "rev-parse", "HEAD").strip()
+            self.flow.engine._project_base(card)
+            self.assertEqual(git(self.root, "rev-parse", "HEAD").strip(), head)
+            self.board.publish()
+            self.assertEqual(self.shown(card)["baseCommit"], self.master)
+
     def test_update_card_cannot_edit_base_or_version(self):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])

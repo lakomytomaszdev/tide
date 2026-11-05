@@ -630,6 +630,9 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
+        slug = slug_from_prompt(card.title, words=4, length=32)
+        previous_branch = ticket_of(st)["cardBranch"]
+        card_branch = previous_branch or f"card/{card.id.lower()}-{slug}"
         with lock_for(project.repo):
             # Wznowienie bierze zapisany commit, nawet gdy ref już zniknął lub przesunął się.
             if _resume:
@@ -641,6 +644,14 @@ class FlowEngine(PlanEditing):
                     base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))
                 except FlowGitError as exc:
                     raise FlowError("no-base", str(exc)) from None
+                # Wynik card-branch jest wspólny dla kolejnych zleceń. Nie wolno zapisać
+                # nowej bazy, gdy ponownie użyjemy gałęzi utworzonej od innej lub nieznanej bazy.
+                if previous_branch or self.git.sha(project.repo, f"refs/heads/{card_branch}"):
+                    recorded = base_of(st)
+                    if (recorded["status"] != "known" or
+                            any(recorded[key] != base[key] for key in ("baseRef", "baseBranch", "baseCommit"))):
+                        raise FlowError("base-mismatch", "gałąź karty ma inną lub nieznaną bazę — "
+                                        "zmiana bazy wymaga osobnej korekty karty")
             try:
                 if not project.youtrack:
                     reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
@@ -679,8 +690,6 @@ class FlowEngine(PlanEditing):
                                  lambda: self._reserve(project.repo, card.title, request_key),
                                  repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
-        slug = slug_from_prompt(card.title, words=4, length=32)
-        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.id.lower()}-{slug}"
         card_worktree = worktree_for(project.repo, card_branch)
         made = self._act(card.id, "card-branch", card_branch,
                          lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, base["baseCommit"]),
