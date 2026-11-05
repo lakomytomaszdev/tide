@@ -233,6 +233,9 @@ class CardFlowMonitor(QObject):
     def list_card_branches(self, card_id: str, request: str, reply) -> None:
         self._json_action("ListCardBranches", request, lambda data: self.engine.list_card_branches(card_id, data), reply)
 
+    def suggest_card_base(self, card_id: str, request: str, reply) -> None:
+        self._json_action("SuggestCardBase", request, lambda data: self.engine.suggest_card_base(card_id, data), reply)
+
     def tick(self) -> None:
         if self._ticking:
             return

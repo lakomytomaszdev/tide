@@ -39,6 +39,7 @@ Rectangle {
     property string branch: ""
     property string cardBranch: ""
     readonly property alias basePicker: basePicker
+    readonly property alias baseSuggestions: baseSuggestions
     property bool branchEdited: false
     property bool editingBranch: false
     property bool newWorktree: true
@@ -198,6 +199,7 @@ Rectangle {
     signal filesDropped(var urls)
     signal modelsRequested()   // „ustaw/zmień w Tide → Modele”: widok Modele okna Tide
     signal branchesRequested(string text)
+    signal suggestionsRequested(var request)
 
     function tone(name) {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
@@ -1061,6 +1063,19 @@ Rectangle {
                             ? ({ref: dialog.card.baseRef, commit: dialog.card.baseCommit, name: dialog.card.baseBranch}) : null
                     contextKey: dialog.cardId + ":" + (dialog.entry === "spec" ? "spec" : "flow") + ":" + (dialog.workProject ? dialog.workProject.slug + ":" + dialog.workProject.repo : "")
                     onRequested: text => dialog.branchesRequested(text)
+                }
+                BaseSuggestions {
+                    id: baseSuggestions
+                    Layout.fillWidth: true
+                    active: basePicker.active && !basePicker.pinned
+                    cardId: dialog.cardId
+                    project: dialog.workProject ? dialog.workProject.slug : ""
+                    repo: dialog.workProject ? dialog.workProject.repo : ""
+                    text: dialog.taskText
+                    description: dialog.card ? dialog.card.description || "" : ""
+                    selectionKey: basePicker.selected ? basePicker.selected.ref + ":" + basePicker.selected.commit : ""
+                    onRequested: request => dialog.suggestionsRequested(request)
+                    onChosen: candidate => basePicker.selected = candidate
                 }
                 ColumnLayout {
                     Layout.fillWidth: true
