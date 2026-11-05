@@ -9,6 +9,7 @@ ColumnLayout {
     property bool active: false
     property string contextKey: ""
     property var branches: []
+    property var recentBases: []
     property var selected: null
     property var pinned: null
     property string mainRef: ""
@@ -22,6 +23,7 @@ ColumnLayout {
     function reset() {
         pendingTag = ""
         branches = []
+        recentBases = []
         selected = pinned
         mainRef = ""
         message = ""
@@ -37,6 +39,7 @@ ColumnLayout {
         message = ""
         status.text = ""
         branches = []
+        recentBases = []
         requested(search.text)
     }
     function receive(tag, reply) {
@@ -49,6 +52,7 @@ ColumnLayout {
             return
         }
         branches = reply.branches || []
+        recentBases = reply.recentBases || []
         mainRef = reply.mainRef || ""
         currentIndex = 0
         // Domyślna baza jest nazwanym refem głównej, nigdy bieżącym HEAD.
@@ -56,7 +60,7 @@ ColumnLayout {
         message = ""
         status.text = (reply.hasMore ? "Zawęź wyszukiwanie — lista ma więcej wyników. " : "")
                     + (reply.warnings || []).join(" ")
-                    + (branches.length === 0 ? " Brak pasujących lokalnych gałęzi." : "")
+                    + (branches.length === 0 ? " Brak pasujących gałęzi." : "")
     }
     function choose(index) {
         const item = branches[index]
@@ -103,6 +107,55 @@ ColumnLayout {
         }
         PillButton { text: "Odśwież"; onClicked: picker.refresh() }
     }
+    FieldLabel {
+        visible: picker.active && !picker.pinned && picker.recentBases.length > 0
+        text: "Ostatnie bazy repozytorium"
+    }
+    QQC2.ScrollView {
+        Layout.fillWidth: true
+        Layout.preferredHeight: Math.min(recents.implicitHeight, 120)
+        visible: picker.active && !picker.pinned && picker.recentBases.length > 0
+        contentWidth: availableWidth
+        clip: true
+        ColumnLayout {
+            id: recents
+            width: parent.width
+            Repeater {
+                model: picker.recentBases
+                delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+                    objectName: "recentBase" + index
+                    Layout.fillWidth: true
+                    implicitHeight: recentName.implicitHeight + 16
+                    color: Tide.Tokens.backgroundCard
+                    radius: Tide.Tokens.radiusTile
+                    activeFocusOnTab: true
+                    signal clicked()
+                    onClicked: if (modelData.selectable) picker.selected = modelData
+                    Accessible.role: Accessible.Button
+                    Accessible.name: modelData.ref + " · " + modelData.commit
+                    Accessible.onPressAction: clicked()
+                    Keys.onReturnPressed: clicked()
+                    Keys.onSpacePressed: clicked()
+                    Text {
+                        id: recentName
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.margins: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.ref + " · " + modelData.commit
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WrapAnywhere
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 12
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: parent.clicked() }
+                }
+            }
+        }
+    }
     QQC2.ScrollView {
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(results.implicitHeight, 160)
@@ -138,7 +191,8 @@ ColumnLayout {
                         anchors.right: parent.right
                         anchors.margins: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.name + (modelData.selectable ? "" : " — " + modelData.reason)
+                        text: (modelData.kind === "remote" ? modelData.ref : modelData.name)
+                              + (modelData.selectable ? "" : " — " + modelData.reason)
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
                         color: modelData.selectable ? Tide.Tokens.textPrimary : Tide.Tokens.textMuted
@@ -153,8 +207,8 @@ ColumnLayout {
     Text {
         Layout.fillWidth: true
         visible: picker.active
-        text: picker.selected ? "Wybrana baza: " + picker.selected.name + " · " + picker.selected.commit
-                              : "Wybierz lokalną gałąź bazową."
+        text: picker.selected ? "Wybrana baza: " + picker.selected.ref + " · " + picker.selected.commit
+                              : "Wybierz lokalną lub zdalną gałąź bazową."
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
         color: Tide.Tokens.textPrimary
@@ -175,7 +229,7 @@ ColumnLayout {
     Text {
         Layout.fillWidth: true
         visible: picker.active && (picker.loading || picker.message !== "")
-        text: picker.loading ? "Pobieram lokalne gałęzie…" : picker.message
+        text: picker.loading ? "Odczytuję znane lokalnie gałęzie…" : picker.message
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Tide.Tokens.textSecondary

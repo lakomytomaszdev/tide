@@ -110,9 +110,15 @@ Gałąź, do której trafiają tickety karty po review; do gałęzi głównej pr
 _Avoid_: gałąź koordynatora, gałąź integracyjna
 
 **Baza karty**:
-Zapisany w dzienniku punkt wyjścia zlecenia: pełny lokalny ref (`baseRef`, `refs/heads/…`), nazwa gałęzi
+Zapisany w dzienniku punkt wyjścia zlecenia: pełny lokalny lub zdalny ref (`baseRef`, `refs/heads/…`
+albo `refs/remotes/…`), nazwa gałęzi (dla zdalnej razem z nazwą remote)
 (`baseBranch`) i przypięty commit (`baseCommit`, SHA). Ruch lub usunięcie refu nie zmienia zapisanej bazy.
 _Avoid_: bieżący HEAD, dzisiejsza główna jako domysł historycznej bazy
+
+**Ostatnie bazy repozytorium**:
+Do 10 różnych pełnych refów od najnowszego udanego `card.started` lub `card.base-changed`, odtworzonych
+z dzienników Tablicy. Worktrees jednego repozytorium współdzielą skróty. Skrót jawnie wybiera obecny SHA
+istniejącego refu; nie zmienia domyślnej głównej ani utrwalonej bazy wznowienia.
 
 **Pierwotna baza**:
 Opis bazy w chwili startu zlecenia (`initialBase`); późniejsza korekta go nie zmienia.

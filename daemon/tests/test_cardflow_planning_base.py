@@ -30,12 +30,19 @@ class PlanningBaseTest(FlowInProcess):
             self.assertEqual(fh.read(), "tylko feature\n")
 
     def test_three_entries_keep_feature_after_ref_moves_restart_and_approval(self):
+        self._three_entries("refs/heads/feature/start")
+
+    def test_three_remote_entries_keep_sha_after_ref_deletion_restart_and_approval(self):
+        self._three_entries("refs/remotes/team/feature/start")
+
+    def _three_entries(self, ref):
         commit = self.feature()
         for entry, mode in (("planning", "light"), ("planning", "full"), ("import", "")):
-            with self.subTest(entry=entry, mode=mode):
+            with self.subTest(entry=entry, mode=mode, ref=ref):
                 git(self.repo, "branch", "-f", "feature/start", commit)
+                git(self.repo, "update-ref", ref, commit)
                 card = self.card(title=f"Baza {entry} {mode}", description="ATRAPA: planowanie")
-                request = dict(entry=entry, mode=mode, baseRef="refs/heads/feature/start",
+                request = dict(entry=entry, mode=mode, baseRef=ref,
                                baseCommit=commit, cardBranch=f"card/{card.lower()}-chosen")
                 terminal = full._Terminal()
                 self.flow.engine.terminal = terminal
@@ -47,8 +54,11 @@ class PlanningBaseTest(FlowInProcess):
                 with mock.patch.object(self.store, "project_card_base", side_effect=OSError("projekcja")):
                     reply = self.start(card, **request)
                 self.assertTrue(reply["ok"], reply)
-                self.assert_base(card, "refs/heads/feature/start", commit)
+                self.board.publish()
+                self.assertEqual(self.shown(card)["baseRef"], ref)
+                self.assertEqual(self.shown(card)["baseCommit"], commit)
                 git(self.repo, "branch", "-f", "feature/start", "master")
+                git(self.repo, "update-ref", "-d", ref)
                 if mode == "full":
                     step = self.of(card, "step.started")[0]
                     self.assertEqual(len(terminal.opened), 1)
@@ -60,7 +70,9 @@ class PlanningBaseTest(FlowInProcess):
                 self.assertEqual(review["branch"], request["cardBranch"])
                 self.assert_feature(review["worktree"])
                 self.restart()
-                self.assert_base(card, "refs/heads/feature/start", commit)
+                self.board.publish()
+                self.assertEqual(self.shown(card)["baseRef"], ref)
+                self.assertEqual(self.shown(card)["baseCommit"], commit)
                 self.approve(card)
                 self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
                 tickets = [s for s in self.of(card, "step.started") if s["kind"] == "ticket"]

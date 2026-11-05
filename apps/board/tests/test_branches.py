@@ -5,6 +5,37 @@ from . import test_view as view
 
 
 class BranchPickerTest(view.ProbeCase):
+    def test_remote_and_recent_are_explicit_choices_and_never_default(self):
+        local = {"ref": "refs/heads/master", "name": "master", "commit": "a" * 40,
+                 "kind": "local", "selectable": True}
+        remote = {"ref": "refs/remotes/team/feature", "name": "team/feature", "commit": "b" * 40,
+                  "kind": "remote", "remote": "team", "selectable": True}
+        duplicate = dict(remote, ref="refs/heads/team/feature", kind="local", commit="c" * 40)
+        reply = {"ok": True, "mainRef": local["ref"], "branches": [local, duplicate, remote],
+                 "recentBases": [remote], "warnings": [], "hasMore": False}
+        out = self.probe(view.FIND_PY + f'''
+js("page.openLaunch('K-15', false)")
+wait(100)
+backend.branch_replies.append({reply!r})
+js("page.launchDialog.entry = 'now'; page.launchDialog.basePicker.reset()")
+wait(100)
+out["default"] = js("page.launchDialog.basePicker.selected.ref")
+out["recentCount"] = js("page.launchDialog.basePicker.recentBases.length")
+out["remoteLabel"] = js(FIND + "(page.launchDialog, 'baseResult2').children[0].text")
+js(FIND + "(page.launchDialog, 'recentBase0').clicked()")
+out["picked"] = js("[page.launchDialog.basePicker.selected.ref, page.launchDialog.basePicker.selected.commit]")
+replies.append({{"ok": False, "message": "Test odbioru"}})
+js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+wait(50)
+out["request"] = json.loads(next(c[2] for c in reversed(calls()) if c[0] == 'StartCard'))
+''')
+        self.assertEqual(out["default"], local["ref"])
+        self.assertEqual(out["recentCount"], 1)
+        self.assertEqual(out["remoteLabel"], remote["ref"])
+        self.assertEqual(out["picked"], [remote["ref"], remote["commit"]])
+        self.assertEqual(out["request"]["baseRef"], remote["ref"])
+        self.assertEqual(out["request"]["baseCommit"], remote["commit"])
+
     def test_all_planning_entries_send_choice_and_reopen_with_persisted_base(self):
         out = self.probe('''
 out["requests"] = []

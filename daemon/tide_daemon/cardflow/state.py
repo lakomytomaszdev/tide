@@ -421,7 +421,8 @@ def fold(events: list[dict]) -> FlowState:
 
 def _base(data: dict) -> dict:
     ref, branch, commit = (data.get(k) for k in ("baseRef", "baseBranch", "baseCommit"))
-    valid = (isinstance(ref, str) and ref.startswith("refs/heads/") and branch == ref[len("refs/heads/"):]
+    prefix = "refs/remotes/" if isinstance(ref, str) and ref.startswith("refs/remotes/") else "refs/heads/"
+    valid = (isinstance(ref, str) and ref.startswith(prefix) and branch == ref[len(prefix):]
              and bool(branch) and not re.search(r"[\s~^:?*\[\\]|\.\.|@\{|//", ref)
              and not ref.endswith(("/", ".", ".lock"))
              and isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit))

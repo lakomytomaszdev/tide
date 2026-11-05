@@ -199,22 +199,33 @@ class FlowGit:
             out["canMerge"] = not out["reason"]
             return out
 
-    def list_branches(self, repo: str, text: str, limit: int) -> dict:
+    def repository_key(self, repo: str) -> str:
+        result = self.run(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if not result.ok:
+            raise FlowGitError("nie można ustalić repozytorium gita")
+        return os.path.realpath(result.out.strip())
+
+    def list_branches(self, repo: str, text: str, limit: int, purpose: str = "base") -> dict:
         """Cały lokalny zbiór przed filtrem i limitem; bez operacji sieciowych."""
         with lock_for(repo):
             main = self.main_branch(repo)
             main_ref = f"refs/heads/{main}" if main else ""
             listed = self.run(repo, "for-each-ref", "--sort=refname",
-                              "--format=%(refname)%00%(objectname)", "refs/heads/")
+                              "--format=%(refname)%00%(objectname)%00%(symref)%00%(objecttype)",
+                              "refs/heads/", *(["refs/remotes/"] if purpose == "base" else []))
             if not listed.ok:
                 raise FlowGitError("nie można odczytać lokalnych gałęzi")
             branches = []
             for line in listed.out.splitlines():
-                ref, commit = line.split("\0", 1)
-                name = ref[len("refs/heads/"):]
-                if text.casefold() not in name.casefold():
+                ref, commit, symbolic, object_type = line.split("\0")
+                if symbolic or object_type != "commit":
                     continue
-                branches.append({"ref": ref, "name": name, "kind": "local", "remote": "",
+                remote = ref.startswith("refs/remotes/")
+                name = ref[len("refs/remotes/"):] if remote else ref[len("refs/heads/"):]
+                if text.casefold() not in ref.casefold():
+                    continue
+                branches.append({"ref": ref, "name": name, "kind": "remote" if remote else "local",
+                                 "remote": name.partition("/")[0] if remote else "",
                                  "commit": commit, "selectable": True, "reason": ""})
             branches.sort(key=lambda b: b["ref"] != main_ref)
             return {"branches": branches[:limit], "mainRef": main_ref,
@@ -222,22 +233,28 @@ class FlowGit:
                     "warnings": [] if main_ref else ["Brak nazwanej gałęzi głównej — wybierz lokalną bazę."]}
 
     def resolve_base(self, repo: str, ref=None, expected=None) -> dict:
-        """Lokalna baza startu; wywołujący trzyma lock_for aż do zapisu card.started."""
-        if ref is not None and (not isinstance(ref, str) or not ref.startswith("refs/heads/")):
-            raise FlowGitError("baza musi być pełnym lokalnym refem refs/heads/…")
+        """Baza startu znana lokalnemu gitowi; wywołujący trzyma lock_for do zapisu card.started."""
+        if ref is not None and (not isinstance(ref, str) or not ref.startswith(("refs/heads/", "refs/remotes/"))):
+            raise FlowGitError("baza musi być pełnym refem refs/heads/… albo refs/remotes/…")
         if ref is None:
             branch = self.main_branch(repo)
             if not branch:
                 raise FlowGitError("nie ma gałęzi głównej — wybierz lokalną bazę")
             ref = f"refs/heads/{branch}"
         if not self.run(repo, "check-ref-format", ref).ok:
-            raise FlowGitError("niepoprawny lokalny ref bazy")
+            raise FlowGitError("niepoprawny ref bazy")
+        if self.run(repo, "symbolic-ref", "--quiet", ref).ok:
+            raise FlowGitError("symboliczny ref nie może być bazą — wybierz konkretną gałąź")
+        remote = ref.startswith("refs/remotes/")
+        if remote and expected is None:
+            raise FlowGitError("wybór zdalnej bazy wymaga SHA — odśwież listę")
         commit = self.sha(repo, ref)
         if not commit:
-            raise FlowGitError("lokalna gałąź bazy nie istnieje")
+            raise FlowGitError("gałąź bazy nie istnieje — odśwież wybór")
         if expected is not None and (not isinstance(expected, str) or expected != commit):
             raise FlowGitError("baza zmieniła się — odśwież wybór i uruchom kartę ponownie")
-        return {"baseRef": ref, "baseBranch": ref[len("refs/heads/"):], "baseCommit": commit}
+        return {"baseRef": ref, "baseBranch": ref[len("refs/remotes/"):] if remote else ref[len("refs/heads/"):],
+                "baseCommit": commit}
 
     def branch_worktree(self, repo: str, branch: str, path: str, base: str) -> dict:
         """Gałąź `branch` od `base` w worktree `path`; już jest (ta gałąź w tym worktree) — bez zmian."""

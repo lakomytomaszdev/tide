@@ -138,7 +138,10 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - ImportYouTrack(s json) -> s    karty w Backlogu z listy {issues: ["LOG-1", …]} → {ok, created, skipped, commitError},
 - ResolveYouTrack(s id, s choice) -> s  konflikt ze zmianą ręczną w YouTracku (karta K-16 albo klucz zgłoszenia;
                              choice: youtrack — przyjmij stan z YouTracka, tide — nadpisz stanem Tide) → {ok, issue, choice},
-- ListCardBranches(s id, s json) -> s  lokalne gałęzie projektu karty: purpose=base|merge, text, limit (1–100).
+- ListCardBranches(s id, s json) -> s  gałęzie projektu karty: purpose=base|merge, text, limit (1–100).
+  base obejmuje lokalne refs/heads i znane refs/remotes (bez symbolicznych); merge tylko refs/heads.
+  recentBases: do 10 różnych istniejących pełnych refów z udanych startów/korekt w dziennikach Tablicy,
+  wspólnych dla worktrees repozytorium; skrót zawiera aktualny SHA i wymaga jawnego wyboru.
   Filtr przed limitem; mainRef, recentBases, recentTargets, warnings, hasMore; bez paginacji i sieci.
 - StartCard(s id, s json) -> s  zlecenie karty w przepływie karty (PT-58), dziś wejście „Od razu”:
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,

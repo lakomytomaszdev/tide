@@ -4348,9 +4348,61 @@ class FlowEngine(PlanEditing):
         if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
         try:
-            return {"ok": True, **self.git.list_branches(project.repo, text, limit)}
+            result = self.git.list_branches(project.repo, text, limit, request["purpose"])
         except FlowGitError as exc:
             raise FlowError("branches", str(exc)) from None
+        if request["purpose"] == "base":
+            try:
+                result["recentBases"] = self._recent_bases(project.repo)
+            except Exception:
+                result["warnings"].append("Nie można odczytać ostatnich baz. Wybierz bazę z listy.")
+        return {"ok": True, **result}
+
+    def _recent_bases(self, repo: str) -> list[dict]:
+        """Skróty są projekcją udanych zdarzeń, wspólną dla worktrees rzeczywistego repozytorium."""
+        key = self.git.repository_key(repo)
+        identities = {os.path.realpath(repo): key}
+        choices = []
+        for card in self.journal.cards():
+            events = self.journal.read(card)
+            for index, event in enumerate(events):
+                if event.get("type") not in ("card.started", "card.base-changed"):
+                    continue
+                state = fold(events[:index + 1])
+                if event["type"] == "card.base-changed" and state.base_change != event:
+                    continue
+                source = (state.started or {}).get("repo")
+                base = base_of(state)
+                if not source or base["status"] != "known":
+                    continue
+                source = os.path.realpath(source)
+                if source not in identities:
+                    try:
+                        identities[source] = self.git.repository_key(source)
+                    except FlowGitError:
+                        identities[source] = ""
+                if identities[source] == key:
+                    stamp = datetime.fromisoformat(event["ts"]).timestamp()
+                    choices.append((stamp, card, event.get("seq", 0), base["baseRef"]))
+        seen, recent = set(), []
+        for _, _, _, ref in sorted(choices, reverse=True):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            try:
+                # Skrót wybiera dzisiejszy SHA refu; historyczny SHA zostaje w dzienniku.
+                commit = self.git.sha(repo, ref)
+                base = self.git.resolve_base(repo, ref, commit)
+            except FlowGitError:
+                continue
+            remote = ref.startswith("refs/remotes/")
+            name = base["baseBranch"]
+            recent.append({"ref": ref, "name": name, "commit": base["baseCommit"],
+                           "kind": "remote" if remote else "local",
+                           "remote": name.partition("/")[0] if remote else "", "selectable": True, "reason": ""})
+            if len(recent) == 10:
+                break
+        return recent
 
     def preview_card_merge(self, card_id: str, request: dict) -> dict:
         """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
