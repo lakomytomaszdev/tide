@@ -60,7 +60,8 @@ class WaveFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.wave_plan(card))["ok"])
         self.approve(card)
-        self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5))
+        self.assertTrue(wait_until(lambda: any(e.get("cause") == "slots" for e in self.of(card, "step.waiting")),
+                                   timeout=5), self.events(card))
         self.assertEqual(len(self.ticket_starts(card)), 1)
         self.assertIn("limit", self.of(card, "step.waiting")[-1]["reason"])
         self.assertTrue(wait_until(lambda: any("limit" in t.get("waitReason", "")
@@ -192,7 +193,8 @@ class WaveFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.wave_plan(card, count=4))["ok"])
         mapping = self.approve(card)["map"]
-        self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5))
+        self.assertTrue(wait_until(lambda: any(e.get("cause") == "slots" for e in self.of(card, "step.waiting")),
+                                   timeout=5), self.events(card))
         self.assertEqual([s["ticket"] for s in self.ticket_starts(card)],
                          [mapping["#1"], mapping["#2"], mapping["#3"]])
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40))
