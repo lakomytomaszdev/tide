@@ -4343,10 +4343,13 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "wymagane: text (do 200000 znaków), nieujemna revision i scope text|files|links")
         card, project = self._project(card_id)
         identity = {"revision": revision, "card": card_id, "project": project.slug, "repo": project.repo}
-        if scope != "text":
+        if scope == "links":
             return {"ok": True, **identity, "candidates": [], "warnings": ["To źródło podpowiedzi nie jest jeszcze obsługiwane."]}
         if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
+        if scope == "files":
+            from .filesuggestions import suggest_files
+            return {"ok": True, **identity, **suggest_files(self.git, project.repo, card.description, text)}
         try:
             branches = self.git.list_branches(project.repo, "", 2**31, "base")["branches"]
         except FlowGitError as exc:

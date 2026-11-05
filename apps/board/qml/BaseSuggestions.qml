@@ -18,6 +18,7 @@ ColumnLayout {
     property var candidates: []
     property string message: ""
     property bool loading: false
+    property string scope: "text"
     signal requested(var request)
     signal chosen(var candidate)
 
@@ -29,13 +30,15 @@ ColumnLayout {
         loading = false
         debounce.restart()
     }
-    function refresh() {
+    function refresh(source) {
         if (!active || !cardId || !project || !repo) return
+        debounce.stop()
+        scope = source || "text"
         pendingTag = ""
         candidates = []
         message = ""
         loading = true
-        requested({text: text, revision: revision, scope: "text"})
+        requested({text: text, revision: revision, scope: scope})
     }
     function receive(tag, reply) {
         if (!active || !pendingTag || tag !== pendingTag) return
@@ -62,6 +65,12 @@ ColumnLayout {
     visible: active
     spacing: 8
     FieldLabel { text: "Podpowiedzi bazy z opisu i polecenia" }
+    QQC2.Button {
+        objectName: "checkBaseFiles"
+        text: "Sprawdź lokalną historię plików"
+        enabled: !suggestions.loading
+        onClicked: suggestions.refresh("files")
+    }
     Text {
         Layout.fillWidth: true
         text: "Podpowiedź nie zmienia bazy. Użyj pełnego refu, a następnie uruchom kartę."
@@ -90,8 +99,11 @@ ColumnLayout {
                         objectName: "baseEvidence" + index
                         Layout.fillWidth: true
                         text: modelData.source + " · " + modelData.strength + " · " + modelData.commit + "\n"
-                              + (modelData.evidence || []).map(e => (e.field === "description" ? "Opis" : "Polecenie")
-                                  + ", wiersz " + e.line + ": " + e.text).join("\n")
+                              + (modelData.source === "files" ? "Pozycja " + modelData.rank + " · ścieżki: " + modelData.matchedPaths + "\n" : "")
+                              + (modelData.evidence || []).map(e => modelData.source === "files"
+                                  ? e.path + " · commit " + e.commit + " · " + e.time
+                                  : (e.field === "description" ? "Opis" : "Polecenie")
+                                    + ", wiersz " + e.line + ": " + e.text).join("\n")
                               + (modelData.reason ? "\n" + modelData.reason : "")
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
@@ -135,7 +147,8 @@ ColumnLayout {
     }
     Text {
         Layout.fillWidth: true
-        text: suggestions.loading ? "Analizuję tekst…" : suggestions.message || (suggestions.candidates.length ? "" : "Brak jawnych wskazań znanych gałęzi.")
+        text: suggestions.loading ? (suggestions.scope === "files" ? "Analizuję lokalną historię plików…" : "Analizuję tekst…")
+              : suggestions.message || (suggestions.candidates.length ? "" : "Brak jawnych wskazań znanych gałęzi.")
         textFormat: Text.PlainText
         wrapMode: Text.WrapAnywhere
         color: Tide.Tokens.textSecondary

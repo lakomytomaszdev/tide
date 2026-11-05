@@ -5,6 +5,38 @@ from . import test_view as view
 
 
 class BaseSuggestionsTest(view.ProbeCase):
+    def test_files_probe_shows_touch_evidence_and_requires_explicit_use(self):
+        candidate = {"ref": "refs/heads/feature/files", "name": "feature/files", "commit": "b" * 40,
+                     "source": "files", "strength": "heuristic", "selectable": True, "reason": "",
+                     "rank": 1, "matchedPaths": 1,
+                     "evidence": [{"path": "src/only-feature.qml", "commit": "c" * 40,
+                                   "time": "2026-01-01T12:00:00+00:00"}]}
+        out = self.probe(view.FIND_PY + f'''
+js("page.openLaunch('K-15', false); page.launchDialog.entry = 'now'")
+wait(400)
+backend.suggestion_replies.append({dict(candidates=[candidate], warnings=["Wynik częściowy; wybierz jawnie."])!r})
+js(FIND + "(page.launchDialog, 'checkBaseFiles').clicked()")
+out["canStartDuringAnalysis"] = js("page.launchDialog.canStart")
+wait(100)
+out["scope"] = json.loads(backend.suggestion_calls[-1][2])["scope"]
+out["before"] = js("page.launchDialog.basePicker.selected.ref")
+out["evidence"] = js(FIND + "(page.launchDialog, 'baseEvidence0').text")
+out["message"] = js("page.launchDialog.baseSuggestions.message")
+js(FIND + "(page.launchDialog, 'useBaseSuggestion0').clicked()")
+replies.append({{"ok": False, "message": "Koniec sondy"}})
+js("page.launchChoice = page.launchDialog.launchState; page.continueLaunch()")
+wait(50)
+out["request"] = json.loads(next(c[2] for c in calls() if c[0] == 'StartCard'))
+''')
+        self.assertEqual(out["scope"], "files")
+        self.assertEqual(out["before"], "refs/heads/master")
+        self.assertTrue(out["canStartDuringAnalysis"])
+        for value in ("heuristic", "src/only-feature.qml", "c" * 40, "2026-01-01", "Pozycja 1"):
+            self.assertIn(value, out["evidence"])
+        self.assertIn("częściowy", out["message"])
+        self.assertEqual((out["request"]["baseRef"], out["request"]["baseCommit"]),
+                         (candidate["ref"], candidate["commit"]))
+
     def test_explicit_use_full_name_plain_evidence_and_start(self):
         name = "feature/" + "bardzo-dluga-nazwa-" * 18 + "<tag>"
         candidate = {"ref": "refs/heads/" + name, "name": name, "commit": "b" * 40,

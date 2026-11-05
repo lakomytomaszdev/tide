@@ -9,6 +9,26 @@ class SuggestBaseDbusTest(FlowCase):
     def suggest(self, card, text, revision=7, scope="text"):
         return self.call("SuggestCardBase", card, json.dumps({"text": text, "revision": revision, "scope": scope}))
 
+    def test_files_source_returns_feature_only_path_and_touch_over_board_bus(self):
+        git(self.repo, "checkout", "-qb", "feature/files", env=self.git_env)
+        with open(os.path.join(self.repo, "feature-only.txt"), "w", encoding="utf-8") as fh:
+            fh.write("tylko feature")
+        git(self.repo, "add", "--", "feature-only.txt", env=self.git_env)
+        dated = dict(self.git_env, GIT_AUTHOR_DATE="2026-01-01T12:00:00Z", GIT_COMMITTER_DATE="2026-01-01T12:00:00Z")
+        git(self.repo, "commit", "-qm", "feature file", env=dated)
+        sha = git(self.repo, "rev-parse", "HEAD", env=self.git_env).strip()
+        git(self.repo, "checkout", "-q", "master", env=self.git_env)
+        card = self.card(description="Popraw `feature-only.txt`")
+        result = self.suggest(card, "", scope="files")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(result["candidates"]), 1, result)
+        candidate = result["candidates"][0]
+        self.assertEqual((candidate["ref"], candidate["commit"], candidate["strength"]),
+                         ("refs/heads/feature/files", sha, "heuristic"))
+        self.assertEqual(candidate["evidence"][0]["path"], "feature-only.txt")
+        self.assertEqual(candidate["evidence"][0]["commit"], sha)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "feature-only.txt")))
+
     def test_long_repeated_line_has_small_response_without_mutation(self):
         card = self.card(description="Bez wskazań")
         before = {"refs": git(self.repo, "show-ref"), "card": self.shown(card),
@@ -88,7 +108,7 @@ class SuggestBaseDbusTest(FlowCase):
         self.assertEqual(result["candidates"], [])
         for text in ("`feature/base`", "git switch feature/base", "refs/heads/feature/base", "Baza feature/base."):
             self.assertEqual(len(self.suggest(card, text)["candidates"]), 1, text)
-        for scope in ("files", "links"):
+        for scope in ("links",):
             result = self.suggest(card, "feature/base", scope=scope)
             self.assertEqual(result["candidates"], [])
             self.assertTrue(result["warnings"])

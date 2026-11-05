@@ -869,7 +869,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `ListCardBranches(s id, s request)` | `→ s` | lokalne gałęzie repozytorium projektu karty: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
-| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tylko odczyt, obecnie obsługuje tekst |
+| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tylko odczyt, obsługuje tekst i lokalną historię plików |
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
@@ -1684,14 +1684,42 @@ gałęzi `kind`, `remote`). Dla tekstu `source: text`, `strength: explicit`, a `
 nazwa może być przycięta w dowodzie; kandydat zachowuje pełną nazwę i ref. Odpowiedź zawiera najwyżej
 32 kandydatów, po 5 dowodów na ref łącznie z obu pól, i 20 ostrzeżeń o nieznanych nazwach (nazwa do
 256 znaków), poza komunikatem o konflikcie i ograniczeniu listy. Kontekst polecenia obejmuje najwyżej
-80 znaków przed tokenem. Dowody są zwykłym tekstem. Zakresy `files` i `links` są zarezerwowane:
-obecnie zwracają pustą listę oraz ostrzeżenie, bez odczytu plików i hostingu.
+80 znaków przed tokenem. Dowody są zwykłym tekstem. Zakres `links` jest zarezerwowany:
+obecnie zwraca pustą listę oraz ostrzeżenie, bez odczytu hostingu.
 
 Okno zlecenia analizuje tekst po krótkiej pauzie. Odpowiedź przyjmuje tylko dla bieżącego tagu,
 revision, karty, projektu i repozytorium. Zmiana tekstu, kontekstu lub wyboru unieważnia oczekującą
 odpowiedź. Podpowiedź nigdy nie zmienia wyboru samoczynnie. „Użyj <pełny ref>” wypełnia istniejące pole
 bazy z SHA; dopiero `StartCard` utrwala decyzję. Błąd analizy nie blokuje ręcznego startu. Dla utrwalonej
 bazy podpowiedzi są wyłączone. Sam odczyt nie zapisuje karty ani dziennika i nie mutuje gita.
+
+**Lokalna historia plików (PT-197).** Przycisk „Sprawdź lokalną historię plików” wywołuje ten sam
+kontrakt z `scope: files`. Analiza działa w istniejącym wątku roboczym i nie blokuje ręcznego startu.
+Ścieżki pochodzą z opisu karty i polecenia: nazwy z ukośnikiem lub kropką, a w cytatach/backtickach
+także nazwy bez rozszerzenia i ze spacjami. Ścieżki są względne wobec katalogu repozytorium;
+bezwzględne przyjmujemy tylko wewnątrz tego katalogu. Traversal i globy są pomijane z ostrzeżeniem.
+Nie odczytujemy wskazanych plików z dysku, nie podążamy za dowiązaniami; plik może istnieć wyłącznie
+w drzewie gałęzi feature. Sam basename jest używany dopiero po jednoznacznym dopasowaniu w całym
+analizowanym zbiorze drzew. Wieloznaczny skrót wymaga podania ścieżki od katalogu repozytorium.
+Plik w katalogu głównym można wskazać dokładnie jako `./config.py`, także gdy gdzie indziej jest jego imiennik.
+
+Zakres wynosi najwyżej 20 różnych ścieżek, 100 lokalnie dostępnych refów gałęzi (lokalnych i remote,
+bez symbolicznych), uporządkowanych po dacie commita końcowego, 200 najnowszych osiągalnych commitów
+na gałąź oraz 5 sekund łącznie. Każde wywołanie gita dostaje pozostały czas. Najpierw ograniczamy
+zbiór commitów bez filtra ścieżek, następnie czytamy zmiany plików wyłącznie w tym zbiorze, bez
+dalszego przechodzenia historii. Ścieżki trafiają za `--` z literalnymi pathspecami, bez powłoki.
+Nie ma fetch, checkoutu ani indeksowania całej historii. Przy limicie lub błędzie wynik pozostaje
+częściowy; ostrzeżenie wyjaśnia, że brak wskazania nie wyklucza gałęzi. Odpowiedź zawiera również
+`analysis: {partial, paths, branches, limits: {paths, branches, commitsPerBranch, seconds}}`.
+
+Kandydat zawsze ma `source: files`, `strength: heuristic`, końcowy ref/SHA oraz dowody
+`{path, commit, timestamp, time}` (czas committera UTC). Dowód wymaga obecności ścieżki w drzewie
+końcowego SHA i dotknięcia jej w ograniczonej historii. Ranking: liczba udowodnionych ścieżek
+(`matchedPaths`), następnie najnowszy czas ich dotknięcia (`lastTouch`); data niezwiązanego commita
+końcowego nie podwyższa oceny. Identyczna ocena daje identyczny `rank`, także dla wspólnego przodka
+kilku gałęzi; kolejność alfabetyczna jest wyłącznie porządkiem prezentacji. Wspólna lista pokazuje
+pozycję, ścieżkę, dotykający commit i czas. Dopiero „Użyj <pełny ref>” zmienia ręczną bazę, a start
+przekazuje wybrany SHA do istniejącego mechanizmu utrwalania bazy.
 
 **Baza startu karty (PT-194, PT-211).** Od razu, Mam plan (`entry: import`), propozycja z Konsoli
 (`entry: plan`) i oba istniejące tryby Planowania korzystają z jednego rozstrzygnięcia bazy.
