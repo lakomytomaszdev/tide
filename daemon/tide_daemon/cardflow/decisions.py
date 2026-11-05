@@ -167,6 +167,7 @@ def _question(st, name, step, done) -> dict:
     options = [_option(f"answer-{index + 1}", raw["title"], raw["effect"], RESOLVE_STEP,
                        {"choice": "answer", "step": name, "answer": raw["title"]}, recommended=raw["recommended"])
                for index, raw in enumerate(raw_options)]
+    options += wait_ticket_options(st, name, step, done.get("question") or "")
     reply = {"method": RESOLVE_STEP, "params": {"choice": "answer", "step": name}, "field": "answer"}
     decision = _decision(st, name, step, "question", happened,
                          "Krok czeka na odpowiedź; bez niej nie pójdzie dalej." if question else "",
@@ -382,7 +383,7 @@ def _single_permission(st, name, step, done) -> dict:
 
 BLOCKED_BY_SCOPE = re.compile(r"ponowienie (?:kroku )?nic|nie zamknie|wymagane działanie koordynatora|decyzj\w* "
                               r"(?:właściciela|koordynatora|użytkownika)|poza zakresem (?:tego )?kroku|brak dostawy|"
-                              r"zakres (?:tego )?kroku nie pozwala", re.I)
+                              r"zakres (?:tego )?kroku nie pozwala|nie ponawiać|bloker\w* .{0,40}niespełnion", re.I)
 
 
 def _error(st, name, step, done) -> dict:
@@ -447,6 +448,14 @@ def _error(st, name, step, done) -> dict:
                    "Ticket wypada z karty (zmiany zostają na jego gałęzi); tickety, które na niego czekały, ruszą dalej.",
                    RESOLVE_STEP, {"choice": "reject", "step": name})] if step.get("ticket") else []),
     ]
+    waits = wait_ticket_options(st, name, step, reason)
+    if waits and blocked:
+        # Wykonawca pisze, że brakuje pracy innego ticketu tej karty (06.11, K-38/PT-191 → PT-171): czekanie, nie ponowienie.
+        options = [{**o, "recommended": False} for o in options]
+        waits[0]["recommended"] = True
+        why = ("Wykonawca zgłasza, że brakuje pracy innego ticketu tej karty. „Czekaj na …” wstrzyma ten krok bez "
+               "pytań; Tide wznowi go sam po scaleniu tamtego ticketu do gałęzi karty.")
+    options = options + waits
     # „Ponów z instrukcją” (03.11, K-16/LEGAL-67): agent kręcił się na tym samym powodzie, a użytkownik nie miał jak
     # mu powiedzieć, co zrobić inaczej. Tekst trafia do wznowionego kroku jako polecenie użytkownika.
     reply = {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
@@ -663,6 +672,23 @@ def _decision(st, name, step, kind, happened, why, options, reply, fault, techni
 def _sentences(kind: str, happened: str, why: str) -> dict:
     generic = GENERIC.get(kind, ("Karta czeka na Twoją decyzję.", "Bez niej karta nie pójdzie dalej."))
     return {"happened": _text(happened) or generic[0], "why": _text(why) or generic[1]}
+
+
+def wait_ticket_options(st: FlowState, name: str, step: dict, text: str) -> list[dict]:
+    """„Czekaj na PT-x” dla niescalonych ticketów planu tej karty wymienionych w treści pytania albo błędu (najwyżej 2)."""
+    rows = (st.plan_approved or {}).get("rows") or []
+    own = step.get("ticket") or ""
+    mentioned = dict.fromkeys(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or "")))
+    out = []
+    for row in rows:
+        ident = str(row.get("id") or "")
+        if ident in mentioned and ident != own and ident not in st.rejected and \
+                not (st.results.get(("merge", ident)) or {}).get("ok") and own not in (row.get("blockers") or []):
+            out.append(_option(f"wait-ticket-{ident}", f"Czekaj na {ident}",
+                               f"Krok stoi bez pytań; Tide wznowi go sam po scaleniu {ident} do gałęzi karty "
+                               "i każe najpierw scalić gałąź karty do gałęzi ticketu.",
+                               RESOLVE_STEP, {"choice": "wait-ticket", "step": name, "waitTicket": ident}))
+    return out[:2]
 
 
 def _option(ident, title, effect, method, params, *, recommended=False) -> dict:

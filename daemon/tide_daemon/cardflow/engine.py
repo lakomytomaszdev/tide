@@ -63,7 +63,7 @@ from .mergepreview import source_dirty
 from .mergeop import MergeWorktree
 from .journal import Journal
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
-                    guard_reason, _epoch)
+                    guard_reason, ticket_waits, _epoch)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -2304,6 +2304,13 @@ class FlowEngine(PlanEditing):
             if st.plan_approved is not None:
                 self._plan_next(card, st)
             return
+        waiting_ticket = (st.step_decisions.get(st.last_step) or {}).get("waitTicket")
+        if result in ("question", "error") and waiting_ticket:
+            merged = (st.results.get(("merge", waiting_ticket)) or {}).get("ok")
+            if merged or waiting_ticket in st.rejected:
+                self._resume_step(card, st, step, {"choice": "answer" if result == "question" else "retry",
+                                                   "answer": self._wait_ticket_resume_text(st, step, waiting_ticket)})
+            return
         waiting_card = (st.step_decisions.get(st.last_step) or {}).get("waitCard")
         if result in ("question", "error") and waiting_card:
             if self._card_done(waiting_card):
@@ -2786,7 +2793,7 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
                                                             "card", "ticket", "baseDecision", "baseRef", "baseCommit",
-                                                            "previewId"}:
+                                                            "previewId", "waitTicket"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
@@ -2851,8 +2858,9 @@ class FlowEngine(PlanEditing):
                         "preview": self.preview_card_base_change(card, {"step": focus})}
         elif base_decision is not None:
             raise FlowError("bad-request", "ten krok nie ma poprawnej propozycji bazy")
-        valid = {"question": ("answer", "wait-card"), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject", "wait-card"),
+        valid = {"question": ("answer", "wait-card", "wait-ticket"),
+                 "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
+                 else ("allow", "deny"), "error": ("retry", "change-executor", "reject", "wait-card", "wait-ticket"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
@@ -2918,6 +2926,10 @@ class FlowEngine(PlanEditing):
             if not re.fullmatch(r"K-\d+", target) or target == card or not self.journal.read(target):
                 raise FlowError("bad-card", "podaj kartę z przepływem, na którą krok ma czekać (np. K-43)")
             extra = {"waitCard": target}
+        if choice == "wait-ticket":
+            # „Czeka na ticket” (06.11, K-38/PT-191 czekał na PT-171): odpowiedź „czekaj” wznawiała krok od razu,
+            # krok kończył się błędem i wracał do użytkownika. Teraz stoi bez pytań do scalenia wskazanego ticketu.
+            extra = {"waitTicket": self._wait_ticket_target(st, step, request.get("waitTicket"))}
         if choice == "allow" and "allow" in request:
             extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
         if choice == "deny" and instead:
@@ -2925,7 +2937,7 @@ class FlowEngine(PlanEditing):
         if request.get("auto"):
             extra["auto"] = True
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry", "wait-card") else "",
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry", "wait-card", "wait-ticket") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
@@ -3967,6 +3979,8 @@ class FlowEngine(PlanEditing):
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         if data.get("result") == "question" and data.get("baseProposal") is not None:
             extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
+        if data.get("waitFor"):
+            extra["waitFor"] = data["waitFor"]
         remembered = False
         auto_allow = False
         broken_mcp = self._codex_broken_mcp(step, data)
@@ -4005,7 +4019,8 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
-        if data.get("result") == "question":
+        waiting = bool(data.get("waitFor")) and self._declared_wait(card, name, step, data)
+        if data.get("result") == "question" and not waiting:
             self._env_question(card, step, data)
         if broken_mcp:
             # Błąd konfiguracji Codexa po stronie Tide: zapamiętany serwer jest odtąd pomijany, krok rusza sam.
@@ -4141,6 +4156,8 @@ class FlowEngine(PlanEditing):
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
                 "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
+                "waitFor": str(data.get("waitFor") or "").strip()[:32]
+                if data["result"] in ("question", "error") and isinstance(data.get("waitFor"), str) else "",
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
 
     @staticmethod
@@ -4484,6 +4501,61 @@ class FlowEngine(PlanEditing):
             if value:
                 found[field] = value
         return found
+
+    @staticmethod
+    def _wait_ticket_target(st: FlowState, step: dict, target) -> str:
+        """Ticket planu tej karty, na którego scalenie krok ma czekać: identyfikator (PT-171) albo numer z planu (#3).
+        Odmowa: spoza planu, własny ticket, odrzucony albo czekanie w kółko (cel czeka na ten ticket)."""
+        raw = str(target or "").strip()
+        own = step.get("ticket") or ""
+        rows = (st.plan_approved or {}).get("rows") or []
+        found = next((str(r.get("id") or "") for r in rows if raw and (
+            str(r.get("id") or "").upper() == raw.upper() or r.get("workId") == raw)), "")
+        if not found or found == own:
+            raise FlowError("bad-ticket", "podaj inny ticket z planu tej karty, na który krok ma czekać (np. PT-171)")
+        if found in st.rejected:
+            raise FlowError("bad-ticket", f"{found} jest odrzucony — nie ma na co czekać")
+        row = next((r for r in rows if r.get("id") == found), {})
+        if own and own in (row.get("blockers") or []) or own in ticket_waits(st).get(found, ""):
+            raise FlowError("bad-ticket", f"{found} sam czeka na {own} — czekanie w kółko")
+        return found
+
+    @staticmethod
+    def _wait_ticket_resume_text(st: FlowState, step: dict, target: str) -> str:
+        decision = next((d for name, d in st.step_decisions.items() if d.get("waitTicket") == target and
+                         (st.steps.get(name) or {}).get("ticket") == step.get("ticket")), {})
+        note = str(decision.get("answer") or "").strip()
+        if target in st.rejected:
+            text = (f"Ticket {target}, na który czekał ten krok, został odrzucony i nie trafi do gałęzi karty. "
+                    "Dokończ ticket bez niego albo zakończ krok pytaniem o zakres.")
+        else:
+            card_branch = ticket_of(st, step.get("ticket") or "").get("cardBranch") or "gałąź karty"
+            text = (f"Ticket {target}, na który czekał ten krok, jest scalony do gałęzi karty {card_branch}. "
+                    f"Najpierw scal ją do gałęzi ticketu w tym worktree (`git merge --no-edit {card_branch}`; "
+                    "konflikty rozwiąż i zatwierdź), potem kontynuuj ticket.")
+        return text + (f"\nUwaga użytkownika: {note}" if note else "")
+
+    def _declared_wait(self, card: str, name: str, step: dict, data: dict) -> bool:
+        """Krok sam zgłosił w wyniku `waitFor` (ticket planu albo karta): Tide zapisuje decyzję czekania bez pytania
+        użytkownika i wznowi krok, gdy cel się domknie. Zły cel — zwykłe pytanie albo błąd kroku."""
+        target = str(data.get("waitFor") or "").strip()
+        st = fold(self.journal.read(card))
+        extra = {}
+        if re.fullmatch(r"[Kk]-\d+", target):
+            other = target.upper()
+            if other == card or not self.journal.read(other):
+                return False
+            extra = {"waitCard": other}
+        else:
+            try:
+                extra = {"waitTicket": self._wait_ticket_target(st, step, target)}
+            except FlowError:
+                return False
+        self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                            kind=step.get("kind") or "",
+                            choice="wait-card" if "waitCard" in extra else "wait-ticket",
+                            answer="", command="", executor="", auto=True, **extra)
+        return True
 
     def _card_done(self, card: str) -> bool:
         """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""

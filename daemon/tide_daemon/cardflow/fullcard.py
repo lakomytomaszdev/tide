@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from . import history
 from .labels import kind_label
-from .state import FlowState
+from .state import FlowState, ticket_waits
 
 PHASES = (("order", "Zlecenie"), ("planning", "Planowanie"), ("plan-review", "Review planu"),
           ("plan-approval", "Zatwierdzenie planu"), ("tickets", "Tickety"), ("closing", "Domknięcie"),
@@ -299,6 +299,9 @@ def waiting_on(st: FlowState, ident: str, row: dict, decisions: list[dict], merg
         if stop["ticket"] == ident:
             found.setdefault("limit", {"kind": "limit", "until": stop["until"]})
     blockers = [b for b in row.get("blockers") or [] if b not in merged and b not in st.rejected]
+    waited = ticket_waits(st).get(ident)
+    if waited and waited not in blockers:
+        blockers.append(waited)       # „czeka na ticket” z decyzji kroku (06.11) liczy się jak bloker
     if blockers:
         found.setdefault("blocker", {"kind": "blocker", "ticket": blockers[0]})
     for (ticket, _kind), wait in st.waiting.items():
