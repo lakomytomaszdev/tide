@@ -91,7 +91,8 @@ class BoxCase(unittest.TestCase):
         # Szablony stosów z fixture'a (dane i skrypty powłoki) zamiast box/stacks.
         self.stacks = os.path.join(self.tmp, "stacks")
         os.makedirs(self.stacks)
-        for name, body in (("base.yaml", BASE_YAML), ("node.yaml", NODE_YAML)):
+        for name, body in (("base.yaml", BASE_YAML), ("node.yaml", NODE_YAML),
+                           ("docker.yaml", "stack: docker\nimages: [testcontainers/ryuk:0.11.0]\n")):
             with open(os.path.join(self.stacks, name), "w", encoding="utf-8") as fh:
                 fh.write(body)
         with open(os.path.join(self.stacks, "node.sh"), "w", encoding="utf-8") as fh:
@@ -99,6 +100,8 @@ class BoxCase(unittest.TestCase):
                      '>> "$TIDE_FAKE_LOG"\n')
         with open(os.path.join(self.stacks, "lib.sh"), "w", encoding="utf-8") as fh:
             fh.write("# atrapa wspólnych funkcji szablonów\n")
+        with open(os.path.join(self.stacks, "docker.sh"), "w", encoding="utf-8") as fh:
+            fh.write("true\n")
         p = mock.patch.object(templates, "STACKS_DIR", self.stacks)
         p.start()
         self.addCleanup(p.stop)
@@ -425,7 +428,8 @@ class BuildTest(BoxCase):
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
                                 "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
-                                "-c", "security.nesting=true"])
+                                "-c", "security.nesting=true", "-c", "security.syscalls.intercept.mknod=true",
+                                "-c", "security.syscalls.intercept.setxattr=true"])
         self.assertIn(["config", "device", "override", "--project", "user-1000", "plasma-tide", "root", "size=25GB"],
                       self.incus_calls())
 

@@ -2,7 +2,7 @@
 
 Kolejność budowy (`build`):
  1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
-    z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
+    z profilu i nesting oraz intercept mknod/setxattr tylko dla Dockera; nigdy
     `security.privileged`; rozmiar dysku głównego `resources.disk`; wolumen `<pudełko>-home` na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
@@ -91,6 +91,7 @@ class BuildResult:
     failed_verify: list = field(default_factory=list)
     steps: list = field(default_factory=list)
     duration: float = 0.0
+    failed_images: list = field(default_factory=list)
 
 
 def templates_version(scripts_dir: str | None = None) -> str:
@@ -191,6 +192,8 @@ class Builder:
         config = {"limits.cpu": res["cpu"], "limits.memory": res["memory"]}
         if full["docker"]["enabled"]:
             config["security.nesting"] = True
+            config["security.syscalls.intercept.mknod"] = True
+            config["security.syscalls.intercept.setxattr"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
         home_pending = self._attach_home(name)
@@ -245,10 +248,12 @@ class Builder:
             steps.append("setup")
             self._run(name, ["bash", "-c", command], env, f"setup: {command}")
         # 7. docker pull
+        failed_images = []
         if full["docker"]["enabled"]:
             for image in templates.build_images(full):
                 steps.append(f"docker:{image}")
-                self._run(name, ["docker", "pull", image], env, f"docker pull {image}")
+                if self.incus.exec(name, ["docker", "pull", image], env) != 0:
+                    failed_images.append(image)
         # 8. verify
         failed = []
         if full["verify"]:
@@ -265,9 +270,10 @@ class Builder:
         self.incus.config_set(name, {bs.RECIPE_KEY: json.dumps(stamp, sort_keys=True, separators=(",", ":"))})
         snap_start = self.clock()
         self.incus.snapshot_create(name, bs.SNAPSHOT)
-        bs.record(slug, "box.ready", name, self.wall, hash=stamp["hash"], warning=bool(failed),
+        warning = bool(failed or failed_images)
+        bs.record(slug, "box.ready", name, self.wall, hash=stamp["hash"], warning=warning, failed_images=failed_images,
                   duration=round(self.clock() - snap_start, 3))
-        return BuildResult(name, stamp["hash"], bool(failed), failed, list(steps))
+        return BuildResult(name, stamp["hash"], warning, failed, list(steps), failed_images=failed_images)
 
     def _run(self, name, command, env, what):
         code = self.incus.exec(name, command, env)

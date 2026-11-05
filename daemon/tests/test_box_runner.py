@@ -102,6 +102,20 @@ class BoxRunnerCase(unittest.TestCase):
 
 
 class ArgvTest(BoxRunnerCase):
+    def test_allocated_ports_only_reach_env_and_docker_host_is_removed(self):
+        from tide_daemon.box.ports import PortPool
+        env = PortPool("proj", "proj").acquire("K-1/s1", {
+            "ports": {"pool": [49123, 49142], "env": ["APP_PORT"]}})
+        runner = self.runner(step_env=lambda s: {**env, "DOCKER_HOST": "unix:///host/docker.sock"})
+        self.assertNotIn("DOCKER_HOST", runner.env(self.step()))
+        runner.start(self.step())
+        values = self.env_file()
+        for key, value in env.items():
+            self.assertEqual(values[key], value)
+            self.assertNotIn(value, " ".join(self.popen_calls[0]["argv"]))
+        self.assertNotIn("DOCKER_HOST", values)
+        self.assertNotIn("DOCKER_HOST", self.popen_calls[0]["env"])
+
     def test_argv_runs_the_step_as_agent_service_without_any_in_env_value(self):
         mac = local.LocalAgent("mac", "http://mac.lan:11434", "openai", "qwen3-coder:30b", 65536, self.token_file)
         runner = self.runner(step_env=lambda s: {"E2E_PORT": "4301", "TIDE_SECRET_MARK": MARKER + "-env"})

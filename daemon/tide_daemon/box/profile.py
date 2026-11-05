@@ -174,7 +174,7 @@ def display_items(profile: dict, known: dict | None = None) -> list:
     out = [(name, "packs" if name.startswith("pack:") else "network", klass) for name, klass in items(profile, known)
            if name != "box:per-card"]
     docker = profile.get("docker") or {}
-    if docker.get("enabled"):
+    if docker.get("enabled") or "docker" in profile.get("stacks", []):
         out.append(("docker", "docker", YELLOW))
     for image in docker.get("images") or []:
         out.append((f"image:{image}", "docker", YELLOW))
@@ -412,7 +412,9 @@ def with_defaults(profile: dict) -> dict:
     net.setdefault("host-ollama", False)
     net.setdefault("full", False)
     dk = out.setdefault("docker", {})
-    dk.setdefault("enabled", False)
+    dk["enabled"] = bool(dk.get("enabled") or "docker" in out["stacks"])
+    if dk["enabled"] and "docker" not in out["stacks"]:
+        out["stacks"].append("docker")
     dk.setdefault("images", [])
     res = out.setdefault("resources", {})
     for key, val in DEFAULT_RESOURCES.items():

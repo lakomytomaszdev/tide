@@ -353,7 +353,8 @@ def propose_profile(report: StackReport, project: str = "") -> dict:
     for image in images:
         note = notes.get(image, {})
         items.append(_item("image", image, note.get("risk", "yellow"),
-                           note.get("note", "obraz wykryty w projekcie"), "docker"))
+                           " ".join([templates.DOCKER_RISK_NOTE, note.get("note", "obraz wykryty w projekcie")]),
+                           "docker"))
     node = report.node
     if node:
         profile["node"] = {"version": node.get("version") or "20"}

@@ -445,6 +445,7 @@ class BoxRunner:
         env = dict(bg.env)
         if self.step_env is not None:
             env.update(self.step_env(step) or {})
+        env.pop("DOCKER_HOST", None)
         return env
 
     # --- urządzenia --------------------------------------------------------------------------------
@@ -664,6 +665,7 @@ class BoxRunner:
             fs.write_secret(os.path.join(bg.step_dir, "in", LOCAL_TOKEN_FILE), launch.read_token(step.local.token_file))
         if self.step_env is not None:
             env.update(self.step_env(step) or {})
+        env.pop("DOCKER_HOST", None)
         fs.write_secret(os.path.join(bg.step_dir, "in", ENV_FILE), env_file_text(env))
         for path in (bg.exit_file, bg.exit_file + ".tmp"):
             fs.unlink(path)
@@ -786,7 +788,7 @@ def _demo(argv: list) -> int:
                             capture_output=True, text=True, check=True).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")
-    step_id = f"demo-{stamp}"
+    step_id = f"demo-{stamp}-{secrets.token_hex(4)}"
     step_dir = f"{worktree}.{step_id}.step"
     # Znacznik ze zmiennej środowiska (nie z argv — ten widać w `ps`), żeby skrypt próby mógł go szukać.
     marker = os.environ.get("TIDE_DEMO_MARKER") or "tide-demo-" + secrets.token_hex(8)
@@ -797,18 +799,36 @@ def _demo(argv: list) -> int:
         box = bs.card_box_name(args.slug, args.card) if args.card else bs.box_name(args.slug)
         Incus(settings.project).file_push(TIDE_STEP_SCRIPT, box, remote)
         tide_step = ("/bin/sh", remote)
-    runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step,
-                       step_env=lambda _s: {"TIDE_DEMO_SECRET": marker})
+    from .ports import PortPool, PoolExhausted
+    profile = bs.bp.load_project(args.slug) or {"tide-box": bs.bp.SCHEMA_VERSION}
+    if args.card:
+        profile = bs.bp.merge(profile, bs.bp.load_card(args.slug, args.card) or {
+            "tide-box": bs.bp.SCHEMA_VERSION}).profile
+    runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step)
+    pool = PortPool(args.slug, runner.box)
+    try:
+        port_env = pool.acquire(step_id, profile)
+    except PoolExhausted as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    runner.step_env = lambda _s: {**port_env, "TIDE_DEMO_SECRET": marker}
     step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
                          step_id=step_id)
 
     def use_command(bg):
         bg.argv = list(command)
 
-    bg, proc = runner.start(step, before_start=use_command)
+    try:
+        bg, proc = runner.start(step, before_start=use_command)
+    except BaseException:
+        if port_env:
+            pool.release(step_id)
+        raise
     print(f"pudełko: {runner.box}\njednostka: {runner.unit_for(bg)}\nkatalog kroku: {step_dir}\n"
           f"znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET={marker}", flush=True)
     code = proc.wait()
+    if port_env:
+        pool.release(step_id)
     for title, path in (("step.log", bg.log_file), (EXEC_LOG, os.path.join(step_dir, "out", EXEC_LOG))):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:

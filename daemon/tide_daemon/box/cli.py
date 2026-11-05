@@ -95,7 +95,12 @@ def run_build(builder, slug, out) -> int:
     print(f"pudełko {res.box}: migawka clean, hash {res.hash}, {res.duration:.1f} s", file=out)
     print(f"dziennik odmów proxy: {os.path.join(bb.state_dir(slug), 'build-denied.log')}", file=out)
     if res.warning:
-        print("zbudowane z ostrzeżeniem — verify nieudane: " + "; ".join(res.failed_verify), file=out)
+        details = []
+        if res.failed_verify:
+            details.append("verify nieudane: " + "; ".join(res.failed_verify))
+        if res.failed_images:
+            details.append("obrazy niepobrane: " + "; ".join(res.failed_images))
+        print("zbudowane z ostrzeżeniem — " + "; ".join(details), file=out)
     return 0
 
 

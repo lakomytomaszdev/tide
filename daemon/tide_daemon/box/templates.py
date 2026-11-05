@@ -14,6 +14,9 @@ import os
 STACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stacks")
 RISKS = ("green", "yellow", "red")
 BASE = "base"
+DOCKER_RISK_NOTE = ("Ryzyko K1: użytkownik agent w grupie docker ma prawa roota pudełka "
+                    "(może zamontować jego rootfs); denyRead nie chroni poświadczeń przed kodem testów. "
+                    "Filtrowanie NIC zapewnia Incus; pełna ochrona poświadczeń: K3.")
 BUILD_ONLY = "build-domains"   # domeny tylko w czasie budowy (PT-192)
 
 _cache: dict = {}
@@ -117,7 +120,10 @@ def load(stack: str) -> dict:
 
 
 def _profile_stacks(profile: dict) -> list[str]:
-    return [str(s) for s in (profile.get("stacks") or [])]
+    stacks = [str(s) for s in (profile.get("stacks") or [])]
+    if (profile.get("docker") or {}).get("enabled") and "docker" not in stacks:
+        stacks.append("docker")
+    return stacks
 
 
 def work_domains(profile: dict) -> tuple:
