@@ -1565,7 +1565,10 @@ class FlowEngine(PlanEditing):
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
-        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
+        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands,
+                                         step_dir=step_dir, box=placement is not None)
+        if placement is not None:
+            prompt += handoff.box_tests(placement.profile)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
@@ -3089,6 +3092,7 @@ class FlowEngine(PlanEditing):
                                      round_no=round_no, card_branch=info["cardBranch"],
                                      ticket_branch=info["branch"], worktree=path, out_dir=out,
                                      diff=diff, note=self._note(card, source), rules=self._rules(project.repo))
+        prompt += handoff.test_evidence(source)
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": path}, step_id, [],

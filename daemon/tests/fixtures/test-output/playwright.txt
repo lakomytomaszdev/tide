@@ -1,0 +1,4 @@
+Running 10 tests using 2 workers
+  2 failed
+  1 skipped
+  7 passed (3.2s)

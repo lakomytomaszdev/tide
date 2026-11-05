@@ -118,12 +118,22 @@ Nie wykonuj push ani scalenia gałęzi.
 """
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, box: bool = False) -> str:
     """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
     own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
            "nie proś o zgodę na niego.\n") if step_dir else ""
+    wrapped = ("W pudełku wolno opakować dozwolone polecenie testowe jako `tide-test <polecenie> [argumenty…]`\n"
+               "bez osobnego wpisu tide-test na liście zgód. Dla tej formy sprawdzaj listę dozwolonych\n"
+               "wobec polecenia wewnątrz owijki. Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c,\n"
+               "nie sam program sh; owijka ani powłoka nie rozszerzają zgody na argumenty lub łańcuchy.\n"
+               "Zakazy mają pierwszeństwo: sprawdzaj zarówno pełne wywołanie, jak i polecenie wewnętrzne\n"
+               "(w tym każde polecenie w treści sh -c). Zabronionego polecenia nie uruchamiaj przez owijkę.\n"
+               "Lista verify profilu wskazuje testy do opakowania, sama nie nadaje zgody na ich wykonanie.\n") if box else ""
+    boundary = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
+                "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.") if box else (
+                "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
     return f"""
 
 Polecenia projektu w tym kroku (najnowsza lista):
@@ -131,7 +141,7 @@ Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
 Zabronione polecenia:
 {deny}
-{own}Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+{own}{wrapped}{boundary}
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
 na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
 Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
@@ -254,6 +264,58 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
 
 Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 """
+
+
+def box_tests(profile: dict) -> str:
+    """Instrukcja tylko dla BoxRunner; polecenia profilu są także testami."""
+    import shlex
+    commands = profile.get("verify") or []
+    examples = "\n".join(f"- tide-test {shlex.join(['sh', '-c', command])}" for command in commands)
+    return ("\nTesty w pudełku: testy uruchamiaj przez `tide-test <polecenie> [argumenty…]`. "
+            "Dotyczy verify profilu oraz npm test, npx playwright test, dotnet test, make test, pytest "
+            "i python -m unittest. Dla złożonego polecenia użyj tide-test sh -c '…'. "
+            "Owijka zachowuje środowisko, katalog roboczy i kod wyjścia; zapisuje log i podsumowanie "
+            "w out/tests katalogu tego kroku, poza worktree.\n" +
+            ("Polecenia verify profilu:\n" + examples + "\n" if examples else ""))
+
+
+def test_evidence(step: dict) -> str:
+    """Spis istniejących artefaktów autora; HostRunner zachowuje dawne przekazanie."""
+    if step.get("runner") != "box":
+        return ""
+    import os
+    import stat
+    from ..box.runner import StepDir
+    from ..tasks.agentcmd import StepError
+    path = step.get("stepDir") or ""
+    found = []
+    tests = False
+    try:
+        fs = StepDir(os.path.dirname(path), path)
+        for parts in (("out",), ("out", "tests")):
+            try:
+                fd = fs._walk(parts, create=False)
+            except OSError:
+                continue
+            try:
+                for name in sorted(os.listdir(fd)):
+                    wanted = (name == "proxy-denied.log" if len(parts) == 1 else
+                              name == "summary.json" or bool(re.fullmatch(r"\d+\.log", name)))
+                    if not wanted:
+                        continue
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode):
+                        artifact = os.path.join(path, *parts, name)
+                        found.append(f"- `{artifact}` — {info.st_size} B")
+                        tests |= len(parts) == 2
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, StepError):
+        pass
+    return ("\nArtefakty kroku wykonawcy:\n" + "\n".join(found) + "\n" +
+            ("krok bez testów.\n" if not tests else "") +
+            "świeży artefakt = dowód; nie proś o ponowny przebieg. "
+            "Sprawdź zgodność polecenia, wyniku i czasu artefaktu z ocenianą zmianą.\n")
 
 
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,

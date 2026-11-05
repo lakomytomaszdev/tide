@@ -245,7 +245,7 @@ class StepDir:
     def mkdir(self, path: str) -> None:
         self._guard(path, lambda: os.close(self._walk(self._rel(path))))
 
-    def write(self, path: str, text: str) -> None:
+    def write(self, path: str, text: str, *, mode: int | None = None) -> None:
         """Zwykły plik (0644): istniejący musi być zwykłym plikiem z jednym dowiązaniem; obcinany po sprawdzeniu."""
         parts = self._rel(path)
 
@@ -258,6 +258,8 @@ class StepDir:
                 os.close(folder)
             try:
                 self._check_regular(fd, path)
+                if mode is not None:
+                    os.fchmod(fd, mode)
                 os.ftruncate(fd, 0)
                 _write_all(fd, text.encode("utf-8"))
             finally:
@@ -410,6 +412,8 @@ class BoxRunner:
         bg = agentcmd.background(bstep)
         bg.env.update(proxy_env(self.proxy_base()))
         bg.env["TIDE_CWD"] = bg.cwd
+        bg.env["TIDE_STEP"] = bg.step_dir
+        bg.env["PATH"] = os.path.join(bg.step_dir, "in", "bin") + os.pathsep + bg.env["PATH"]
         # Katalog tymczasowy Claude Code leży w /tmp pudełka (zakłada go tide-step), nie na hoście.
         tmp = bg.env.get("CLAUDE_CODE_TMPDIR")
         if tmp:
@@ -653,6 +657,9 @@ class BoxRunner:
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
         fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
         fs.prepare(bg)
+        from . import test_artifacts
+        with open(test_artifacts.__file__, encoding="utf-8") as source:
+            fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-test"), source.read(), mode=0o755)
         if before_start is not None:
             before_start(bg)
         env = dict(bg.env)

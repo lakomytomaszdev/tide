@@ -529,12 +529,27 @@ class DeniedTest(BoxFlow):
         self.deny("K-1-PT-1-1", "telemetry.example.org", "telemetry.example.org")
         self.engine._finish(self.card_id, step, exit_code=0)
         done = self.finished(self.card_id, "K-1-PT-1-1")
+        with open(os.path.join(step["stepDir"], "out", "proxy-denied.log")) as copied:
+            with open(boxstep.denied_log_path(SLUG, step["step"])) as original:
+                self.assertEqual(copied.read(), original.read())
         self.assertEqual(done["result"], "done")
         self.assertIn(boxstep.NOTE_FILE, done["notes"])
         note = os.path.join(self.root, self.engine.journal.rel_dir(self.card_id), "steps", "K-1-PT-1-1",
                             boxstep.NOTE_FILE)
         with open(note, encoding="utf-8") as fh:
             self.assertIn("telemetry.example.org:443", fh.read())
+
+    def test_copy_of_proxy_log_never_follows_output_symlink(self):
+        step = self.step(self.card_id, "K-1-PT-1-1", {"result": "done", "notes": []})
+        self.deny(step["step"], "telemetry.example.org")
+        target = os.path.join(self.base, "do-not-change")
+        with open(target, "w") as fh:
+            fh.write("nietknięty")
+        os.symlink(target, os.path.join(step["stepDir"], "out", "proxy-denied.log"))
+        self.engine._finish(self.card_id, step, exit_code=0)
+        with open(target) as fh:
+            self.assertEqual(fh.read(), "nietknięty")
+        self.assertEqual(self.finished(self.card_id, step["step"])["result"], "done")
 
     def test_forged_entry_in_the_step_dir_is_ignored(self):
         """Dziennik odmów leży poza katalogiem kroku (rw w pudełku) — plik podłożony przez agenta nic nie znaczy."""
@@ -714,13 +729,28 @@ class BoxStepInProcessTest(BoxFlow):
         return step
 
     def test_ticket_step_runs_in_the_box_and_finishes(self):
-        self.build_box()
+        self.build_box({"tide-box": 1, "verify": ["make test"],
+                        "network": {"domains": ["api.example.org"]}})
+        changed = json.loads(self.board.upsert_project(json.dumps({
+            "slug": SLUG, "allowedCommands": ["make test"], "deniedCommands": ["make install"]})))
+        self.assertTrue(changed["ok"])
         card_id = self.card()
         with mock.patch.object(refguard, "begin", wraps=refguard.begin) as begin:
             self.assertTrue(self.start(card_id)["ok"])
             step = self.started_box(card_id)
         self.assertEqual(begin.call_args.kwargs["branch"], step["branch"])
         finished = self.finished(card_id)
+        with open(os.path.join(step["stepDir"], "in", "prompt.txt")) as fh:
+            prompt = fh.read()
+        self.assertIn("testy uruchamiaj przez `tide-test", prompt)
+        self.assertIn("- make test\nZabronione polecenia:\n- make install\n", prompt)
+        self.assertIn("bez osobnego wpisu tide-test na liście zgód", prompt)
+        self.assertIn("wobec polecenia wewnątrz owijki", prompt)
+        self.assertIn("Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c", prompt)
+        self.assertIn("Zakazy mają pierwszeństwo", prompt)
+        self.assertIn("(w tym każde polecenie w treści sh -c)", prompt)
+        self.assertIn("- tide-test sh -c 'make test'", prompt)
+        self.assertNotIn("Przed poleceniem spoza listy dozwolonych zapisz", prompt)
         self.assertEqual(finished["result"], "done")
         self.assertTrue(wait_until(lambda: self.proxy.calls[-1][0] == "clear", timeout=10), self.proxy.calls)
         execs = [c for c in self.incus_calls("exec") if "/usr/bin/env" in c]
@@ -743,8 +773,58 @@ class BoxStepInProcessTest(BoxFlow):
         self.assertNotIn("runner", step)
         self.assertIsInstance(self.engine.runner, HostRunner)
         self.assertEqual(self.finished(card_id)["result"], "done")
+        with open(os.path.join(step["stepDir"], "in", "prompt.txt")) as fh:
+            self.assertNotIn("tide-test", fh.read())
         self.assertEqual(self.incus_calls("exec"), [])
         self.assertEqual(self.proxy.calls, [])
+
+    def test_fix_prompt_and_review_receive_box_test_instructions_and_artifacts(self):
+        self.build_box({"tide-box": 1, "verify": ["./custom-check --quick"]})
+        changed = json.loads(self.board.upsert_project(json.dumps({
+            "slug": SLUG, "allowedCommands": ["npm test"], "deniedCommands": ["npm test --unsafe"]})))
+        self.assertTrue(changed["ok"])
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 1")
+        configure = boxstep.configure_background
+        test_dirs = []
+
+        def prepare(*args, **kwargs):
+            configure(*args, **kwargs)
+            if test_dirs:
+                return
+            tests = os.path.join(args[-1].step_dir, "out", "tests")
+            test_dirs.append(tests)
+            os.makedirs(tests, exist_ok=True)
+            for name, content in (("1.log", "4 passed\n"), ("summary.json", "[]")):
+                with open(os.path.join(tests, name), "w") as fh:
+                    fh.write(content)
+
+        # Artefakty istnieją przed startem autora — test nie ściga się z monitorem.
+        # Sprawdzamy przekazanie i prompty; kontrolę czystości przez bwrap testuje gitops.
+        def clean_tip(repo, branch, path):
+            return self.engine.git.sha(repo, f"refs/heads/{branch}")
+
+        with mock.patch.object(boxstep, "configure_background", side_effect=prepare), \
+                mock.patch.object(self.engine.git, "clean_tip", side_effect=clean_tip):
+            self.assertTrue(self.start(card_id)["ok"])
+            self.finished(card_id, count=3)
+        tests = test_dirs[0]
+        steps = self.of(card_id, "step.started")
+        review = next(s for s in steps if s["kind"] == "review")
+        fix = next(s for s in steps if s["kind"] == "fix")
+        with open(os.path.join(review["stepDir"], "in", "prompt.txt")) as fh:
+            prompt = fh.read()
+        self.assertIn(os.path.join(tests, "1.log"), prompt)
+        self.assertIn("— 9 B", prompt)
+        self.assertIn("świeży artefakt = dowód; nie proś o ponowny przebieg", prompt)
+        with open(os.path.join(fix["stepDir"], "in", "prompt.txt")) as fh:
+            prompt = fh.read()
+        self.assertIn("testy uruchamiaj przez `tide-test", prompt)
+        self.assertIn("./custom-check --quick", prompt)
+        self.assertIn("- npm test\nZabronione polecenia:\n- npm test --unsafe\n", prompt)
+        self.assertIn("bez osobnego wpisu tide-test na liście zgód", prompt)
+        self.assertIn("Zakazy mają pierwszeństwo", prompt)
+        self.assertIn("sama nie nadaje zgody na ich wykonanie", prompt)
+        self.assertNotIn("Przed poleceniem spoza listy dozwolonych zapisz", prompt)
 
     def test_restart_during_a_box_step_finds_it_by_its_entry_and_reads_the_result(self):
         self.build_box()
