@@ -22,4 +22,10 @@ domains:
   - name: downloads.claude.ai
     risk: green
     note: pliki instalatora Claude Code (P-6, obraz bazowy)
+# Usługa powitalna Ubuntu w obrazie odzywa się w czasie budowy. W próbie PT-192 z 18:38 obie budowy
+# skończyły się clean, ale miały po osiem odmów tej domeny. Wyjaśniona domena jest dostępna tylko przy budowie.
+build-domains:
+  - name: motd.ubuntu.com
+    risk: green
+    note: Ubuntu motd-news w obrazie bazowym (PT-192, dziennik próby); tylko budowa
 images: []

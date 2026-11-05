@@ -404,6 +404,15 @@ class StackFunctionsTest(unittest.TestCase):
 # ------------------------------------------------------------ szablony danych: domeny tylko budowy
 
 class BuildOnlyDomainsTest(unittest.TestCase):
+    def test_ubuntu_motd_is_build_only_for_every_stack(self):
+        for stack in ([], ["python-qt"], ["dotnet", "docker"]):
+            with self.subTest(stacks=stack):
+                profile = {"tide-box": 1, "stacks": stack}
+                self.assertIn("motd.ubuntu.com", templates.build_domains(profile))
+                self.assertNotIn("motd.ubuntu.com", templates.work_domains(profile))
+                self.assertNotIn("motd.ubuntu.com", templates.known_domains())
+                self.assertNotIn("motd.ubuntu.com", bproxy.compose_policy(profile, {}).domains)
+
     def test_github_only_for_the_docker_build_never_for_steps(self):
         profile = {"tide-box": 1, "stacks": ["dotnet", "docker"]}
         build = templates.build_domains(profile)
@@ -503,9 +512,10 @@ class StackBuildTest(unittest.TestCase):
         want = [d["name"] for d in templates.load("base")["domains"]]
         want += [d["name"] for d in templates.load("python-qt")["domains"] if d["name"] not in want]
         want += ["pypi.example.org"]
+        want += [d["name"] for d in templates.load("base").get(templates.BUILD_ONLY, [])]
         self.assertEqual(domains, want)
         self.assertEqual(domains, list(templates.build_domains(profile)))
-        for host in ("pypi.org", "files.pythonhosted.org", "archive.ubuntu.com", "pypi.example.org"):
+        for host in ("pypi.org", "files.pythonhosted.org", "archive.ubuntu.com", "pypi.example.org", "motd.ubuntu.com"):
             self.assertTrue(policy.allows(host), host)
         for host in ("github.com", "registry-1.docker.io", "api.nuget.org"):
             self.assertFalse(policy.allows(host), host)
@@ -596,6 +606,25 @@ class StackBuildTest(unittest.TestCase):
 class TrialScriptTest(unittest.TestCase):
     TRIAL = os.path.join(ROOT, "scripts", "box", "stacks-trial.sh")
 
+    def test_acceptance_runs_both_checks_and_preserves_either_failure(self):
+        wrapper = os.path.join(ROOT, "scripts", "box", "stacks-acceptance.sh")
+        with tempfile.TemporaryDirectory() as folder:
+            for command, variable in (("bash", "TRIAL_EXIT"), ("make", "TESTS_EXIT")):
+                path = os.path.join(folder, command)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(f'#!/bin/sh\necho {command} >> "$CHECK_LOG"\nexit "${{{variable}}}"\n')
+                os.chmod(path, 0o755)
+            log = os.path.join(folder, "checks.log")
+            for trial, tests in ((0, 0), (2, 0), (0, 3), (2, 3)):
+                with self.subTest(trial=trial, tests=tests):
+                    if os.path.exists(log):
+                        os.remove(log)
+                    env = {**os.environ, "PATH": folder + os.pathsep + "/usr/bin:/bin", "CHECK_LOG": log,
+                           "TRIAL_EXIT": str(trial), "TESTS_EXIT": str(tests)}
+                    proc = subprocess.run(["/bin/bash", wrapper], env=env, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(proc.returncode, trial or tests, proc.stdout + proc.stderr)
+                    self.assertEqual(read(log).splitlines(), ["bash", "make"])
+
     def run_trial(self, failure="", snapshots="allow"):
         # Cały skrypt próby, ale bez hostowego Incusa, Tablicy i instalowania pakietów.
         # Atrapy zwracają też prawidłowe dane kontroli po budowie, aby kod zakończenia
@@ -650,6 +679,11 @@ incus() {
                 echo "$TRIAL_SNAPSHOTS"
             fi ;;
         exec)
+            # Proxy budowy już nie działa: domyślny pull nieobecnego hello-world musi zawieść.
+            if [[ $* == *'docker run '* ]]; then
+                echo 'proxyconnect tcp: connect: connection refused' >&2
+                return 125
+            fi
             if [[ $* == *claude* && $FAIL_STAGE == check ]]; then return 7; fi
             if [[ $* == *'/root/pt192-poza-home'* && $* == *'test -e'* ]]; then return 1; fi
             if [[ $* == *'cat /home/agent/pt192-marker'* ]]; then echo pt192-stamp; fi
@@ -709,6 +743,12 @@ bash "$TRIAL"
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn(": fail", proc.stdout)
         self.assertNotIn("SUDO ", proc.stdout)
+
+    def test_trial_does_not_pull_after_build_proxy_is_stopped(self):
+        proc = self.run_trial()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("WYNIK docker-image-as-agent: ok", proc.stdout)
+        self.assertNotIn("hello-world", proc.stdout)
 
     def test_trial_failure_cannot_be_hidden_by_successful_cleanup(self):
         for stage in ("approve", "build", "check", "reset", "warning", "cleanup"):

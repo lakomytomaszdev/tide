@@ -259,8 +259,10 @@ if approve tide-stacks-test "$B" && build tide-stacks-test; then
         && result dockerd-env ok "proxy i pełne NO_PROXY" || result dockerd-env fail "$env_line"
     check docker-as-agent in_box tide-stacks-test --user 1000 --group 1000 --env HOME=/home/agent -- \
         sg docker -c "docker info --format 'docker {{.ServerVersion}} runtime {{.DefaultRuntime}}'"
-    check docker-hello in_box tide-stacks-test --user 1000 --group 1000 --env HOME=/home/agent -- \
-        sg docker -c "docker run --rm hello-world"
+    # Proxy polecenia build już nie działa. Sprawdzamy lokalny obraz pobrany przez builder podczas budowy,
+    # bez domyślnego pull hello-world:latest po zdjęciu polityki proxy (próba z 18:38, kod 125).
+    check docker-image-as-agent in_box tide-stacks-test --user 1000 --group 1000 --env HOME=/home/agent -- \
+        sg docker -c "docker image inspect testcontainers/ryuk:0.11.0 --format '{{.Id}}'"
     check dotnet-sdks in_box tide-stacks-test --user 1000 --group 1000 --env HOME=/home/agent -- \
         bash -lc 'dotnet --list-sdks'
     check nuget-config in_box tide-stacks-test -- grep -c 'add key="nuget.org"' /home/agent/.nuget/NuGet/NuGet.Config

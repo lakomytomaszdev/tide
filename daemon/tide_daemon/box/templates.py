@@ -1,8 +1,8 @@
 """Szablony stosów pudełka (#30): dane w `box/stacks/<stos>.yaml`, nie kod powłoki.
 
 Szablon niesie pełną listę domen potrzebnych do budowy i pracy (klasa ryzyka `green`/`yellow`/`red`), pakiety apt
-i domyślne obrazy Dockera; `build-domains` (PT-192) to domeny wyłącznie dla skryptu szablonu `<stos>.sh` w czasie
-budowy. Z szablonów wynikają: `build_domains(profile)` (lista dla proxy #5 w czasie budowy #4, z `build-domains`),
+i domyślne obrazy Dockera; `build-domains` (PT-192) to domeny wyłącznie czasu budowy (skrypty i usługi obrazu).
+Z szablonów wynikają: `build_domains(profile)` (lista dla proxy #5 w czasie budowy #4, z `build-domains`),
 `work_domains(profile)` (polityka kroków, bez `build-domains`), `known_domains()` (słownik domena → klasa dla
 `classify` z #2, tylko `domains`) i `registry_domains(stack)` (sieć kroku w tle).
 
@@ -14,7 +14,7 @@ import os
 STACKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stacks")
 RISKS = ("green", "yellow", "red")
 BASE = "base"
-BUILD_ONLY = "build-domains"   # domeny tylko dla skryptów szablonów w czasie budowy (PT-192)
+BUILD_ONLY = "build-domains"   # domeny tylko w czasie budowy (PT-192)
 
 _cache: dict = {}
 
@@ -131,7 +131,7 @@ def work_domains(profile: dict) -> tuple:
 
 def build_domains(profile: dict) -> tuple:
     """Lista budowy (proxy #5 w czasie `tide box build`/`tide box base`): `work_domains` + `build-domains`
-    szablonów wg `stacks` — domeny potrzebne wyłącznie skryptom szablonów (np. wydanie runc z github.com)."""
+    szablonów wg `stacks` — np. wydanie runc z github.com i usługa motd-news obrazu Ubuntu."""
     names = [BASE, *_profile_stacks(profile)]
     extra = [d["name"] for stack in names for d in load(stack).get(BUILD_ONLY, [])]
     return tuple(dict.fromkeys([*work_domains(profile), *extra]))

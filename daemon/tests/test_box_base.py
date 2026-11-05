@@ -381,7 +381,8 @@ class BaseBuildTest(BaseCase):
         self.assertEqual(len(self.proxy.seen), 1)
         ip, domains, ollama, denied, policy = self.proxy.seen[0]
         self.assertEqual(domains, list(templates.build_domains({})))
-        self.assertEqual(domains, [d["name"] for d in templates.load("base")["domains"]])
+        data = templates.load("base")
+        self.assertEqual(domains, [d["name"] for d in data["domains"] + data.get(templates.BUILD_ONLY, [])])
         for domain in ("claude.ai", "downloads.claude.ai", "registry.npmjs.org"):
             self.assertTrue(policy.allows(domain), domain)
         for domain in ("api.anthropic.com", "chatgpt.com", "github.com", "evil.claude.ai.example.org"):

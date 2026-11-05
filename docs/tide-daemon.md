@@ -2688,11 +2688,12 @@ builder (#4) i konfiguracja Dockera w pudełku (#8/PT-171), nie szablon; domeny 
 (`DefaultEnvironment` usług `systemd --user`, czyli kroków `tide-step`). Wartości są sprawdzane (bez spacji,
 cudzysłowów i `$`).
 
-**Domeny tylko budowy.** Szablon może mieć poza `domains` listę `build-domains`: domeny potrzebne wyłącznie
-skryptowi szablonu w czasie budowy. `templates.build_domains(profile)` (lista budowy dla proxy) zawiera je,
+**Domeny tylko budowy.** Szablon może mieć poza `domains` listę `build-domains`: domeny dla skryptów i usług
+obrazu wyłącznie w czasie budowy. `templates.build_domains(profile)` (lista budowy dla proxy) zawiera je,
 `templates.work_domains(profile)` (polityka kroków w `proxy.compose_policy`) i `known_domains()` (klasyfikacja
 pozycji profilu) — nie. Dziś: `docker` → `github.com` (czerwone jako domena pracy — repozytorium zdalne)
-i `release-assets.githubusercontent.com` (wydanie runc), `dotnet` → `aka.ms` (kanały `dotnet-install.sh`). Domeny
+i `release-assets.githubusercontent.com` (wydanie runc), `dotnet` → `aka.ms` (kanały `dotnet-install.sh`),
+`base` → `motd.ubuntu.com` (serwis powitalny Ubuntu; wyjaśnione odmowy z próby PT-192 z 18:38). Domeny
 pracy dopisane w PT-192 z dzienników P-1/P-6: `production.cloudfront.docker.com`, `crl3/crl4/ocsp.digicert.com`
 (sprawdzanie podpisów paczek NuGet), lustra `playwright-akamai/verizon.azureedge.net`.
 
@@ -2723,6 +2724,12 @@ wykrytym `ksshaskpass`/`ssh-askpass`. Hasło wpisuje się w oknie systemowym; ni
 ani do dziennika próby. Ten sam mechanizm działa przy cofaniu ustawienia, także po wygaśnięciu zgody sudo.
 Bez terminala i pomocnika pozostaje `sudo -n` (brak wcześniejszej zgody przerywa próbę przed profilami).
 Nieudany odczyt początkowego ustawienia migawek również przerywa próbę, zanim zmieni ona projekt.
+Kontrola Docker po budowie sprawdza `docker info` i lokalny `testcontainers/ryuk:0.11.0` jako agent.
+Obraz pobiera builder, gdy proxy i polityka budowy działają; po budowie proxy CLI jest już zatrzymane.
+Skrypt nie próbuje wtedy pobierać dodatkowego `hello-world`.
+`bash scripts/box/stacks-acceptance.sh` wykonuje poza piaskownicą próbę oraz pełne `make test`, również
+gdy próba się nie powiedzie. Wynik końcowy zachowuje błąd dowolnej części; pełne wyjście jest w dzienniku
+polecenia poza piaskownicą.
 
 ### Proxy wyjściowe (PT-168)
 

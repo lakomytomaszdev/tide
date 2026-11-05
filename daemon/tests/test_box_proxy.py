@@ -496,7 +496,8 @@ class ComposeTests(unittest.TestCase):
 
     def test_invalid_card_is_skipped(self):
         got = self.compose(None, {"K-7": {"tide-box": 2}})
-        self.assertEqual(got.domains, bx.MODEL_DOMAINS + templates.build_domains({}))
+        self.assertEqual(got.domains, bx.MODEL_DOMAINS + templates.work_domains({}))
+        self.assertNotIn("motd.ubuntu.com", got.domains)
         self.assertTrue(any("K-7" in n for n in self.notes))
 
 
