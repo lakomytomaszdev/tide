@@ -2117,6 +2117,50 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
 
+### Uwagi do najbliższego wznowienia kroku (PT-245)
+
+`/Board AddCardStepNote(s id, s request) → s` przyjmuje obiekt JSON:
+`{step, orderSeq, requestId, text}`. `step` to konkretny bieżący krok, `orderSeq` pochodzi z
+`derived.flow.orderSeq` (numer zdarzenia `card.started`), a `requestId` to niepusty klucz klienta do
+200 znaków. Treść musi być niepusta po usunięciu białych znaków i mieć najwyżej 16 KiB UTF-8.
+Odpowiedź `{ok: true, id, noteId}` potwierdza trwały zapis `step.note-added` w dzienniku, bez
+zatrzymywania procesu ani uruchamiania sesji. Ta sama treść, krok i klucz w tym zleceniu zwracają
+ten sam `noteId` (również po doręczeniu); inna treść lub krok daje `note-conflict`. Nieaktualne
+zlecenie daje `stale-order`, krok zakończony albo zastąpiony — `stale-step`, błędna treść — `bad-note`.
+Zapis i sprawdzenie idempotencji są pod jedną blokadą dziennika.
+
+Wspólne przygotowanie wznowienia dołącza oczekujące uwagi w kolejności zapisu. Dotyczy odpowiedzi,
+retry, zmiany lub przekazania wykonawcy, przejęcia w Konsoli oraz automatycznego wznowienia po
+poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.started`; intencja
+`step-start` przechowuje tę samą listę do odtworzenia po awarii. Nieudany start bez trwałego
+następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
+Gdy nieprzejęte zadanie Konsoli zostanie atomowo anulowane, `step.console_closed.cancelledNoteIds`
+cofa potwierdzenie wyłącznie uwag dołączonych do tej próby (`consoleNoteIds` w stanie kroku).
+Próba Konsoli ma pusty plik rozstrzygnięcia w trwałym katalogu wejścia kroku, pod nazwą
+złożoną z `processFile` i unikalnego `consoleUnit`. Launcher i anulowanie zmieniają atomowo
+jego nazwę odpowiednio na `.claimed` lub `.cancelled`; wygrywa tylko jedna operacja.
+Plik i zmiana katalogu są synchronizowane na dysk przed potwierdzeniem. Trwałe `.cancelled`
+pozwala odtworzyć cofnięcie po awarii przed zapisem zdarzenia także po utracie runtime lub
+sprzątnięciu go przez `TaskFiles.sweep()`. Plik runtime nadal służy do przekazania polecenia;
+spóźniony launcher nie uruchomi zadania po trwałym anulowaniu. Starsze zadania bez tego
+śladu zachowują obsługę znacznika runtime `.cancelled`. Nieudane anulowanie lub samo
+zamknięcie Konsoli nie cofa doręczenia.
+Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
+nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
+
+Kolejka jest ograniczona do łańcucha `parentStep` tego samego ticketu i zlecenia. Niezależne
+review, inny ticket i nowe zlecenie nie otrzymują uwag. Uwaga nie rozszerza zgód na polecenia,
+nie zatwierdza planu i nie wymusza wznowienia po końcu pracy.
+
+Pełna karta w Tablicy i Sesjach pokazuje formularz przy konkretnym kroku oraz
+`flow.stepNotes[] = {noteId, step, text, orderSeq, requestId, status, statusLabel, successor, …}`.
+Stan to `pending` („oczekuje”), `delivered` („przekazana — <następca>”) albo `undelivered`
+(„nieprzekazana — krok zakończony”). `flow.steps[].canAddNote` określa dostępność formularza.
+Błąd/pytanie/zgoda nadal mogą czekać na wznowienie; zakończenie bez wznowienia zachowuje widoczną
+uwagę jako nieprzekazaną. Formularz zachowuje treść i klucz ponowienia po błędzie zapisu.
+Odpowiedź zapisu rozlicza szkic po `requestId` także po otwarciu innej karty; powrót do pierwszej
+pozwala wysłać następną uwagę po sukcesie albo ponowić zapis z tym samym kluczem po błędzie.
+
 ### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
 
 Zakończenie kroku z wynikiem `error` albo `stopped` ma w `step.finished` pola `fault` (`tide`, `model`, `user`,

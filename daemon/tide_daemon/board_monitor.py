@@ -313,6 +313,12 @@ class BoardMonitor(QObject):
             return
         self.flow.preview_step_fault(card_id, request, reply)
 
+    def add_card_step_note(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.add_step_note(card_id, request, reply)
+
     def report_step_fault(self, card_id: str, request: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))

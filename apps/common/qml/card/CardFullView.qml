@@ -50,6 +50,38 @@ Rectangle {
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
     readonly property string headline: flow && flow.headline ? flow.headline : ""
     readonly property var history: flow && Array.isArray(flow.history) ? flow.history : []
+    readonly property var stepNotes: flow && Array.isArray(flow.stepNotes) ? flow.stepNotes : []
+    readonly property var noteSteps: flow && Array.isArray(flow.steps) ? flow.steps.filter(
+        s => s.canAddNote || stepNotes.some(n => n.step === s.id)) : []
+    property var noteDrafts: ({})
+
+    function noteKey(step) { return (card ? card.id : "") + ":" + (flow ? flow.orderSeq : 0) + ":" + step }
+    function noteDraft(step) { return noteDrafts[noteKey(step)] || {text: "", requestId: "", busy: false, error: "", saved: ""} }
+    function editNote(step, text) {
+        const drafts = Object.assign({}, noteDrafts)
+        const old = noteDraft(step)
+        if (old.busy) return
+        drafts[noteKey(step)] = {text: text, requestId: old.text === text ? old.requestId : "", busy: false, error: "", saved: ""}
+        noteDrafts = drafts
+    }
+    function sendNote(step) {
+        const old = noteDraft(step)
+        if (old.busy || !old.text.trim()) return
+        const requestId = old.requestId || "step-note-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+        const drafts = Object.assign({}, noteDrafts)
+        drafts[noteKey(step)] = Object.assign({}, old, {requestId: requestId, busy: true, error: ""})
+        noteDrafts = drafts
+        answered("step-note:" + requestId, "AddCardStepNote",
+                 {step: step, orderSeq: flow.orderSeq, requestId: requestId, text: old.text})
+    }
+    function noteReply(requestId, error, reply) {
+        const drafts = Object.assign({}, noteDrafts)
+        const key = Object.keys(drafts).find(k => drafts[k].requestId === requestId)
+        if (!key) return
+        drafts[key] = error ? Object.assign({}, drafts[key], {busy: false, error: error})
+                            : {text: "", requestId: "", busy: false, error: "", saved: reply && reply.noteId || ""}
+        noteDrafts = drafts
+    }
     // Bieżące zlecenie od najnowszego wpisu; wcześniejsze (`old`) osobno, zwinięte.
     readonly property var currentHistory: history.filter(h => !h.old).reverse()
     readonly property var oldHistory: history.filter(h => h.old === true).reverse()
@@ -1084,6 +1116,32 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: view.noteSteps.length > 0
+                Text {
+                    text: "Uwagi do kroków"
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                }
+                Repeater {
+                    model: view.noteSteps
+                    delegate: StepNoteForm {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        stepId: modelData.id
+                        caption: [modelData.ticket, modelData.executor, modelData.id].filter(x => !!x).join(" · ")
+                        canAdd: modelData.canAddNote === true
+                        draft: view.noteDraft(stepId)
+                        notes: view.stepNotes.filter(n => n.step === stepId)
+                        onEdited: text => view.editNote(stepId, text)
+                        onSubmitted: view.sendNote(stepId)
                     }
                 }
             }

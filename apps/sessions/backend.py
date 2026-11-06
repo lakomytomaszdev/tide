@@ -26,7 +26,7 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 # Zapisy /Board, po których usługa ma nową migawkę kart (lista „Karty w przepływie” odświeża się od razu).
-WRITES = ("ResolveCardReview", "EnterStep", "ResolveCardStep", "RevokeTicketConsent", "ApproveCardPlan", "EditCardPlan", "ReportStepFault")
+WRITES = ("ResolveCardReview", "EnterStep", "ResolveCardStep", "RevokeTicketConsent", "ApproveCardPlan", "EditCardPlan", "ReportStepFault", "AddCardStepNote")
 
 
 def load_common(name: str):
@@ -221,6 +221,10 @@ class Backend(QObject):
     @pyqtSlot(str, str, str)
     def revokeTicketConsent(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "RevokeTicketConsent", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def addCardStepNote(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "AddCardStepNote", [card_id, request])
 
     @pyqtSlot(str, str, str)
     def previewCardBaseChange(self, tag: str, card_id: str, request: str) -> None:
