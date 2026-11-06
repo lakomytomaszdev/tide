@@ -10,6 +10,7 @@ from tide_daemon.box.ports import PortPool, PoolExhausted
 from tide_daemon.cardflow import boxstep
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
+from tide_daemon.cardflow.state import fold
 
 
 PROFILE = {"ports": {"pool": [4300, 4309]}}
@@ -38,7 +39,9 @@ class PortFailureTest(unittest.TestCase):
                 owner = "K-38/first"
                 env = self.pool.acquire(owner, PROFILE)
                 runner = mock.Mock()
-                runner.start.return_value = (SimpleNamespace(unit="tide-step-first", git_dir="/git"), mock.Mock())
+                proc = mock.Mock()
+                proc.poll.return_value = None
+                runner.start.return_value = (SimpleNamespace(unit="tide-step-first", git_dir="/git"), proc)
                 placement = boxstep.Placement("proj", "proj", "10.0.0.2", False, PROFILE, runner,
                                               docker=True, port_owner=owner, port_env=env)
                 engine = FlowEngine.__new__(FlowEngine)
@@ -74,6 +77,20 @@ class PortFailureTest(unittest.TestCase):
                 self.assert_reserved()
                 with mock.patch.object(boxstep, "proxy_of", return_value=None):
                     boxstep.recover_network(engine)
+                    if failure == "result":
+                        intent = fold(engine.journal.read("K-38")).intents[("step-start", "first")]
+                        with mock.patch.object(engine, "_unit_state", return_value="inactive"), \
+                                mock.patch("tide_daemon.cardflow.engine.stepstop.read_exit_code", return_value=None):
+                            engine._reconcile("K-38", intent)
+                            self.assert_reserved()
+                            self.assertNotIn(("step-start", "first"), fold(engine.journal.read("K-38")).results)
+                            # Dopiero koniec klienta przy nadal nieistniejącej jednostce zamyka zamiar.
+                            proc.poll.return_value = 0
+                            engine._reconcile("K-38", intent)
+                        self.assertFalse(fold(engine.journal.read("K-38")).results[("step-start", "first")]["ok"])
+                        self.assertEqual(self.pool.acquire("other", PROFILE)["PORT"], "4300")
+                        self.pool.release("other")
+                        continue
                 self.assert_reserved()
                 self.pool.release(owner)
 

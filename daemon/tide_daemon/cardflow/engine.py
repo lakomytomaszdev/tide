@@ -3225,6 +3225,9 @@ class FlowEngine(PlanEditing):
             code = stepstop.read_exit_code(intent.get("stepDir") or "") if state == "inactive" else None
             if state == "unknown":
                 return
+            proc = self.procs.get(key)
+            if state == "inactive" and code is None and proc is not None and proc.poll() is None:
+                return  # Klient może dopiero tworzyć jednostkę; zachowujemy otwarty zamiar i porty.
             if state == "active" or (code == 0 and os.path.isfile(result)):
                 git_dir = ""
                 try:
