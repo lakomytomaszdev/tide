@@ -28,6 +28,13 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+class InspectionError(ValueError):
+    """Kontrolowane metadane odmowy; bez tekstu wyjątku, ścieżek i argv procesu."""
+    def __init__(self, pid, phase, errno):
+        super().__init__("process-metadata-unavailable")
+        self.details = {"pid": pid, "phase": phase, "errno": errno}
+
+
 class ActivationBlocker:
     """Kolejka przed stop: nazwy przechodzą na nas bez przerwy umożliwiającej aktywację."""
     def __init__(self, service_pid):
@@ -101,29 +108,39 @@ def check_processes(source, allowed_daemon=None):
     for process in Path("/proc").iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
+        phase = "stat-process"
         try:
             if process.stat().st_uid != os.getuid():
                 continue
+            phase = "read-cmdline"
             argv = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
             kind = process_kind(argv)
             pid = int(process.name)
             if kind == "test" or (kind == "daemon" and pid != allowed_daemon):
                 raise ValueError(f"active-{kind}-pid-{pid}")
             if pid != allowed_daemon:
+                phase = "list-fds"
                 for fd in (process / "fd").iterdir():
                     try:
+                        phase = "read-fdlink"
                         target = os.path.realpath(os.readlink(fd))
                         if target == source or target.startswith(source + "/"):
-                            flags = next(line.split()[1] for line in
-                                         (process / "fdinfo" / fd.name).read_text().splitlines()
-                                         if line.startswith("flags:"))
-                            if int(flags, 8) & os.O_ACCMODE:
+                            phase = "read-fdinfo"
+                            lines = (process / "fdinfo" / fd.name).read_text().splitlines()
+                            try:
+                                flags = int(next(line.split()[1] for line in lines
+                                                 if line.startswith("flags:")), 8)
+                            except (StopIteration, ValueError, IndexError):
+                                raise InspectionError(pid, "parse-fdinfo", None) from None
+                            if flags & os.O_ACCMODE:
                                 raise ValueError(f"active-writer-pid-{pid}")
                     except FileNotFoundError:
                         continue
             checked += 1
         except (FileNotFoundError, ProcessLookupError):
             continue
+        except OSError as error:
+            raise InspectionError(int(process.name), phase, error.errno) from None
     return {"checked_user_processes": checked, "active_tests": 0, "extra_daemons": 0,
             "writable_source_descriptors": 0}
 
@@ -152,6 +169,8 @@ def run(args, audit):
     service = service_metadata(args.source)
     audit.event("service-before", **service)
     audit.event("processes-before", **check_processes(args.source, service["main_pid"]))
+    if getattr(args, "preflight_only", False):
+        return {"status": "ok", "preflight_only": True, "service_active": True}
     control, create_backup, remove_candidate = host.systemctl, cleanup.create_backup, cleanup.remove_candidate
     blocker = None
     backup_verified = False
@@ -222,16 +241,23 @@ def run(args, audit):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("source", "plan", "preview-metadata", "backup-dir", "report", "repeat-plan",
-                 "repeat-backup-dir", "repeat-report", "audit"):
+    for name in ("source", "plan", "preview-metadata", "audit"):
         parser.add_argument("--" + name, required=True)
+    for name in ("backup-dir", "report", "repeat-plan", "repeat-backup-dir", "repeat-report"):
+        parser.add_argument("--" + name)
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="Wyłącznie kontrola metadanych; bez rezerwacji nazw, stop i zastosowania")
     args = parser.parse_args(argv)
+    if not args.preflight_only and not all((args.backup_dir, args.report, args.repeat_plan,
+                                           args.repeat_backup_dir, args.repeat_report)):
+        parser.error("zastosowanie wymaga wszystkich ścieżek backupu i raportów")
     audit = None
     previous_handlers = {}
     try:
         for path in (args.plan, args.preview_metadata, args.backup_dir, args.report,
                      args.repeat_plan, args.repeat_backup_dir, args.repeat_report, args.audit):
-            cleanup.external(args.source, path)
+            if path is not None:
+                cleanup.external(args.source, path)
         audit = Audit(args.audit)
         def interrupted(signum, frame):
             raise ValueError("host-operation-interrupted")
@@ -245,10 +271,14 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError) as exc:
         # Wyjątki systemowe mogą zawierać argv/ścieżki; do modelu tylko kontrolowany kod.
         reason = str(exc) if type(exc) is ValueError and str(exc).startswith("active-") else "host-operation-refused-or-failed"
+        details = {}
+        if isinstance(exc, InspectionError):
+            reason = "process-metadata-unavailable"
+            details = exc.details
         if audit:
             audit.data["status"] = "error"
-            audit.event("failed", reason=reason)
-        print(json.dumps({"status": "error", "reason": reason, "audit": args.audit}))
+            audit.event("failed", reason=reason, **details)
+        print(json.dumps({"status": "error", "reason": reason, "audit": args.audit, **details}))
         return 1
     finally:
         for sig, handler in previous_handlers.items():

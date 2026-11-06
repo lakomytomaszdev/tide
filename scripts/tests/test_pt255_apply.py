@@ -146,6 +146,14 @@ class ApplyWindowTest(unittest.TestCase):
         self.assertTrue(self.active)
         self.assertNotIn(("stop", operation.host.UNIT), self.calls)
 
+    def test_diagnostic_preflight_never_reserves_names_or_stops_service(self):
+        self.args.preflight_only = True
+        result = operation.run(self.args, self.audit)
+        self.assertTrue(result["preflight_only"])
+        self.assertIsNone(self.blocker)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(self.journal.exists())
+
     def test_failed_stop_still_releases_names_and_restarts(self):
         control = self.control
 
@@ -172,6 +180,31 @@ class ApplyWindowTest(unittest.TestCase):
 
 
 class ProcessClassificationTest(unittest.TestCase):
+    def test_metadata_denial_reports_pid_and_phase_without_exception_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = Path(directory) / "999999999"
+            process.mkdir()
+            (process / "cmdline").write_bytes(b"unknown-program\0")
+            original_iterdir = Path.iterdir
+
+            def processes(path):
+                if str(path) == "/proc":
+                    return iter([process])
+                if path == process / "fd":
+                    raise PermissionError(13, "DO_NOT_DISCLOSE")
+                return original_iterdir(path)
+
+            with patch.object(Path, "iterdir", processes):
+                try:
+                    operation.check_processes("/synthetic/source")
+                except ValueError as error:
+                    self.assertEqual(error.details, {"pid": 999999999, "phase": "list-fds", "errno": 13})
+                    self.assertNotIn("DO_NOT_DISCLOSE", str(error))
+                except OSError:
+                    self.fail("Odmowa nie podaje kontrolowanego PID/fazy i kończy się ogólnym błędem")
+                else:
+                    self.fail("Nie wolno pomijać procesu z niedostępnymi metadanymi")
+
     def test_supported_test_runners_and_daemon_are_recognized(self):
         for argv in (["python3", "-m", "unittest", "discover"], ["python3", "-m", "pytest"],
                      ["/usr/bin/pytest"], ["python3", "/repo/tools/test_runner.py", "--changed"],
