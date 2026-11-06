@@ -170,7 +170,11 @@ katalog artefaktów i brak celu przerywają sprawdzanie przed publikacją niekom
 Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia daje wynik błędu kroku.
 
 Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
-`../followups/…` są przeliczane względem docelowego katalogu kartek. Kolejne commity stanu planu
+`../followups/…` są przeliczane względem docelowego katalogu kartek. Linki ze szkiców do planu
+i kartek są przeliczane według datowanej nazwy planu i nadanych ID ticketów, także w podkatalogach,
+z zachowaniem fragmentów i parametrów URL. Lokalny cel szkicu musi należeć do publikowanego kompletu:
+plan, kartki ticketów planu lub `followups/`; pozostałe cele są odrzucane przed publikacją propozycji.
+Kolejne commity stanu planu
 zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy udany commit zatwierdzonej
 poprawki bierze tekst poza tabelą i szkice z nowej zamrożonej propozycji. Podczas oczekiwania
 na decyzję commity stanu nadal korzystają z pakietu poprzednio zatwierdzonej wersji:

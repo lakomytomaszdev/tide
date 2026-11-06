@@ -2587,8 +2587,7 @@ class FlowEngine(PlanEditing):
             lines += [before, ""]
         lines += ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-        files = {os.path.join(os.path.dirname(approved["planFile"]), name): body
-                 for name, body in artifacts.items() if name.startswith("followups/")}
+        files, ticket_paths = {}, {}
         for row in approved.get("rows") or []:
             ticket = row["id"]
             state = self._plan_row_state(st, ticket, merged)
@@ -2598,6 +2597,7 @@ class FlowEngine(PlanEditing):
                           row.get("class") or "", row["reviewer"], ", ".join(row["blockers"]))) + " |")
             ticket_dir = os.path.dirname(approved["planFile"]).replace("/plans", "/tickets")
             ticket_path = f"{ticket_dir}/{card.lower()}-flow/{ticket.lower()}.md"
+            ticket_paths[f"tickets/{(row.get('workId') or ticket).lstrip('#')}.md"] = ticket_path
             # Kartka w propozycji leżała w tickets/ obok followups/ („../followups/x.md”); w repozytorium szkice są
             # obok planu, więc odnośnik wskazuje je względem katalogu kartki (05.11, K-50: martwe linki w PT-201/208).
             followups = os.path.relpath(os.path.join(os.path.dirname(approved["planFile"]), "followups"),
@@ -2613,6 +2613,7 @@ class FlowEngine(PlanEditing):
                 except OSError:
                     pass
             files[ticket_path] = text.encode("utf-8")
+        files.update(planartifacts.followup_files(artifacts, source, approved["planFile"], ticket_paths))
         if after:
             lines += ["", after]
         files[approved["planFile"]] = ("\n".join(lines) + "\n").encode("utf-8")

@@ -178,6 +178,12 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                      "note": row.note, "blockers": list(row.blockers),
                      **({"project": slug} if len(projects) > 1 else {}),
                      **({"fromPlan": other["path"]} if from_other else {})})
+    published = {os.path.basename(path)} | {name for name in artifacts if name.startswith('followups/')}
+    published.update('tickets/' + row['workId'].lstrip('#') + '.md' for row in rows)
+    try:
+        planartifacts.check_links(artifacts, published=published)
+    except ValueError as exc:
+        errors.append(str(exc))
     for row in rows:
         for blocker in row["blockers"]:
             if blocker not in seen:

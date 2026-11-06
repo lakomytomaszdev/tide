@@ -88,7 +88,7 @@ def read(root, *, validate=True, plan_name=None):
     return files
 
 
-def check_links(files):
+def check_links(files, *, published=None):
     """Lokalny link do followups musi wskazywać Markdown wewnątrz tego pakietu."""
     for source, body in files.items():
         for match in LINK.finditer(body.decode('utf-8')):
@@ -102,6 +102,42 @@ def check_links(files):
             target = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
             if url.scheme == 'file' or path.startswith('/') or target.startswith('../') or target not in files:
                 raise ValueError(f'{source}: brak lokalnego celu followups lub wyjście poza artefakty: {raw}')
+            if published is not None and target not in published:
+                raise ValueError(f'{source}: lokalny cel szkicu nie trafia do commita planu: {raw}')
+
+
+def followup_files(artifacts, source, plan_file, ticket_paths):
+    """Relokuje linki szkiców według nazw planu i kartek faktycznie zapisywanych w commicie.
+
+    Mapa obejmuje wyłącznie sprawdzony pakiet; nie odczytujemy celów linków z dysku.
+    Fragmenty, parametry, tytuły i składnia referencji pozostają bez zmian.
+    """
+    paths = {name: posixpath.join(posixpath.dirname(plan_file), name)
+             for name in artifacts if name.startswith('followups/')}
+    paths[os.path.basename(source.get('planPath') or 'plan.md')] = plan_file
+    paths.update(ticket_paths)
+    files = {}
+    for name, destination in paths.items():
+        if not name.startswith('followups/'):
+            continue
+
+        def relocate(match):
+            group = 1 if match.group(1) is not None else 2
+            token = match.group(group)
+            url = urlsplit(token.strip('<>'))
+            if url.scheme or url.netloc or not url.path:
+                return match.group()
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(url.path)))
+            if target not in paths:
+                raise ValueError(f'{name}: lokalny cel szkicu nie trafia do commita planu: {target}')
+            if target.startswith('followups/'):
+                return match.group()
+            path = quote(posixpath.relpath(paths[target], posixpath.dirname(destination)), safe='/')
+            start = match.start(group) - match.start() + int(token.startswith('<'))
+            return match.group()[:start] + path + match.group()[start + len(url.path):]
+
+        files[destination] = LINK.sub(relocate, artifacts[name].decode('utf-8')).encode('utf-8')
+    return files
 
 
 def relocate_ticket_links(text, followups):
