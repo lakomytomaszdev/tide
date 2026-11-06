@@ -162,7 +162,7 @@ def run_command(args, command, out, err, *, builder=None):
         cards[args.card] = bp.load_card(args.slug, args.card) or {"tide-box": 1}
         profile = bp.merge(project, cards[args.card]).profile
     policy = bproxy.compose_policy(project, cards)
-    per_card = bp.with_defaults(profile)["box"] == "per-card"
+    per_card = bp.with_defaults(profile)["box"] == "per-card" or bool(profile.get("packs"))
     if per_card and not args.card:
         raise bb.BuildError("pudełko per-card wymaga --card K-N")
     settings = builder.settings if builder is not None else bset.load()

@@ -118,45 +118,58 @@ class PacksTest(unittest.TestCase):
 
 
 class PacksRunnerTest(BoxRunnerCase):
+    def runner(self, **kw):
+        kw.setdefault("per_card", kw.get("card") == "K-38")
+        return super().runner(**kw)
+
     def prepare_pack(self):
         source = Path(self.tmp) / "session.jsonl"
         source.write_text("dziennik")
         spec = {"name": "logs", "from": str(source)}
         packs.materialize("proj", "K-38", [spec])
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": [spec], "accepted_red": ["pack:logs"]})
+        self.incus.launch("tide-base", bs.card_box_name("proj", "K-38"))
         return spec
 
     def test_first_step_adds_readonly_device_once_in_correct_box(self):
         self.prepare_pack()
-        for per_card in (False, True):
-            if per_card:
-                self.incus.launch("tide-base", bs.card_box_name("proj", "K-38"))
-            runner = self.runner(card="K-38", per_card=per_card)
-            runner.ensure_devices(self.step())
-            runner.ensure_devices(self.step())
-            adds = [argv for argv in self.adds(runner.box) if "tide-pack-k-38-logs" in argv]
-            self.assertEqual(len(adds), 1)
-            self.assertIn("readonly=true", adds[0])
-            self.assertIn("path=/packs/logs", adds[0])
-            self.assertIn("source=" + packs.root("proj", "K-38") + "/logs", adds[0])
+        runner = self.runner(card="K-38")
+        runner.ensure_devices(self.step())
+        runner.ensure_devices(self.step())
+        adds = [argv for argv in self.adds(runner.box) if "tide-pack-k-38-logs" in argv]
+        self.assertEqual(len(adds), 1)
+        self.assertIn("readonly=true", adds[0])
+        self.assertIn("path=/packs/logs", adds[0])
+        self.assertIn("source=" + packs.root("proj", "K-38") + "/logs", adds[0])
 
     def test_changed_device_and_foreign_card_refuse_start(self):
         self.prepare_pack()
         runner = self.runner(card="K-38")
         runner.ensure_devices(self.step())
+        foreign = self.runner(card="K-39")
+        foreign.box = runner.box
         with self.assertRaisesRegex(Exception, "obcą lub zmienioną"):
-            self.runner(card="K-39").ensure_devices(self.step())
-        self.incus.device_remove("proj", "tide-pack-k-38-logs")
-        self.incus.device_add("proj", "tide-pack-k-38-logs", "disk",
+            foreign.ensure_devices(self.step())
+        self.incus.device_remove(runner.box, "tide-pack-k-38-logs")
+        self.incus.device_add(runner.box, "tide-pack-k-38-logs", "disk",
                               {"source": self.tmp, "path": "/packs/logs", "readonly": False})
         with self.assertRaisesRegex(Exception, "obcą lub zmienioną"):
             runner.ensure_devices(self.step())
 
     def test_pack_cannot_be_hot_added_over_another_running_step(self):
         self.prepare_pack()
-        bs.mark_in_use("proj", "proj", "other-card-step")
+        bs.mark_in_use("proj", bs.card_box_name("proj", "K-38"), "other-card-step")
         with self.assertRaisesRegex(Exception, "bez innych biegnących"):
             self.runner(card="K-38").ensure_devices(self.step())
+        self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show(bs.card_box_name("proj", "K-38")))
+
+    def test_pack_refused_in_shared_box_even_after_other_step_releases_reservation(self):
+        self.prepare_pack()
+        bs.mark_in_use("proj", "proj", "other-card-step")
+        bs.mark_released("proj", "proj", "other-card-step")
+        self.assertEqual(bs.running_steps("proj", "proj"), [])
+        with self.assertRaisesRegex(Exception, "osobnego pudełka karty"):
+            self.runner(card="K-38", per_card=False).ensure_devices(self.step())
         self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show("proj"))
 
     def test_approved_packs_are_readable_in_claude_sandbox(self):
@@ -175,7 +188,7 @@ class PacksRunnerTest(BoxRunnerCase):
         journal.append("K-38", "step.finished", step="s1", result="error")
         packs.cleanup("proj", "K-38", self.incus, journal)
         self.assertFalse(os.path.exists(packs.root("proj", "K-38")))
-        self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show("proj"))
+        self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show(bs.card_box_name("proj", "K-38")))
         self.assertEqual(journal.read("K-38")[-1]["type"], "packs.removed")
         packs.cleanup("proj", "K-38", self.incus, journal)
         self.assertEqual(sum(e["type"] == "packs.removed" for e in journal.read("K-38")), 1)

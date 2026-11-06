@@ -7,11 +7,13 @@ import base64
 import json
 import os
 import shutil
+import subprocess
 import unittest
 from unittest import mock
 
 from tide_daemon.box import builder as bb
 from tide_daemon.box import profile as bp
+from tide_daemon.box import packs
 from tide_daemon.box import proxy as bproxy
 from tide_daemon.box import refguard
 from tide_daemon.box import runner as br
@@ -20,9 +22,11 @@ from tide_daemon.cardflow import boxaccess, boxstep, boxwait, engine as flow_eng
 from tide_daemon.cardflow.engine import BOX_STEP_KINDS, FlowDeferred, FlowError
 from tide_daemon.cardflow.state import fold
 from tide_daemon.tasks.runner import HostRunner
+from tide_daemon.tasks import agentcmd
 
 from .boxflow import SLUG, BoxFlow, FakeProxy
 from .privatebus import wait_until
+from . import gitrepos
 
 PLANNING_KINDS = ("planning", "plan-fix", "plan-amend", "plan-revise", "plan-review")
 
@@ -280,6 +284,70 @@ class PlacementTest(BoxFlow):
         self.assertEqual(len(self.incus_calls("copy")), 1)
         self.assertEqual(self.incus().instance(first.box)["status"], "Running")
         self.assertEqual(self.incus().instance(SLUG)["status"], "Stopped")   # pudełko projektu nietknięte
+
+    def approve_pack(self, **extra):
+        source = os.path.join(self.base, "session.jsonl")
+        with open(source, "w") as fh:
+            fh.write("dziennik")
+        spec = {"name": "logs", "from": source}
+        packs.materialize(SLUG, self.card_id, [spec])
+        bp.save_card(SLUG, self.card_id, {"tide-box": 1, "packs": [spec],
+                                        "accepted_red": ["pack:logs"], **extra})
+
+    def mount_pack(self, placement):
+        wt = self.repo + "-worktrees/pack-test"
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "pack-test", wt)
+        step = agentcmd.Step(tool="claude", binary="claude", prompt="test", repo=self.repo,
+                             worktree=wt, step_dir=wt + ".step", step_id="pack-step")
+        placement.runner.ensure_devices(step)
+        devices = self.incus().device_show(placement.box)
+        self.assertEqual(devices["tide-pack-" + self.card_id.lower() + "-logs"]["readonly"], "true")
+        self.assertFalse(any(d.get("path", "").startswith("/packs")
+                             for d in self.incus().device_show(SLUG).values()))
+
+    def test_card_per_card_overrides_project_and_mounts_pack_only_in_card_copy(self):
+        self.build_box({"tide-box": 1, "box": "per-project"})
+        self.approve_pack(box="per-card")
+        placement = self.place()
+        self.assertTrue(placement.per_card)
+        self.assertEqual(placement.box, bs.card_box_name(SLUG, self.card_id))
+        self.mount_pack(placement)
+
+    def test_card_per_card_without_packs_overrides_project(self):
+        self.build_box({"tide-box": 1, "box": "per-project"})
+        bp.save_card(SLUG, self.card_id, {"tide-box": 1, "box": "per-card"})
+        self.assertEqual(self.place().box, bs.card_box_name(SLUG, self.card_id))
+
+    def test_pack_isolated_from_independent_unit_left_after_other_card_step(self):
+        self.build_box({"tide-box": 1, "box": "per-project"})
+        other = self.card()
+        placement_b = boxstep.place(self.engine, other, SLUG, "ticket", "", BOX_STEP_KINDS)
+        bs.mark_in_use(SLUG, placement_b.box, "other-step")
+        # Niezależna jednostka przeżywa zwolnienie zasobów kroku B. Atrapa Incusa modeluje
+        # przestrzenie montowań urządzeniami instancji, a atrapa systemd uruchamia żywy proces.
+        unit = "left-by-other-card.service"
+        process = subprocess.Popen([self.box_run, "--unit=" + unit, "--", "/bin/sleep", "60"])
+        def cleanup():
+            process.terminate()
+            process.wait(timeout=5)
+        self.addCleanup(cleanup)
+        self.assertTrue(wait_until(lambda: os.path.exists(os.path.join(self.units, unit))))
+        boxstep._release_resources(self.engine, {"step": "other-step", "boxSlug": SLUG, "box": placement_b.box})
+        self.assertEqual(bs.running_steps(SLUG, placement_b.box), [])
+        self.approve_pack(box="per-project")
+        placement_a = self.place()
+        self.assertEqual(placement_b.box, SLUG)
+        self.assertEqual(placement_a.box, bs.card_box_name(SLUG, self.card_id))
+        self.mount_pack(placement_a)
+        self.assertIsNone(process.poll())
+
+    def test_pack_refuses_resume_in_previously_shared_box(self):
+        self.build_box()
+        self.engine.journal.append(self.card_id, "step.started", step="shared", runner="box",
+                                   box=SLUG, boxSlug=SLUG, kind="ticket")
+        self.approve_pack()
+        with self.assertRaisesRegex(boxstep.BoxError, "nie można wznowić"):
+            self.place(parent="shared")
 
     def test_resume_inherits_the_runner_of_the_resumed_step(self):
         self.build_box()

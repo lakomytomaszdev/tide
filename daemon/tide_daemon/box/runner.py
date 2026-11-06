@@ -595,6 +595,9 @@ class BoxRunner:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _ensure_locked(self, step: agentcmd.Step, wanted: list) -> list:
+        if any(d.path.startswith("/packs/") for d in wanted):
+            if not self.card or self.box != bs.card_box_name(self.slug, self.card):
+                raise agentcmd.StepError("paczki wymagają osobnego pudełka karty")
         present = self.incus.device_show(self.box)
         expected_packs = {d.name: d.values() for d in wanted if d.path.startswith("/packs/")}
         for name, values in present.items():

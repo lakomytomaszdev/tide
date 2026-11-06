@@ -146,7 +146,10 @@ class CommandTest(BoxRunnerCase):
         self.assertEqual(code, 0, err)
         packs = [c for c in added.call_args_list if c.args[1].startswith("tide-pack-")]
         self.assertEqual(len(packs), 1)
+        self.assertEqual(packs[0].args[0], bs.card_box_name("proj", "K-38"))
         self.assertEqual(packs[0].args[3], {"source": source, "path": "/packs/logs", "readonly": True})
+        self.assertIn(bs.card_box_name("proj", "K-38"), self.launches[-1][0])
+        self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show(bs.card_box_name("proj", "K-38")))
         self.assertNotIn("tide-pack-k-38-logs", self.incus.device_show("proj"))
 
     def test_unaccepted_pack_is_never_mounted(self):

@@ -202,13 +202,22 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if others:
         raise BoxWaiting("czeka na zakończenie kroków innej karty w repozytorium: " + ", ".join(others))
     builder = builder_of(engine, settings)
+    try:
+        effective = bp.merge(profile, bp.load_card(slug, card_id) or {"tide-box": 1}).profile
+    except bp.ProfileError as exc:
+        raise BoxError(f"profil środowiska karty {card_id} jest niepoprawny: {exc}") from None
     full = bp.with_defaults(profile)
-    per_card = full.get("box") == "per-card"
+    # Nawet zakończony krok może pozostawić procesy we wspólnym pudełku.
+    # Paczki wymagają osobnej przestrzeni montowań, niezależnie od rezerwacji kroków.
+    has_packs = bool(effective.get("packs"))
+    per_card = effective.get("box", "per-project") == "per-card" or has_packs
     if forced:
         name = parent.get("box") or ""
         if parent.get("boxSlug") != slug or name not in (bs.box_name(slug), bs.card_box_name(slug, card_id)):
             raise BoxError("wznawiany krok ma niespójną tożsamość pudełka")
         per_card = name == bs.card_box_name(slug, card_id)
+        if has_packs and not per_card:
+            raise BoxError("paczki wymagają osobnego pudełka karty; nie można wznowić kroku w pudełku projektu")
     status = builder.status(slug, card=card_id if forced and per_card else "", profile=profile)
     if status.error:
         raise BoxWaiting(f"czeka na pudełko ({status.error})")
