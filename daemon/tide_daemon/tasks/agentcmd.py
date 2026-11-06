@@ -590,3 +590,27 @@ def background(step: Step) -> Background:
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
                       files=files, dirs=dirs, workdir=out if step.write_out_only else "")
 
+
+def caretaker_interactive(step: Step) -> Background:
+    """Ta sama piaskownica i środowisko co w tle; zmienia się wyłącznie interfejs programu na rozmowę."""
+    bg = background(replace(step, write_out_only=True,
+                            permission_mode="dontAsk" if step.tool == "claude" else ""))
+    argv = list(bg.argv)
+    if step.tool == "claude":
+        out = os.path.normpath(os.path.join(step.step_dir, "out"))
+        at = argv.index("--disallowedTools")
+        argv[at:at] = [f"Read(/{step.step_dir}/in/**)", f"Read(/{out}/**)",
+                       f"Write(/{out}/**)", f"Edit(/{out}/**)"]
+        argv.remove("-p")
+        at = argv.index("--output-format")
+        del argv[at:at + 2]
+        argv.remove("--verbose")
+        argv += ["--", step.prompt]
+    else:
+        argv.remove("exec")
+        argv.remove("--json")
+        argv.remove("--skip-git-repo-check")
+        argv[-1:] = ["--", step.prompt]
+    bg.argv = argv
+    return bg
+

@@ -3,7 +3,7 @@ import unittest
 from tide_daemon.cardflow import labels
 
 ALL_KINDS = ("planning", "plan-import", "plan-fix", "plan-review", "plan-revise", "plan-amend",
-             "ticket", "review", "fix", "conflict", "close", "interactive", "caretaker")
+             "ticket", "review", "fix", "conflict", "close", "interactive", "caretaker", "caretaker-chat")
 ALL_RESULTS = ("done", "question", "denied", "error", "stopped")
 
 
@@ -24,6 +24,7 @@ class LabelsTest(unittest.TestCase):
         self.assertEqual(labels.kind_label("plan-revise"), "poprawa planu")
         self.assertEqual(labels.kind_label("fix"), "poprawki")
         self.assertEqual(labels.kind_label("close"), "domknięcie")
+        self.assertEqual(labels.kind_label("caretaker-chat"), "rozmowa z opiekunem")
         self.assertEqual(labels.result_label("done"), "gotowe")
         self.assertEqual(labels.result_label("stopped"), "zatrzymany")
 

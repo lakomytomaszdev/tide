@@ -486,6 +486,9 @@ sys.exit(0)
 
 KONSOLE = """#!/bin/bash
 echo "konsole $*" >> "$TIDE_FAKE_LOG"
+if [ -n "$TIDE_FAKE_KONSOLE_SERVICE" ]; then
+    exec /usr/bin/python3 -s "$TIDE_FAKE_KONSOLE" --record-task "$TIDE_FAKE_KONSOLE_SERVICE" "${@: -1}"
+fi
 """
 
 

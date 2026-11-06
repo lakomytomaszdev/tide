@@ -633,6 +633,7 @@ Rectangle {
         // Wybór wykonawcy i ustawienia karty są w panelu karty Tablicy; w Sesjach nie ma go, więc wracamy do listy.
         onPanelRequested: page.closeFull()
         onEnterStepRequested: stepId => page.sendCard("enter-step", page.fullCardId, "", "EnterStep", { step: stepId })
+        onCaretakerTalkRequested: page.sendCard("caretaker-talk", page.fullCardId, "", "TalkToCaretaker", {})
     }
 
     CardUi.DecisionDialog {

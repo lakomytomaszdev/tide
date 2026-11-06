@@ -115,7 +115,8 @@ def _event_entry(e: dict, st=None) -> dict | None:
             return None
         return {"id": f"{kind}#{e.get('seq')}", "ts": _epoch(e.get("ts")), "kind": "caretaker",
                 "kindLabel": KIND_LABELS["caretaker"], "text": text,
-                "actor": ACTOR, "actorLabel": "Opiekun", "old": False,
+                "actor": ACTOR, "actorLabel": "Opiekun (rozmowa)" if e.get("mode") == "chat" else "Opiekun",
+                "mode": e.get("mode") or "background", "old": False,
                 "step": e.get("target") or e.get("step") or "", "ticket": ticket, "result": "",
                 "attempts": [], "canResume": False}
     if kind == "card.started":

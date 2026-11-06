@@ -627,7 +627,8 @@ key(Qt.Key.Key_Return)
 out["sent"] = calls()
 ''', scenario_f(self.data, decisions(journal_caretaker_card())))
                 self.assertEqual(out["opened"]["kind"], "Opiekun")
-                self.assertEqual([o[0] for o in out["opened"]["options"]], ["Ponów etap", "Zamknij"])
+                self.assertEqual([o[0] for o in out["opened"]["options"]],
+                                 ["Ponów etap", "Zamknij", "Porozmawiaj z opiekunem"])
                 self.assertEqual(out["care"]["title"], f"Opiekun poleca: {CARE_RECOMMENDATION}")
                 self.assertEqual(out["sent"], [["ResolveCardCaretaker", "K-8",
                                                json.dumps({"choice": choice, "problem": "flow-error:advance"},
@@ -640,6 +641,15 @@ out["sent"] = calls()
         self.assertEqual(len(decision["caretaker"]["tried"]), 1)
         self.assertEqual(decision["options"][0]["id"], "change-executor", "polecona pierwsza już z usługi")
         self.assertEqual(decisions_caretaker(False)[0]["caretaker"]["tried"], [])
+
+    def test_card_problem_talk_option_passes_the_problem_id(self):
+        out = self.probe(STATE_PY + '''
+click(card("K-8"))
+click(option(2))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+''', scenario_f(self.data, decisions(journal_caretaker_card())))
+        self.assertEqual(out["sent"], [["TalkToCaretaker", "K-8", '{"problem":"flow-error:advance"}']])
 
     def test_block_shows_recommendation_and_summary_above_the_options_without_choosing(self):
         first = decisions_caretaker()[0]["options"][0]

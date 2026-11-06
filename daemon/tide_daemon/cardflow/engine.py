@@ -59,6 +59,7 @@ from . import guard
 from . import limits as flow_limits
 from . import planning
 from .planediting import PlanEditing
+from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for
 from .journal import Journal
@@ -188,7 +189,8 @@ class _CaretakerPort:
                                    ticket=run.get("ticket") or "", action="escalate",
                                    summary=params.get("summary") or "",
                                    recommendation=params.get("recommendation") or "",
-                                   optionId=params.get("optionId") or "", failed=False, error="", code="")
+                                   optionId=params.get("optionId") or "", failed=False, error="", code="",
+                                   mode=run.get("mode") or "background")
 
     def retry(self, problem: dict, params: dict) -> dict:
         """Akcja `retry` (PT-150), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`, więc powtórzona po
@@ -328,7 +330,7 @@ def timeout_seconds(path: str) -> float:
     return float(value) * 60.0
 
 
-class FlowEngine(PlanEditing):
+class FlowEngine(CaretakerChat, PlanEditing):
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
@@ -918,7 +920,7 @@ class FlowEngine(PlanEditing):
 
     def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
-                              ticket="", round_no=0, review_tip=""):
+                              ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
@@ -943,18 +945,23 @@ class FlowEngine(PlanEditing):
                 remaining = max(0, 96 * 1024 - len((prompt + header).encode("utf-8")))
                 context = self._project_context(extra.repo, min(32 * 1024, remaining))
                 prompt += header + context + "\n"
+        prepared = prepare(step_dir) if prepare else None
+        if prepared:
+            prompt = prepared.stdin
         with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
             fh.write(prompt)
-        session = str(uuid.uuid4()) if selected.tool == "claude" else ""
+        session = prepared.session_id if prepared else str(uuid.uuid4()) if selected.tool == "claude" else ""
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out], selected.route)
-        if selected.tool == "codex":
+        if prepared:
+            command.argv = prepared.argv
+        if not prepared and selected.tool == "codex":
             command.argv[1:1] = ["--sandbox", "workspace-write"]
-        if selected.route is None:
+        if not prepared and selected.route is None:
             options = ["--model", selected.model]
             if selected.tool == "codex" and selected.effort:
                 options += ["-c", f'model_reasoning_effort="{selected.effort}"']
             command.argv[1:1] = options
-        if session:
+        if not prepared and session:
             command.argv.insert(1, "--session-id")
             command.argv.insert(2, session)
         closed = os.path.join(inp, "console-closed.json")
@@ -965,20 +972,29 @@ class FlowEngine(PlanEditing):
             pass  # spóźniona druga karta bez zadania zamknie się zamiast otworzyć powłokę
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
-                   "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
+                   "title": f"{item.id} · " + ("rozmowa z opiekunem" if kind == "caretaker-chat" else ticket or "planowanie Pełne"), "closedFile": closed,
                    "processFile": process_file, "resultFile": os.path.join(out, handoff.RESULT_FILE),
                    "consoleUnit": console_unit,
                    "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
                    "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
         payload.update(command.task_fields())
+        if prepared:
+            payload.update(workdir=prepared.workdir, env=prepared.env, cleanEnv=True,
+                           secretEnv=prepared.secret_env, tokenFiles=prepared.token_files)
         task_file = self.task_files.write(payload)
+        interactive = ({"mode": "interactive", "closeFile": closed, "processFile": process_file,
+                        "consoleUnit": console_unit, "taskFile": task_file, "enteredAt": self.clock(),
+                        "routeUrl": selected.route.url if selected.route else "",
+                        "routeKind": selected.route.kind if selected.route else "",
+                        "routeTokenFile": selected.route.token_file if selected.route else "",
+                        "consoleClosed": False, "consoleOpened": False} if kind == "caretaker-chat" else {})
         self.journal.append(item.id, "step.started", step=step_id, kind=kind, ticket=ticket, round=round_no,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, local=selected.local, effort=selected.effort,
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip)
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip, **interactive)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -993,7 +1009,8 @@ class FlowEngine(PlanEditing):
         if not opened:
             if self.task_files.cancel(task_file):
                 self.journal.append(item.id, "step.console_closed", step=step_id)
-                self._finish(item.id, fold(self.journal.read(item.id)).steps[step_id],
+                current = fold(self.journal.read(item.id))
+                self._finish(item.id, (current.steps.get(step_id) or current.caretakers[step_id]),
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
@@ -1783,7 +1800,8 @@ class FlowEngine(PlanEditing):
         pisze) albo "" (żyje albo nie wiadomo, a zamrożenie się nie udało — zmiany z okna należą do kroku)."""
         frozen = {}
         for name in names:
-            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            watched = st.caretakers.get(name) or {}
+            unit = watched.get("consoleUnit") or watched.get("unit") or ""
             if unit and self.freeze_unit(unit, True):
                 frozen[name] = "frozen"
                 continue
@@ -1797,7 +1815,8 @@ class FlowEngine(PlanEditing):
 
     def _guard_thaw(self, st: FlowState, frozen: dict) -> None:
         for name, how in frozen.items():
-            unit = (st.caretakers.get(name) or {}).get("unit") or ""
+            watched = st.caretakers.get(name) or {}
+            unit = watched.get("consoleUnit") or watched.get("unit") or ""
             if how == "frozen" and not self.freeze_unit(unit, False):
                 logging.getLogger(__name__).warning("nie udało się odmrozić kroku opiekuna %s (%s)", name, unit)
 
@@ -2634,7 +2653,7 @@ class FlowEngine(PlanEditing):
         """Otwiera oczekujące zadanie Konsoli po przerwaniu usługi między zapisem a terminal.open."""
         if self.terminal is None or not self.terminal.available():
             return
-        for step in st.steps.values():
+        for step in [*st.steps.values(), *st.caretakers.values()]:
             name = step.get("step") or ""
             if step.get("mode") != "interactive" or step.get("consoleOpened") or step.get("consoleClosed") or \
                     name in st.finished or (name in st.transfer_requests and name not in st.step_decisions):
@@ -2739,7 +2758,7 @@ class FlowEngine(PlanEditing):
         # opiekuna jest nieaktualna (`caretaker.stale`) i niczego nie wykonuje.
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
-                   for s in st.running() if s.get("kind") != caretaker.KIND)
+                   for s in st.running() if s.get("kind") not in (caretaker.KIND, "caretaker-chat"))
         if st.card_finished or busy or not step or choice not in valid or \
                 (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" and
                  not caretaker_problem and not caretaker.handed_repeat(st, focus)):
@@ -3463,7 +3482,10 @@ class FlowEngine(PlanEditing):
             # Akcja opiekuna przerwana restartem między zamiarem a wynikiem (PT-150): dokończenie tą samą ścieżką;
             # `apply` sprawdza, co już zapisał ten krok opiekuna, więc skutek powstaje dokładnie raz.
             st = fold(self.journal.read(card))
-            run, done = st.caretaker_runs.get(key), st.finished.get(key) or {}
+            run = st.caretaker_runs.get(key) or st.caretaker_chat_actions.get(key)
+            done = st.finished.get(key) or {}
+            if run and run.get("mode") == "chat":
+                done = {"outcome": run.get("outcome") or {}}
             outcome = done.get("outcome") or {}
             if run is not None and outcome.get("ok") and outcome.get("action") in caretaker.ACTIONS:
                 self._caretaker_act(card, run, outcome["action"], outcome.get("params") or {})
@@ -3566,6 +3588,9 @@ class FlowEngine(PlanEditing):
 
     def _poll_interactive(self, card: str, step: dict) -> None:
         """Plik wyniku kończy próbę; po zamknięciu bez pliku użytkownik wybiera dalszy ruch."""
+        if step.get("kind") == "caretaker-chat":
+            self._poll_caretaker_chat(card, step)
+            return
         out = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
         if os.path.isfile(out):
             data = self._result(out)
@@ -3724,6 +3749,11 @@ class FlowEngine(PlanEditing):
 
     def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
               *, handoff: bool = False) -> bool:
+        if step.get("kind") == "caretaker-chat":
+            if not self._stop_caretaker_chat(step):
+                return False
+            self._finish_caretaker_chat(card, step, reason)
+            return True
         if handoff and not stepstop.terminate(self.procs.get(step.get("step") or ""),
                                               step.get("unit") or "", self.grace):
             return False  # sprawdzenie czystości WIP dopiero po potwierdzonym końcu programu
@@ -3751,6 +3781,9 @@ class FlowEngine(PlanEditing):
                 messages=None, exit_code=None) -> None:
         name = step.get("step") or ""
         if name in fold(self.journal.read(card)).finished:
+            return
+        if step.get("kind") == "caretaker-chat":
+            self._finish_caretaker_chat(card, step, (forced or {}).get("reason") or "")
             return
         if step.get("kind") == caretaker.KIND:
             self._finish_caretaker(card, step, forced, exit_code)
@@ -4058,7 +4091,7 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, caretaker.ACTION, problem=run.get("problem") or "", step=run.get("step") or "",
                             target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
                             params=params, ok=ok, error=error[:caretaker.REASON_MAX], code=code, label=label,
-                            retried=retried, stale=stale,
+                            retried=retried, stale=stale, mode=run.get("mode") or "background",
                             **({"detail": detail[:caretaker.REASON_MAX]} if detail else {}))
 
     def _caretaker_fail(self, card: str, run: dict, code: str, error: str, *, action: str = "",
@@ -4068,7 +4101,7 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, caretaker.ESCALATED, problem=run.get("problem") or "", step=run.get("step") or "",
                             target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
                             summary=summary, recommendation=recommendation, optionId="", failed=True,
-                            error=error[:caretaker.REASON_MAX], code=code)
+                            error=error[:caretaker.REASON_MAX], code=code, mode=run.get("mode") or "background")
 
     def _caretaker_launch(self, card: str, st: FlowState, run: dict) -> None:
         st = self._caretaker_state(st)
@@ -4203,7 +4236,13 @@ class FlowEngine(PlanEditing):
             spec.apply(port, problem, params)
             return
         try:
-            made = self._act(card, "caretaker-action", step, lambda: spec.apply(port, problem, params) or {},
+            def apply():
+                if run.get("mode") == "chat":
+                    wrote = self._guard_verdict(card, run.get("chat") or "")
+                    if wrote:
+                        return {"failed": guard.WROTE, "error": wrote}
+                return spec.apply(port, problem, params) or {}
+            made = self._act(card, "caretaker-action", step, apply,
                              problem=run.get("problem") or "", caretakerAction=name, params=params)
         except FlowError as exc:
             self._caretaker_record(card, run, name, params, ok=False, error=str(exc), code="caretaker-action")
