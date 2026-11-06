@@ -1,9 +1,16 @@
 import base64
 import hashlib
+import struct
+import zlib
 
 IMAGE_ID = "A-" + "1" * 32
 TEXT_ID = "A-" + "2" * 32
-PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=")
+def chunk(kind, raw):
+    return struct.pack(">I", len(raw)) + kind + raw + struct.pack(">I", zlib.crc32(kind + raw))
+
+
+PNG = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) +
+       chunk(b"IDAT", zlib.compress(b"\x00\x00\x80\xff")) + chunk(b"IEND", b""))
 
 
 def entry(ident, raw, name, mime):

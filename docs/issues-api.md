@@ -296,6 +296,41 @@ otwiera Tablicy, nie wykonuje gita i nie ma lokalnej ścieżki zapisu zastępuj�
 
 ## Instalacja i użycie
 
+### Widok Sprawy (PT-220)
+
+Pasek jednego okna Tide zawiera **Sprawy**. Domyślnie lista pokazuje szkice i sprawy gotowe
+do przyjęcia; filtry udostępniają również przyjęte, odrzucone i archiwalne. Plakietka liczy `ready`.
+Wyszukiwanie obejmuje numer, tytuł i projekt. `tide issue open S-N` sprawdza sprawę przez
+publiczne `Show` i wywołuje `org.tide.Window /Window Show("issues", "S-N")` albo uruchamia
+zainstalowane okno z `--view issues --select S-N`. Nieznana sprawa daje zwykły błąd CLI bez otwarcia.
+
+Widok edytuje tylko tytuł, treść Markdown i przypisanie projektu; przy zapisie wysyła wyłącznie
+zmienione pola i `expectedVersion`. „Bez projektu” wysyła `null`. Zmiana gotowej sprawy przywraca
+szkic. Konflikt zachowuje lokalny tekst na czas życia okna, pokazuje aktualną wersję i blokuje
+zapis do jawnego ponownego wczytania z potwierdzeniem. Zmiana zaznaczenia zachowuje bufory odwiedzonych
+spraw. Nie są to pliki odzyskiwania po zamknięciu okna. Submit/reject/reopen używają istniejącego API;
+przyjęcie i zlecenie nie są jeszcze dostępne w tym etapie.
+
+Raport przechodzi przez parser Markdown Qt z wyłączonym HTML. Obrazy muszą wskazywać dokładną
+ścieżkę `attachments/A-…` z manifestu tej sprawy. Nie otwieramy jej na dysku: publiczne `ReadAttachment`
+z ID i wersją dostarcza bajty, które klient sprawdza względem manifestu. Tylko PNG/JPEG/WebP po
+dekodowaniu trafiają do kontrolowanego dostawcy `image://issue-evidence/` pod losowym identyfikatorem.
+Pozostałe obrazy, SVG, sieć, dowolne `file://` i przejścia poza katalog nie mają podglądu.
+Linki HTTP(S) otwierają się wyłącznie po kliknięciu. Renderer dokumentów kart pozostaje bez zmian.
+
+Każdy załącznik ma wynik kontroli spójności. Pusty manifest jest poprawny; opisane w raporcie braki
+nie tworzą listy wymaganych plików. „Otwórz obraz” tworzy prywatną, ponownie zakodowaną kopię PNG;
+pozostałe dowody otwierają się jawnie **jako tekst**, pod stałym rozszerzeniem `.txt` (binaria mogą
+być nieczytelne). HTML/SVG ani nazwa dowodu nie wybierają programu wykonującego jego treść.
+Podgląd `--data issues=plik.json` nie wykonuje mutacji, odczytów dyskowych dowodów ani otwarć systemowych.
+
+Pakiet widoku kopiuje standardowe `widgets/stage.py`; obejmuje go instalacja okna Tide.
+Systemowy Python potrzebuje dodatkowo modułu **PyQt6.QtQuick** (`python3-pyqt6.qtquick`)
+oprócz używanych już QtQml, QtGui i QtDBus. Zestaw `issues` obejmuje teraz również
+`apps/issues/tests`: QML na danych testowych oraz backend i CLI z rzeczywistą usługą na prywatnym D-Bus.
+
+### CLI
+
 Standardowa instalacja `make install` obejmuje CLI (z istniejącą kopią zapasową przed instalacją).
 Sam komponent `install-cli` kopiuje `cli/tide.py` z prawem wykonania do `~/.local/bin/tide`;
 `uninstall-cli` usuwa tę kopię. Potrzebny jest systemowy Python 3 i PyQt6 QtDBus, jak dla usługi.

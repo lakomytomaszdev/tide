@@ -28,12 +28,13 @@ engine = QQmlApplicationEngine()
 factory = tide.guard_network(engine)
 backend.install_image_provider(engine)
 engine.setInitialProperties({"source": backend})
-engine.loadData(b"import QtQuick\nWindow { width: 1440; height: 920; visible: true\n"
+engine.loadData(b'import QtQuick\nimport "tide" as Tide\nWindow { width: 1440; height: 920; visible: true; color: Tide.Tokens.backgroundWindow\n'
                 b"property var source\nIssuesView { objectName: 'issues'; anchors.fill: parent; backend: source } }",
                 QUrl.fromLocalFile(pkg + "/views/issues/qml/Probe.qml"))
 assert engine.rootObjects(), "Nie udało się załadować QML"
 window = engine.rootObjects()[0]
 view = window.findChild(QObject, "issues")
+engine.rootContext().setContextProperty("view", view)
 out = {}
 
 

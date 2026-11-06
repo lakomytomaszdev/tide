@@ -11,18 +11,18 @@ Item {
     property var backend: null
     property bool active: true
     property var preview: ({})
-    readonly property var state: backend ? JSON.parse(backend.stateJson) : ({})
-    readonly property var issue: state.issue || null
-    readonly property var draft: state.draft || ({})
+    readonly property var modelState: backend ? JSON.parse(backend.stateJson) : ({})
+    readonly property var issue: modelState.issue || null
+    readonly property var draft: modelState.draft || ({})
     readonly property bool editable: !!issue && ["draft", "ready"].indexOf(issue.state) >= 0
-    readonly property bool canAct: !!backend && !backend.preview && !!state.available && !state.busy && !state.conflict
-    readonly property var rows: Logic.rows(state.issues, search.text, projectFilter.currentValue || "", stateFilter.currentValue || "open")
-    readonly property var railInfo: ({label: "Sprawy", value: (state.issues || []).length + " raportów",
+    readonly property bool canAct: !!backend && !backend.preview && !!modelState.available && !modelState.busy && !modelState.conflict && !modelState.error
+    readonly property var rows: Logic.rows(modelState.issues, search.text, projectFilter.currentValue || "", stateFilter.currentValue || "open")
+    readonly property var railInfo: ({label: "Sprawy", value: (modelState.issues || []).length + " raportów",
         note: "Szkic → gotowa do przyjęcia. Przyjęcie będzie dostępne w kolejnym etapie."})
     property bool editing: false
     property string pendingDetach: ""
     readonly property var projectChoices: {
-        const options = Logic.projectOptions(state.projects, "Bez projektu")
+        const options = Logic.projectOptions(modelState.projects, "Bez projektu")
         if (draft.project && !options.some(p => p.value === draft.project))
             options.push({label: "Nieznany projekt: " + draft.project, value: draft.project})
         return options
@@ -31,7 +31,7 @@ Item {
     function showItem(item) { if (backend) { backend.selectIssue(item); editing = false } }
     function takeFocus() { search.forceActiveFocus() }
     function chooseFirst() {
-        if (!state.selected && rows.length > 0) showItem(rows[0].id)
+        if (!modelState.selected && rows.length > 0) showItem(rows[0].id)
     }
     onRowsChanged: chooseFirst()
     Component.onCompleted: chooseFirst()
@@ -45,19 +45,19 @@ Item {
             Label { text: "Sprawy"; font.pixelSize: 28; color: Tide.Tokens.textPrimary }
             Label { text: backend && backend.preview ? "Podgląd · akcje wyłączone" : "Raporty rozmów" }
             Item { Layout.fillWidth: true }
-            Action { text: "Odśwież"; enabled: !!backend && !state.busy; onClicked: backend.reload() }
+            Action { text: "Odśwież"; enabled: !!backend && !modelState.busy; onClicked: backend.reload() }
         }
         Label {
             Layout.fillWidth: true
-            visible: !state.available
+            visible: !modelState.available
             text: "Usługa Tide jest niedostępna lub nie udostępnia spraw. Ponów odczyt przyciskiem Odśwież."
             color: Tide.Tokens.waiting
         }
         Label {
             objectName: "issueNotice"
             Layout.fillWidth: true
-            visible: !!state.notice
-            text: state.notice || ""
+            visible: !!modelState.notice
+            text: modelState.notice || ""
             color: Tide.Tokens.waiting
         }
         RowLayout {
@@ -73,7 +73,7 @@ Item {
                 id: projectFilter
                 objectName: "issueProjectFilter"
                 Layout.preferredWidth: 220
-                model: Logic.projectOptions(state.projects, "Wszystkie projekty")
+                model: Logic.projectOptions(modelState.projects, "Wszystkie projekty")
                 Accessible.name: "Filtr projektu"
             }
             Select {
@@ -109,7 +109,7 @@ Item {
                         radius: Tide.Tokens.radiusFrame
                         color: Tide.Tokens.backgroundCard
                         border.width: 1
-                        border.color: view.state.selected === modelData.id ? Tide.Tokens.accent : "transparent"
+                        border.color: view.modelState.selected === modelData.id ? Tide.Tokens.accent : "transparent"
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Button
                         Accessible.name: modelData.id + " " + modelData.title
@@ -130,7 +130,7 @@ Item {
                 }
                 Label { visible: view.rows.length === 0; text: "Brak spraw dla wybranych filtrów." }
                 Repeater {
-                    model: state.listErrors || []
+                    model: modelState.listErrors || []
                     Label {
                         required property var modelData
                         Layout.fillWidth: true
@@ -150,11 +150,11 @@ Item {
                     Label {
                         objectName: "issueError"
                         Layout.fillWidth: true
-                        visible: !!state.error
-                        text: state.error || ""
+                        visible: !!modelState.error
+                        text: modelState.error || ""
                         color: Tide.Tokens.waiting
                     }
-                    Label { visible: !view.issue && !state.error; text: "Wybierz sprawę z listy." }
+                    Label { visible: !view.issue && !modelState.error; text: "Wybierz sprawę z listy." }
                     ColumnLayout {
                         Layout.fillWidth: true
                         visible: !!view.issue
@@ -179,13 +179,13 @@ Item {
                         }
                         Label {
                             Layout.fillWidth: true
-                            visible: !!draft.project && !(state.projects || []).some(p => p.slug === draft.project)
+                            visible: !!draft.project && !(modelState.projects || []).some(p => p.slug === draft.project)
                             text: "Nieznany lub usunięty projekt. Wybierz istniejący projekt albo wyczyść przypisanie przed submit."
                             color: Tide.Tokens.waiting
                         }
                         RowLayout {
                             Action { text: view.editing ? "Pokaż raport" : "Edytuj szkic"; visible: view.editable; onClicked: view.editing = !view.editing }
-                            Label { text: state.dirty ? "Lokalne zmiany · zachowane do zamknięcia okna" : "Zapisana wersja" }
+                            Label { text: modelState.dirty ? "Lokalne zmiany · zachowane do zamknięcia okna" : "Zapisana wersja" }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -201,7 +201,7 @@ Item {
                                 objectName: "issueTitle"
                                 Layout.fillWidth: true
                                 text: draft.title || ""
-                                enabled: !state.busy
+                                enabled: !modelState.busy
                                 maximumLength: 200
                                 onTextEdited: if (backend) backend.updateDraft("title", text)
                             }
@@ -211,7 +211,7 @@ Item {
                                 Layout.fillWidth: true
                                 model: view.projectChoices
                                 currentIndex: Math.max(0, view.projectChoices.findIndex(p => p.value === (draft.project || "")))
-                                enabled: !state.busy
+                                enabled: !modelState.busy
                                 onActivated: if (backend) backend.updateDraft("project", currentValue)
                             }
                             Label { text: "Raport Markdown (bez frontmatteru)" }
@@ -220,7 +220,7 @@ Item {
                                 Layout.fillWidth: true
                                 Layout.minimumHeight: 280
                                 text: draft.report || ""
-                                enabled: !state.busy
+                                enabled: !modelState.busy
                                 textFormat: TextEdit.PlainText
                                 wrapMode: TextEdit.Wrap
                                 selectByMouse: true
@@ -239,7 +239,7 @@ Item {
                             Layout.fillWidth: true
                             visible: !view.editing
                             // changed obejmuje także asynchroniczne zakończenie odczytu obrazów.
-                            text: { view.state; return backend ? backend.renderReport(draft.report || "", Tide.Tokens.sky) : "" }
+                            text: { view.modelState; return backend ? backend.renderReport(draft.report || "", Tide.Tokens.sky) : "" }
                             textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: true
@@ -255,23 +255,25 @@ Item {
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
-                            visible: !!state.conflict
+                            visible: !!modelState.conflict
                             Label {
                                 objectName: "issueConflict"
                                 Layout.fillWidth: true
                                 color: Tide.Tokens.waiting
-                                text: "Konflikt · aktualna wersja " + state.conflict + ". Lokalny tekst zachowano. Porównaj go przed ponownym wczytaniem."
+                                text: "Konflikt · aktualna wersja " + modelState.conflict + ". Lokalny tekst zachowano. Porównaj go przed ponownym wczytaniem."
                             }
-                            Label { text: state.current ? "Aktualny tytuł: " + state.current.title + " · projekt: " + (state.current.project || "bez przypisania") : "Pobieranie aktualnej wersji…" }
+                            Label { text: modelState.current ? "Aktualny tytuł: " + modelState.current.title + " · projekt: " + (modelState.current.project || "bez przypisania") : "Pobieranie aktualnej wersji…" }
                             QQC2.TextArea {
                                 objectName: "issueCurrentReport"
                                 Layout.fillWidth: true
-                                text: state.current ? state.current.report : ""
+                                text: modelState.current ? modelState.current.report : ""
                                 textFormat: TextEdit.PlainText
                                 readOnly: true
                                 selectByMouse: true
                                 wrapMode: TextEdit.Wrap
                                 color: Tide.Tokens.textSecondary
+                                selectionColor: Tide.Tokens.accent
+                                selectedTextColor: Tide.Tokens.backgroundDesktop
                                 font.family: Tide.Theme.uiFamily
                                 background: Rectangle { color: Tide.Tokens.backgroundCard }
                             }
@@ -284,34 +286,34 @@ Item {
                                 text: "Zapisz zmiany"
                                 primary: true
                                 visible: view.editable
-                                enabled: view.canAct && !!state.dirty
+                                enabled: view.canAct && !!modelState.dirty
                                 onClicked: backend.save()
                             }
                             Action {
                                 objectName: "issueReload"
                                 text: "Wczytaj ponownie"
-                                enabled: !!backend && !backend.preview && !state.busy
+                                enabled: !!backend && !backend.preview && !modelState.busy
                                 onClicked: discardDialog.open()
                             }
                             Action {
                                 objectName: "issueSubmit"
                                 text: "Przygotuj do przyjęcia"
                                 visible: !!view.issue && view.issue.state === "draft"
-                                enabled: view.canAct && !state.dirty
+                                enabled: view.canAct && !modelState.dirty
                                 onClicked: backend.transition("Submit")
                             }
                             Action {
                                 objectName: "issueReject"
                                 text: "Odrzuć"
                                 visible: view.editable
-                                enabled: view.canAct && !state.dirty
+                                enabled: view.canAct && !modelState.dirty
                                 onClicked: rejectDialog.open()
                             }
                             Action {
                                 objectName: "issueReopen"
                                 text: "Otwórz jako szkic"
                                 visible: !!view.issue && view.issue.state === "rejected"
-                                enabled: view.canAct && !state.dirty
+                                enabled: view.canAct && !modelState.dirty
                                 onClicked: backend.transition("Reopen")
                             }
                         }
@@ -336,7 +338,7 @@ Item {
                                 }
                                 Label {
                                     Layout.fillWidth: true
-                                    text: modelData.id + " · " + ((state.evidence || {})[modelData.id] || "Oczekuje na sprawdzenie")
+                                    text: modelData.id + " · " + ((modelState.evidence || {})[modelData.id] || "Oczekuje na sprawdzenie")
                                     color: Tide.Tokens.textMuted
                                 }
                                 RowLayout {
@@ -348,7 +350,7 @@ Item {
                                     Action {
                                         text: "Odłącz"
                                         visible: view.editable
-                                        enabled: view.canAct && !state.dirty
+                                        enabled: view.canAct && !modelState.dirty
                                         onClicked: { view.pendingDetach = modelData.id; detachDialog.open() }
                                     }
                                 }
@@ -358,7 +360,7 @@ Item {
                             objectName: "issueAttach"
                             text: "Dołącz plik…"
                             visible: view.editable
-                            enabled: view.canAct && !state.dirty
+                            enabled: view.canAct && !modelState.dirty
                             onClicked: attachmentDialog.open()
                         }
                     }
@@ -372,31 +374,22 @@ Item {
         fileMode: FileDialog.OpenFile
         onAccepted: if (view.backend && !view.backend.preview) view.backend.attach(selectedFile)
     }
-    QQC2.Dialog {
+    Confirm {
         id: discardDialog
-        anchors.centerIn: parent
-        modal: true
-        title: "Wczytać zapisaną wersję?"
-        standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
-        Label { text: "Lokalne zmiany tej sprawy zostaną zastąpione aktualną wersją z usługi." }
+        heading: "Wczytać zapisaną wersję?"
+        message: "Lokalne zmiany tej sprawy zostaną zastąpione aktualną wersją z usługi."
         onAccepted: if (view.backend) view.backend.reloadSelected()
     }
-    QQC2.Dialog {
+    Confirm {
         id: rejectDialog
-        anchors.centerIn: parent
-        modal: true
-        title: "Odrzucić sprawę?"
-        standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
-        Label { text: "Raport i dowody pozostaną do odczytu. Możesz później otworzyć sprawę jako szkic." }
+        heading: "Odrzucić sprawę?"
+        message: "Raport i dowody pozostaną do odczytu. Możesz później otworzyć sprawę jako szkic."
         onAccepted: if (view.backend) view.backend.transition("Reject")
     }
-    QQC2.Dialog {
+    Confirm {
         id: detachDialog
-        anchors.centerIn: parent
-        modal: true
-        title: "Odłączyć dowód?"
-        standardButtons: QQC2.Dialog.Ok | QQC2.Dialog.Cancel
-        Label { text: "Dowód zniknie z bieżącego manifestu. Sprawa wróci do szkicu." }
+        heading: "Odłączyć dowód?"
+        message: "Dowód zniknie z bieżącego manifestu. Sprawa wróci do szkicu."
         onAccepted: if (view.backend) view.backend.detach(view.pendingDetach)
     }
 }

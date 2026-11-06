@@ -2,7 +2,7 @@
 import re
 
 from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
-from PyQt6.QtGui import QColor, QImage, QImageReader, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
+from PyQt6.QtGui import QImage, QImageReader, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
 from PyQt6.QtQuick import QQuickImageProvider
 
 LINK = re.compile(r"https?://[^\s<>\x00-\x1f]+", re.IGNORECASE)
@@ -77,6 +77,7 @@ def decode_image(raw, mime):
     buffer.setData(QByteArray(raw))
     buffer.open(QIODevice.OpenModeFlag.ReadOnly)
     reader = QImageReader(buffer, IMAGE_TYPES[mime])
+    reader.setAutoDetectImageFormat(False)
     reader.setDecideFormatFromContent(False)
     size = reader.size()
     if (not size.isValid() or size.width() * size.height() > 40_000_000 or
@@ -84,7 +85,13 @@ def decode_image(raw, mime):
         return QImage()
     if size.width() > 720 or size.height() > 600:
         reader.setScaledSize(size.scaled(720, 600, Qt.AspectRatioMode.KeepAspectRatio))
-    return reader.read()
+    previous_limit = QImageReader.allocationLimit()
+    try:
+        QImageReader.setAllocationLimit(320)
+        image = reader.read()
+    finally:
+        QImageReader.setAllocationLimit(previous_limit)
+    return image if reader.error() == QImageReader.ImageReaderError.UnknownError else QImage()
 
 
 class ImageProvider(QQuickImageProvider):

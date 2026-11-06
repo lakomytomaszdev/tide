@@ -194,3 +194,131 @@ out['svg'] = module.report.decode_image(b'<svg xmlns="http://www.w3.org/2000/svg
         self.assertIn('href="https://example.org"', out["html"])
         self.assertIn("&lt;script&gt;", out["html"])
         self.assertTrue(out["provider"] and out["svg"])
+
+    def test_keyboard_edit_wiring_and_buffers_survive_navigation(self):
+        out = self.run_scenario('''
+from PyQt6.QtCore import Qt
+js('view.editing = true')
+wait()
+engine.rootContext().setContextProperty('field', obj('issueReportEditor'))
+js('field.forceActiveFocus()')
+QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+for char in 'Lokalny raport':
+    QTest.keyClick(window, char)
+wait()
+out['typed'] = state()['draft']['report']
+engine.rootContext().setContextProperty('titleField', obj('issueTitle'))
+js('titleField.forceActiveFocus()')
+QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+for char in 'Nowy tytul':
+    QTest.keyClick(window, char)
+wait()
+out['title'] = state()['draft']['title']
+backend.selectIssue('S-2')
+backend.selectIssue('S-1')
+wait()
+out['returned'] = state()['draft']
+out['dirty'] = state()['dirty']
+''')
+        self.assertEqual(out['typed'], 'Lokalny raport')
+        self.assertEqual(out['title'], 'Nowy tytul')
+        self.assertEqual(out['returned']['report'], out['typed'])
+        self.assertEqual(out['returned']['title'], out['title'])
+        self.assertTrue(out['dirty'])
+
+    def test_lifecycle_uses_version_only_and_dirty_buffer_blocks_actions(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script()
+issue = dict(state()['issue'], attachments=[])
+replies.append(dict(ok=True, issue=dict(issue, state='rejected', version=2)))
+backend.transition('Reject')
+wait()
+out['reject'] = calls[-1]
+replies.append(dict(ok=True, issue=dict(issue, state='draft', version=3)))
+backend.transition('Reopen')
+wait()
+out['reopen'] = calls[-1]
+backend.updateDraft('report', 'lokalnie')
+before = len(calls)
+backend.transition('Submit')
+out['dirtyBlocked'] = len(calls) == before
+backend.updateDraft('report', issue['report'])
+replies.append(dict(ok=True, issue=dict(issue, state='ready', version=4)))
+backend.transition('Submit')
+wait()
+out['submit'] = calls[-1]
+''')
+        for method, version in [('reject', 1), ('reopen', 2), ('submit', 3)]:
+            call = out[method]
+            self.assertEqual(call[:2], [method.capitalize(), 'S-2'])
+            self.assertEqual(json.loads(call[2]), {'expectedVersion': version})
+        self.assertTrue(out['dirtyBlocked'])
+
+    def test_links_require_activation_and_malicious_schemes_never_open(self):
+        out = self.run_scenario('''
+from unittest.mock import patch
+backend._preview = False
+with patch.object(module.QDesktopServices, 'openUrl', return_value=True) as opened:
+    wait()
+    out['before'] = opened.call_count
+    for url in ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,bad', 'ftp://example.org']:
+        backend.openLink(url)
+    out['bad'] = opened.call_count
+    backend.openLink('https://example.org/docs')
+    out['after'] = [args.args[0].toString() for args in opened.call_args_list]
+''')
+        self.assertEqual((out['before'], out['bad']), (0, 0))
+        self.assertEqual(out['after'], ['https://example.org/docs'])
+
+    def test_integrity_failures_block_provider_and_newer_version_does_not_erase_text(self):
+        fixture = data()
+        image = fixture['issues'][0]['attachments'][0]
+        image['sha256'] = '0' * 64
+        out = self.run_scenario('''
+out['images'] = len(backend._provider.images)
+out['status'] = list(state()['evidence'].values())
+backend.updateDraft('report', 'Wpisany tekst')
+new = dict(state()['issue'], version=2, report='Obcy zapis', attachments=[])
+backend._shown('S-1', dict(ok=True, issue=new))
+out['kept'] = state()['draft']['report']
+out['current'] = state()['current']['report']
+out['conflict'] = state()['conflict']
+''', fixture)
+        self.assertEqual(out['images'], 0)
+        self.assertIn('Dowód jest niezgodny z manifestem.', out['status'])
+        self.assertEqual((out['kept'], out['current'], out['conflict']), ('Wpisany tekst', 'Obcy zapis', 2))
+
+    def test_layout_paints_report_in_staged_view(self):
+        target = REPO / 'build' / 'issues-preview.png'
+        target.parent.mkdir(exist_ok=True)
+        out = self.run_scenario('''
+wait(100)
+out['saved'] = window.grabWindow().save(%r)
+out['height'] = obj('issueReport').property('height')
+''' % str(target))
+        self.assertTrue(out['saved'])
+        self.assertGreater(out['height'], 50)
+        self.assertGreater(target.stat().st_size, 15000)
+
+    def test_manifest_path_and_read_identity_are_not_interchangeable(self):
+        fixture = data()
+        fixture['issues'][0]['attachments'][0]['path'] = '../../secret.png'
+        out = self.run_scenario('''
+out['images'] = len(backend._provider.images)
+out['statuses'] = list(state()['evidence'].values())
+issue = state()['issue']
+entry = issue['attachments'][1]
+raw = b'<script>secret()</script>'
+good = dict(ok=True, id=issue['id'], version=issue['version'], attachment=entry)
+out['valid'] = bool(module.validate_read(issue, entry, good, raw))
+out['foreign'] = bool(module.validate_read(issue, entry, dict(good, id='S-2'), raw))
+out['version'] = bool(module.validate_read(issue, entry, dict(good, version=2), raw))
+out['bytes'] = bool(module.validate_read(issue, entry, good, b'obce bajty'))
+out['entry'] = bool(module.validate_read(issue, entry, dict(good, attachment=dict(entry, name='obcy')), raw))
+''', fixture)
+        self.assertEqual(out['images'], 0)
+        self.assertIn('Niedozwolona ścieżka manifestu.', out['statuses'])
+        self.assertTrue(out['valid'])
+        for key in ('foreign', 'version', 'bytes', 'entry'):
+            self.assertFalse(out[key], key)

@@ -36,7 +36,10 @@ def failure(message, error="unavailable"):
 
 
 def validate_read(issue, entry, result, raw):
-    return (result.get("ok") and result.get("id") == issue["id"] and
+    ident = entry.get("id", "")
+    return (isinstance(ident, str) and report.ATTACHMENT.fullmatch(ident) and
+            entry.get("path") == "attachments/" + ident and
+            result.get("ok") and result.get("id") == issue["id"] and
             result.get("version") == issue["version"] and result.get("attachment") == entry and
             len(raw) <= FILE_MAX and len(raw) == entry.get("size") and
             hashlib.sha256(raw).hexdigest() == entry.get("sha256"))
@@ -44,7 +47,8 @@ def validate_read(issue, entry, result, raw):
 
 def read_source(url):
     """Jawny wybór użytkownika, każdy komponent bez dowiązań i bez plików specjalnych."""
-    if not url.isLocalFile() or url.host() or ".." in url.toLocalFile().split("/"):
+    if (not url.isLocalFile() or url.host() or not os.path.isabs(url.toLocalFile()) or
+            ".." in url.toLocalFile().split("/")):
         raise ValueError("Wybierz zwykły lokalny plik bez dowiązań.")
     path = url.toLocalFile()
     parts = path.split("/")
@@ -88,6 +92,7 @@ class Backend(QObject):
         self._available = data is not None
         self._busy = False
         self._pending = set()
+        self._refreshing = False
         self._capabilities = set()
         self._generation = 0
         self._images = {}
@@ -186,16 +191,19 @@ class Backend(QObject):
 
     @pyqtSlot()
     def reload(self):
-        if self._preview or self._busy:
+        if self._preview or self._busy or self._refreshing:
             return
+        self._refreshing = True
         def info(result, _raw):
             self._capabilities = set(result.get("capabilities", [])) if result.get("ok") else set()
             self._available = "issue.show" in self._capabilities and "issue.list" in self._capabilities
             if not self._available:
+                self._refreshing = False
                 self._lost()
                 return
             self._call("List", [], listed)
         def listed(result, _raw):
+            self._refreshing = False
             if not result.get("ok"):
                 self._notice = result.get("message", "Nie można odczytać spraw.")
             else:
@@ -203,6 +211,11 @@ class Backend(QObject):
                 self._list_errors = result.get("errors", [])
                 if self._notice.startswith("Usługa Tide"):
                     self._notice = ""
+                buf = self._buffers.get(self._selected, {})
+                meta = next((i for i in self._issues if i["id"] == self._selected), None)
+                if not self._busy and meta and buf.get("issue") and meta["version"] != buf["issue"]["version"]:
+                    ident = self._selected
+                    self._call("Show", [ident], lambda reply, _: self._shown(ident, reply))
             self.changed.emit()
         def projects(result, _raw):
             self._projects = result.get("projects", [])
@@ -233,7 +246,9 @@ class Backend(QObject):
             buf["error"] = result.get("message", "Nie można odczytać sprawy.")
         else:
             issue = result["issue"]
-            if not discard and self._dirty(buf):
+            if buf.get("issue") and issue["version"] < buf["issue"]["version"]:
+                return
+            if not discard and (self._dirty(buf) or buf.get("conflict")):
                 if issue["version"] != buf["issue"]["version"]:
                     buf.update(current=issue, conflict=issue["version"])
             else:
@@ -251,10 +266,15 @@ class Backend(QObject):
 
     @pyqtSlot()
     def reloadSelected(self):
-        if self._busy or self._preview:
+        if self._busy or self._preview or not self._selected:
             return
         ident = self._selected
-        self._call("Show", [ident], lambda result, _: self._shown(ident, result, discard=True))
+        self._busy = True
+        self.changed.emit()
+        def done(result, _raw):
+            self._busy = False
+            self._shown(ident, result, discard=True)
+        self._call("Show", [ident], done)
 
     def _can_write(self, method):
         buf = self._buffers.get(self._selected, {})
@@ -262,7 +282,7 @@ class Backend(QObject):
                    "Reject": ("draft", "ready"), "Reopen": ("rejected",),
                    "Attach": ("draft", "ready"), "Detach": ("draft", "ready")}
         return (not self._preview and self._available and not self._busy and buf.get("issue") and
-                not buf.get("conflict") and buf["issue"]["state"] in allowed[method] and
+                not buf.get("conflict") and not buf.get("error") and buf["issue"]["state"] in allowed[method] and
                 "issue." + method.lower() in self._capabilities)
 
     @pyqtSlot()
@@ -302,15 +322,24 @@ class Backend(QObject):
             else:
                 self._notice = result.get("message", "Nie udało się zapisać sprawy.")
                 if result.get("error") == "version-conflict":
-                    buf["conflict"] = result.get("currentVersion", 0)
-                    self._call("Show", [ident], lambda reply, _: self._conflict_current(ident, reply))
+                    self._record_conflict(ident, result)
             self.changed.emit()
         self._call(method, args, done)
 
     def _conflict_current(self, ident, result):
         if result.get("ok"):
-            self._buffers[ident]["current"] = result["issue"]
+            buf = self._buffers[ident]
+            if buf.get("conflict") and result["issue"]["version"] >= buf["conflict"]:
+                buf["current"] = result["issue"]
+                buf["conflict"] = result["issue"]["version"]
         self.changed.emit()
+
+    def _record_conflict(self, ident, result):
+        buf = self._buffers[ident]
+        current = result.get("currentVersion")
+        if type(current) is int and current > max(buf.get("conflict", 0), buf.get("issue", {}).get("version", 0)):
+            buf["conflict"] = current
+            self._call("Show", [ident], lambda reply, _: self._conflict_current(ident, reply))
 
     @pyqtSlot(QUrl)
     def attach(self, url):
@@ -334,10 +363,13 @@ class Backend(QObject):
         def got(result, raw):
             if result.get("ok") and not validate_read(issue, entry, result, raw):
                 result, raw = failure("Dowód jest niezgodny z manifestem.", "broken-file"), b""
+            if result.get("error") == "version-conflict" and not self._preview:
+                self._record_conflict(issue["id"], result)
             callback(result, raw)
         if self._preview:
             try:
-                raw = base64.b64decode(self._data.get("attachmentData", {}).get(entry["id"], ""), validate=True)
+                encoded = self._data.get("attachmentData", {}).get(entry["id"], "")
+                raw = base64.b64decode(encoded, validate=True) if len(encoded) <= (FILE_MAX + 2) // 3 * 4 else b""
             except ValueError:
                 raw = b""
             got(dict(ok=True, id=issue["id"], version=issue["version"], attachment=entry), raw)
@@ -411,22 +443,27 @@ class Backend(QObject):
             else:
                 # Niezaufane rozszerzenia (w tym HTML/SVG/skrypty) nie wybierają aplikacji.
                 # Otwarcie pozostałych dowodów jako tekst jest jawną akcją użytkownika.
-                temp = QTemporaryDir()
-                self._exports.append(temp)
-                path = os.path.join(temp.path(), "dowod.txt")
-                if entry["type"] in report.IMAGE_TYPES:
-                    image = report.decode_image(raw, entry["type"])
-                    if image.isNull():
-                        self._notice = "Nieprawidłowy obraz."
-                        self.changed.emit()
-                        return
-                    path = os.path.join(temp.path(), "dowod.png")
-                    image.save(path, "PNG")
-                else:
-                    with open(path, "x", encoding="utf-8") as fh:
-                        fh.write(raw.decode("utf-8", errors="replace"))
-                os.chmod(path, 0o400)
-                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                try:
+                    temp = QTemporaryDir()
+                    if not temp.isValid():
+                        raise OSError("Nie można utworzyć prywatnej kopii dowodu.")
+                    self._exports.append(temp)
+                    path = os.path.join(temp.path(), "dowod.txt")
+                    if entry["type"] in report.IMAGE_TYPES:
+                        image = report.decode_image(raw, entry["type"])
+                        if image.isNull():
+                            raise OSError("Nieprawidłowy obraz.")
+                        path = os.path.join(temp.path(), "dowod.png")
+                        if not image.save(path, "PNG"):
+                            raise OSError("Nie można zapisać prywatnej kopii obrazu.")
+                    else:
+                        with open(path, "x", encoding="utf-8") as fh:
+                            fh.write(raw.decode("utf-8", errors="replace"))
+                    os.chmod(path, 0o400)
+                    if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+                        self._notice = "Nie można otworzyć dowodu w programie systemowym."
+                except OSError as exc:
+                    self._notice = str(exc)
             self.changed.emit()
         self._read(issue, entry, opened)
 

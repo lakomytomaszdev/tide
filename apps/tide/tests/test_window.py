@@ -82,6 +82,7 @@ class PackageTest(unittest.TestCase):
                      "views/sessions/backend.py", "views/sessions/qml/SessionsView.qml",
                      "views/sessions/qml/tide/Tokens.qml", "views/worktrees/backend.py",
                      "views/worktrees/qml/WorktreesView.qml", "views/worktrees/qml/tide/Tokens.qml",
+                     "views/issues/backend.py", "views/issues/issuereport.py", "views/issues/qml/IssuesView.qml",
                      "compat/tide-sessions.py", "compat/tide-worktrees.py"):
             self.assertIn(name, files)
         self.assertFalse([f for f in files if "/tests/" in f or f.startswith("tests/")
@@ -404,7 +405,7 @@ class WindowOverDbusTest(unittest.TestCase):
         self.assertIsNone(re.search(QML_PROBLEMS, err or ""), err)
 
     def test_show_switches_views_and_rejects_unknown(self):
-        for view in ("worktrees", "docker", "reports", "models", "sessions", "board"):
+        for view in ("worktrees", "docker", "reports", "models", "sessions", "issues", "board"):
             self.assertTrue(self.show(view))
             self.assertTrue(wait_until(lambda: self.current() == view, timeout=5), view)
         self.assertFalse(self.show("nieznany"))
@@ -663,7 +664,8 @@ class InstallTest(unittest.TestCase):
         self.assertIn(f"Exec=/usr/bin/python3 -s {self.dest}/tide.py\n", main)
         self.assertIn("StartupWMClass=tide\n", main)
         self.assertIn("Icon=tide\n", main)
-        self.assertIn("Actions=board;sessions;worktrees;docker;reports;models;\n", main)
+        self.assertIn("Actions=board;issues;sessions;worktrees;docker;reports;models;\n", main)
+        self.assertIn(f"Exec=/usr/bin/python3 -s {self.dest}/tide.py --view issues\n", main)
         self.assertIn(f"Exec=/usr/bin/python3 -s {self.dest}/tide.py --view reports\n", main)
         self.assertIn("X-Tide-Component=tide-window\n", main)
         for view, name, title in (("sessions", "tide-sessions", "Tide Sesje"), ("worktrees", "tide-worktrees",
