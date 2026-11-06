@@ -601,7 +601,8 @@ class StepDecisionTest(FlowInProcess):
         with open(call_path, encoding="utf-8") as fh:
             call = json.load(fh)
         self.assertNotIn("--resume", call["argv"])
-        self.assertIn("Poprzedni krok tego ticketu prowadził inny wykonawca", call["prompt"])
+        self.assertIn("prowadził inny wykonawca (Sonnet)", call["prompt"])
+        self.assertIn("zaczynasz nową sesję", call["prompt"])
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:

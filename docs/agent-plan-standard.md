@@ -193,6 +193,9 @@ osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani re
 wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
 planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
 
+Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent uruchamiają pełny `make test`
+zamiast niedostępnego celu i zapisują wynik. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+
 Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
 [dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
 

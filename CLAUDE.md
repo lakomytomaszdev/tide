@@ -23,6 +23,9 @@ wykonaj go bez dodatkowego `make test`. Domyślnie moduły biegną w liczbie pro
 `JOBS=N` zmienia limit. Lista zestawów: `tools/test_suites.py`, instrukcja i izolacja:
 [docs/testing.md](docs/testing.md).
 
+Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent wykonują pełny `make test`
+i zapisują wynik. Szczegóły: [starsze gałęzie](docs/testing.md#starsze-gałęzie-bez-celu-test-changed).
+
 ## Agent skills
 
 ### Issue tracker

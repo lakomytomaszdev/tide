@@ -430,6 +430,13 @@ elif word in ("czeka-na", "czeka-na-blad"):
     # tylko błąd z nazwą ticketu (jak PT-191) — o czekaniu decyduje użytkownik w oknie.
     target = re.search(r"ATRAPA-CZEKA: (\S+)", prompt).group(1)
     if "jest scalony do gałęzi karty" in prompt:
+        # PT-260: dowód pobrania pracy blokera, a nie samo rozpoznanie zdania w kartce wznowienia.
+        branch = re.search(r"git merge --no-edit ([^`]+)`", prompt).group(1)
+        subprocess.run(["git", "merge", "--no-edit", branch], check=True)
+        with open(os.path.join(cwd, "ATRAPA-1.md"), encoding="utf-8") as fh:
+            dependency = fh.read()
+        with open(os.path.join(out, "dependency-read.txt"), "w", encoding="utf-8") as fh:
+            fh.write(dependency)
         finish("done")
     elif word == "czeka-na":
         finish("error", reason=f"brak modułu z {target}", waitFor=target)
