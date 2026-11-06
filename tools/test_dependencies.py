@@ -87,7 +87,17 @@ class ImportGraph:
                     self.uncertain.setdefault(path, []).append(line)
                 else:
                     names.add(name)
-            dependencies = {self.names[name] for name in names if name in self.names} - {path}
+            dependencies = {self.names[name] for name in names if name in self.names}
+            # Import podmodułu wykonuje też istniejące inicjalizatory wszystkich
+            # pakietów nadrzędnych, również przy stałej nazwie importu dynamicznego.
+            for name in names:
+                parent = name.rpartition(".")[0]
+                while parent:
+                    initializer = self.names.get(parent)
+                    if initializer and initializer.endswith("/__init__.py"):
+                        dependencies.add(initializer)
+                    parent = parent.rpartition(".")[0]
+            dependencies.discard(path)
             self.dependencies[path] = dependencies
             for dependency in dependencies:
                 self.importers[dependency].add(path)

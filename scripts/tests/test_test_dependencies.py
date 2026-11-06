@@ -112,6 +112,33 @@ class DependencySelectionTest(unittest.TestCase):
         second = self.write_test("second", "from daemon.tide_daemon import leaf\n")
         self.assertTrue({first, second} <= set(self.select(source).modules))
 
+    def test_submodule_imports_depend_on_all_parent_initializers(self):
+        source = self.source("transport")
+        # Dwa poziomy inicjalizatorów; żaden nie może zostać pominięty.
+        outer = self.source("models/__init__", "from .. import transport\n")
+        inner = self.source("models/nested/__init__", "from ... import transport\n")
+        self.source("models/nested/executors")
+        direct = self.write_test("transport", "from tide_daemon import transport\n")
+        unrelated = self.write_test("unrelated", "import json\n")
+        for prefix in ("tide_daemon", "daemon.tide_daemon"):
+            for body in (
+                f"import {prefix}.models.nested.executors\n",
+                f"from {prefix}.models.nested.executors import Executor\n",
+                f'import importlib\nimportlib.import_module("{prefix}.models.nested.executors")\n',
+                f'__import__("{prefix}.models.nested.executors")\n',
+            ):
+                with self.subTest(body=body):
+                    indirect = self.write_test("executors", body)
+                    selection = self.select(source)
+                    self.assertIn(direct, selection.modules)
+                    self.assertIn(indirect, selection.modules)
+                    self.assertNotIn(unrelated, selection.modules)
+                    self.assertFalse(selection.full)
+                    graph = ImportGraph(self.root, ["daemon/tests"])
+                    self.assertTrue({outer, inner} <= graph.dependencies[indirect])
+                    self.assertIn(indirect, self.select(outer).modules)
+                    self.assertIn(indirect, self.select(inner).modules)
+
     def test_dynamic_alias_and_variable_imports_do_not_disappear_beside_static_test(self):
         imports = (
             'from importlib import import_module as load\nload("tide_daemon.leaf")\n',

@@ -42,7 +42,9 @@ bez importowania ani wykonywania tych plików. Śledzi `import`, `from ... impor
 względne, aliasy i importy wewnątrz funkcji) oraz stałe nazwy w `importlib.import_module` i
 `__import__`, także przez alias modułu lub funkcji (`import importlib as lib`,
 `from importlib import import_module as load`, odpowiedniki z `builtins`). Rozpoznaje
-zarówno `tide_daemon`, jak i `daemon.tide_daemon`. Wybiera test
+zarówno `tide_daemon`, jak i `daemon.tide_daemon`. Graf uwzględnia istniejące
+`__init__.py` wszystkich pakietów nadrzędnych importowanego modułu, także dla stałej
+nazwy importu dynamicznego. Wybiera test
 importujący zmieniony moduł bezpośrednio albo przez kod pośredni i pomocniki testów,
 również poza `daemon/tests`. Zmieniony samodzielny moduł testów wybiera sam siebie.
 Brak rozpoznanych importów do zmienionego źródła oznacza dawny zestaw katalogowy.
