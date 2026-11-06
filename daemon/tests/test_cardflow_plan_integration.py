@@ -138,6 +138,9 @@ class PlanFlowTest(FlowInProcess):
     def test_restart_between_reservation_and_approval_reuses_ids(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        # Przerwanie wstrzykujemy w bezpośrednie wywołanie. Działający monitor mógł wcześniej
+        # zużyć tę samą jednorazową awarię przy odzyskiwaniu plan.approval_requested.
+        self.flow.stop()
         journal = self.flow.engine.journal
         original = journal.append
         interrupted = False

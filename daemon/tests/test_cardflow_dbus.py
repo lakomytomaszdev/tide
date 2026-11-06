@@ -425,9 +425,10 @@ class JournalTest(FlowCase):
         git(self.board, "rm", "-q", "-r", os.path.join("flow", card_id), env=self.git_env)
         git(self.board, "commit", "-q", "-m", "ręczne cofnięcie", env=self.git_env)
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
-        snapshot = self.call("Snapshot")
-        self.assertTrue([e for e in snapshot["errors"] if "dziennik" in e["message"] and card_id in e["message"]],
-                        snapshot["errors"])
+        # Odtworzenie pliku poprzedza publikację ostrzeżenia w migawce.
+        self.assertTrue(wait_until(lambda: any("dziennik" in e["message"] and card_id in e["message"]
+                                              for e in self.call("Snapshot")["errors"]), timeout=15),
+                        self.call("Snapshot")["errors"])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
 
 

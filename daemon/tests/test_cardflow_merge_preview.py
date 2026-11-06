@@ -577,6 +577,8 @@ class PreviewDbusTest(FlowCase):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])
         self.wait_column(card, "review", timeout=40)
+        # Sama kolumna pojawia się po review ticketu; podgląd wymaga też zakończonego domknięcia.
+        self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=40), self.events(card))
         before = fingerprint(self.repo)
         r = self.call("PreviewCardMerge", card, "{}")
         self.assertTrue(r["ok"], r)
