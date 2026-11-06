@@ -351,6 +351,66 @@ class EngineGateTest(unittest.TestCase):
         resources.assert_not_called()
         finish.assert_not_called()
 
+    def old_outside_launch(self):
+        step = self.old_step()
+        name = step["step"]
+        self.journal.append("K-38", "intent", action="step-start", key=name, ticket="PT-176", unit="old-unit")
+        self.journal.append("K-38", "result", action="step-start", key=name, ok=True, unit="old-unit")
+        self.journal.append("K-38", "step.decision", step=name, choice="run", auto=True)
+        exit_file = self.root / "old-outside/in/exit-code"
+        # Zdarzenia starej usługi: klient systemd-run wystartował, scope jeszcze nie istnieje.
+        self.journal.append("K-38", "outside.started", step=name, ticket="PT-176", unit="old-outside",
+                            exitFile=str(exit_file))
+        return step, exit_file
+
+    def test_unresolved_outside_stays_unknown_across_restart_without_touching_wip(self):
+        step, exit_file = self.old_outside_launch()
+        self.assertFalse(exit_file.exists())
+        before = self.journal.read("K-38")
+        for engine in (self.engine, self.restart()):
+            self.assertEqual(engine.procs, {})  # stary klient outside nie miał zachowanego uchwytu
+            with mock.patch.object(engine, "_unit_state", return_value="inactive"), \
+                    mock.patch.object(trialhold.stepstop, "unit_state", return_value="inactive"), \
+                    mock.patch("subprocess.Popen") as spawn, mock.patch("subprocess.run") as run, \
+                    mock.patch.object(engine, "_kill") as kill:
+                self.assertFalse(trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38"))))
+                for action in (spawn, run, kill):
+                    action.assert_not_called()
+            inventory = next(e for e in reversed(self.journal.read("K-38")) if e["type"] == "k38.inventory")
+            self.assertEqual([(i["kind"], i["state"]) for i in inventory["items"]],
+                             [("step", "inactive"), ("outside", "unknown")])
+        self.assertEqual(self.journal.read("K-38")[:len(before)], before)
+        self.assertEqual((self.root / "PT-176/wip.txt").read_text(), "zachowany WIP")
+        self.assertFalse(exit_file.exists())
+        self.assertEqual(fold(self.journal.read("K-38")).finished[step["step"]]["wip"],
+                         {"handoff": "historical-note"})
+
+    def test_final_gate_refuses_unresolved_outside_even_with_historical_completion(self):
+        step, exit_file = self.old_outside_launch()
+        procedure = HostProcedure(self.tmp.name)
+        store = HostStore()
+        store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
+        for proof in ("missing", "exit-file", "outside-finished"):
+            if proof == "exit-file":
+                exit_file.parent.mkdir(parents=True)
+                exit_file.write_text("0\n")
+            elif proof == "outside-finished":
+                # Dawne finished nie potwierdzało końca klienta ani skuteczności stopu scope.
+                self.journal.append("K-38", "outside.finished", step=step["step"], exit=0)
+            for bootstrap in (True, False):
+                with self.subTest(proof=proof, bootstrap=bootstrap):
+                    engine = self.restart()
+                    trial_gate = gate.TrialGate(store=store, procedure=procedure)
+                    trial_gate.register_bootstrap("diagnostic")
+                    inventory = lambda: trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38")))
+                    with mock.patch.object(engine, "_unit_state", return_value="inactive"), \
+                            mock.patch.object(trialhold.stepstop, "unit_state", return_value="inactive"), \
+                            self.assertRaises(gate.TrialDenied):
+                        trial_gate.start_registered("diagnostic", consent=True, inventory=inventory,
+                                                    bootstrap=bootstrap)
+        self.assertEqual(procedure.calls, [])
+        self.assertFalse((procedure.target / "proof.txt").exists())
+
     def test_inventory_preserves_processes_and_new_handoff_is_idempotent(self):
         step = self.old_step()
         self.journal.append("K-38", "outside.started", step=step["step"], ticket="PT-176", unit="old-outside")

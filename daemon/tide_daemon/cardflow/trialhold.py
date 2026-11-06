@@ -55,6 +55,11 @@ def inventory(engine, card, st):
             continue
         try:
             state = stepstop.unit_state(event["unit"]) if event.get("unit") else "unknown"
+            # outside.started nie potwierdza utworzenia scope przez asynchroniczny systemd-run.
+            # Po restarcie brak jednostki nie rozstrzyga, czy klient dopiero ją utworzy.
+            # Dawne outside.finished i plik exit-code też nie są chronionym dowodem hosta.
+            if state == "inactive":
+                state = "unknown"
         except Exception:
             state = "unknown"
         items.append({"step": event.get("step"), "ticket": event.get("ticket"), "kind": "outside",
