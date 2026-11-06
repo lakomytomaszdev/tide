@@ -5,9 +5,11 @@ import unittest
 from unittest import mock
 
 from .test_cardflow import FlowInProcess
+from .test_cardflow_dbus import git
 from . import test_cardflow_enter_unit as enter_tests
 from .privatebus import wait_until
 from tide_daemon.cardflow.engine import FlowError
+from tide_daemon.tasks import agentcmd, dotnet, node
 
 
 class ReadDirsLaunchTest(FlowInProcess):
@@ -18,6 +20,86 @@ class ReadDirsLaunchTest(FlowInProcess):
     def filesystem(self, step):
         with open(os.path.join(step["stepDir"], "in", "settings.json")) as fh:
             return json.load(fh)["sandbox"]["filesystem"]
+
+    def test_background_to_console_preserves_project_tooling_with_or_without_read_dirs(self):
+        home = os.path.join(self.base, "home")
+        data = os.path.join(home, "data")
+        node_home = os.path.join(home, ".nvm", "versions", "node", "v22.0.0")
+        chrome = os.path.join(home, ".cache", "ms-playwright", "chromium-123", "chrome-linux", "chrome")
+        packages = os.path.join(home, ".nuget", "packages")
+        for folder in (data, os.path.join(node_home, "bin"), os.path.dirname(chrome), packages):
+            os.makedirs(folder)
+        for path, body in ((os.path.join(node_home, "bin", "node"), "node fixture"),
+                           (chrome, "chrome fixture"),
+                           (os.path.join(self.repo, "package.json"), "{}"),
+                           (os.path.join(self.repo, "App.csproj"), "<Project />")):
+            with open(path, "w") as fh:
+                fh.write(body)
+        git(self.repo, "add", "package.json", "App.csproj")
+        git(self.repo, "commit", "-qm", "Add project tooling fixtures")
+        with open(self.settings, "w") as fh:
+            json.dump({"networkDomains": {"proj": ["packages.example.test"]}}, fh)
+        self.flow.engine.terminal = enter_tests._Terminal([])
+        background = agentcmd.background
+        for remove_dirs in (False, True):
+            built = []
+
+            def capture(step):
+                bg = background(step)
+                built.append(bg)
+                return bg
+
+            with self.subTest(remove_dirs=remove_dirs), \
+                    mock.patch.dict(os.environ, NUGET_PACKAGES=packages), \
+                    mock.patch.object(dotnet, "restore", return_value=(True, "")) as restore, \
+                    mock.patch.object(node, "install", return_value=(True, "")) as install, \
+                    mock.patch.object(agentcmd, "background", side_effect=capture) as build:
+                self.configure([data])
+                card = self.card(description="ATRAPA: pytanie-bez-pracy")
+                self.assertTrue(self.start(card)["ok"])
+                self.wait_column(card, "waiting")
+                first = self.started(card)
+                before = self.filesystem(first)
+                bg_step = build.call_args.args[0]
+                background_env = built[0].env
+                restore.assert_called_once()
+                install.assert_called_once()
+                if remove_dirs:
+                    self.configure([])
+                reply = self.flow.engine.enter(card, first["step"])
+                self.assertTrue(reply["ok"], reply)
+                with open(self.flow.engine.terminal.plan.task_file) as fh:
+                    payload = json.load(fh)
+                env = payload["env"]
+                console = self.flow.engine.terminal.plan
+                settings_path = console.argv[console.argv.index("--settings") + 1]
+                with open(settings_path) as fh:
+                    sandbox = json.load(fh)["sandbox"]
+                fs = sandbox["filesystem"]
+                for folder in (node_home, packages, os.path.dirname(chrome)):
+                    self.assertIn(folder, before["allowRead"])
+                    self.assertIn(folder, fs["allowRead"])
+                    self.assertNotIn(folder, fs["allowWrite"])
+                for key in ("PATH", "CHROME_BIN", *dotnet.step_env("", "")):
+                    if key != "DOTNET_CLI_HOME":
+                        self.assertEqual(env[key], background_env[key], key)
+                self.assertTrue(env["PATH"].startswith(os.path.join(node_home, "bin") + os.pathsep))
+                out = os.path.join(os.path.dirname(os.path.dirname(settings_path)), "out")
+                self.assertEqual(env["DOTNET_CLI_HOME"], os.path.join(out, ".dotnet-home"))
+                self.assertEqual(env["npm_config_cache"], os.path.join(out, ".npm-cache"))
+                self.assertEqual(sandbox["network"]["allowedDomains"], list(bg_step.network_domains))
+                self.assertIn("registry.npmjs.org", sandbox["network"]["allowedDomains"])
+                self.assertIn("api.nuget.org", sandbox["network"]["allowedDomains"])
+                self.assertIn("packages.example.test", sandbox["network"]["allowedDomains"])
+                self.assertEqual(fs["denyRead"], ["~"])
+                if remove_dirs:
+                    self.assertNotIn(data, fs["allowRead"])
+                else:
+                    self.assertIn(data, fs["allowRead"])
+                    self.assertIn(data, fs["denyWrite"])
+                restore.assert_called_once()
+                install.assert_called_once()
+                self.assertEqual(self.filesystem(first), before)
 
     def test_background_and_resume_use_current_list_without_mutating_first_profile(self):
         data = os.path.join(self.base, "home", "data")
@@ -84,6 +166,22 @@ class ReadDirsLaunchTest(FlowInProcess):
 class ReadDirsEnterTest(unittest.TestCase):
     SID = enter_tests.EnterStepTest.SID
     setUp = enter_tests.EnterStepTest.setUp
+
+    def test_reenter_completed_console_keeps_original_tooling_kind(self):
+        data = os.path.join(self.root, "data")
+        os.makedirs(data)
+        self.engine.store.load().projects["proj"].read_dirs = [data]
+        self.engine.journal.append("K-1", "step.finished", step=self.step_id, result="done")
+        command = mock.Mock(argv=["/bin/claude", "restricted"], task_fields=lambda: {})
+        with mock.patch.object(self.engine, "_restricted_console", return_value=command) as build:
+            entered = self.engine.enter("K-1", self.step_id)["step"]
+            self.assertEqual(build.call_args.kwargs["kind"], "ticket")
+            self.engine.journal.append("K-1", "step.console_closed", step=entered)
+            self.engine.journal.append("K-1", "step.finished", step=entered, result="done")
+            self.engine.enter("K-1", entered)
+        self.assertEqual(build.call_count, 2)
+        self.assertEqual(build.call_args.kwargs["kind"], "ticket")
+
     def test_enter_revalidates_before_stopping_or_removing_result(self):
         data = os.path.join(self.root, "data")
         os.makedirs(data)

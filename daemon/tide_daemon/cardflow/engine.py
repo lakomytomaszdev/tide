@@ -1096,7 +1096,8 @@ class FlowEngine(PlanEditing):
             readonly_repos = [p["repo"] for p in order if not p.get("main")]
             command = self._restricted_console(selected.tool, selected.binary, prompt, worktree,
                 project.repo, step_dir, step_id, project_reads + readonly_repos, session=session,
-                route=selected.route, model=selected.model, effort=selected.effort, images=shots)
+                route=selected.route, model=selected.model, effort=selected.effort, images=shots,
+                project=project, kind=kind)
         closed = os.path.join(inp, "console-closed.json")
         process_file = os.path.join(inp, "console-process.json")
         claim_dir = os.path.join(inp, "console-claim")
@@ -1399,6 +1400,8 @@ class FlowEngine(PlanEditing):
                  if current.get("kind") in ("planning", "plan-fix") else [])
         project_reads = self._configured_reads(item, project, worktree, step_dir, order=order, route=route)
         read_profile = bool(project_reads) or self._used_read_profile(card_id, worktree)
+        # Kolejne wejście po wyniku done ma rodzaj interactive, ale zachowuje profil pierwotnej pracy.
+        tooling_kind = current.get("toolingKind") or current.get("kind") or "ticket"
         if read_profile:
             board = self.store.load()
             readonly_repos = ([p["repo"] for p in order if not p.get("main")] if order else
@@ -1408,7 +1411,8 @@ class FlowEngine(PlanEditing):
                 current.get("repo") or project.repo, step_dir, new_id, project_reads + readonly_repos,
                 session=session, resume=True, route=route, model=current.get("model") or "",
                 effort=current.get("effort") or "",
-                context_dirs=[d for d in self._ancestor_outs(card_id, step_id) if d != out])
+                context_dirs=[d for d in self._ancestor_outs(card_id, step_id) if d != out],
+                project=project, kind=tooling_kind)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
                    "processFile": process_file, "consoleUnit": console_unit,
@@ -1421,7 +1425,7 @@ class FlowEngine(PlanEditing):
                                 ticket=current.get("ticket") or "", executor=current.get("executor") or "",
                                 program=tool, provider=current.get("provider") or "", local=bool(current.get("local")),
                                 model=current.get("model") or "", unit="", session=session,
-                                readDirsProfile=read_profile,
+                                readDirsProfile=read_profile, toolingKind=tooling_kind,
                                 worktree=worktree, branch=current.get("branch") or "", stepDir=step_dir,
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
@@ -1798,8 +1802,23 @@ class FlowEngine(PlanEditing):
         return any(s.get("readDirsProfile") and s.get("worktree") == worktree
                    for s in fold(self.journal.read(card)).steps.values())
 
+    def _project_tooling(self, project, worktree, tool, kind):
+        """Składniki profilu i środowiska wspólne dla tła i Konsoli, bez instalowania zależności."""
+        from ..tasks import dotnet, node
+        code = kind in ("ticket", "fix", "review", "conflict", "close")
+        is_dotnet = code and dotnet.is_dotnet(worktree)
+        node_home = node.node_home(os.path.expanduser("~")) if code and node.is_node(worktree) else ""
+        domains = ()
+        if tool == "claude" and kind in ("ticket", "fix", "conflict"):
+            extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
+            domains = tuple(dict.fromkeys([*node.registry_domains(worktree, dotnet=is_dotnet),
+                                           *[d for d in extra if isinstance(d, str)]]))
+        return {"dotnet": is_dotnet, "node_home": node_home, "network_domains": domains,
+                "chrome_bin": node.chrome_bin(os.path.expanduser("~")) if node_home else ""}
+
     def _restricted_console(self, tool, binary, prompt, worktree, repo, step_dir, step_id, read_dirs,
-                            *, session="", resume=False, route=None, model="", effort="", images=(), context_dirs=()):
+                            *, project, kind, session="", resume=False, route=None, model="", effort="",
+                            images=(), context_dirs=()):
         try:
             return agentcmd.restricted_interactive(agentcmd.Step(
                 tool, binary, prompt, worktree, repo, step_dir, step_id,
@@ -1809,6 +1828,7 @@ class FlowEngine(PlanEditing):
                 context_dirs=tuple(context_dirs),
                 permission_mode="acceptEdits" if tool == "claude" else "",
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()),
+                **self._project_tooling(project, worktree, tool, kind),
                 **self._git_identity(repo)), images=images)
         except (agentcmd.StepError, OSError) as exc:
             raise FlowError("read-dirs", f"Nie można zastosować profilu tylko do odczytu: {exc}") from None
@@ -1879,24 +1899,14 @@ class FlowEngine(PlanEditing):
             from ..tasks import dotnet
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
                                                            step_dir=step_dir)
-            is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
-            if is_dotnet:
+            tooling = self._project_tooling(project, worktree, selected.tool, kind)
+            if tooling["dotnet"]:
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
             from ..tasks import node as node_mod
-            # P1: sieć z piaskownicy kroku tylko do rejestrów paczek stosu (Claude Code `allowedDomains`); Codex
-            # ma własną piaskownicę bez listy domen, więc tam bez zmian. `networkDomains[projekt]` dopisuje domeny.
-            domains = ()
-            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict"):
-                extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
-                domains = tuple(dict.fromkeys([*node_mod.registry_domains(worktree, dotnet=is_dotnet),
-                                               *[d for d in extra if isinstance(d, str)]]))
-            node_home = ""
-            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree):
-                node_home = node_mod.node_home(os.path.expanduser("~"))
-                if kind in ("ticket", "fix", "conflict") and node_home:
-                    ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
-                    prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
+            if kind in ("ticket", "fix", "conflict") and tooling["node_home"]:
+                ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
+                prompt += node_mod.prompt_note(ok, tail, network=bool(tooling["network_domains"]))
             bg = agentcmd.background(agentcmd.Step(
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                 step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
@@ -1906,10 +1916,10 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])), context_dirs=tuple(context_dirs), dotnet=is_dotnet, node_home=node_home,
+                tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])), context_dirs=tuple(context_dirs),
                 read_profile=read_profile,
-                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "",
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()),
+                **tooling,
                 **self._git_identity(project.repo)))
             bg.prepare()
             for source, target in zip(images, shots):
