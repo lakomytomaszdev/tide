@@ -50,7 +50,8 @@ Standard: `~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md`.
 
 Słownictwo projektu: `CONTEXT.md`. Pełny format planu i kartki oraz kontrakt kroku:
 `docs/agent-plan-standard.md`; działanie usługi: `docs/tide-daemon.md`. Karta Tablicy prowadzi dziennik,
-gałąź karty, osobne tickety, review u innego modelu i decyzje użytkownika w panelu. Przy nowej pracy wybierz
+gałąź karty, osobne tickety, niezależne review według ryzyka i decyzje użytkownika w panelu. Dobór recenzenta:
+`docs/agent-plan-standard.md`, sekcja „Recenzja według ryzyka”. Przy nowej pracy wybierz
 „Od razu”, „Lekkie”, „Pełne” albo „Mam plan” zgodnie z potrzebą; Pełne planowanie w nowym przepływie jest
 przewidziane na drugi etap, do tego czasu rozmowa planująca pozostaje w Konsoli. Zanim zaczniesz ticket,
 przeczytaj jego kartkę i plan. Gdy uruchamiasz krok w tle, zapisz wynik w `result.json` według kontraktu.
