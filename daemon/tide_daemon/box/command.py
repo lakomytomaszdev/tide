@@ -62,16 +62,11 @@ def pack_devices(slug, card, profile):
         return []
     if not card:
         raise bb.BuildError("paczki wymagają --card")
-    root = os.path.join(os.path.dirname(br.host_home_dir(slug)), "packs", card.lower())
-    devices = []
-    for name in packs:
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", name):
-            raise bb.BuildError(f"paczka {name!r}: oczekiwano nazwy przygotowanej kopii PT-173")
-        source = os.path.join(root, name)
-        if os.path.realpath(source) != source or not os.path.isdir(source):
-            raise bb.BuildError(f"brak bezpiecznej przygotowanej paczki: {source}")
-        devices.append(br.Device("tide-pack-" + card.lower() + "-" + name, source, readonly=True, path="/packs/" + name))
-    return devices
+    from .packs import devices, PackError
+    try:
+        return devices(slug, card, packs)
+    except (PackError, OSError, ValueError) as exc:
+        raise bb.BuildError(f"brak bezpiecznej przygotowanej paczki: {exc}") from exc
 
 
 def _log_dir(slug, owner):

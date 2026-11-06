@@ -136,6 +136,8 @@ class CommandTest(BoxRunnerCase):
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": ["logs"], "accepted_red": ["pack:logs"]})
         source = os.path.join(os.path.dirname(br.host_home_dir("proj")), "packs", "k-38", "logs")
         os.makedirs(source)
+        with open(os.path.join(os.path.dirname(source), "approved.json"), "w") as fh:
+            json.dump({"logs": {}}, fh)
         # Zachowujemy argv device add, bo po zakończeniu urządzenie ma zostać zdjęte.
         add = self.incus.device_add
         with mock.patch.object(self.incus, "device_add", wraps=add) as added:

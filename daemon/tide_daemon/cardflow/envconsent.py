@@ -24,6 +24,7 @@ from ..box import settings as box_settings
 from ..box import state as bs
 from ..box import templates
 from ..box import yamlmini
+from ..box import packs
 from ..tasks import stack
 from . import boxwait
 from . import environment
@@ -106,6 +107,19 @@ def _profile_items(profile: dict, known, scope: str, accepted=(), locked_red=Fal
                          locked=locked_red and risk == bp.RED, note=note,
                          label={"docker": "Docker w pudełku", "ports": "Pula portów", "resources": "Zasoby pudełka",
                                 "box:per-card": "Pudełko osobne dla tej karty"}.get(ident, ident)))
+        if group == "packs":
+            spec = next(p for p in profile["packs"]
+                        if ident == "pack:" + (p["name"] if isinstance(p, dict) else p))
+            report = packs.describe(spec)
+            out[-1]["pack"] = report
+            out[-1]["blocked"] = report["blocked"]
+            outcome = "zablokowana" if report["blocked"] else "brak trafień"
+            out[-1]["note"] = (f"{report['count']} plików, {report['size']} B; skaner: {outcome}. " + packs.FILTER_NOTE + "\n" +
+                               "\n".join(report["paths"]) + "\n" +
+                               "\n".join(h["path"] + ": " + h["rule"] for h in report["hits"]) +
+                               report.get("error", ""))
+            if report["blocked"]:
+                out[-1]["enabled"] = False
     return out
 
 
@@ -268,6 +282,7 @@ def prepare(engine, card_id: str, text: str, st) -> Prepared:
     errors = [f"pozycja czerwona {r!r} wymaga jawnego zaznaczenia (accepted_red)" for r in required if r not in accepted]
     errors += [f"accepted_red: pozycji {a!r} nie ma w profilu albo nie jest czerwona" for a in accepted
                if a not in required and a not in template_red]
+    errors += [f"{i['id']}: paczka zablokowana; {i['note']}" for i in shown if i.get("blocked")]
     if errors:
         raise EnvError(errors, shown)
     card = dict(card)
@@ -316,6 +331,11 @@ def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
 def _commit(engine, prepared: Prepared, plan: dict) -> dict:
     slug, card_id = prepared.slug, prepared.card_id
     saved = []
+    if prepared.card.get("packs"):
+        try:
+            packs.materialize(slug, card_id, prepared.card["packs"])
+        except (packs.PackError, OSError) as exc:
+            return {"ok": False, "id": card_id, "error": "invalid-packs", "message": str(exc)}
     if prepared.new_project:
         saved.append(bp.save_project(slug, prepared.project))
     card_clean = dict(prepared.card)

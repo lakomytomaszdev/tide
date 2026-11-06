@@ -506,7 +506,7 @@ class YamlMiniTest(unittest.TestCase):
         self.assertEqual(yamlmini.loads("a:\n- x\n- y\nb: 1\n"), {"a": ["x", "y"], "b": 1})
 
     def test_rejects_unsupported(self):
-        for text in ("a: |\n  x\n", "a:\n\t- x\n", "a: 1\na: 2\n", "a:\n  - b: 1\n", "a: [1, 2\n", "a: &x 1\n",
+        for text in ("a: |\n  x\n", "a:\n\t- x\n", "a: 1\na: 2\n", "a: [1, 2\n", "a: &x 1\n",
                      "  a: 1\nb: 2\n"):
             with self.assertRaises(yamlmini.YamlError, msg=text):
                 yamlmini.loads(text)

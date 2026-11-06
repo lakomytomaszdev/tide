@@ -136,6 +136,7 @@ ColumnLayout {
             readonly property bool toggleItem: !!modelData.toggle
             // Zaznaczenie pozycji: zgoda użytkownika (pozycje wymagające zgody), wybór przełącznika albo stan z modelu.
             readonly property bool checked: {
+                if (modelData.blocked === true) return false
                 if (consentItem) return section.isChecked(modelData)
                 if (toggleItem && section.toggleLine !== "") return section.toggleLine === modelData.toggle.on
                 return modelData.enabled === true
@@ -199,6 +200,7 @@ ColumnLayout {
                 }
                 Rectangle {
                     objectName: "envItemSwitch"
+                    enabled: row.modelData.blocked !== true
                     visible: row.consentItem || row.toggleItem
                     Layout.alignment: Qt.AlignTop
                     implicitWidth: 18

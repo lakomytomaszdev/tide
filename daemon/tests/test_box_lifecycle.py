@@ -233,6 +233,31 @@ class LifecycleTest(BoxCase):
         self.assertIsNone(self.b.incus.instance(name))
         self.assertIsNotNone(self.b.incus.instance("plasma-tide"))
 
+    def test_engine_tick_removes_packs_of_closed_card_after_error(self):
+        from tide_daemon.box import packs
+        from pathlib import Path
+        source = Path(self.tmp) / "logs.jsonl"
+        source.write_text("dane")
+        spec = {"name": "logs", "from": str(source)}
+        packs.materialize("plasma-tide", "K-38", [spec])
+        dev = packs.devices("plasma-tide", "K-38", [spec])[0]
+        self.b.incus.device_add("plasma-tide", dev.name, "disk", dev.values())
+        journal = Journal(bp.board_dir())
+        journal.append("K-38", "card.started", project="plasma-tide")
+        journal.append("K-38", "step.finished", step="s1", result="error")
+        journal.append("K-38", "card.closed")
+        engine = SimpleNamespace(journal=journal, procs={},
+                                 box_settings_source=lambda: dataclasses.replace(self.settings, enabled=True),
+                                 box_builder=lambda: self.b)
+        bs.mark_in_use("plasma-tide", "plasma-tide", "busy")
+        lc.tick(engine)
+        self.assertTrue(os.path.exists(packs.root("plasma-tide", "K-38")))
+        bs.mark_released("plasma-tide", "plasma-tide", "busy")
+        lc.tick(engine)
+        self.assertFalse(os.path.exists(packs.root("plasma-tide", "K-38")))
+        self.assertNotIn(dev.name, self.b.incus.device_show("plasma-tide"))
+        self.assertEqual(journal.read("K-38")[-1]["type"], "packs.removed")
+
     def test_stale_copy_is_kept_when_new_project_snapshot_is_missing(self):
         name = self.b.copy_for_card("plasma-tide", "K-38")
         self.approve({**PROFILE, "setup": ["true"]})

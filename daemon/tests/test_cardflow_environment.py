@@ -76,6 +76,37 @@ class EnvEngineTest(EnvBase):
     def box_files(self):
         return [os.path.join(d, f) for d, _s, files in os.walk(self.boxboard) for f in files if f == "box.yaml"]
 
+    def test_pack_approval_copies_only_after_red_consent(self):
+        from tide_daemon.box import packs
+        path = os.path.join(self.base, "session.jsonl")
+        with open(path, "w") as fh:
+            fh.write("dziennik sesji")
+        card = {"tide-box": 1, "packs": [{"name": "logs", "from": path}]}
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": os.path.join(self.base, "data")}):
+            self.assertFalse(self.approve(bp.dump(card))["ok"])
+            self.assertFalse(os.path.exists(packs.root(SLUG, self.card_id)))
+            card["accepted_red"] = ["pack:logs"]
+            self.assertTrue(self.approve(bp.dump(card))["ok"])
+            devices = packs.devices(SLUG, self.card_id, card["packs"])
+            self.assertTrue(devices[0].readonly)
+            self.assertNotEqual(devices[0].source, path)
+            self.assertEqual(bp.load_card(SLUG, self.card_id)["packs"], card["packs"])
+
+    def test_secret_pack_cannot_be_approved_even_with_red_consent(self):
+        from tide_daemon.box import packs
+        path = os.path.join(self.base, "secret.jsonl")
+        with open(path, "w") as fh:
+            fh.write("ghp_hidden-value")
+        card = {"tide-box": 1, "packs": [{"name": "logs", "from": path}], "accepted_red": ["pack:logs"]}
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": os.path.join(self.base, "data")}):
+            result = self.approve(bp.dump(card))
+            self.assertFalse(result["ok"])
+            row = next(i for i in result["items"] if i["id"] == "pack:logs")
+            self.assertTrue(row["blocked"])
+            self.assertEqual(row["pack"]["hits"], [{"path": path, "rule": "ghp_"}])
+            self.assertFalse(os.path.exists(packs.root(SLUG, self.card_id)))
+            self.assertEqual(self.box_files(), [])
+
     # --- sekcja w planie ------------------------------------------------------------------------
 
     def test_plan_section_classifies_items_from_the_service_and_keeps_red_off(self):

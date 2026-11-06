@@ -172,6 +172,13 @@ def tick(engine):
         try:
             b = boxstep.builder_of(engine, settings)
             lifecycle = Lifecycle(b)
+            from . import packs
+            for card in closed.get(slug, set()):
+                # Stan ostatniego kroku (także error) nie zmienia obowiązku sprzątania.
+                names = (bs.box_name(slug), bs.card_box_name(slug, card))
+                with bs.lifecycle_lock(slug):
+                    if not any(active_steps(b, slug, name, engine) for name in names):
+                        packs.cleanup(slug, card, b.incus, engine.journal)
             lifecycle.idle(slug)
             for inst in b.incus.list():
                 config = inst.get("config") or {}

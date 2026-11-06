@@ -431,6 +431,8 @@ class BoxRunner:
         path = os.path.join(inp, "settings.json")
         host = json.loads(bg.files[path])
         deny = list(BOX_DENY_READ) + [os.path.join(inp, ENV_FILE)]
+        if self._pack_specs():
+            deny.remove("/packs")  # zatwierdzone kopie mają być czytelne; zapis blokuje Incus
         settings = {k: v for k, v in host.items() if k != "sandbox"}
         if step.local is not None and step.local.token_file:
             # apiKeyHelper hosta czyta plik spoza pudełka — w pudełku czyta kopię 0600 w `in/` (poza zasięgiem
@@ -455,6 +457,14 @@ class BoxRunner:
         return env
 
     # --- urządzenia --------------------------------------------------------------------------------
+
+    def _pack_specs(self):
+        if not self.card:
+            return []
+        profile = bs.bp.load_card(self.slug, self.card) or {}
+        accepted = profile.get("accepted_red", [])
+        return [p for p in profile.get("packs", [])
+                if "pack:" + (p["name"] if isinstance(p, dict) else p) in accepted]
 
     def idmap(self) -> str:
         uid, gid = os.getuid(), os.getgid()
@@ -495,6 +505,15 @@ class BoxRunner:
         devices.append(Device(_device_name("worktrees"), root))
         devices.append(Device(_device_name("home"), host_home_dir(self.slug, self.host_env), path=BOX_HOME))
         devices.extend(self.extra_devices)
+        if self.card:
+            from . import packs
+            specs = self._pack_specs()
+            try:
+                existing = {d.name for d in devices}
+                devices.extend(d for d in packs.devices(self.slug, self.card, specs, self.host_env)
+                               if d.name not in existing)
+            except (ValueError, OSError) as exc:
+                raise agentcmd.StepError(f"paczki karty: {exc}") from exc
         self._check_sources(devices, repo)
         return devices
 
@@ -577,6 +596,12 @@ class BoxRunner:
 
     def _ensure_locked(self, step: agentcmd.Step, wanted: list) -> list:
         present = self.incus.device_show(self.box)
+        expected_packs = {d.name: d.values() for d in wanted if d.path.startswith("/packs/")}
+        for name, values in present.items():
+            if str(values.get("path", "")).startswith("/packs"):
+                if name not in expected_packs or any(str(values.get(k, "")).lower() != str(v).lower()
+                                                     for k, v in expected_packs[name].items()):
+                    raise agentcmd.StepError("pudełko zawiera obcą lub zmienioną paczkę — odmowa startu")
         taken = {str(d.get("path", "")) for d in present.values() if isinstance(d, dict)}
         missing = []
         for dev in wanted:
@@ -586,6 +611,10 @@ class BoxRunner:
                 continue        # builder podpiął już wolumen `<pudełko>-home` na /home/agent
             missing.append(dev)
         idmap = self.idmap()
+        if any(d.path.startswith("/packs/") for d in missing):
+            busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
+            if busy:
+                raise agentcmd.StepError("dodanie paczki wymaga pudełka bez innych biegnących kroków")
         idmap_ok = self.incus.config_get(self.box, "raw.idmap") == idmap
         inst = self.incus.instance(self.box)
         if inst is None:

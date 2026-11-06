@@ -19,7 +19,7 @@ from datetime import datetime
 
 from .labels import result_label, step_name
 
-LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
+LOGGED = ("packs.removed", "card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
           "ticket.rejected", "result")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "step.decision", "plan.approved",
@@ -113,6 +113,8 @@ def _event_entry(e: dict, st=None) -> dict | None:
         group, text = "card", "Karta wznowiona"
     elif kind == "card.closed":
         group, text = "card", "Praca domknięta na gałęzi karty"
+    elif kind == "packs.removed":
+        group, text = "card", "Usunięto paczki danych karty i ich urządzenia z pudełka"
     elif kind == "card.main-merged":
         group, text = "merge", "Karta scalona do master"
     elif kind == "step.decision":

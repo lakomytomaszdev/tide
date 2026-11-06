@@ -159,7 +159,7 @@ def items(profile: dict, known: dict | None = None) -> list:
     for domain in net.get("domains") or []:
         out.append((domain, classify(domain, known)))
     for pack in profile.get("packs") or []:
-        out.append((f"pack:{pack}", RED))
+        out.append((f"pack:{pack['name'] if isinstance(pack, dict) else pack}", RED))
     if profile.get("box") == "per-card":
         out.append(("box:per-card", GREEN))
     return out
@@ -382,7 +382,8 @@ def validate(raw, scope: str = "project") -> dict:
         else:
             out["notes"] = raw["notes"]
     if card and "packs" in raw:
-        out["packs"] = _str_list(raw["packs"], "packs", errors)
+        from .packs import validate_specs
+        out["packs"] = validate_specs(raw["packs"], errors)
     if card and "accepted_red" in raw:
         out["accepted_red"] = _str_list(raw["accepted_red"], "accepted_red", errors)
 
@@ -510,7 +511,8 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
         out["project"] = card["project"]
     if net:
         out["network"] = net
-    packs = [p for p in card.get("packs", []) if f"pack:{p}" in accepted]
+    packs = [p for p in card.get("packs", [])
+             if f"pack:{p['name'] if isinstance(p, dict) else p}" in accepted]
     if packs:
         out["packs"] = packs
     if accepted:

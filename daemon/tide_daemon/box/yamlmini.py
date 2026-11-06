@@ -3,7 +3,7 @@
 Czyta: mapy i listy blokowe (wcięcie spacjami), listy i mapy w stylu przepływu (`[a, b]`, `{k: v}`),
 napisy w cudzysłowach, liczby całkowite, `true`/`false`/`null`/`~`, komentarze `# …`.
 Nie czyta (błąd `YamlError`): kotwice, tagi, bloki `|`/`>`, wiele dokumentów, tabulatory we wcięciu,
-powtórzone klucze, elementy listy będące mapami.
+powtórzone klucze. Listy map obsługują m.in. opisy paczek danych karty.
 """
 import json
 import re
@@ -214,7 +214,17 @@ def _list(lines, pos, indent):
         if not rest:
             raise YamlError(f"wiersz {number}: pusty element listy")
         if _KEY.match(rest) and rest[:1] not in "[{\"'":
-            raise YamlError(f"wiersz {number}: element listy będący mapą nie jest obsługiwany")
+            # Mapa zaczyna się po `- `; kolejne klucze mają wcięcie indent + 2.
+            start = pos
+            pos += 1
+            while pos < len(lines) and lines[pos][0] > indent:
+                pos += 1
+            block = [(indent + 2, rest, number), *lines[start + 1:pos]]
+            value, end = _map(block, 0, indent + 2)
+            if end != len(block):
+                raise YamlError(f"wiersz {number}: niepoprawna mapa listy")
+            items.append(value)
+            continue
         items.append(_scalar(rest))
         pos += 1
     return items, pos
@@ -286,6 +296,12 @@ def _emit(data, indent, lines, order):
             elif isinstance(val, list) and val:
                 lines.append(f"{pad}{key}:")
                 for item in val:
+                    if isinstance(item, dict) and item:
+                        nested = []
+                        _emit(item, indent + 4, nested, ())
+                        lines.append(f"{pad}  - " + nested[0].lstrip())
+                        lines.extend(nested[1:])
+                        continue
                     if isinstance(item, (dict, list)):
                         raise YamlError("zagnieżdżone listy i mapy w liście nie są obsługiwane")
                     lines.append(f"{pad}  - {_fmt_scalar(item)}")
