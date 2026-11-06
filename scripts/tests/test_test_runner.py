@@ -14,6 +14,16 @@ from tools import test_runner as runner
 from tools.test_suites import SUITES
 
 
+_POOL = tempfile.TemporaryDirectory()
+
+
+def setUpModule():
+    # Testy uruchamiacza mają własną pulę: uruchomione wprost nie czekają na miejsca przebiegów kart (06.11).
+    patcher = patch.dict("os.environ", {"TIDE_TEST_SLOTS_DIR": _POOL.name})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class SelectionTest(unittest.TestCase):
     def test_component_changes_and_more_specific_cardflow_mapping(self):
         self.assertEqual(runner.changed_suites(["apps/board/qml/Main.qml", "daemon/tide_daemon/main.py"]),
@@ -260,3 +270,27 @@ class MachineSlotsTest(unittest.TestCase):
             slots = runner.MachineSlots(1, blocker / "slots")
             self.assertIsNone(slots.acquire())
             self.assertTrue(slots.disabled)
+
+    def test_read_only_pool_from_the_host_still_limits_a_sandboxed_run(self):
+        import os, stat
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop(runner.SLOT_HELD, None)
+            host = runner.MachineSlots(1, self.dir)
+            held = host.acquire()                       # host zakłada plik i trzyma jedyne miejsce
+            os.chmod(self.dir / "slot-0.lock", stat.S_IRUSR)
+            os.chmod(self.dir, stat.S_IRUSR | stat.S_IXUSR)    # jak katalog tylko do odczytu w piaskownicy
+            self.addCleanup(os.chmod, self.dir, stat.S_IRWXU)
+            self.addCleanup(os.chmod, self.dir / "slot-0.lock", stat.S_IRUSR | stat.S_IWUSR)
+            sandboxed = runner.MachineSlots(1, self.dir)
+            import threading
+            got = []
+            worker = threading.Thread(target=lambda: got.append(sandboxed.acquire()), daemon=True)
+            with redirect_stdout(io.StringIO()):
+                worker.start()
+                worker.join(0.6)
+                self.assertFalse(got, "piaskownica czeka na miejsce trzymane przez hosta")
+                self.assertFalse(sandboxed.disabled)
+                runner.MachineSlots.release(held)
+                worker.join(5)
+            self.assertTrue(got and got[0] is not None)
+            runner.MachineSlots.release(got[0])

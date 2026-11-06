@@ -55,17 +55,25 @@ class MachineSlots:
             return None
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
-            (self.directory / "slot-0.lock").touch()
+            for index in range(self.size):
+                (self.directory / f"slot-{index}.lock").touch()
         except OSError:
-            # Piaskownica kroku albo pudełko bez zapisywalnego katalogu puli: przebieg działa jak dawniej, bez puli.
-            self.disabled = True
-            return None
+            # Piaskownica kroku widzi katalog puli tylko do odczytu (06.11: pięć przebiegów w piaskownicach Codexa
+            # pominęło pulę — 45 procesów testów, obciążenie 75). `flock` działa na pliku otwartym do odczytu, więc
+            # wystarczy, że miejsca założył wcześniej przebieg na hoście. Bez żadnego pliku — przebieg bez puli.
+            if not any((self.directory / f"slot-{index}.lock").is_file() for index in range(self.size)):
+                self.disabled = True
+                return None
         while True:
             for index in range(self.size):
+                path = self.directory / f"slot-{index}.lock"
                 try:
-                    handle = open(self.directory / f"slot-{index}.lock", "a+")
+                    handle = open(path, "a+")
                 except OSError:
-                    continue
+                    try:
+                        handle = open(path, "r")
+                    except OSError:
+                        continue
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     return handle
