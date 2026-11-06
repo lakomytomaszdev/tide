@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 
 from . import launch
 from . import local as local_mod
+from . import skills as skills_mod
 
 
 class UnknownTool(ValueError):
@@ -372,7 +373,8 @@ def _font_dirs(home: str) -> list[str]:
     return found
 
 
-def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list, dict, dict]:
+def _claude(step: Step, inp: str, out: str, env: dict, home: str,
+            skills: list[skills_mod.Skill]) -> tuple[list, dict, dict]:
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
@@ -380,6 +382,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
                                                         *_font_dirs(home),
+                                                        *skills_mod.read_dirs(skills),
                                                         *([step.node_home] if step.node_home else []),
                                                         *([os.path.dirname(step.chrome_bin)] if step.chrome_bin else [])],
                        "allowWrite": [out]},
@@ -407,12 +410,21 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         model = [f"--model={step.model}"] if step.model else []
         secret = {"token_files": []}
     settings_path = os.path.join(inp, "settings.json")
+    plugin, files = skills_mod.claude_plugin(skills, inp)
+    if skills:
+        # Read bez --add-dir: ten ostatni rozszerza też domyślny obszar zapisu sesji.
+        skill_dirs = skills_mod.read_dirs(skills)
+        settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
+                                   "deny": read_only_rules(skill_dirs)}
+        settings["sandbox"]["filesystem"]["denyWrite"] = skill_dirs
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
             # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
             # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
             "--add-dir", out]
+    if plugin:
+        argv += ["--plugin-dir", plugin]
     for folder in step.context_dirs:
         # Narzędzie Read poza katalogami sesji pyta o zgodę, której krok nie dostanie — stąd --add-dir.
         argv += ["--add-dir", folder]
@@ -425,7 +437,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
     disallowed = [*step.disallowed_tools, *read_only_rules(step.read_dirs)]
     if disallowed:
         argv += ["--disallowedTools", *disallowed]
-    return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
+    files[settings_path] = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    return argv, files, secret
 
 
 def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
@@ -463,9 +476,10 @@ def background(step: Step) -> Background:
     inp, out = os.path.join(step.step_dir, "in"), os.path.join(step.step_dir, "out")
     env = _env(step, base, inp)
     git_dir = resolve_git_dir(step.repo, step.worktree)
+    skills = skills_mod.discover(step.tool, home)
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
-        argv, files, extra = _claude(step, inp, out, env, home)
+        argv, files, extra = _claude(step, inp, out, env, home, skills)
         session = step.session_id
     else:
         argv, extra = _codex(step, out, env, git_dir)
@@ -473,8 +487,11 @@ def background(step: Step) -> Background:
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
     files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES + TOOLING_DIRS) + "\n"
+    files[os.path.join(inp, "skills.json")] = json.dumps(
+        [{"name": skill.name, "path": skill.path} for skill in skills], ensure_ascii=False, indent=2) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
-    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
+    return Background(argv, env, step.prompt + skills_mod.prompt(skills, step.tool),
+                      step.worktree, step.step_dir, session, step.tool, repo=step.repo,
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
