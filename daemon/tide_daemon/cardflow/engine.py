@@ -1206,6 +1206,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         self._require_safe_evidence_console(selected.tool, source_evidence)
+        if source_evidence and parent_step:
+            self._validate_historical_evidence(item.id, context_state, source_evidence)
         if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
         context_prompt, base_context = self._step_base_context(context_state)
@@ -1876,6 +1878,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             "Interaktywny Claude nie zapewnia dowodów sprawy tylko do odczytu. "
                             "Wybierz Lekkie planowanie lub Codexa; krok Claude można wznowić w tle.")
 
+    @staticmethod
+    def _validate_historical_evidence(card_id, st, source_evidence):
+        """Sprawdza wszystkie kopie zlecenia nadal wskazane przez kartki i historię sesji."""
+        try:
+            previous = {**st.steps, **st.caretakers}
+            for old_step in previous.values():
+                # Przygotowana rozmowa ma tylko in/context i nigdy nie otrzymuje dowodów.
+                # Opiekun w tle nadal podlega kontroli, również po zamknięciu kroku.
+                if old_step.get("kind") == "caretaker-chat":
+                    continue
+                if old_step.get("seq", 0) >= (st.started or {}).get("seq", 0):
+                    source_evidence.validate(old_step.get("stepDir"))
+        except (BoardError, OSError, ValueError, UnicodeError) as exc:
+            raise FlowError("broken-evidence", f"{card_id}: odmowa wznowienia ze starymi dowodami: {exc}") from None
+
     def _wait_cause(self, reason: str, selected) -> tuple[str, str]:
         """(przyczyna, odnowienie) czekania do `step.waiting` (pełna karta, PT-128): `quota` (okno limitu, z godziną
         odnowienia), `local` (kolejka modeli lokalnych) albo `slots` (kroki dostawcy naraz)."""
@@ -2022,13 +2039,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if source_evidence and parent_step:
             # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
             # wejścia zlecenia, nie tylko ostatniego rodzica ani ograniczoną listę ancestor_outs.
-            try:
-                previous = {**evidence_state.steps, **evidence_state.caretakers}
-                for old_step in previous.values():
-                    if old_step.get("seq", 0) >= (evidence_state.started or {}).get("seq", 0):
-                        source_evidence.validate(old_step.get("stepDir"))
-            except (BoardError, OSError, ValueError, UnicodeError) as exc:
-                raise FlowError("broken-evidence", f"{card.id}: odmowa wznowienia ze starymi dowodami: {exc}") from None
+            self._validate_historical_evidence(card.id, evidence_state, source_evidence)
         self._admit(card.id, selected, ticket, kind, step_id)
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else

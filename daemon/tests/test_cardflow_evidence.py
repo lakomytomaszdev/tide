@@ -173,6 +173,40 @@ class EvidenceFlowTest(AcceptedFixture):
 
 
 class EvidenceInteractiveTest(AcceptedFixture):
+    def test_interactive_transfer_checks_all_historical_copies_before_console(self):
+        from .test_cardflow_full_planning import _Terminal
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.cardflow.state import fold
+        card, _ = self.accepted()
+        engine = self.flow.engine
+        terminal = _Terminal()
+        engine.terminal = terminal
+        self.assertTrue(self.start(card, entry="planning", mode="full", executor="Codex Astra")["ok"])
+        self.flow.stop()
+        first = fold(engine.journal.read(card)).steps[self.of(card, "step.started")[0]["step"]]
+        # Zdrowe przekazanie tworzy nowszą kopię. Uszkodzony będzie dopiero jej przodek.
+        # Historyczne przekazanie do Claude mogło nastąpić przed wprowadzeniem odmowy.
+        with mock.patch.object(engine, "_require_safe_evidence_console"):
+            engine._resume_step(card, fold(engine.journal.read(card)), first,
+                                {"choice": "transfer", "executor": "Sonnet"})
+        state = fold(engine.journal.read(card))
+        latest = state.steps[state.last_step]
+        item = self.store.load().cards[int(card[2:])]
+        data = engine._issue_evidence(item, started=state.started)
+        data.validate(latest["stepDir"])
+        manifest = json.loads(Path(first["stepDir"], "in/evidence/attachments.json").read_text())
+        target = Path(first["stepDir"], "in/evidence", manifest["attachments"][1]["path"])
+        target.chmod(0o600)
+        target.write_bytes(b"uszkodzone historyczne dane")
+        target.chmod(0o444)
+        before = self.events(card)
+        opened = list(terminal.opened)
+        with self.assertRaises(FlowError) as refused:
+            engine._resume_step(card, state, latest, {"choice": "transfer", "executor": "Codex Astra"})
+        self.assertEqual(refused.exception.code, "broken-evidence")
+        self.assertEqual(terminal.opened, opened)
+        self.assertEqual(self.events(card), before)
+
     @staticmethod
     def shell_write(path):
         # Właściciel pliku 0444 może zmienić tryb, zapisać bajty i podmienić plik przez powłokę.
@@ -355,6 +389,31 @@ class EvidenceProcessTest(AcceptedFixture):
                 self.answer(card, first)
                 resumed, _ = self.observed(card, 1)
                 self.assertEqual(resumed["parentStep"], first["step"])
+
+    def test_closed_caretaker_chat_does_not_block_background_resume_after_restart(self):
+        from .test_cardflow_full_planning import _Terminal
+        from tide_daemon.cardflow.state import fold
+        card, _ = self.accepted()
+        self.assertTrue(self.start(card)["ok"])
+        first, _ = self.observed(card, 0)
+        self.assertTrue(wait_until(lambda: self.of(card, "step.finished"), timeout=20))
+        self.flow.stop()
+        engine = self.flow.engine
+        engine.terminal = _Terminal()
+        with mock.patch.object(engine, "_caretaker_setup", return_value={"reason": "", "executor": "Sonnet"}):
+            reply = engine.talk_to_caretaker(card, {})
+        chat = fold(engine.journal.read(card)).caretakers[reply["step"]]
+        self.assertTrue(Path(chat["stepDir"], "in/context").is_dir())
+        self.assertFalse(Path(chat["stepDir"], "in/evidence").exists())
+        engine._finish_caretaker_chat(card, chat)
+        self.restart()
+        state = fold(self.flow.engine.journal.read(card))
+        self.assertTrue(state.caretakers[chat["step"]]["consoleClosed"])
+        self.flow.engine._resume_step(card, state, state.steps[first["step"]],
+                                      {"choice": "answer", "answer": "Tak"})
+        resumed, record = self.observed(card, 2)
+        self.assertEqual(resumed["parentStep"], first["step"])
+        self.assertEqual(len(record["manifests"]), 2)
 
     def test_resume_refuses_changed_historical_copies_with_healthy_issue(self):
         from tide_daemon.cardflow.engine import FlowError
