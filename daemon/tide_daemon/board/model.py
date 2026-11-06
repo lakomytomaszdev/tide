@@ -135,6 +135,9 @@ class Project:
     assignment_rules: str = ""
     allowed_commands: list = field(default_factory=list)
     denied_commands: list = field(default_factory=list)
+    read_dirs: list = field(default_factory=list)
+    read_dir_bindings: list = field(default_factory=list)
+    read_dirs_error: str = ""
     doc: Document | None = None
 
 
@@ -327,6 +330,15 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
                                              commands.ALLOWED_KEY, errors, path)
     project.denied_commands = commands.read(doc.get(commands.DENIED_KEY), default_denied,
                                             commands.DENIED_KEY, errors, path)
+    from ..tasks import readaccess
+    try:
+        project.read_dirs = readaccess.paths(json.loads(doc.get(readaccess.KEY) or "[]"))
+        project.read_dir_bindings = json.loads(doc.get(readaccess.BINDINGS_KEY) or "[]")
+        if not isinstance(project.read_dir_bindings, list):
+            raise ValueError("readDirs: uszkodzone powiązania dowiązań")
+    except (ValueError, TypeError) as exc:
+        project.read_dirs_error = f"readDirs: niepoprawne ustawienie ({exc})"
+        errors.append(_err(path, project.read_dirs_error))
     try:
         value = json.loads(doc.get("assignment-rules") or '""')
         project.assignment_rules = value if isinstance(value, str) else ""

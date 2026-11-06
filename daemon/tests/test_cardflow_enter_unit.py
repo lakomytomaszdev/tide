@@ -13,6 +13,7 @@ from unittest import mock
 from tide_daemon.cardflow import state, execution
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
+from tide_daemon.board.model import Card, Project
 from tide_daemon.tasks import agentcmd, launch
 from tide_daemon.tasks.core import TaskFiles
 
@@ -214,6 +215,8 @@ class EnterStepTest(unittest.TestCase):
         unit_patch.start()
         self.addCleanup(unit_patch.stop)
         store = mock.Mock(root=os.path.join(self.root, "board"))
+        store.load.return_value.cards = {1: Card(1, "Karta", project="proj")}
+        store.load.return_value.projects = {"proj": Project("proj", "Projekt", repo=self.root)}
         self.engine = FlowEngine(store, journal=Journal(store.root, mirror=os.path.join(self.root, "mirror")),
                                  terminal=self.terminal, task_files=TaskFiles(os.path.join(self.root, "tasks")))
         self.step_id = "K-1-PT-1-1"
@@ -419,7 +422,7 @@ class EnterStepTest(unittest.TestCase):
         self.engine.journal.append("K-1", "step.finished", step=self.step_id, result="stopped")
         selected = execution.Execution("Sonnet", "claude", "/bin/claude", "sonnet", "anthropic")
         item = mock.Mock(id="K-1", projects=[])
-        project = mock.Mock(repo=self.root, name="Projekt")
+        project = Project("proj", "Projekt", repo=self.root)
         self.terminal.open = mock.Mock(side_effect=RuntimeError("D-Bus"))
         with mock.patch.object(agentcmd, "resolve_git_dir", return_value="/git/worktree"):
             with self.assertRaises(FlowError):

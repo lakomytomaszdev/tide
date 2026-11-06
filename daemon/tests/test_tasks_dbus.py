@@ -99,7 +99,7 @@ class TasksContractTest(unittest.TestCase):
     def agent_calls(self):
         try:
             with open(self.agent_log, encoding="utf-8") as fh:
-                return [json.loads(line) for line in fh]
+                return [json.loads(line) for line in fh if line.endswith("\n")]
         except OSError:
             return []
 
@@ -123,6 +123,14 @@ class TasksContractTest(unittest.TestCase):
                 self.fail(f"Brak pełnego wywołania agenta dla {prompt!r} po {timeout}s; "
                           f"log={self.agent_log}, offset={offset}, nowe bajty={data!r}")
             time.sleep(0.01)
+
+    def wait_agent_calls(self, count):
+        # Przejęcie zadania przez Konsolę wyprzedza zapis wywołania przez proces agenta.
+        self.assertTrue(wait_until(lambda: len(self.agent_calls()) >= count, timeout=10),
+                        f"brak {count} pełnych wpisów agenta: {self.agent_calls()}")
+        calls = self.agent_calls()
+        self.assertEqual(len(calls), count)
+        return calls
 
     def test_1_repos_defaults_and_suggestion(self):
         repos = json.loads(self.call("Repos"))
@@ -152,7 +160,7 @@ class TasksContractTest(unittest.TestCase):
         self.assertEqual(result["branch"], "claude/napraw-cudzyslowy-apostrofy-rm-rf-id")
         self.assertEqual(result["title"], "alpha · claude/napraw-cudzyslowy-apostrofy-rm-rf-id")
         self.assertTrue(os.path.isdir(worktree))
-        runs = self.agent_calls()
+        runs = self.wait_agent_calls(1)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["name"], "claude")
         self.assertEqual(runs[0]["argv"], ["--", TRICKY.strip()])
@@ -208,25 +216,15 @@ class TasksContractTest(unittest.TestCase):
         result = self.start(repoPath=self.alpha, tool="codex", prompt="Karta K-1: plan w tablicy", newWorktree=True,
                             branch="codex/k-1-plan", addDirs=[docs])
         self.assertTrue(result["ok"], result)
+        self.wait_agent_calls(before + 1)
         result = self.start(repoPath=self.alpha, tool="claude", prompt="Karta K-1: tylko specyfikacja",
                             newWorktree=False, addDirs=[docs])
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"]), (self.alpha, ""))
-        expected = [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
-                    ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])]
-        observed = []
-
-        def complete_calls():
-            nonlocal observed
-            try:
-                observed = [(r["name"], r["argv"]) for r in self.agent_calls()[before:]]
-            except json.JSONDecodeError:
-                return False  # Atrapa może właśnie dopisywać linię.
-            return observed == expected
-
-        # Odpowiedź Start potwierdza przejęcie zadania, nie koniec zapisu atrapy.
-        wait_until(complete_calls)
-        self.assertEqual(observed, expected, "Nie zapisano kompletnych wywołań obu bieżących startów")
+        runs = self.wait_agent_calls(before + 2)[before:]
+        self.assertEqual([(r["name"], r["argv"]) for r in runs],
+                         [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
+                          ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])])
         refused = self.start(repoPath=self.alpha, tool="claude", prompt="Zapisz coś poza tablicą", newWorktree=False,
                              addDirs=[self.beta])
         self.assertEqual((refused["ok"], refused["error"]), (False, "bad-add-dir"))

@@ -13,7 +13,7 @@ class AddDirsPublicationTest(unittest.TestCase):
         # Wywołujemy prawdziwy scenariusz kontraktu. Start drugiego narzędzia już
         # odpowiedział, lecz jego wpis staje się dostępny dopiero w trzecim odczycie.
         with tempfile.TemporaryDirectory() as root:
-            scenario = unittest.TestCase()
+            scenario = test_tasks_dbus.TasksContractTest("test_5_add_dirs_from_board_for_both_tools")
             scenario.alpha = os.path.join(root, "alpha")
             scenario.beta = os.path.join(root, "beta")
             scenario.board = os.path.join(root, "board")

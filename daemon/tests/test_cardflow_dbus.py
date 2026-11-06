@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from . import DAEMON_DIR, flowfakes
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
@@ -434,10 +435,24 @@ class JournalTest(FlowCase):
         git(self.board, "rm", "-q", "-r", os.path.join("flow", card_id), env=self.git_env)
         git(self.board, "commit", "-q", "-m", "ręczne cofnięcie", env=self.git_env)
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
-        # Odtworzenie pliku poprzedza publikację ostrzeżenia w migawce.
-        self.assertTrue(wait_until(lambda: any("dziennik" in e["message"] and card_id in e["message"]
-                                              for e in self.call("Snapshot")["errors"]), timeout=15),
-                        self.call("Snapshot")["errors"])
+        # Odtworzony plik i opublikowana migawka kończą się osobno. Pierwsza odpowiedź
+        # celowo nie ma ostrzeżenia, aby wymusić ten sam wyścig także bez obciążenia.
+        call, first_snapshot = self.call, []
+
+        def delayed_snapshot(member, *args):
+            result = call(member, *args)
+            if member == "Snapshot" and not first_snapshot:
+                first_snapshot.append(True)
+                return {**result, "errors": []}
+            return result
+
+        def published_warning():
+            return [e for e in self.call("Snapshot")["errors"]
+                    if "dziennik" in e["message"] and card_id in e["message"]]
+
+        with mock.patch.object(self, "call", side_effect=delayed_snapshot):
+            self.assertTrue(wait_until(published_warning, timeout=15), "ostrzeżenie w migawce po odtworzeniu dziennika")
+        self.assertEqual(first_snapshot, [True])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
 
 

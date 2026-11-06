@@ -62,8 +62,16 @@ class YouTrackFlowTest(FlowInProcess):
             proposal = proposal.replace('ticket-prefix: PT', 'ticket-prefix: LOG')
         with open(path, 'w', encoding='utf-8') as fh:
             fh.write(proposal)
+        # Pierwszy ticket czeka na odpowiedź: poprawka dodaje trzeci bez wyścigu z końcem całego planu.
+        ticket_path = os.path.join(os.path.dirname(path), 'tickets', '1.md')
+        with open(ticket_path, encoding='utf-8') as fh:
+            body = fh.read()
+        with open(ticket_path, 'w', encoding='utf-8') as fh:
+            fh.write(body.replace('ATRAPA: gotowe', 'ATRAPA: pytanie-bez-pracy'))
         self.assertTrue(self.submit(card, path)['ok'])
         self.assertTrue(self.approve(card)['ok'])
+        self.assertTrue(wait_until(lambda: any(s['kind'] == 'ticket' for s in self.of(card, 'step.started')),
+                                   timeout=10), self.events(card))
         box = []
         self.flow.edit_plan(card, json.dumps({'action': 'return', 'feedback': 'Dodaj ticket z poprawką'}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))

@@ -1195,6 +1195,49 @@ mode: full
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
+### Katalogi danych projektu tylko do odczytu (PT-246)
+
+W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,
+np. `~/.cache/hud-timeline`. `UpsertProject` przyjmuje `readDirs: ["/pełna/ścieżka", "~/katalog"]`;
+migawka projektu zwraca `readDirs` jako listę ścieżek kanonicznych. Brak pola w starym projekcie
+oznacza pustą listę. Pusta lista w żądaniu usuwa udostępnienie, pominięcie pola zachowuje ustawienie.
+Zapis w pliku projektu: `read-dirs` (JSON); wewnętrzne `read-dir-bindings` zachowuje powiązania dowiązań.
+
+Limit wynosi 32 wpisy. Tide usuwa duplikaty, rozwija `~/` względem użytkownika usługi i rozwiązuje
+dowiązania. Nie tworzy brakujących katalogów. Odmawia korzeni systemu, punktów montowania,
+katalogu domowego i jego przodków, katalogów sekretów (m.in. `.ssh`, `.gnupg`, `.aws`, `.azure`,
+`.kube`, `.codex`, `.claude`, `.config`, portfel kluczy i stan Tide) oraz nakładania z obszarem zapisu
+kroku. Ścieżki ze znakami wzorców uprawnień są odrzucane. Token aktualnego punktu modelu również
+nie może leżeć w udostępnionym katalogu. Błąd ustawienia nie zamienia się po cichu w inne uprawnienie.
+
+Każdy start i wznowienie ponownie sprawdza istnienie katalogów i zapamiętane cele dowiązań.
+Podmiana celu daje czytelną odmowę; trzeba usunąć stary wpis i świadomie udostępnić nowy cel.
+Katalogi dostają wyłącznie kroki projektu oraz kroki już uprawnione do odczytu tego projektu jako
+dodatkowego projektu karty/zlecenia. Nie są dopisywane globalnie do innych kart ani do poleceń hosta.
+Zmiana ustawienia działa od następnego uruchomienia, również przy wejściu do tej pracy w Konsoli.
+Już działający proces zachowuje poprzedni profil; usunięcie wpisu go nie zatrzymuje.
+
+Claude otrzymuje `allowRead` i **`denyWrite` profilu systemu plików**, obok zakazu narzędzi Edit.
+Codex zachowuje `workspace-write`: dane nie trafiają do `--add-dir` ani `writable_roots`, a domyślne
+obszary zapisu `/tmp` i `TMPDIR` są wyłączane dla tego profilu. Zachowuje to istniejący ogólny zakres
+odczytu Codexa; `readDirs` nie jest nowym mechanizmem ukrywania reszty dysku. Wejście do Konsoli dla
+tej pracy używa wspólnego profilu i zachowuje go także po usunięciu ostatniego wpisu. Nie powstaje
+nowe pudełko K-38 ani nowa ścieżka wykonywania poleceń poza piaskownicą.
+
+Dowód działania granicy: `daemon/tests/test_project_read_dirs_native.py`, włączany przez
+`TIDE_READ_DIRS_NATIVE=1`. Test używa natywnego Codex `sandbox linux` i natywnego Bash Claude
+z lokalną atrapą API (bez modelu, prawdziwych kluczy, hooków ani MCP). Raporty w
+`build/test-results/read-dirs-native/{claude,codex}-proof.json` osobno pokazują udany odczyt oraz
+niezerowe kody prób zapisu, utworzenia, usunięcia i zmiany nazwy, bezpośrednio i przez dowiązanie
+z worktree. Niedostępność piaskownicy po włączeniu testu jest błędem, nie udanym testem ani pominięciem.
+Próby wymagające zagnieżdżenia piaskownicy należy zgłosić w kroku jako `outside`.
+Jeśli Codex jest zainstalowany jako Snap, próba używa natywnego programu z tego samego
+zainstalowanego pakietu (`/snap/codex/<wersja>/bin/codex`). Wrapper `snap run` może odmówić startu
+w jednostce `tide-outside`, zanim zostanie utworzony profil. Test sprawdza granicę `workspace-write`
+samego programu; nie jest testem dodatkowych ograniczeń Snap ani zgodności jego wrappera z systemd.
+Nie zmienia to produkcyjnego wyboru programu. Artefakty `{claude,codex}-command.json` zapisują
+dokładne argv wykonanego testu obok dowodu operacji.
+
 Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
 (`teal`, `lavender`, `peach`, `butter`, `rose`, `mint`, `sky`; lista z `pastel` w `theme/palette/`),
 treść to opis. Nowa tablica dostaje „Firma” (`sky`, klient komercyjny) i „własne” (`lavender`).

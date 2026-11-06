@@ -176,8 +176,27 @@ class BaseContextTest(StartBaseSetup):
         self.assertIn("Wersja bazy karty: 2", prompt)
         self.assertIn("old.step/out", prompt)
         invocation = Path(new["stepDir"], "out/fake-call.json")
-        self.assertTrue(wait_until(invocation.exists, timeout=5))
-        calls = json.loads(invocation.read_text())
+        # Plik może już istnieć, gdy atrapa jeszcze zapisuje końcówkę JSON. Pierwszy
+        # odczyt urywamy celowo, żeby ta próba obejmowała wyścig niezależnie od obciążenia.
+        read_text, partial_reads = Path.read_text, []
+
+        def partial_read(path, *args, **kwargs):
+            text = read_text(path, *args, **kwargs)
+            if path == invocation and not partial_reads:
+                partial_reads.append(True)
+                return text[:-1]
+            return text
+
+        def invocation_ready():
+            try:
+                return json.loads(invocation.read_text())
+            except (OSError, ValueError):
+                return None
+
+        with mock.patch.object(Path, "read_text", partial_read):
+            calls = wait_until(invocation_ready, timeout=5)
+        self.assertTrue(calls, f"Brak kompletnego wywołania atrapy: {invocation}")
+        self.assertEqual(partial_reads, [True])
         self.assertNotIn("--resume", calls["argv"])
         self.assertEqual(calls["cwd"], new["worktree"])
         self.assertIn(new["session"], calls["argv"])
