@@ -250,7 +250,7 @@ class Backend(QObject):
             if buf.get("issue") and issue["version"] < buf["issue"]["version"]:
                 return
             buf["error"] = ""
-            if not discard and (self._dirty(buf) or buf.get("conflict")):
+            if not discard and (self._dirty(buf) or buf.get("conflict") or buf.get("acceptingVersion")):
                 if issue["version"] != buf["issue"]["version"]:
                     buf.update(current=issue, conflict=issue["version"])
             else:
@@ -321,14 +321,18 @@ class Backend(QObject):
         self._busy = True
         self._notice = ""
         version = buf["issue"]["version"] if expected_version is None else expected_version
+        if method == "AcceptIssue":
+            # Spóźniony Show odświeżenia nie może zastąpić raportu objętego decyzją.
+            buf["acceptingVersion"] = version
         args = [ident, json.dumps(dict(patch, expectedVersion=version), ensure_ascii=False)]
         if raw is not None:
             args.append(QByteArray(raw))
         self.changed.emit()
         def done(result, _raw):
             self._busy = False
+            buf.pop("acceptingVersion", None)
             if result.get("ok"):
-                self._shown(ident, result, discard=method == "Update")
+                self._shown(ident, result, discard=method in ("Update", "AcceptIssue"))
                 # Attach/Detach są zablokowane przy niezapisanym tekście; przejścia również.
                 self._notice = result.get("commitError", "")
                 self.reload()

@@ -200,6 +200,8 @@ monitors.py; układ ekranów w KWin bez zmian):
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
 - sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
+import json
+
 from PyQt6.QtCore import QByteArray, QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 

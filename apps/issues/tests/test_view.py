@@ -15,6 +15,25 @@ PROBLEMS = r"TypeError|ReferenceError|is not a type|is not defined|Cannot read|I
 
 
 class ViewTest(unittest.TestCase):
+    def test_pending_refresh_cannot_replace_report_while_acceptance_is_in_flight(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script(callback_delay=10)
+issue = dict(state()['issue'])
+new = dict(issue, version=2, report='Nowa wersja', state='draft')
+replies.extend([dict(ok=False, error='version-conflict', currentVersion=2, message='Konflikt'), dict(ok=True, issue=new)])
+backend.acceptIssue(1)
+# Odczyt odświeżenia rozpoczął się przed kliknięciem, lecz kończy po wysłaniu decyzji.
+backend._shown('S-2', dict(ok=True, issue=new))
+settle()
+out['state'] = state()
+out['request'] = calls[0]
+''')
+        self.assertEqual(out['state']['issue']['version'], 1)
+        self.assertEqual(out['state']['conflict'], 2)
+        self.assertEqual(out['state']['current']['report'], 'Nowa wersja')
+        self.assertEqual(json.loads(out['request'][2])['expectedVersion'], 1)
+
     def test_accept_button_pins_rendered_version_and_retries_same_request(self):
         out = self.run_scenario('''
 backend.selectIssue('S-2')
