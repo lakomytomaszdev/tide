@@ -33,6 +33,27 @@ EVAL_SPEC.loader.exec_module(EVALUATOR)
 class EvaluatorTest(unittest.TestCase):
     """Wybór programu i sprzątanie poświadczeń; bez uruchamiania jakiegokolwiek modelu."""
 
+    def test_long_output_directory_does_not_exceed_unix_socket_name_limit(self):
+        from xml.etree import ElementTree
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / ('dlugi-worktree-' * 12) / 'runtime'
+            directory.mkdir(parents=True)
+            config = directory / 'bus.conf'
+            EVALUATOR.write_bus_config(config)
+            address = ElementTree.fromstring(config.read_text()).findtext('listen')
+            if address.startswith('unix:tmpdir='):
+                socket_name = address.removeprefix('unix:tmpdir=') + '/dbus-XXXXXXXXXX'
+            else:
+                self.assertTrue(address.startswith('unix:abstract='))
+                socket_name = '\x00' + address.removeprefix('unix:abstract=')
+            self.assertLess(len(os.fsencode(socket_name)), 108, 'Socket name too long')
+            first = address
+            EVALUATOR.write_bus_config(config)
+            root = ElementTree.fromstring(config.read_text())
+            self.assertNotEqual(first, root.findtext('listen'))
+            self.assertIsNotNone(root.find('./policy/deny[@user="*"]'))
+            self.assertIsNotNone(root.find('./policy/allow[@user="' + str(os.getuid()) + '"]'))
+
     def test_codex_only_uses_explicit_binary_without_searching_path_for_claude(self):
         args = SimpleNamespace(skip_claude=True, skip_codex=False, codex_bin=Path(sys.executable))
         with mock.patch.object(EVALUATOR.shutil, 'which', side_effect=AssertionError('Nie szukaj w PATH')):

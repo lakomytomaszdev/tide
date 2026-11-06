@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 PACKAGE = Path(__file__).resolve().parent
 REPO = PACKAGE.parent.parent
@@ -48,6 +49,15 @@ def selected_programs(args):
             raise RuntimeError('Brak wykonywalnego programu Codex: ' + str(executable))
         programs['codex'] = str(executable)
     return programs
+
+
+def write_bus_config(path):
+    # Linux: abstrakcyjny adres nie dziedziczy długości worktree. Dostęp tylko dla tego UID.
+    address = 'unix:abstract=tide-issue-' + uuid.uuid4().hex
+    path.write_text('<busconfig><type>session</type><listen>' + address +
+                    '</listen><auth>EXTERNAL</auth><policy context="default">'
+                    '<deny user="*"/><allow user="' + str(os.getuid()) + '"/>'
+                    '<allow send_destination="*"/><allow own="*"/></policy></busconfig>')
 
 
 @contextmanager
@@ -126,9 +136,7 @@ def run(args):
         window.write_text('import pathlib,sys\npathlib.Path(' + repr(str(output / 'opened')) +
                           ').write_text(sys.argv[-1])\n')
         config = runtime / 'bus.conf'
-        config.write_text('<busconfig><type>session</type><listen>unix:tmpdir=' + str(runtime) +
-                          '</listen><auth>EXTERNAL</auth><policy context="default">'
-                          '<allow send_destination="*"/><allow own="*"/></policy></busconfig>')
+        write_bus_config(config)
         bus = subprocess.Popen(['dbus-daemon', '--config-file=' + str(config), '--nofork',
                                 '--nopidfile', '--print-address=1'], stdout=subprocess.PIPE, text=True)
         daemon = None
