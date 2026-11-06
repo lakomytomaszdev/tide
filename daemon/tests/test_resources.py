@@ -14,6 +14,7 @@ from . import DAEMON_DIR
 from .fakebin import make_env
 from .test_board_core import BoardCase, git_out
 from .test_board_launch import old_seed
+from .test_cardflow import FlowInProcess
 from tide_daemon import resources
 from tide_daemon.board import flows
 
@@ -28,6 +29,53 @@ def install(env):
 
 
 class ResourceInstallTest(unittest.TestCase):
+    def test_cli_tools_use_installed_modules_with_separate_resources(self):
+        with tempfile.TemporaryDirectory(prefix="tide osobne zasoby ") as tmp:
+            env = make_env(tmp)
+            env.update(HOME=str(Path(tmp) / "inna osoba"), USER="inna-osoba",
+                       XDG_DATA_HOME=str(Path(tmp) / "dane usługi"), PYTHONPATH="")
+            Path(env["HOME"]).mkdir()
+            dest = install(env)
+            custom = Path(tmp) / "osobny pakiet"
+            shutil.move(str(dest.parent / "resources"), custom)
+            env["TIDE_RESOURCES_DIR"] = str(custom)
+            metadata = subprocess.run([sys.executable, "-I", "-c", """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from tide_daemon.issues import IssueService
+print(IssueService().call('Info'))
+""", str(dest)], env=env, cwd=tmp, capture_output=True, text=True)
+            self.assertEqual(metadata.returncode, 0, metadata.stderr)
+            info = json.loads(metadata.stdout)
+            self.assertTrue(all(item["available"] for item in info["resources"].values()))
+            self.assertEqual(info["resources"]["next-id"]["pythonPath"], str(dest))
+            workspace = Path(tmp) / "projekty"
+            workspace.mkdir()
+            repo = workspace / "projekt"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True, capture_output=True)
+            cli = Path(env["HOME"]) / ".local/bin/tide"
+            # Atrapa wyłącznie transportu Info; klient i procesy narzędzi są z instalacji.
+            driver = """
+import importlib.machinery, json, sys, types
+cli = types.ModuleType('installed_cli')
+importlib.machinery.SourceFileLoader(cli.__name__, sys.argv[1]).exec_module(cli)
+class Api:
+    def call(self, method):
+        assert method == 'Info'
+        return json.loads(sys.argv[2])
+cli.PublicApi = Api
+sys.exit(cli.main(sys.argv[3:]))
+"""
+            for args, expected in ((["next-id", str(repo), "--prefix", "PT", "--dry-run"], "PT-1"),
+                                   (["check-plans", str(workspace), "--no-youtrack", "--json"], "[]")):
+                with self.subTest(command=args[0]):
+                    result = subprocess.run([sys.executable, "-I", "-c", driver, str(cli),
+                                             metadata.stdout, *args], env=env, cwd=tmp,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
+
     def test_installed_modules_and_tools_read_resources_without_source_imports(self):
         with tempfile.TemporaryDirectory(prefix="tide-resources-") as tmp:
             env = make_env(tmp)
@@ -103,7 +151,8 @@ print(json.dumps(info, ensure_ascii=False))
         cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cli)
         path = str(resources.resolve("next-id"))
-        reply = {"ok": True, "resources": {"next-id": {"available": True, "path": path}}}
+        reply = {"ok": True, "resources": {"next-id": {"available": True, "path": path,
+                                                       "pythonPath": str(DAEMON_DIR)}}}
         with mock.patch.object(cli, "PublicApi") as api, mock.patch.object(cli.subprocess, "run") as run:
             api.return_value.call.return_value = reply
             run.return_value.returncode = 0
@@ -111,6 +160,19 @@ print(json.dumps(info, ensure_ascii=False))
                                        "--prefix", "PT", "--dry-run"]), 0)
             self.assertEqual(run.call_args.args[0], [sys.executable, path, "/repo ze spacjami", "--prefix", "PT",
                                                     "--count", "1", "--title", "$(nie wykonuj)", "--dry-run"])
+            self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"], str(DAEMON_DIR))
+
+
+class MissingResourceStartTest(FlowInProcess):
+    def test_public_start_preserves_missing_resource_diagnostic(self):
+        card = self.card()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"TIDE_RESOURCES_DIR": tmp}):
+            reply = self.start(card)
+        self.assertFalse(reply["ok"], reply)
+        self.assertEqual(reply["error"], "unavailable")
+        self.assertIn("plan-standard", reply["message"])
+        self.assertIn("TIDE_RESOURCES_DIR", reply["message"])
+        self.assertFalse(self.of(card, "step.started"))
 
 
 class ResourceMigrationTest(BoardCase):

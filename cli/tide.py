@@ -116,6 +116,10 @@ def main(argv=None):
             if not asset.get("available") or not os.path.isfile(asset.get("path", "")):
                 raise CliError("unavailable", "Brak zainstalowanego narzędzia Tide; sprawdź tide info --json "
                                "i instalację zasobów (TIDE_RESOURCES_DIR w środowisku usługi).")
+            module_path = asset.get("pythonPath", "")
+            if not module_path or not os.path.isdir(os.path.join(module_path, "tide_daemon")):
+                raise CliError("unavailable", "Brak modułów narzędzia Tide; sprawdź instalację usługi "
+                               "i pythonPath w tide info --json.")
             if args.command == "next-id":
                 forwarded = [args.repo, "--prefix", args.prefix, "--count", str(args.count), "--title", args.title]
                 if args.dry_run:
@@ -127,7 +131,9 @@ def main(argv=None):
                 if as_json:
                     forwarded.append("--json")
             try:
-                return subprocess.run([sys.executable, asset["path"], *forwarded], check=False).returncode
+                env = {**os.environ, "PYTHONPATH": module_path}
+                return subprocess.run([sys.executable, asset["path"], *forwarded],
+                                      env=env, check=False).returncode
             except OSError:
                 raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
         if result["ok"] and args.command != "info":

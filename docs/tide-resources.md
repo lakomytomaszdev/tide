@@ -16,6 +16,8 @@ tide next-id "/ścieżka ze spacjami/projekt" --title "Opis ticketu" --dry-run
 tide check-plans "/katalog projektów" --no-youtrack --json
 ```
 
+Wpisy narzędzi w `info` zawierają też `pythonPath`: katalog modułów działającej usługi.
+Klient przekazuje go jako `PYTHONPATH` procesu narzędzia, niezależnie od lokalizacji zasobów.
 Narzędzia wymagają zainstalowanych modułów usługi; sam klient nadal wymaga publicznego D-Bus
 i `python3-pyqt6.qtdbus`. Nie trzeba mieć checkoutu autora. W checkoutcie resolver korzysta
 z jego własnych `docs/` i `tools/`; uruchomienie samodzielnej kopii usługi wybiera sąsiedni katalog

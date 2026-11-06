@@ -14,6 +14,8 @@ ASSETS = {"plan-standard": ("docs/agent-plan-standard.md", "1.3"),
 class ResourceError(ValueError):
     """Niekompletna instalacja albo błędna konfiguracja zasobów."""
 
+    code = "unavailable"
+
 
 def root() -> Path:
     configured = os.environ.get("TIDE_RESOURCES_DIR")
@@ -38,6 +40,8 @@ def info() -> dict:
     result = {}
     for name, (relative, version) in ASSETS.items():
         item = {"path": str(root() / relative), "version": version, "available": False}
+        if name in ("next-id", "check-plans"):
+            item["pythonPath"] = str(Path(__file__).resolve().parent.parent)
         try:
             data = resolve(name).read_bytes()
             item.update(available=True, sha256=hashlib.sha256(data).hexdigest())
