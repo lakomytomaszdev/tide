@@ -46,3 +46,23 @@ class BoardRepoRaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DirectRunStateIsolationTest(unittest.TestCase):
+    """06.11: bezpośredni `python3 -m unittest` nie może pisać do stanu działającej usługi (karta-widmo K-1)."""
+
+    def test_direct_import_moves_state_to_a_temporary_directory(self):
+        import os
+        import subprocess
+        import sys
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for package in ("daemon.tests", "apps.board.tests"):
+            with self.subTest(package=package):
+                run = subprocess.run(
+                    [sys.executable, "-c", f"import os, {package}; "
+                     "from tide_daemon import board_monitor; print(os.environ['XDG_STATE_HOME'])"
+                     if package == "daemon.tests" else f"import os, {package}; print(os.environ['XDG_STATE_HOME'])"],
+                    cwd=root, capture_output=True, text=True, timeout=60,
+                    env={**os.environ, "XDG_STATE_HOME": os.path.expanduser("~/.local/state")})
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertIn("tide-test-state-", run.stdout)
