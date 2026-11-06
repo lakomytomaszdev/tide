@@ -1077,6 +1077,32 @@ out["repo"] = calls()[-1]
         self.assertEqual(out["tagOpen"], "pomysł", "po błędzie formularz zostaje")
         self.assertEqual(json.loads(out["repo"][1]), {"repo": "/home/user/DevWorkspace/legal-agents"})
 
+    def test_project_read_directories_form_loads_edits_and_removes_entries(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0]["readDirs"] = ["/data/hud", "/data/frames"]
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["loaded"] = js(find("projectReadDirs") + ".text")
+js(find("projectReadDirs") + ".text = '/data/frames'")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["removeOne"] = calls()[-1]
+js("page.managePage.openProject = 'plasma-tide'")
+wait(80)
+js(find("projectReadDirs") + ".text = ''")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["removeAll"] = calls()[-1]
+""", data)
+        self.assertEqual(out["loaded"], "/data/hud\n/data/frames")
+        self.assertEqual(out["removeOne"][0], "UpsertProject")
+        self.assertEqual(json.loads(out["removeOne"][-1]), {"slug": "plasma-tide", "readDirs": ["/data/frames"]})
+        self.assertEqual(json.loads(out["removeAll"][-1]), {"slug": "plasma-tide", "readDirs": []})
+
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class LaunchMarkStoreTest(unittest.TestCase):

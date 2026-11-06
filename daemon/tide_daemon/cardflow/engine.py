@@ -1074,6 +1074,8 @@ class FlowEngine(PlanEditing):
         # Repozytoria pozostałych projektów zlecenia: Claude dostaje je przez --add-dir z zakazem zapisu (reguły
         # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
         order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
+        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order,
+                                                route=selected.route)
         read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
                                        selected.route)
@@ -1089,6 +1091,12 @@ class FlowEngine(PlanEditing):
         if session:
             command.argv.insert(1, "--session-id")
             command.argv.insert(2, session)
+        read_profile = bool(project_reads) or self._used_read_profile(item.id, worktree)
+        if read_profile:
+            readonly_repos = [p["repo"] for p in order if not p.get("main")]
+            command = self._restricted_console(selected.tool, selected.binary, prompt, worktree,
+                project.repo, step_dir, step_id, project_reads + readonly_repos, session=session,
+                route=selected.route, model=selected.model, effort=selected.effort, images=shots)
         closed = os.path.join(inp, "console-closed.json")
         process_file = os.path.join(inp, "console-process.json")
         claim_dir = os.path.join(inp, "console-claim")
@@ -1110,6 +1118,7 @@ class FlowEngine(PlanEditing):
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
+                            readDirsProfile=read_profile,
                             parentStep=parent_step, attempt=attempt, reviewTip=review_tip, **base_context)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
@@ -1339,6 +1348,12 @@ class FlowEngine(PlanEditing):
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
             route = selected.route
+        item, project = self._project(card_id)
+        order = ((st.started or {}).get("projects") or []
+                 if source_step.get("kind") in ("planning", "plan-fix") else [])
+        # Błędne uprawnienie nie może najpierw zatrzymać zdrowego procesu ani skasować jego wyniku.
+        self._configured_reads(item, project, worktree, source_step.get("stepDir") or worktree + ".step",
+                               order=order, route=route)
         if step_id not in st.finished:
             if not self._stop_for_enter(card_id, source_step):
                 raise FlowError("not-stopped", "trwający krok nie zatrzymał się; Konsola nie została otwarta")
@@ -1379,6 +1394,21 @@ class FlowEngine(PlanEditing):
         console_unit = "tide-console-" + uuid.uuid4().hex
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
+        item, project = self._project(card_id)
+        order = ((st.started or {}).get("projects") or []
+                 if current.get("kind") in ("planning", "plan-fix") else [])
+        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order, route=route)
+        read_profile = bool(project_reads) or bool(current.get("readDirsProfile"))
+        if read_profile:
+            board = self.store.load()
+            readonly_repos = ([p["repo"] for p in order if not p.get("main")] if order else
+                              [board.projects[s].repo for s in item.projects if s in board.projects
+                               and board.projects[s].repo and not board.projects[s].repo_missing])
+            command = self._restricted_console(tool, binary, prompt, worktree,
+                current.get("repo") or project.repo, step_dir, new_id, project_reads + readonly_repos,
+                session=session, resume=True, route=route, model=current.get("model") or "",
+                effort=current.get("effort") or "",
+                context_dirs=[d for d in self._ancestor_outs(card_id, step_id) if d != out])
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
                    "processFile": process_file, "consoleUnit": console_unit,
@@ -1391,6 +1421,7 @@ class FlowEngine(PlanEditing):
                                 ticket=current.get("ticket") or "", executor=current.get("executor") or "",
                                 program=tool, provider=current.get("provider") or "", local=bool(current.get("local")),
                                 model=current.get("model") or "", unit="", session=session,
+                                readDirsProfile=read_profile,
                                 worktree=worktree, branch=current.get("branch") or "", stepDir=step_dir,
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
@@ -1399,6 +1430,7 @@ class FlowEngine(PlanEditing):
                                 baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
+                            readDirsProfile=read_profile,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file,
                             enteredAt=self.clock())
@@ -1739,6 +1771,48 @@ class FlowEngine(PlanEditing):
         return prompt, {"baseVersion": st.base_version, "baseRef": st.base.get("baseRef", ""),
                         "baseCommit": st.base.get("baseCommit", "")}
 
+    def _configured_reads(self, card, project, worktree, step_dir, *, order=(), route=None):
+        """Wyłącznie projekty, których repozytoria ten krok już może czytać; świeży odczyt ustawień."""
+        from ..tasks import readaccess
+        board = self.store.load()
+        primary = board.projects.get(project.slug, project)
+        projects = [primary]
+        if order:
+            for entry in order:
+                extra = board.projects.get(entry.get("slug"))
+                if extra and not entry.get("main") and extra.repo and not extra.repo_missing and \
+                        os.path.realpath(extra.repo) == os.path.realpath(entry.get("repo") or ""):
+                    projects.append(extra)
+        else:
+            projects += [board.projects[s] for s in card.projects if s in board.projects
+                         and board.projects[s].repo and not board.projects[s].repo_missing]
+        git = os.path.join(project.repo, ".git")
+        writable = [worktree, os.path.join(step_dir, "out"), git]
+        try:
+            return readaccess.project_dirs(projects, writable=writable,
+                                           secrets=[route.token_file] if route else [])
+        except ValueError as exc:
+            raise FlowError("read-dirs", str(exc)) from None
+
+    def _used_read_profile(self, card, worktree):
+        return any(s.get("readDirsProfile") and s.get("worktree") == worktree
+                   for s in fold(self.journal.read(card)).steps.values())
+
+    def _restricted_console(self, tool, binary, prompt, worktree, repo, step_dir, step_id, read_dirs,
+                            *, session="", resume=False, route=None, model="", effort="", images=(), context_dirs=()):
+        try:
+            return agentcmd.restricted_interactive(agentcmd.Step(
+                tool, binary, prompt, worktree, repo, step_dir, step_id,
+                session_id=session, resume=resume, local=route, model=model, effort=effort,
+                tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys(read_dirs)),
+                read_profile=True,
+                context_dirs=tuple(context_dirs),
+                permission_mode="acceptEdits" if tool == "claude" else "",
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()),
+                **self._git_identity(repo)), images=images)
+        except (agentcmd.StepError, OSError) as exc:
+            raise FlowError("read-dirs", f"Nie można zastosować profilu tylko do odczytu: {exc}") from None
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
@@ -1796,6 +1870,11 @@ class FlowEngine(PlanEditing):
 
         def launch() -> dict:
             nonlocal prompt
+            configured = self._configured_reads(card, project, worktree, step_dir, order=order,
+                                                route=selected.route)
+            read_profile = bool(configured) or self._used_read_profile(card.id, worktree)
+            if configured:
+                prompt += "\nKatalogi danych projektu (wyłącznie do odczytu):\n" + "\n".join(configured) + "\n"
             from ..board.commands import claude_tools
             from ..tasks import dotnet
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
@@ -1827,7 +1906,8 @@ class FlowEngine(PlanEditing):
                 allowed_tools=allowed_tools if selected.tool == "claude" else (),
                 disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
                 enforce_command_policy=selected.tool == "claude",
-                tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), context_dirs=tuple(context_dirs), dotnet=is_dotnet, node_home=node_home,
+                tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])), context_dirs=tuple(context_dirs), dotnet=is_dotnet, node_home=node_home,
+                read_profile=read_profile,
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
                 chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "",
                 **self._git_identity(project.repo)))
@@ -1837,7 +1917,7 @@ class FlowEngine(PlanEditing):
                 shutil.copyfile(source, target)
             proc = bg.start(systemd_run=self.systemd_run)
             self.procs[step_id] = proc
-            return {"unit": bg.unit, "gitDir": bg.git_dir}
+            return {"unit": bg.unit, "gitDir": bg.git_dir, "readDirsProfile": read_profile}
 
         if kind == "review":
             # Nieśledzone pliki sprzed review: nowe po review to pliki recenzenta (wynik pomiaru, notatki) — Tide
@@ -1872,6 +1952,7 @@ class FlowEngine(PlanEditing):
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
+                                   readDirsProfile=begun.get("readDirsProfile", False),
                                    repo=project.repo, **base_context)
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:

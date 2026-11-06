@@ -367,6 +367,8 @@ def fold(events: list[dict]) -> FlowState:
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",
                                    "source": e.get("source") or "", "taskFile": e.get("taskFile") or "",
+                                   "readDirsProfile": bool(e.get("readDirsProfile") or
+                                                           st.steps[e["step"]].get("readDirsProfile")),
                                    "consoleClosed": False, "consoleOpened": False}
         elif kind == "step.console_opened" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "consoleOpened": True}

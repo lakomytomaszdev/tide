@@ -687,6 +687,7 @@ Rectangle {
         property bool youtrackSync: true
         property string allowedCommands: ""
         property string deniedCommands: ""
+        property string readDirs: ""
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -706,6 +707,8 @@ Rectangle {
             deniedCommands = (project.deniedCommands || []).join("\n")
             allowedCommandsArea.text = allowedCommands
             deniedCommandsArea.text = deniedCommands
+            readDirs = (project.readDirs || []).join("\n")
+            readDirsArea.text = readDirs
             assignmentRulesArea.text = project.assignmentRules || ""
         }
 
@@ -731,6 +734,8 @@ Rectangle {
             const denied = commandLines(deniedCommands)
             if (JSON.stringify(allowed) !== JSON.stringify(project.allowedCommands || [])) request.allowedCommands = allowed
             if (JSON.stringify(denied) !== JSON.stringify(project.deniedCommands || [])) request.deniedCommands = denied
+            const dirs = commandLines(readDirs)
+            if (JSON.stringify(dirs) !== JSON.stringify(project.readDirs || [])) request.readDirs = dirs
             if (assignmentRulesArea.text.trim() !== (project.assignmentRules || "")) request.assignmentRules = assignmentRulesArea.text.trim()
             page.send("project", project.slug, request)
         }
@@ -964,6 +969,32 @@ Rectangle {
                     font.pixelSize: 12
                     Accessible.name: "Zasady przydziału projektu, puste dziedziczą wspólne"
                     background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
+                }
+                FieldLabel { text: "Katalogi tylko do odczytu"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                QQC2.TextArea {
+                    id: readDirsArea
+                    objectName: "projectReadDirs"
+                    Layout.fillWidth: true
+                    implicitHeight: 90
+                    text: row.readDirs
+                    onTextChanged: row.readDirs = text
+                    placeholderText: "Np. ~/.cache/hud-timeline — po jednym katalogu w wierszu, maksymalnie 32"
+                    wrapMode: TextEdit.NoWrap
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.monoFamily
+                    font.pixelSize: 12
+                    Accessible.name: "Katalogi projektu tylko do odczytu, po jednym w wierszu"
+                    background: Rectangle { radius: Tide.Tokens.radiusTile; color: Tide.Tokens.backgroundPanel }
+                }
+                Text {
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+                    text: "Dane udostępniane krokom tego projektu i krokom uprawnionym do czytania go jako projektu dodatkowego. Zapis, usuwanie i zmiana nazwy są zabronione. Zmiana listy działa od następnego startu lub wznowienia, także w Konsoli; działający proces zachowuje swój profil."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
                 }
                 FieldLabel { text: "Dozwolone polecenia"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
                 QQC2.TextArea {
