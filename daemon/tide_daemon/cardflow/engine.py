@@ -55,6 +55,7 @@ from . import caretakerctx
 from . import handoff
 from .decisions import clean_options
 from . import execution
+from . import evidence
 from . import faults
 from . import fullcard
 from . import guard
@@ -856,6 +857,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
+        source_evidence = self._issue_evidence(card)
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
@@ -884,6 +886,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id, request=request, trackerProject=project.youtrack,
                                       trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images,
+                                      sourceEvidence=source_evidence.source if source_evidence else None,
                                       baseRef=base["baseRef"], baseBranch=base["baseBranch"],
                                       baseCommit=base["baseCommit"], baseVersion=1)
         self._project_base(card.id)
@@ -977,6 +980,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
+        source_evidence = self._issue_evidence(item)
         with open(path, "rb") as fh:
             source_bytes = fh.read(source_plans.MAX_BYTES + 1)
         if len(source_bytes) > source_plans.MAX_BYTES:
@@ -996,6 +1000,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.store.update_card(card_id, {"planPath": path})
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                             column=item.column, moveId=item.move_id, check=check, images=images,
+                            sourceEvidence=source_evidence.source if source_evidence else None,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, preferredProvider=request.get("preferredProvider") or selected.provider,
                             prefix=prefix, trackerProject=project.youtrack,
@@ -1050,6 +1055,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
+        source_evidence = self._issue_evidence(item)
         with lock_for(project.repo):
             base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         if project.youtrack:
@@ -1065,6 +1071,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             provider=selected.provider, preferredProvider=preferred, prefix=prefix,
                             check=check,
                             assignmentRules=assignment.rules(self.store.load(), project), images=images,
+                            sourceEvidence=source_evidence.source if source_evidence else None,
                             effort=selected.effort,
                             routeUrl=selected.route.url if selected.route else "",
                             routeKind=selected.route.kind if selected.route else "",
@@ -1194,6 +1201,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         context_state = fold(self.journal.read(item.id))
+        source_evidence = self._issue_evidence(item, started=context_state.started)
         if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
         context_prompt, base_context = self._step_base_context(context_state)
@@ -1209,6 +1217,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         for source, target in zip(images, shots):
             os.makedirs(os.path.dirname(target), exist_ok=True)
             shutil.copyfile(source, target)
+        if source_evidence:
+            source_evidence.materialize(step_dir)
+            shots = [*shots, *source_evidence.images(step_dir)]
+            prompt += source_evidence.prompt(step_dir)
         board = self.store.load()
         extras = [board.projects[slug] for slug in item.projects
                   if slug in board.projects and board.projects[slug].repo and
@@ -1231,6 +1243,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
         order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
         read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
+        if source_evidence and selected.tool == "claude":
+            read_dirs += [os.path.join(inp, "evidence"), os.path.join(inp, "images")]
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
                                        selected.route)
         if read_dirs:
@@ -1835,6 +1849,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             out.append(real)
         return out
 
+    def _issue_evidence(self, card, *, started=None):
+        ref = started.get("sourceEvidence", evidence.source(card)) if started else evidence.source(card)
+        try:
+            return evidence.load(self.store, card.id, ref)
+        except (BoardError, OSError, ValueError, UnicodeError) as exc:
+            raise FlowError("broken-evidence", f"{card.id}: odmowa dostarczenia dowodów sprawy: {exc}") from None
+
     def _wait_cause(self, reason: str, selected) -> tuple[str, str]:
         """(przyczyna, odnowienie) czekania do `step.waiting` (pełna karta, PT-128): `quota` (okno limitu, z godziną
         odnowienia), `local` (kolejka modeli lokalnych) albo `slots` (kroki dostawcy naraz)."""
@@ -1976,6 +1997,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 attempt=0, resume_session="", make_prompt=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
+        source_evidence = self._issue_evidence(card, started=fold(self.journal.read(card.id)).started)
         self._admit(card.id, selected, ticket, kind, step_id)
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
@@ -1984,10 +2006,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "conflict", "close", caretaker.KIND) else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
+        issue_shots = source_evidence.images(step_dir) if source_evidence else []
         prompt = "" if make_prompt else prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
-                                                     images=shots, test_base=made_ticket.get("base") or "")
+                                                     images=[*shots, *issue_shots], test_base=made_ticket.get("base") or "")
+        if source_evidence:
+            prompt += source_evidence.prompt(step_dir)
         context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
         prompt += context_prompt
         read_dirs, context_dirs = [], []
@@ -2016,13 +2041,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Zrzuty ekranu z karty leżą w `in/images` kroku (a w wznowieniu — kroku, od którego zaczął się ticket):
         # narzędzie Read poza katalogami sesji jest odrzucane, więc są katalogami do odczytu (04.11, K-49:
         # agent nie mógł przeczytać zrzutu z komentarzami review).
-        image_dirs = [os.path.join(step_dir, "in", "images")] if shots else []
+        image_dirs = [os.path.join(step_dir, "in", "images")] if shots or issue_shots else []
         image_dirs += [os.path.join(os.path.dirname(d), "in", "images") for d in context_dirs]
         image_dirs += [os.path.join(worktree + ".step", "in", "images")]
         # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
         image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
+        if source_evidence:
+            read_dirs.append(os.path.join(step_dir, "in", "evidence"))
         from .. import resources
         standard = resources.resolve("plan-standard")
         if str(standard) not in prompt:
@@ -2039,6 +2066,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             nonlocal prompt
             if make_prompt:
                 prompt = make_prompt(step_dir)
+                if source_evidence:
+                    prompt += source_evidence.prompt(step_dir)
             from ..board.commands import claude_tools
             from ..tasks import dotnet
             # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
@@ -2080,6 +2109,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             for source, target in zip(images, shots):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copyfile(source, target)
+            if source_evidence:
+                source_evidence.materialize(step_dir)
             if kind == caretaker.KIND:
                 # Strażnik (PT-158): stan bazowy tuż przed startem programu, po wszystkich przygotowaniach Tide.
                 # Przy problemie ticketu pod strażą jest też drzewo i HEAD worktree karty (review M2); katalog gita
