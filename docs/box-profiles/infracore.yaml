@@ -1,0 +1,13 @@
+tide-box: 1
+project: infracore
+type: container
+base: tide-base
+stacks: [dotnet]
+dotnet:
+  sdk: ['8.0.415', '6.0.428']
+network:
+  domains: []
+  host-ollama: false
+verify:
+  - dotnet build
+notes: "Propozycja PT-186 do zatwierdzenia. Linie SDK 8.0 i 6.0 przypięte do poprawek. Restore wyłącznie z nuget.org; bez prywatnych źródeł i danych hosta. Testy Firebirda do sprawdzenia na pulpicie."

@@ -110,10 +110,16 @@ def _profile_items(profile: dict, known, scope: str, accepted=(), locked_red=Fal
 
 
 def _template_items(items: list, accepted=()) -> list:
-    """Pozycje sieci i obrazów z szablonów stosów (propozycja bez profilu): czerwone włącza tylko jawna zgoda."""
+    """Pozycje propozycji: sieć/obrazy wymagają zgody; lokalne źródła są informacją bez udostępnienia."""
     out = []
     for entry in items:
         risk = entry.get("risk") if entry.get("risk") in (bp.GREEN, bp.YELLOW, bp.RED) else bp.YELLOW
+        if entry.get("kind") == "local-feed":
+            # Informacja o nieudostępnionym źródle plikowym, nigdy przełącznik domeny.
+            out.append(_item(f"local-feed:{entry['value']}", "packs", bp.RED, scope="projekt",
+                             enabled=False, locked=True, note=entry.get("description") or "",
+                             label=entry["value"], kind="local-feed"))
+            continue
         group = "docker" if entry.get("kind") == "image" else "network"
         ident = f"image:{entry['value']}" if group == "docker" else entry["value"]
         out.append(_item(ident, group, risk, scope="projekt", enabled=risk != bp.RED or ident in accepted,
