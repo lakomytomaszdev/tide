@@ -1,0 +1,225 @@
+"""Testy unittest w osobnych procesach, z pełnym raportem po wszystkich modułach."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import fnmatch
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+if __package__:
+    from .test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
+else:
+    from test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def default_jobs():
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    return max(1, cores - 2)
+
+
+def modules_for(entries, root=ROOT):
+    modules = set()
+    for directory, pattern in entries:
+        folder = root / directory
+        if not folder.is_dir():
+            raise ValueError(f"Brak katalogu testów: {directory}")
+        # Tak samo jak discover: test*.py także w podpakietach z __init__.py.
+        def walk(path):
+            for child in sorted(path.iterdir()):
+                if child.is_file() and fnmatch.fnmatch(child.name, pattern) and child.suffix == ".py":
+                    modules.add(child.relative_to(root).as_posix())
+                elif child.is_dir() and (child / "__init__.py").is_file():
+                    walk(child)
+        walk(folder)
+        # Hook pakietu może zmieniać zbiór testów. Nie dzielimy takiego discover.
+        for package in [folder, *[p.parent for p in folder.rglob("__init__.py")]]:
+            init = package / "__init__.py"
+            if init.exists() and "load_tests" in init.read_text(encoding="utf-8"):
+                raise ValueError(f"{init}: hook load_tests wymaga osobnej obsługi przed podziałem")
+    return sorted(modules)
+
+
+def git_paths(base, root=ROOT):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root).decode("utf-8", "surrogateescape")
+    ancestor = git("merge-base", base, "HEAD").strip()
+    # Porównanie z working tree obejmuje commity gałęzi, indeks i zmiany robocze.
+    changed = git("diff", "--name-only", "--no-renames", "-z", ancestor, "--").split("\0")
+    untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0")
+    return sorted(set(filter(None, changed + untracked)))
+
+
+def changed_suites(paths):
+    selected = set()
+    for path in paths:
+        matches = [prefix for prefix in CHANGE_MAP if path.startswith(prefix)]
+        if not matches:
+            return None
+        selected.add(CHANGE_MAP[max(matches, key=len)])
+    return sorted(selected)
+
+
+class RecordingResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ids = []
+
+    def startTest(self, test):
+        self.ids.append(test.id())
+        super().startTest(test)
+
+
+def run_worker(module, report, root=ROOT, directory=False, inventory=False):
+    # Przy uruchomieniu skryptu sys.path[0] wskazuje tools/, nie repozytorium.
+    sys.path.insert(0, str(root))
+    suite = unittest.TestLoader().discover(
+        str(root / module if directory else (root / module).parent),
+        pattern="test*.py" if directory else Path(module).name, top_level_dir=str(root))
+    if inventory:
+        def ids(tests):
+            for test in tests:
+                if isinstance(test, unittest.TestSuite):
+                    yield from ids(test)
+                else:
+                    yield test.id()
+        Path(report).write_text(json.dumps(list(ids(suite))), encoding="utf-8")
+        return 0
+    result = unittest.TextTestRunner(verbosity=1, resultclass=RecordingResult).run(suite)
+    data = {
+        "tests": result.testsRun, "ids": result.ids, "skipped": len(result.skipped),
+        "skipped_tests": [(test.id(), reason) for test, reason in result.skipped],
+        "expected_failures": [test.id() for test, _ in result.expectedFailures],
+        "failures": [test.id() for test, _ in result.failures],
+        "errors": [test.id() for test, _ in result.errors],
+        "unexpected_successes": [test.id() for test in result.unexpectedSuccesses],
+    }
+    Path(report).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return int(not result.wasSuccessful())
+
+
+def run_module(module, output, root=ROOT):
+    started = time.monotonic()
+    stem = module.replace("/", "__").removesuffix(".py")
+    log, report = output / (stem + ".log"), output / (stem + ".json")
+    with log.open("w", encoding="utf-8") as stream:
+        try:
+            proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,
+                                   "--worker-report", str(report)], cwd=root, stdout=stream,
+                                  stderr=subprocess.STDOUT)
+            returncode = proc.returncode
+        except OSError as exc:
+            stream.write(f"Nie można uruchomić procesu: {exc}\n")
+            returncode = 1
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {"tests": 0, "ids": [], "skipped": 0, "failures": [], "errors": [],
+                "unexpected_successes": [], "crash": "Proces nie zapisał wyniku"}
+        returncode = returncode or 1
+    data.update(module=module, returncode=returncode, seconds=time.monotonic() - started,
+                log=str(log))
+    return data
+
+
+def execute(modules, jobs, output, root=ROOT):
+    output.mkdir(parents=True, exist_ok=True)
+    results = []
+    parallel = [m for m in modules if m not in SERIAL_MODULES]
+    serial = [m for m in modules if m in SERIAL_MODULES]
+
+    def collect(result):
+        results.append(result)
+        state = "OK" if result["returncode"] == 0 else "BŁĄD"
+        print(f"[{state}] {result['module']}: {result['tests']} testów, {result['seconds']:.2f} s", flush=True)
+        if result["returncode"]:
+            print(Path(result["log"]).read_text(encoding="utf-8", errors="replace"), flush=True)
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(run_module, module, output, root) for module in parallel]
+        for future in as_completed(futures):
+            collect(future.result())
+    for module in serial:
+        print(f"[OSOBNO] {module}: {SERIAL_MODULES[module]}", flush=True)
+        collect(run_module(module, output, root))
+    return sorted(results, key=lambda r: r["module"])
+
+
+def summarize(results, seconds):
+    failed = [r for r in results if r["returncode"]]
+    print(f"\nRazem: {sum(r['tests'] for r in results)} testów, {len(results)} modułów, "
+          f"pominięte: {sum(r['skipped'] for r in results)}, czas: {seconds:.2f} s")
+    print("Wszystkie nieudane testy:")
+    for result in failed:
+        names = result["failures"] + result["errors"] + result["unexpected_successes"]
+        for name in names or [result.get("crash", f"proces zakończony kodem {result['returncode']}")]:
+            print(f"- {result['module']}: {name}")
+    if not failed:
+        print("brak")
+    return int(bool(failed))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dirs", nargs="+", default=sorted({d for pairs in SUITES.values() for d, _ in pairs}))
+    parser.add_argument("--suite", choices=SUITES)
+    parser.add_argument("--changed", action="store_true")
+    parser.add_argument("--base", default="master")
+    parser.add_argument("--jobs", type=int, default=default_jobs())
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--list-suites", action="store_true")
+    parser.add_argument("--list", action="store_true", help="wypisz moduły bez uruchamiania")
+    parser.add_argument("--worker")
+    parser.add_argument("--worker-report")
+    parser.add_argument("--worker-directory", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--inventory", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.list_suites:
+        print(" ".join(SUITES))
+        return 0
+    if args.worker:
+        return run_worker(args.worker, args.worker_report, root=Path.cwd(), directory=args.worker_directory,
+                          inventory=args.inventory)
+    if args.jobs < 1:
+        parser.error("JOBS musi być dodatnią liczbą całkowitą")
+    entries = [(d, "test*.py") for d in args.dirs]
+    if args.suite:
+        entries = SUITES[args.suite]
+    if args.changed:
+        try:
+            paths = git_paths(args.base)
+        except subprocess.CalledProcessError:
+            parser.error(f"Nie można ustalić diff względem {args.base!r}; podaj BASE=<ref>")
+        selected = changed_suites(paths)
+        print("Dobór zmian: " + ("pełny przebieg (ścieżka poza mapą)" if selected is None
+                                else ", ".join(selected) or "brak zmian"))
+        if selected is not None:
+            entries = [pair for name in selected for pair in SUITES[name]]
+    try:
+        modules = modules_for(entries)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.list:
+        print("\n".join(modules))
+        return 0
+    # Osobny katalog dla każdego przebiegu zapobiega nadpisywaniu logów innej sesji.
+    parent = args.output or ROOT / "build" / "test-results"
+    parent.mkdir(parents=True, exist_ok=True)
+    output = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    print(f"Moduły: {len(modules)}, JOBS={args.jobs}, logi: {output}", flush=True)
+    started = time.monotonic()
+    results = execute(modules, args.jobs, output)
+    elapsed = time.monotonic() - started
+    (output / "summary.json").write_text(json.dumps({"seconds": elapsed, "jobs": args.jobs,
+        "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summarize(results, elapsed)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

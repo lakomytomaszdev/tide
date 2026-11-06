@@ -1,0 +1,190 @@
+"""PT-215: dobór zmian, kompletność discover, błędy wszystkich modułów i izolacja."""
+from collections import Counter
+from contextlib import redirect_stdout
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from tools import test_runner as runner
+from tools.test_suites import SUITES
+
+
+class SelectionTest(unittest.TestCase):
+    def test_component_changes_and_more_specific_cardflow_mapping(self):
+        self.assertEqual(runner.changed_suites(["apps/board/qml/Main.qml", "daemon/tide_daemon/main.py"]),
+                         ["board", "daemon"])
+        self.assertEqual(runner.changed_suites(["daemon/tide_daemon/cardflow/gitops.py",
+                                               "daemon/tests/test_cardflow_new.py"]), ["cardflow"])
+
+    def test_unknown_path_falls_back_to_full_and_empty_diff_is_empty(self):
+        for path in ("Makefile", "mk/daemon.mk", "tools/test_runner.py", "theme/shared.py", "README.md"):
+            self.assertIsNone(runner.changed_suites(["apps/board/qml/Main.qml", path]))
+        self.assertEqual(runner.changed_suites([]), [])
+
+    def test_registry_covers_current_make_directories(self):
+        dirs = []
+        for fragment in (runner.ROOT / "mk").glob("*.mk"):
+            for line in fragment.read_text().splitlines():
+                if line.startswith("TEST_DIRS +="):
+                    dirs.extend(line.split("+=", 1)[1].split())
+        registered = {d for entries in SUITES.values() for d, _ in entries}
+        self.assertEqual(set(dirs), registered)
+        self.assertEqual(len(dirs), len(set(dirs)))
+
+    def test_jobs_reserves_two_cores_and_at_least_one_worker(self):
+        with patch.object(runner.os, "sched_getaffinity", return_value=set(range(16))):
+            self.assertEqual(runner.default_jobs(), 14)
+        with patch.object(runner.os, "sched_getaffinity", return_value={0}):
+            self.assertEqual(runner.default_jobs(), 1)
+
+
+class RunnerContractTest(unittest.TestCase):
+    def setUp(self):
+        (runner.ROOT / "build").mkdir(exist_ok=True)
+        self.tmp = tempfile.TemporaryDirectory(dir=runner.ROOT / "build")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = self.root / "example"
+        self.package.mkdir()
+        (self.package / "__init__.py").write_text("")
+
+    def write(self, name, text):
+        path = self.package / name
+        path.write_text(text, encoding="utf-8")
+        return path.relative_to(self.root).as_posix()
+
+    def test_all_failures_errors_subtests_and_crashes_are_reported_without_stopping(self):
+        self.write("test_first.py", '''import unittest
+class Example(unittest.TestCase):
+    def test_fail(self): self.fail("pierwszy")
+    def test_subtests(self):
+        for n in range(2):
+            with self.subTest(n=n): self.assertEqual(n, 7)
+''')
+        self.write("test_second.py", '''import unittest
+class Example(unittest.TestCase):
+    def test_error(self): raise ValueError("drugi")
+    @unittest.expectedFailure
+    def test_unexpected(self): pass
+''')
+        self.write("test_crash.py", 'import os\nos._exit(0)\n')
+        self.write("test_good.py", '''import unittest
+class Example(unittest.TestCase):
+    def test_ok(self): pass
+''')
+        output = io.StringIO()
+        with redirect_stdout(output):
+            results = runner.execute(runner.modules_for([("example", "test*.py")], self.root),
+                                     2, self.root / "logs", self.root)
+            status = runner.summarize(results, 0)
+        self.assertEqual(status, 1)
+        self.assertEqual(len(results), 4)
+        report = output.getvalue().split("Wszystkie nieudane testy:", 1)[1]
+        for name in ("example/test_first.py", "test_fail", "(n=0)", "(n=1)",
+                     "example/test_second.py", "test_error", "test_unexpected", "example/test_crash.py"):
+            self.assertIn(name, report)
+        self.assertNotIn("example/test_good.py", report)
+        self.assertEqual(sum(r["tests"] for r in results), 5)
+
+    def test_separate_processes_cannot_leak_environment_to_next_module(self):
+        self.write("test_a.py", '''import os, unittest
+class Example(unittest.TestCase):
+    def test_mutate(self): os.environ["TIDE_RUNNER_LEAK"] = "yes"
+''')
+        self.write("test_b.py", '''import os, unittest
+class Example(unittest.TestCase):
+    def test_isolated(self): self.assertNotIn("TIDE_RUNNER_LEAK", os.environ)
+''')
+        with redirect_stdout(io.StringIO()):
+            results = runner.execute(runner.modules_for([("example", "test*.py")], self.root),
+                                     1, self.root / "logs", self.root)
+        self.assertTrue(all(r["returncode"] == 0 for r in results))
+
+    def test_serial_modules_run_after_parallel_work_and_one_at_a_time(self):
+        modules = ["a", "serial1", "b", "serial2"]
+        calls = []
+        def run(module, *args):
+            calls.append(module)
+            return dict(module=module, returncode=0, tests=1, seconds=0)
+        with patch.object(runner, "SERIAL_MODULES", {"serial1": "wspólny zasób", "serial2": "ten sam zasób"}), \
+                patch.object(runner, "run_module", side_effect=run), redirect_stdout(io.StringIO()):
+            runner.execute(modules, 2, self.root / "logs", self.root)
+        self.assertEqual(set(calls[:2]), {"a", "b"})
+        self.assertEqual(calls[2:], ["serial1", "serial2"])
+
+    def inventory(self, module, directory=False):
+        report = self.root / "inventory.json"
+        command = [sys.executable, str(runner.ROOT / "tools/test_runner.py"), "--worker", module,
+                   "--worker-report", str(report), "--inventory"]
+        if directory:
+            command.append("--worker-directory")
+        proc = subprocess.run(command, cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(report.read_text())
+
+    def test_module_split_keeps_discover_multiplicity_including_imported_tests(self):
+        self.write("test_a.py", '''import unittest
+class Example(unittest.TestCase):
+    def test_ok(self): pass
+''')
+        self.write("test_b.py", 'from .test_a import Example\n')
+        modules = runner.modules_for([("example", "test*.py"), ("example", "test_a.py")], self.root)
+        old = self.inventory("example", directory=True)
+        split = [test for module in modules for test in self.inventory(module)]
+        self.assertEqual(Counter(old), Counter(split))
+        self.assertEqual(len(split), 2)
+
+    def test_git_diff_includes_branch_staged_working_untracked_deleted_and_both_sides_of_rename(self):
+        def git(*args):
+            return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.DEVNULL)
+        git("init", "-b", "base")
+        git("config", "user.name", "Test")
+        git("config", "user.email", "test@example.invalid")
+        for name in ("branch", "staged", "working", "deleted", "renamed"):
+            (self.root / name).write_text("old\n")
+        git("add", ".")
+        git("commit", "-qm", "Initial")
+        git("checkout", "-b", "ticket")
+        (self.root / "branch").write_text("new\n")
+        git("commit", "-qam", "Branch change")
+        (self.root / "staged").write_text("new\n")
+        git("add", "staged")
+        (self.root / "working").write_text("new\n")
+        (self.root / "deleted").unlink()
+        (self.root / "renamed").rename(self.root / "destination")
+        (self.root / "untracked").write_text("new\n")
+        self.assertEqual(runner.git_paths("base", self.root),
+                         ["branch", "deleted", "destination", "renamed", "staged", "untracked", "working"])
+
+    def test_package_load_tests_is_rejected_instead_of_silently_losing_tests(self):
+        (self.package / "__init__.py").write_text("def load_tests(loader, tests, pattern): return tests\n")
+        with self.assertRaisesRegex(ValueError, "load_tests"):
+            runner.modules_for([("example", "test*.py")], self.root)
+
+    def test_make_public_targets_use_runner_selection_and_forward_jobs_and_base(self):
+        for target, expected in (("test", "--dirs"), ("test-cardflow", "--suite cardflow"),
+                                 ("test-daemon", "--suite daemon"), ("test-board", "--suite board"),
+                                 ("test-changed", '--changed --base "feature/base"')):
+            command = subprocess.check_output(["make", "-n", target, "JOBS=3", "BASE=feature/base"],
+                                              cwd=runner.ROOT, text=True)
+            self.assertIn("tools/test_runner.py", command)
+            self.assertIn(expected, command)
+            self.assertIn('--jobs "3"', command)
+
+    def test_cli_rejects_nonpositive_jobs_and_unknown_base_before_running_tests(self):
+        script = str(runner.ROOT / "tools/test_runner.py")
+        for args, expected in ((["--jobs", "0"], "JOBS"),
+                               (["--changed", "--base", "refs/heads/nonexistent-pt215"], "BASE")):
+            proc = subprocess.run([sys.executable, script, *args], cwd=self.root,
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn(expected, proc.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
