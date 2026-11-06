@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 SERVICE = "org.tide.Daemon"
@@ -34,6 +35,11 @@ def parser():
     root.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     commands = root.add_subparsers(dest="command", required=True, parser_class=Parser)
     info = commands.add_parser("info", help="wersja i możliwości API")
+    backlog = commands.add_parser("backlog", help="przyjmij przeczytaną wersję sprawy do Backlogu")
+    backlog.add_argument("id", help="S-N")
+    backlog.add_argument("--expected-version", required=True, type=int)
+    backlog.add_argument("--request-id", help="klucz identycznych ponowień; domyślnie nowy UUID")
+    backlog.set_defaults(action="accept")
     next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
     next_id.add_argument("repo")
     next_id.add_argument("--prefix", default="")
@@ -84,7 +90,7 @@ def parser():
     attachment.add_argument("--attachment", required=True)
     attachment.add_argument("--output", required=True)
     attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
-    for command in (info, issue, create, listing, show, opening, update, attach, detach, attachment, *transitions):
+    for command in (info, backlog, issue, create, listing, show, opening, update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
 
@@ -250,7 +256,10 @@ def main(argv=None):
             capability = "show" if args.action == "open" else args.action
             if f"issue.{capability}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
-            if args.action == "open":
+            if args.action == "accept":
+                result = api.call("AcceptIssue", args.id, json.dumps({"expectedVersion": args.expected_version,
+                    "destination": "backlog", "requestId": args.request_id or str(uuid.uuid4())}))
+            elif args.action == "open":
                 if not re.fullmatch(r"S-[1-9][0-9]{0,8}", args.id):
                     raise CliError("bad-request", "Podaj numer sprawy S-N.")
                 result = api.call("Show", args.id)
@@ -305,6 +314,8 @@ def main(argv=None):
     elif "issue" in result:
         issue = result["issue"]
         print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
+        if result.get("card"):
+            print(f"{result['card']}: przyjęto wersję {result['acceptedVersion']} do Backlogu")
         if args.action == "show":
             print(issue["report"], end="")
     elif "issues" in result:

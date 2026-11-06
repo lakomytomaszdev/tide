@@ -73,7 +73,7 @@ def live_script(callback_delay=1):
     """Transport scenariusza z odpowiedziami; produkcyjna logika zapisu pozostaje ta sama."""
     backend._preview = False
     backend._available = True
-    backend._capabilities = {"issue." + a for a in ("update", "submit", "reject", "reopen", "attach", "detach", "attachment")}
+    backend._capabilities = {"issue." + a for a in ("update", "submit", "reject", "reopen", "attach", "detach", "attachment", "accept")}
     calls, replies = [], []
     def call(method, args, callback, *unused):
         calls.append([method, *args])

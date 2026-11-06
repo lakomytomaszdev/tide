@@ -18,6 +18,7 @@ import "board.js" as Logic
 
 Item {
     id: view
+    signal navigateRequested(string viewId, string item)
 
     property var backend: null
     property bool active: true
@@ -83,6 +84,7 @@ Item {
     onSnapshotChanged: if (pendingItem !== "" && snapshot && (snapshot.cards || []).length > 0) Qt.callLater(() => showItem(pendingItem))
 
     BoardPage {
+        onNavigateRequested: (viewId, item) => view.navigateRequested(viewId, item)
         id: page
         anchors.fill: parent
         snapshot: view.snapshot
