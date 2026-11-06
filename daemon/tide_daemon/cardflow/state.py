@@ -29,6 +29,7 @@ from datetime import datetime
 import re
 
 from .baseproposal import pending
+from . import consent
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -69,6 +70,8 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
+    outside_launched: set = field(default_factory=set)  # także zakończone, przed wznowieniem kroku
+    ticket_consents: dict = field(default_factory=dict)  # ticket → ostatnie nadanie/cofnięcie w zleceniu
     superseded: set = field(default_factory=set)      # kroki sprzed ostatniego card.started — nie czekają na decyzję
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
     limits: dict = field(default_factory=dict)         # krok → odczyt limitu w chwili wyczerpania
@@ -229,6 +232,7 @@ def fold(events: list[dict]) -> FlowState:
             if st.base_request.get("decision") == e.get("decision"):
                 st.base_request = {}
         if kind == "card.started":
+            st.ticket_consents = {}
             st.base = _base(e)
             st.initial_base = dict(st.base)
             version = e.get("baseVersion", 0)
@@ -268,6 +272,7 @@ def fold(events: list[dict]) -> FlowState:
                     and previous == st.base_version and version == previous + 1
                     and candidate["status"] == "known" and _valid_generation(st, e, candidate)):
                 st.base, st.base_version, st.base_change = candidate, version, e
+                st.ticket_consents = {}
                 st.base_validation_required = e.get("validationRequired") is True
                 st.base_generation_wait = {}
                 if "generation" in e:
@@ -393,10 +398,17 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.decision":
             if e.get("step") not in st.superseded:
                 st.step_decisions[e.get("step")] = e
+        elif kind in (consent.GRANTED, consent.REVOKED):
+            consent.apply(st, e)
+        elif kind == "outside.decision-invalidated":
+            current = st.step_decisions.get(e.get("step")) or {}
+            if current.get("seq") == e.get("decisionSeq"):
+                st.step_decisions.pop(e.get("step"), None)
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
         elif kind == "outside.started":
+            st.outside_launched.add(e.get("step"))
             st.outside_started[e.get("step")] = e
         elif kind == "outside.finished":
             st.outside_started.pop(e.get("step"), None)
@@ -422,6 +434,9 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.approval_requested = None
+            if e.get("appendRevision"):
+                st.plan_revision = {**e["appendRevision"], "seq": e["seq"]}
+                st.plan_reviewer = st.plan_revision["reviewer"]
         elif kind == "plan.reviewer-selected":
             st.plan_reviewer = e.get("executor") or ""
         elif kind == 'plan.approval_requested':
@@ -430,6 +445,11 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
             st.closed = None
         elif kind == "plan.revision-discarded":
+            if (st.plan_revision or {}).get("kind") == "append":
+                st.plan_proposed = st.plan_revision["previousProposal"]
+                st.plan_reviewed = st.plan_revision["previousReview"]
+                st.plan_reviewer = ""
+                st.plan_review_wait = None
             st.plan_revision = None
             st.plan_checked = None
         elif kind == "plan.revision-failed":
@@ -1219,8 +1239,10 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                                else phase, "why": "" if state in ("gotowe", "odrzucone") else why})
     out["tickets"].sort(key=lambda ticket: ticket["wave"])
     out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
+    from . import planappend
     out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
-                           "planner": proposal.get("planner") or "",
+                           "fingerprint": planappend.fingerprint(st), "canAppend": planappend.available(st),
+                           "planner": (proposal.get("reviewAuthor") if revision_pending else "") or proposal.get("planner") or "",
                            "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
                                                if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
                            "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))

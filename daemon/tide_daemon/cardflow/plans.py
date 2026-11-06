@@ -153,9 +153,9 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                              e.model.lower() != author.model.lower()), None)
         if reviewer is None:
             errors.append(f"{ident}: nieznany albo niedostępny recenzent „{row.reviewer}”")
-        elif author is not None and (author.model.lower() == reviewer.model.lower() or
+        elif author is not None and (not independent_reviewer(author, reviewer) or
                                      (author.provider == "local") != (reviewer.provider == "local")):
-            errors.append(f"{ident}: recenzent musi mieć inny model i zachować pracę lokalną")
+            errors.append(f"{ident}: recenzent musi mieć inny model albo siłę myślenia i zachować pracę lokalną")
         card_name = (work.group(1) if work else ident) + ".md"
         card_path = os.path.realpath(os.path.join(folder, card_name))
         if not _inside(card_path, folder):

@@ -148,6 +148,28 @@ class CardOpenTest(unittest.TestCase):
                                        "result['page'] = js('cardOpen')")
         self.assertEqual((out["cardOpen"], out["page"]), ("full", "full"))
 
+    def test_ticket_consent_button_reaches_board_from_sessions(self):
+        with open(self.working, encoding="utf-8") as fh:
+            snapshot = json.load(fh)["boardSnapshot"]
+        flow = next(c for c in snapshot["cards"] if c["id"] == CARD)["derived"]["flow"]
+        flow["ticketConsents"] = [{"ticket": "PT-2", "active": True, "canRevoke": True,
+                                   "orderSeq": 7, "baseVersion": 1}]
+        data = self.data_file("ticket-consent", snapshot)
+        out = self.probe(data, """
+click_entry(0)
+pos = json.loads(js("(function walk(it) { for (const c of it.children) { "
+    "if (c.objectName === 'revokeTicketConsent') { const p = c.mapToItem(null, c.width/2, c.height/2); "
+    "return JSON.stringify([Math.round(p.x), Math.round(p.y)]) } "
+    "const found = walk(c); if (found) return found } return null })(cardFullView)"))
+QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(*pos))
+QTest.qWait(200)
+result['calls'] = calls()
+""")
+        sent = [c for c in out["calls"] if c[0] == "RevokeTicketConsent"]
+        self.assertEqual(len(sent), 1, out)
+        self.assertEqual(sent[0][1], CARD)
+        self.assertEqual(json.loads(sent[0][2]), {"ticket": "PT-2", "orderSeq": 7, "baseVersion": 1})
+
     def test_base_refusal_opens_shared_preview_and_escape_keeps_question(self):
         from apps.board.tests.test_base_change import PREVIEW
         response = json.dumps({"ok": True, "waiting": True, "changed": False, "preview": PREVIEW})

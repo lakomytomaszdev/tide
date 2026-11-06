@@ -176,6 +176,10 @@ class CardFlowMonitor(QObject):
         self._json_action("PreviewStepFault", request, lambda data: self.engine.preview_step_fault(card_id, data),
                           reply)
 
+    def revoke_ticket_consent(self, card_id: str, request: str, reply) -> None:
+        self._json_action("RevokeTicketConsent", request,
+                          lambda data: self.engine.revoke_ticket_consent(card_id, data), reply)
+
     def report_step_fault(self, card_id: str, request: str, reply) -> None:
         """ReportStepFault: karta z błędem w Backlogu plasma-tide (albo nowe wystąpienie) i ponowienie kroku."""
         self._json_action("ReportStepFault", request, lambda data: self.engine.report_step_fault(card_id, data),
