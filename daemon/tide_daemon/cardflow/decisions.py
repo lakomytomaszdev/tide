@@ -151,7 +151,11 @@ def _caretaker(st, event):
                    ("dismiss", "Zamknij", "Tide zamknie problem bez ponawiania etapu."))]
     made = {"id": f"caretaker:{problem}:{event['seq']}", "kind": "caretaker", "step": "", "stepKind": "",
             "ticket": event.get("ticket") or "", "executor": "", "happened": happened or GENERIC["caretaker"][0],
-            "why": GENERIC["caretaker"][1], "options": options, "freeText": False, "reply": None,
+            "why": GENERIC["caretaker"][1], "options": options, "freeText": True,
+            "reply": {"method": "ResolveCardCaretaker", "preview": PREVIEW_FAULT,
+                      "params": {"choice": "report", "problem": problem}, "field": "description",
+                      "label": "Zgłoś błąd Tide", "confirmLabel": "Zgłoś błąd",
+                      "effect": "Zapisze zgłoszenie w Backlogu plasma-tide i zamknie problem bez ponawiania etapu."},
             "fault": "", "technical": {"problem": problem, "error": event.get("error") or ""}}
     made = caretaker.annotate_escalation(st, made, event)
     if not made["caretaker"]["recommendation"]:

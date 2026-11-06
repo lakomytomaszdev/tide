@@ -18,6 +18,7 @@ kroku po zamaskowaniu sekretów. Podpis błędu (rodzaj kroku + `fault` + przycz
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -476,16 +477,24 @@ def _short(value, env: dict | None = None) -> str:
 def card_title(step_kind: str, fault: str, cause: str, reason_labels: dict | None = None,
                env: dict | None = None) -> str:
     what = mask(cause_label(cause, reason_labels), env) or "błąd"
-    if fault == "tide":
+    if step_kind == "flow" and fault == "tide":
+        title = f"Błąd Tide w przepływie: {what}"
+    elif fault == "tide":
         title = f"Błąd Tide w kroku {kind_label(step_kind)}: {what}"
     else:
         title = f"Błąd kroku {kind_label(step_kind)} ({FAULT_LABELS.get(fault, fault)}): {what}"
     return title if len(title) <= 200 else title[:199] + "…"
 
 
+def occurrence_marker(ident: str) -> str:
+    """Trwały znacznik wystąpienia bez ujawniania identyfikatora źródłowego."""
+    return f"<!-- tide-fault-occurrence: {hashlib.sha256(ident.encode('utf-8')).hexdigest()} -->" if ident else ""
+
+
 def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, executor: str, attempt: int,
                result: str, reason: str, fault: str, cause: str, description: str, log_excerpt: str,
-               reason_labels: dict | None = None, env: dict | None = None, with_excerpt: bool = True) -> str:
+               reason_labels: dict | None = None, env: dict | None = None, with_excerpt: bool = True,
+               occurrence_id: str = "") -> str:
     """Jedno wystąpienie błędu: kiedy, gdzie, czyja wina, opis użytkownika i wycinek dziennika kroku."""
     where = " ".join(part for part in (kind_label(step_kind), ticket) if part)
     head = f"### {when} · {card} · {where}" + (f" ({executor})" if executor else "")
@@ -501,13 +510,17 @@ def occurrence(*, when: str, card: str, step: str, step_kind: str, ticket: str, 
     if with_excerpt:
         lines += ["", "Wycinek dziennika kroku (sekrety zamaskowane):", "", "```text",
                   log_excerpt or "(dziennik kroku jest pusty albo niedostępny)", "```"]
+    if occurrence_id:
+        lines += ["", occurrence_marker(occurrence_id)]
     return "\n".join(lines) + "\n"
 
 
-def card_body(*, card: str, sig: str, happened: str, first: str, env: dict | None = None) -> str:
+def card_body(*, card: str, sig: str, happened: str, first: str, env: dict | None = None,
+              caretaker: bool = False) -> str:
     happened = mask(happened, env)   # „co się stało” przy `unknown` cytuje powód wyniku pisany przez agenta
     return "\n".join([
-        f"Błąd zgłoszony z karty {card} przyciskiem „Opisz problem i ponów”.", "",
+        f"Błąd zgłoszony z karty {card} " + ("przez opiekuna." if caretaker else
+                                           "przyciskiem „Opisz problem i ponów”."), "",
         f"{SIGNATURE_PREFIX}`{sig}`", "",
         "## Co się stało", "", happened, "",
         "## Wystąpienia", "", first,

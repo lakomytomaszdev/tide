@@ -59,6 +59,29 @@ class DecisionDbusTest(FlowCase):
         self.assertEqual(reply["error"], "bad-request")
         self.assertEqual(self.of(card_id, "step.decision"), [])
 
+    def test_caretaker_report_preview_validation_and_no_retry_on_private_bus(self):
+        card_id = self.seed_caretaker()
+        project_repo = os.path.join(self.base, "ws", "plasma-tide")
+        from .gitrepos import git
+        os.makedirs(project_repo)
+        git(project_repo, "init", "-q")
+        git(project_repo, "commit", "-q", "--allow-empty", "-m", "init")
+        self.assertTrue(self.call("UpsertProject", json.dumps({"repo": project_repo}))["ok"])
+        [decision] = self.shown(card_id)["derived"]["flow"]["decisions"]
+        reply = decision["reply"]
+        self.assertEqual(reply["label"], "Zgłoś błąd Tide")
+        bad = self.call(reply["method"], card_id, json.dumps({**reply["params"], "description": " "}))
+        self.assertEqual(bad["error"], "bad-request")
+        request = json.dumps({**reply["params"], "description": "Etap nadal nie działa"})
+        preview = self.call(reply["preview"], card_id, request)
+        self.assertTrue(preview["ok"], preview)
+        self.assertEqual(preview["signature"], "flow/tide/advance")
+        self.assertEqual(self.of(card_id, "caretaker.decision"), [])
+        reported = self.call(reply["method"], card_id, request)
+        self.assertTrue(reported["ok"], reported)
+        self.assertTrue(reported["reported"].startswith("K-"))
+        self.assertEqual(self.of(card_id, "stage.retry"), [])
+
     def test_question_decision_is_answered_through_resolve_card_step(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
