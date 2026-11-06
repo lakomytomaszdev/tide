@@ -2049,8 +2049,15 @@ poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.start
 następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
 Gdy nieprzejęte zadanie Konsoli zostanie atomowo anulowane, `step.console_closed.cancelledNoteIds`
 cofa potwierdzenie wyłącznie uwag dołączonych do tej próby (`consoleNoteIds` w stanie kroku).
-Znacznik zadania `.cancelled` pozwala utrwalić to również po restarcie pomiędzy anulowaniem
-a zapisem zdarzenia. Nieudane anulowanie lub samo zamknięcie Konsoli nie cofa doręczenia.
+Próba Konsoli ma pusty plik rozstrzygnięcia w trwałym katalogu wejścia kroku, pod nazwą
+złożoną z `processFile` i unikalnego `consoleUnit`. Launcher i anulowanie zmieniają atomowo
+jego nazwę odpowiednio na `.claimed` lub `.cancelled`; wygrywa tylko jedna operacja.
+Plik i zmiana katalogu są synchronizowane na dysk przed potwierdzeniem. Trwałe `.cancelled`
+pozwala odtworzyć cofnięcie po awarii przed zapisem zdarzenia także po utracie runtime lub
+sprzątnięciu go przez `TaskFiles.sweep()`. Plik runtime nadal służy do przekazania polecenia;
+spóźniony launcher nie uruchomi zadania po trwałym anulowaniu. Starsze zadania bez tego
+śladu zachowują obsługę znacznika runtime `.cancelled`. Nieudane anulowanie lub samo
+zamknięcie Konsoli nie cofa doręczenia.
 Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
 nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
 

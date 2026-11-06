@@ -86,13 +86,16 @@ def prepare(st, parent, prompt):
 def close_console(journal, card, name, *, cancelled=False):
     """Utrwala także cofnięcie doręczenia po atomowym anulowaniu zadania Konsoli.
 
-    Znacznik .cancelled odtwarza dowód po awarii między zmianą nazwy zadania a
-    zapisem zdarzenia. Brak znacznika/przejęcie zadania nie uprawnia do cofnięcia.
+    Trwały ślad rozstrzygnięcia próby odtwarza dowód także po utracie runtime.
+    Znacznik runtime pozostaje obsługiwany dla starszych zadań.
     """
     from .state import fold
+    from ..tasks.launch import task_state_file
     step = fold(journal.read(card)).steps[name]
     task = step.get("taskFile") or ""
-    cancelled = cancelled or bool(task and os.path.exists(task + ".cancelled"))
+    durable = task_state_file(step)
+    cancelled = cancelled or bool(durable and os.path.exists(durable + ".cancelled")) or \
+        bool(task and os.path.exists(task + ".cancelled"))
     journal.append(card, "step.console_closed", step=name,
                    cancelledNoteIds=step.get("consoleNoteIds", []) if cancelled else [])
 

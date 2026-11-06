@@ -359,6 +359,43 @@ class EnterStepTest(unittest.TestCase):
         self.engine.tick()
         self._assert_note_pending_and_retry(ident)
 
+    def test_recovery_after_cancel_and_runtime_loss_delivers_note_in_real_retry(self):
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(self.engine.task_files.cancel(current["taskFile"]))
+        # Awaria przed step.console_closed, a potem restart maszyny lub sweep().
+        os.unlink(current["taskFile"] + ".cancelled")
+        self.engine = FlowEngine(self.engine.store,
+            journal=Journal(self.engine.store.root, mirror=os.path.join(self.root, "mirror")),
+            terminal=self.terminal, task_files=TaskFiles(self.engine.task_files.folder),
+            clock=lambda: current["enteredAt"] + 31)
+        self.engine.tick()
+        self._assert_note_pending_and_retry(ident)
+
+    def test_recovery_after_durable_cancel_before_runtime_rename_delivers_note(self):
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        rename = os.rename
+
+        def crash(source, target):
+            if source == current["taskFile"]:
+                raise RuntimeError("awaria po trwałym anulowaniu")
+            return rename(source, target)
+
+        with mock.patch.object(os, "rename", side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.engine.task_files.cancel(current["taskFile"])
+        self.assertTrue(os.path.isfile(current["taskFile"]))
+        self.assertIsNone(launch.claim(current["taskFile"]), "spóźniona Konsola nie uruchomi zadania")
+        self.engine = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                                task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
+        self.engine.tick()
+        self._assert_note_pending_and_retry(ident)
+
     def test_cancelled_task_does_not_finish_stale_poll_before_transfer_recovery(self):
         from tide_daemon.cardflow import stepnotes
         self._note()
