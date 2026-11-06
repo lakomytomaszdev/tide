@@ -3798,9 +3798,8 @@ class FlowEngine(PlanEditing):
         if os.path.exists(step.get("processFile") or ""):
             return False  # nieczytelny zapis procesu nie dowodzi jego końca
         task_file = step.get("taskFile") or ""
-        return bool(task_file and (os.path.exists(task_file + ".cancelled") or
-                    (not os.path.exists(task_file) and
-                     self.clock() - float(step.get("enteredAt") or self.clock()) > 30)))
+        return bool(task_file and not os.path.exists(task_file) and
+                    self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
 
     def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
         name = step.get("step") or ""

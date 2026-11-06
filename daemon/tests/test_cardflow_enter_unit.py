@@ -355,9 +355,27 @@ class EnterStepTest(unittest.TestCase):
         current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
         self.assertTrue(self.engine.task_files.cancel(current["taskFile"]))
         self.engine = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
-                                task_files=self.engine.task_files)
+                                task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
         self.engine.tick()
         self._assert_note_pending_and_retry(ident)
+
+    def test_cancelled_task_does_not_finish_stale_poll_before_transfer_recovery(self):
+        from tide_daemon.cardflow import stepnotes
+        self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        stale = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.engine.clock = lambda: stale["enteredAt"] + 1
+        # Jak w testach awarii przekazania: migawka odpytywania powstała przed
+        # zapisaniem decyzji i anulowaniem pliku, restart ma dopiero dokończyć WIP.
+        self.engine.journal.append("K-1", "step.transfer_requested", step=self.step_id,
+                                   ticket="PT-1", executor="Codex mocny")
+        self.assertTrue(self.engine.task_files.cancel(stale["taskFile"]))
+        stepnotes.close_console(self.engine.journal, "K-1", self.step_id, cancelled=True)
+        self.engine._poll_interactive("K-1", stale)
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertNotIn(self.step_id, folded.finished)
+        self.assertEqual(stepnotes.view(folded)[0]["status"], "pending")
 
     def test_full_planning_handoff_cancel_keeps_note_for_real_resume(self):
         ident = self._note()
