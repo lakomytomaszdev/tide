@@ -1,15 +1,17 @@
 """PT-261: kompletność inwentaryzacji na plikach Tablicy, bez prawdziwych procesów."""
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tide_daemon.box import lifecycle, trialgate as gate
+from tide_daemon.box import lifecycle, state as bs, trialgate as gate
+from tide_daemon.box.builder import Builder
 from tide_daemon.cardflow import boxstep, trialhold
-from tide_daemon.cardflow.engine import FlowEngine
+from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
 from tide_daemon.cardflow.state import fold
 from .test_cardflow_trial_gate import HostStore
@@ -167,3 +169,85 @@ class InventoryTest(unittest.TestCase):
     def test_inventory_refolds_complete_history_instead_of_stale_caller_state(self):
         self.journal.append("K-38", "step.started", step="K-38-PT-176-1", ticket="PT-176")
         self.assertFalse(trialhold.inventory(self.engine, "K-38", fold([])))
+
+    def test_public_decision_denies_incomplete_card_registry(self):
+        # Nawet bez rozpoznanych prób niepełny rejestr nie uprawnia do startu.
+        original = os.listdir
+        roots = {self.journal.mirror, str(self.board / "flow")}
+        for index, unreadable in enumerate((roots, {self.journal.mirror}, {str(self.board / "flow")})):
+            with self.subTest(unreadable=unreadable):
+                _, procedure = self.procedure()
+                binding = procedure.snapshot()
+                binding = replace(binding, target=binding.target + str(index), attempt=str(index))
+                procedure.snapshot = lambda binding=binding: binding
+                self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+                name = self.engine.register_trial_diagnostic()["step"]
+
+                def denied(path):
+                    if os.fspath(path) in unreadable:
+                        raise PermissionError("odmowa listowania rejestru")
+                    return original(path)
+
+                with mock.patch.object(os, "listdir", side_effect=denied), self.assertRaises(FlowError):
+                    self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+                procedure.start.assert_not_called()
+
+    def test_public_decision_always_checks_known_k38(self):
+        self.journal.append("K-38", "step.started", step="K-38-PT-176-1", ticket="PT-176")
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        with mock.patch.object(self.journal, "cards_complete", return_value=[]), self.assertRaises(FlowError):
+            self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+        procedure.start.assert_not_called()
+
+    def test_strict_registry_includes_card_without_journal_and_rejects_symlink(self):
+        card = self.board / "flow/K-99"
+        card.mkdir()
+        self.assertIn("K-99", self.journal.cards_complete())
+        with self.assertRaises(FileNotFoundError):
+            self.journal.read_complete("K-99")
+        card.rmdir()
+        card.symlink_to(self.board / "flow/K-38", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.journal.cards_complete()
+
+    def test_corrupt_history_preserves_boxes_and_packs_across_restart(self):
+        self.project()
+        self.journal.append("K-38", "card.started", project="proj")
+        self.journal.append("K-38", "card.closed")
+        mirror = Path(self.journal.mirror_path("K-38"))
+        corrupt = mirror.read_bytes() + b'{"type":"step.started","ticket":"PT-176",BROKEN}\n'
+        mirror.write_bytes(corrupt)
+        bs.record("proj", "box.ready", "proj", clock=lambda: 0, duration=0)
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted):
+                self.assertFalse(self.inventory())
+                self.assertTrue(trialhold.public_inventory(self.engine))
+                incus = mock.Mock()
+                incus.instance.return_value = {"status": "Running"}
+                incus.list.return_value = []
+                settings = SimpleNamespace(enabled=True, idle_hours=0)
+                builder = Builder(settings, incus=incus, policy=object(), clock=lambda: 100, wall=lambda: 100)
+                builder.steps_source = lambda slug, name: lifecycle.active_steps(builder, slug, name, self.engine)
+                with mock.patch.object(boxstep, "settings_of", return_value=settings), \
+                        mock.patch.object(boxstep, "builder_of", return_value=builder), \
+                        mock.patch("tide_daemon.box.packs.cleanup") as cleanup:
+                    lifecycle.tick(self.engine)
+                incus.stop.assert_not_called()
+                incus.delete.assert_not_called()
+                cleanup.assert_not_called()
+                # Druga kontrola przy operacji również musi odmówić, niezależnie
+                # od wcześniejszego skanu ticka i od rozpoznania projektu.
+                self.assertTrue(lifecycle.active_steps(builder, "proj", "proj", self.engine))
+                self.assertEqual(mirror.read_bytes(), corrupt)
+
+    def test_registry_error_preserves_all_projects_before_lifecycle(self):
+        self.project()
+        with mock.patch.object(boxstep, "settings_of", return_value=SimpleNamespace(enabled=True)), \
+                mock.patch.object(boxstep, "builder_of") as builder, \
+                mock.patch.object(self.journal, "cards_complete", side_effect=PermissionError("rejestr")):
+            lifecycle.tick(self.engine)
+        builder.assert_not_called()

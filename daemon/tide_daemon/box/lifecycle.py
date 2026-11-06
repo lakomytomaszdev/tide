@@ -34,11 +34,14 @@ def active_steps(builder, slug, name, engine=None):
     from .runner import BoxRunner
 
     journal = engine.journal if engine is not None else Journal(bp.board_dir())
+    try:
+        states = [fold(journal.read_complete(card)) for card in journal.cards_complete()]
+    except (OSError, ValueError, TypeError, KeyError):
+        return ["niepełna historia kart"]
     busy = set(bs.running_steps(slug, name))
     instance = builder.incus.instance(name)
     running = instance is not None and str(instance.get("status", "")).lower() == "running"
-    for card in journal.cards():
-        st = fold(journal.read(card))
+    for st in states:
         for step in st.steps.values():
             if step.get("boxSlug") != slug or step.get("box") != name:
                 continue
@@ -159,7 +162,14 @@ def tick(engine):
     if not settings.enabled:
         return
     from ..cardflow import trialhold
-    if engine.journal.has("K-38") and not trialhold.public_inventory(engine):
+    try:
+        states = {card: fold(engine.journal.read_complete(card))
+                  for card in engine.journal.cards_complete()}
+    except (OSError, ValueError, TypeError, KeyError):
+        # Nie ufamy nawet projektowi z tolerancyjnie odczytanego fragmentu.
+        # Bez pełnej historii nie da się bezpiecznie zawęzić zakresu ochrony.
+        return
+    if "K-38" in states and not trialhold.public_inventory(engine):
         return  # nieznany proces dawnego CLI: bez automatycznego stop/reset/cleanup
     projects = os.path.join(bp.board_dir(), "projects")
     try:
@@ -168,8 +178,7 @@ def tick(engine):
         return
     closed = {}
     frozen = set()
-    for card in engine.journal.cards():
-        st = fold(engine.journal.read(card))
+    for card, st in states.items():
         from ..cardflow.trialhold import held
         if st.started and any(held(s) for s in st.steps.values()):
             frozen.add(st.started.get("project"))

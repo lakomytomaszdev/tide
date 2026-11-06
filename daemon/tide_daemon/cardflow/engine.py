@@ -335,7 +335,11 @@ class FlowEngine(PlanEditing):
         # Dziennik konsumujemy PRZED startem. Restart lub błąd wymaga nowej rejestracji i decyzji.
         self.journal.append(card, "k38.diagnostic-consumed", step=name)
         def safe():
-            states = [trialhold.inventory(self, c, fold(self.journal.read(c))) for c in self.journal.cards()]
+            try:
+                cards = set(self.journal.cards_complete()) | {"K-38"}
+            except (OSError, ValueError):
+                return False
+            states = [trialhold.inventory(self, c, fold([])) for c in sorted(cards)]
             return all(states)
         try:
             self.trial_gate.start_registered(name, consent=True, inventory=safe, bootstrap=True)

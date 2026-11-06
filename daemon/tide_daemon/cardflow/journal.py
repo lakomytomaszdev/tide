@@ -74,6 +74,33 @@ class Journal:
     def has(self, card: str) -> bool:
         return os.path.isfile(self.mirror_path(card)) or os.path.isfile(self.path(card))
 
+    def cards_complete(self) -> list[str]:
+        """Rejestr dla kontroli bezpieczeństwa; błąd listowania propaguje unknown.
+
+        Brak katalogu jest prawidłowy przed pierwszym zapisem. Istniejący katalog
+        musi być czytelny i nie może być dowiązaniem. Katalog karty bez dziennika
+        też trafia do wyniku, aby read_complete odmówił zamiast pominąć historię.
+        """
+        with self.lock:
+            found = set()
+            for root, mirror in ((self.mirror, True), (os.path.join(self.root, FLOW_DIR), False)):
+                try:
+                    mode = os.lstat(root).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISDIR(mode):
+                    raise ValueError("rejestr kart nie jest katalogiem")
+                for name in os.listdir(root):
+                    card = name[:-6] if mirror and name.endswith(".jsonl") else name
+                    if mirror and not name.endswith(".jsonl"):
+                        continue
+                    if not CARD_DIR_RE.fullmatch(card):
+                        continue
+                    if not mirror and not stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode):
+                        raise ValueError("rejestr karty nie jest katalogiem")
+                    found.add(card)
+            return sorted(found)
+
     def read(self, card: str) -> list[dict]:
         """Zdarzenia karty z kopii usługi (albo z tablicy, gdy kopii nie ma). Pamięć po rozmiarze i mtime."""
         source = self.mirror_path(card) if os.path.isfile(self.mirror_path(card)) else self.path(card)
