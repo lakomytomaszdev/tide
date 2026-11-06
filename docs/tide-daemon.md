@@ -3095,11 +3095,18 @@ się z migawką. Runner uwzględnia też założenie pustego `config.worktree` n
 Start kolejnego kroku odmawia utrwalenia obcych zmian aktywnego sąsiada jako nowej kopii.
 
 Silnik sprawdza strażnika przy każdym zakończeniu kroku w pudełku, również po zatrzymaniu,
-timeout i błędzie programu. Najpierw odtwarza konfigurację i pliki, następnie przywraca
-obce refy (`git update-ref --no-deref <ref> <nowa> <oczekiwana-stara>`; nowe refy usuwa
-z oczekiwaną wartością). Zmiana po porównaniu powoduje błąd CAS zamiast nadpisania
-nowszej wartości. Przywracanie celów refów symbolicznych używa standardowego `<ref>.lock`
-i ponownego sprawdzenia OID oraz celu pod blokadą. Kontrola sprawdza też `HEAD` worktree
+timeout i błędzie programu. Najpierw odtwarza konfigurację i pliki. Zakres naprawy refów to
+wyłącznie własna gałąź zapisana przy starcie kroku (`snapshot.branch`), także przy odzyskiwaniu
+starszej migawki. Zwykłe commity/reset tej gałęzi są dozwolone; usunięcie lub zastąpienie jej
+refem symbolicznym jest raportowane i naprawiane. Zmiany pozostałych dozwolonych gałęzi
+sąsiadów są pomijane. Zmiany poza dozwolonym zbiorem są raportowane **bez odtwarzania**:
+migawka nie pozwala odróżnić naruszenia od legalnego zapisu innej karty poza `host_operation`.
+Raport takiej zmiany nadal kończy krok błędem i pozostawia obcy ref nietknięty.
+Naprawa własnego refu używa `git update-ref --no-deref` z oczekiwaną starą wartością;
+zmiana po porównaniu powoduje błąd CAS zamiast nadpisania nowszej wartości.
+Podmiana własnego refu symbolicznego używa standardowego `<ref>.lock`
+i ponownego sprawdzenia OID oraz celu pod blokadą, bez zapisu do celu aliasu.
+Kontrola sprawdza też `HEAD` worktree
 i wskaźnik `.git`; po naruszeniu `HEAD` ponownie wskazuje gałąź kroku.
 
 Naruszenie zapisuje zdarzenie `refs.guard` z polami `refs`, `files`, `head`, `errors`

@@ -221,16 +221,33 @@ class CommandTest(BoxRunnerCase):
         self.assertEqual(code, 1, err)
         self.assertFalse(self.launches)
 
-    def test_ref_guard_restores_foreign_ref_and_still_cleans_resources(self):
-        oid = gitrepos.git(self.repo, "rev-parse", "master").strip()
+    def test_ref_guard_reports_foreign_ref_without_restoring_and_still_cleans_resources(self):
         code, _, err = self.run_cli(["run", "proj", "--worktree", self.worktree, "--", "/usr/bin/git",
                                      "update-ref", "-d", "refs/heads/master"])
         self.assertEqual(code, 1, err)
         self.assertIn("refs.guard", err)
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), oid)
+        self.assertIn("refs/heads/master", err)
+        self.assertNotIn("refs/heads/master", gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)"))
         self.assertEqual(bs.running_steps("proj", "proj"), [])
         self.assertFalse(self.proxy.steps)
         self.assertEqual(self.proxy.calls[-1][0], "clear")
+
+    def test_legal_commit_of_other_card_during_command_is_preserved(self):
+        other = os.path.join(self.tmp, "other-card")
+        gitrepos.git(self.repo, "worktree", "add", "-b", "card/k-55", other)
+        spawn = self.spawn
+        tips = []
+
+        def concurrent_commit(argv, **kw):
+            gitrepos.commit(other, "plan.md", "legalny zapis innej karty\n")
+            tips.append(gitrepos.git(other, "rev-parse", "HEAD").strip())
+            return spawn(argv, **kw)
+
+        with mock.patch.object(self, "spawn", side_effect=concurrent_commit):
+            code, _, err = self.run_cli()
+        self.assertEqual(code, 1, err)  # nierozpoznana zmiana jest raportowana
+        self.assertIn("refs/heads/card/k-55", err)
+        self.assertEqual(gitrepos.git(other, "rev-parse", "HEAD").strip(), tips[0])
 
     def test_per_card_profile_uses_copy_and_the_same_card_policy(self):
         bp.save_card("proj", "K-38", {"tide-box": 1, "box": "per-card",

@@ -57,20 +57,32 @@ class GuardTest(unittest.TestCase):
         gitrepos.commit(self.worktrees[name], name)
         return gitrepos.git(self.repo, "rev-parse", "ticket/" + name).strip()
 
-    def test_master_is_restored_with_expected_old_oid_and_own_commit_survives(self):
+    def test_deleted_own_ref_is_restored_without_reverting_parallel_ticket(self):
+        self.begin()
+        self.begin("two")
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/ticket/one"])
+        self.assertFalse(result["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), self.original)
+        self.assertEqual(self.finish("two"), {})
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/two").strip(), tip)
+
+    def test_foreign_movement_is_reported_without_any_ref_write_and_own_commit_survives(self):
         self.begin()
         tip = self.commit("one")
         gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
         with mock.patch.object(Git, "run", autospec=True, side_effect=Git.run) as run:
             result = self.finish()
         self.assertEqual(result["refs"], ["refs/heads/master"])
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
         self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), tip)
         updates = [c.args[2:] for c in run.call_args_list if "update-ref" in c.args]
-        self.assertIn(("update-ref", "--no-deref", "refs/heads/master", self.original, tip), updates)
+        self.assertEqual(updates, [])
         self.assertEqual(self.finish(), result)  # trwały wynik, także po utracie pamięci procesu
 
-    def test_added_branch_tag_and_deleted_ref_are_restored(self):
+    def test_added_branch_tag_and_deleted_foreign_ref_are_only_reported(self):
         gitrepos.git(self.repo, "branch", "existing")
         self.begin()
         gitrepos.git(self.repo, "branch", "tmp-evil")
@@ -78,26 +90,27 @@ class GuardTest(unittest.TestCase):
         gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/existing")
         result = self.finish()
         self.assertEqual(result["refs"], ["refs/heads/existing", "refs/heads/tmp-evil", "refs/tags/evil"])
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "existing").strip(), self.original)
         refs = gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)")
-        self.assertNotIn("evil", refs)
+        self.assertNotIn("refs/heads/existing", refs)
+        self.assertIn("refs/heads/tmp-evil", refs)
+        self.assertIn("refs/tags/evil", refs)
 
     def test_ref_cas_does_not_overwrite_a_change_after_comparison(self):
         self.begin()
-        bad = self.commit("one")
+        self.commit("one")
         good = self.commit("two")
-        gitrepos.git(self.repo, "update-ref", "refs/heads/master", bad)
+        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
         real_run = Git.run
 
         def raced(git, cwd, *args, **kw):
-            if "update-ref" in args and "refs/heads/master" in args:
-                gitrepos.git(self.repo, "update-ref", "refs/heads/master", good)
+            if "update-ref" in args and "refs/heads/ticket/one" in args:
+                gitrepos.git(self.repo, "update-ref", "refs/heads/ticket/one", good)
             return real_run(git, cwd, *args, **kw)
 
         with mock.patch.object(Git, "run", raced):
             result = self.finish()
         self.assertTrue(result["errors"])
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), good)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), good)
 
     def test_two_overlapping_steps_finish_together_without_reverting_either_ticket(self):
         self.begin()
@@ -125,9 +138,10 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(peers[0][1]["allowed"], ["refs/heads/ticket/one"])
         # Nawet zapis przez podmieniony HEAD odrzuconego sąsiada nie dostaje wyjątku.
         gitrepos.commit(self.worktrees["two"], "attack")
+        tip = gitrepos.git(self.repo, "rev-parse", "master").strip()
         result = self.finish()
         self.assertEqual(result["refs"], ["refs/heads/master"])
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
 
     def test_bad_admin_entry_does_not_skip_independent_repairs_and_can_be_retried(self):
         config = (self.common / "config").read_bytes()
@@ -148,7 +162,7 @@ class GuardTest(unittest.TestCase):
         self.assertIn("hooks", result["files"])
         self.assertTrue(result["head"])
         self.assertTrue(any("worktrees/junk" in error for error in result["errors"]))
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
         self.assertFalse((self.common / "hooks/new-hook").exists())
         self.assertFalse((self.common / "info/attributes").exists())
         self.assertEqual((self.common / "config").read_bytes(), config)
@@ -163,40 +177,56 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(refguard._active(self.repo), [])
         self.assertEqual(self.finish(), retried)
 
-    def test_new_dangling_symbolic_ref_is_reported_and_removed(self):
+    def test_new_dangling_foreign_symbolic_ref_is_only_reported(self):
         self.begin()
         gitrepos.git(self.repo, "symbolic-ref", "refs/heads/tmp-evil", "refs/heads/missing")
         result = self.finish()
         self.assertEqual(result.get("refs"), ["refs/heads/tmp-evil"])
         self.assertFalse(result["errors"])
-        self.assertFalse((self.common / "refs/heads/tmp-evil").exists())
+        self.assertTrue((self.common / "refs/heads/tmp-evil").exists())
 
-    def test_dangling_symbolic_ref_is_preserved_or_restored_from_snapshot(self):
+    def test_dangling_foreign_symbolic_ref_changes_are_only_reported(self):
         ref = "refs/heads/alias"
         gitrepos.git(self.repo, "symbolic-ref", ref, "refs/heads/missing")
         self.begin()
         self.assertEqual(self.finish(), {})
         for change in (("symbolic-ref", ref, "refs/heads/other-missing"), ("symbolic-ref", "--delete", ref)):
             with self.subTest(change=change):
+                gitrepos.git(self.repo, "symbolic-ref", ref, "refs/heads/missing")
                 self.begin()
                 gitrepos.git(self.repo, *change)
                 result = self.finish()
                 self.assertEqual(result["refs"], [ref])
                 self.assertFalse(result["errors"])
-                self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", ref).strip(), "refs/heads/missing")
+                if change[1] == "--delete":
+                    self.assertFalse((self.common / ref).exists())
+                else:
+                    self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", ref).strip(), "refs/heads/other-missing")
 
-    def test_direct_ref_replaced_by_dangling_symbolic_ref_is_restored_without_touching_target(self):
+    def test_own_ref_replaced_by_dangling_symbolic_ref_is_restored_without_touching_target(self):
         self.begin()
-        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/master", "refs/heads/missing")
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/ticket/one", "refs/heads/missing")
         result = self.finish()
-        self.assertEqual(result["refs"], ["refs/heads/master"])
+        self.assertEqual(result["refs"], ["refs/heads/ticket/one"])
         self.assertFalse(result["errors"])
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), self.original)
         self.assertFalse((self.common / "refs/heads/missing").exists())
 
-    def test_dangling_symbolic_ref_deletion_checks_target_again_under_ref_lock(self):
+    def test_own_alias_to_parallel_branch_is_repaired_without_reverting_its_target(self):
         self.begin()
-        ref = "refs/heads/tmp-evil"
+        self.begin("two")
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "symbolic-ref", "refs/heads/ticket/one", "refs/heads/ticket/two")
+        result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/ticket/one"])
+        self.assertFalse(result["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/two").strip(), tip)
+        self.assertEqual(self.finish("two"), {})
+
+    def test_own_symbolic_ref_repair_checks_target_again_under_ref_lock(self):
+        self.begin()
+        ref = "refs/heads/ticket/one"
         gitrepos.git(self.repo, "symbolic-ref", ref, "refs/heads/missing")
         real_restore = refguard._restore_symref
         real_refs = refguard._refs
@@ -238,7 +268,7 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(result["files"], ["info"])
         self.assertTrue(result["errors"])
         self.assertFalse((self.common / "info/attributes").exists())
-        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
         retried = self.finish()
         self.assertFalse(retried["errors"])
         self.assertEqual(retried["files"], ["hooks", "info"])
@@ -271,8 +301,9 @@ class GuardTest(unittest.TestCase):
 
     def test_foreign_card_branch_is_not_allowed(self):
         self.begin()
-        self.commit("two")
+        tip = self.commit("two")
         self.assertEqual(self.finish()["refs"], ["refs/heads/ticket/two"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/two").strip(), tip)
 
     def test_other_card_waits_and_cannot_start_until_guard_is_finished(self):
         self.begin()
@@ -306,15 +337,16 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.finish(), {})
         self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), tip)
 
-    def test_symbolic_ref_target_is_restored_and_new_symbolic_ref_removed(self):
+    def test_foreign_symbolic_ref_target_and_new_symbolic_ref_are_only_reported(self):
         gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/master")
         self.begin()
         gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/ticket/one")
         gitrepos.git(self.repo, "symbolic-ref", "refs/heads/tmp-alias", "refs/heads/master")
         result = self.finish()
+        self.assertEqual(result["refs"], ["refs/heads/alias", "refs/heads/tmp-alias"])
         self.assertFalse(result["errors"])
-        self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias").strip(), "refs/heads/master")
-        self.assertNotIn("tmp-alias", gitrepos.git(self.repo, "for-each-ref"))
+        self.assertEqual(gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias").strip(), "refs/heads/ticket/one")
+        self.assertIn("tmp-alias", gitrepos.git(self.repo, "for-each-ref"))
 
     def test_symbolic_alias_to_ticket_is_not_a_violation_when_ticket_advances(self):
         gitrepos.git(self.repo, "symbolic-ref", "refs/heads/alias", "refs/heads/ticket/one")
@@ -453,8 +485,7 @@ class GuardTest(unittest.TestCase):
                 engine.store = mock.Mock(root=str(self.root / "store"))
                 step = fold(engine.journal.read("K-38")).steps["one"]
                 gitrepos.commit(self.worktrees["one"], "engine-" + failure)
-                tip = gitrepos.git(self.repo, "rev-parse", "ticket/one").strip()
-                gitrepos.git(self.repo, "update-ref", "refs/heads/master", tip)
+                gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
                 hook = self.common / "hooks/new-hook"
                 hook.write_text("obcy hak")
                 real_node, real_run = refguard._node, Git.run
@@ -465,7 +496,7 @@ class GuardTest(unittest.TestCase):
                     return real_node(parent, name)
 
                 def cas_error(git, cwd, *args, **kw):
-                    if "update-ref" in args and "refs/heads/master" in args:
+                    if "update-ref" in args and "refs/heads/ticket/one" in args:
                         raise agentcmd.StepError("chwilowy błąd CAS")
                     return real_run(git, cwd, *args, **kw)
 
@@ -485,7 +516,7 @@ class GuardTest(unittest.TestCase):
                     with mock.patch.object(boxstep, "_release_resources", side_effect=OSError("sprzątanie sieci")):
                         engine.tick()
                 self.assertFalse(hook.exists())
-                self.assertEqual(gitrepos.git(self.repo, "rev-parse", "master").strip(), self.original)
+                self.assertEqual(gitrepos.git(self.repo, "rev-parse", "ticket/one").strip(), self.original)
                 self.assertEqual(refguard._active(self.repo), [])
                 events = engine.journal.read("K-38")
                 ended = [e for e in events if e["type"] == "step.finished"]
@@ -494,7 +525,7 @@ class GuardTest(unittest.TestCase):
                 repaired = [e for e in events if e["type"] == "refs.guard"][-1]
                 self.assertEqual(repaired["errors"], [])
                 self.assertEqual(repaired["files"], ["hooks"])
-                self.assertEqual(repaired["refs"], ["refs/heads/master"])
+                self.assertEqual(repaired["refs"], ["refs/heads/ticket/one"])
                 self.begin("two")
                 self.assertEqual(self.finish("two"), {})
 
@@ -528,7 +559,7 @@ class RunnerGuardTest(BoxRunnerCase):
         self.assertEqual(self.demo(runner, "--", "true"), 0)
         self.assertEqual(refguard._active(self.repo), [])
 
-    def test_demo_restores_foreign_ref_and_returns_error(self):
+    def test_demo_reports_foreign_ref_without_restoring_and_returns_error(self):
         runner = self.runner()
         runner.unit_state = mock.Mock(return_value="inactive")
 
@@ -538,7 +569,7 @@ class RunnerGuardTest(BoxRunnerCase):
 
         runner._popen = mock.Mock(return_value=mock.Mock(wait=mock.Mock(side_effect=ended)))
         self.assertEqual(self.demo(runner, "--", "true"), 1)
-        self.assertNotIn("refs/tags/evil", gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)"))
+        self.assertIn("refs/tags/evil", gitrepos.git(self.repo, "for-each-ref", "--format=%(refname)"))
         self.assertEqual(refguard._active(self.repo), [])
 
     def test_demo_waits_for_confirmed_unit_end_before_checking_guard(self):

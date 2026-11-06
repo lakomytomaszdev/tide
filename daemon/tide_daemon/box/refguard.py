@@ -3,6 +3,8 @@
 Dozwolone refy zapamiętujemy jako sumę gałęzi kroków tej samej karty, które nakładały się
 w czasie. Zakończenie sąsiada nie odbiera uprawnienia starszej migawce. Kopie i rejestr
 są w stanie hosta, nigdy w zapisywalnym przez agenta katalogu kroku.
+Odtwarzanie refów obejmuje wyłącznie zapisaną gałąź własnego kroku. Zmiany poza tym
+zakresem raportujemy bez zapisu: migawka nie dowodzi, kto przesunął obcy ref.
 """
 from __future__ import annotations
 
@@ -304,6 +306,9 @@ def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
             expected_files = {**peer["files"], **{p: n for p, n in trusted.items() if p not in peer["files"]}}
             if files != expected_files:
                 raise StepError("strażnik refów: chronione pliki zmienione w aktywnym kroku")
+            own_ref = refs.get(peer["branch"])
+            if not own_ref or own_ref["target"]:
+                raise StepError("strażnik refów: gałąź aktywnego kroku wymaga naprawy")
             permitted = set(peer["allowed"]) | ({branch} if peer["card"] == card else set())
             if any(not _same_ref(refs.get(r), peer["refs"].get(r))
                    for r in set(refs) | set(peer["refs"]) if r not in permitted):
@@ -477,11 +482,23 @@ def finish(repo, card, step, *, branch="", active_only=False):
             current = _refs(repo)
             for ref in sorted(set(current) | set(saved["refs"])):
                 old, now = saved["refs"].get(ref), current.get(ref)
-                if _same_ref(old, now) or ref in saved["allowed"]:
+                if _same_ref(old, now):
+                    continue
+                own = ref == saved["branch"]
+                if own:
+                    # Zwykły commit/reset własnej gałęzi jest dozwolony. Usunięcie
+                    # lub podmiana jej na alias wymaga naprawy wyłącznie tego refu.
+                    if now and not now["target"]:
+                        continue
+                elif ref in saved["allowed"]:
                     continue
                 report["refs"].append(ref)
-                # --no-deref nie dotyka celu obcego refu symbolicznego. CAS obejmuje
-                # aktualną wartość: legalny ruch po porównaniu nie zostanie nadpisany.
+                if not own:
+                    continue
+                # Uprawnienie naprawy wynika z gałęzi zapisanej w begin, nigdy
+                # z sumy allowed sąsiadów ani z aktualnego HEAD. CAS chroni
+                # także własny ref przed ruchem po porównaniu; alias nie daje
+                # prawa zapisu jego celu.
                 if (old and old["target"]) or (now and now["target"]):
                     with checking(ref):
                         _restore_symref(repo, ref, old, now)
