@@ -1,0 +1,9 @@
+{"v":1,"seq":1,"ts":"2026-11-03T10:00:00+01:00","type":"card.started","entry":"now","executor":"Haiku","provider":"anthropic","preferredProvider":"anthropic","repo":"/workspace/proj","column":"todo"}
+{"v":1,"seq":2,"ts":"2026-11-03T10:00:01+01:00","type":"step.started","step":"K-31-PT-7-1","kind":"ticket","ticket":"PT-7","executor":"Haiku","provider":"anthropic","attempt":0,"parentStep":"","worktree":"/workspace/proj-worktrees/pt-7","stepDir":"/workspace/proj-worktrees/pt-7-1.step"}
+{"v":1,"seq":3,"ts":"2026-11-03T10:00:02+01:00","type":"step.finished","step":"K-31-PT-7-1","ticket":"PT-7","result":"error","reason":"no-result"}
+{"v":1,"seq":4,"ts":"2026-11-03T10:00:03+01:00","type":"step.retry","step":"K-31-PT-7-1","ticket":"PT-7"}
+{"v":1,"seq":5,"ts":"2026-11-03T10:00:04+01:00","type":"step.started","step":"K-31-PT-7-2","kind":"ticket","ticket":"PT-7","executor":"Haiku","provider":"anthropic","attempt":1,"parentStep":"K-31-PT-7-1","worktree":"/workspace/proj-worktrees/pt-7","stepDir":"/workspace/proj-worktrees/pt-7-2.step"}
+{"v":1,"seq":6,"ts":"2026-11-03T10:00:05+01:00","type":"step.finished","step":"K-31-PT-7-2","ticket":"PT-7","result":"error","reason":"no-result"}
+{"v":1,"seq":7,"ts":"2026-11-03T10:00:06+01:00","type":"step.decision","step":"K-31-PT-7-2","ticket":"PT-7","choice":"change-executor","executor":"Sonnet","auto":true,"escalated":true}
+{"v":1,"seq":8,"ts":"2026-11-03T10:00:07+01:00","type":"step.started","step":"K-31-PT-7-3","kind":"ticket","ticket":"PT-7","executor":"Sonnet","provider":"anthropic","attempt":0,"parentStep":"K-31-PT-7-2","worktree":"/workspace/proj-worktrees/pt-7","stepDir":"/workspace/proj-worktrees/pt-7-3.step"}
+{"v":1,"seq":9,"ts":"2026-11-03T10:00:08+01:00","type":"step.finished","step":"K-31-PT-7-3","ticket":"PT-7","result":"error","reason":"no-result"}

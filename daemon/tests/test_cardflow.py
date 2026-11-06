@@ -13,9 +13,24 @@ import subprocess
 import unittest
 from unittest import mock
 
+from tide_daemon.cardflow_monitor import CardFlowMonitor
+
 from . import flowfakes
 from .privatebus import app, wait_until
 from .test_cardflow_dbus import CLAUDE_MD, git, test_root
+
+
+class _TestCardFlowMonitor(CardFlowMonitor):
+    def stop(self):
+        # Fixture czeka na oba rodzaje wątków przed restartem, wstrzyknięciem awarii
+        # albo usunięciem repozytorium; produkcyjne stop() pozostaje nieblokujące.
+        pools = (self._pool, self._hosting_pool)
+        super().stop()
+        for pool in pools:
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
+        app().processEvents()
+        self._ticking = False
 
 
 class FlowInProcess(unittest.TestCase):
@@ -69,26 +84,13 @@ class FlowInProcess(unittest.TestCase):
 
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
-        from tide_daemon.cardflow_monitor import CardFlowMonitor
         from tide_daemon.models import executors
-
-        class IsolatedFlowMonitor(CardFlowMonitor):
-            def stop(self):
-                # Produkcyjne stop() nie czeka na wątki. Fixture musi je zakończyć
-                # przed restartem silnika, cofnięciem patch.dict i usunięciem repozytorium.
-                pools = (self._pool, self._hosting_pool)
-                super().stop()
-                for pool in pools:
-                    if pool is not None:
-                        pool.shutdown(wait=True, cancel_futures=True)
-                app().processEvents()  # dostarczenie _done przed kolejnym testem
-                self._ticking = False
 
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
-        flow = IsolatedFlowMonitor(engine, self.board, poll_ms=150)
+        flow = _TestCardFlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         flow.start()
         self.addCleanup(flow.stop)
@@ -136,6 +138,11 @@ class FlowInProcess(unittest.TestCase):
 
     def of(self, card_id, kind) -> list:
         return [e for e in self.events(card_id) if e["type"] == kind]
+
+    def ticket_finished(self, card_id) -> list:
+        """`step.finished` kroków ticketu, bez kroku opiekuna karty (PT-143), który rusza po drugim błędzie."""
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s.get("kind") != "caretaker"}
+        return [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]
 
     def results(self, card_id, action) -> list:
         return [e for e in self.of(card_id, "result") if e.get("action") == action]
@@ -405,7 +412,7 @@ class NowInProcessTest(FlowInProcess):
         card_id = self.card(description="ATRAPA: bez-wyniku")
         reply = self.start(card_id)
         card = self.wait_column(card_id, "waiting")
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-result"), ("error", "no-result")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -467,7 +474,7 @@ class GuardInProcessTest(FlowInProcess):
         pid = self.unit_pid(step)
         self.assertTrue(flowfakes.alive(pid))
         card = self.wait_column(card_id, "waiting", timeout=30)
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-progress"), ("error", "no-progress")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)

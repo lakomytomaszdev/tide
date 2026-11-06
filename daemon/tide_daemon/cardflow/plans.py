@@ -187,7 +187,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     if rows and not waves:
         stuck = _cycle(rows)
         through = sorted({r.get("project") or "" for r in rows if r["workId"] in stuck} - {""})
-        errors.append(f"{', '.join(stuck)}: plan zawiera cykl blokerów"
+        errors.append((f"{', '.join(stuck)}: " if stuck else "") + "plan zawiera cykl blokerów"
                       + (f" przez projekty {', '.join(through)}" if len(through) > 1 else ""))
     return Proposal(plan, rows, cards, waves, errors)
 

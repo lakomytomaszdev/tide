@@ -1,0 +1,4 @@
+Ticket zakończył się done, lecz Tide nie przygotował review.
+Przebieg 1: FlowGitError: przygotowanie review: katalog etapu niedostępny
+Przebieg 2 po 11 s: ten sam błąd
+GITHUB_TOKEN=•••

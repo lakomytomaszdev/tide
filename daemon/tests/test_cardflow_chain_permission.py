@@ -31,8 +31,10 @@ class ChainPermissionFlowTest(FlowInProcess):
         found = wait_until(lambda: [s for s in self.of(card_id, "step.started") if s.get("parentStep") == parent],
                            timeout=20)
         self.assertTrue(found, self.events(card_id))
+        # Samo istnienie pliku nie oznacza, że atrapa skończyła zapis JSON.
+        self.assertTrue(wait_until(lambda: [s for s in self.of(card_id, "step.finished")
+                                           if s.get("step") == found[0]["step"]], timeout=20), self.events(card_id))
         call = os.path.join(found[0]["stepDir"], "out", "fake-call.json")
-        self.assertTrue(wait_until(lambda: os.path.isfile(call), timeout=20), "wznowiony krok nie ruszył")
         with open(call, encoding="utf-8") as fh:
             return json.load(fh)
 

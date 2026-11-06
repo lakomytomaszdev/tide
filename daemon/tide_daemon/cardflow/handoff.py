@@ -139,12 +139,17 @@ worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w
 
 
 def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,
-                   allowed=None, skipped=(), instead: str = "") -> str:
+                   allowed=None, skipped=(), instead: str = "", caretaker: bool = False) -> str:
     """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu.
     `allowed` — zgoda na wybrane polecenia z łańcucha (PT-124), `skipped` — niezaznaczone, `instead` — co krok ma
-    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”)."""
-    if choice == "answer":
-        detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
+    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”), `caretaker` — ponowienie z instrukcją
+    od opiekuna karty (PT-150), nie od użytkownika."""
+    if caretaker and choice == "retry":
+        detail = ("Instrukcja od opiekuna karty (opiekun sprawdził dziennik tego kroku i historię karty; instrukcja ma "
+                  f"pierwszeństwo przed wcześniejszym planem kroku):\n{answer}\nZachowaj zmiany z poprzednich prób.")
+    elif choice == "answer":
+        author = "opiekuna karty" if caretaker else "użytkownika"
+        detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź {author}: {answer}"
         picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
         if picked:
             detail += "\nUżytkownik wybrał podaną opcję."
@@ -186,7 +191,10 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
                   "diagnostyczne poleceniem `git clean -f -- <ścieżka>` (nie `rm`), "
                   "a potem zakończ krok tym samym wynikiem co poprzednio.")
     elif choice == "change-executor":
-        detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+        author = "Opiekun karty wybrał" if caretaker else "Użytkownik wybrał"
+        detail = f"{author} innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+        if answer:
+            detail += f"\nInstrukcja dla nowej sesji wykonawcy:\n{answer}"
     elif choice == "transfer":
         detail = "Krok przekazano od innego dostawcy. Kontynuuj w tym samym worktree z commita WIP; przeczytaj notkę techniczną niżej."
     elif choice == "auto":

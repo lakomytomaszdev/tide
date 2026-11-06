@@ -328,7 +328,7 @@ def main(argv=None) -> int:
             def notify_card_step(item):
                 labels = {"question": "pytanie", "denied": "potrzebna zgoda", "error": "błąd kroku",
                           "plan": "plan do zatwierdzenia", "review": "karta do sprawdzenia",
-                          "limit": "limit dostawcy", "stalled": "karta stoi"}
+                          "limit": "limit dostawcy", "stalled": "karta stoi", "caretaker": "decyzja opiekuna"}
                 kind = labels.get(item["result"], "krok czeka")
                 flow_notifier.notify(f"flow:{item['card']}:{item['step']}",
                                      f"{item['card']}: {kind}" + (f" z {item['ticket']}" if item['ticket'] else ""),

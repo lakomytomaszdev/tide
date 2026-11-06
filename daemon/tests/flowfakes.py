@@ -7,6 +7,15 @@
   `pytanie` (commit i wynik „pytanie”), `pytanie-bez-pracy` (pytanie przed zmianą plików i commitem),
   `pytanie-opcje` (pytanie z poprawnymi `options[]`), `pytanie-zle-opcje` (kilka poleconych).
   Ścieżkę pliku wyniku bierze z kartki (linia „Plik wyniku: …”), nie z ustawień.
+  Kartkę opiekuna karty (PT-143) rozpoznaje po pierwszej linii „Jesteś opiekunem karty”; co odpowiada, mówi
+  „ATRAPA-OPIEKUN: …” w opisie problemu (`escalate` — domyślnie, `powoli` — 6 s pracy i escalate,
+  `akcja-<nazwa>`, `bez-wyniku`, `zly-format`, `pytanie`, `blad`; PT-150: `retry` — ponowienie „Kroku problemu”
+  z instrukcją, `retry-obcy` — ponowienie kroku spoza problemu, `retry-powoli` — 6 s pracy, potem `retry`;
+  PT-147: `akcja-<nazwa>-powoli` — 6 s pracy, potem `akcja-<nazwa>`;
+  PT-158: `pisze-sledzony`, `pisze-nowy`,
+  `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
+  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
+  jest też w dzienniku kroku).
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
 - `systemctl --user is-active --quiet <j>.scope` (0 — żyje, 3 — nie) i `kill --signal=… <j>.scope` (sygnał do grupy
@@ -45,6 +54,97 @@ word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0
 file_match = re.search(r"ATRAPA-PLIK: ([a-zA-Z0-9_-]+)", prompt)
 work = os.path.join(cwd, "ATRAPA-" + file_match.group(1) + ".md" if file_match else "ATRAPA.md")
 
+if prompt.startswith("Jesteś opiekunem karty"):
+    # Krok opiekuna (PT-143): co zrobić mówi „ATRAPA-OPIEKUN: …” w opisie problemu (powód błędu kroku).
+    care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", prompt)
+    if not care:
+        # PT-146: przy poprawie planu polecenie jest w odrzuconym pliku plan.md z kontekstu (druga nieudana poprawka).
+        failed_plan = re.search(r"(\S*plan-fix/failed-plan\.md)", prompt)
+        if failed_plan and os.path.isfile(failed_plan.group(1)):
+            with open(failed_plan.group(1), encoding="utf-8") as fh:
+                care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", fh.read())
+    care = care.group(1) if care else "escalate"
+    if care == "powoli":            # opiekun pracuje kilka sekund (widok „W toku”, restart usługi), potem escalate
+        time.sleep(6)
+        care = "escalate"
+    if care == "retry-powoli":      # PT-150: kilka sekund pracy (decyzja użytkownika w tym czasie), potem retry
+        time.sleep(6)
+        care = "retry"
+    if care.endswith("-powoli"):    # PT-147: `akcja-<nazwa>-powoli` — kilka sekund pracy, potem ta akcja
+        time.sleep(6)
+        care = care[:-len("-powoli")]
+    # PT-158: opiekun, który pisze poza `out` (zmienia plik śledzony, dodaje nieśledzony, robi commit), a potem
+    # zapisuje poprawny wynik `escalate` — strażnik ma go odrzucić przed odczytem wyniku.
+    tree = re.search(r"Worktree kroku \(wyłącznie do odczytu\): (\S+)", prompt).group(1)
+    if care == "pisze-sledzony":
+        tracked = subprocess.check_output(["git", "-C", tree, "ls-files"], text=True).split()
+        with open(os.path.join(tree, tracked[0]), "a", encoding="utf-8") as fh:
+            fh.write("zmiana opiekuna\n")
+    elif care == "pisze-nowy":
+        with open(os.path.join(tree, "opiekun-byl-tu.txt"), "w", encoding="utf-8") as fh:
+            fh.write("nowy plik\n")
+    elif care == "commit":
+        subprocess.run(["git", "-C", tree, "commit", "-q", "--allow-empty", "-m", "opiekun commituje"], check=True)
+    elif care in ("karta-sledzony", "karta-nowy"):
+        # Review M2 (PT-158): zapis w worktree karty (nie ticketu) bez commita.
+        listed = subprocess.check_output(["git", "-C", tree, "worktree", "list", "--porcelain"], text=True)
+        num = re.match(r"Jesteś opiekunem karty K-(\d+)", prompt).group(1)
+        card_tree = next(block.split("\n")[0][len("worktree "):] for block in listed.split("\n\n")
+                         if f"branch refs/heads/card/k-{num}-" in block)
+        if care == "karta-sledzony":
+            tracked = subprocess.check_output(["git", "-C", card_tree, "ls-files"], text=True).split()
+            with open(os.path.join(card_tree, tracked[0]), "a", encoding="utf-8") as fh:
+                fh.write("zmiana opiekuna w karcie\n")
+        else:
+            with open(os.path.join(card_tree, "opiekun-w-karcie.txt"), "w", encoding="utf-8") as fh:
+                fh.write("nowy plik\n")
+    if care in ("pisze-sledzony", "pisze-nowy", "commit", "karta-sledzony", "karta-nowy"):
+        care = "escalate"
+    data = None
+    if care == "zly-format":
+        with open(result, "w", encoding="utf-8") as fh:
+            fh.write("to nie jest JSON")
+    elif care == "pytanie":
+        data = {"result": "question", "question": "Czy ponowić krok z inną instrukcją?"}
+    elif care == "blad":
+        data = {"result": "error", "reason": "opiekun nie wie, co zrobić"}
+    elif care.startswith("akcja-"):
+        data = {"result": "done", "action": care[len("akcja-"):], "summary": "Sprawdziłem.", "recommendation": "Zrób to."}
+    elif care == "escalate":
+        data = {"result": "done", "action": "escalate", "summary": "Krok dwa razy padł na tym samym teście.",
+                "recommendation": "Zmień wykonawcę na mocniejszy model.", "optionId": "change-executor"}
+    elif care in ("retry", "retry-obcy"):
+        # PT-150: ponowienie kroku problemu („Krok problemu: …” w kartce) albo kroku spoza problemu.
+        target = re.search(r"Krok problemu: (\S+)", prompt).group(1) if care == "retry" else "K-999-obcy-1"
+        data = {"result": "done", "action": "retry", "step": target,
+                "instruction": "Najpierw uruchom test eksportu i popraw format daty na ISO 8601.",
+                "reason": "Dziennik kroku pokazuje błąd formatu daty."}
+    elif care == "return-plan-gap":
+        # PT-155: luka wynika z decyzji A, a rozpoczęte tickety mają pozostać nietykalne.
+        data = {"result": "done", "action": "return-plan",
+                "feedback": "Dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły, "
+                            "przepisz bez zmian.", "reason": "W planie brakuje migracji z decyzji A."}
+    elif care in ("return-plan", "return-plan-obce", "approve-plan"):
+        # PT-146: odesłanie planu z precyzyjną uwagą (wiersz, bloker, błąd standardu); `-obce` — numer uwagi spoza
+        # listy; `approve-plan` — akcja, której opiekun nie ma.
+        data = {"result": "done", "action": care if care == "approve-plan" else "return-plan",
+                "feedback": "Wiersz #1: kryterium nie jest mierzalne (bloker: ticket nie może ruszyć); błąd "
+                            "standardu 1.2: brak sekcji Dla recenzenta. Odrocz tę uwagę do ticketu #2.",
+                "reason": "Poprzednia poprawka nie przeszła sprawdzenia formatu."}
+        if care == "return-plan-obce":
+            data["findings"] = "9"
+    # PT-156: odpowiedź zadana przez test okablowania, bez udawania diagnozy modelu.
+    scripted = re.search(r"^ATRAPA-WYNIK: (.+)$", prompt, re.MULTILINE)
+    if scripted:
+        data = json.loads(scripted.group(1))
+        if data.get("step") == "$target":
+            data["step"] = re.search(r"Krok problemu: (\S+)", prompt).group(1)
+    if data is not None:
+        with open(result, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": sid}))
+    sys.exit(0)
+
 if prompt.startswith("Popraw propozycję planu karty"):
     if "ATRAPA: amend-question" in prompt and "Odpowiedź użytkownika:" not in prompt:
         with open(result, "w") as fh:
@@ -58,8 +158,13 @@ if prompt.startswith("Popraw propozycję planu karty"):
             json.dump({"result": "done", "notes": []}, fh)
         sys.exit(0)
     rows = proposal["rows"]
+    broken_structure = "ATRAPA: amend-bad-structure" in prompt
+    if broken_structure:
+        rows[0]["blockers"] = ["#99"]
     if "Dodaj ticket" in prompt:
         rows.append({**rows[-1], "workId": "#3", "title": "Dodatkowy ticket", "blockers": []})
+        if "Dodaj ticket na migrację formatu" in prompt:
+            rows[-1]["body"] = "# Migracja\nATRAPA: migracja\nATRAPA-PLIK: migracja\n- [ ] Format zmigrowany.\n"
     os.makedirs(os.path.join(out, "tickets"), exist_ok=True)
     with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
         fh.write("---\ntide-plan: 1\ntitle: Poprawiony\ncard: " + re.search(r"karty (K-[0-9]+)", prompt).group(1) +
@@ -70,7 +175,11 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
+            fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+    if broken_structure:
+        with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Eksport\nCo zbudować: eksport danych.\n## Dla recenzenta\nSprawdź format.\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)
@@ -139,8 +248,10 @@ if prompt.startswith("Krok planowania Lekkiego"):
         sys.exit(0)
     bad = "ATRAPA: plan-bad" in prompt
     repair = "ATRAPA: plan-repair" in prompt and ".plan-fix-" not in out
+    marker = re.search(r"ATRAPA-OPIEKUN: [a-z-]+", prompt)     # PT-146: polecenie dla opiekuna w odrzuconym planie
     with open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
-        fh.write("nie plan" if bad or repair else "---\ntide-plan: 1\ntitle: Eksport\ncard: " + card +
+        fh.write("nie plan" + (" " + marker.group(0) if marker else "") if bad or repair else
+                 "---\ntide-plan: 1\ntitle: Eksport\ncard: " + card +
                  "\ntracker: local\nticket-prefix: PT\ncoordinator: claude\n---\n"
                  "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
@@ -241,9 +352,16 @@ if word == "cli-zgoda":
     print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [
         {"tool_name": "Bash", "tool_input": {"command": "git fetch origin"}}]}))
     sys.exit(0)
+if word == "wynik-worktree" and "Instrukcja od opiekuna karty" not in prompt:
+    with open(os.path.join(cwd, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump({"result": "done"}, fh)
+    commit()
+    print("Zapisano wynik: " + os.path.join(cwd, "result.json"), flush=True)
+    print("GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", flush=True)
+    sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
-if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt:
+if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt and "Instrukcja od opiekuna karty" not in prompt:
     # PT-125: piaskownica odmawia zapisu pliku wyniku; w dzienniku kroku token i zmienne środowiskowe.
     print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "tool_use", "name": "Bash", "input": {
@@ -268,6 +386,8 @@ elif word in ("pytanie-opcje", "pytanie-zle-opcje"):
     else:
         finish("question", question="Który format daty?", options=[
             {"title": "A", "recommended": True}, {"title": "B", "recommended": True}])
+elif word == "odmowa-opiekun":
+    finish("denied", command="make install", reason="ATRAPA-OPIEKUN: retry")
 elif word == "zgoda":
     if "- git fetch origin\n" in prompt or "Użytkownik odmówił zgody" in prompt:
         finish("done")
@@ -316,6 +436,31 @@ elif word in ("blad-dwa", "blad-zmien"):
         finish("done")
     else:
         finish("error", reason="awaria testowa")
+elif word == "blad-opiekun":
+    # PT-143: błąd po każdej próbie z powodem z linii „ATRAPA-POWOD: …” (tam też polecenie dla atrapy opiekuna).
+    if "Użytkownik rozstrzygnął poprawę planu po odesłaniu przez opiekuna" in prompt:
+        # PT-155: wznowiony autor rzeczywiście korzysta z nowej pracy dostępnej w gałęzi karty.
+        branch = re.search(r"Uwzględnij zmiany z gałęzi karty (\S+) w bieżącym worktree", prompt).group(1)
+        migrated = subprocess.check_output(["git", "show", branch + ":MIGRACJA.txt"], text=True)
+        with open(os.path.join(cwd, "MIGRACJA.txt"), "w", encoding="utf-8") as fh:
+            fh.write(migrated)
+        write("eksport po migracji: " + migrated.strip())
+        commit()
+        finish("done")
+    elif "Użytkownik polecił ponowić" in prompt or "Użytkownik wybrał innego wykonawcę" in prompt:
+        finish("done")
+    else:
+        reason = re.search(r"ATRAPA-POWOD: (.+)", prompt)
+        reason = reason.group(1).strip() if reason else "awaria testowa"
+        # PT-153: powód (z sekretami z testu) trafia też do dziennika kroku — kontekst opiekuna musi go zamaskować.
+        print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Test pada: " + reason}]}}), flush=True)
+        finish("error", reason=reason)
+elif word == "migracja":
+    with open(os.path.join(cwd, "MIGRACJA.txt"), "w", encoding="utf-8") as fh:
+        fh.write("format-v2\n")
+    commit()
+    finish("done")
 elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",
@@ -399,6 +544,9 @@ sys.exit(0)
 
 KONSOLE = """#!/bin/bash
 echo "konsole $*" >> "$TIDE_FAKE_LOG"
+if [ -n "$TIDE_FAKE_KONSOLE_SERVICE" ]; then
+    exec /usr/bin/python3 -s "$TIDE_FAKE_KONSOLE" --record-task "$TIDE_FAKE_KONSOLE_SERVICE" "${@: -1}"
+fi
 """
 
 

@@ -56,6 +56,12 @@ class YouTrackFlowTest(FlowInProcess):
         # 03.11, K-16: nowy ticket z poprawki planu dostawał lokalny numer zamiast zgłoszenia w YouTracku.
         card = self.card()
         path = self.proposal(card)
+        # Pierwszy ticket czeka na odpowiedź, więc drugi nie wystartuje w trakcie poprawki planu.
+        ticket_path = os.path.join(os.path.dirname(path), 'tickets', '1.md')
+        with open(ticket_path, encoding='utf-8') as fh:
+            body = fh.read()
+        with open(ticket_path, 'w', encoding='utf-8') as fh:
+            fh.write(body.replace('ATRAPA: gotowe', 'ATRAPA: pytanie'))
         with open(path, encoding='utf-8') as fh:
             proposal = fh.read().replace('tracker: local',
                                          'tracker: youtrack\ntracker-project: LOG\ntracker-url: ' + self.fake.url)
@@ -63,7 +69,11 @@ class YouTrackFlowTest(FlowInProcess):
         with open(path, 'w', encoding='utf-8') as fh:
             fh.write(proposal)
         self.assertTrue(self.submit(card, path)['ok'])
-        self.assertTrue(self.approve(card)['ok'])
+        initial = self.approve(card)
+        self.assertTrue(initial['ok'], initial)
+        self.assertTrue(wait_until(lambda: any(e.get('ticket') == initial['map']['#1']
+                                               and e.get('result') == 'question'
+                                               for e in self.of(card, 'step.finished')), timeout=15), self.events(card))
         box = []
         self.flow.edit_plan(card, json.dumps({'action': 'return', 'feedback': 'Dodaj ticket z poprawką'}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
@@ -75,6 +85,7 @@ class YouTrackFlowTest(FlowInProcess):
         approved = self.of(card, 'plan.revision-approved')[-1]
         self.assertEqual(approved['plan']['map'].get('#3'), 'LOG-3')
         self.assertIn('LOG-3', self.fake.issues)
+        self.assertFalse(any(s.get('ticket') == initial['map']['#2'] for s in self.of(card, 'step.started')))
 
     def test_local_reservation_intent_does_not_block_youtrack_creation(self):
         # 03.11, K-16: lokalna rezerwacja pod tym samym kluczem dawała wieczne „czekam na potwierdzenie”.
