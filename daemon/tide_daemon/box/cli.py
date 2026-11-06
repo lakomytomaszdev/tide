@@ -33,6 +33,7 @@ def _parser():
     p.add_argument("slug", nargs="?")
     p = sub.add_parser("build", help="buduje pudełko z profilu w Tablicy")
     p.add_argument("slug")
+    p.add_argument("--worktree", default="", help="czysty worktree projektu: verify na kopii jego commita w pudełku")
     p = sub.add_parser("status", help="stan pudełka, hash i filtrowanie NIC")
     p.add_argument("slug")
     p.add_argument("--card", help="kopia pudełka dla karty (box: per-card)")
@@ -102,8 +103,8 @@ def run_base(base_builder, out) -> int:
     return 0
 
 
-def run_build(builder, slug, out) -> int:
-    res = builder.build(slug)
+def run_build(builder, slug, out, worktree="") -> int:
+    res = builder.build(slug, verify_worktree=worktree) if worktree else builder.build(slug)
     print(f"pudełko {res.box}: migawka clean, hash {res.hash}, {res.duration:.1f} s", file=out)
     print(f"dziennik odmów proxy: {os.path.join(bb.state_dir(slug), 'build-denied.log')}", file=out)
     if res.warning:
@@ -174,7 +175,7 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             settings = _settings(err)
             service, own = bbase.ensure_proxy(settings)
             try:
-                return run_build(bb.Builder(settings, policy=service), args.slug, out)
+                return run_build(bb.Builder(settings, policy=service), args.slug, out, args.worktree)
             finally:
                 if own:
                     service.stop()
@@ -182,7 +183,7 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             builder = bb.Builder(_settings(err))
         b = builder
         if args.cmd == "build":
-            return run_build(b, args.slug, out)
+            return run_build(b, args.slug, out, args.worktree)
         if args.cmd == "status":
             st = b.status(args.slug, args.card)
             text = format_status(st)

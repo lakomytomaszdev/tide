@@ -6,12 +6,15 @@
 # Wersja Playwrighta przypięta tutaj (PLAYWRIGHT_VERSION). Projekt z inną wersją w package.json dociąga w kroku
 # swoją rewizję Chromium do tego samego katalogu (należy do agenta; domeny pobierania są w playwright.yaml).
 # Zależności systemowe (`--with-deps`) instaluje apt przez proxy z obrazu bazowego.
+# PT-184: profil z dotnet.sdk bez node.version korzysta z Microsoft.Playwright i dołączonego
+# do paczki sterownika Node. Nie wymaga stosu node ani npx. Wersja .NET odpowiada LegalApp.
 set -euo pipefail
 
 # shellcheck source=lib.sh
 source "${BASH_SOURCE[0]%/*}/lib.sh"
 
 PLAYWRIGHT_VERSION=1.55.0
+PLAYWRIGHT_DOTNET_VERSION=1.52.0
 PLAYWRIGHT_BROWSERS=/opt/ms-playwright
 NODE_MIN_MAJOR=20
 
@@ -43,10 +46,56 @@ install_browsers() {
     echo "playwright $PLAYWRIGHT_VERSION: ${found[*]}"
 }
 
+dotnet_project() {
+    local sdk=${TIDE_DOTNET_SDK%% *}
+    [[ $sdk =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Playwright .NET wymaga dokładnego dotnet.sdk"
+    cat <<EOF
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net${sdk%.*}</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="$PLAYWRIGHT_DOTNET_VERSION" />
+  </ItemGroup>
+</Project>
+EOF
+}
+
+install_dotnet_browsers() (
+    # Osobny proces powłoki ogranicza trap do tej funkcji. Projekt instalatora zostaje usunięty
+    # także po błędzie NuGet lub instalatora, przeglądarka zostaje w migawce clean.
+    local project work
+    project=$(dotnet_project)
+    command -v dotnet >/dev/null || die "brak dotnet — dodaj stos dotnet przed playwright"
+    work=$(mktemp -d)
+    trap 'rm -rf -- "$work"' EXIT
+    printf '%s\n' "$project" > "$work/BrowserInstall.csproj"
+    printf '%s\n' 'return Microsoft.Playwright.Program.Main(args);' > "$work/Program.cs"
+    mkdir -p "$PLAYWRIGHT_BROWSERS"
+    export PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS"
+    # Źródło tylko publiczne; nie czytamy konfiguracji ani poświadczeń NuGet hosta.
+    dotnet restore "$work/BrowserInstall.csproj" --source https://api.nuget.org/v3/index.json
+    dotnet run --project "$work/BrowserInstall.csproj" --configuration Release --no-restore -- install --with-deps chromium
+    shopt -s nullglob
+    local found=("$PLAYWRIGHT_BROWSERS"/chromium-*/chrome-linux*/chrome)
+    (( ${#found[@]} > 0 )) || die "Playwright .NET nie zostawił Chromium w $PLAYWRIGHT_BROWSERS"
+    chown -R "$AGENT:$AGENT" "$PLAYWRIGHT_BROWSERS"
+    echo "playwright .NET $PLAYWRIGHT_DOTNET_VERSION: ${found[*]}"
+)
+
+install_playwright() {
+    if [[ -n ${TIDE_DOTNET_SDK:-} && -z ${TIDE_NODE_VERSION:-} ]]; then
+        install_dotnet_browsers
+    else
+        check_node
+        install_browsers
+    fi
+}
+
 main() {
     stack_main
-    check_node
-    install_browsers
+    install_playwright
     write_stack_env "" playwright "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS"
 }
 

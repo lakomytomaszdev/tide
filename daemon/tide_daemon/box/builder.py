@@ -2,7 +2,7 @@
 
 Kolejność budowy (`build`):
  1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
-    z profilu i nesting oraz intercept mknod/setxattr tylko dla Dockera; nigdy
+    z profilu i nesting tylko dla Dockera; bez syscall intercept (runc 1.2.6, decyzja PT-164); nigdy
     `security.privileged`; rozmiar dysku głównego `resources.disk`; prywatny katalog hosta na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
@@ -15,10 +15,12 @@ Kolejność budowy (`build`):
  5. `apt-get install` (pakiety szablonów i profilu), 6. `setup`, 7. `docker pull` (gdy `docker.enabled`),
  8. `verify` (nieudane → „zbudowane z ostrzeżeniem”), 9. migawka `clean` z odciskiem przepisu.
 
-Każde `incus exec` budowy biegnie jako root pudełka z `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide: adres i port
+Polecenia instalacji biegną jako root pudełka z `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide: adres i port
 pochodzą z uruchomionego proxy (`proxy.running()` — nasłuch na adresie mostka z `box.bridge`, port `box.proxy-port`),
 więc proxy i builder mają jedno źródło. Brak uruchomionego proxy (albo brak jego adresu) to błąd przed pierwszym
 poleceniem `incus`. Po migawce polityka budowy jest zdejmowana (`clear_box_policy`). Budowa nie czyta stdin.
+Opcja CLI `build --worktree` (PT-184) eksportuje commit czystego worktree do kopii w pudełku;
+verify biegnie tam jako agent, a kopia jest usuwana przed migawką. Bez tej opcji verify zachowuje tryb roota.
 Odcisk przepisu pochodzi wyłącznie z `profile.recipe_stamp` i jest zapisany w kluczu `user.tide.recipe`
 instancji tuż przed migawką, więc migawka `clean` (i każda kopia z niej) niesie go w swojej konfiguracji.
 Opis: docs/tide-daemon.md (Budowa pudełka).
@@ -35,6 +37,7 @@ from . import netenv
 from . import profile as bp
 from . import state as bs
 from . import templates
+from . import verify as bverify
 from .incus import Incus, IncusError
 from . import proxy as bproxy
 from .settings import BoxSettings
@@ -51,7 +54,7 @@ NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/
 # Zapisana wersja szablonów stosów: `templates_version()` katalogu `box/stacks` (dane `*.yaml` i skrypty `*.sh`).
 # Wchodzi do hasha przepisu jako `templates`. Test (`test_box_stacks.py`) porównuje ją z sumą katalogu, więc każda
 # zmiana szablonu wymaga świadomego podbicia tej stałej — a pudełka zbudowane wcześniej stają się nieaktualne.
-STACKS_VERSION = "8aa43bcc752bf5c08856ef597fdeaa87bfa4578aa3d8f9d12b81131acb190da1"
+STACKS_VERSION = "52c4b33c8752e52c721f3eb72720e1e7d9715082454e72f135d587856c6add63"
 
 
 class BuildError(RuntimeError):
@@ -158,7 +161,7 @@ class Builder:
     # --- budowa ----------------------------------------------------------------------------------
 
     @bs.serialized
-    def build(self, slug: str, profile: dict | None = None) -> BuildResult:
+    def build(self, slug: str, profile: dict | None = None, verify_worktree: str = "") -> BuildResult:
         profile = self.load_profile(slug) if profile is None else bp.validate(profile, "project")
         full = bp.with_defaults(profile)
         if full["type"] == "vm":
@@ -184,7 +187,8 @@ class Builder:
         try:
             with open(log_path, "w", encoding="utf-8") as log:
                 self.incus.log = log
-                result = self._build(slug, name, full, proxy, domains, steps)
+                with bverify.source_archive(slug, verify_worktree) as source:
+                    result = self._build(slug, name, full, proxy, domains, steps, source)
         except Exception as exc:
             bs.record(slug, "box.build", name, self.wall, phase="end", result="error", error=str(exc),
                       steps=steps, duration=round(self.clock() - started, 3))
@@ -199,7 +203,7 @@ class Builder:
                   duration=result.duration, hash=result.hash)
         return result
 
-    def _build(self, slug, name, full, proxy, domains, steps) -> BuildResult:
+    def _build(self, slug, name, full, proxy, domains, steps, source=None) -> BuildResult:
         if self.incus.instance(name) is not None:
             self.ensure_home(slug)  # eksport starych danych przed usunięciem starej instancji
             self.incus.delete(name, force=True)
@@ -210,8 +214,6 @@ class Builder:
         config = limits(full)
         if full["docker"]["enabled"]:
             config["security.nesting"] = True
-            config["security.syscalls.intercept.mknod"] = True
-            config["security.syscalls.intercept.setxattr"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
         self._attach_home(name, slug)
@@ -228,12 +230,12 @@ class Builder:
         os.chmod(denied, 0o600)
         self.policy.set_box_policy(ip, domains, bool(full["network"].get("host-ollama")), denied)
         try:
-            return self._provision(slug, name, full, proxy, steps)
+            return self._provision(slug, name, full, proxy, steps, source)
         finally:
             # polityka budowy nie zostaje w proxy po budowie (kroki dostaną politykę karty, #18)
             self.policy.clear_box_policy(ip)
 
-    def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
+    def _provision(self, slug, name, full, proxy, steps, source=None) -> BuildResult:
         # Szablony (lib.sh) sprawdzają, że HTTP(S)_PROXY wywołania = TIDE_BOX_PROXY, a drop-in dockerd (docker.sh)
         # dostaje NO_PROXY wyłącznie z TIDE_BOX_NO_PROXY — obie wartości tylko stąd.
         env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive",
@@ -274,11 +276,15 @@ class Builder:
         if full["verify"]:
             steps.append("verify")
             v_start = self.clock()
-            for command in full["verify"]:
-                if self.incus.exec(name, ["bash", "-c", command], env) != 0:
-                    failed.append(command)
+            with bverify.in_box(self.incus, name, source, env,
+                                agent_uid=self.settings.agent_uid, agent_gid=self.settings.agent_gid) as context:
+                verify_env = {**env, "HOME": "/home/agent"} if source else env
+                for command in full["verify"]:
+                    if self.incus.exec(name, ["bash", "-c", command], verify_env, **context) != 0:
+                        failed.append(command)
             bs.record(slug, "box.verify", name, self.wall, result="ok" if not failed else "fail", failed=failed,
-                      duration=round(self.clock() - v_start, 3))
+                      duration=round(self.clock() - v_start, 3),
+                      **({"sourceCommit": source.commit} if source else {}))
         # 9. migawka clean z odciskiem przepisu
         steps.append("snapshot")
         stamp = self.stamp(full)

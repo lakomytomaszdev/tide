@@ -16,9 +16,10 @@ OUT ?=
 # CHECK_ARGS: np. --host-ip 10.20.1.10 --spoof-ip <sprawdzony-wolny-IP> --spoof-image <lokalny-obraz>.
 BOX ?=
 CHECK_ARGS ?=
+CHECK_WORKTREE ?=
 box-check:
 	@test -n "$(BOX)" || { echo "Podaj BOX=<slug>" >&2; exit 2; }
-	$(PYTHON) daemon/tide.py box run "$(BOX)" -- bash scripts/box/check.sh $(CHECK_ARGS)
+	$(PYTHON) scripts/box/check-project.py "$(BOX)" $(if $(CHECK_WORKTREE),--worktree "$(CHECK_WORKTREE)") -- $(CHECK_ARGS)
 
 box-base:
 	$(PYTHON) daemon/tide.py box base

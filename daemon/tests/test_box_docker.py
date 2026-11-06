@@ -9,15 +9,15 @@ from .test_box_builder import BoxCase, PROFILE, PROXY
 
 
 class DockerTest(BoxCase):
-    def test_enabled_and_stack_enable_nesting_and_intercepts_before_templates(self):
+    def test_enabled_and_stack_enable_nesting_without_intercepts_before_templates(self):
         for profile in ({**PROFILE, "stacks": [], "docker": {"enabled": True}},
                         {**PROFILE, "stacks": ["docker"], "docker": {"images": []}}):
             self.builder().build("plasma-tide", profile)
             argvs = self.incus_calls()
             init = next(a for a in argvs if a[0] == "init")
-            for key in ("security.nesting", "security.syscalls.intercept.mknod",
-                        "security.syscalls.intercept.setxattr"):
-                self.assertIn(key + "=true", init)
+            self.assertIn("security.nesting=true", init)
+            # PT-164: przypięty runc działa bez intercept zabronionego w projekcie ograniczonym.
+            self.assertFalse(any("security.syscalls.intercept." in arg for arg in init))
             template = next(a for a in argvs if a[0] == "exec" and "/opt/tide/stacks/docker.sh" in a)
             self.assertLess(argvs.index(init), argvs.index(template))
 
