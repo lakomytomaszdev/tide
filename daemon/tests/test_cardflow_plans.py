@@ -75,6 +75,16 @@ class ProposalTest(PlanFixture):
         self.assertEqual(got.rows[0]["reviewer"], "Codex Astra")
         self.assertTrue(any("jedną tabelę" in e for e in got.errors))
 
+    def test_same_model_with_other_effort_is_an_independent_reviewer(self):
+        cards = {"1": "## Kryteria akceptacji\n- [ ] Działa\n", "2": "## Kryteria akceptacji\n- [ ] Działa\n",
+                 "3": "## Kryteria akceptacji\n- [ ] Działa\n"}
+        self.write("| #1 | X | todo | | Codex mocny | | mocny | Codex standard | |\n"
+                   "| #2 | Y | todo | | Codex standard | | standard | Codex mocny | |\n"
+                   "| #3 | Z | todo | | Codex mocny | | mocny | Codex mocny | |\n", cards)
+        errors = self.check().errors
+        self.assertEqual([e for e in errors if "recenzent" in e],
+                         ["#3: recenzent musi mieć inny model albo inną siłę myślenia i zachować pracę lokalną"])
+
     def test_card_identity_local_class_and_work_id_are_checked(self):
         self.write("| OTHER-1 | X | todo | | Sonnet | | lokalny | Opus | |\n",
                    {"OTHER-1": "## Kryteria akceptacji\n- [ ] Działa\n"})
