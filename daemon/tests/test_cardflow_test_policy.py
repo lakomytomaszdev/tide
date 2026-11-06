@@ -1,4 +1,6 @@
 """PT-243: kartki rozdzielają testy ticketu od sprawdzenia całej karty."""
+import os
+import tempfile
 import unittest
 
 from tide_daemon.cardflow import handoff
@@ -59,3 +61,35 @@ class TestPolicyCards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OldCardBranchTest(unittest.TestCase):
+    """06.11: gałęzie kart sprzed `make test-changed` (K-37, K-38) dostają dotychczasową zasadę pełnego `make test`."""
+
+    def tree(self, makefile):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.mkdir(os.path.join(tmp.name, "mk"))
+        with open(os.path.join(tmp.name, "mk", "tests.mk"), "w", encoding="utf-8") as fh:
+            fh.write(makefile)
+        return tmp.name
+
+    def cards(self, worktree):
+        common = dict(card_id="K-38", title="Pudełko", description="d", ticket="PT-189", worktree=worktree,
+                      out_dir="/o", test_base="b" * 40)
+        return [handoff.ticket_card(**common, project="p", branch="t", card_branch="card/k-38"),
+                handoff.fix_card(**common, branch="t", round_no=1, review="MAJOR"),
+                handoff.review_card(**common, round_no=1, card_branch="card/k-38", ticket_branch="t",
+                                    diff="d", note="n", rules="")]
+
+    def test_branch_without_target_keeps_full_run_and_forbids_porting(self):
+        for text in self.cards(self.tree("test:\n\t@true\ntest-daemon:\n\t@true\n")):
+            with self.subTest(kind=text.splitlines()[0]):
+                self.assertNotIn("make test-changed BASE=", text)
+                self.assertIn("pełny `make test`", text)
+                self.assertIn("Nie przenoś infrastruktury testów z master", text)
+
+    def test_branch_with_target_uses_changed_tests(self):
+        for text in self.cards(self.tree("test:\n\t@true\ntest-changed:\n\t@true\n")):
+            with self.subTest(kind=text.splitlines()[0]):
+                self.assertIn("make test-changed BASE=" + "b" * 40, text)
