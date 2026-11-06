@@ -549,8 +549,25 @@ class RunnerGuardTest(BoxRunnerCase):
         with mock.patch.object(br, "BoxRunner", return_value=runner), \
                 mock.patch.object(runner, "start", side_effect=start_in_temp), \
                 mock.patch("tide_daemon.box.settings.load", return_value=self.settings), \
+                mock.patch("tide_daemon.box.trialgate.require_public"), \
                 contextlib.redirect_stdout(io.StringIO()):
+            # Historyczny adapter refguard działa tu tylko na własnym repozytorium
+            # i atrapie Incusa. Publiczną odmowę sprawdzamy bez tej podmiany poniżej.
             return br._demo(["proj", "--worktree", self.worktree, "--branch", "feat/pt-1", *options])
+
+    def test_public_demo_and_retry_refuse_before_runner_or_refguard(self):
+        for options in (("--", "true"), ("--finish-guard", "demo-20261106120000-abcd1234")):
+            with self.subTest(options=options), \
+                    mock.patch.object(br, "BoxRunner") as runner, \
+                    mock.patch.object(refguard, "begin") as begin, \
+                    mock.patch.object(refguard, "finish") as finish, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(br._demo(["proj", "--worktree", self.worktree,
+                                           "--branch", "feat/pt-1", *options]), 3)
+                runner.assert_not_called()
+                begin.assert_not_called()
+                finish.assert_not_called()
+        self.assertFalse(os.path.exists(refguard._root(self.repo)))
 
     def test_clean_demo_releases_guard(self):
         runner = self.runner()
