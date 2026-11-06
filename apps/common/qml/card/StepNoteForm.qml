@@ -28,6 +28,7 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: form.canAdd
         text: "Uwaga trafi do najbliższego wznowienia. Zapis nie przerywa pracy kroku ani nie uruchamia nowej sesji."
+        textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Tide.Tokens.textMuted
         font.family: Tide.Theme.uiFamily

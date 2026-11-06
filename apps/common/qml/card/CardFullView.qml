@@ -1073,6 +1073,7 @@ Rectangle {
                 visible: view.noteSteps.length > 0
                 Text {
                     text: "Uwagi do kroków"
+                    textFormat: Text.PlainText
                     color: Tide.Tokens.textPrimary
                     font.family: Tide.Theme.uiFamily
                     font.pointSize: Tide.Tokens.fontSizePt * 1.1
