@@ -4028,7 +4028,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                   "detail": detail})
 
         for decision in decisions.build_decisions(st):
-            if decision["kind"] == "caretaker":
+            if decision["kind"] == "caretaker" or (
+                    decision["kind"] in ("plan-revision-failed", "plan-fix-failed") and decision.get("caretaker")):
                 once(decision["id"], "caretaker", decision["happened"])
 
         if st.plan_revision and st.plan_revision.get("pending") and st.plan_reviewed:

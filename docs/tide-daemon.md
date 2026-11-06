@@ -1734,6 +1734,53 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+## Scenariusz 03.11 — ocena na prawdziwym modelu
+
+PT-156 rozdziela dwie rzeczy: test okablowania przez `FlowEngine` na atrapach
+(`daemon/tests/test_cardflow_caretaker_0311.py`) oraz ręczną ocenę diagnozy prawdziwego
+wykonawcy. Atrapa dostaje gotową odpowiedź; jej sukces nie mierzy jakości modelu ani „95%”.
+Test sprawdza dziennik, `engine.derived()`, katalog `in/context/`, strażnik oraz skutki akcji.
+W tym zestawie granica gita przy zapisie planu i przygotowaniu review jest atrapą; testy
+piaskownicy gita pozostają w osobnym zestawie. Nie oznacza to testu izolacji systemowej.
+
+Materiały są w `tests/fixtures/caretaker-0311/`: podkatalogi `1`, `2`, `3`, `4a`, `4b`
+zawierają odtworzony dziennik karty, wycinek kroku i kryterium oceny. Są rekonstrukcją
+przyczyn z kartki K-37, a nie kopiami prywatnych dzienników. Ścieżki są umowne,
+sekrety zamaskowane. Nie wgrywaj ich do działającej Tablicy.
+
+Procedura ręczna, poza `make test`:
+
+1. Dla każdego z pięciu podkatalogów otwórz świeżą sesję wybranego prawdziwego
+   wykonawcy w Konsoli, z repozytorium tylko do odczytu. Zanotuj nazwę wykonawcy,
+   model, ustawienia rozumowania, datę i identyfikator sesji. Nie dawaj mu `expected.md`.
+2. Przekaż `journal.jsonl`, `step.log`, `docs/agent-plan-standard.md` i
+   `docs/sandbox-and-permissions.md`. W przypadku 2 dołącz treść odrzuconego
+   `plan.md`: „błędny plan”; poprzednia propozycja i błędy są w dzienniku.
+   W przypadku 3 zatwierdzona baza i decyzja A są w dzienniku. Dla 4b oceń oba
+   przebiegi, a nie tylko ostatnią linię błędu.
+3. Użyj zadania: „Jesteś opiekunem karty Tide. Na podstawie dołączonych źródeł
+   zdiagnozuj przyczynę i zaproponuj jedną akcję z kontraktu opiekuna. Nie wykonuj
+   akcji, poleceń ani zapisów w repozytorium lub Tablicy. Zwróć JSON jak wynik
+   kroku: result=done, action oraz wymagane pola. Dozwolone są retry (step,
+   instruction, reason), return-plan (feedback, reason), retry-stage lub escalate
+   (summary, recommendation); opcjonalny report zawiera description. Nie możesz
+   zatwierdzać planu, wydawać zgody, scalać ani odrzucać ticketu. Ścieżki w materiale
+   są umowne. Po JSON wyjaśnij diagnozę, wskazując konkretne zdarzenia i linie.”
+4. Zapisz surową odpowiedź poza repozytorium przed otwarciem `expected.md` danego
+   przypadku. Porównaj osobno: trafność przyczyny, oparcie jej na źródłach,
+   kompletność parametrów akcji i zachowanie granic decyzji użytkownika. Błędne
+   wyjaśnienie przy trafnej nazwie akcji nie zalicza diagnozy.
+5. W notce karty K-37 zapisz dla każdego przypadku: wykonawcę/model, sesję, wynik
+   JSON, ocenę każdego kryterium (tak/nie z uzasadnieniem), cytowany zamaskowany
+   dowód oraz ewentualną lukę Tide. Zachowaj odpowiedź modelu; nie dopisuj jej do
+   testowego expected.md. Kolejne oceny rób w nowych sesjach, bez poprzednich odpowiedzi.
+
+Ocena nie jest bramką testów i nie uruchamia się automatycznie. Testy nie wywołują
+prawdziwych modeli. Znana sprzeczność wymagania PT-156 z kontraktem PT-143: zły wynik
+lub niedozwolona akcja oddają problem natychmiast, a PT-156 oczekuje dopiero limitu.
+Testy `test_bad_*` oznaczają tę konkretną lukę jako oczekiwaną porażkę; ich obecność
+nie oznacza spełnienia kryterium. Rozstrzygnięcie kontraktu wymaga osobnej decyzji.
+
 ## Opiekun karty (K-37)
 
 Opiekun karty to krok w tle rodzaju `caretaker` („opiekun”), który Tide uruchamia sam przy problemie karty, zanim

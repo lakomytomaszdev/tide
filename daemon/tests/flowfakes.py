@@ -131,6 +131,12 @@ if prompt.startswith("Jesteś opiekunem karty"):
                 "reason": "Poprzednia poprawka nie przeszła sprawdzenia formatu."}
         if care == "return-plan-obce":
             data["findings"] = "9"
+    # PT-156: odpowiedź zadana przez test okablowania, bez udawania diagnozy modelu.
+    scripted = re.search(r"^ATRAPA-WYNIK: (.+)$", prompt, re.MULTILINE)
+    if scripted:
+        data = json.loads(scripted.group(1))
+        if data.get("step") == "$target":
+            data["step"] = re.search(r"Krok problemu: (\S+)", prompt).group(1)
     if data is not None:
         with open(result, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
@@ -317,9 +323,16 @@ if word == "cli-zgoda":
     print(json.dumps({"type": "result", "subtype": "success", "permission_denials": [
         {"tool_name": "Bash", "tool_input": {"command": "git fetch origin"}}]}))
     sys.exit(0)
+if word == "wynik-worktree" and "Instrukcja od opiekuna karty" not in prompt:
+    with open(os.path.join(cwd, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump({"result": "done"}, fh)
+    commit()
+    print("Zapisano wynik: " + os.path.join(cwd, "result.json"), flush=True)
+    print("GITHUB_TOKEN=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", flush=True)
+    sys.exit(0)
 if word == "bez-wyniku":
     sys.exit(0)
-if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt:
+if word == "odmowa-zapisu" and "Użytkownik polecił ponowić" not in prompt and "Instrukcja od opiekuna karty" not in prompt:
     # PT-125: piaskownica odmawia zapisu pliku wyniku; w dzienniku kroku token i zmienne środowiskowe.
     print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "tool_use", "name": "Bash", "input": {
