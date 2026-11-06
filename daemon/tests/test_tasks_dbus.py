@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 from . import gitrepos
-from .privatebus import SERVICE, PrivateBus, requires_dbus
+from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_tasks_core import FAKE_AGENT, TRICKY, write_exec
 
 PATH, IFACE = "/Tasks", "org.tide.Daemon.Tasks"
@@ -181,10 +181,15 @@ class TasksContractTest(unittest.TestCase):
         result = self.start(repoPath=self.alpha, tool="codex", prompt="Karta K-1: plan w tablicy", newWorktree=True,
                             branch="codex/k-1-plan", addDirs=[docs])
         self.assertTrue(result["ok"], result)
+        # Start potwierdza przejęcie zadania przez launcher, a zapis argv następuje dopiero w programie.
+        self.assertTrue(wait_until(lambda: len(self.agent_calls()) == before + 1, timeout=5),
+                        "pierwszy program nie zapisał wywołania")
         result = self.start(repoPath=self.alpha, tool="claude", prompt="Karta K-1: tylko specyfikacja",
                             newWorktree=False, addDirs=[docs])
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"]), (self.alpha, ""))
+        self.assertTrue(wait_until(lambda: len(self.agent_calls()) == before + 2, timeout=5),
+                        "drugi program nie zapisał wywołania")
         runs = self.agent_calls()[before:]
         self.assertEqual([(r["name"], r["argv"]) for r in runs],
                          [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
