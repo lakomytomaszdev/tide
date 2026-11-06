@@ -253,7 +253,11 @@ def fold(events: list[dict]) -> FlowState:
             st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
-            if st.moved_to not in ("done", "archived"):
+            # Domknięcie mogło zacząć się przed ręcznym odesłaniem karty do poprawy.
+            # Jego późniejszy wynik nie jest nową pracą i nie cofa decyzji użytkownika.
+            closing_after_rework = (st.moved_to == "todo" and
+                                    (st.steps.get(e.get("step")) or {}).get("kind") == "close")
+            if st.moved_to not in ("done", "archived") and not closing_after_rework:
                 st.moved_to = ""
         elif kind == "review.verdict":
             st.verdicts[(e.get("ticket"), e.get("round"))] = e
@@ -346,7 +350,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.closed":
-            st.closed = e
+            if st.moved_to != "todo":
+                st.closed = e
         elif kind == "card.main-merged":
             st.main_merged = e
         elif kind == "card.moved":
