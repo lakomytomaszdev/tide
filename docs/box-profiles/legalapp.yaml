@@ -2,6 +2,8 @@
 tide-box: 1
 project: legalapp
 stacks: [dotnet, docker, playwright]
+# Narzędzia czerwonej listy: brak programu nie może udawać odmowy granicy.
+apt: [dnsutils, netcat-openbsd, iproute2, dbus]
 dotnet:
   sdk: [10.0.100]
 docker:
@@ -12,4 +14,4 @@ network:
   domains: []
 verify:
   - dotnet build
-notes: "Propozycja PT-184; wymaga obsługi Playwright .NET i kontekstu projektu dla verify przed budową."
+notes: "Propozycja PT-184; Playwright .NET 1.52.0; budowa z --worktree wskazującym czysty worktree LegalApp."

@@ -20,4 +20,9 @@ domains:
   - name: storage.googleapis.com
     risk: yellow
     note: ogólny magazyn Google; Playwright pobiera stąd Chromium, ale domena obsługuje dowolne zasoby
+# Wariant .NET (PT-184): projekt instalatora z przypiętą paczką, tylko podczas budowy.
+build-domains:
+  - name: api.nuget.org
+    risk: green
+    note: paczka Microsoft.Playwright do instalacji przeglądarki .NET
 images: []
