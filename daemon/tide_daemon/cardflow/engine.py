@@ -1627,7 +1627,6 @@ class FlowEngine(PlanEditing):
             self.procs[step_id] = proc
             if placement is None:
                 return {"unit": bg.unit, "gitDir": bg.git_dir}
-            boxstep.started(self, placement, card.id, step_id, selected.tool)
             self._box_runners[placement.box] = placement.runner
             return {"unit": bg.unit, "gitDir": bg.git_dir, **placement.entry()}
 
@@ -1644,10 +1643,17 @@ class FlowEngine(PlanEditing):
                               local=selected.local, branch=made_ticket["branch"],
                               reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
         except (agentcmd.StepError, OSError) as exc:
+            # Błąd zapisu wyniku nie cofa uruchomienia jednostki. Otwarty zamiar pozwala
+            # odzyskać krok; porty i miejsce lokalne należą do niego aż do potwierdzonego końca.
+            if step_id in self.procs:
+                raise FlowError("step", f"krok wystartował, ale nie utrwalono startu: {exc}") from None
             if placement is not None:
                 boxstep.release_ports(placement.entry())
             self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
+        if placement is not None:
+            # Dodatkowy wpis ryzyka nie może zmienić udanego startu w wynik ok=False.
+            boxstep.started(self, placement, card.id, step_id, selected.tool)
         return self.journal.append(card.id, "step.started", step=step_id, kind=kind, ticket=ticket,
                                    round=round_no, executor=selected.name, program=selected.tool,
                                    model=selected.model, provider=selected.provider, local=selected.local,

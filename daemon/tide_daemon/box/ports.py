@@ -7,11 +7,13 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import tempfile
 
 from . import profile as bp
 
 BLOCK_SIZE = 10
+DEMO_OWNER = re.compile(r"demo-[0-9]{14}-[0-9a-f]{8}")
 
 
 class PoolExhausted(Exception):
@@ -74,3 +76,34 @@ class PortPool:
     def release(self, owner: str) -> None:
         with self._locked() as leases:
             leases.pop(owner, None)
+
+    @contextlib.contextmanager
+    def demo_guard(self, owner: str, *, blocking: bool = True):
+        """Blokada życia klienta demo, także przed utworzeniem jednostki; znika po śmierci procesu.
+
+        Plik zostaje na dysku, żeby konkurujące procesy zawsze blokowały ten sam inode.
+        Trwały właściciel przydziału określa jednostkę bez dodatkowego pliku metadanych.
+        """
+        if not DEMO_OWNER.fullmatch(owner):
+            raise ValueError("niepoprawny identyfikator demo")
+        os.makedirs(self.folder, mode=0o700, exist_ok=True)
+        path = os.path.join(self.folder, self.box + "." + owner + ".lock")
+        with open(path, "a", encoding="utf-8") as guard:
+            try:
+                fcntl.flock(guard, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(guard, fcntl.LOCK_UN)
+
+    def recover_demos(self, unit_state) -> None:
+        """Odzyskuje osierocone demo tylko po potwierdzonym końcu jednostki w tym pudełku."""
+        with self._locked() as leases:
+            owners = [owner for owner in leases if DEMO_OWNER.fullmatch(owner)]
+        for owner in owners:
+            with self.demo_guard(owner, blocking=False) as available:
+                if available and unit_state("tide-step-" + owner + ".service") == "inactive":
+                    self.release(owner)

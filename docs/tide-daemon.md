@@ -2532,7 +2532,15 @@ Wyczerpana pula oznacza `step.waiting` z przyczyną `box`; kolejne tyknięcie po
 Wartości portów BoxRunner zapisuje tylko w `in/env`, nigdy w argv ani w środowisku klienta Incusa hosta.
 Zakończenie kroku (także `error`) i nieudany start zwalniają przydział; odzyskiwanie po restarcie zwalnia
 również zakończone kroki, nieudane zamiary startu i rezerwacje sprzed zamiaru startu.
-Tryb `BoxRunner --demo` korzysta z tej samej puli zatwierdzonego profilu i zwalnia ją po zakończeniu klienta.
+Błąd utrwalenia udanego startu pozostawia rezerwację przy otwartym zamiarze; odzyskiwanie
+odnajduje jednostkę i zachowuje jej porty do końca kroku.
+Tryb `BoxRunner --demo` korzysta z tej samej puli zatwierdzonego profilu. Zwalnia przydział dopiero
+po potwierdzeniu `inactive` jednostki w pudełku. Przerwanie oczekiwania wywołuje zatrzymanie jednostki;
+stan aktywny lub nieznany pozostawia trwałą rezerwację. Kolejne demo sprawdza osierocone przydziały
+tego pudełka i zwalnia wyłącznie te z potwierdzonym końcem jednostki. Identyfikator właściciela
+`demo-<czas>-<losowy sufiks>` określa nazwę jednostki; osobna blokada procesu demo chroni również
+okno między przydzieleniem portów a utworzeniem jednostki. Śmierć procesu zwalnia blokadę systemową,
+ale zachowuje rezerwację do bezpiecznego odzyskania.
 
 **Ryzyko K1.** Grupa `docker` daje użytkownikowi `agent` prawa roota pudełka, w tym możliwość
 zamontowania rootfs. Wewnętrzne `denyRead` nie chroni poświadczeń agenta przed kodem testów.

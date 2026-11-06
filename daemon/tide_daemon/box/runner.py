@@ -799,21 +799,35 @@ def _demo(argv: list) -> int:
         box = bs.card_box_name(args.slug, args.card) if args.card else bs.box_name(args.slug)
         Incus(settings.project).file_push(TIDE_STEP_SCRIPT, box, remote)
         tide_step = ("/bin/sh", remote)
-    from .ports import PortPool, PoolExhausted
+    from .ports import PortPool
     profile = bs.bp.load_project(args.slug) or {"tide-box": bs.bp.SCHEMA_VERSION}
     if args.card:
         profile = bs.bp.merge(profile, bs.bp.load_card(args.slug, args.card) or {
             "tide-box": bs.bp.SCHEMA_VERSION}).profile
     runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step)
     pool = PortPool(args.slug, runner.box)
+    step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
+                         step_id=step_id)
+    return _demo_run(runner, pool, step, profile, command, marker)
+
+
+def _demo_run(runner, pool, step, profile, command, marker) -> int:
+    # Kolejne demo odzyska rezerwacje po przerwaniu lub śmierci klienta. Nieaktywny
+    # systemd jest dowodem końca dopiero, gdy proces startujący nie trzyma już blokady.
+    pool.recover_demos(lambda unit: runner.unit_state(runner.box, unit))
+    with pool.demo_guard(step.step_id):
+        return _demo_guarded(runner, pool, step, profile, command, marker)
+
+
+def _demo_guarded(runner, pool, step, profile, command, marker) -> int:
+    from .ports import PoolExhausted
+    step_id, step_dir = step.step_id, step.step_dir
     try:
         port_env = pool.acquire(step_id, profile)
     except PoolExhausted as exc:
         print(str(exc), file=sys.stderr)
         return 3
     runner.step_env = lambda _s: {**port_env, "TIDE_DEMO_SECRET": marker}
-    step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
-                         step_id=step_id)
 
     def use_command(bg):
         bg.argv = list(command)
@@ -826,9 +840,18 @@ def _demo(argv: list) -> int:
         raise
     print(f"pudełko: {runner.box}\njednostka: {runner.unit_for(bg)}\nkatalog kroku: {step_dir}\n"
           f"znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET={marker}", flush=True)
-    code = proc.wait()
-    if port_env:
-        pool.release(step_id)
+    try:
+        code = proc.wait()
+    except BaseException:
+        runner.kill({"unit": runner.unit_for(bg), "box": runner.box}, proc=proc)
+        raise
+    finally:
+        if port_env:
+            if runner.unit_state(runner.box, runner.unit_for(bg)) == "inactive":
+                pool.release(step_id)
+            else:
+                print(f"porty {step_id} pozostają zarezerwowane; kolejne demo ponowi sprawdzenie jednostki",
+                      file=sys.stderr)
     for title, path in (("step.log", bg.log_file), (EXEC_LOG, os.path.join(step_dir, "out", EXEC_LOG))):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
