@@ -132,7 +132,7 @@ plany sześciokolumnowe zachowują dotychczasowe znaczenie.
 | Kolumna 1.2 | Opis |
 | --- | --- |
 | `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
-| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy |
+| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy; sam dobór nie potwierdza spełnienia zasad recenzji według ryzyka (niżej) |
 | `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
 
 **Wersja 1.3:** po `Blokery` może dojść opcjonalna kolumna `Projekt` (10 kolumn). Parser czyta plany o 6, 7, 8, 9
@@ -171,7 +171,7 @@ pytań do użytkownika w trakcie kroku; po niezależnym review pokazuje plan do 
 
 **Role.** Planujący przygotowuje tabelę i kartki. Inny wykonawca sprawdza plan przed pokazaniem go użytkownikowi;
 gdy znajdzie braki, planujący dostaje jedną poprawkę. Autor ticketu wykonuje pionowy wycinek w osobnym worktree,
-a recenzent używa innego modelu i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
+a recenzent spełnia zasady recenzji według ryzyka (niżej) i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
 może też zmienić wykonawcę lub kartkę ticketu, który jeszcze nie wystartował. Tickety bez blokerów mogą biec
 równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników do gałęzi karty.
 
@@ -192,6 +192,9 @@ gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawany
 osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani review. Zasada zastępuje
 wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
 planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
+
+Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
+[dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
 
 **Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
 `"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
@@ -274,6 +277,8 @@ review; format pliku planu i reguły zatwierdzania zostają bez zmian.
 **Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. Krok `close` przed napisaniem podsumowania
 uruchamia raz pełny `make test` na tej gałęzi i zapisuje wynik w podsumowaniu. Nieudane testy obsługuje
 jak inne problemy domknięcia: wynik `error` z opisem niepowodzeń zamiast `done`, bez scalenia do głównej.
+Domknięcie mimo nieudanego pełnego przebiegu wymaga jawnego rozliczenia odstępstwa i decyzji użytkownika
+według [zasad wyjątków od testów](testing.md#wyjątki-od-testów).
 Polecenie wymagające zgody lub wykonania poza piaskownicą korzysta ze zwykłego kontraktu `denied`/`outside`;
 wznowienie wykorzystuje wynik i nie powtarza udanego przebiegu bez nowych zmian.
 `check: manual` dodaje listę „Co przetestować
@@ -308,6 +313,54 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
    — wtedy ticket trafia do kolumny „Czeka” z treścią pytania.
 4. Recenzent ma w opisie albo typie słowo „review” (`code-reviewer`, `Review TOM-140 …`), a jego raport
    podaje liczby `BLOCKER` / `MAJOR` / `NIT` i werdykt (`APPROVE` albo `REQUEST CHANGES`).
+
+## Recenzja według ryzyka
+
+Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md).
+Niezależność oznacza nową sesję recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
+Dla zwykłych ticketów dopuszczalny jest ten sam model z inną siłą myślenia, np. Codex mocny ↔ standard.
+Sama zmiana siły myślenia nie oznacza zmiany rodziny modeli.
+
+Recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Codex) jest obowiązkowy dla:
+
+- granic uprawnień i bezpieczeństwa;
+- operacji destrukcyjnych;
+- migracji trwałego stanu;
+- historycznych wznowień i ważności zgód;
+- współbieżnych operacji git, blokad i odtwarzania po awarii;
+- zmian doboru testów i bramek akceptacji;
+- integracji zmieniających wspólny kontrakt kart.
+
+Przed scaleniem trzeba sprawdzić klasę ryzyka i dobór recenzenta; automatyczny wybór wykonawcy nie
+zwalnia z tego obowiązku. Przy braku dostępnego limitu wymaganego recenzenta ryzykowny ticket czeka.
+Wymaganie nie spada automatycznie do tego samego modelu z inną siłą myślenia ani do braku review.
+Review pozostaje obowiązkowe i kończy się `APPROVE` bez BLOCKER i MAJOR.
+
+## Poprawki koordynatora poza kartą
+
+To wyjątkowa ścieżka dla pilnego odblokowania pracy albo usunięcia regresji. Jedna poprawka usuwa
+jedną przyczynę i obejmuje najwyżej **150 zmienionych linii kodu produkcyjnego w 3 plikach**,
+liczonych łącznie dla całej poprawki (dodania i usunięcia), bez dzielenia na commity w celu obejścia limitu.
+Testy i dokumentacja nie zwiększają limitu kodu produkcyjnego, ale wchodzą do zakresu review.
+Funkcje, zmiany kontraktów oraz wszystkie klasy ryzyka z poprzedniej sekcji idą wyłącznie przez kartę
+z review **przed scaleniem**, także gdy poprawka jest pilna lub mała.
+
+Przed dostarczeniem poprawki wymagane są test odtwarzający problem (nieudany na przypiętej bazie,
+udany po poprawce) oraz testy regresji dobrane do zmiany. Wyniki podlegają zasadom wyjątków od testów.
+Koordynator zapisuje wpis w [rejestrze poprawek](agents/coordinator-fixes.md):
+
+- przyczynę, pilność i zakres oraz czas dostarczenia;
+- SHA bazy i poprawki;
+- dokładne polecenia, wyniki na bazie i po poprawce oraz regresję;
+- dotknięte karty i sposób dostarczenia do każdej ich gałęzi (SHA scalenia lub przeniesienia);
+- sposób wycofania i stan faktycznego wycofania;
+- termin, recenzenta, raport i wynik niezależnego review po fakcie.
+
+Niezależne review musi zakończyć się **w ciągu 24 godzin od dostarczenia poprawki**, a wcześniej,
+jeśli ma być scalana karta polegająca na tej poprawce. Zaległe review wstrzymuje kolejne scalenia
+tą ścieżką. BLOCKER lub MAJOR wykryty po fakcie oznacza zatrzymanie zależnego działania i naprawę
+albo wycofanie poprawki; sposób rozliczenia trafia do rejestru. Samo zlecenie review nie jest jego wynikiem.
+Ta ścieżka nie daje zgody na push ani scalenie do głównej bez wyraźnego polecenia użytkownika.
 
 ## Zakończenie pracy (1.1)
 
