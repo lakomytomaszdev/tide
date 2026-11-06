@@ -42,7 +42,7 @@ class TestPolicyCards(unittest.TestCase):
                                           out_dir="/o", tickets=[], manual=manual)
                 self.assertIn("Przed napisaniem podsumowania uruchom raz pełny `make test`", text)
                 self.assertIn("w worktree gałęzi karty, po scaleniu ticketów", text)
-                self.assertIn("Jeśli testy nie przejdą, nie zgłaszaj done", text)
+                self.assertIn("nie zgłaszaj done", text)
                 self.assertIn("zapisz wynik error", text)
                 self.assertIn("denied albo outside", text)
                 self.assertIn("Nie scalaj do gałęzi głównej", text)
@@ -167,3 +167,10 @@ class RerunFailedTest(unittest.TestCase):
         import test_runner
         dirs = sorted({d for pairs in test_runner.SUITES.values() for d, _ in pairs})
         self.assertEqual([d for d in dirs if not os.path.isfile(os.path.join(root, d, "__init__.py"))], [])
+
+    def test_card_close_reruns_failed_modules_instead_of_reporting_error(self):
+        """06.11 K-68: domknięcie padło na jednym niestabilnym module, a agent podsumowania mógł tylko zgłosić błąd."""
+        text = handoff.close_card(card_id="K-68", title="t", description="d", worktree=self.tree_with_runner(),
+                                  out_dir="/o", tickets=[], manual=False)
+        self.assertIn("nie powtarzaj całego `make test` na tym samym", text)
+        self.assertIn("/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>", text)

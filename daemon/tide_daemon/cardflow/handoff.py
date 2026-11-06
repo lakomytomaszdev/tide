@@ -96,8 +96,11 @@ def close_card(*, card_id: str, title: str, description: str, worktree: str, out
 Opis karty: {description}
 Wyniki ticketów: {tickets}
 Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
-Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done: zapisz wynik error
-z opisem niepowodzeń, jak przy innych problemach domknięcia. Gdy polecenie wymaga zgody lub wykonania
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie powtarzaj całego `make test` na tym samym
+kodzie: poproś (kontrakt outside) o ponowienie tylko padniętych modułów według zasady niżej. Gdy po ponowieniu
+nadal coś pada albo zmieniasz kod, nie zgłaszaj done: zapisz wynik error z opisem niepowodzeń, jak przy innych
+problemach domknięcia. Udane ponowienie na tym samym HEAD zapisz w podsumowaniu obok pierwszego przebiegu.
+{rerun_failed(worktree)} Gdy polecenie wymaga zgody lub wykonania
 poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
 bez nowych zmian.
 Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
