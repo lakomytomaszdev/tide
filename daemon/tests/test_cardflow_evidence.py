@@ -356,6 +356,52 @@ class EvidenceProcessTest(AcceptedFixture):
                 resumed, _ = self.observed(card, 1)
                 self.assertEqual(resumed["parentStep"], first["step"])
 
+    def test_resume_refuses_changed_historical_copies_with_healthy_issue(self):
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.cardflow.state import fold
+        for executor in ("Sonnet", "Codex mocny"):
+            for damage in ("image", "attachment", "manifest", "report", "missing", "symlink"):
+                with self.subTest(executor=executor, damage=damage):
+                    card, _ = self.accepted()
+                    self.assertTrue(self.start(card, executor=executor)["ok"])
+                    first, _ = self.observed(card, 0)
+                    self.answer(card, first)
+                    resumed, record = self.observed(card, 1)
+                    self.assertEqual(len(record["manifests"]), 2)
+                    self.assertTrue(wait_until(lambda: len(self.of(card, "step.finished")) == 2,
+                                               timeout=20), self.events(card))
+                    self.flow.stop()
+                    self.restart()
+                    # Uszkadzamy dziadka wznowienia, nie najnowsze wejście ani magazyn sprawy.
+                    folder = Path(first["stepDir"], "in/evidence")
+                    manifest = json.loads((folder / "attachments.json").read_text())
+                    entry = next(e for e in manifest["attachments"]
+                                 if e["type"].startswith("image/") == (damage == "image"))
+                    target = folder / entry["path"]
+                    if damage in ("manifest", "report"):
+                        target = folder / ("attachments.json" if damage == "manifest" else "report.md")
+                    if damage in ("missing", "symlink"):
+                        target.unlink()
+                        if damage == "symlink":
+                            target.symlink_to(Path(resumed["stepDir"], "in/evidence") / entry["path"])
+                    else:
+                        target.chmod(0o600)
+                        target.write_bytes(b"podmienione historyczne dane")
+                        target.chmod(0o444)
+                    engine = self.flow.engine
+                    state = fold(engine.journal.read(card))
+                    item = self.store.load().cards[int(card[2:])]
+                    self.assertIsNotNone(engine._issue_evidence(item, started=state.started))
+                    before = self.events(card)
+                    with mock.patch("tide_daemon.cardflow.engine.agentcmd.background",
+                                    side_effect=AssertionError("Proces dostał niesprawdzone stare dowody")) as process:
+                        with self.assertRaises(FlowError) as refused:
+                            engine._resume_step(card, state, state.steps[resumed["step"]],
+                                                {"choice": "answer", "answer": "Tak"})
+                    self.assertEqual(refused.exception.code, "broken-evidence")
+                    process.assert_not_called()
+                    self.assertEqual(self.events(card), before)
+
     def test_process_reads_bytes_in_planning_ticket_and_both_resumptions(self):
         card, _ = self.accepted("ATRAPA: plan-question")
         self.restart()

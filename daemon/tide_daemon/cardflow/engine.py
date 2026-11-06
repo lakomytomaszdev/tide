@@ -2017,7 +2017,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 attempt=0, resume_session="", make_prompt=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
-        source_evidence = self._issue_evidence(card, started=fold(self.journal.read(card.id)).started)
+        evidence_state = fold(self.journal.read(card.id))
+        source_evidence = self._issue_evidence(card, started=evidence_state.started)
+        if source_evidence and parent_step:
+            # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
+            # wejścia zlecenia, nie tylko ostatniego rodzica ani ograniczoną listę ancestor_outs.
+            try:
+                previous = {**evidence_state.steps, **evidence_state.caretakers}
+                for old_step in previous.values():
+                    if old_step.get("seq", 0) >= (evidence_state.started or {}).get("seq", 0):
+                        source_evidence.validate(old_step.get("stepDir"))
+            except (BoardError, OSError, ValueError, UnicodeError) as exc:
+                raise FlowError("broken-evidence", f"{card.id}: odmowa wznowienia ze starymi dowodami: {exc}") from None
         self._admit(card.id, selected, ticket, kind, step_id)
         worktree = made_ticket["worktree"]
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else

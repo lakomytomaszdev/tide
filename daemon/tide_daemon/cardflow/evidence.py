@@ -42,20 +42,35 @@ class Evidence:
                 f"Przyjęty raport sprawy: {folder / 'report.md'}\n"
                 "Obrazy sprawy:\n" + "\n".join(self.images(step_dir)) + "\n")
 
-    def materialize(self, step_dir):
-        folder = Path(step_dir, "in/evidence")
+    def _files(self):
+        """Jedna reprezentacja kopii i manifestu do publikacji oraz sprawdzania historii."""
         manifest = {"version": 1, "attachments": []}
         for entry, raw in self.copies:
             entry = dict(entry)
             if entry["type"] in IMAGE_TYPES:
                 target = Path("images", entry["id"] + IMAGE_TYPES[entry["type"]])
                 entry["path"] = "../" + target.as_posix()
-                _write(Path(step_dir, "in", target), raw)
+                yield Path("in", target), raw
             else:
-                _write(folder / entry["path"], raw)
+                yield Path("in/evidence", entry["path"]), raw
             manifest["attachments"].append(entry)
-        _write(folder / "report.md", self.report)
-        _write(folder / "attachments.json", (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode())
+        yield Path("in/evidence/report.md"), self.report
+        yield Path("in/evidence/attachments.json"), (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
+
+    def materialize(self, step_dir):
+        for relative, raw in self._files():
+            _write(Path(step_dir, relative), raw)
+
+    def validate(self, step_dir):
+        """Bez naprawiania braków: historia sesji może nadal wskazywać te konkretne kopie."""
+        if not step_dir or not Path(step_dir).is_absolute():
+            attachments.reject("Brakuje katalogu historycznych dowodów kroku.", "broken-file")
+        for relative, expected in self._files():
+            # Nie ufamy dawnemu manifestowi ani jego ścieżkom. Każdy komponent bez symlinków,
+            # bajty i manifest porównane z ponownie sprawdzonym, przyjętym źródłem.
+            raw = attachments.read_file(step_dir, relative, len(expected))
+            if raw != expected:
+                attachments.reject(f"Historyczny dowód kroku jest niezgodny ze sprawą: {relative}.", "broken-file")
 
 
 def _write(path, raw):

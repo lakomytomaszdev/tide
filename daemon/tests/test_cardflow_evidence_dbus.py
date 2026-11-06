@@ -17,19 +17,23 @@ from pathlib import Path
 import hashlib
 manifests = re.findall(r"(?m)^Manifest dowodów sprawy: (.+)$", prompt)
 if manifests:
-    manifest_path = Path(manifests[-1])
-    manifest = json.loads(manifest_path.read_text())
     observed = []
-    for entry in manifest["attachments"]:
-        path = manifest_path.parent / entry["path"]
-        raw = path.read_bytes()
-        observed.append({**entry, "bytes": raw.hex(), "observedHash": hashlib.sha256(raw).hexdigest(),
-                         "writeBits": path.stat().st_mode & 0o222})
-    inp = manifest_path.parent.parent
-    images = [{"name": p.name, "bytes": p.read_bytes().hex()} for p in (inp / "images").glob("*")]
+    images, reports = {}, []
+    for name in dict.fromkeys(manifests):
+        manifest_path = Path(name)
+        manifest = json.loads(manifest_path.read_text())
+        for entry in manifest["attachments"]:
+            path = manifest_path.parent / entry["path"]
+            raw = path.read_bytes()
+            observed.append({**entry, "bytes": raw.hex(), "observedHash": hashlib.sha256(raw).hexdigest(),
+                             "writeBits": path.stat().st_mode & 0o222})
+        inp = manifest_path.parent.parent
+        for p in (inp / "images").glob("*"):
+            images[str(p)] = {"name": p.name, "bytes": p.read_bytes().hex()}
+        reports.append((manifest_path.parent / "report.md").read_text())
     with open(os.path.join(out, "read-evidence.json"), "w") as fh:
-        json.dump({"attachments": observed, "images": images,
-                   "report": (manifest_path.parent / "report.md").read_text()}, fh)
+        json.dump({"attachments": observed, "images": list(images.values()),
+                   "report": "\n".join(reports), "manifests": list(dict.fromkeys(manifests))}, fh)
 if prompt.startswith("Krok ticketu"):
     word = "pytanie-bez-pracy"
 '''
@@ -98,7 +102,8 @@ class EvidenceBusTest(FlowCase):
             self.assertEqual(entry["observedHash"], hashlib.sha256(self.expected[entry["name"]]).hexdigest())
             self.assertEqual(entry["writeBits"], 0)
         self.assertIn("# Dowody", record["report"])
-        self.assertEqual(sum(bytes.fromhex(p["bytes"]) == self.expected["zrzut.png"] for p in record["images"]), 1)
+        self.assertEqual(sum(bytes.fromhex(p["bytes"]) == self.expected["zrzut.png"] for p in record["images"]),
+                         len(record["manifests"]))
         self.assertFalse(any(bytes.fromhex(p["bytes"]) in (self.expected["AGENTS.md"], self.expected["dane.html"])
                              for p in record["images"]))
         return step, record
