@@ -4,7 +4,21 @@ To przygotowane próby, nie potwierdzenie ich wykonania. Rzeczywiste wyniki dopi
 po każdej rundzie. Nie zastępować niepowodzeń wynikiem testu z atrapą.
 Nie zmieniać profilu, domen ani mechanizmów usługi bez odnotowania przyczyny i numeru ticketu.
 
-## Kolejność rund
+## Aktualne ograniczenia
+
+Oddanie PT-176 obejmuje przygotowane artefakty. Scenariusz 4 jest odłożony do PT-274.
+Próby instalacji i granic pozostają zablokowane bramką PT-261. Przyszła procedura wymaga
+dostosowania do jednorazowego celu z PT-273 i ponownego dopuszczenia przez użytkownika.
+Osobna runda `outside` ani sama osłona PT-170 nie uchylają tej blokady.
+Nie uruchamiać teraz instalacji, czerwonej listy ani prób odczytu poświadczeń.
+
+Walidacja oddawanych zmian: `make test-changed BASE=8c82f1692a494a95be41704c2debf27efc492272`.
+
+## Historyczna kolejność rund — obecnie niedopuszczona do wykonania
+
+Poniższe polecenia zachowano jako opis dawnych prób, nie jako aktualną instrukcję uruchomienia.
+W szczególności wskazanie rzeczywistego pliku pulpitu w punkcie 7 jest historyczne i niedopuszczone;
+przed przyszłymi próbami trzeba zastąpić je procedurą dla jednorazowego celu PT-273.
 
 Każde polecenie poniżej wymaga osobnej rundy `outside`, z katalogu worktree PT-176.
 Nie wykonywać na hoście gołego `make install` — jest zabronione w kroku.
@@ -41,9 +55,17 @@ opisana w `docs/tide-daemon.md`, sekcja „Polecenie i czerwona lista”.
 ## Karta testowa i scenariusz 6
 
 W panelu utworzyć osobną kartę testową plasma-tide z propozycją `plan.md`, kartką `tickets/1.md`
-i profilem `card.box.yaml`. To operacja użytkownika; pliki w tym katalogu nie oznaczają utworzenia karty.
+i profilem `box.yaml` obok `plan.md`. To operacja użytkownika; pliki w tym katalogu nie oznaczają utworzenia karty.
 Tide nadaje rzeczywiste ID karty i ticketu. Zatwierdzić plan razem z paczką po obejrzeniu raportu skanera
 i niepustej listy plików. Żaden `accepted_red` nie jest preautoryzowany w propozycji.
+
+Przed importem skopiować cały ten katalog do katalogu propozycji, zachowując nazwy `plan.md`,
+`box.yaml` i `tickets/1.md`. Użyć ścieżki importu istniejącego planu (obsługuje brak `card`);
+sprawdzić w katalogu wykonawców dostępność przydziału Sonnet / Opus albo wybrać dostępne modele.
+Importer odrzuca paczkę bez `accepted_red`: dopiero po jawnej zgodzie użytkownika na podgląd
+`session-logs` dopisać w kopii `box.yaml` pole `accepted_red: [pack:session-logs]` i przekazać
+propozycję do importu oraz zatwierdzenia planu. Bez tej zgody nie importować profilu z paczką.
+To instrukcja przyszłego przygotowania; w PT-176 nie udzielono zgody i nie utworzono karty.
 
 Po zgodzie, w kolejnych osobnych rundach (zastąpić `K-N` rzeczywistym ID):
 
@@ -59,7 +81,8 @@ rozstrzygnąć „dopisać do szablonu”, „dopisać do profilu” albo „nie
 Po domknięciu karty sprawdzić zdarzenie `packs.removed` oraz nieistnienie katalogu kopii
 wyliczonego przez `tide_daemon.box.packs.root("plasma-tide", "K-N")`. Nie kasować go ręcznie dla zaliczenia.
 
-Osobno wykonać próbę `cat ~/.claude/.credentials.json` narzędziem Bash rzeczywistego agenta.
+Historyczna, obecnie niedopuszczona próba: `cat ~/.claude/.credentials.json` narzędziem Bash rzeczywistego agenta.
+Obowiązują bramka PT-261 i jednorazowy cel PT-273; nie wykonywać jej teraz.
 Nie kopiować treści poświadczeń do notki; zachować jedynie rezultat odczytu. Zwykły shell `box run`
 nie dowodzi działania P-2. Przy niedziałającym bwrap lub Dockerze bez K3 zapisać
 „ryzyko resztkowe K1”, nigdy „odmowa”. Każde „nie dotyczy” wymaga dowodu uzupełniającego.

@@ -3,4 +3,4 @@ box: per-card
 packs:
   - name: session-logs
     from: ~/.claude/projects/-home-tomek-DevWorkspace-plasma-tide/*.jsonl
-# To propozycja. Pole accepted_red nadaje panel dopiero po jawnej zgodzie użytkownika.
+# To propozycja bez zgody. Przed importem patrz README; accepted_red dopiero po jawnej zgodzie użytkownika.

@@ -1,6 +1,7 @@
 """PT-176: dostarczony profil, propozycja paczki i rzeczywiste argumenty prób."""
 import importlib.util
 import io
+import shutil
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 import subprocess
@@ -9,6 +10,8 @@ import unittest
 from unittest import mock
 
 from tide_daemon.box import profile as bp
+from tide_daemon.cardflow import plans
+from tide_daemon.models.executors import default_catalog
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = ROOT / "docs/box-profiles"
@@ -29,7 +32,7 @@ class PlasmaTideProfileTest(unittest.TestCase):
 
     def test_card_pack_requires_explicit_consent_before_merge(self):
         project = bp.parse((PROFILES / "plasma-tide.yaml").read_text())
-        card = bp.parse((PROFILES / "plasma-tide-acceptance/card.box.yaml").read_text(), "card")
+        card = bp.parse((PROFILES / "plasma-tide-acceptance/box.yaml").read_text(), "card")
         self.assertEqual(card["box"], "per-card")
         self.assertEqual(bp.red_items(card), ["pack:session-logs"])
         self.assertEqual(bp.merge(project, card).profile.get("packs", []), [])
@@ -37,6 +40,29 @@ class PlasmaTideProfileTest(unittest.TestCase):
         merged = bp.merge(project, card)
         self.assertEqual(merged.dropped_red, [])
         self.assertEqual(merged.profile["packs"][0]["name"], "session-logs")
+
+    def test_acceptance_proposal_import_requires_consent_and_preserves_pack(self):
+        # Kopia symuluje przygotowanie przez użytkownika; wzorzec pozostaje bez zgody.
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "proposal"
+            shutil.copytree(PROFILES / "plasma-tide-acceptance", folder)
+
+            def read():
+                return plans.read(str(folder / "plan.md"), "K-999", default_catalog(),
+                                  allowed_roots=(tmp,), imported=True)
+
+            pending = read()
+            self.assertEqual(len(pending.errors), 1, pending.errors)
+            self.assertIn("pack:session-logs", pending.errors[0])
+            self.assertIn("accepted_red", pending.errors[0])
+            with (folder / "box.yaml").open("a") as profile:
+                profile.write("\naccepted_red: [pack:session-logs]\n")
+            approved = read()
+            self.assertEqual(approved.errors, [])
+            self.assertEqual(approved.rows[0]["executor"], "Sonnet")
+            self.assertEqual(approved.rows[0]["reviewer"], "Opus")
+            self.assertEqual(approved.box["packs"][0]["name"], "session-logs")
+            self.assertEqual(approved.box["box"], "per-card")
 
     def test_long_argument_crosses_box_cli_without_shell_rejoining(self):
         result = subprocess.CompletedProcess([], 0, "PT-176-find-ok\n", "")
