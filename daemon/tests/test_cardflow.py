@@ -63,7 +63,7 @@ class FlowInProcess(unittest.TestCase):
         from tide_daemon.board_monitor import BoardMonitor
         self.store = BoardStore(self.root)
         self.board = BoardMonitor(self.store, debounce_ms=200, poll_ms=60_000)
-        self.addCleanup(self.board.stop)
+        self.addCleanup(self.stop_board)
         self.flow = self.make_flow()
         self.board.start()
         self.assertTrue(json.loads(self.board.upsert_project(json.dumps({"repo": self.repo})))["ok"])
@@ -77,15 +77,38 @@ class FlowInProcess(unittest.TestCase):
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
         flow = CardFlowMonitor(engine, self.board, poll_ms=150)
+        # W testach stop jest granicą synchronizacji. Produkcyjne stop pozostaje nieblokujące.
+        flow.stop = lambda: self.stop_flow(flow)
         self.board.flow = flow
         flow.start()
-        self.addCleanup(flow.stop)
+        self.addCleanup(self.stop_flow, flow)
         return flow
+
+    def stop_flow(self, flow=None):
+        """Kończymy także bieżącą pracę przed zmianą środowiska testu lub ręcznym użyciem silnika."""
+        flow = flow or self.flow
+        pool = flow._pool
+        from tide_daemon.cardflow_monitor import CardFlowMonitor
+        CardFlowMonitor.stop(flow)
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+        app().processEvents()
+        # Anulowany tick nie woła callbacku `after`, więc sam nie wyzeruje flagi.
+        # Po shutdown(wait=True) żadna praca tego monitora już nie biegnie.
+        flow._ticking = False
+
+    def stop_board(self):
+        self.board.stop()
+        # QObject monitora może pozostać w cyklu Python/Qt. Nie zostawiamy instancji inotify
+        # do końca wielotysięcznego zestawu testów w jednym procesie.
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        watcher = self.board._watcher
+        watcher.deleteLater()
+        QCoreApplication.sendPostedEvents(watcher, QEvent.Type.DeferredDelete)
 
     def restart(self):
         """Nowy silnik i monitor na tej samej tablicy (bez procesów kroków w pamięci) — jak usługa po restarcie."""
-        self.flow.stop()
-        wait_until(lambda: False, timeout=0.3)
+        self.stop_flow()
         self.flow = self.make_flow()
 
     # --- pomocnicze -------------------------------------------------------------------------------

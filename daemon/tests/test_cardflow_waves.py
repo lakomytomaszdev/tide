@@ -136,6 +136,9 @@ class WaveFlowTest(FlowInProcess):
                 worker.join(5)
             self.wait_column(first, "review", timeout=20)
             self.wait_column(second, "review", timeout=20)
+            # Zapis step.finished poprzedza zwolnienie slotu; kończymy tick przed sprawdzeniem kolejki
+            # i wyjściem z podmiany queue.shared (także przy cleanupie tego testu).
+            self.stop_flow()
             self.assertFalse(isolated.busy())
 
     def test_restart_restores_local_slot_and_releases_it_after_running_step(self):
