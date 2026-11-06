@@ -43,4 +43,6 @@ CHANGE_MAP["daemon/tests/test_cardflow"] = "cardflow"
 # Klucz to ścieżka modułu; wartość musi wyjaśniać wspólny zasób. Takie moduły
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.
-SERIAL_MODULES = {}
+SERIAL_MODULES = {
+    "theme/terminal/tests/test_statusline.py": "pomiar budżetu 150 ms czasu ściennego bez konkurencji pozostałych modułów o CPU",
+}

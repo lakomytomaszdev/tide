@@ -435,3 +435,13 @@ Pełne testy: 4168 testów, 230 modułów, 4 pominięte, 456,58 s; jeden błąd 
 Kolumna review pojawia się przed końcem kroku domknięcia; test czeka teraz na `card.closed` obu kart
 przed zatrzymaniem monitora i sprawdzeniem kolejki. Pełne `make test` po poprawce wymaga osobnego outside,
 które nie uruchamia CLI ani strażnika refów na repozytorium użytkownika.
+
+Niezależne `make test` po piątej rundzie: 4172 testy, 230 modułów, 4 pominięte, 495,73 s.
+Log: [pełne testy po piątej rundzie](box-prototype/pt191-make-test-resume-9.log). Test kolejki po oczekiwaniu
+na domknięcia przeszedł. Pozostały dwa błędy testów: liczenie kroku close jako kolejnego wykonania
+po odrzuceniu ticketu oraz mediana statusline 152,29 ms przy 14 równoległych modułach (próg 150 ms).
+Pierwszy test pomija teraz close w porównaniu liczby kroków, zachowując asercje odrzucenia i braku scalenia.
+Moduł statusline korzysta z istniejącego trybu szeregowego po wszystkich równoległych modułach;
+próg 150 ms i liczba pomiarów pozostają bez zmian. Lokalnie 14 testów statusline i harmonogramu runnera
+przechodzi. Kolejne outside dotyczy wyłącznie `make test`; próby na wspólnym `.git` pozostają zablokowane
+po incydencie strażnika, a pierwszy rzeczywisty krok agenta nadal wymaga zatwierdzonej karty testowej.
