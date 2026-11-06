@@ -3,6 +3,7 @@ a drugi `pop(0)` kończył się `IndexError: pop from empty list` (MergeCardToMa
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -33,16 +34,41 @@ class BoardRepoRaceTest(unittest.TestCase):
         self.assertEqual(calls, ["test"], "jeden commit na wpis kolejki")
         self.assertEqual(repo.pending, [])
 
-    def test_commit_inside_sync_does_not_deadlock(self):
+    def test_commit_during_foreign_flush_returns_at_once_and_is_committed_by_the_flusher(self):
+        """Review Astry: wątek Qt nie może czekać na cudzy git — dopisuje wpis i wraca."""
         repo = BoardRepo("/nieuzywane-repo-testu")
-        with mock.patch.object(repo, "_commit_now", return_value=("", False)), \
+        repo.pending.append(("pierwszy", ["a"]))
+        calls, entered, release = [], threading.Event(), threading.Event()
+
+        def slow_commit(message, paths):
+            calls.append(message)
+            if message == "pierwszy":
+                entered.set()
+                release.wait(3)
+            return "", False
+
+        with mock.patch.object(repo, "_commit_now", side_effect=slow_commit):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                worker = pool.submit(repo.flush)
+                entered.wait(3)
+                started = time.monotonic()
+                self.assertEqual(repo.commit("drugi", ["b"]), "")
+                self.assertLess(time.monotonic() - started, 0.5, "commit nie czeka na cudze opróżnianie")
+                release.set()
+                self.assertEqual(worker.result(timeout=5), "")
+        self.assertEqual(calls, ["pierwszy", "drugi"])
+        self.assertEqual(repo.pending, [])
+
+    def test_sync_flushes_pending_entries_itself(self):
+        repo = BoardRepo("/nieuzywane-repo-testu")
+        repo.pending.append(("zaległy", ["x"]))
+        with mock.patch.object(repo, "_commit_now", return_value=("", False)) as commit_now, \
                 mock.patch.object(repo, "initialized", return_value=True), \
                 mock.patch.object(repo, "busy", return_value=""), \
                 mock.patch.object(repo.git, "run", return_value=mock.Mock(ok=True, out="")):
-            with repo.lock:
-                self.assertEqual(repo.commit("a", ["x"]), "")
-                self.assertFalse(repo.sync("s") is None)
-
+            self.assertTrue(repo.sync("s"))
+        commit_now.assert_called_once_with("zaległy", ["x"])
+        self.assertEqual(repo.pending, [])
 
 if __name__ == "__main__":
     unittest.main()

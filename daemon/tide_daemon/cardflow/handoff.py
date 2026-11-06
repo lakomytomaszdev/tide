@@ -15,10 +15,14 @@ OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect"
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
 
 
+RERUN_MODULES = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
+                 "różny od 0) przez uruchamiacz projektu — ta sama pula maszyny i izolacja stanu co w pełnym przebiegu:\n"
+                 "`/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>`. Tide robi to także sam, gdy prosisz\n"
+                 "o to samo pełne polecenie na tym samym HEAD.")
 RERUN_RUNNER = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
-                "różny od 0), każdy tym samym interpreterem co `make test`:\n"
-                "`XDG_STATE_HOME=\"$(mktemp -d)\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`\n"
-                "(osobny katalog stanu jak w uruchamiaczu: test bez izolacji nadpisał kiedyś stan działającej Tablicy).")
+                "różny od 0), każdy tym samym interpreterem co `make test` i we własnym katalogu stanu:\n"
+                "`d=\"$(mktemp -d)\" && XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`\n"
+                "(test bez izolacji nadpisał kiedyś stan działającej Tablicy).")
 RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem\n"
                  "na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.")
 
@@ -26,8 +30,9 @@ RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, na
 def rerun_failed(worktree: str = "") -> str:
     """Etap A (06.11: 31% czasu testów to powtórki całego zestawu na tym samym kodzie). Przepis zależy od
     projektu: repozytorium z `tools/test_runner.py` dostaje dokładne polecenie, inne technologie — zasadę."""
+    from .testrerun import runner_reruns
     runner = not worktree or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))
-    how = RERUN_RUNNER if runner else RERUN_GENERIC
+    how = (RERUN_MODULES if runner_reruns(worktree) else RERUN_RUNNER) if runner else RERUN_GENERIC
     return f"""Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
 niestabilności lub obciążenia), nie powtarzaj całego zestawu. {how}
 W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie

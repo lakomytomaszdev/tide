@@ -14,8 +14,11 @@ import shlex
 import subprocess
 
 VALUE = r"[A-Za-z0-9_./:@+-]+"
-FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: [A-Z_]+={VALUE})*$")
+# Po `make` tylko parametry doboru, które ponowienie odtwarza (BASE, JOBS); inne zmienne Make (np. LC_ALL=C)
+# zmieniałyby recepturę, więc taki przebieg idzie w całości (review Astry 06.11, runda 2).
+FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS)={VALUE})*$")
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
+JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?: |$)")
 # Nagłówek przebiegu uruchamiacza (pierwsza taka linia dziennika); dowolne późniejsze „logi:” z wyjścia testu
 # nie mogą wskazać cudzego raportu (review Astry 06.11).
 HEADER = re.compile(r"^Moduły: (\d+), JOBS=\d+, logi: (\S+)$", re.M)
@@ -35,9 +38,18 @@ def _git(worktree: str, *args: str) -> str | None:
     return run.stdout if run.returncode == 0 else None
 
 
+def runner_reruns(worktree: str) -> bool:
+    """Czy uruchamiacz gałęzi umie `--modules` (pula maszyny i izolacja stanu jak w pełnym przebiegu)."""
+    try:
+        with open(os.path.join(worktree, "tools", "test_runner.py"), encoding="utf-8") as fh:
+            return '"--modules"' in fh.read()
+    except OSError:
+        return False
+
+
 def head(worktree: str) -> str:
-    """HEAD worktree, gdy repozytorium ma uruchamiacz Tide i czyste drzewo; inaczej pusty napis (bez podmiany)."""
-    if not worktree or not os.path.isfile(os.path.join(worktree, "tools", "test_runner.py")):
+    """HEAD worktree, gdy uruchamiacz gałęzi umie ponowienie i drzewo jest czyste; inaczej "" (bez podmiany)."""
+    if not worktree or not runner_reruns(worktree):
         return ""
     status = _git(worktree, "status", "--porcelain")
     sha = _git(worktree, "rev-parse", "HEAD")
@@ -63,16 +75,17 @@ def failed_modules(log: str) -> list[str]:
 
 
 def rerun_command(modules: list[str], sha: str, previous: str, command: str = "") -> str:
-    """Każdy moduł z własnym `XDG_STATE_HOME`, jak w `tools/test_runner.py` (test bez izolacji nadpisał kiedyś stan
-    działającej Tablicy), i ze zmiennymi środowiska z oryginalnego polecenia."""
-    prefix = PREFIX.match(command.strip()).group(1) if PREFIX.match(command.strip()) else ""
+    """Przez uruchamiacz projektu (`--modules`): ta sama pula maszyny, osobny katalog stanu każdego modułu i raport
+    jak w pełnym przebiegu; zmienne środowiska sprzed `make` i JOBS zostają."""
+    command = command.strip()
+    prefix = PREFIX.match(command).group(1) if PREFIX.match(command) else ""
+    jobs = JOBS.search(command)
     lines = [f"echo 'Tide: ten sam HEAD {sha[:12]} i czyste drzewo co w przebiegu {previous} — "
-             f"ponawiam tylko padnięte moduły ({len(modules)}); TIDE_FULL_RUN=1 wymusza pełny przebieg'", "rc=0"]
-    for module in modules:
-        folder, name = os.path.split(module)
-        lines.append(f'XDG_STATE_HOME="$(mktemp -d)" {prefix}/usr/bin/python3 -m unittest discover -t . '
-                     f"-s {shlex.quote(folder)} -p {shlex.quote(name)} || rc=1")
-    return "\n".join(lines + ["exit $rc"])
+             f"ponawiam tylko padnięte moduły ({len(modules)}); TIDE_FULL_RUN=1 wymusza pełny przebieg'",
+             f"{prefix}/usr/bin/python3 tools/test_runner.py"
+             + (f" --jobs {shlex.quote(jobs.group(1))}" if jobs else "")
+             + " --modules " + " ".join(shlex.quote(module) for module in modules)]
+    return "\n".join(lines)
 
 
 def substitute(events: list[dict], worktree: str, command: str) -> tuple[str, str, str]:
