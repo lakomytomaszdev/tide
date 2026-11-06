@@ -1,0 +1,13 @@
+tide-box: 1
+project: plasma-tide
+stacks: [python-qt]
+# Narzędzia prób granicy i zależności testów; instalowane wyłącznie w pudełku.
+apt: [dnsutils, netcat-openbsd, iproute2, dbus, python3-dbus, python3-gi, python3-yaml]
+network:
+  domains: [pypi.org, files.pythonhosted.org]
+  host-ollama: true
+ports:
+  pool: [49100, 49199]
+verify:
+  - make test
+box: per-project

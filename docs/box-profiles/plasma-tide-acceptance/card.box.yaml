@@ -1,0 +1,6 @@
+tide-box: 1
+box: per-card
+packs:
+  - name: session-logs
+    from: ~/.claude/projects/-home-tomek-DevWorkspace-plasma-tide/*.jsonl
+# To propozycja. Pole accepted_red nadaje panel dopiero po jawnej zgodzie użytkownika.
