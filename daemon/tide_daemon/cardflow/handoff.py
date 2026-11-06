@@ -31,7 +31,9 @@ def rerun_failed(worktree: str = "") -> str:
 niestabilności lub obciążenia), nie powtarzaj całego zestawu. {how}
 W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie
 (ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
-pełne polecenie z akapitu wyżej.
+pełne polecenie z akapitu wyżej. Ponowienie zmienia tylko to, co uruchamiasz, nie ocenę: porażka pierwszego
+przebiegu zostaje wynikiem, a udane ponowienie jej nie zastępuje. Rozlicz ją jak każde odstępstwo
+(`docs/testing.md`, „Wyjątki od testów”: ten sam test na bazie i na master, obciążenie, zakres, właściciel).
 """
 
 
@@ -96,10 +98,10 @@ def close_card(*, card_id: str, title: str, description: str, worktree: str, out
 Opis karty: {description}
 Wyniki ticketów: {tickets}
 Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
-Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie powtarzaj całego `make test` na tym samym
-kodzie: poproś (kontrakt outside) o ponowienie tylko padniętych modułów według zasady niżej. Gdy po ponowieniu
-nadal coś pada albo zmieniasz kod, nie zgłaszaj done: zapisz wynik error z opisem niepowodzeń, jak przy innych
-problemach domknięcia. Udane ponowienie na tym samym HEAD zapisz w podsumowaniu obok pierwszego przebiegu.
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
+`make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
+outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
+problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
 {rerun_failed(worktree)} Gdy polecenie wymaga zgody lub wykonania
 poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
 bez nowych zmian.
@@ -303,7 +305,8 @@ Dla recenzenta:
    "- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);" + chr(10) +
    "  nie uruchamiaj go ponownie na potrzeby review,"}
 - ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
-  (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów,
+  (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów; udane ponowienie nie zastępuje porażki,
+  oceń rozliczenie odstępstwa jak przy każdym nieudanym przebiegu,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 

@@ -172,5 +172,7 @@ class RerunFailedTest(unittest.TestCase):
         """06.11 K-68: domknięcie padło na jednym niestabilnym module, a agent podsumowania mógł tylko zgłosić błąd."""
         text = handoff.close_card(card_id="K-68", title="t", description="d", worktree=self.tree_with_runner(),
                                   out_dir="/o", tickets=[], manual=False)
-        self.assertIn("nie powtarzaj całego `make test` na tym samym", text)
+        self.assertIn("nie powtarzaj całego\n`make test` na tym samym kodzie", text)
+        self.assertIn("O przyjęciu odstępstwa decyduje użytkownik", text)
+        self.assertIn("udane ponowienie jej nie zastępuje", text)
         self.assertIn("/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>", text)
