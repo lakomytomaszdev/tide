@@ -1899,6 +1899,7 @@ Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta w
 | `base` | napis | obraz bazowy, np. `images:ubuntu/24.04` |
 | `stacks` | lista | nazwy szablonów (lista szablonów należy do #30) |
 | `node.version`, `dotnet.sdk` | napis/liczba, lista dla `dotnet.sdk` | |
+| `dotnet.restore-projects` | opcjonalna niepusta lista względnych ścieżek `.csproj` | publiczny restore tylko wskazanych projektów na kopii HEAD; bez listy restore całego rozwiązania; lista wchodzi do hasha przepisu |
 | `apt`, `setup`, `verify` | listy napisów | |
 | `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6 także z osadzonym IPv4 — mapowanym, zgodnym wstecznie i NAT64, `localhost`, nazwy jednoetykietowe oraz sufiksy `.local`, `.lan`, `.internal`, `.home.arpa`, `.localdomain`, `.intranet`, `.corp`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
 | `network.host-ollama` | bool | |

@@ -44,7 +44,7 @@ class StackReport:
     python: dict = field(default_factory=dict)          # markers, make_targets, qt_offscreen, qt
     docker: dict = field(default_factory=dict)          # compose_files, compose_images, ports
     testcontainers_images: list = field(default_factory=list)
-    nuget_sources: list = field(default_factory=list)   # {source, url, host, internal, known}
+    nuget_sources: list = field(default_factory=list)   # {source, key, url, host, internal, known, local?}
     ci: dict = field(default_factory=dict)              # files, images, commands, deploy_ignored
     internal_addresses: list = field(default_factory=list)  # {url, host, source}
 
@@ -171,7 +171,14 @@ def _nuget_sources(root: str) -> list:
             continue
         for block in re.findall(r"<packageSources>(.*?)</packageSources>", _read(path), re.S | re.I):
             for key, url in re.findall(r"<add\s+key=\"([^\"]*)\"\s+value=\"([^\"]*)\"", block, re.I):
-                host = (urlsplit(url).hostname or "").lower()
+                parsed = urlsplit(url)
+                # Źródło plikowe (także file://serwer/udział) nie jest domeną proxy.
+                # Raportujemy je bez dopisywania do sieci ani montowań pudełka.
+                if url and (not parsed.scheme or parsed.scheme == "file" or re.match(r"^[A-Za-z]:[\\/]", url)):
+                    result.append({"source": name, "key": key, "url": url, "host": "",
+                                   "internal": True, "known": False, "local": True})
+                    continue
+                host = (parsed.hostname or "").lower()
                 if not host:
                     continue
                 result.append({"source": name, "key": key, "url": url, "host": host,
@@ -307,7 +314,8 @@ def detect(worktree: str) -> StackReport:
         stacks.append("docker")
     if python.get("qt"):
         stacks.append("python-qt")
-    internal = [{"url": s["url"], "host": s["host"], "source": s["source"]} for s in sources if s["internal"]]
+    internal = [{"url": s["url"], "host": s["host"], "source": s["source"]} for s in sources
+                if s["internal"] and not s.get("local")]
     return StackReport(stacks=[s for s in STACK_ORDER if s in stacks], node=node, dotnet=dotnet, python=python,
                        docker=docker, testcontainers_images=images, nuget_sources=sources, ci=ci,
                        internal_addresses=internal)
@@ -341,6 +349,13 @@ def propose_profile(report: StackReport, project: str = "") -> dict:
     if report.python and not report.python.get("qt"):
         extra_domains += list(templates.registry_domains("python-qt"))
     for source in report.nuget_sources:
+        if source.get("local"):
+            items.append(_item("local-feed", source["url"], "red",
+                               f"Lokalne źródło NuGet z {source['source']} ({source['key']}): "
+                               "wyłączone; katalog hosta nie jest udostępniany w pudełku. "
+                               "Dostęp do danych wymaga osobnego pakietu zgód na paczkę danych.",
+                               f"nuget:{source['source']}"))
+            continue
         if source["host"] in templates.known_domains():
             continue
         what = ("adres wewnętrzny (sieć lokalna) — wymaga jawnej zgody, domyślnie wyłączony" if source["internal"]
