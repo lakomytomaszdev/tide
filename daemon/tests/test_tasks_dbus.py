@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from . import gitrepos
@@ -102,6 +103,27 @@ class TasksContractTest(unittest.TestCase):
         except OSError:
             return []
 
+    def wait_for_agent_call(self, offset, prompt, timeout=5):
+        """Start potwierdza przejęcie zadania, nie zakończenie zapisu przez agenta."""
+        deadline = time.monotonic() + timeout
+        data = b""
+        while True:
+            try:
+                with open(self.agent_log, "rb") as fh:
+                    fh.seek(offset)
+                    data = fh.read()
+            except FileNotFoundError:
+                data = b""
+            # Ostatni fragment może zawierać niepełny JSON albo znak UTF-8.
+            for line in data.split(b"\n")[:-1]:
+                run = json.loads(line)
+                if run.get("argv", [])[-1:] == [prompt]:
+                    return run
+            if time.monotonic() >= deadline:
+                self.fail(f"Brak pełnego wywołania agenta dla {prompt!r} po {timeout}s; "
+                          f"log={self.agent_log}, offset={offset}, nowe bajty={data!r}")
+            time.sleep(0.01)
+
     def test_1_repos_defaults_and_suggestion(self):
         repos = json.loads(self.call("Repos"))
         self.assertEqual(sorted(r["name"] for r in repos), ["alpha", "beta"])
@@ -166,13 +188,18 @@ class TasksContractTest(unittest.TestCase):
         self.assertEqual((result["ok"], result["error"]), (False, "protected-branch"))
         self.assertEqual(json.loads(self.call("Start", "to nie json"))["error"], "bad-request")
         self.assertEqual(self.start(repoPath=self.beta, tool="codex", prompt="x")["error"], "one-word")
-        before = len(self.agent_calls())
+        try:
+            offset = os.path.getsize(self.agent_log)
+        except FileNotFoundError:
+            offset = 0
         result = self.start(repoPath=self.beta, tool="codex", prompt="Przejrzyj README w głównym katalogu",
                             newWorktree=False)
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"], result["branch"]), (self.beta, "", "main"))
-        run = self.agent_calls()[before]
+        run = self.wait_for_agent_call(offset, "Przejrzyj README w głównym katalogu")
         self.assertEqual((run["name"], run["argv"]), ("codex", ["--", "Przejrzyj README w głównym katalogu"]))
+        self.assertEqual(os.path.realpath(run["cwd"]), os.path.realpath(self.beta))
+        self.assertEqual(gitrepos.git(self.beta, "branch", "--show-current").strip(), "main")
 
     def test_5_add_dirs_from_board_for_both_tools(self):
         docs = os.path.join(self.board, "docs", "alpha")
