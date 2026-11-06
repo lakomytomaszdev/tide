@@ -36,8 +36,9 @@ def opt(name):
 sid = opt("--session-id") or opt("--resume")
 prompt = sys.stdin.read()
 cwd = os.getcwd()
-result = re.search(r"Plik wyniku: (\S+)", prompt)
-result = result.group(1) if result else ""
+# Kontekst opiekuna może cytować kartki wcześniejszych kroków. Obowiązuje końcowa ścieżka jego własnego wyniku.
+results = re.findall(r"^Plik wyniku: (\S+)$", prompt, re.MULTILINE)
+result = results[-1] if results else ""
 out = os.path.dirname(result) if result else os.path.join(os.path.dirname(cwd), "missing-out")
 os.makedirs(out, exist_ok=True)
 with open(os.path.join(out, "fake-call.json"), "w", encoding="utf-8") as fh:

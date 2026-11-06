@@ -9,9 +9,11 @@ import shutil
 import tempfile
 import unittest
 from itertools import product
+from pathlib import Path
 from unittest import mock
 
 from tide_daemon.cardflow import caretaker, caretakerctx, faults
+from tide_daemon.cardflow.state import fold
 
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
@@ -973,9 +975,109 @@ class TideDocsTest(unittest.TestCase):
             self.assertIn("Standard planu", fh.readline())
 
 
+class InlineContextTest(unittest.TestCase):
+    @staticmethod
+    def file(path, text, **extra):
+        return {"relative": path, "path": "/context/" + path, "title": path, "text": text, **extra}
+
+    def test_priority_and_target_step_before_old_attempts(self):
+        paths = ["docs/standard.md", "changes.diff", "steps/old/note.md", "steps/old/step-log.md",
+                 "journal.jsonl", "steps/old/result.json", "steps/target/step-log.md",
+                 "steps/target/result.json", "plan-fix/errors.md"]
+        text = caretakerctx.inline_context([self.file(p, "dowód\n") for p in paths], target="target")
+        ordered = ["steps/target/result.json", "steps/old/result.json", "plan-fix/errors.md", "journal.jsonl",
+                   "steps/target/step-log.md", "steps/old/step-log.md", "steps/old/note.md",
+                   "changes.diff", "docs/standard.md"]
+        positions = [text.index(f"### {p} —") for p in ordered]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_limit_counts_utf8_headers_and_manifest_and_reports_each_file(self):
+        for path, tail in (("journal.jsonl", True), ("steps/current/step-log.md", True),
+                           ("steps/current/note.md", False)):
+            with self.subTest(path=path):
+                text = caretakerctx.inline_context([
+                    self.file(path, "POCZĄTEK\n" + "żółć 🐚\n" * 20000 + "KONIEC\n", trimmed=True),
+                    self.file("changes.diff", "dalsze dane" * 20000)])
+                self.assertLessEqual(len(text.encode("utf-8")), caretakerctx.INLINE_MAX_BYTES)
+                self.assertNotIn("�", text)
+                self.assertIn("KONIEC" if tail else "POCZĄTEK", text)
+                self.assertNotIn("POCZĄTEK" if tail else "KONIEC", text)
+                self.assertIn(f"- {path}: obcięto", text)
+                self.assertIn("przycięty już w pliku", text)
+                self.assertIn("- changes.diff: pominięto", text)
+
+    def test_manifest_alone_cannot_exceed_limit(self):
+        files = [self.file(f"steps/{n}/{'n' * 200}.md", "dużo danych\n" * 50) for n in range(1000)]
+        text = caretakerctx.inline_context(files)
+        self.assertLessEqual(len(text.encode("utf-8")), caretakerctx.INLINE_MAX_BYTES)
+        self.assertIn("plików i ich nazwy — limit wykazu", text)
+
+    def test_build_attaches_exact_masked_files_only_when_requested(self):
+        tree = Tree(self)
+        journal = tree.journal()
+        tree.write(os.path.join(tree.card_dir, "steps", "K-1-PT-7-2", "note.md"),
+                   f"Diagnoza GITHUB_TOKEN={TOKEN}\n{ENV_ONLY}\n")
+        kwargs = dict(card="K-1", card_dir=tree.card_dir, worktree=tree.worktree,
+                      context_dir=os.path.join(tree.step_dir, "in", "context"), env=ENV, tide_docs="")
+        problem = caretaker.problems(journal.st)[0]
+        files = caretakerctx.build(problem, journal.st, journal.events, **kwargs)
+        self.assertTrue(all(set(f) == {"path", "title", "trimmed"} for f in files))
+        files = caretakerctx.build(problem, journal.st, journal.events, **kwargs, include_text=True)
+        for item in files:
+            self.assertEqual(item["text"], Path(item["path"]).read_text())
+        text = caretakerctx.inline_context(files)
+        for secret in (TOKEN, ENV_ONLY):
+            self.assertNotIn(secret, text)
+        self.assertIn("•••", text)
+
+    def test_fixture_0311_has_diagnosis_evidence_in_codex_stdin(self):
+        tree = Tree(self)
+        fixture = Path(__file__).resolve().parents[2] / "tests/fixtures/caretaker-0311/1"
+        events = [json.loads(line) for line in (fixture / "journal.jsonl").read_text().splitlines()]
+        for event in events:
+            if event["type"] == "step.started":
+                event.update(worktree=tree.worktree, stepDir=os.path.join(tree.base, event["step"] + ".step"))
+        target = next(e for e in reversed(events) if e["type"] == "step.started")
+        tree.write(os.path.join(target["stepDir"], "out", "step.log"), (fixture / "step.log").read_text())
+        st = fold(events)
+        problem = caretaker.problems(st)[0]
+        files = caretakerctx.build(problem, st, events, card="K-31", card_dir=tree.card_dir,
+                                   worktree=tree.worktree, context_dir=os.path.join(tree.step_dir, "in/context"),
+                                   include_text=True, env=ENV)
+        prompt = caretaker.brief(problem, st, card="K-31", out_dir=os.path.join(tree.step_dir, "out"),
+                                 worktree=tree.worktree, commands=False, context=files)
+        self.assertIn("Zapisano wynik: /workspace/proj-worktrees/pt-7/result.json", prompt)
+        self.assertIn("Oczekiwany wynik: /workspace/proj-worktrees/pt-7-3.step/out/result.json", prompt)
+        self.assertIn('"reason": "no-result"', prompt)
+        self.assertIn("Kontekst jest w treści", prompt)
+        self.assertIn("Nie uruchamiaj poleceń", prompt)
+
+
 class ContextFlowTest(FlowInProcess):
     """Przebieg przez FlowEngine z atrapą `claude`: błąd kroku ticketu → krok opiekuna z kontekstem. Repozytorium
     projektu nie ma dokumentów Tide — migawki pochodzą z dokumentów działającej usługi (tu: repozytorium Tide)."""
+
+    def test_codex_receives_context_in_stdin_without_command_tools(self):
+        self.flow.engine.set_flow_settings({"caretakerExecutor": "Codex mocny"})
+        card_id = self.card(description="Eksport.\nATRAPA: blad-opiekun\n"
+                                        f"ATRAPA-POWOD: unikalny blad PT-257 GITHUB_TOKEN={TOKEN}\n"
+                                        "ATRAPA-OPIEKUN: escalate")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40), self.events(card_id))
+        step = next(s for s in self.of(card_id, "step.started") if s["kind"] == "caretaker")
+        with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            call = json.load(fh)
+        prompt = call["prompt"]
+        self.assertIn("Kontekst jest w treści", prompt)
+        self.assertIn("120 kB", prompt)
+        self.assertIn("Test pada: unikalny blad PT-257", prompt)
+        self.assertIn('"type": "step.finished"', prompt)
+        self.assertIn("# Standard planu pracy agentów (Tide)", prompt)
+        self.assertNotIn(TOKEN, prompt)
+        self.assertNotIn("Przeczytaj je", prompt)
+        from tide_daemon.tasks.agentcmd import CODEX_NO_COMMANDS
+        for feature in CODEX_NO_COMMANDS:
+            self.assertIn(f"features.{feature}=false", call["argv"])
 
     def test_context_files_brief_paths_and_masking(self):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "docs", "agent-plan-standard.md")))
@@ -1013,6 +1115,9 @@ class ContextFlowTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             prompt = fh.read()
         self.assertIn("## Kontekst", prompt)
+        self.assertIn("Przeczytaj je", prompt)
+        self.assertNotIn("Kontekst jest w treści", prompt)
+        self.assertNotIn("# Standard planu pracy agentów (Tide)", prompt)
         for rel in expected:
             self.assertIn(os.path.join(context, rel), prompt)
         for secret in SECRETS[:3]:

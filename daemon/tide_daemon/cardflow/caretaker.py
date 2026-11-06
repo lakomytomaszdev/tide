@@ -1127,7 +1127,8 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
           context: list | None = None, context_dir: str = "", limit: int = ACTION_LIMIT, chat: bool = False) -> str:
     """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), pliki kontekstu (PT-153, `context` —
     `[{path, title, trimmed}]` z `caretakerctx.build`), dostępne akcje z parametrami, zakazy, polecenia tylko do
-    odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu pochodzi
+    odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Bez poleceń kontekst zawiera także
+    `relative` i `text` z `build(include_text=True)`; kartka osadza treść w limicie 120 kB. Sekcja problemu pochodzi
     z `BRIEF_SECTIONS` według wyzwalacza."""
     section = BRIEF_SECTIONS.get(problem.get("trigger") or "")
     described = section(problem, st) if section else f"## Problem\n\nProblem {problem.get('id')}."
@@ -1137,7 +1138,10 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         if extra:
             described += "\n\n" + extra
     files = []
-    if context:
+    if not commands:
+        from .caretakerctx import inline_context
+        files = [inline_context(context or [], target=problem.get("step") or ""), ""]
+    elif context:
         files = ["## Kontekst", "",
                  f"Tide przygotował pliki kontekstu w {context_dir or '(katalog kontekstu)'} (tylko do odczytu; "
                  "sekrety zamaskowane jako •••, razem najwyżej 400 kB). Przeczytaj je, zanim wybierzesz akcję:", ""]
