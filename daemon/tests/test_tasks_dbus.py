@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 from . import gitrepos
-from .privatebus import SERVICE, PrivateBus, requires_dbus
+from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_tasks_core import FAKE_AGENT, TRICKY, write_exec
 
 PATH, IFACE = "/Tasks", "org.tide.Daemon.Tasks"
@@ -98,9 +98,17 @@ class TasksContractTest(unittest.TestCase):
     def agent_calls(self):
         try:
             with open(self.agent_log, encoding="utf-8") as fh:
-                return [json.loads(line) for line in fh]
+                return [json.loads(line) for line in fh if line.endswith("\n")]
         except OSError:
             return []
+
+    def wait_agent_calls(self, count):
+        # Przejęcie zadania przez Konsolę wyprzedza zapis wywołania przez proces agenta.
+        self.assertTrue(wait_until(lambda: len(self.agent_calls()) >= count, timeout=10),
+                        f"brak {count} pełnych wpisów agenta: {self.agent_calls()}")
+        calls = self.agent_calls()
+        self.assertEqual(len(calls), count)
+        return calls
 
     def test_1_repos_defaults_and_suggestion(self):
         repos = json.loads(self.call("Repos"))
@@ -130,7 +138,7 @@ class TasksContractTest(unittest.TestCase):
         self.assertEqual(result["branch"], "claude/napraw-cudzyslowy-apostrofy-rm-rf-id")
         self.assertEqual(result["title"], "alpha · claude/napraw-cudzyslowy-apostrofy-rm-rf-id")
         self.assertTrue(os.path.isdir(worktree))
-        runs = self.agent_calls()
+        runs = self.wait_agent_calls(1)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["name"], "claude")
         self.assertEqual(runs[0]["argv"], ["--", TRICKY.strip()])
@@ -171,7 +179,7 @@ class TasksContractTest(unittest.TestCase):
                             newWorktree=False)
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"], result["branch"]), (self.beta, "", "main"))
-        run = self.agent_calls()[before]
+        run = self.wait_agent_calls(before + 1)[before]
         self.assertEqual((run["name"], run["argv"]), ("codex", ["--", "Przejrzyj README w głównym katalogu"]))
 
     def test_5_add_dirs_from_board_for_both_tools(self):
@@ -181,11 +189,12 @@ class TasksContractTest(unittest.TestCase):
         result = self.start(repoPath=self.alpha, tool="codex", prompt="Karta K-1: plan w tablicy", newWorktree=True,
                             branch="codex/k-1-plan", addDirs=[docs])
         self.assertTrue(result["ok"], result)
+        self.wait_agent_calls(before + 1)
         result = self.start(repoPath=self.alpha, tool="claude", prompt="Karta K-1: tylko specyfikacja",
                             newWorktree=False, addDirs=[docs])
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"]), (self.alpha, ""))
-        runs = self.agent_calls()[before:]
+        runs = self.wait_agent_calls(before + 2)[before:]
         self.assertEqual([(r["name"], r["argv"]) for r in runs],
                          [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
                           ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])])

@@ -70,7 +70,8 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            fh.write(row["body"] + ("" if row is rows[0] and row["workId"].startswith("PT-") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            # Pierwszy rozpoczęty ticket zachowuje kartkę także dla numerów z zewnętrznego trackera.
+            fh.write(row["body"] + ("" if row is rows[0] and not row["workId"].startswith("#") else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)
