@@ -1201,7 +1201,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         context_state = fold(self.journal.read(item.id))
-        source_evidence = self._issue_evidence(item, started=context_state.started)
+        # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
+        source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
         context_prompt, base_context = self._step_base_context(context_state)
