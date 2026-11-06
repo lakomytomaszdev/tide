@@ -91,3 +91,12 @@ nie urywało się przedwcześnie. Wymaga tego samego środowiska co pełne testy
 gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. Nie uruchamiaj
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
+
+## Starsze gałęzie bez celu test-changed
+
+Wyjątek dotyczy wyłącznie gałęzi, której Makefile (wraz z `mk/*.mk`) nie udostępnia jeszcze
+`test-changed`: autor i recenzent uruchamiają tam pełny `make test` i zapisują polecenie oraz wynik
+w notce. Tide sprawdza dostępność celu w worktree ticketu podczas tworzenia kartki przekazania
+(`cardflow/handoff.py`). Nie wymaga przenoszenia infrastruktury testów z głównej gałęzi do starej
+karty. Gdy cel jest dostępny, obowiązuje przypięty `BASE` i zwykłe `make test-changed`.
+Ten wyjątek nie znosi pełnego testu gałęzi karty przy domknięciu.

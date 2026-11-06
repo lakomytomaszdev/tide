@@ -903,7 +903,7 @@ def ticket_waits(st: FlowState) -> dict[str, str]:
         target, ticket = d.get("waitTicket"), (st.steps.get(name) or {}).get("ticket") or ""
         if not target or name in resumed or ticket in st.rejected or name in st.superseded:
             continue
-        if target in st.rejected or (st.results.get(("merge", target)) or {}).get("ok"):
+        if target in st.rejected or target in st.imported_done or (st.results.get(("merge", target)) or {}).get("ok"):
             continue
         out[ticket] = target
     return out

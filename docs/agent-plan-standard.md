@@ -193,6 +193,9 @@ osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani re
 wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
 planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
 
+Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent uruchamiają pełny `make test`
+zamiast niedostępnego celu i zapisują wynik. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+
 **Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
 `"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
 `effect` — jedno zdanie o skutku wyboru (do 400 znaków, opcjonalny), `recommended` — najwyżej jedna pozycja.

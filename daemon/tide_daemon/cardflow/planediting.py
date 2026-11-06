@@ -15,10 +15,19 @@ PLAN_AUTHOR = "plan"    # `reassign-author` z ticket=plan przepina planistę kol
 
 
 def planner_of(st, proposal) -> str:
-    """Planista poprawek i review planu: przepięty przez użytkownika/koordynatora (06.11, K-38: poprawka planu czekała
+    """Planista przyszłych poprawek: przepięty przez użytkownika/koordynatora (06.11, K-38: poprawka planu czekała
     na limit Claude do soboty, bo zawsze szła do pierwotnego planisty), inaczej planista propozycji."""
     override = (st.author_overrides.get(PLAN_AUTHOR) or {}).get("executor")
     return override or (proposal or {}).get("planner") or ""
+
+
+def proposal_author_of(st, proposal) -> str:
+    """Autor zapisanej wersji propozycji; zmiana wykonawcy przyszłych poprawek go nie zmienia."""
+    proposal = proposal or {}
+    source = st.steps.get(proposal.get("sourceStep")) or {}
+    rows = proposal.get("rows") or [{}]
+    return source.get("executor") or proposal.get("planner") or rows[0].get("executor") or ""
+
 
 class PlanEditing:
     @staticmethod
@@ -53,8 +62,8 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(planner_of(st, proposal) or proposal["rows"][0]["executor"])
-            options = [e for e in catalog.executors if e.name != author.name and plans.independent_reviewer(author, e)
+            author = catalog.get(proposal_author_of(st, proposal))
+            options = [e for e in catalog.executors if author and e.name != author.name and plans.independent_reviewer(author, e)
                        and (e.provider == "local") == (author.provider == "local")]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
             # (K-33, K-35: domyślnie brany Haiku łamał format wyniku i nie łapał rozmiaru ticketów).
@@ -65,6 +74,9 @@ class PlanEditing:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
             selected_name = st.plan_reviewer or options[0].name
+            if selected_name not in {e.name for e in options}:
+                from .engine import FlowError
+                raise FlowError("bad-reviewer", "wybierz niezależnego recenzenta autora tej wersji planu")
             selected = execution.resolve(selected_name, catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-review", self._review_prompt(card, proposal))
             return True
@@ -311,10 +323,9 @@ class PlanEditing:
                 raise FlowError("review-active", "przegląd planu już wystartował")
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(planner_of(st, proposal) or proposal["rows"][0]["executor"])
+            author = catalog.get(proposal_author_of(st, proposal))
             selected = catalog.get(str(request.get("executor") or ""))
-            if not author or not selected or author.name == selected.name or \
-                    author.model.lower() == selected.model.lower() or \
+            if not author or not selected or not plans.independent_reviewer(author, selected) or \
                     (author.provider == "local") != (selected.provider == "local"):
                 raise FlowError("bad-reviewer", "wybierz niezależny model recenzenta planu")
             execution.resolve(selected.name, catalog, config=cfg, probe=self.model_probe, which=self.which)

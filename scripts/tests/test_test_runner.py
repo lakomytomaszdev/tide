@@ -247,10 +247,22 @@ class MachineSlotsTest(unittest.TestCase):
         self.assertEqual(peak[0], 3, "dwa przebiegi po 4 wątki razem najwyżej 3 moduły naraz")
 
     def test_slot_of_a_dead_process_returns_to_the_pool(self):
+        import fcntl
         code = ("import sys, os; sys.path.insert(0, sys.argv[1]); from tools import test_runner as r; "
-                "os.environ.pop(r.SLOT_HELD, None); r.MachineSlots(1, sys.argv[2]).acquire(); os._exit(0)")
-        subprocess.run([sys.executable, "-c", code, str(runner.ROOT), str(self.dir)], check=True,
-                       env={k: v for k, v in __import__("os").environ.items() if k != runner.SLOT_HELD})
+                "os.environ.pop(r.SLOT_HELD, None); handle = r.MachineSlots(1, sys.argv[2]).acquire(); "
+                "print('locked', flush=True); sys.stdin.readline(); os._exit(0)")
+        with subprocess.Popen([sys.executable, "-c", code, str(runner.ROOT), str(self.dir)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                              env={k: v for k, v in __import__("os").environ.items() if k != runner.SLOT_HELD}) as proc:
+            self.assertEqual(proc.stdout.readline().strip(), "locked")
+            try:
+                with open(self.dir / "slot-0.lock") as contender:
+                    with self.assertRaises(BlockingIOError, msg="uchwyt nadal trzyma blokadę w żywym procesie"):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                proc.stdin.write("exit\n")
+                proc.stdin.flush()
+                self.assertEqual(proc.wait(timeout=5), 0)
         with patch.dict("os.environ", {}, clear=False) as env:
             env.pop(runner.SLOT_HELD, None)
             slots = runner.MachineSlots(1, self.dir)
