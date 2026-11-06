@@ -1158,6 +1158,12 @@ z lokalną atrapą API (bez modelu, prawdziwych kluczy, hooków ani MCP). Raport
 niezerowe kody prób zapisu, utworzenia, usunięcia i zmiany nazwy, bezpośrednio i przez dowiązanie
 z worktree. Niedostępność piaskownicy po włączeniu testu jest błędem, nie udanym testem ani pominięciem.
 Próby wymagające zagnieżdżenia piaskownicy należy zgłosić w kroku jako `outside`.
+Jeśli Codex jest zainstalowany jako Snap, próba używa natywnego programu z tego samego
+zainstalowanego pakietu (`/snap/codex/<wersja>/bin/codex`). Wrapper `snap run` może odmówić startu
+w jednostce `tide-outside`, zanim zostanie utworzony profil. Test sprawdza granicę `workspace-write`
+samego programu; nie jest testem dodatkowych ograniczeń Snap ani zgodności jego wrappera z systemd.
+Nie zmienia to produkcyjnego wyboru programu. Artefakty `{claude,codex}-command.json` zapisują
+dokładne argv wykonanego testu obok dowodu operacji.
 
 Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
 (`teal`, `lavender`, `peach`, `butter`, `rose`, `mint`, `sky`; lista z `pastel` w `theme/palette/`),

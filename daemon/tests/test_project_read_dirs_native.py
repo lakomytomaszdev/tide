@@ -20,6 +20,39 @@ from unittest import mock
 from . import gitrepos
 from tide_daemon.tasks import agentcmd
 
+
+def native_binary(tool):
+    binary = (shutil.which(tool) or ("/snap/bin/codex" if tool == "codex" else
+                                   os.path.expanduser("~/.local/bin/claude")))
+    if tool == "codex" and os.path.realpath(binary) == "/usr/bin/snap":
+        # Wrapper Snap odmawia startu z obcego scope systemd, zanim dojdzie do profilu.
+        # Badamy workspace-write tego samego programu z zainstalowanego pakietu; nie
+        # zmieniamy produkcyjnego startu i nie uznajemy błędu wrappera za odmowę zapisu.
+        binary = os.path.realpath("/snap/codex/current/bin/codex")
+    if not os.access(binary, os.X_OK):
+        raise RuntimeError(f"Brak natywnego programu {tool}: {binary}")
+    return binary
+
+
+class NativeProgramSelectionTest(unittest.TestCase):
+    def test_snap_wrapper_selects_the_native_program_from_the_installed_package(self):
+        def realpath(path):
+            return {"/snap/bin/codex": "/usr/bin/snap",
+                    "/snap/codex/current/bin/codex": "/snap/codex/42/bin/codex"}[path]
+        with mock.patch.object(shutil, "which", return_value="/snap/bin/codex"), \
+                mock.patch.object(os.path, "realpath", side_effect=realpath), \
+                mock.patch.object(os, "access", return_value=True):
+            self.assertEqual(native_binary("codex"), "/snap/codex/42/bin/codex")
+
+    def test_other_installations_are_preserved_and_missing_program_is_an_error(self):
+        with mock.patch.object(shutil, "which", return_value="/opt/codex"), \
+                mock.patch.object(os.path, "realpath", return_value="/opt/codex"), \
+                mock.patch.object(os, "access", return_value=True):
+            self.assertEqual(native_binary("codex"), "/opt/codex")
+        with mock.patch.object(os, "access", return_value=False):
+            with self.assertRaises(RuntimeError):
+                native_binary("codex")
+
 PROBE = '''import json, pathlib, shlex, subprocess, sys
 out, target, alias = sys.argv[1:]
 report = {}
@@ -113,9 +146,7 @@ class NativeReadDirsTest(unittest.TestCase):
         self.alias.symlink_to(self.data, target_is_directory=True)
 
     def command(self, tool):
-        binary = (shutil.which(tool) or ("/snap/bin/codex" if tool == "codex" else
-                                       os.path.expanduser("~/.local/bin/claude")))
-        self.assertTrue(os.access(binary, os.X_OK), f"Brak {tool}: {binary}")
+        binary = native_binary(tool)
         step = agentcmd.Step(tool, binary, "Wykonaj próbę profilu.", str(self.wt), str(self.repo),
             str(self.step_dir), "native-probe", model="test", read_dirs=(str(self.data),),
             allowed_tools=("Bash",), permission_mode="acceptEdits", codex_mcp=(),
@@ -131,6 +162,7 @@ class NativeReadDirsTest(unittest.TestCase):
 
     def verify(self, tool, report, run):
         (self.evidence / f"{tool}-process.log").write_text(run.stdout + "\n" + run.stderr)
+        (self.evidence / f"{tool}-command.json").write_text(json.dumps(run.args, ensure_ascii=False, indent=2))
         self.assertEqual(run.returncode, 0, run.stderr[-4000:])
         self.assertTrue(report.is_file(), f"Brak dowodu: {self.evidence / (tool + '-process.log')}")
         proof = json.loads(report.read_text())
