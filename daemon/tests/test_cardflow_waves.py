@@ -136,6 +136,9 @@ class WaveFlowTest(FlowInProcess):
                 worker.join(5)
             self.wait_column(first, "review", timeout=20)
             self.wait_column(second, "review", timeout=20)
+            # Review jest widoczne jeszcze przed końcem lokalnego kroku domknięcia.
+            for card in (first, second):
+                self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=20), self.events(card))
             # Zapis step.finished poprzedza zwolnienie slotu; kończymy tick przed sprawdzeniem kolejki
             # i wyjściem z podmiany queue.shared (także przy cleanupie tego testu).
             self.stop_flow()
