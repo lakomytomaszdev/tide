@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -107,14 +108,113 @@ def process_kind(argv):
     return None
 
 
-def user_manager_main_pid(unit):
-    """Bieżący MainPID jednostki systemowej; brak pewnego wyniku nie daje wyjątku."""
+def incus_container(cgroup):
+    """Tożsamość wyłącznie z pełnego komponentu cgroup, bez historycznych PID."""
+    containers = set()
+    for line in cgroup.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[2].startswith("/"):
+            raise ValueError("invalid-container-cgroup")
+        for component in parts[2].split("/"):
+            if component in {".", ".."}:
+                raise ValueError("invalid-container-cgroup")
+            match = re.fullmatch(r"lxc\.payload\.([A-Za-z0-9][A-Za-z0-9_.-]*)_([A-Za-z0-9][A-Za-z0-9-]*)", component)
+            if match:
+                containers.add(match.groups())
+    if len(containers) > 1:
+        raise ValueError("ambiguous-container-cgroup")
+    return dict(zip(("project", "name"), containers.pop())) if containers else None
+
+
+def checked_container_disks(text, source):
+    """Tylko urządzenia z rozwiniętego YAML; konfiguracja i ścieżki nie trafiają do raportu."""
+    import yaml
+
+    class UniqueSafeLoader(yaml.SafeLoader):
+        pass
+
+    def unique_mapping(loader, node):
+        result = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node)
+            if not isinstance(key, str) or key in result:
+                raise ValueError("ambiguous-container-config")
+            result[key] = loader.construct_object(value_node)
+        return result
+
+    UniqueSafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
     try:
-        value = subprocess.run(["systemctl", "show", unit, "-p", "MainPID", "--value"],
-                               check=True, capture_output=True, text=True, timeout=10).stdout.strip()
-        return int(value) if value.isascii() and value.isdecimal() and int(value) > 0 else None
-    except (OSError, subprocess.SubprocessError):
+        config = yaml.load(text, Loader=UniqueSafeLoader)
+    except yaml.YAMLError:
+        raise ValueError("invalid-container-config") from None
+    if not isinstance(config, dict) or not isinstance(config.get("devices"), dict):
+        raise ValueError("invalid-container-devices")
+    source = os.path.realpath(source, strict=os.path.ALLOW_MISSING)
+    disks = []
+    for name, device in sorted(config["devices"].items()):
+        if not isinstance(device, dict) or not isinstance(device.get("type"), str) or not device["type"]:
+            raise ValueError("invalid-container-device")
+        if device["type"] != "disk":
+            continue
+        value = device.get("source", "")
+        if not isinstance(value, str):
+            raise ValueError("invalid-container-disk-source")
+        row = {"device": name}
+        if os.path.isabs(value):
+            resolved = os.path.realpath(value, strict=os.path.ALLOW_MISSING)
+            common = os.path.commonpath((source, resolved))
+            if common in (source, resolved):
+                raise ValueError("container-source-overlap")
+            row.update(source_kind="host-path", source_relation="disjoint",
+                       source_sha256=hashlib.sha256(os.fsencode(resolved)).hexdigest())
+        elif (isinstance(device.get("pool"), str) and device["pool"]
+              and ((not value and device.get("path") == "/")
+                   or (value and all(part not in {".", ".."} for part in value.split("/"))))):
+            # Dysk puli nie podaje ścieżki hosta; bez puli względne source jest niejednoznaczne.
+            row.update(source_kind="storage-pool", source_relation="managed-volume")
+        else:
+            raise ValueError("ambiguous-container-disk-source")
+        disks.append(row)
+    return disks
+
+
+def container_fd_exemption(process, source):
+    """Odczyt Incusa po EACCES; błąd lub niejednoznaczność nadal oznaczają odmowę."""
+    pid = int(process.name)
+    container = None
+
+    def refuse(phase, error=None):
+        failure = InspectionError(pid, phase, getattr(error, "errno", None))
+        if container is not None:
+            failure.details["container"] = container
+        if isinstance(error, subprocess.CalledProcessError):
+            failure.details["returncode"] = error.returncode
+        raise failure from None
+
+    try:
+        before = (process / "cgroup").read_text()
+        container = incus_container(before)
+    except (OSError, ValueError) as error:
+        refuse("read-container-cgroup", error)
+    if container is None:
         return None
+    try:
+        config = subprocess.run(["incus", "config", "show", container["name"], "--project",
+                                 container["project"], "--expanded"], check=True,
+                                capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        refuse("container-config-unavailable", error)
+    try:
+        disks = checked_container_disks(config, source)
+    except (ImportError, OSError, ValueError, TypeError, RecursionError) as error:
+        phase = "container-source-overlap" if type(error) is ValueError and str(error) == "container-source-overlap" else "invalid-container-config"
+        refuse(phase, error)
+    try:
+        if (process / "cgroup").read_text() != before:
+            refuse("container-cgroup-changed")
+    except OSError as error:
+        refuse("read-container-cgroup", error)
+    return {"container": container, "checked_disks": disks}
 
 
 def check_processes(source, allowed_daemon=None, *, audit=None):
@@ -162,19 +262,19 @@ def check_processes(source, allowed_daemon=None, *, audit=None):
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as error:
-            # Jawny wyjątek koordynatora: niezrzucalny menedżer użytkownika.
-            # Nigdy po nazwie, historycznym PID lub odmowie innych metadanych.
+            # Korekta koordynatora: tylko kontener z potwierdzonym brakiem
+            # montażu źródła. Nigdy MainPID, nazwa procesu ani samo EACCES.
             pid = int(process.name)
-            unit = f"user@{os.getuid()}.service"
             if (error.errno == errno.EACCES
-                    and phase in {"list-fds", "read-fdinfo", "read-fdlink"}
-                    and pid == user_manager_main_pid(unit)):
-                skip = {"pid": pid, "phase": phase, "errno": error.errno, "unit": unit,
-                        "reason": "user-manager-mainpid-fd-eacces"}
-                if audit is not None:
-                    audit.event("process-inspection-skipped", **skip)
-                skips.append(skip)
-                continue
+                    and phase in {"list-fds", "read-fdinfo", "read-fdlink"}):
+                evidence = container_fd_exemption(process, source)
+                if evidence is not None:
+                    skip = {"pid": pid, "phase": phase, "errno": error.errno, **evidence,
+                            "reason": "incus-container-without-source-mount"}
+                    if audit is not None:
+                        audit.event("process-inspection-skipped", **skip)
+                    skips.append(skip)
+                    continue
             raise InspectionError(int(process.name), phase, error.errno, descriptor, flags) from None
     return {"checked_user_processes": checked, "active_tests": 0, "extra_daemons": 0,
             "writable_source_descriptors": 0, "inspection_skips": skips}
