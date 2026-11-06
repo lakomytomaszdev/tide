@@ -64,12 +64,18 @@ class Source:
     config: str
     revision: str
     env: dict
+    projects: tuple = ()
 
     def run(self, command):
         return self.incus.exec(self.box, command, self.env, user=1000, cwd=self.cwd)
 
     def restore(self):
-        return self.run(["dotnet", "restore", "--configfile", self.config, "--source", PUBLIC_NUGET])
+        for project in self.projects or (None,):
+            code = self.run(["dotnet", "restore", *([project] if project else []),
+                             "--configfile", self.config, "--source", PUBLIC_NUGET])
+            if code != 0:
+                return code
+        return 0
 
 
 def checked(incus, box, command, env, user=None):
@@ -104,7 +110,8 @@ def project_source(incus, slug, box, profile, env):
             checked(incus, box, ["chmod", "0644", remote_archive, remote + "/nuget.config"], env)
             checked(incus, box, ["tar", "-xf", remote_archive, "-C", remote + "/src",
                                  "--no-same-owner", "--no-same-permissions"], agent_env, user=1000)
-            yield Source(incus, box, remote + "/src", remote + "/nuget.config", revision, agent_env)
+            yield Source(incus, box, remote + "/src", remote + "/nuget.config", revision, agent_env,
+                         tuple(profile.get("dotnet", {}).get("restore-projects", [])))
         finally:
             # Nie tworzymy migawki zawierającej źródła, nawet jeśli build lub sprzątanie zawiedzie.
             try:

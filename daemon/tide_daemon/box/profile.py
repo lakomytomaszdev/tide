@@ -279,7 +279,7 @@ def validate(raw, scope: str = "project") -> dict:
             else:
                 out["node"] = {"version": str(ver)}
     if "dotnet" in raw:
-        dn = _check_map(raw["dotnet"], {"sdk"}, "dotnet", errors)
+        dn = _check_map(raw["dotnet"], {"sdk", "restore-projects"}, "dotnet", errors)
         if "sdk" in dn:
             sdk = dn["sdk"]
             sdks = sdk if isinstance(sdk, list) else [sdk]
@@ -288,6 +288,15 @@ def validate(raw, scope: str = "project") -> dict:
                 errors.append("dotnet.sdk: oczekiwano numeru wersji albo listy numerów")
             else:
                 out["dotnet"] = {"sdk": [str(s) for s in sdks]}
+        if "restore-projects" in dn:
+            projects = dn["restore-projects"]
+            if (not isinstance(projects, list) or not projects
+                    or any(not isinstance(p, str) or not re.fullmatch(
+                        r"[A-Za-z0-9_][A-Za-z0-9_./-]*\.csproj", p)
+                        or any(part in ("", ".", "..") for part in p.split("/")) for p in projects)):
+                errors.append("dotnet.restore-projects: oczekiwano niepustej listy względnych ścieżek .csproj")
+            else:
+                out.setdefault("dotnet", {})["restore-projects"] = list(dict.fromkeys(projects))
     for key in ("apt",):
         if key in raw:
             out[key] = _str_list(raw[key], key, errors, _APT)
@@ -528,7 +537,9 @@ def _recipe_parts(profile: dict) -> dict:
         "base": full.get("base", ""),
         "stacks": list(full["stacks"]),                      # kolejność ma znaczenie (kolejność instalacji)
         "node": full.get("node", {}).get("version", ""),
-        "dotnet": sorted(set(dotnet.get("sdk", []))),         # zbiór wersji SDK
+        "dotnet": ({"sdk": sorted(set(dotnet.get("sdk", []))),
+                    "restore-projects": list(dotnet["restore-projects"])}
+                   if dotnet.get("restore-projects") else sorted(set(dotnet.get("sdk", [])))),
         "apt": sorted(set(full["apt"])),                     # zbiór pakietów
         "setup": list(full["setup"]),                        # kolejność poleceń ma znaczenie
         "docker.enabled": full["docker"]["enabled"],

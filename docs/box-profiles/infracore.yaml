@@ -5,9 +5,13 @@ base: tide-base
 stacks: [dotnet]
 dotnet:
   sdk: ['8.0.415', '6.0.428']
+  restore-projects:
+    - src/Commons/Commons.csproj
+    - tools/UploadSmokeTest/UploadSmokeTest.csproj
 network:
   domains: []
   host-ollama: false
 verify:
-  - dotnet build --no-restore
-notes: "Propozycja PT-186 do zatwierdzenia. Linie SDK 8.0 i 6.0 przypięte do poprawek. Restore wyłącznie z nuget.org; bez prywatnych źródeł i danych hosta. Testy Firebirda do sprawdzenia na pulpicie."
+  - dotnet build src/Commons/Commons.csproj --no-restore
+  - dotnet build tools/UploadSmokeTest/UploadSmokeTest.csproj --no-restore
+notes: "PT-186: zatwierdzony publiczny podzbiór Commons i UploadSmokeTest. Restore wyłącznie z nuget.org; bez prywatnych źródeł i danych hosta. Testy API i projekty wymagające pakietów Firma oraz PDF przeniesione do K-75. Firebird do sprawdzenia na pulpicie."

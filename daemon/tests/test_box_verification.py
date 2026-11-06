@@ -70,6 +70,31 @@ class SourceTest(unittest.TestCase):
                     raise RuntimeError("verify failed")
         self.assertEqual([c.args[1][0] for c in self.incus.exec.call_args_list][-2:], ["rm", "rm"])
 
+    def test_explicit_subset_restores_each_project_only_from_public_nuget(self):
+        projects = ["src/Commons/Commons.csproj", "tools/UploadSmokeTest/UploadSmokeTest.csproj"]
+        profile = {"stacks": ["dotnet"], "dotnet": {"restore-projects": projects}}
+        with mock.patch.object(v, "archive_head", side_effect=self.source_archive):
+            with v.project_source(self.incus, "proj", "box", profile, self.env) as source:
+                self.assertEqual(source.restore(), 0)
+                restores = [c for c in self.incus.exec.call_args_list if c.args[1][:2] == ["dotnet", "restore"]]
+                self.assertEqual([c.args[1] for c in restores], [
+                    ["dotnet", "restore", p, "--configfile", source.config, "--source", v.PUBLIC_NUGET]
+                    for p in projects])
+                self.incus.exec.side_effect = [1]
+                self.assertEqual(source.restore(), 1)
+                self.incus.exec.side_effect = None
+
+    def test_subset_schema_rejects_paths_outside_the_source_and_changes_recipe(self):
+        base = {"tide-box": 1, "dotnet": {"sdk": ["8.0.415"]}}
+        before = bp.recipe_hash(bp.validate(base), "templates", "agents")
+        for value in ([], "App.csproj", ["../App.csproj"], ["/App.csproj"], ["x/../App.csproj"],
+                      ["x//App.csproj"], ["-App.csproj"], ["x;echo.csproj"], [True]):
+            with self.subTest(value=value), self.assertRaises(bp.ProfileError):
+                bp.validate({**base, "dotnet": {"restore-projects": value}})
+        profile = bp.validate({**base, "dotnet": {**base["dotnet"], "restore-projects": ["src/App.csproj"]}})
+        self.assertNotEqual(bp.recipe_hash(profile, "templates", "agents"), before)
+        self.assertEqual(bp.parse(bp.dump(profile))["dotnet"], profile["dotnet"])
+
     def test_unsafe_archives_are_rejected_before_any_container_operation(self):
         for name, kind in (("../escape", tarfile.REGTYPE), ("/escape", tarfile.REGTYPE),
                            (".git/config", tarfile.REGTYPE), ("source/link", tarfile.SYMTYPE),

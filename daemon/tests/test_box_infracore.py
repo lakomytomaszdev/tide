@@ -79,7 +79,9 @@ class ProjectProfileTest(unittest.TestCase):
         self.assertEqual(profile["project"], "infracore")
         self.assertEqual(profile["stacks"], ["dotnet"])
         self.assertEqual(profile["dotnet"]["sdk"], ["8.0.415", "6.0.428"])
-        self.assertEqual(profile["verify"], ["dotnet build --no-restore"])
+        projects = ["src/Commons/Commons.csproj", "tools/UploadSmokeTest/UploadSmokeTest.csproj"]
+        self.assertEqual(profile["dotnet"]["restore-projects"], projects)
+        self.assertEqual(profile["verify"], [f"dotnet build {p} --no-restore" for p in projects])
         self.assertEqual(bp.red_items(profile, templates.known_domains()), [])
         self.assertEqual(profile["network"]["domains"], [])
         self.assertNotIn("nuget_devhost", text)

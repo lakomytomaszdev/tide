@@ -1,7 +1,26 @@
 # PT-186 — odbiór rzeczywistego projektu
 
-Profil obok jest propozycją do zatwierdzenia, nie dowodem zgody ani budowy. Nie kopiować go do repozytorium projektu.
+Profil obok opisuje publiczny podzbiór zatwierdzony decyzją koordynatora w kroku PT-186.
+Nie jest dowodem zielonej budowy. Nie kopiować go do repozytorium projektu.
 Decyzja o kryteriach lokalnego źródła i stanie wejściowym: `docs/agents/pt-186/decisions.md`.
+
+## Zakres v1 po rzeczywistej próbie
+
+Pełny restore rozwiązania z nuget.org zakończył się błędami NU1101/NU1102.
+Koordynator ograniczył odbiór PT-186 do `src/Commons/Commons.csproj` i
+`tools/UploadSmokeTest/UploadSmokeTest.csproj`, których publiczny restore przeszedł.
+Profil wymienia je w `dotnet.restore-projects`: niepustej liście względnych ścieżek .csproj
+wewnątrz kopii źródeł, uwzględnianej w hashu przepisu. Bez listy builder zachowuje restore całego rozwiązania.
+Każdy projekt listy otrzymuje ten sam wygenerowany config z jedynym źródłem nuget.org;
+nieudany restore blokuje verify. Verify buduje oba projekty z `--no-restore`.
+
+Do K-75 przeniesiono testy API oraz projekty wymagające `Firma.Core`, `Firma.Core.Files`,
+`Firma.App5.Core`, `Firma.APP5.DataAccess`, `Firma.MenuSynchronization`, `PdfGenDp5`
+i `PdfGen >= 1.1.1`: brak ich wymaganych wersji w nuget.org. Dotyczy to m.in. Infrastructure,
+Dp5PostgresIntegration, PdfServices, ApiService, Web, PdfE2eTest, RefactoredInfrastructureTests
+i ApiServiceTests. Źródłem lokalnym wskazanym w repo jest nuget_devhost.config (`/samba/nuget/`);
+profil projektu nie udostępnia go. Wybrany publiczny podzbiór nie zawiera projektu testowego;
+zielonego buildu nie należy opisywać jako zaliczonych testów API.
 
 ## Rozpoznanie
 
@@ -29,11 +48,11 @@ może leżeć poza rozwiązaniem. Sprawdzić skład rozwiązania przed zmianą p
    a verify uruchamia jako agent w kopii źródeł. Przed clean usuwa kopię; błąd sprzątania przerywa budowę.
    `box.verify.source_revision` wskazuje sprawdzony commit. Nie zastępować buildu pustym projektem ani samym
    `dotnet --list-sdks`. `dotnet build --no-restore` po jawnym restore nie sięga ponownie do konfiguracji projektu.
-4. Restore rozwiązania w odizolowanym worktree wykonywać jawnie z `--source https://api.nuget.org/v3/index.json`
+4. Restore wskazanych projektów publicznego podzbioru w odizolowanym worktree wykonywać jawnie z `--source https://api.nuget.org/v3/index.json`
    i `--configfile NuGet.Config`. W czasie verify Builder używa oddzielnego, wygenerowanego pliku z `<clear />`
    i jedynym źródłem nuget.org. Nigdy nie używać `nuget_devhost.config`. Brak pakietu prywatnego oznacza rzeczywistą
    niezgodność zależności, nie powód do samodzielnego udostępnienia prywatnego źródła.
-5. Testy uruchamiać przez `tide box run infracore --worktree <worktree-projektu> -- dotnet test ...`.
+5. Testy (przeniesione do K-75 według decyzji powyżej) uruchamiać przez `tide box run infracore --worktree <worktree-projektu> -- dotnet test ...`.
    Wybrać testy bez bazy po przeczytaniu ich inicjalizacji, nie po samej nazwie projektu. Testy Firebirda bez
    wykrytego obrazu opisać jako „do sprawdzenia na pulpicie”. Nie dodawać zgadywanego obrazu.
 6. W tym samym pudełku sprawdzić odczyt `/samba/nuget/`: brak katalogu lub odmowa dostępu oznacza zaliczenie,
