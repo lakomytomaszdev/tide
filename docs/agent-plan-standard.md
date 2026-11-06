@@ -156,6 +156,24 @@ worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repoz
 Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
 review i scaleniu ticketu.
 
+**Szkice zakresu następczego (`followups/`).** Pakiet propozycji obejmuje Markdowny obok planu,
+`tickets/*.md` i `followups/**/*.md`. Podkatalogi szkiców zachowują swoją strukturę. Usługa zamraża
+pełną treść przed przekazaniem propozycji; review otrzymuje kopię pakietu w `in/proposal/`, a poprawka
+dodatkowo zaczyna z kopiami w swoim wyjściu. Późniejsza edycja wyjścia autora nie zmienia migawki.
+Dotyczy to planowania w tle, Konsoli oraz propozycji wskazanej z pliku. Każda propozycja przechowuje
+własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
+
+Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
+Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze
+referencyjne i cele z fragmentem) muszą wskazywać istniejący Markdown w pakiecie; wyjście poza
+katalog artefaktów i brak celu przerywają sprawdzanie przed publikacją niekompletnej propozycji.
+Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia daje wynik błędu kroku.
+
+Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
+`../followups/…` są przeliczane względem docelowego katalogu kartek. Kolejne commity stanu planu
+zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Szkic opisuje zakres do osobnego
+zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
+
 ## Przepływ karty prowadzony przez Tide (1.2)
 
 Karta na Tablicy uruchamia planowanie albo pojedynczy ticket. Tide prowadzi dziennik karty, zakłada gałąź karty

@@ -58,7 +58,7 @@ from . import planning
 from .planediting import PlanEditing
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
-from . import baseproposal
+from . import baseproposal, planartifacts
 from .mergepreview import source_dirty
 from .mergeop import MergeWorktree
 from .journal import Journal
@@ -1033,6 +1033,10 @@ class FlowEngine(PlanEditing):
         if st.started.get("mode") == "full" and kind == "planning":
             self._launch_full_planning(item, project, selected, made, step_id, list(images), shots, text)
             return
+        if round_no:
+            frozen = next((s.get("snapshotDir") for s in reversed(list(st.finished.values())) if s.get("snapshotDir")), "")
+            if frozen:
+                text += planartifacts.prepare(frozen, os.path.dirname(out), seed=True)
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
 
@@ -1548,8 +1552,10 @@ class FlowEngine(PlanEditing):
             self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
         if proposal.errors:
             return {"ok": False, "id": card_id, "error": "invalid-plan", "errors": proposal.errors}
-        with open(os.path.realpath(path), "rb") as fh:
-            source = fh.read(flow_plans.plan_mod.MAX_BYTES + 1)
+        artifact_rel = os.path.join("plan", "sources", str(uuid.uuid4()))
+        planartifacts.save(self.journal, card_id, artifact_rel, proposal.artifacts)
+        artifact_path = os.path.join(self.store.root, self.journal.rel_dir(card_id), artifact_rel)
+        source = proposal.artifacts[os.path.basename(path)]
         self.journal.write_file(card_id, os.path.join("plan", "plan.md"), source)
         for ident, body in proposal.cards.items():
             self.journal.write_file(card_id, os.path.join("plan", "tickets", ident.lstrip("#") + ".md"),
@@ -1567,7 +1573,7 @@ class FlowEngine(PlanEditing):
                                                                      "trackerProject", "source", "main")}
                                              for p in order]} if len(order) > 1 else {}),
                             sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
-                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
+                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.join(artifact_path, os.path.basename(path)), artifactPath=artifact_path)
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
     def approve_plan(self, card_id: str) -> dict:
@@ -2567,6 +2573,9 @@ class FlowEngine(PlanEditing):
                  "status: done" if len(merged | st.rejected) == len(approved.get("rows") or []) else "status: active",
                  f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", ""]
         before, after = "", ""
+        artifacts = planartifacts.read(proposed["artifactPath"]) if proposed.get("artifactPath") else {}
+        if proposed.get("planPath") and os.path.basename(proposed["planPath"]) in artifacts:
+            before, after = self._plan_extra(artifacts[os.path.basename(proposed["planPath"])].decode("utf-8"))
         if worktree and approved.get("planFile"):
             try:
                 with open(os.path.join(worktree, approved["planFile"]), encoding="utf-8") as fh:
@@ -2577,7 +2586,8 @@ class FlowEngine(PlanEditing):
             lines += [before, ""]
         lines += ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-        files = {}
+        files = {os.path.join(os.path.dirname(approved["planFile"]), name): body
+                 for name, body in artifacts.items() if name.startswith("followups/")}
         for row in approved.get("rows") or []:
             ticket = row["id"]
             state = self._plan_row_state(st, ticket, merged)
@@ -3981,8 +3991,11 @@ class FlowEngine(PlanEditing):
                     self.journal.write_file(card, os.path.join("steps", name, entry), fh.read())
                 kept.append(entry)
         snapshot_dir = ""
-        if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
-            snapshot_dir = self._freeze_planning_output(card, name, out)
+        if data.get("result") == "done" and step.get("kind") in ("planning", "plan-fix", "plan-import", "plan-revise", "plan-amend"):
+            try:
+                snapshot_dir = self._freeze_planning_output(card, name, out)
+            except (OSError, UnicodeError, ValueError) as exc:
+                data = {"result": "error", "reason": f"niepoprawne artefakty planowania: {exc}"}
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
         if data.get("result") == "question" and data.get("baseProposal") is not None:
             extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
@@ -4072,19 +4085,7 @@ class FlowEngine(PlanEditing):
     def _freeze_planning_output(self, card: str, step: str, out: str) -> str:
         """Migawka artefaktów z chwili wyniku, poza zapisywalnym katalogiem Konsoli."""
         relative = os.path.join("steps", step, "proposal")
-        total = 0
-        for folder, prefix in ((out, ""), (os.path.join(out, "tickets"), "tickets")):
-            if not os.path.isdir(folder) or os.path.islink(folder):
-                continue
-            for entry in sorted(os.scandir(folder), key=lambda item: item.name):
-                if not entry.name.endswith(".md") or not entry.is_file(follow_symlinks=False):
-                    continue
-                size = entry.stat(follow_symlinks=False).st_size
-                total += size
-                if size > source_plans.MAX_BYTES or total > 16 * 1024 * 1024:
-                    raise FlowError("planning-output", "artefakty planowania przekraczają dopuszczalny rozmiar")
-                with open(entry.path, "rb") as fh:
-                    self.journal.write_file(card, os.path.join(relative, prefix, entry.name), fh.read())
+        planartifacts.save(self.journal, card, relative, planartifacts.read(out))
         return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
 
     def _queue_notices(self, card: str) -> None:
