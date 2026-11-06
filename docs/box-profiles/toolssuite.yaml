@@ -1,0 +1,19 @@
+# Propozycja PT-185; zatwierdzony profil przechowuje Tablica, poza repozytorium firma.
+tide-box: 1
+project: toolssuite
+type: container
+stacks: [node, playwright]
+node: { version: "20" }
+# Szablon playwright pobiera też Chromium dla CHROME_BIN Karmy.
+# Projekt używa Playwright 1.64.1; jego rewizja musi być pobrana już przy budowie.
+setup:
+  - PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.64.1 install chromium
+network:
+  domains: []
+  host-ollama: false
+ports: { pool: [4300, 4399], env: [PORT, E2E_PORT] }
+docker: { enabled: false, images: [] }
+resources: { cpu: 8, memory: 24GiB, disk: 60GB, swap: false }
+verify:
+  - npm run lint
+box: per-project
