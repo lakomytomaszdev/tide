@@ -35,7 +35,9 @@ class StepStopBoxTest(BoxFlow):
         self.assertIn(step["unit"] + ".service", kills[0])
         self.assertTrue(finished["wip"]["stopped"])
         self.assert_changes_kept(finished, step, step["branch"])
-        self.assertEqual(bs.running_steps(SLUG, SLUG), [])
+        # step.finished jest utrwalane przed _release_box; po restarcie sprzątanie może jeszcze trwać.
+        self.assertTrue(wait_until(lambda: not bs.running_steps(SLUG, SLUG), timeout=10),
+                        bs.running_steps(SLUG, SLUG))
         # Na hoście nic nie było zatrzymywane: atrapa systemctl hosta nie dostała `kill`.
         with open(self.calls, encoding="utf-8") as fh:
             self.assertFalse([line for line in fh if line.startswith("systemctl") and " kill" in line])
