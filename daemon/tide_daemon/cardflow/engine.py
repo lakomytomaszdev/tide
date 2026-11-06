@@ -3262,7 +3262,8 @@ class FlowEngine(PlanEditing):
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
-                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if intent.get(k)})
+                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
+                                                         "boxPortOwner") if intent.get(k)})
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))

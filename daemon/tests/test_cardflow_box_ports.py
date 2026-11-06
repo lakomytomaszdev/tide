@@ -59,6 +59,20 @@ class PortPlacementTest(BoxFlow):
         with self.assertRaises(PoolExhausted):
             PortPool(SLUG, SLUG).acquire("other", PROFILE)
 
+    def test_recovered_start_preserves_owner_and_releases_ports_when_finished(self):
+        from tide_daemon.cardflow.state import fold
+        placement = self.place("first")
+        journal = self.engine.journal
+        journal.append(self.card_id, "intent", action="step-start", key="first", **placement.entry())
+        journal.append(self.card_id, "result", action="step-start", key="first", ok=True)
+        self.engine._recover_started_steps(self.card_id, fold(journal.read(self.card_id)))
+        step = fold(journal.read(self.card_id)).steps["first"]
+        self.assertEqual(step.get("boxPortOwner"), placement.port_owner)
+        journal.append(self.card_id, "step.finished", step="first", result="error")
+        with mock.patch.object(boxstep, "proxy_of", return_value=None):
+            boxstep.recover_network(self.engine)
+        self.assertEqual(self.place("second").port_env["PORT"], "49123")
+
 
 class PortExecutionTest(BoxFlow):
     def test_two_parallel_steps_get_disjoint_ranges_in_their_env_files(self):
