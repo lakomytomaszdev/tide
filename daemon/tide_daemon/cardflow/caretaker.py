@@ -1127,7 +1127,8 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
           context: list | None = None, context_dir: str = "", limit: int = ACTION_LIMIT, chat: bool = False) -> str:
     """Kartka kroku opiekuna: opis problemu (zamaskowany `faults.mask`), pliki kontekstu (PT-153, `context` —
     `[{path, title, trimmed}]` z `caretakerctx.build`), dostępne akcje z parametrami, zakazy, polecenia tylko do
-    odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Sekcja problemu pochodzi
+    odczytu (`commands` — program z listą poleceń, Claude) i ścieżka wyniku. Bez poleceń kontekst zawiera także
+    `relative` i `text` z `build(include_text=True)`; kartka osadza treść w limicie 120 kB. Sekcja problemu pochodzi
     z `BRIEF_SECTIONS` według wyzwalacza."""
     section = BRIEF_SECTIONS.get(problem.get("trigger") or "")
     described = section(problem, st) if section else f"## Problem\n\nProblem {problem.get('id')}."
@@ -1137,7 +1138,10 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         if extra:
             described += "\n\n" + extra
     files = []
-    if context:
+    if not commands:
+        from .caretakerctx import inline_context
+        files = [inline_context(context or [], target=problem.get("step") or ""), ""]
+    elif context:
         files = ["## Kontekst", "",
                  f"Tide przygotował pliki kontekstu w {context_dir or '(katalog kontekstu)'} (tylko do odczytu; "
                  "sekrety zamaskowane jako •••, razem najwyżej 400 kB). Przeczytaj je, zanim wybierzesz akcję:", ""]
@@ -1160,9 +1164,36 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
     import json
     retryable = problem_steps(problem, st) if "retry" in actions else []
     retry_lines = [f"Kroki do ponowienia (pole `step` akcji `retry`): {', '.join(retryable)}"] if retryable else []
+    # Wariant wybieramy przed złożeniem kartki: kontekst może cytować dowolną z instrukcji poniżej.
+    introduction = ("Tryb rozmowy: rozmawiaj z użytkownikiem o stanie karty i dostępnych akcjach." if chat else
+                    "Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
+                    "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.")
+    questions = ("- Możesz zadawać pytania w rozmowie. Zgody, zatwierdzenia i scalenie pozostają w panelu Tide."
+                 if chat else "- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.")
+    if chat:
+        ending = [
+            "", "## Akcje rozmowy", "",
+            "Rozmowa nie zużywa limitu działań problemu. Każdą uzgodnioną akcję zapisz osobno jako "
+            f"{out_dir}/action-<n>.json (n = 1, 2, …), tym samym kontraktem JSON:",
+            json.dumps(example, ensure_ascii=False),
+            "Zapisz cały JSON jednym wywołaniem narzędzia zapisu; nie nadpisuj gotowych akcji. "
+            "Tide wykonuje każdą od razu i raz, a wynik zapisuje w historii karty. "
+            "Nie zapisuj result.json. Po zakończeniu rozmowy zamknij kartę Konsoli.", "",
+        ]
+    else:
+        ending = [
+            f"- Przy jednym problemie Tide uruchamia opiekuna najwyżej {limit} razy; potem problem wraca do użytkownika "
+            "ze streszczeniem prób. Nie ponawiaj kroku z tą samą instrukcją, która już nie pomogła (poprzednie próby są "
+            "w kontekście).",
+            "", "## Wynik", "",
+            f"Plik wyniku: {out_dir}/result.json", "",
+            "Zapisz go jako ostatnią czynność, w formacie JSON, np.:",
+            json.dumps(example, ensure_ascii=False),
+            "Bez pliku wyniku albo z wynikiem innym niż `done` krok opiekuna jest nieudany, a problem wraca do "
+            "użytkownika.", "",
+        ]
     text = "\n".join([
-        f"{BRIEF_FIRST_LINE} {card} w Tide. Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
-        "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.",
+        f"{BRIEF_FIRST_LINE} {card} w Tide. {introduction}",
         "",
         f"Id problemu: {problem.get('id')}",
         f"Krok problemu: {problem.get('step') or '(brak)'}",
@@ -1184,35 +1215,9 @@ def brief(problem: dict, st, *, card: str, out_dir: str, worktree: str, commands
         "- Nie commituj, nie rób push ani scalenia; nie zatwierdzaj planu, nie udzielaj zgód na polecenia, nie "
         "uruchamiaj niczego poza piaskownicą i nie odrzucaj ticketu. Takich akcji nie ma — akcja spoza listy jest "
         "nieudanym działaniem i problem od razu wraca do użytkownika.",
-        "- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.",
-        f"- Przy jednym problemie Tide uruchamia opiekuna najwyżej {limit} razy; potem problem wraca do użytkownika "
-        "ze streszczeniem prób. Nie ponawiaj kroku z tą samą instrukcją, która już nie pomogła (poprzednie próby są "
-        "w kontekście).",
-        "",
-        "## Wynik",
-        "",
-        f"Plik wyniku: {out_dir}/result.json",
-        "",
-        "Zapisz go jako ostatnią czynność, w formacie JSON, np.:",
-        json.dumps(example, ensure_ascii=False),
-        "Bez pliku wyniku albo z wynikiem innym niż `done` krok opiekuna jest nieudany, a problem wraca do "
-        "użytkownika.",
-        "",
+        questions,
+        *ending,
     ])
-    if chat:
-        text = text.replace("Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
-                            "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.",
-                            "Tryb rozmowy: rozmawiaj z użytkownikiem o stanie karty i dostępnych akcjach.")
-        text = text.replace("- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.",
-                            "- Możesz zadawać pytania w rozmowie. Zgody, zatwierdzenia i scalenie pozostają w panelu Tide.")
-        start = text.index("- Przy jednym problemie")
-        text = text[:start] + "\n## Akcje rozmowy\n\n" + (
-            "Rozmowa nie zużywa limitu działań problemu. Każdą uzgodnioną akcję zapisz osobno jako "
-            f"{out_dir}/action-<n>.json (n = 1, 2, …), tym samym kontraktem JSON:\n" +
-            json.dumps(example, ensure_ascii=False) + "\n" +
-            "Zapisz cały JSON jednym wywołaniem narzędzia zapisu; nie nadpisuj gotowych akcji. "
-            "Tide wykonuje każdą od razu i raz, a wynik zapisuje w historii karty. "
-            "Nie zapisuj result.json. Po zakończeniu rozmowy zamknij kartę Konsoli.\n")
     return text
 
 

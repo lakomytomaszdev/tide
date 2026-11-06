@@ -63,7 +63,8 @@ class CaretakerChat:
             context_dir = os.path.join(step_dir, "in", caretakerctx.CONTEXT_DIR)
             files = caretakerctx.build(problem, now, events, card=card, worktree=made["worktree"],
                                        context_dir=context_dir,
-                                       card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)), step=name)
+                                       card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)), step=name,
+                                       include_text=selected.tool != "claude")
             prompt = caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
                                      worktree=made["worktree"], commands=selected.tool == "claude",
                                      context=files, context_dir=context_dir, chat=True)
