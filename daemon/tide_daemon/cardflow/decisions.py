@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import re
 
+from . import caretaker
 from . import faults
 from . import baseproposal
 from . import findings as review_findings
@@ -50,7 +51,8 @@ from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of
 
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
-         "plan-approval", "plan-revision", "plan-revision-failed", "plan-reviewer", "tracker")
+         "plan-approval", "plan-revision", "plan-revision-failed", "plan-fix-failed", "plan-reviewer", "tracker",
+         "caretaker")
 
 RESOLVE_STEP, RESOLVE_REVIEW = "ResolveCardStep", "ResolveCardReview"
 APPROVE_PLAN, EDIT_PLAN, ENTER_STEP = "ApproveCardPlan", "EditCardPlan", "EnterStep"
@@ -58,6 +60,8 @@ REPORT_FAULT, PREVIEW_FAULT = "ReportStepFault", "PreviewStepFault"
 
 # Zdania, gdy dziennik nie daje szczegółów (US 2) — każdy rodzaj ma swoje, nigdy pusty napis.
 GENERIC = {
+    "caretaker": ("Opiekun sprawdził problem, który zatrzymał kartę.",
+                  "Opiekun oddał decyzję Tobie. Wybierz, co zrobić z problemem."),
     "question": ("Krok zadał pytanie i czeka na odpowiedź.",
                  "Bez odpowiedzi krok nie pójdzie dalej."),
     "permission": ("Krok poprosił o zgodę na polecenie spoza listy dozwolonych.",
@@ -76,6 +80,8 @@ GENERIC = {
                       "Zmieniony plan zastąpi obecny dopiero po Twoim zatwierdzeniu różnicy."),
     "plan-revision-failed": ("Poprawka planu nie przeszła sprawdzenia formatu.",
                              "Tej poprawki nie da się użyć — odeślij plan ponownie albo ją odrzuć."),
+    "plan-fix-failed": ("Poprawki formatu planu nadal nie przechodzą sprawdzenia.",
+                        "Bez poprawnego planu karta nie pójdzie dalej — ponów poprawę z instrukcją."),
     "plan-reviewer": ("Review planu nie może wystartować.",
                       "Bez review plan nie trafi do zatwierdzenia."),
     "tracker": ("Operacja w YouTracku nie powiodła się.",
@@ -103,21 +109,38 @@ def build_decisions(st: FlowState) -> list[dict]:
     for name in _latest_steps(st):
         if (st.steps.get(name) or {}).get("ticket") in st.rejected:
             continue        # odrzucony ticket nie czeka na nikogo (K-16/LEGAL-75, 03.11)
+        if caretaker.hidden(st, name):
+            continue                    # opiekun karty sprawdza ten krok — decyzja wróci z jego wynikiem (PT-143)
         made = _step_decision(st, name)
         if made:
+            made = caretaker.annotate(st, made)
             step = st.steps.get(name) or {}
             add(0 if not step.get("ticket") else 1, (st.finished.get(name) or {}).get("seq"), made)
     for (ticket, round_no), question in st.review_questions.items():
         if (ticket, round_no) in st.review_decisions or ticket in st.rejected:
             continue
-        add(1, question.get("seq"), _review(st, ticket, round_no, question))
+        add(1, question.get("seq"), caretaker.annotate(st, _review(st, ticket, round_no, question)))
+    for made in _plan_fix_decisions(st):
+        add(0, (st.finished.get(made["step"]) or {}).get("seq"), made)
     plan = _plan_decision(st)
+    if plan and plan.get("kind") == "plan-revision-failed":
+        # PT-146: nieudaną poprawkę planu sprawdza opiekun — decyzja wraca z jego wynikiem (jak decyzja kroku).
+        target = caretaker.revision_step(st)
+        if target and caretaker.hidden(st, target):
+            plan = None
+        elif target:
+            seq = plan.pop("_seq", 0)
+            plan = {**caretaker.annotate(st, plan, target), "_seq": seq}
     if plan:
+        plan = caretaker.annotate(st, plan)
         add(0, plan.pop("_seq", 0), plan)
     for failure in st.tracker_failures():
         if failure.get("action") == "youtrack-note" or st.running():
             continue
         add(0, failure.get("seq"), _tracker(failure))
+    for event in caretaker.escalations(st):
+        if (event.get("problem") or "").startswith(("flow-error:", "stalled:")):
+            add(0, event.get("seq"), _caretaker(st, event))
     found.sort(key=lambda item: (item[0], item[1]))
     # `findings[]` (uwagi recenzenta z wagą i ticketami) ma tylko zatwierdzenie planu; reszta — pusta lista.
     return [{**decision, "findings": decision.get("findings", [])} for _group, _seq, decision in found]
@@ -125,12 +148,42 @@ def build_decisions(st: FlowState) -> list[dict]:
 
 # --- kroki ---------------------------------------------------------------------------------------
 
+def _caretaker(st, event):
+    problem = event["problem"]
+    if problem.startswith("flow-error:"):
+        stage = problem.split(":", 1)[1]
+        happened = ((st.flow_errors.get(stage) or {}).get("event") or {}).get("error")
+    else:
+        happened = "Karta stoi bez kroku i powodu czekania."
+    options = [_option(choice, title, effect, "ResolveCardCaretaker", {"choice": choice, "problem": problem})
+               for choice, title, effect in (
+                   ("retry-stage", "Ponów etap", "Tide ponowi etap karty i zamknie ten problem."),
+                   ("dismiss", "Zamknij", "Tide zamknie problem bez ponawiania etapu."))]
+    made = {"id": f"caretaker:{problem}:{event['seq']}", "kind": "caretaker", "step": "", "stepKind": "",
+            "ticket": event.get("ticket") or "", "executor": "", "happened": happened or GENERIC["caretaker"][0],
+            "why": GENERIC["caretaker"][1], "options": options, "freeText": True,
+            "reply": {"method": "ResolveCardCaretaker", "preview": PREVIEW_FAULT,
+                      "params": {"choice": "report", "problem": problem}, "field": "description",
+                      "label": "Zgłoś błąd Tide", "confirmLabel": "Zgłoś błąd",
+                      "effect": "Zapisze zgłoszenie w Backlogu plasma-tide i zamknie problem bez ponawiania etapu."},
+            "fault": "", "technical": {"problem": problem, "error": event.get("error") or ""}}
+    made = caretaker.annotate_escalation(st, made, event)
+    if not made["caretaker"]["recommendation"]:
+        made["caretaker"]["recommendation"] = "Wybierz, czy ponowić etap, czy zamknąć problem."
+    return made
+
+
 def _latest_steps(st: FlowState) -> list[str]:
     """Ostatni krok każdego ticketu (kroki planu i domknięcia mają wspólny pusty ticket)."""
     latest: dict = {}
     for name, item in st.steps.items():
         latest[item.get("ticket") or ""] = name
     return list(latest.values())
+
+
+def step_decision(st: FlowState, name: str) -> dict | None:
+    """Decyzja kroku bez ukrywania przez opiekuna i bez jego pola (opis problemu do kartki opiekuna)."""
+    return _step_decision(st, name)
 
 
 def _step_decision(st: FlowState, name: str) -> dict | None:
@@ -153,7 +206,8 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
     if result == "denied":
         return _permission(st, name, step, done)
     # Wygasłe logowanie Tide pyta od razu, bez automatycznego ponowienia (03.11) — decyzja też od razu.
-    if result == "error" and (int(step.get("attempt") or 0) >= 1 or reason == "login"):
+    if result == "error" and (int(step.get("attempt") or 0) >= 1 or reason == "login" or
+                              caretaker.handed_repeat(st, name)):     # PT-148: opiekun oddał ten sam powód drugi raz
         return _error(st, name, step, done)
     if result == "stopped" and reason == "interactive-closed":
         return _stopped(st, name, step, done)
@@ -167,6 +221,7 @@ def _question(st, name, step, done) -> dict:
     options = [_option(f"answer-{index + 1}", raw["title"], raw["effect"], RESOLVE_STEP,
                        {"choice": "answer", "step": name, "answer": raw["title"]}, recommended=raw["recommended"])
                for index, raw in enumerate(raw_options)]
+    options += wait_ticket_options(st, name, step, done.get("question") or "")
     reply = {"method": RESOLVE_STEP, "params": {"choice": "answer", "step": name}, "field": "answer"}
     decision = _decision(st, name, step, "question", happened,
                          "Krok czeka na odpowiedź; bez niej nie pójdzie dalej." if question else "",
@@ -382,7 +437,7 @@ def _single_permission(st, name, step, done) -> dict:
 
 BLOCKED_BY_SCOPE = re.compile(r"ponowienie (?:kroku )?nic|nie zamknie|wymagane działanie koordynatora|decyzj\w* "
                               r"(?:właściciela|koordynatora|użytkownika)|poza zakresem (?:tego )?kroku|brak dostawy|"
-                              r"zakres (?:tego )?kroku nie pozwala", re.I)
+                              r"zakres (?:tego )?kroku nie pozwala|nie ponawiać|bloker\w* .{0,40}niespełnion", re.I)
 
 
 def _error(st, name, step, done) -> dict:
@@ -447,6 +502,14 @@ def _error(st, name, step, done) -> dict:
                    "Ticket wypada z karty (zmiany zostają na jego gałęzi); tickety, które na niego czekały, ruszą dalej.",
                    RESOLVE_STEP, {"choice": "reject", "step": name})] if step.get("ticket") else []),
     ]
+    waits = wait_ticket_options(st, name, step, reason)
+    if waits and blocked:
+        # Wykonawca pisze, że brakuje pracy innego ticketu tej karty (06.11, K-38/PT-191 → PT-171): czekanie, nie ponowienie.
+        options = [{**o, "recommended": False} for o in options]
+        waits[0]["recommended"] = True
+        why = ("Wykonawca zgłasza, że brakuje pracy innego ticketu tej karty. „Czekaj na …” wstrzyma ten krok bez "
+               "pytań; Tide wznowi go sam po scaleniu tamtego ticketu do gałęzi karty.")
+    options = options + waits
     # „Ponów z instrukcją” (03.11, K-16/LEGAL-67): agent kręcił się na tym samym powodzie, a użytkownik nie miał jak
     # mu powiedzieć, co zrobić inaczej. Tekst trafia do wznowionego kroku jako polecenie użytkownika.
     reply = {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
@@ -459,6 +522,9 @@ def _error(st, name, step, done) -> dict:
                  "hint": "Co zauważyłeś? Np. „po aktualizacji Tide to samo przy review ticketów”.",
                  "effect": f"Opis trafi do karty z błędem w Backlogu {faults.REPORT_PROJECT} razem z wycinkiem "
                            "dziennika kroku (bez sekretów); krok ruszy ponownie."}
+    note = caretaker.unavailable_note(st, name)
+    if note:
+        why = (why or GENERIC["error"][1]) + f" ({note[:1].upper()}{note[1:]}.)"
     technical = _step_technical(step, done)
     technical.update(attempts=attempts, stalledSince=done.get("stalledSince") or "", fault=fault,
                      faultCause=cause, faultLabel=faults.FAULT_LABELS.get(fault, fault),
@@ -512,6 +578,32 @@ def _review(st, ticket, round_no, question) -> dict:
             "ticket": ticket, "executor": step.get("executor") or "", "kind": "review",
             **_sentences("review", happened, ""), "options": options, "freeText": False, "reply": None,
             "fault": "", "technical": technical}
+
+
+def _plan_fix_decisions(st: FlowState) -> list[dict]:
+    """Druga nieudana poprawa formatu planu (PT-146) nie ma decyzji z samego stanu kroku (`done`, bez propozycji).
+    Decyzja powstaje, gdy opiekun oddał problem (`caretaker.escalated`, także po limicie działań) albo nie działa
+    przy tej karcie; opcja „Ponów z instrukcją” to `ResolveCardStep retry` na kroku `plan-fix`."""
+    found = []
+    for name in caretaker.plan_fix_waiting(st):
+        if caretaker.hidden(st, name):
+            continue
+        step = st.steps.get(name) or {}
+        errors = caretaker.plan_fix_errors(st, {"step": name, "decision": ""})
+        base = {"id": f"step:{name}", "step": name, "stepKind": step.get("kind") or "", "ticket": "",
+                "executor": step.get("executor") or "", "kind": "plan-fix-failed",
+                **_sentences("plan-fix-failed", "", ""),
+                "options": [_option("retry", "Ponów poprawę z instrukcją…",
+                                    "Planujący poprawi plan jeszcze raz z Twoją instrukcją i błędami formatu.",
+                                    RESOLVE_STEP, {"choice": "retry", "step": name}, recommended=True)],
+                "freeText": True, "fault": "model",
+                "reply": {"method": RESOLVE_STEP, "params": {"choice": "retry", "step": name}, "field": "answer",
+                          "label": "Ponów z instrukcją", "effect": "Ten sam planujący poprawi plan z Twoją instrukcją."},
+                "technical": {**_step_technical(step, st.finished.get(name) or {}), "errors": errors}}
+        made = caretaker.annotate(st, base, name)
+        if "caretaker" in made or caretaker.local_only(st):
+            found.append(made)
+    return found
 
 
 def _plan_decision(st: FlowState) -> dict | None:
@@ -663,6 +755,23 @@ def _decision(st, name, step, kind, happened, why, options, reply, fault, techni
 def _sentences(kind: str, happened: str, why: str) -> dict:
     generic = GENERIC.get(kind, ("Karta czeka na Twoją decyzję.", "Bez niej karta nie pójdzie dalej."))
     return {"happened": _text(happened) or generic[0], "why": _text(why) or generic[1]}
+
+
+def wait_ticket_options(st: FlowState, name: str, step: dict, text: str) -> list[dict]:
+    """„Czekaj na PT-x” dla niescalonych ticketów planu tej karty wymienionych w treści pytania albo błędu (najwyżej 2)."""
+    rows = (st.plan_approved or {}).get("rows") or []
+    own = step.get("ticket") or ""
+    mentioned = dict.fromkeys(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", str(text or "")))
+    out = []
+    for row in rows:
+        ident = str(row.get("id") or "")
+        if ident in mentioned and ident != own and ident not in st.rejected and \
+                not (st.results.get(("merge", ident)) or {}).get("ok") and own not in (row.get("blockers") or []):
+            out.append(_option(f"wait-ticket-{ident}", f"Czekaj na {ident}",
+                               f"Krok stoi bez pytań; Tide wznowi go sam po scaleniu {ident} do gałęzi karty "
+                               "i każe najpierw scalić gałąź karty do gałęzi ticketu.",
+                               RESOLVE_STEP, {"choice": "wait-ticket", "step": name, "waitTicket": ident}))
+    return out[:2]
 
 
 def _option(ident, title, effect, method, params, *, recommended=False) -> dict:

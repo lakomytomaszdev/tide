@@ -179,7 +179,7 @@ class NotificationFilter(QObject):
         watcher.finished.connect(lambda w: self._inhibited(w))
 
     def _inhibited(self, watcher: QDBusPendingCallWatcher, release_now: bool = True) -> None:
-        # stop() odbiera odpowiedź ręcznie; finished może dotrzeć podczas lub po oczekiwaniu.
+        # Blokujące zatrzymanie i sygnał finished mogą odebrać tę samą odpowiedź — ciasteczko zwalniamy raz.
         if watcher not in self._pending:
             return
         self._pending.remove(watcher)

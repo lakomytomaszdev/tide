@@ -159,7 +159,8 @@ class PlanningBaseTest(FlowInProcess):
         git(self.repo, "branch", "-f", "feature/start", "master")
         self.wait_column(card, "waiting")
         steps = self.of(card, "step.started")
-        self.assertEqual(len(steps), 2)
+        # Opiekun sprawdza błąd po ponowieniu; także jego worktree musi zachować przypiętą bazę.
+        self.assertEqual(len([s for s in steps if s["kind"] != "caretaker"]), 2)
         self.assertEqual(len(self.of(card, "step.retry")), 1)
         for step in steps:
             self.assertEqual(git(step["worktree"], "rev-parse", "HEAD").strip(), commit)

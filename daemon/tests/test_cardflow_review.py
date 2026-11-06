@@ -123,6 +123,11 @@ class ReviewFlowTest(FlowInProcess):
                        "Notka wyniku wykonawcy:", "Atrapa zrobiła ticket.", "Zasady projektu:",
                        "CLAUDE.md", "Plik wyniku:"):
             self.assertIn(phrase, prompt)
+        self.assertIn(f"make test-changed BASE={self.master}", prompt)
+        with open(os.path.join(steps[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn(f"make test-changed BASE={self.master}", json.load(fh)["prompt"])
+        with open(os.path.join(steps[2]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn("Przed napisaniem podsumowania uruchom raz pełny `make test`", json.load(fh)["prompt"])
         verdict = self.of(card, "review.verdict")
         self.assertEqual([(v["verdict"], v["blockers"], v["majors"], v["nits"]) for v in verdict],
                          [("APPROVE", 0, 0, 0)])
@@ -146,6 +151,7 @@ class ReviewFlowTest(FlowInProcess):
         with open(os.path.join(fixes[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             prompt = json.load(fh)["prompt"]
         self.assertIn("MAJOR: popraw ATRAPA.md", prompt)
+        self.assertIn(f"make test-changed BASE={self.master}", prompt)
         self.assertEqual(len(self.results(card, "merge")), 1)
 
     def test_three_failed_reviews_wait_for_user_without_merging(self):

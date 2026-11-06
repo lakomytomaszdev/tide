@@ -36,7 +36,8 @@ class OverviewTest(unittest.TestCase):
         self.now[0] += 181
         self.engine._guard_card("K-1")
         self.engine._guard_card("K-1")
-        self.assertEqual([n["result"] for n in self.engine.take_notices()], ["stalled"])
+        self.assertEqual(self.engine.take_notices(), [], "opiekun dostaje problem przed powiadomieniem")
+        self.assertEqual(len([e for e in self.journal.read("K-1") if e["type"] == "card.stalled"]), 1)
         self.assertTrue(derived(fold(self.journal.read("K-1")), {"column": "todo"})["flow"]["stalledSince"])
         self.journal.append("K-1", "step.started", step="s1", ticket="PT-1", kind="ticket", executor="Sonnet")
         shown = derived(fold(self.journal.read("K-1")), {"column": "todo"})
@@ -100,7 +101,16 @@ class OverviewTest(unittest.TestCase):
         self.journal.append("K-1", "result", action="merge", key="PT-1", ok=True)
         self.now[0] += 181
         self.engine._guard_card("K-1")
-        self.assertEqual(self.engine.take_notices()[0]["result"], "stalled")
+        self.assertEqual(self.engine.take_notices(), [], "powiadomienie czeka na decyzję opiekuna")
+        self.assertTrue(fold(self.journal.read("K-1")).stalled_since)
+
+    def test_stall_without_available_caretaker_notifies_once(self):
+        self.journal.append("K-1", "card.started", entry="plan", repo=self.temp.name, column="todo",
+                            preferredProvider="local")
+        self.now[0] += 181
+        self.engine._guard_card("K-1")
+        self.engine._guard_card("K-1")
+        self.assertEqual([n["result"] for n in self.engine.take_notices()], ["stalled"])
 
     def test_report_reads_completed_ticket_with_executor_from_journal(self):
         old_state = os.environ.get("XDG_STATE_HOME")

@@ -662,6 +662,20 @@ function transferSettingsExecutors(status) {
         .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
 }
 
+// Wykonawca opiekuna karty (PT-151): „Domyślny” (pusty — najmocniejsza klasa preferowanego dostawcy karty) i cały
+// katalog, także wykonawcy lokalni. Zapisany wykonawca spoza listy (np. usunięty z katalogu) zostaje widoczny,
+// żeby zapis innych pól go nie zmienił po cichu; usługa i tak odrzuci nieznanego (`bad-executor`).
+function caretakerExecutorOptions(status, current) {
+    const options = [{ value: "", label: "Domyślny — najmocniejszy u dostawcy karty" }]
+    for (const e of launchExecutorList(status)) {
+        if (!e || !e.name || !e.provider) continue
+        options.push({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) })
+    }
+    if (current && !options.some(o => o.value === current))
+        options.push({ value: String(current), label: String(current) + " · spoza katalogu" })
+    return options
+}
+
 function planningLimitWarning(limits, provider, threshold) {
     const service = provider === "anthropic" ? "claude" : provider === "openai" ? "chatgpt" : ""
     if (!service || !limits || limits.available !== true || !limits.services) return ""

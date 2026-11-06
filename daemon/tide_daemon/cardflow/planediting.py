@@ -146,7 +146,10 @@ class PlanEditing:
         decision = st.step_decisions.get(step["step"])
         if decision:
             self._resume_step(card, st, step, decision)
-        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+        elif self._caretaker_resume(card, st, step):
+            pass                # `retry` opiekuna bez decyzji (PT-150), z jego instrukcją
+        elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" \
+                and not self._caretaker_takes_over(card, st, step["step"]):    # PT-148: opiekun zamiast ślepej próby
             if step["step"] not in st.step_retries:
                 self.journal.append(card, "step.retry", step=step["step"], ticket="", reason=done.get("reason") or "")
             self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
@@ -277,7 +280,11 @@ class PlanEditing:
             raise FlowError("bad-feedback", "wpisz uwagi do planu (do 32000 znaków)")
         return feedback
 
-    def edit_plan(self, card, request):
+    def edit_plan(self, card, request, *, caretaker_problem="", caretaker_step="", caretaker_from=""):
+        """Zmiany planu z okna (EditCardPlan). `caretaker_*` — odesłanie planu przez akcję `return-plan` opiekuna
+        (PT-146, tylko z silnika, nie z D-Bus): ta sama walidacja i te same zapisy, `plan.returned` dostaje pola
+        `caretaker`/`caretakerStep`/`caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
+        (`_advance_user_revision`), poza parą „zamiar → wynik” akcji opiekuna."""
         from .engine import FlowError
         self._require_base_context(card)
         if request.get("action") == "return":
@@ -317,6 +324,9 @@ class PlanEditing:
                 self.journal.append(card, "step.decision", step=previous["step"], ticket="",
                                     choice="change-executor", executor=selected.name)
             return {"ok": True, "id": card}
+        if request.get("action") == "return" and st.plan_revision and not st.plan_revision.get("failed") \
+                and (caretaker_problem or not st.plan_revision.get("pending")):
+            raise FlowError("revision-active", "poprawa planu już trwa")
         if not st.plan_reviewed and (request.get("action") != "edit" or
                                     any(s.get("step") not in st.finished for s in review_steps)):
             raise FlowError("review-pending", "zaczekaj na review planu przed tą zmianą")
@@ -349,6 +359,11 @@ class PlanEditing:
                 baseline = (st.plan_approved or proposal)["rows"]
                 # Przy zatwierdzonym planie poprawa posługuje się już nadanymi ID.
                 baseline = [{**r, "workId": r.get("id") or r["workId"]} for r in baseline]
+            if caretaker_problem:
+                self.journal.append(card, "plan.returned", feedback=feedback, baseline=baseline,
+                                    caretaker=caretaker_problem, caretakerStep=caretaker_step,
+                                    caretakerFrom=caretaker_from)
+                return {"ok": True, "id": card}
             self.journal.append(card, "plan.returned", feedback=feedback, baseline=baseline)
             self._advance_user_revision(card, fold(self.journal.read(card)))
             return {"ok": True, "id": card}

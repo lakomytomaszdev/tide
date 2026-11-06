@@ -187,6 +187,14 @@ lub `majors`. Brak poprawnego wyniku jest błędem
 kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty;
 wznowienie zachowuje worktree i zmiany.
 
+**Testy ticketu i review.** Przed oddaniem ticketu i poprawek autor uruchamia
+`make test-changed BASE=<punkt startu ticketu na gałęzi karty>` i zapisuje polecenie oraz wynik
+w notce. Kartka przekazuje przypięty SHA z wyniku utworzenia gałęzi ticketu; późniejszy ruch
+gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawanych zmian i nie żąda
+osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani review. Zasada zastępuje
+wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
+planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
+
 **Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
 `"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
 `effect` — jedno zdanie o skutku wyboru (do 400 znaków, opcjonalny), `recommended` — najwyżej jedna pozycja.
@@ -265,7 +273,12 @@ pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeni
 Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to błąd formatu. To zmienia tylko wynik
 review; format pliku planu i reguły zatwierdzania zostają bez zmian.
 
-**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. `check: manual` dodaje listę „Co przetestować
+**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. Krok `close` przed napisaniem podsumowania
+uruchamia raz pełny `make test` na tej gałęzi i zapisuje wynik w podsumowaniu. Nieudane testy obsługuje
+jak inne problemy domknięcia: wynik `error` z opisem niepowodzeń zamiast `done`, bez scalenia do głównej.
+Polecenie wymagające zgody lub wykonania poza piaskownicą korzysta ze zwykłego kontraktu `denied`/`outside`;
+wznowienie wykorzystuje wynik i nie powtarza udanego przebiegu bez nowych zmian.
+`check: manual` dodaje listę „Co przetestować
 ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga
 osobnego polecenia użytkownika**. Statusy i numeracja pochodzą z dziennika oraz zatwierdzonego planu; istniejące
 plany sześciokolumnowe i stare sesje koordynatora zachowują dotychczasowy odczyt. Plik planu w repozytorium projektu

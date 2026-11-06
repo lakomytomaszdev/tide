@@ -14,8 +14,12 @@ Własny motyw KDE Plasma 6 (KDE neon, Wayland, dwa monitory) z widżetami do pra
 ## Testy podczas pracy
 
 W trakcie ticketu uruchamiaj testy dobrane do zmiany (`make test-cardflow`, `make test-daemon`,
-`make test-board` albo `make test-changed BASE=<baza>`). Pełny `make test` wykonaj raz przed
-oddaniem ticketu. Domyślnie moduły biegną w liczbie procesów równej liczbie rdzeni minus dwa;
+`make test-board`). Przed oddaniem ticketu i poprawek wykonaj `make test-changed BASE=<punkt startu ticketu
+na gałęzi karty>` i zapisz wynik w notce. Recenzent sprawdza ten wynik; osobny pełny `make test`
+nie jest kryterium ticketu ani review. Ta zasada zastępuje wymóg pełnego przebiegu w kartkach
+istniejących planów (także K-37, K-38 i K-55), bez ich przepisywania. Pełny `make test` wykonaj raz
+na gałęzi karty przy jej domknięciu, przed podsumowaniem. Jeśli `test-changed` wybierze pełny zestaw,
+wykonaj go bez dodatkowego `make test`. Domyślnie moduły biegną w liczbie procesów równej liczbie rdzeni minus dwa;
 `JOBS=N` zmienia limit. Lista zestawów: `tools/test_suites.py`, instrukcja i izolacja:
 [docs/testing.md](docs/testing.md).
 

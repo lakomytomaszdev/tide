@@ -22,6 +22,10 @@ bash "$src/../scripts/install-resources.sh"
 # Jawny zakres produktu w podglądzie odmowy, z działającym odnośnikiem także poza repozytorium.
 mkdir -p "$dest/docs/agents/plans/followups"
 cp "$src/../docs/agents/plans/followups/replay-code.md" "$dest/docs/agents/plans/followups/"
+# Migawki dokumentów Tide do kontekstu opiekuna karty (PT-153) — karty innych projektów nie mają ich w worktree.
+mkdir -p "$dest/tide-docs/docs"
+cp "$src/../docs/agent-plan-standard.md" "$src/../docs/sandbox-and-permissions.md" "$dest/tide-docs/docs/"
+cp "$src/../AGENTS.md" "$dest/tide-docs/AGENTS.md"
 
 cat > "$unit" <<EOF
 [Unit]

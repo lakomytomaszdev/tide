@@ -99,6 +99,10 @@ class CardFlowMonitor(QObject):
     def enter_step(self, card_id: str, step_id: str, reply) -> None:
         self._action("EnterStep", lambda: self.engine.enter(card_id, step_id), reply)
 
+    def talk_to_caretaker(self, card_id: str, request: str, reply) -> None:
+        self._json_action("TalkToCaretaker", request,
+                          lambda data: self.engine.talk_to_caretaker(card_id, data), reply)
+
     def abandon_step(self, card_id: str, step_id: str, reply) -> None:
         self._action("AbandonStep", lambda: self.engine.abandon(card_id, step_id), reply)
 
@@ -171,6 +175,11 @@ class CardFlowMonitor(QObject):
 
         if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
+    def resolve_caretaker(self, card_id: str, request: str, reply) -> None:
+        """Decyzja o problemie karty bez własnego kroku."""
+        self._json_action("ResolveCardCaretaker", request,
+                          lambda data: self.engine.resolve_caretaker(card_id, data), reply)
 
     def preview_step_fault(self, card_id: str, request: str, reply) -> None:
         """PreviewStepFault: podgląd karty z błędem kroku bez zapisu (PT-125)."""

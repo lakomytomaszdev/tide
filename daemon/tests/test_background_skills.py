@@ -7,6 +7,28 @@ from tide_daemon.tasks import agentcmd
 
 
 class BackgroundSkillsTest(BackgroundBase):
+    def test_caretaker_keeps_skills_and_read_only_command_policy(self):
+        for tool in ("claude", "codex"):
+            with self.subTest(tool=tool):
+                root = os.path.join(self.home, ".claude" if tool == "claude" else ".agents", "skills")
+                path = self.skill(root, "caretaker-" + tool)
+                cmd = agentcmd.background(self.step(tool, codex_mcp=(), write_out_only=True,
+                    enforce_command_policy=True, allowed_tools=("Bash(make install)",)))
+                self.assertIn(path, cmd.stdin)
+                self.assertEqual(cmd.workdir, os.path.join(self.step_dir, "out"))
+                cmd.prepare()
+                if tool == "claude":
+                    self.assertIn("--plugin-dir", cmd.argv)
+                    self.assertNotIn("Bash(make install)", cmd.argv)
+                    self.assertIn(f"Edit(/{os.path.normpath(self.worktree)}/**)", cmd.argv)
+                    fs = self.settings(cmd)["sandbox"]["filesystem"]
+                    self.assertEqual(fs["allowWrite"], [cmd.workdir])
+                    self.assertIn(os.path.dirname(path), fs["denyWrite"])
+                else:
+                    roots = json.loads(next(arg.split("=", 1)[1] for arg in cmd.argv
+                        if arg.startswith("sandbox_workspace_write.writable_roots=")))
+                    self.assertEqual(roots, [cmd.workdir])
+
     def skill(self, root, name, extra=""):
         folder = os.path.join(root, name)
         os.makedirs(folder, exist_ok=True)

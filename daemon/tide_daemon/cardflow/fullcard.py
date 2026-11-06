@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from . import history
 from .labels import kind_label
-from .state import FlowState
+from .state import FlowState, ticket_waits
 
 PHASES = (("order", "Zlecenie"), ("planning", "Planowanie"), ("plan-review", "Review planu"),
           ("plan-approval", "Zatwierdzenie planu"), ("tickets", "Tickety"), ("closing", "Domknięcie"),
@@ -45,6 +45,7 @@ TICKET_STATUS = {"planned": "w planie", "queued": "w kolejce", "running": "pracu
 def enrich(st: FlowState, out: dict) -> dict:
     """Dokłada pola pełnej karty do gotowego `derived` (ten sam słownik)."""
     flow = out["flow"]
+    flow["canTalkToCaretaker"] = bool(st.started and not st.card_finished)
     decisions = flow.get("decisions") or []
     rows = {(r.get("id") or r.get("workId")): r for r in (flow.get("plan") or {}).get("rows") or []}
     merged = {t["id"] for t in out["tickets"] if t.get("state") == "gotowe"}
@@ -56,7 +57,8 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["executor"] = assigned.get("executor") or row.get("executor") or ""
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
-    flow["running"] = running_steps(flow.get("steps") or [], st)
+    from .caretaker import running_entries
+    flow["running"] = running_steps(flow.get("steps") or [], st) + running_entries(st)
     flow["history"] = history.build(st, flow.get("steps") or [])
     # Skutek ręcznego zakończenia (Gotowe / Archiwum → `_complete_manual_finish`): zatrzymane kroki i odrzucone tickety.
     flow["finish"] = {"steps": len(flow["running"]),
@@ -299,6 +301,9 @@ def waiting_on(st: FlowState, ident: str, row: dict, decisions: list[dict], merg
         if stop["ticket"] == ident:
             found.setdefault("limit", {"kind": "limit", "until": stop["until"]})
     blockers = [b for b in row.get("blockers") or [] if b not in merged and b not in st.rejected]
+    waited = ticket_waits(st).get(ident)
+    if waited and waited not in blockers:
+        blockers.append(waited)       # „czeka na ticket” z decyzji kroku (06.11) liczy się jak bloker
     if blockers:
         found.setdefault("blocker", {"kind": "blocker", "ticket": blockers[0]})
     for (ticket, _kind), wait in st.waiting.items():
@@ -348,6 +353,8 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
     if done.get("result") == "denied" and (st.step_decisions.get(latest.get("step")) or {}).get("choice") in \
             ("run", "run-always", "run-ticket"):
         return status("queued", "w kolejce: " + _command(done))
+    if latest.get("step") in st.caretaking:
+        return status("running", "sprawdza opiekun")
     return status("waiting")
 
 
@@ -386,6 +393,10 @@ def headline(st: FlowState, out: dict) -> str:
         return "Karta jest scalona" + (f" do {target}" if target else "") + "; nic już na Ciebie nie czeka."
     if st.closed:
         return "Praca jest na gałęzi karty i czeka, aż ją sprawdzisz i wybierzesz cel scalenia."
+    caring = (flow.get("caretaker") or {}).get("working") or []
+    if caring:
+        # Opiekun (PT-144): jego problem nie jest decyzją użytkownika, więc nic na niego nie czeka.
+        return f"Opiekun zajmuje się {caring[0].get('subject') or 'kartą'}, nic nie czeka na Ciebie."
     if hold and not count:
         until = next((t["waitingOn"].get("until") for t in out.get("tickets") or []
                       if t.get("waitingOn") and t["waitingOn"]["kind"] == "limit" and t["waitingOn"].get("until")), "")

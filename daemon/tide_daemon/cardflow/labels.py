@@ -18,6 +18,8 @@ KIND_LABELS = {
     "conflict": "konflikt",
     "close": "domknięcie",
     "interactive": "rozmowa",
+    "caretaker": "opiekun",
+    "caretaker-chat": "rozmowa z opiekunem",
 }
 
 RESULT_LABELS = {

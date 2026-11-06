@@ -1,16 +1,27 @@
 # Testy podczas pracy nad ticketem
 
-W trakcie implementacji uruchamiaj zestawy dobrane do zmiany. Pełny `make test` uruchom
-raz przed oddaniem ticketu. Powtarzaj pełny przebieg dopiero po zmianach, które tego wymagają,
-albo po błędzie wskazującym na szerszą regresję.
+W trakcie implementacji uruchamiaj zestawy dobrane do zmiany. Przed oddaniem ticketu i po
+poprawkach uruchom `make test-changed BASE=<punkt startu ticketu na gałęzi karty>`.
+Używaj przypiętego SHA z kartki kroku, nie przesuwającego się wierzchołka gałęzi karty ani
+domyślnego `master`. Zapisz polecenie i wynik w notce. Recenzent sprawdza, że ten przebieg
+przeszedł dla oddawanych zmian; nie żąda osobnego pełnego `make test`.
+
+Pełny `make test` uruchom raz przy domknięciu karty (krok `close`), na gałęzi karty po scaleniu
+ticketów, przed podsumowaniem. Nieudany przebieg oznacza problem domknięcia: wynik `error`
+z opisem niepowodzeń zamiast `done`, bez scalania do głównej. Brak zgody lub konieczność wykonania
+poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
+przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
+
+Ta zasada zastępuje wymóg pełnego `make test` przed oddaniem ticketu zapisany w kartkach
+istniejących planów, w tym K-37, K-38 i K-55. Nie przepisujemy tych planów.
 
 ```sh
 make test-cardflow           # test_cardflow*.py oraz testy basesuggestions i hostingcli
 make test-daemon             # wszystkie testy usługi
 make test-board              # okno Tablicy (apps/board/tests)
 make test-issues             # magazyn spraw i proces CLI na prywatnym D-Bus
-make test-changed BASE=master
-make test                   # końcowa kontrola wszystkich komponentów
+make test-changed BASE=<SHA-startu-ticketu>
+make test                   # raz przy domknięciu karty, na gałęzi karty
 make test JOBS=4             # ograniczenie liczby jednoczesnych procesów
 make test JOBS=1             # diagnostyka bez równoległości
 ```
@@ -32,11 +43,16 @@ To heurystyka katalogów, więc przy zmianach zależności między komponentami 
 zestawy ręcznie. Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspólny moduł motywów
 lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem bez uruchamiania
 testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
+Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
+`make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
 
 ## Równoległość i wynik
 
 Domyślnie liczba procesów to liczba rdzeni dostępnych procesowi minus dwa, minimum jeden.
-`JOBS=N` nadpisuje ten limit. Każdy plik `test*.py` jest osobnym procesem systemowego Pythona;
+`JOBS=N` nadpisuje ten limit. Wszystkie przebiegi naraz (np. kilka ticketów Tide) dzielą wspólną pulę
+miejsc maszyny o tej samej wielkości (`$XDG_RUNTIME_DIR/tide-test-slots`, blokady `flock`): drugi
+`make test` nie dokłada kolejnych procesów, tylko czeka na wolne miejsca modułów. `TIDE_TEST_SLOTS=N`
+zmienia wielkość puli, `TIDE_TEST_SLOTS_DIR` jej katalog. Każdy plik `test*.py` jest osobnym procesem systemowego Pythona;
 `unittest discover` używa tego samego katalogu najwyższego `.` i tego samego wzorca jak wcześniej.
 Nie dzielimy klasy ani pojedynczego testu. Zachowujemy także powtórzenia klas importowanych
 przez inne moduły, które uruchamiał dotychczasowy `discover`. Hook pakietu `load_tests` wymaga
