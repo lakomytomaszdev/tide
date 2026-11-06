@@ -131,7 +131,7 @@ class BackgroundClaudeTest(BackgroundBase):
                                     "--output-format", "stream-json", "--verbose",
                                     "--session-id", "11111111-2222-3333-4444-555555555555",
                                     "--add-dir", os.path.join(self.step_dir, "out")])
-        self.assertEqual(cmd.stdin, "Zrób ticket")
+        self.assertTrue(cmd.stdin.startswith("Zrób ticket\n"))
         self.assertNotIn("Zrób ticket", " ".join(cmd.argv))
         self.assertEqual(cmd.cwd, self.worktree)
         self.assertEqual(cmd.session_id, "11111111-2222-3333-4444-555555555555")
@@ -304,7 +304,7 @@ class BackgroundCodexTest(BackgroundBase):
                                     "--sandbox", "workspace-write",
                                     "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots),
                                     "-c", 'approval_policy="never"', "-"])
-        self.assertEqual(cmd.stdin, "Zrób ticket")
+        self.assertTrue(cmd.stdin.startswith("Zrób ticket\n"))
         self.assertEqual(cmd.session_id, "")
         self.assertNotIn("CLAUDE_CODE_TMPDIR", cmd.env)
         self.assertNotIn(git, roots)
