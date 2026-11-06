@@ -79,7 +79,7 @@ class ProjectProfileTest(unittest.TestCase):
         self.assertEqual(profile["project"], "infracore")
         self.assertEqual(profile["stacks"], ["dotnet"])
         self.assertEqual(profile["dotnet"]["sdk"], ["8.0.415", "6.0.428"])
-        self.assertEqual(profile["verify"], ["dotnet build"])
+        self.assertEqual(profile["verify"], ["dotnet build --no-restore"])
         self.assertEqual(bp.red_items(profile, templates.known_domains()), [])
         self.assertEqual(profile["network"]["domains"], [])
         self.assertNotIn("nuget_devhost", text)

@@ -15,7 +15,8 @@ Kolejność budowy (`build`):
  5. `apt-get install` (pakiety szablonów i profilu), 6. `setup`, 7. `docker pull` (gdy `docker.enabled`),
  8. `verify` (nieudane → „zbudowane z ostrzeżeniem”), 9. migawka `clean` z odciskiem przepisu.
 
-Każde `incus exec` budowy biegnie jako root pudełka z `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide: adres i port
+Instalacja biegnie jako root; verify .NET projektu z Tablicy jako agent na kopii HEAD (`verification.py`).
+Wywołania dostają `HTTPS_PROXY`/`HTTP_PROXY` na proxy Tide: adres i port
 pochodzą z uruchomionego proxy (`proxy.running()` — nasłuch na adresie mostka z `box.bridge`, port `box.proxy-port`),
 więc proxy i builder mają jedno źródło. Brak uruchomionego proxy (albo brak jego adresu) to błąd przed pierwszym
 poleceniem `incus`. Po migawce polityka budowy jest zdejmowana (`clear_box_policy`). Budowa nie czyta stdin.
@@ -35,6 +36,7 @@ from . import netenv
 from . import profile as bp
 from . import state as bs
 from . import templates
+from . import verification
 from .incus import Incus, IncusError
 from . import proxy as bproxy
 from .settings import BoxSettings
@@ -274,11 +276,23 @@ class Builder:
         if full["verify"]:
             steps.append("verify")
             v_start = self.clock()
-            for command in full["verify"]:
-                if self.incus.exec(name, ["bash", "-c", command], env) != 0:
-                    failed.append(command)
+            source_revision = ""
+            with verification.project_source(self.incus, slug, name, full, env) as source:
+                if source is not None:
+                    source_revision = source.revision
+                restored = source is None or source.restore() == 0
+                if not restored:
+                    failed.append("dotnet restore (wyłącznie nuget.org)")
+                for command in full["verify"]:
+                    if not restored:
+                        failed.append(command)
+                        continue
+                    code = (source.run(["bash", "-c", command]) if source is not None
+                            else self.incus.exec(name, ["bash", "-c", command], env))
+                    if code != 0:
+                        failed.append(command)
             bs.record(slug, "box.verify", name, self.wall, result="ok" if not failed else "fail", failed=failed,
-                      duration=round(self.clock() - v_start, 3))
+                      duration=round(self.clock() - v_start, 3), source_revision=source_revision)
         # 9. migawka clean z odciskiem przepisu
         steps.append("snapshot")
         stamp = self.stamp(full)

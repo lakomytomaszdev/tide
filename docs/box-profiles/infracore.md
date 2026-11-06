@@ -23,11 +23,15 @@ może leżeć poza rozwiązaniem. Sprawdzić skład rozwiązania przed zmianą p
 2. Przed zatwierdzeniem pokazać użytkownikowi rzeczywisty profil z przypiętymi SDK. Nie traktować zatwierdzenia
    korekty kryteriów jako zatwierdzenia profilu. Prywatne źródło nie trafia do `network.domains`, `setup` ani montowań.
 3. Zbudować pudełko przez `tide box build infracore`, zapisać czas, status JSON i dzienniki. Sam stan
-   `clean` z ostrzeżeniem nie spełnia kryterium zielonego verify. W obecnym Builderze `verify` wykonuje się przez
-   `incus exec` bez zamontowania repozytorium; przed uznaniem `dotnet build` za dowód sprawdzić, jaki projekt
-   rzeczywiście został zbudowany. Nie zastępować go testowym pustym projektem ani samym `dotnet --list-sdks`.
+   `clean` z ostrzeżeniem nie spełnia kryterium zielonego verify. Builder dla projektu .NET z Tablicy przygotowuje
+   archiwum zatwierdzonego HEAD bez .git i zmian roboczych. Sprawdza archiwum (bez dowiązań, ścieżek wychodzących
+   poza korzeń i plików specjalnych, limit 256 MiB), wysyła kopię do pudełka, robi jawny restore z nuget.org,
+   a verify uruchamia jako agent w kopii źródeł. Przed clean usuwa kopię; błąd sprzątania przerywa budowę.
+   `box.verify.source_revision` wskazuje sprawdzony commit. Nie zastępować buildu pustym projektem ani samym
+   `dotnet --list-sdks`. `dotnet build --no-restore` po jawnym restore nie sięga ponownie do konfiguracji projektu.
 4. Restore rozwiązania w odizolowanym worktree wykonywać jawnie z `--source https://api.nuget.org/v3/index.json`
-   i `--configfile NuGet.Config`. Nigdy nie używać `nuget_devhost.config`. Brak pakietu prywatnego oznacza rzeczywistą
+   i `--configfile NuGet.Config`. W czasie verify Builder używa oddzielnego, wygenerowanego pliku z `<clear />`
+   i jedynym źródłem nuget.org. Nigdy nie używać `nuget_devhost.config`. Brak pakietu prywatnego oznacza rzeczywistą
    niezgodność zależności, nie powód do samodzielnego udostępnienia prywatnego źródła.
 5. Testy uruchamiać przez `tide box run infracore --worktree <worktree-projektu> -- dotnet test ...`.
    Wybrać testy bez bazy po przeczytaniu ich inicjalizacji, nie po samej nazwie projektu. Testy Firebirda bez
