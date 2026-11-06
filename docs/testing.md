@@ -32,6 +32,48 @@ zestawy ręcznie. Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspóln
 lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem bez uruchamiania
 testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
 
+## Bezpośrednie testy usługi i izolacja stanu
+
+Z katalogu głównego repozytorium obsługujemy trzy bezpośrednie wejścia:
+
+```sh
+python3 -m unittest daemon.tests.test_state_isolation
+python3 -m unittest discover -s daemon/tests -t . -p 'test_state_isolation.py'
+python3 -m pytest -q daemon/tests/test_state_isolation.py
+```
+
+Wymagany jest interpreter z zależnościami danego testu (dla trzeciego wejścia także `pytest`).
+Nazwa modułu lub wzorzec może wskazywać dowolny test usługi, także nowy `test_cardflow*.py`.
+`daemon.tests.__init__` izoluje cały pakiet przed importami produktu. Uruchamianie samego pliku,
+które pomija wymagane importy pakietowe, nie jest dodatkowym interfejsem testowym.
+
+Każdy bezpośredni proces dostaje własny `tide-test-state-*` z `tempfile.mkdtemp`, nawet jeśli
+zastał już `XDG_STATE_HOME` sesji. `HOME` pozostaje bez zmian. Domyślny `Journal` zapisuje kopie
+w testowym `$XDG_STATE_HOME/tide/cardflow/`; nie zmieniamy produkcyjnego `mirror_root` ani nie wyłączamy kopii.
+Repozytoria, tablice i świadome nadpisania środowiska testu (również `patch.dict`) muszą wskazywać
+wyłącznie syntetyczne katalogi fixture. Izolacja domyślnego XDG nie zastępuje tej odpowiedzialności.
+
+Runner i inicjalizacja pakietu używają wspólnego kontraktu `tools/test_isolation.py`:
+`TIDE_TEST_ISOLATED=1` oraz `TIDE_TEST_STATE_DIR` wskazują istniejący bezwzględny katalog równy
+`XDG_STATE_HOME`. Sam XDG, sam marker lub niespójny komplet nie oznaczają odziedziczonej izolacji.
+Potomkowie testu, także rzeczywista usługa, dziedziczą środowisko i zapisują do tego samego katalogu.
+Potomek importujący testy pożycza go bez rejestrowania usunięcia. `state_environment` służy runnerowi
+do jawnego przekazania nowego testowego katalogu; jego właściciel musi go wcześniej utworzyć i później usunąć.
+Świadome nadpisanie XDG w fixture wymaga również przekazania zgodnego kontraktu, jeżeli potomny
+proces importujący pakiet testów ma korzystać z tego nadpisania.
+
+Przed zastąpieniem XDG zapamiętujemy w `TIDE_TEST_ORIGINAL_STATE_ROOTS` JSON z polami
+`xdg_state_home` (efektywny pierwotny XDG, z domyślnym HOME/.local/state) i
+`default_tide_state_home` (pierwotny HOME/.local/state/tide). Ten sam zapis dziedziczą potomkowie.
+To wejście dla strażnika PT-254; ten ticket nie wdraża blokowania zapisów poza izolacją.
+
+Przy zwykłym zakończeniu bezpośredniego procesu jego `atexit` usuwa własny katalog. Potomkowie
+muszą zakończyć pracę przed rodzicem; nie usuwają pożyczonego katalogu (także po fork).
+Nagłe zabicie procesu bez wykonania `atexit` może pozostawić katalog tymczasowy.
+Przy uruchomieniu przez runner właścicielem pozostaje runner: jak dotychczas usuwa katalog po
+zakończeniu modułu, także nieudanego, a diagnostyka pozostaje w `.log`, `.json` i `summary.json`.
+Testy izolacji porównują lokalizacje i zawartość syntetycznych zapisów, nie mtime stanu użytkownika.
+
 ## Równoległość i wynik
 
 Domyślnie liczba procesów to liczba rdzeni dostępnych procesowi minus dwa, minimum jeden.
