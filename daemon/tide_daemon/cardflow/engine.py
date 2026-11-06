@@ -93,8 +93,22 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
-OUTSIDE_PER_PROJECT = 4         # polecenia poza piaskownicą naraz w projekcie (06.11: próba z 8 — obciążenie przekroczyło 30; wracamy do 4, dopóki gałęzie K-38/K-55 i piaskownice nie korzystają z puli testów)
-OUTSIDE_TOTAL = 5               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
+OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
+
+
+def test_pool_available(worktree: str) -> bool:
+    """Czy uruchamiacz testów w worktree korzysta ze wspólnej puli maszyny. Brak uruchamiacza (inny projekt) — tak:
+    nie zmieniamy środowiska projektów, które nie używają tools/test_runner.py."""
+    path = os.path.join(worktree, "tools", "test_runner.py") if worktree else ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "class MachineSlots" in fh.read()
+    except OSError:
+        return True
+
+
 CLOSE_AUTHOR = "close"           # `reassign-author` z ticket=close przepina wykonawcę domknięcia karty
 OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
@@ -4901,7 +4915,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 files = caretakerctx.build(problem, now, events, card=card, worktree=worktree,
                                            context_dir=context_dir,
                                            card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)),
-                                           step=name)
+                                           step=name, include_text=selected.tool != "claude")
                 return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
                                        worktree=worktree, commands=selected.tool == "claude", context=files,
                                        context_dir=context_dir, limit=conf["limit"])
@@ -5709,6 +5723,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         chrome = node_mod.chrome_bin(os.path.expanduser("~"))
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
+        if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
+            # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
+            # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
+            env["JOBS"] = str(OLD_RUNNER_JOBS)
         argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",

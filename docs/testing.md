@@ -8,7 +8,9 @@ przeszedł dla oddawanych zmian; nie żąda osobnego pełnego `make test`.
 
 Pełny `make test` uruchom raz przy domknięciu karty (krok `close`), na gałęzi karty po scaleniu
 ticketów, przed podsumowaniem. Nieudany przebieg oznacza problem domknięcia: wynik `error`
-z opisem niepowodzeń zamiast `done`, bez scalania do głównej. Brak zgody lub konieczność wykonania
+z opisem niepowodzeń zamiast `done`. Wyjątek dla domknięcia wymaga jawnego rozliczenia i decyzji
+użytkownika według zasad poniżej; scalenie do głównej nadal wymaga osobnego polecenia.
+Brak zgody lub konieczność wykonania
 poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
 przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
 
@@ -44,6 +46,25 @@ lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem be
 testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
 Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
 `make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
+
+## Wyjątki od testów
+
+Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
+pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
+Odstępstwo w notce ticketu, a przy domknięciu również w podsumowaniu karty, zawiera:
+
+- pierwszy wynik: polecenie, SHA, nieudane testy i odnośnik do logu;
+- wynik tego samego testu na przypiętej bazie ticketu oraz na `master`, z zapisanymi SHA,
+  poleceniami i warunkami porównania (bez zmiany zarządzanej gałęzi);
+- obciążenie maszyny przy niepowodzeniu i porównaniu, w tym równoległe przebiegi i limit procesów;
+- uzasadnienie oraz dokładny zakres odstępstwa: które niepowodzenia obejmuje, a które nadal blokują;
+- właściciela poprawki i sposób śledzenia jej wykonania.
+
+Brak danych oznacz jawnie; nie uznawaj bez dowodu, że problem występował już na bazie albo wynikał
+z obciążenia. Recenzent ocenia uzasadnienie i zakres odstępstwa. Domknięcie karty z nieudanym pełnym
+przebiegiem jest możliwe tylko z takim jawnym rozliczeniem i jawną decyzją użytkownika o przyjęciu
+odstępstwa. Do tego czasu krok zgłasza problem domknięcia, zachowując nieudany wynik. Przyjęcie
+odstępstwa nie zmienia wyniku testu na sukces i nie zastępuje osobnej zgody na scalenie do głównej.
 
 ## Równoległość i wynik
 

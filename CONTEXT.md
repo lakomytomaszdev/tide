@@ -245,7 +245,11 @@ Rola wykonawcy, który robi ticket (krok ticketu i poprawki).
 _Avoid_: wykonawca ticketu, implementer
 
 **Recenzent**:
-Rola wykonawcy, który robi review ticketu albo planu; zawsze inny model niż autor.
+Rola wykonawcy, który robi niezależne review ticketu albo planu w nowej sesji. Dla zwykłych ticketów
+dopuszczalny jest ten sam model z inną siłą myślenia (Codex mocny ↔ standard). Dla klas ryzyka
+wymienionych w [standardzie planu](docs/agent-plan-standard.md#recenzja-według-ryzyka) wymagany jest
+recenzent innej rodziny modeli (np. Astra / Claude względem autora Codex); brak dostępnego limitu
+takiego recenzenta oznacza oczekiwanie, bez automatycznego obniżenia wymagania.
 _Avoid_: reviewer w tekstach dla użytkownika
 
 **Klasa**:
