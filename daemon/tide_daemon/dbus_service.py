@@ -520,6 +520,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="RevokeTicketConsent">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="PreviewStepFault">
     <arg name="id" type="s" direction="in"/>
     <arg name="request" type="s" direction="in"/>
@@ -1062,6 +1067,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardStep", flush=True)
 
         self.monitor.resolve_card_step(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def RevokeTicketConsent(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.revoke_ticket_consent(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)

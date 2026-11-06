@@ -49,6 +49,7 @@ from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
+from . import consent
 from .decisions import clean_options
 from . import execution
 from . import faults
@@ -2792,6 +2793,9 @@ class FlowEngine(PlanEditing):
             if opened:
                 self.journal.append(card, "step.console_opened", step=name, recovered=True)
 
+    def revoke_ticket_consent(self, card_id: str, request: dict) -> dict:
+        return consent.revoke(self, card_id, request)
+
     def resolve_step(self, card_id: str, request: dict) -> dict:
         """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi."""
         try:
@@ -2917,7 +2921,8 @@ class FlowEngine(PlanEditing):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-ticket":
                 # Zgoda na polecenia poza piaskownicą do końca ticketu (03.11, K-33/PT-110: trzy kopie, trzy pytania).
-                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
+                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus,
+                                    orderSeq=(st.started or {}).get("seq"), baseVersion=st.base_version)
             if choice == "run-always":
                 from ..board.commands import outside_risky
                 if outside_risky(command, roots, self._extra_repos(card)):
@@ -3999,14 +4004,12 @@ class FlowEngine(PlanEditing):
             from ..board.commands import sandbox_grant
             data["canAllow"] = sandbox_grant(command, project.denied_commands) is not None
             if data.get("outside"):
-                from ..board.commands import outside_allowed, outside_matches, outside_pattern
+                from ..board.commands import outside_allowed, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
                 roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
                 data["canAllow"] = outside_allowed(command, project.denied_commands, roots)
-                remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
-                                                   or self._ticket_consent(card, step.get("ticket") or "")
-                                                   or self._auto_outside(card) and not outside_risky(command, roots, self._extra_repos(card)))
+                remembered = consent.automatic(self, card, step, command)
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -4320,6 +4323,8 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
+            if not consent.before_start(self, card, step, done, decision):
+                return None
             if self._outside_busy(card):
                 # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
                 # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
@@ -4439,10 +4444,9 @@ class FlowEngine(PlanEditing):
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
         poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
-        from ..board.commands import outside_allowed, outside_matches
+        from ..board.commands import outside_allowed
         command = done.get("command") or ""
         _, project = self._project(card)
-        from ..board.commands import outside_risky
         roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
         allowed = outside_allowed(command, project.denied_commands, roots)
         if allowed != bool(done.get("canAllow", True)):
@@ -4450,9 +4454,7 @@ class FlowEngine(PlanEditing):
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
-        if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
-                        self._ticket_consent(card, step.get("ticket") or "") or
-                        self._auto_outside(card) and not outside_risky(command, roots, self._extra_repos(card))):
+        if allowed and consent.automatic(self, card, step, command):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
@@ -4627,10 +4629,7 @@ class FlowEngine(PlanEditing):
         return better[0].name if better else ""
 
     def _ticket_consent(self, card: str, ticket: str) -> bool:
-        boundary = fold(self.journal.read(card)).base_change.get("seq", 0)
-        return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
-                                    and e.get("seq", 0) > boundary
-                                    for e in self.journal.read(card))
+        return (fold(self.journal.read(card)).ticket_consents.get(ticket) or {}).get("type") == consent.GRANTED
 
     def _outside_busy(self, card: str) -> bool:
         """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
@@ -4695,12 +4694,14 @@ class FlowEngine(PlanEditing):
             started = {e.get("step") for e in events if e.get("type") == "outside.started"}
             resumed = {e.get("parentStep") for e in events if e.get("type") == "step.started" and e.get("parentStep")}
             outside = {e.get("step") for e in events if e.get("type") == "step.finished" and e.get("outside")}
-            for e in events:
+            current = fold(events)
+            for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now
                 # Stara zgoda (karta porzucona) nie blokuje kolejki nawet przez OUTSIDE_QUEUE_STALE.
                 if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
-                        name in outside and name not in started and name not in resumed and now - queued < 86400:
+                        name in outside and name not in started and name not in resumed and \
+                        name not in current.superseded and now - queued < 86400:
                     self._outside_waiting.setdefault(name, (other, slug, queued, now))
 
     def _outside_exit(self, card: str, name: str) -> str:

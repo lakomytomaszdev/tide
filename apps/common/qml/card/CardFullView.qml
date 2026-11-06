@@ -58,6 +58,7 @@ Rectangle {
     readonly property var otherProviders: flow && Array.isArray(flow.otherProviders) ? flow.otherProviders : []
     readonly property var limitTransfer: flow && flow.limitTransfer ? flow.limitTransfer : null
     property bool transferSent: false
+    property string consentError: ""
     readonly property alias form: form
 
     signal backRequested()
@@ -241,6 +242,7 @@ Rectangle {
 
     function start() {
         transferSent = false
+        consentError = ""
         answeredIds = []
         confirming = null
         menuOpen = false
@@ -254,6 +256,10 @@ Rectangle {
 
     // Usługa odrzuciła odpowiedź: decyzja wraca na wierzch z powodem.
     function failed(decisionId, message) {
+        if (decisionId.indexOf("ticket-consent:") === 0) {
+            consentError = message
+            return
+        }
         if (decisionId.indexOf("limit-transfer:") === 0) transferSent = false
         answeredIds = answeredIds.filter(id => id !== decisionId)
         form.fail(message)
@@ -726,6 +732,52 @@ Rectangle {
                             onClicked: form.choose()
                         }
                     }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: consentRows.count > 0
+                spacing: 8
+                Repeater {
+                    id: consentRows
+                    model: view.flow && view.flow.ticketConsents ? view.flow.ticketConsents : []
+                    RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.ticket + (modelData.active
+                                  ? ": automatyczna zgoda na polecenia poza piaskownicą"
+                                  : ": zgoda cofnięta — następne polecenie wymaga decyzji")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 13
+                        }
+                        Tide.TextButton {
+                            objectName: "revokeTicketConsent"
+                            visible: modelData.canRevoke
+                            text: "Cofnij zgodę dla " + modelData.ticket
+                            onClicked: {
+                                view.consentError = ""
+                                view.answered("ticket-consent:" + modelData.ticket, "RevokeTicketConsent",
+                                    { ticket: modelData.ticket, orderSeq: modelData.orderSeq,
+                                      baseVersion: modelData.baseVersion })
+                            }
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: view.consentError !== ""
+                    text: view.consentError
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    color: Tide.Tokens.peach
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
                 }
             }
 

@@ -320,6 +320,11 @@ elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",
                    "question": "Czy możesz uruchomić testy z Dockerem/Testcontainers poza piaskownicą?"}, fh)
+elif word == "poza-kolejne":
+    # Każde wznowienie ponownie prosi o to samo polecenie: test granic zgody ticketu.
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
+                   "reason": "kolejna prośba ticketu"}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")
