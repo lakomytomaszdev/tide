@@ -152,10 +152,18 @@ class CardCliDbusTest(flow.CaretakerChatDbusTest):
                          "ATRAPA-POWOD: test pada ATRAPA-OPIEKUN: escalate")
         self.assertTrue(self.start(card)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=30))
-        self.fake_console.terminate()
-        self.fake_console.wait(5)
-        self.assertTrue(wait_until(lambda: not self.service.bus.interface().isServiceRegistered(
-            "org.kde.konsole.tide_caretaker_test").value(), timeout=5))
+        # Dostępność oznacza program, a nie działające okno. Launchers zapamiętuje
+        # wynik wyszukiwania przy starcie, więc odtwarzamy daemon z PATH bez konsole.
+        search = Path(self.base, "without-konsole")
+        search.mkdir()
+        for directory in os.get_exec_path(self.env):
+            for source in Path(directory).iterdir():
+                target = search / source.name
+                if (source.name != "konsole" and not target.exists()
+                        and source.is_file() and os.access(source, os.X_OK)):
+                    target.symlink_to(source)
+        self.env["PATH"] = str(search)
+        self.restart()
         before = self.shown(card)
         self.assertEqual(self.run_cli(card, code=3)["error"], "no-terminal")
         self.assertEqual(self.shown(card), before)
