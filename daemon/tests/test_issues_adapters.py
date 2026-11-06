@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from . import test_issues_dbus as integration
 from .fakebin import make_env
@@ -23,6 +25,66 @@ PACKAGE = REPO / 'cli/agents'
 SPEC = importlib.util.spec_from_file_location('issue_fixture', PACKAGE / 'eval/fixture.py')
 FIXTURE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FIXTURE)
+EVAL_SPEC = importlib.util.spec_from_file_location('issue_evaluator', PACKAGE / 'evaluate.py')
+EVALUATOR = importlib.util.module_from_spec(EVAL_SPEC)
+EVAL_SPEC.loader.exec_module(EVALUATOR)
+
+
+class EvaluatorTest(unittest.TestCase):
+    """Wybór programu i sprzątanie poświadczeń; bez uruchamiania jakiegokolwiek modelu."""
+
+    def test_codex_only_uses_explicit_binary_without_searching_path_for_claude(self):
+        args = SimpleNamespace(skip_claude=True, skip_codex=False, codex_bin=Path(sys.executable))
+        with mock.patch.object(EVALUATOR.shutil, 'which', side_effect=AssertionError('Nie szukaj w PATH')):
+            self.assertEqual(EVALUATOR.selected_programs(args), {'codex': str(Path(sys.executable).absolute())})
+        args.codex_bin = Path('/nonexistent/explicit-codex')
+        with mock.patch.object(EVALUATOR.shutil, 'which', return_value='/snap/bin/codex') as search:
+            with self.assertRaisesRegex(RuntimeError, 'explicit-codex'):
+                EVALUATOR.selected_programs(args)
+            search.assert_not_called()
+
+    def test_credentials_for_selected_program_are_private_and_removed_on_exit(self):
+        for failure in (None, RuntimeError, SystemExit, KeyboardInterrupt):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                original_home = root / 'original'
+                original_codex = original_home / '.codex'
+                original_codex.mkdir(parents=True)
+                (original_codex / 'auth.json').write_text('testowe poświadczenie')
+                (original_home / '.claude').mkdir()
+                (original_home / '.claude/.credentials.json').write_text('niewybrany program')
+                env = {'CODEX_HOME': str(root / 'runtime/codex'),
+                       'CLAUDE_CONFIG_DIR': str(root / 'runtime/claude')}
+                for name in env.values():
+                    Path(name).mkdir(parents=True)
+                destination = Path(env['CODEX_HOME']) / 'auth.json'
+                try:
+                    with EVALUATOR.credentials(original_home, original_codex, env, {'codex': '/explicit/codex'}):
+                        self.assertEqual(destination.read_text(), 'testowe poświadczenie')
+                        self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
+                        self.assertFalse(Path(env['CLAUDE_CONFIG_DIR'], '.credentials.json').exists())
+                        if failure:
+                            raise failure()
+                except (RuntimeError, SystemExit, KeyboardInterrupt):
+                    if failure is None:
+                        raise
+                self.assertFalse(destination.exists())
+                self.assertTrue((original_codex / 'auth.json').is_file())
+
+    def test_partial_credential_copy_is_removed_after_read_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'original'
+            source.mkdir()
+            (source / 'auth.json').write_text('testowe poświadczenie')
+            destination = root / 'runtime'
+            destination.mkdir()
+            env = {'CODEX_HOME': str(destination), 'CLAUDE_CONFIG_DIR': str(root / 'no-claude')}
+            with mock.patch.object(Path, 'read_bytes', side_effect=OSError('kontrolowany błąd odczytu')):
+                with self.assertRaises(OSError):
+                    with EVALUATOR.credentials(root, source, env, {'codex': '/explicit/codex'}):
+                        self.fail('Nie wolno kontynuować po błędzie kopiowania')
+            self.assertFalse((destination / 'auth.json').exists())
 
 
 class PackageTest(unittest.TestCase):

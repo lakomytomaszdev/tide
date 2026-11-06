@@ -2,6 +2,7 @@
 """Jawna, sieciowa ocena syntezy; poza make test i bez atrap programów modeli."""
 import argparse
 import base64
+from contextlib import contextmanager, ExitStack
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
@@ -9,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -33,13 +35,46 @@ def command(argv, env, cwd, prefix, input_text=None, timeout=600):
     return result.stdout
 
 
+def selected_programs(args):
+    programs = {}
+    if not args.skip_claude:
+        executable = shutil.which('claude')
+        if not executable:
+            raise RuntimeError('Wymagany rzeczywisty program claude w PATH.')
+        programs['claude'] = executable
+    if not args.skip_codex:
+        executable = args.codex_bin.absolute()
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise RuntimeError('Brak wykonywalnego programu Codex: ' + str(executable))
+        programs['codex'] = str(executable)
+    return programs
+
+
+@contextmanager
+def credentials(original_home, original_codex, env, programs):
+    """Kopiuj tylko wybrane poświadczenia; usuń także częściowy zapis po błędzie."""
+    copies = []
+    try:
+        for program, source, destination in (
+                ('codex', original_codex / 'auth.json', Path(env['CODEX_HOME']) / 'auth.json'),
+                ('claude', original_home / '.claude/.credentials.json',
+                 Path(env['CLAUDE_CONFIG_DIR']) / '.credentials.json')):
+            if program in programs and source.is_file():
+                descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                copies.append(destination)
+                with os.fdopen(descriptor, 'wb') as stream:
+                    stream.write(source.read_bytes())
+        yield
+    finally:
+        for destination in copies:
+            destination.unlink(missing_ok=True)
+
+
 def run(args):
     # Odczyt ścieżek przed utworzeniem izolacji; żadnego importu konfiguracji użytkownika.
     original_home = Path.home()
     original_codex = Path(os.environ.get('CODEX_HOME') or original_home / '.codex')
-    programs = {name: shutil.which(name) for name in ('claude', 'codex')}
-    if not all(programs.values()):
-        raise RuntimeError('Wymagane rzeczywiste programy claude i codex w PATH; nie używaj atrap.')
+    programs = selected_programs(args)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     fixture_spec = importlib.util.spec_from_file_location('issue_fixture', PACKAGE / 'eval/fixture.py')
@@ -58,7 +93,7 @@ def run(args):
         shutil.copy2(PACKAGE / 'eval' / name, inputs / name)
     write_json(output / 'input-sha256.json', {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs.iterdir()})
-    with tempfile.TemporaryDirectory(prefix='issue-synthesis-', dir=output) as runtime_name:
+    with tempfile.TemporaryDirectory(prefix='issue-synthesis-', dir=output) as runtime_name, ExitStack() as cleanup:
         runtime = Path(runtime_name)
         env = {**os.environ, 'HOME': str(runtime / 'home'), 'XDG_DATA_HOME': str(runtime / 'data'),
                'XDG_CONFIG_HOME': str(runtime / 'config'), 'XDG_CACHE_HOME': str(runtime / 'cache'),
@@ -74,14 +109,10 @@ def run(args):
                      'XDG_STATE_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR'):
             Path(env[name]).mkdir(parents=True, exist_ok=True)
         Path(env['GIT_CONFIG_GLOBAL']).write_text('[user]\n name = Tide tests\n email = tests@localhost\n[commit]\n gpgsign = false\n')
-        # Tylko uwierzytelnienie, nigdy config.toml, settings.json, hooki ani MCP.
-        for source, destination in ((original_codex / 'auth.json', Path(env['CODEX_HOME']) / 'auth.json'),
-                                    (original_home / '.claude/.credentials.json',
-                                     Path(env['CLAUDE_CONFIG_DIR']) / '.credentials.json')):
-            if source.is_file():
-                shutil.copyfile(source, destination)
-                destination.chmod(0o600)
-        install_env = {**env, 'PATH': str(Path(programs['codex']).parent) + os.pathsep + env['PATH']}
+        # ExitStack usuwa kopie przed usunięciem całego tymczasowego HOME, także po błędzie.
+        cleanup.enter_context(credentials(original_home, original_codex, env, programs))
+        program_dirs = os.pathsep.join(str(Path(path).parent) for path in programs.values())
+        install_env = {**env, 'PATH': program_dirs + os.pathsep + env['PATH']}
         command([sys.executable, str(PACKAGE / 'install.py')], install_env, runtime,
                 output / 'install-package')
         binary = runtime / 'bin'
@@ -134,8 +165,9 @@ def run(args):
             if not reply.arguments() or not json.loads(reply.arguments()[0]).get('ok'):
                 raise RuntimeError('Nie utworzono izolowanego projektu.')
             write_json(output / 'project.json', json.loads(reply.arguments()[0]))
-            for program, model in (('claude', args.claude_model), ('codex', args.codex_model)):
-                evaluate_one(program, model, programs[program], output, inputs, runtime, env)
+            models = {'claude': args.claude_model, 'codex': args.codex_model}
+            for program, executable in programs.items():
+                evaluate_one(program, models[program], executable, output, inputs, runtime, env)
             QDBusConnection.disconnectFromBus('issue-eval')
         finally:
             for process in (daemon, bus):
@@ -149,7 +181,9 @@ def run(args):
             if bus.stdout:
                 bus.stdout.close()
     write_json(output / 'status.json', {'result': 'needs-rubric', 'programs': list(programs),
-                                       'message': 'Oceń oba raporty i wyniki CLI; nie jest to automatyczny pass.'})
+                                       'skippedPrograms': [p for p in ('claude', 'codex') if p not in programs],
+                                       'message': 'Oceń zapisane raporty i wyniki CLI; nie jest to automatyczny pass. '
+                                                  'Pominięty program wymaga odrębnej oceny przed zamknięciem kryterium.'})
 
 
 def evaluate_one(program, model, executable, output, inputs, runtime, env):
@@ -226,6 +260,7 @@ def evaluate_one(program, model, executable, output, inputs, runtime, env):
         if destination.read_bytes() != (inputs / attachment['name']).read_bytes():
             raise RuntimeError('Kopia dowodu różni się od wejścia.')
     write_json(folder / 'metadata.json', {'program': program, 'version': version, 'requestedModel': model,
+                                         'executable': executable,
                                          'observedModels': observed, 'timestamp': datetime.now(timezone.utc).isoformat(),
                                          'issue': final['id'], 'state': issue['state'], 'versionOfIssue': issue['version'],
                                          'protocol': 'real-synthesis-cli-transport-separate',
@@ -240,7 +275,15 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--claude-model', required=True)
     parser.add_argument('--codex-model', required=True)
+    parser.add_argument('--codex-bin', type=Path, default=Path('/usr/lib/chatgpt/resources/codex'))
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--skip-claude', action='store_true', help='wyłącznie ocena Codexa; bez wywołań Claude')
+    selection.add_argument('--skip-codex', action='store_true', help='wyłącznie ocena Claude po odrębnej zgodzie')
     args = parser.parse_args()
+    # SIGTERM przechodzi przez finally/contextmanager zamiast pozostawiać kopie poświadczeń.
+    def terminate(signum, frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
     try:
         run(args)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:

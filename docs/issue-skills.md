@@ -71,12 +71,27 @@ doboru skilla przez program. Osobno sprawdzamy instalowane wejścia i operacje h
 Przykład świadomego uruchomienia (modele odpowiadają katalogowi wykonawców projektu):
 
 ```sh
-python3 cli/agents/evaluate.py --output build/issue-synthesis/pt-224 --claude-model sonnet --codex-model gpt-6.1-sol
+python3 cli/agents/evaluate.py --output build/issue-synthesis/pt-224 --claude-model sonnet --codex-model gpt-6.1-sol --codex-bin /usr/lib/chatgpt/resources/codex
 ```
 
 `bash scripts/evaluate-issue-synthesis.sh` najpierw wykonuje deterministyczny moduł
 testów adapterów na prywatnym D-Bus. Dopiero po sukcesie uruchamia powyższą sieciową
 ocenę. Te dwa wyniki pozostają odrębnymi dowodami; skrypt nie ocenia sam jakości raportów.
+
+Można oceniać programy osobno. `--skip-claude` nie uruchamia Claude (także `--version`)
+ani nie czyta jego poświadczeń. Codex jest uruchamiany z jawnego `--codex-bin`, domyślnie
+`/usr/lib/chatgpt/resources/codex`, jak w Tide; runner nie zastępuje go wersją ze snap
+znalezioną w PATH. Metadane zawierają dokładną ścieżkę programu oraz jego wersję.
+
+```sh
+bash scripts/evaluate-issue-synthesis.sh --skip-claude --output build/issue-synthesis/pt-224-codex
+```
+
+Po odrębnej zgodzie na późniejszą ocenę Claude można użyć `--skip-codex` z nowym
+katalogiem wyniku. `status.json` wymienia pominięty program; pojedynczy przebieg nie
+spełnia kryterium obu syntez. Kopiowane są tylko poświadczenia wybranego programu,
+z prawami 0600. Context manager usuwa kopie również po błędzie kopiowania/instalacji,
+nieudanym procesie, przerwaniu i SIGTERM, a następnie usuwa całe tymczasowe HOME.
 
 Katalog wyniku jest nowy, by nie nadpisywać wcześniejszej oceny. Zawiera wersje programów,
 żądane i odczytane z transkryptów modele, wejście, raporty, transkrypty, wyniki CLI,
