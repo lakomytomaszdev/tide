@@ -11,6 +11,9 @@ Metody zwracają jeden napis JSON; wyjątkiem jest `ReadAttachment`, zwracające
 Nie przyjmują ścieżek do plików klienta ani ścieżek odczytu Tablicy.
 CLI jest samodzielnym klientem tego interfejsu; nie importuje pakietu `tide_daemon`.
 
+Rozmowa opiekuna karty ma oddzielny kontrakt `/Board` z PT-149; opis poniżej
+w sekcji [CLI rozmowy opiekuna](#cli-rozmowy-opiekuna--pt-226).
+
 | Metoda | Argumenty D-Bus | Wynik przy sukcesie, poza wspólną kopertą |
 | --- | --- | --- |
 | `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment"]` |
@@ -30,6 +33,56 @@ Błąd: `{"ok":false,"apiVersion":1,"error":"bad-request","message":"…"}`.
 `Info` działa także z `--no-board`, wtedy lista możliwości jest pusta; zapisy i odczyty spraw
 zwracają `unavailable`. Klient przed operacją sprawdza dokładnie wersję 1 i wymaganą możliwość.
 Brak lub niezgodność API kończy polecenie bez zapisu, importu lokalnego i uruchamiania modelu.
+
+### CLI rozmowy opiekuna — PT-226
+
+```text
+tide card open K-N [--problem <id>] --json
+```
+
+Właścicielem operacji jest **K-37/PT-149**: publiczne `/Board`, interfejs
+`org.tide.Daemon.Board`, `TalkToCaretaker(s id, s request) → s`.
+CLI przekazuje identyfikator karty i `{}` albo `{"problem":"<id>"}`. Sukces
+`{"ok":true,"step":"…"}` oznacza przyjęcie otwarcia rozmowy przez usługę i kod wyjścia 0.
+Wynik JSON jest zachowany bez dokładania koperty API spraw. Pole `step` identyfikuje krok rozmowy.
+To samo wejście wywołuje istniejący przycisk „Porozmawiaj z opiekunem”.
+
+PT-149 obsługuje rozpoczęty, niezakończony przepływ z dostępnym worktree karty.
+Opcjonalny `problem` musi nadal występować. Bez niego usługa wybiera problem lub rozmowę ogólną.
+Karta bez rozpoczętego przepływu, zakończona lub problem już nieaktualny zwracają `no-step`.
+Ponowne otwarcie przy otwartej rozmowie daje `console-open`; nie obiecuje aktywacji ani wznowienia.
+Kontekst, profil narzędzi, ochrona zapisu, akcje i cykl życia rozmowy należą do PT-149.
+Adapter nie zmienia kolumny ani pauzy i nie uruchamia lokalnego programu.
+
+| Odpowiedź / sytuacja | Kod wyjścia CLI |
+| --- | --- |
+| `ok: true` i niepusty `step` | 0 |
+| `bad-request`, błędne argumenty CLI | 2 |
+| `no-terminal`, niedostępny daemon, brak metody lub niezgodny kontrakt | 3 |
+| `console-open` | 4 |
+| `no-step`, `not-found` | 5 |
+| Pozostałe odmowy PT-149, np. `no-executor`, `local-only`, `no-worktree`, `step` | 1 |
+
+Odmowa zachowuje wszystkie pola odpowiedzi usługi. Brak publicznej metody kończy się
+`api-incompatible`, kodem 3 i bez otwarcia rozmowy. Nie ma fallbacku do `CardContext`,
+`OpenCardGuardian` ani `card.session`.
+
+`tide info --json` dodaje `card.open` do `capabilities` tylko po sprawdzeniu rzeczywistej
+sygnatury metody w introspekcji. `operations["card.open"]` zawiera `available`,
+`contract: "PT-149"`, `contractVerified: false` i opis wymaganej weryfikacji.
+`available` potwierdza wejście API, a nie działanie całego kontraktu.
+CLI nie wykonuje testu otwierającego rozmowę podczas `info` i nie przechowuje atestacji
+działającego daemona. Dowód kompletnego kontraktu pochodzi z testu na prywatnym D-Bus
+z atrapą Konsoli i jest zapisany w notce wykonania ticketu.
+
+Testy adaptera i zainstalowanego CLI: `daemon.tests.test_issues_card_cli`,
+zarejestrowane przez wzorzec `test_issues*.py` w zestawie `issues` oraz w zestawie `daemon`.
+Testy porównują oba porządki otwarcia CLI/przycisk przez wspólne wejście D-Bus,
+jedną rozmowę na kartę, kolumnę, pauzę i odmowy. Wiązanie rzeczywistego przycisku
+sprawdza `apps/board/tests/test_card_full_view.py`,
+`FullViewTest.test_talk_button_and_escalated_decision_call_the_service`.
+Test kontraktu zależności: `daemon.tests.test_cardflow_dbus.CaretakerChatDbusTest`
+oraz `daemon.tests.test_cardflow_caretaker_chat` (w tym ochrona zapisu).
 
 ### Create — wdrożone w PT-218
 

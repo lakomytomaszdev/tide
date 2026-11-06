@@ -218,6 +218,7 @@ class IssuesDbusTest(unittest.TestCase):
         self.assertEqual(set(info["capabilities"]), {
             "issue.create", "issue.list", "issue.show", "issue.update", "issue.submit",
             "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment",
+            "card.open",
         })
         self.assertEqual(set(info["resources"]), {"plan-standard", "next-id", "check-plans"})
         self.assertTrue(all(item["available"] for item in info["resources"].values()))
@@ -318,6 +319,9 @@ class IssuesDbusTest(unittest.TestCase):
                        extra_env=self.env)
         reply = self.run_cli("issue", "create", "--report", "/nie-ma-pliku", "--title", "x", code=3)
         self.assertEqual(reply["error"], "api-incompatible")
+        self.assertFalse(Path(proof).exists())
+        self.assertFalse(Path(self.board).exists())
+        self.assertEqual(self.run_cli("card", "open", "K-1", code=3)["error"], "api-incompatible")
         self.assertFalse(Path(proof).exists())
         self.assertFalse(Path(self.board).exists())
 
