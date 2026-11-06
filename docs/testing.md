@@ -1,15 +1,26 @@
 # Testy podczas pracy nad ticketem
 
-W trakcie implementacji uruchamiaj zestawy dobrane do zmiany. Pełny `make test` uruchom
-raz przed oddaniem ticketu. Powtarzaj pełny przebieg dopiero po zmianach, które tego wymagają,
-albo po błędzie wskazującym na szerszą regresję.
+W trakcie implementacji uruchamiaj zestawy dobrane do zmiany. Przed oddaniem ticketu i po
+poprawkach uruchom `make test-changed BASE=<punkt startu ticketu na gałęzi karty>`.
+Używaj przypiętego SHA z kartki kroku, nie przesuwającego się wierzchołka gałęzi karty ani
+domyślnego `master`. Zapisz polecenie i wynik w notce. Recenzent sprawdza, że ten przebieg
+przeszedł dla oddawanych zmian; nie żąda osobnego pełnego `make test`.
+
+Pełny `make test` uruchom raz przy domknięciu karty (krok `close`), na gałęzi karty po scaleniu
+ticketów, przed podsumowaniem. Nieudany przebieg oznacza problem domknięcia: wynik `error`
+z opisem niepowodzeń zamiast `done`, bez scalania do głównej. Brak zgody lub konieczność wykonania
+poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
+przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
+
+Ta zasada zastępuje wymóg pełnego `make test` przed oddaniem ticketu zapisany w kartkach
+istniejących planów, w tym K-37, K-38 i K-55. Nie przepisujemy tych planów.
 
 ```sh
 make test-cardflow           # test_cardflow*.py oraz testy basesuggestions i hostingcli
 make test-daemon             # wszystkie testy usługi
 make test-board              # okno Tablicy (apps/board/tests)
-make test-changed BASE=master
-make test                   # końcowa kontrola wszystkich komponentów
+make test-changed BASE=<SHA-startu-ticketu>
+make test                   # raz przy domknięciu karty, na gałęzi karty
 make test JOBS=4             # ograniczenie liczby jednoczesnych procesów
 make test JOBS=1             # diagnostyka bez równoległości
 ```
@@ -31,6 +42,8 @@ To heurystyka katalogów, więc przy zmianach zależności między komponentami 
 zestawy ręcznie. Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspólny moduł motywów
 lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem bez uruchamiania
 testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
+Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
+`make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
 
 ## Równoległość i wynik
 
