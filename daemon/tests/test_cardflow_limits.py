@@ -296,6 +296,10 @@ class TransferFlowTest(FlowInProcess):
         self.wait_column(card, "review", timeout=50)
 
     def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
+        # StartCard może oddać odpowiedź dopiero po wykryciu szybkiego sygnału atrapy.
+        # Włączamy odpytywanie po zmianie metryki, aby step.limit miało właściwe okno i reset.
+        self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,
@@ -303,6 +307,7 @@ class TransferFlowTest(FlowInProcess):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
         self.assertTrue(self.start(card)["ok"])
         metric["remaining"] = 0
+        self.flow.start()
         self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
                                         self.of(card, "step.finished")), timeout=30), self.events(card))
         first = self.of(card, "step.started")[0]

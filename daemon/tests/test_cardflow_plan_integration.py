@@ -222,6 +222,8 @@ class PlanFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        "koniec tyknięcia przed ręcznym zatwierdzeniem i ponowieniem commita")
         engine = self.flow.engine
         engine.approve_plan(card)
         reserved = [r["ticket"] for r in self.results(card, "reserve")]
