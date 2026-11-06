@@ -149,8 +149,9 @@ def _realpath(path, pid):
         if candidate in ("/proc/self", "/proc/thread-self"):
             # Powiadomienie niesie TID. self wskazuje TGID, a thread-self
             # konkretny wątek; odczyt readlink w nadzorcy podałby jego własne ID.
-            with open(f"/proc/{pid}/status", encoding="ascii") as stream:
-                tgid = next(line.split()[1] for line in stream if line.startswith("Tgid:"))
+            # Name może zawierać dowolne bajty; interpretujemy tylko liczbowe Tgid.
+            with open(f"/proc/{pid}/status", "rb") as stream:
+                tgid = int(next(line.split()[1] for line in stream if line.startswith(b"Tgid:")))
             target = f"/proc/{tgid}"
             if part == "thread-self":
                 target += f"/task/{pid}"

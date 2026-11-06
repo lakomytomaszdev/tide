@@ -88,7 +88,7 @@ class StateGuardTest(unittest.TestCase):
                         (root / "existing").write_text("synthetic original")
                         self.env["TIDE_GUARD_PROBE_ALIAS"] = alias
                         result, records = self.probe("fd-alias-" + mode, root / "existing", entry=entry)
-                        self.assertIn("SHELL DENIED" if mode == "shell" else "PYTHON SWALLOWED", result.stdout)
+                        self.assertIn("SHELL DENIED" if mode == "shell" else "PYTHON SWALLOWED errno=1", result.stdout)
                         self.assertTrue(any(record.get("operation") in ("open", "openat")
                                             and record.get("targets") for record in records), records)
                         if mode in ("thread", "shell"):

@@ -56,12 +56,14 @@ class GuardProbe(unittest.TestCase):
                     print(f"SHELL {'ALLOWED' if result.returncode == 0 else 'DENIED'}", flush=True)
                 else:
                     def truncate_alias():
+                        # /proc/status zawiera także nazwę procesu/wątku spoza ASCII.
+                        self.assertEqual(ctypes.CDLL(None).prctl(15, "próba-aliasu".encode(), 0, 0, 0), 0)
                         try:
                             output = os.open(alias, os.O_WRONLY | os.O_TRUNC)
                             os.close(output)
                             print("PYTHON ALLOWED", flush=True)
-                        except PermissionError:
-                            print("PYTHON SWALLOWED", flush=True)
+                        except OSError as exc:
+                            print(f"PYTHON SWALLOWED errno={exc.errno}", flush=True)
                     if action == "fd-alias-thread":
                         with ThreadPoolExecutor(1) as pool:
                             pool.submit(truncate_alias).result()
