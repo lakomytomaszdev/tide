@@ -1,11 +1,13 @@
 """Uwagi użytkownika: trwała kolejka do najbliższego wznowienia tego samego łańcucha.
 
 Tylko step.started (albo step.entered przy przejęciu istniejącego kroku) potwierdza
-dołączenie do polecenia. Intencja startu przechowuje identyfikatory do recovery.
+dołączenie do polecenia. Pewne anulowanie nieprzejętego zadania Konsoli cofa to
+potwierdzenie dla tej próby. Intencja startu przechowuje identyfikatory do recovery.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 
@@ -79,6 +81,20 @@ def prepare(st, parent, prompt):
                    "\n".join(json.dumps({"noteId": n["noteId"], "text": n["text"]}, ensure_ascii=False)
                              for n in notes) + "\n</TIDE_STEP_NOTES>\n")
     return prompt, [n["noteId"] for n in notes]
+
+
+def close_console(journal, card, name, *, cancelled=False):
+    """Utrwala także cofnięcie doręczenia po atomowym anulowaniu zadania Konsoli.
+
+    Znacznik .cancelled odtwarza dowód po awarii między zmianą nazwy zadania a
+    zapisem zdarzenia. Brak znacznika/przejęcie zadania nie uprawnia do cofnięcia.
+    """
+    from .state import fold
+    step = fold(journal.read(card)).steps[name]
+    task = step.get("taskFile") or ""
+    cancelled = cancelled or bool(task and os.path.exists(task + ".cancelled"))
+    journal.append(card, "step.console_closed", step=name,
+                   cancelledNoteIds=step.get("consoleNoteIds", []) if cancelled else [])
 
 
 def view(st):

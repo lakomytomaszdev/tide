@@ -129,7 +129,7 @@ Rectangle {
         cardTags = tags
         if (!sent) return
         if (sent[1].indexOf("step-note:") === 0) {
-            if (sent[0] === fullCardId) cardFullView.noteReply(sent[1].substring(10),
+            cardFullView.noteReply(sent[1].substring(10),
                 reply && reply.ok ? "" : reply && reply.message || "Nie zapisano uwagi.", reply)
             return
         }

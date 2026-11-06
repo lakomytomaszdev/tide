@@ -2047,6 +2047,10 @@ retry, zmiany lub przekazania wykonawcy, przejęcia w Konsoli oraz automatyczneg
 poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.started`; intencja
 `step-start` przechowuje tę samą listę do odtworzenia po awarii. Nieudany start bez trwałego
 następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
+Gdy nieprzejęte zadanie Konsoli zostanie atomowo anulowane, `step.console_closed.cancelledNoteIds`
+cofa potwierdzenie wyłącznie uwag dołączonych do tej próby (`consoleNoteIds` w stanie kroku).
+Znacznik zadania `.cancelled` pozwala utrwalić to również po restarcie pomiędzy anulowaniem
+a zapisem zdarzenia. Nieudane anulowanie lub samo zamknięcie Konsoli nie cofa doręczenia.
 Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
 nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
 
@@ -2060,6 +2064,8 @@ Stan to `pending` („oczekuje”), `delivered` („przekazana — <następca>�
 („nieprzekazana — krok zakończony”). `flow.steps[].canAddNote` określa dostępność formularza.
 Błąd/pytanie/zgoda nadal mogą czekać na wznowienie; zakończenie bez wznowienia zachowuje widoczną
 uwagę jako nieprzekazaną. Formularz zachowuje treść i klucz ponowienia po błędzie zapisu.
+Odpowiedź zapisu rozlicza szkic po `requestId` także po otwarciu innej karty; powrót do pierwszej
+pozwala wysłać następną uwagę po sukcesie albo ponowić zapis z tym samym kluczem po błędzie.
 
 ### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
 

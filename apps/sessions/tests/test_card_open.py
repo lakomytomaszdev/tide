@@ -168,6 +168,59 @@ result['draft'] = json.loads(js('JSON.stringify(cardFullView.noteDraft(' + json.
         self.assertFalse(out["draft"]["busy"])
         self.assertTrue(out["draft"]["error"])
 
+    def test_delayed_note_reply_after_opening_another_card_releases_original_draft(self):
+        with open(self.working, encoding="utf-8") as fh:
+            data = json.load(fh)["boardSnapshot"]
+        first = next(c for c in data["cards"] if c["id"] == CARD)
+        data["cards"].append(dict(first, id="K-98", title="Druga karta"))
+        path = self.data_file("notes-navigation", data)
+        for success in (True, False):
+            with self.subTest(success=success):
+                out = self.probe(path, "success = " + repr(success) + r'''
+pending_notes = []
+original_write = backend._write
+def delayed_write(tag, member, args):
+    if member != 'AddCardStepNote':
+        return original_write(tag, member, args)
+    backend._calls.append([member, *args])
+    pending_notes.append(tag)
+backend._write = delayed_write
+js("openFull('K-8')")
+step = js('cardFullView.noteSteps[0].id')
+draft = 'cardFullView.noteDraft(' + json.dumps(step) + ')'
+js("cardFullView.editNote(" + json.dumps(step) + ", 'Uwaga A')")
+js('cardFullView.sendNote(' + json.dumps(step) + ')')
+result['first'] = calls()[-1]
+js("openFull('K-98')")
+js("cardFullView.editNote(" + json.dumps(step) + ", 'Szkic B')")
+backend.replied.emit(pending_notes.pop(0), json.dumps(
+    {'ok': True, 'noteId': 'note-A'} if success else {'ok': False, 'message': 'Błąd A'}))
+result['other'] = json.loads(js('JSON.stringify(' + draft + ')'))
+js("openFull('K-8')")
+result['settled'] = json.loads(js('JSON.stringify(' + draft + ')'))
+assert not result['settled']['busy'], 'odpowiedź A nie zwolniła szkicu po nawigacji'
+if success:
+    js("cardFullView.editNote(" + json.dumps(step) + ", 'Następna uwaga A')")
+js('cardFullView.sendNote(' + json.dumps(step) + ')')
+result['next'] = calls()[-1]
+result['calls'] = len(pending_notes)
+assert result['calls'] == 1, 'formularz nie wysłał następnej uwagi albo ponowienia'
+backend.replied.emit(pending_notes.pop(0), json.dumps({'ok': True, 'noteId': 'note-next'}))
+result['saved'] = json.loads(js('JSON.stringify(' + draft + ')'))
+''')
+                self.assertEqual(out["other"]["text"], "Szkic B")
+                self.assertFalse(out["other"]["busy"])
+                self.assertFalse(out["settled"]["busy"])
+                self.assertEqual(out["calls"], 1)
+                self.assertEqual(out["saved"]["saved"], "note-next")
+                if success:
+                    self.assertEqual(out["settled"]["saved"], "note-A")
+                    self.assertNotEqual(json.loads(out["first"][2])["requestId"],
+                                        json.loads(out["next"][2])["requestId"])
+                else:
+                    self.assertEqual(out["settled"]["error"], "Błąd A")
+                    self.assertEqual(out["first"], out["next"])
+
     def test_base_refusal_opens_shared_preview_and_escape_keeps_question(self):
         from apps.board.tests.test_base_change import PREVIEW
         response = json.dumps({"ok": True, "waiting": True, "changed": False, "preview": PREVIEW})

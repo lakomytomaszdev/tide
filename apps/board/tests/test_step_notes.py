@@ -11,6 +11,57 @@ from .test_view import ProbeCase
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class StepNotesFormTest(ProbeCase):
+    def test_delayed_reply_after_navigation_releases_the_original_draft(self):
+        data = full_d(self.data)
+        first = next(c for c in data["cards"] if c["id"] == "K-8")
+        data["cards"].append(dict(first, id="K-98", title="Druga karta"))
+        for success in (True, False):
+            with self.subTest(success=success):
+                out = self.probe(STATE_PY + "success = " + repr(success) + r'''
+pending_notes = []
+original_write = backend._write
+def delayed_write(tag, member, args):
+    if member != 'AddCardStepNote':
+        return original_write(tag, member, args)
+    backend._calls.append([member, *args])
+    pending_notes.append(tag)
+backend._write = delayed_write
+js("page.openFull('K-8')")
+step = js("page.cardFullView.noteSteps[0].id")
+draft = "page.cardFullView.noteDraft(" + json.dumps(step) + ")"
+js("page.cardFullView.editNote(" + json.dumps(step) + ", 'Uwaga A')")
+js("page.cardFullView.sendNote(" + json.dumps(step) + ")")
+out['first'] = calls()[-1]
+js("page.openFull('K-98')")
+js("page.cardFullView.editNote(" + json.dumps(step) + ", 'Szkic B')")
+backend.replied.emit(pending_notes.pop(0), json.dumps(
+    {'ok': True, 'noteId': 'note-A'} if success else {'ok': False, 'message': 'Błąd A'}))
+out['other'] = js(draft)
+js("page.openFull('K-8')")
+out['settled'] = js(draft)
+assert not out['settled']['busy'], 'odpowiedź A nie zwolniła szkicu po nawigacji'
+if success:
+    js("page.cardFullView.editNote(" + json.dumps(step) + ", 'Następna uwaga A')")
+js("page.cardFullView.sendNote(" + json.dumps(step) + ")")
+out['next'] = calls()[-1]
+out['calls'] = len(pending_notes)
+assert out['calls'] == 1, 'formularz nie wysłał następnej uwagi albo ponowienia'
+backend.replied.emit(pending_notes.pop(0), json.dumps({'ok': True, 'noteId': 'note-next'}))
+out['saved'] = js(draft)
+''', data)
+                self.assertEqual(out["other"]["text"], "Szkic B")
+                self.assertFalse(out["other"]["busy"])
+                self.assertFalse(out["settled"]["busy"])
+                self.assertEqual(out["calls"], 1)
+                self.assertEqual(out["saved"]["saved"], "note-next")
+                if success:
+                    self.assertEqual(out["settled"]["saved"], "note-A")
+                    self.assertNotEqual(json.loads(out["first"][2])["requestId"],
+                                        json.loads(out["next"][2])["requestId"])
+                else:
+                    self.assertEqual(out["settled"]["error"], "Błąd A")
+                    self.assertEqual(out["first"], out["next"])
+
     def test_form_error_retry_success_and_persisted_status(self):
         data = full_d(self.data)
         flow = next(c for c in data["cards"] if c["id"] == "K-8")["derived"]["flow"]

@@ -79,6 +79,19 @@ class QueueTest(unittest.TestCase):
             self.add()
         self.assertEqual(caught.exception.code, "stale-order")
 
+    def test_cancel_console_revokes_only_notes_from_that_attempt(self):
+        first = self.add()["noteId"]
+        self.journal.append("K-1", "step.started", step="s2", ticket="PT-1", parentStep="s1",
+                            deliveredNoteIds=[first])
+        second = stepnotes.add(self.journal, "K-1", {"step": "s2", "orderSeq": 1,
+            "requestId": "r2", "text": "Uwaga do Konsoli"}, fold)["noteId"]
+        self.journal.append("K-1", "step.entered", step="s2", deliveredNoteIds=[second])
+        stepnotes.close_console(self.journal, "K-1", "s2", cancelled=True)
+        st = self.state()
+        self.assertEqual(st.steps["s2"]["deliveredNoteIds"], [first])
+        self.assertEqual(stepnotes.prepare(st, "s2", "retry")[1], [second])
+        self.assertEqual([n["status"] for n in stepnotes.view(st)], ["delivered", "pending"])
+
 
 class NotesFlowTest(FlowInProcess):
     def note(self, card, step, text, key):

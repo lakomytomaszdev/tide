@@ -405,7 +405,7 @@ Rectangle {
         delete tags[tag]
         decisionTags = tags
         if (sent && sent[1].indexOf("step-note:") === 0) {
-            if (sent[0] === fullCardId) cardFullView.noteReply(sent[1].substring(10), error, reply)
+            cardFullView.noteReply(sent[1].substring(10), error, reply)
             return
         }
         if (sent && !error && reply && reply.preview) baseChangePreview.show(sent[0], reply.preview)

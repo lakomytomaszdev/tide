@@ -369,6 +369,7 @@ def fold(events: list[dict]) -> FlowState:
                                    "deliveredNoteIds": list(dict.fromkeys([
                                        *st.steps[e["step"]].get("deliveredNoteIds", []),
                                        *e.get("deliveredNoteIds", [])])),
+                                   "consoleNoteIds": e.get("deliveredNoteIds", []),
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",
@@ -377,7 +378,10 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.console_opened" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "consoleOpened": True}
         elif kind == "step.console_closed" and e.get("step") in st.steps:
-            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleClosed": True}
+            st.steps[e["step"]] = {**st.steps[e["step"]], "consoleClosed": True,
+                                   "deliveredNoteIds": [ident for ident in
+                                       st.steps[e["step"]].get("deliveredNoteIds", [])
+                                       if ident not in e.get("cancelledNoteIds", [])]}
         elif kind == "step.transfer_requested":
             st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":

@@ -62,6 +62,7 @@ from . import baseproposal
 from .mergepreview import source_dirty
 from .mergeop import MergeWorktree
 from .journal import Journal
+from .stepnotes import close_console
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
                     guard_reason, ticket_waits, _epoch)
 from .tracker import TrackerOutbox
@@ -1123,6 +1124,7 @@ class FlowEngine(PlanEditing):
                             parentStep=parent_step, attempt=attempt, reviewTip=review_tip,
                             deliveredNoteIds=note_ids, **base_context)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
+                            deliveredNoteIds=note_ids,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
         plan = Plan(repo_path=project.repo, repo_name=project.name, tool=selected.tool, prompt=prompt,
@@ -1135,7 +1137,7 @@ class FlowEngine(PlanEditing):
             opened = ""
         if not opened:
             if self.task_files.cancel(task_file):
-                self.journal.append(item.id, "step.console_closed", step=step_id)
+                close_console(self.journal, item.id, step_id, cancelled=True)
                 self._finish(item.id, fold(self.journal.read(item.id)).steps[step_id],
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
@@ -1427,7 +1429,7 @@ class FlowEngine(PlanEditing):
             mode = ""
         if not mode:
             if self.task_files.cancel(task_file):
-                self.journal.append(card_id, "step.console_closed", step=new_id)
+                close_console(self.journal, card_id, new_id, cancelled=True)
                 self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
@@ -2106,7 +2108,7 @@ class FlowEngine(PlanEditing):
             if item.get("step") in st.transfer_requests and item.get("step") not in st.step_decisions:
                 continue
             if item.get("mode") == "interactive" and not item.get("consoleClosed") and self._console_ended(item):
-                self.journal.append(card, "step.console_closed", step=item.get("step"))
+                close_console(self.journal, card, item.get("step"))
         st = fold(self.journal.read(card))
         if st.moved_to in ("done", "archived") and not st.card_finished:
             self._complete_manual_finish(card, st.moved_to)
@@ -2765,7 +2767,7 @@ class FlowEngine(PlanEditing):
         if not (cancelled or self._console_ended(step)):
             return False
         if not step.get("consoleClosed"):
-            self.journal.append(card, "step.console_closed", step=step.get("step") or "")
+            close_console(self.journal, card, step.get("step") or "", cancelled=cancelled)
         return self._stop(card, step, "stopped", "transfer", handoff=True)
 
     def _recover_transfer_requests(self, card: str, st: FlowState) -> None:
@@ -3766,7 +3768,7 @@ class FlowEngine(PlanEditing):
                 return
         if step.get("consoleClosed") or self._console_ended(step):
             if not step.get("consoleClosed"):
-                self.journal.append(card, "step.console_closed", step=step.get("step"))
+                close_console(self.journal, card, step.get("step"))
             self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                              "question": "Karta Konsoli została zamknięta bez wyniku. Wznowić czy porzucić?"})
             return
@@ -3777,7 +3779,7 @@ class FlowEngine(PlanEditing):
             timed_out = False  # plik przejęty przez kartę; czekamy na wynik albo znacznik zamknięcia
         if timed_out:
             if self.task_files.cancel(task_file):
-                self.journal.append(card, "step.console_closed", step=step.get("step"))
+                close_console(self.journal, card, step.get("step"), cancelled=True)
                 self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                                  "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
                 return
@@ -3796,8 +3798,9 @@ class FlowEngine(PlanEditing):
         if os.path.exists(step.get("processFile") or ""):
             return False  # nieczytelny zapis procesu nie dowodzi jego końca
         task_file = step.get("taskFile") or ""
-        return bool(task_file and not os.path.exists(task_file) and
-                    self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
+        return bool(task_file and (os.path.exists(task_file + ".cancelled") or
+                    (not os.path.exists(task_file) and
+                     self.clock() - float(step.get("enteredAt") or self.clock()) > 30)))
 
     def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
         name = step.get("step") or ""
