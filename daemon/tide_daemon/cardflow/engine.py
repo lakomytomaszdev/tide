@@ -2101,7 +2101,7 @@ class FlowEngine(PlanEditing):
             return
         self._advance_user_revision(card, fold(self.journal.read(card)))
         current = fold(self.journal.read(card))
-        if current.running() and (current.plan_revision or {}).get("pending"):
+        if (current.plan_revision or {}).get("pending"):
             self._advance_plan_review(card, current)
         self._queue_notices(card)
         st = fold(self.journal.read(card))

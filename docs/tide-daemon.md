@@ -903,7 +903,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
-| `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
+| `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
@@ -2628,6 +2628,33 @@ przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do pla
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony
 przed edycją również po restarcie. Taka zmiana zwraca `ticket-started`.
 Ponowienie identycznej edycji nie dopisuje drugiego zdarzenia.
+
+**Dopisanie przez użytkownika (PT-248).** W zarządzaniu zatwierdzonym planem przycisk „Dopisz ticket” otwiera
+formularz tytułu, kartki z mierzalnymi kryteriami, klasy, wykonawcy, niezależnego recenzenta i blokerów.
+Ta operacja obejmuje wyłącznie **jeden nowy ticket w jednym projekcie karty**. Blokery wskazują istniejące
+tickety planu; dopisanie nie dodaje blokerów do dotychczasowej pracy. Karta zakończona, aktywna poprawa,
+review, domknięcie lub korekta bazy wykluczają nowy zapis. Przy wstrzymanej karcie review czeka na wznowienie.
+
+Publiczne `EditCardPlan` przyjmuje `{action: "append", planFingerprint, requestKey, title, body, class,
+executor, reviewer, blockers: ["PT-42"]}` oraz opcjonalny `project` równy projektowi karty.
+`derived.flow.plan.fingerprint` jest odciskiem zatwierdzonego planu i wersji bazy, a `canAppend` informuje
+o dostępności formularza. Postęp istniejących kroków nie zmienia odcisku; edycja planu go zmienia.
+Nieaktualny odcisk daje `stale-plan`, ponowne użycie klucza z inną treścią — `request-conflict`.
+Błędy wspólnego sprawdzania formatu wracają jako `invalid-plan` z `errors[]`, bez zmiany planu i rezerwacji ID.
+
+Udany zapis tworzy pojedyncze zdarzenie `plan.proposed` z `sourceKind: append`, `appendRequest` i
+`appendRevision`. Zdarzenie atomowo utrwala propozycję z numerem roboczym oraz oczekującą różnicę.
+Nie uruchamia `planning`, `plan-amend` ani `plan-revise`, również gdy pierwotny planujący ma wyczerpany limit.
+Wybrany recenzent ticketu sprawdza propozycję istniejącą ścieżką `plan-review`; obowiązuje niezależność modelu
+albo siły myślenia oraz zachowanie lokalności. Błąd review używa zwykłych decyzji kroku.
+Werdykt `REQUEST_CHANGES` pozostawia uwagi użytkownikowi, bez automatycznej poprawki przez planującego.
+
+Po review użytkownik osobno wybiera `ApproveCardPlan` lub `EditCardPlan {action: "discard-revision"}`.
+Zatwierdzenie nadaje jeden trwały numer i kieruje ticket do zwykłej realizacji według blokerów.
+Istniejące wiersze wracają bez zmian, łącznie z treścią kartek i przydziałami; postęp pochodzi nadal z dziennika.
+Odrzucenie zachowuje dotychczasowy plan. Poprawiony ticket można zapisać z nowym kluczem żądania.
+Ponowienie identycznego zapisu (także po zatwierdzeniu lub odrzuceniu) zwraca `already: true`, bez nowej
+propozycji. Rezerwacje i odtwarzanie zatwierdzenia korzystają z istniejących trwałych zamiarów.
 
 `action: return` zapisuje `plan.returned` z uwagami i bazą porównania. Krok `plan-amend` przygotowuje
 nową propozycję; usługa oblicza dodane, usunięte i zmienione tickety oraz pola zmian.

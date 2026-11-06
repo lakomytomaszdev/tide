@@ -2,7 +2,7 @@
 import json
 import os
 
-from . import execution, findings as review_findings, plans
+from . import execution, findings as review_findings, plans, planappend
 from .state import fold, ticket_of
 
 
@@ -43,7 +43,7 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            author = catalog.get(proposal.get("reviewAuthor") or proposal.get("planner") or proposal["rows"][0]["executor"])
             options = [e for e in catalog.executors if e.name != author.name and plans.independent_reviewer(author, e)
                        and (e.provider == "local") == (author.provider == "local")]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
@@ -85,7 +85,7 @@ class PlanEditing:
             reason = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else ""
             raise FlowError("bad-plan-review", "recenzent nie zapisał poprawnego plan-review.json"
                             + (f": {reason}" if reason else "")) from None
-        if report["verdict"] == "REQUEST_CHANGES":
+        if report["verdict"] == "REQUEST_CHANGES" and proposal.get("sourceKind") != "append":
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
             selected = execution.resolve(proposal["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
@@ -279,6 +279,8 @@ class PlanEditing:
         if request.get("action") == "return":
             self._returned_feedback(request)
         st = fold(self.journal.read(card))
+        if request.get("action") == "append":
+            return planappend.append(self, card, st, request)
         proposal = st.plan_proposed
         if request.get("action") == "return" and not proposal and st.closed and (st.started or {}).get("entry") == "now":
             self._bootstrap_direct_plan(card, st)
@@ -294,10 +296,10 @@ class PlanEditing:
                 raise FlowError("review-active", "przegląd planu już wystartował")
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            author = catalog.get(proposal.get("reviewAuthor") or proposal.get("planner") or proposal["rows"][0]["executor"])
             selected = catalog.get(str(request.get("executor") or ""))
             if not author or not selected or author.name == selected.name or \
-                    author.model.lower() == selected.model.lower() or \
+                    not plans.independent_reviewer(author, selected) or \
                     (author.provider == "local") != (selected.provider == "local"):
                 raise FlowError("bad-reviewer", "wybierz niezależny model recenzenta planu")
             execution.resolve(selected.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
@@ -313,6 +315,8 @@ class PlanEditing:
                 self.journal.append(card, "step.decision", step=previous["step"], ticket="",
                                     choice="change-executor", executor=selected.name)
             return {"ok": True, "id": card}
+        if (st.plan_revision or {}).get("kind") == "append" and request.get("action") in ("return", "enter"):
+            raise FlowError("manual-append", "odrzuć dopisanie i zapisz poprawiony ticket w formularzu")
         if not st.plan_reviewed and (request.get("action") != "edit" or
                                     any(s.get("step") not in st.finished for s in review_steps)):
             raise FlowError("review-pending", "zaczekaj na review planu przed tą zmianą")
@@ -322,7 +326,7 @@ class PlanEditing:
                 raise FlowError("no-planner-session", "brak sesji planującego")
             return self.enter(card, step["step"])
         if request.get("action") == "discard-revision":
-            if not (st.plan_revision or {}).get("failed"):
+            if not (st.plan_revision or {}).get("failed") and (st.plan_revision or {}).get("kind") != "append":
                 raise FlowError("no-failed-revision", "nie ma błędnej poprawki do odrzucenia")
             self.journal.append(card, "plan.revision-discarded")
             return {"ok": True, "id": card}
@@ -498,6 +502,14 @@ class PlanEditing:
         current = st.plan_approved
         proposal = st.plan_proposed
         delta = self._difference(current["rows"], proposal["rows"])
+        if (st.plan_revision or {}).get("kind") == "append":
+            from . import baseproposal
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision-pending", "najpierw rozstrzygnij korektę bazy")
+            if st.card_finished or st.closed:
+                raise FlowError("no-plan", "karta jest już zakończona")
+            if delta["removed"] or delta["changed"] or len(delta["added"]) != 1:
+                raise FlowError("bad-append", "dopisanie musi zachować wszystkie istniejące tickety")
         started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         if set(delta["removed"]) & started or any(c["ticket"] in started for c in delta["changed"]):
             raise FlowError("ticket-started", "różnica zmienia ticket, który już ruszył")
@@ -530,6 +542,9 @@ class PlanEditing:
         rows = [{**r, "id": mapping[r["workId"]], "blockers": [mapping[b] for b in r["blockers"]],
                  "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card), "plan", "tickets", mapping[r["workId"]] + ".md")}
                 for r in proposal["rows"]]
+        if (st.plan_revision or {}).get("kind") == "append":
+            original = {r["id"]: r for r in current["rows"]}
+            rows = [original.get(r["id"], r) for r in rows]
         self.journal.append(card, "plan.revision-approved", difference=delta,
                             plan={"rows": rows, "map": {**current.get("map", {}), **mapping}})
         return {"ok": True, "id": card, "difference": delta}

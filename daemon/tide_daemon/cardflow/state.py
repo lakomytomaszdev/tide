@@ -422,6 +422,9 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.approval_requested = None
+            if e.get("appendRevision"):
+                st.plan_revision = {**e["appendRevision"], "seq": e["seq"]}
+                st.plan_reviewer = st.plan_revision["reviewer"]
         elif kind == "plan.reviewer-selected":
             st.plan_reviewer = e.get("executor") or ""
         elif kind == 'plan.approval_requested':
@@ -430,6 +433,11 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
             st.closed = None
         elif kind == "plan.revision-discarded":
+            if (st.plan_revision or {}).get("kind") == "append":
+                st.plan_proposed = st.plan_revision["previousProposal"]
+                st.plan_reviewed = st.plan_revision["previousReview"]
+                st.plan_reviewer = ""
+                st.plan_review_wait = None
             st.plan_revision = None
             st.plan_checked = None
         elif kind == "plan.revision-failed":
@@ -1219,8 +1227,10 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                                else phase, "why": "" if state in ("gotowe", "odrzucone") else why})
     out["tickets"].sort(key=lambda ticket: ticket["wave"])
     out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
+    from . import planappend
     out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
-                           "planner": proposal.get("planner") or "",
+                           "fingerprint": planappend.fingerprint(st), "canAppend": planappend.available(st),
+                           "planner": (proposal.get("reviewAuthor") if revision_pending else "") or proposal.get("planner") or "",
                            "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
                                                if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
                            "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))

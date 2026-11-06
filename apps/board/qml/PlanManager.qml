@@ -13,10 +13,17 @@ Rectangle {
     property string error: ""
     property string notice: ""
     property string selectedTicketId: ""
+    property bool appending: false
+    property string appendFingerprint: ""
+    property string appendError: ""
+    property string appendPayload: ""
+    property string appendKey: ""
     readonly property var plan: card && card.derived && card.derived.flow ? card.derived.flow.plan || null : null
     readonly property var rows: plan ? plan.rows || [] : []
     readonly property var selectedTicket: rows.find(r => (r.id || r.workId) === selectedTicketId) || null
     readonly property bool canEdit: !!plan && (plan.status === "blocked" || plan.status === "pending" || plan.status === "approved")
+    readonly property bool appendRevision: !!plan && !!plan.revision && plan.revision.kind === "append"
+    readonly property bool ticketFieldsEnabled: appending || (canEdit && !!selectedTicket && selectedTicket.editable !== false)
     signal closeRequested()
     signal cardRequested()
     signal editRequested(string cardId, var request)
@@ -32,6 +39,7 @@ Rectangle {
         return (options || []).findIndex(o => o.value === value)
     }
     function selectTicket(row) {
+        appending = false
         selectedTicketId = row.id || row.workId
         classPicker.currentIndex = ["lekki", "standard", "mocny", "lokalny"].indexOf(row.class || "standard")
         executorPicker.currentIndex = optionIndex(executorPicker.model, row.executor)
@@ -39,8 +47,46 @@ Rectangle {
         reviewerPicker.currentIndex = optionIndex(reviewerPicker.model, row.reviewer)
         bodyEdit.text = row.body || ""
     }
+    function beginAppend() {
+        appending = true
+        appendFingerprint = plan.fingerprint
+        appendError = ""
+        titleEdit.text = ""
+        blockersEdit.text = ""
+        bodyEdit.text = "# Cel\n\n\n## Kryteria akceptacji\n- [ ] \n\n## Dla recenzenta\n"
+        classPicker.currentIndex = 1
+        executorPicker.currentIndex = -1
+        reviewerPicker.wanted = ""
+        reviewerPicker.currentIndex = -1
+    }
+    function submitAppend() {
+        const blockers = blockersEdit.text.split(",").map(s => s.trim()).filter(s => s)
+        const ids = rows.map(r => r.id || r.workId)
+        if (!titleEdit.text.trim() || titleEdit.text.length > 500 || /[|\r\n]/.test(titleEdit.text))
+            appendError = "Wpisz tytuł w jednym wierszu (do 500 znaków, bez |)."
+        else if (!/^\s*-\s*\[\s*\]\s*\S/m.test(bodyEdit.text))
+            appendError = "Dodaj do kartki mierzalne kryteria jako - [ ] opis wyniku."
+        else if (executorPicker.currentIndex < 0 || reviewerPicker.currentIndex < 0)
+            appendError = "Wybierz wykonawcę i niezależnego recenzenta."
+        else if (blockers.some(b => ids.indexOf(b) < 0))
+            appendError = "Wybierz blokery z istniejącego planu: " + ids.join(", ")
+        else {
+            appendError = ""
+            const request = {action: "append", planFingerprint: appendFingerprint,
+                title: titleEdit.text.trim(), body: bodyEdit.text, class: classPicker.currentText,
+                executor: executorPicker.currentValue, reviewer: reviewerPicker.currentValue, blockers: blockers}
+            const payload = JSON.stringify(request)
+            if (payload !== appendPayload) {
+                appendPayload = payload
+                appendKey = "append-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+            }
+            request.requestKey = appendKey
+            editRequested(card.id, request)
+        }
+    }
+    onAppendRevisionChanged: if (appendRevision) appending = false
     onRowsChanged: {
-        if (rows.length && !rows.some(r => (r.id || r.workId) === selectedTicketId))
+        if (!appending && rows.length && !rows.some(r => (r.id || r.workId) === selectedTicketId))
             Qt.callLater(() => { if (manager.rows.length) manager.selectTicket(manager.rows[0]) })
     }
 
@@ -71,6 +117,13 @@ Rectangle {
                 Accessible.role: Accessible.Heading
             }
             PillButton { text: "Szczegóły karty"; outline: true; onClicked: manager.cardRequested() }
+            PillButton {
+                objectName: "planManagerAddTicket"
+                text: "Dopisz ticket"
+                visible: !!manager.plan && manager.plan.canAppend === true && !manager.appending
+                enabled: !manager.busy
+                onClicked: manager.beginAppend()
+            }
             PillButton { text: "Zamknij"; outline: true; onClicked: manager.closeRequested() }
         }
         Text {
@@ -89,6 +142,17 @@ Rectangle {
             wrapMode: Text.Wrap
         }
         // Plan z kolumną Projekt (K-33 #4): źródło numerów każdego projektu zlecenia.
+        Text {
+            objectName: "planManagerAppendDifference"
+            Layout.fillWidth: true
+            visible: manager.appendRevision
+            text: "Dopisanie jednego ticketu: " + (manager.appendRevision ? manager.plan.revision.difference.added.join(", ") : "")
+                  + ". Istniejące tickety zachowują treść i przydziały. Po review zatwierdź różnicę osobno."
+            textFormat: Text.PlainText
+            color: Tide.Tokens.sky
+            font.family: Tide.Theme.uiFamily
+            wrapMode: Text.Wrap
+        }
         Text {
             objectName: "planManagerProjects"
             Layout.fillWidth: true
@@ -269,7 +333,7 @@ Rectangle {
                 spacing: 10
                 Text {
                     Layout.fillWidth: true
-                    text: manager.selectedTicket ? (manager.selectedTicket.id || manager.selectedTicket.workId)
+                    text: manager.appending ? "Nowy ticket · projekt karty · bez nadanego ID" : manager.selectedTicket ? (manager.selectedTicket.id || manager.selectedTicket.workId)
                           + " · " + manager.selectedTicket.title : "Wybierz ticket z listy"
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textPrimary
@@ -277,6 +341,22 @@ Rectangle {
                     font.pixelSize: 16
                     font.bold: true
                     wrapMode: Text.Wrap
+                }
+                QQC2.TextField {
+                    id: titleEdit
+                    objectName: "planManagerAppendTitle"
+                    Layout.fillWidth: true
+                    visible: manager.appending
+                    placeholderText: "Tytuł nowego ticketu"
+                    Accessible.name: "Tytuł nowego ticketu"
+                }
+                QQC2.TextField {
+                    id: blockersEdit
+                    objectName: "planManagerAppendBlockers"
+                    Layout.fillWidth: true
+                    visible: manager.appending
+                    placeholderText: "Blokery z planu, po przecinku (opcjonalne)"
+                    Accessible.name: "Blokery nowego ticketu"
                 }
                 Text {
                     objectName: "planManagerTicketProject"
@@ -309,7 +389,7 @@ Rectangle {
                         objectName: "planManagerClass"
                         Layout.fillWidth: true
                         model: ["lekki", "standard", "mocny", "lokalny"]
-                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        enabled: manager.ticketFieldsEnabled
                         Accessible.name: "Klasa ticketu"
                     }
                     PlanFieldLabel { text: "Wykonawca"; hint: "model, który pisze kod" }
@@ -320,7 +400,7 @@ Rectangle {
                         model: Logic.transferSettingsExecutors(manager.modelsStatus)
                         textRole: "label"
                         valueRole: "value"
-                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        enabled: manager.ticketFieldsEnabled
                         Accessible.name: "Wykonawca ticketu"
                     }
                     PlanFieldLabel { text: "Recenzent"; hint: "inny model, który sprawdza zmiany" }
@@ -334,7 +414,7 @@ Rectangle {
                         model: Logic.planReviewerExecutors(manager.modelsStatus, executorPicker.currentValue || "")
                         textRole: "label"
                         valueRole: "value"
-                        enabled: manager.canEdit && !!manager.selectedTicket && manager.selectedTicket.editable !== false
+                        enabled: manager.ticketFieldsEnabled
                         Accessible.name: "Recenzent ticketu"
                         onActivated: index => wanted = model[index].value
                         onModelChanged: Qt.callLater(() => {
@@ -348,7 +428,7 @@ Rectangle {
                     QQC2.TextArea {
                         id: bodyEdit
                         objectName: "planManagerBody"
-                        readOnly: !manager.canEdit || !manager.selectedTicket || manager.selectedTicket.editable === false
+                        readOnly: !manager.ticketFieldsEnabled
                         wrapMode: TextEdit.Wrap
                         color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.uiFamily
@@ -359,6 +439,7 @@ Rectangle {
                 PillButton {
                     objectName: "planManagerSaveTicket"
                     text: "Zapisz przydział i kartkę"
+                    visible: !manager.appending
                     enabled: !manager.busy && manager.canEdit && !!manager.selectedTicket
                              && manager.selectedTicket.editable !== false && executorPicker.currentIndex >= 0
                              && reviewerPicker.currentIndex >= 0
@@ -367,14 +448,32 @@ Rectangle {
                         class: classPicker.currentText, executor: executorPicker.currentValue,
                         reviewer: reviewerPicker.currentValue, body: bodyEdit.text})
                 }
+                RowLayout {
+                    visible: manager.appending
+                    PillButton {
+                        objectName: "planManagerSubmitAppend"
+                        text: "Zapisz propozycję do review"
+                        enabled: !manager.busy
+                        onClicked: manager.submitAppend()
+                    }
+                    PillButton {
+                        text: "Anuluj"
+                        outline: true
+                        onClicked: {
+                            manager.appending = false
+                            if (manager.rows.length) manager.selectTicket(manager.rows[0])
+                        }
+                    }
+                }
             }
         }
         Text {
             Layout.fillWidth: true
-            visible: !!manager.error || !!manager.notice
-            text: manager.error || manager.notice
+            objectName: "planManagerError"
+            visible: !!manager.appendError || !!manager.error || !!manager.notice
+            text: manager.appendError || manager.error || manager.notice
             textFormat: Text.PlainText
-            color: manager.error ? Tide.Tokens.rose : Tide.Tokens.mint
+            color: manager.error || manager.appendError ? Tide.Tokens.rose : Tide.Tokens.mint
             font.family: Tide.Theme.uiFamily
             wrapMode: Text.Wrap
         }
@@ -385,8 +484,16 @@ Rectangle {
                 id: feedback
                 objectName: "planManagerFeedback"
                 Layout.fillWidth: true
-                visible: !!manager.plan && manager.plan.status === "pending"
+                visible: !!manager.plan && manager.plan.status === "pending" && !manager.appendRevision
                 placeholderText: "Uwagi, jeśli plan wymaga poprawy"
+            }
+            PillButton {
+                objectName: "planManagerDiscardAppend"
+                visible: manager.appendRevision && manager.plan.status === "pending"
+                text: "Odrzuć dopisanie"
+                outline: true
+                enabled: !manager.busy
+                onClicked: manager.editRequested(manager.card.id, {action: "discard-revision"})
             }
             PillButton {
                 objectName: "planManagerReturn"
@@ -399,7 +506,7 @@ Rectangle {
             PillButton {
                 objectName: "planManagerApprove"
                 visible: !!manager.plan && manager.plan.status === "pending"
-                text: "Zatwierdź plan i rozpocznij implementację"
+                text: manager.appendRevision ? "Zatwierdź różnicę i dopisz ticket" : "Zatwierdź plan i rozpocznij implementację"
                 enabled: !manager.busy
                 onClicked: manager.approveRequested(manager.card.id)
             }
