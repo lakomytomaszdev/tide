@@ -299,6 +299,12 @@ class BoardMonitor(QObject):
             return
         self.flow.resolve_step(card_id, request, reply)
 
+    def revoke_ticket_consent(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.revoke_ticket_consent(card_id, request, reply)
+
     def preview_step_fault(self, card_id: str, request: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))

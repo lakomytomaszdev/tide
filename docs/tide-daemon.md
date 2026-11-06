@@ -2021,6 +2021,20 @@ wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. �
 „Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
 poleceń nie da się zezwolić.
 
+Zgodę „uruchamiaj zawsze dla ticketu” można cofnąć w pełnej karcie (Tablica i Sesje).
+`/Board RevokeTicketConsent(id, {ticket, orderSeq, baseVersion})` przyjmuje kontekst z
+`derived.flow.ticketConsents[]` i zwraca `{ok, ticket, active: false, seq}`. Powtórzenie zwraca ten sam wynik.
+Obcy ticket daje `bad-ticket`, a stare zlecenie lub wersja bazy — `stale-context`.
+Projekcja zawiera `active`, `revoked`, `canRevoke`, `seq`, `orderSeq` i `baseVersion`.
+Źródłem jest ostatnie `outside.ticket-consent` lub `outside.ticket-consent-revoked` w bieżącym
+zleceniu i wersji bazy; nowy start i korekta bazy zerują projekcję, zachowując historię.
+Po cofnięciu automatyczne zgody i zapamiętane rodziny projektu nie uruchamiają kolejnych poleceń tego
+ticketu. Reguły projektu i inne tickety pozostają ważne. Jednorazowe ręczne „Uruchom” działa tylko dla
+swojego polecenia; nowe „Uruchamiaj dla ticketu” przywraca automatyzację. Cofnięcie unieważnia
+oczekujące decyzje automatyczne i decyzję `run-ticket`; odrębna ręczna zgoda na polecenie pozostaje.
+Kontrola bezpośrednio przed startem kolejki podlega aktualnym zakazom. Operacja cofnięcia i start
+biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, kończy się normalnie.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
