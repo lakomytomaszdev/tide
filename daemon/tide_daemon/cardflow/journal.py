@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
 from datetime import datetime, timezone
 
@@ -87,6 +88,36 @@ class Journal:
         events = _parse(_read(source))
         self._cache[card] = (key, events)
         return list(events)
+
+    def read_complete(self, card: str) -> list[dict]:
+        """Odczyt dla bramki: błąd lub brak historii nie jest pustą historią.
+
+        Bez tolerancyjnego parsera/cache i bez naprawiania plików. Istniejąca
+        kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
+        OSError/ValueError oznaczają dla wywołującego stan unknown.
+        """
+        with self.lock:
+            source = self.mirror_path(card)
+            try:
+                os.lstat(source)
+            except FileNotFoundError:
+                source = self.path(card)
+            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, encoding="utf-8") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    raise ValueError("dziennik nie jest zwykłym plikiem")
+                events = []
+                for line in fh:
+                    if not line.endswith("\n"):
+                        raise ValueError("niepełny zapis zdarzenia")
+                    event = json.loads(line)
+                    if (not isinstance(event, dict) or type(event.get("v")) is not int
+                            or event["v"] != SCHEMA or type(event.get("seq")) is not int
+                            or event["seq"] != len(events) + 1 or event.get("card") != card
+                            or not isinstance(event.get("type"), str) or not event["type"]):
+                        raise ValueError("niepełna lub nieznana historia zdarzeń")
+                    events.append(event)
+                return events
 
     # --- zapis -----------------------------------------------------------------------------------
 

@@ -5,6 +5,7 @@ import stat
 
 from ..box import trialgate
 from ..tasks import stepstop
+from .state import fold
 
 
 def held(step):
@@ -12,7 +13,14 @@ def held(step):
 
 
 def inventory(engine, card, st):
-    events = engine.journal.read(card)
+    try:
+        events = engine.journal.read_complete(card)
+        # Stan z tolerancyjnego odczytu UI lub wcześniejszego ticka nie jest dowodem.
+        st = fold(events)
+    except (OSError, ValueError, TypeError, KeyError):
+        # Nie dopisujemy przez tolerancyjny parser do uszkodzonej historii.
+        # Jej zachowany błąd oznacza unknown również po restarcie usługi.
+        return False
     items = []
     known = dict(st.steps)
     for (action, name), intent in st.intents.items():
@@ -90,21 +98,36 @@ def public_inventory(engine):
     root = os.path.join(engine.journal.root, "projects")
     items = _public_process_inventory()
     try:
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            raise ValueError("rejestr projektów nie jest katalogiem")
         slugs = sorted(os.listdir(root))
-    except FileNotFoundError:
-        slugs = []
-        items.append({"state": "unknown", "path": root})
-    except OSError:
+    except (OSError, ValueError):
         slugs = []
         items.append({"state": "unknown", "path": root})
     for slug in slugs:
-        path = os.path.join(root, slug, "box", "journal.jsonl")
+        project = os.path.join(root, slug)
+        path = project
+        try:
+            mode = os.lstat(project).st_mode
+            if stat.S_ISREG(mode) and slug.endswith(".md"):
+                continue  # metadane BoardStore, nie katalog rejestrów pudełka
+            if not stat.S_ISDIR(mode):
+                raise ValueError("rejestr projektu nie jest katalogiem")
+            path = os.path.join(project, "box")
+            try:
+                mode = os.lstat(path).st_mode
+            except FileNotFoundError:
+                if os.path.lexists(os.path.join(project, "box.yaml")):
+                    items.append({"state": "unknown", "path": path})
+                continue
+            if not stat.S_ISDIR(mode):
+                raise ValueError("rejestr pudełka nie jest katalogiem")
+        except (OSError, ValueError):
+            items.append({"state": "unknown", "path": path})
+            continue
+        path = os.path.join(project, "box", "journal.jsonl")
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except FileNotFoundError:
-            if os.path.exists(os.path.dirname(path)) or os.path.exists(os.path.join(root, slug, "box.yaml")):
-                items.append({"state": "unknown", "path": path})
-            continue
         except OSError:
             items.append({"state": "unknown", "path": path})
             continue
