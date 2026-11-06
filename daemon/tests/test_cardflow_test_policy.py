@@ -93,3 +93,22 @@ class OldCardBranchTest(unittest.TestCase):
         for text in self.cards(self.tree("test:\n\t@true\ntest-changed:\n\t@true\n")):
             with self.subTest(kind=text.splitlines()[0]):
                 self.assertIn("make test-changed BASE=" + "b" * 40, text)
+
+
+class OldRunnerJobsTest(unittest.TestCase):
+    """06.11: gałęzie sprzed wspólnej puli testów brały po 14 procesów — polecenie poza piaskownicą dostaje JOBS=4."""
+
+    def tree(self, runner):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        if runner is not None:
+            os.mkdir(os.path.join(tmp.name, "tools"))
+            with open(os.path.join(tmp.name, "tools", "test_runner.py"), "w", encoding="utf-8") as fh:
+                fh.write(runner)
+        return tmp.name
+
+    def test_pool_detection(self):
+        from tide_daemon.cardflow.engine import test_pool_available
+        self.assertFalse(test_pool_available(self.tree("def execute(): pass\n")))
+        self.assertTrue(test_pool_available(self.tree("class MachineSlots:\n    pass\n")))
+        self.assertTrue(test_pool_available(self.tree(None)), "projekt bez uruchamiacza Tide — bez zmian")
