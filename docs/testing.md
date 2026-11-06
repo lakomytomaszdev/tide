@@ -195,8 +195,12 @@ albo obciążenia), nie powtarza całego `make test-changed`/`make test`. Urucha
 „Wszystkie nieudane testy” (albo z `summary.json`, `returncode` różny od 0), każdy osobno:
 
 ```sh
-XDG_STATE_HOME="$(mktemp -d)" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>
+/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>
 ```
+
+`--modules` uruchamia dokładnie te moduły z tą samą pulą maszyny, osobnym katalogiem stanu każdego modułu
+i raportem `summary.json` co pełny przebieg. Gałąź karty sprzed tej opcji ponawia moduły pojedynczo:
+`d="$(mktemp -d)" && XDG_STATE_HOME="$d" /usr/bin/python3 -m unittest discover -t . -s <katalog> -p <plik>`.
 
 W notce zapisuje pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, raport) i ponowienie (ten sam HEAD,
 czysty `git status`, lista modułów, wynik). Recenzent uznaje ponowienie tylko przy tym samym HEAD co pełny przebieg.
@@ -210,9 +214,10 @@ Tekst zasady w kartkach kroków: `rerun_failed` w `daemon/tide_daemon/cardflow/h
 
 Tide wymusza tę zasadę sam (`daemon/tide_daemon/cardflow/testrerun.py`): gdy polecenie poza piaskownicą to
 pełny przebieg (`make test`, `make test-changed …`), a ostatni taki przebieg w tym samym worktree padł na tym samym
-HEAD przy czystym drzewie, Tide uruchamia zamiast niego tylko moduły z `summary.json` tamtego przebiegu i zapisuje
+HEAD przy czystym drzewie i takim samym poleceniu (cel, BASE, JOBS), Tide uruchamia zamiast niego
+`tools/test_runner.py --modules` z modułami, które padły według `summary.json` tamtego przebiegu, i zapisuje
 w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
-oznaczają zwykły pełny przebieg. Dotyczy repozytoriów z `tools/test_runner.py`.
+oznaczają zwykły pełny przebieg. Dotyczy gałęzi, których uruchamiacz ma opcję `--modules`.
 
 ## Starsze gałęzie bez celu test-changed
 

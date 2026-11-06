@@ -363,6 +363,8 @@ def main(root=ROOT):
     parser.add_argument("--output", type=Path)
     parser.add_argument("--list-suites", action="store_true")
     parser.add_argument("--list", action="store_true", help="wypisz moduły bez uruchamiania")
+    # Ponowienie padniętych modułów (Tide, cardflow/testrerun.py): dokładna lista, ta sama pula i izolacja stanu.
+    parser.add_argument("--modules", nargs="+", help="uruchom tylko te moduły (ścieżki z raportu przebiegu)")
     parser.add_argument("--worker")
     parser.add_argument("--worker-report")
     parser.add_argument("--worker-directory", action="store_true", help=argparse.SUPPRESS)
@@ -376,8 +378,8 @@ def main(root=ROOT):
                           inventory=args.inventory)
     if args.jobs < 1:
         parser.error("JOBS musi być dodatnią liczbą całkowitą")
-    if args.suite and args.changed:
-        parser.error("--suite i --changed są osobnymi sposobami doboru testów")
+    if sum(map(bool, (args.suite, args.changed, args.modules))) > 1:
+        parser.error("--suite, --changed i --modules są osobnymi sposobami doboru testów")
     entries = [(d, "test*.py") for d in args.dirs]
     if args.suite:
         entries = SUITES[args.suite]
@@ -392,6 +394,12 @@ def main(root=ROOT):
             selection = changed_modules(paths, entries, root)
             explain_selection(selection)
             modules = selection.modules
+        elif args.modules:
+            known = set(modules_for(entries, root))
+            unknown = [module for module in args.modules if module not in known]
+            if unknown:
+                parser.error("nieznane moduły testów: " + ", ".join(unknown))
+            modules = sorted(set(args.modules))
         else:
             modules = modules_for(entries, root)
     except ValueError as exc:

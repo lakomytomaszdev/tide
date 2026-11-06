@@ -21,7 +21,16 @@ class SubstituteTest(unittest.TestCase):
         os.makedirs(os.path.join(self.repo, "pkg", "tests"))
         for part in ("pkg", "pkg/tests"):
             open(os.path.join(self.repo, part, "__init__.py"), "w").close()
-        self.write("tools/test_runner.py", "")
+        # Atrapa uruchamiacza z `--modules`: każdy moduł przez unittest, kod 1 przy porażce (prawdziwy
+        # uruchamiacz testuje scripts/tests/test_test_runner.py).
+        self.write("tools/test_runner.py", "import subprocess, sys, os\n"
+                   "args = sys.argv[1:]\n"
+                   "mods = args[args.index('--modules') + 1:]  # parser.add_argument(\"--modules\")\n"
+                   "rc = 0\n"
+                   "for m in mods:\n"
+                   "    d, f = os.path.split(m)\n"
+                   "    rc |= subprocess.call([sys.executable, '-m', 'unittest', 'discover', '-t', '.', '-s', d, '-p', f])\n"
+                   "sys.exit(1 if rc else 0)\n")
         self.write("pkg/tests/test_good.py", "import unittest\nclass T(unittest.TestCase):\n"
                                               "    def test_ok(self):\n        pass\n")
         self.write("pkg/tests/test_bad.py", "import unittest\nclass T(unittest.TestCase):\n"
@@ -56,7 +65,7 @@ class SubstituteTest(unittest.TestCase):
         command, head, rerun_of = testrerun.substitute(self.failed_run(), self.repo, "make test-changed BASE=abc")
         self.assertEqual(rerun_of, "K-1-PT-1-3")
         self.assertTrue(head)
-        self.assertIn("-s pkg/tests -p test_bad.py", command)
+        self.assertIn("/usr/bin/python3 tools/test_runner.py --modules pkg/tests/test_bad.py", command)
         self.assertNotIn("test_good.py", command)
         run = subprocess.run(["/bin/sh", "-c", command], cwd=self.repo, capture_output=True, text=True,
                              env={**os.environ, "PYTHONPATH": ""}, timeout=60)
@@ -68,32 +77,34 @@ class SubstituteTest(unittest.TestCase):
                                              "    def test_no(self):\n        self.fail()\n")
         subprocess.run(self.git + ["commit", "-qam", "bad"], check=True)
         command, _, _ = testrerun.substitute(self.failed_run(), self.repo, "make test-changed BASE=abc")
-        self.assertIn("unittest", command)
+        self.assertIn("--modules", command)
         run = subprocess.run(["/bin/sh", "-c", command], cwd=self.repo, capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 1)
 
     def test_no_substitution_when_code_changed_tree_dirty_or_forced(self):
         events = self.failed_run()
         self.write("pkg/tests/test_good.py", "# zmiana\n")
-        self.assertEqual(testrerun.substitute(events, self.repo, "make test")[0], "make test", "brudne drzewo")
+        same = "make test-changed BASE=abc"
+        self.assertEqual(testrerun.substitute(events, self.repo, same)[0], same, "brudne drzewo")
         subprocess.run(self.git + ["commit", "-qam", "change"], check=True)
-        self.assertEqual(testrerun.substitute(events, self.repo, "make test")[0], "make test", "nowy HEAD")
+        self.assertEqual(testrerun.substitute(events, self.repo, same)[0], same, "nowy HEAD")
         events = self.failed_run(step="K-1-PT-1-4")
         self.assertEqual(testrerun.substitute(events, self.repo, "TIDE_FULL_RUN=1 make test")[0],
                          "TIDE_FULL_RUN=1 make test")
 
     def test_no_substitution_after_success_without_report_or_for_other_commands(self):
-        self.assertEqual(testrerun.substitute(self.failed_run(exit_code=0), self.repo, "make test")[0], "make test")
-        self.assertEqual(testrerun.substitute(self.failed_run(failed=()), self.repo, "make test")[0], "make test")
+        same = "make test-changed BASE=abc"
+        self.assertEqual(testrerun.substitute(self.failed_run(exit_code=0), self.repo, same)[0], same)
+        self.assertEqual(testrerun.substitute(self.failed_run(failed=()), self.repo, same)[0], same)
         self.assertEqual(testrerun.substitute(self.failed_run(), self.repo, "make install")[0], "make install")
-        self.assertEqual(testrerun.substitute(self.failed_run(failed=("../x.py",)), self.repo, "make test")[0],
-                         "make test")
+        self.assertEqual(testrerun.substitute(self.failed_run(failed=("../x.py",)), self.repo, same)[0], same)
 
     def test_projects_without_tide_runner_are_untouched(self):
         events = self.failed_run()
         os.remove(os.path.join(self.repo, "tools", "test_runner.py"))
         subprocess.run(self.git + ["commit", "-qam", "no runner"], check=True)
-        self.assertEqual(testrerun.substitute(events, self.repo, "make test"), ("make test", "", ""))
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc"),
+                         ("make test-changed BASE=abc", "", ""))
 
     def test_other_scope_or_parameters_run_in_full(self):
         """Review Astry: po `test-changed BASE=A` także `make test` albo inna baza to pełny przebieg."""
@@ -101,11 +112,22 @@ class SubstituteTest(unittest.TestCase):
         for command in ("make test", "make test-changed BASE=def", "JOBS=2 make test-changed BASE=abc"):
             self.assertEqual(testrerun.substitute(events, self.repo, command)[0], command, command)
 
-    def test_rerun_keeps_isolated_state_and_command_environment(self):
+    def test_rerun_keeps_command_environment_and_jobs(self):
         events = self.failed_run()
-        events[0]["command"] = "LC_ALL=C make test-changed BASE=abc"
-        command = testrerun.substitute(events, self.repo, "LC_ALL=C make test-changed BASE=abc")[0]
-        self.assertIn('XDG_STATE_HOME="$(mktemp -d)" LC_ALL=C /usr/bin/python3 -m unittest', command)
+        events[0]["command"] = "LC_ALL=C make test-changed BASE=abc JOBS=3"
+        command = testrerun.substitute(events, self.repo, "LC_ALL=C make test-changed BASE=abc JOBS=3")[0]
+        self.assertIn("LC_ALL=C /usr/bin/python3 tools/test_runner.py --jobs 3 --modules", command)
+
+    def test_make_variables_other_than_base_and_jobs_run_in_full(self):
+        """Review Astry (runda 2): `make test LC_ALL=C` zmienia recepturę — ponowienie by to zgubiło."""
+        self.assertFalse(testrerun.is_full_test("make test LC_ALL=C"))
+
+    def test_branch_runner_without_modules_option_is_untouched(self):
+        events = self.failed_run()
+        self.write("tools/test_runner.py", "# stary uruchamiacz\n")
+        subprocess.run(self.git + ["commit", "-qam", "old runner"], check=True)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc")
 
     def test_report_comes_only_from_the_run_header_and_must_be_complete(self):
         events = self.failed_run()

@@ -128,7 +128,7 @@ class RerunFailedTest(unittest.TestCase):
 
     def test_runner_repository_gets_exact_command_other_technologies_the_rule(self):
         own = self.tree_with_runner()
-        self.assertIn("XDG_STATE_HOME=\"$(mktemp -d)\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>",
+        self.assertIn("XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>",
                       handoff.rerun_failed(own))
         other = OldCardBranchTest.tree(self, "test:\n\t@dotnet test\n")
         text = handoff.rerun_failed(other)
@@ -140,6 +140,14 @@ class RerunFailedTest(unittest.TestCase):
         os.mkdir(os.path.join(root, "tools"))
         open(os.path.join(root, "tools", "test_runner.py"), "w").close()
         return root
+
+    def test_runner_with_modules_option_gets_the_runner_command(self):
+        root = self.tree_with_runner()
+        with open(os.path.join(root, "tools", "test_runner.py"), "w", encoding="utf-8") as fh:
+            fh.write('parser.add_argument("--modules", nargs="+")\n')
+        text = handoff.rerun_failed(root)
+        self.assertIn("/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>", text)
+        self.assertNotIn("unittest discover", text)
 
     def test_reviewer_accepts_rerun_only_on_the_same_head(self):
         review = OldCardBranchTest.cards(None, OldCardBranchTest.tree(self, "test:\n\t@true\ntest-changed:\n\t@true\n"))[2]
@@ -175,4 +183,4 @@ class RerunFailedTest(unittest.TestCase):
         self.assertIn("nie powtarzaj całego\n`make test` na tym samym kodzie", text)
         self.assertIn("O przyjęciu odstępstwa decyduje użytkownik", text)
         self.assertIn("udane ponowienie jej nie zastępuje", text)
-        self.assertIn("XDG_STATE_HOME=\"$(mktemp -d)\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>", text)
+        self.assertIn("XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>", text)

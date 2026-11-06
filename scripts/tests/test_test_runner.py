@@ -306,3 +306,28 @@ class MachineSlotsTest(unittest.TestCase):
                 worker.join(5)
             self.assertTrue(got and got[0] is not None)
             runner.MachineSlots.release(got[0])
+
+
+class ModulesOptionTest(unittest.TestCase):
+    """06.11: ponowienie padniętych modułów (cardflow/testrerun.py) idzie przez uruchamiacz — pula i izolacja stanu."""
+
+    def run_main(self, *argv):
+        out = io.StringIO()
+        with patch.object(sys, "argv", ["test_runner.py", *argv]), redirect_stdout(out), \
+                patch("sys.stderr", io.StringIO()):
+            try:
+                code = runner.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_modules_selects_exactly_the_given_known_modules(self):
+        known = runner.modules_for([(d, "test*.py") for d in sorted({d for p in SUITES.values() for d, _ in p})])
+        chosen = sorted(known)[:2]
+        code, out = self.run_main("--modules", *reversed(chosen), "--list")
+        self.assertIn(code, (0, None))
+        self.assertEqual(out.split(), chosen)
+
+    def test_unknown_module_and_mixed_selection_are_rejected(self):
+        self.assertEqual(self.run_main("--modules", "daemon/tests/test_nie_ma.py", "--list")[0], 2)
+        self.assertEqual(self.run_main("--modules", "x.py", "--changed")[0], 2)
