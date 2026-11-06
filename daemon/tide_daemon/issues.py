@@ -537,8 +537,9 @@ class IssueStore:
 
 class IssueService:
     """Publiczne odpowiedzi JSON; brak wyjątków wydostających się do QtDBus."""
-    def __init__(self, board=None):
+    def __init__(self, board=None, engine=None):
         self.store = IssueStore(board) if board is not None else None
+        self.engine = engine
 
     def call(self, method, *args):
         raw = b""
@@ -549,13 +550,26 @@ class IssueService:
                           ("create", "list", "show", "update", "submit", "reject", "reopen",
                            "attach", "detach", "attachment", "accept")] if self.store else []}
                 result["resources"] = resources.info()
+                if self.store and self.engine:
+                    result["capabilities"] += ["issue.go", "issue.retry-start", "issue.preview-launch"]
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":
                 result = self.store.create(_json(args[0]))
             elif method == "AcceptIssue":
-                from .issue_acceptance import accept
-                result = accept(self.store, args[0], _json(args[1]))
+                data = _json(args[1])
+                if isinstance(data, dict) and data.get("destination") == "go" and self.engine:
+                    from .issue_start import accept
+                    result = accept(self.store, self.engine, args[0], data)
+                else:
+                    from .issue_acceptance import accept
+                    result = accept(self.store, args[0], data)
+            elif method in ("RetryIssueStart", "PreviewIssueLaunch"):
+                if not self.engine:
+                    fail("Zlecenia spraw są niedostępne.", "unavailable")
+                from .issue_start import retry, preview
+                result = (retry if method == "RetryIssueStart" else preview)(
+                    self.store, self.engine, args[0], _json(args[1]))
             elif method in ("Update", "Submit", "Reject", "Reopen"):
                 result = self.store.mutate(args[0], _json(args[1]), method)
             elif method in ("Attach", "Detach"):
@@ -564,7 +578,11 @@ class IssueService:
             elif method == "ReadAttachment":
                 result, raw = self.store.read_attachment(args[0], _json(args[1]))
             elif method == "Show":
-                result = {"issue": self.store.show(args[0])}
+                if self.engine:
+                    from .issue_start import show
+                    result = show(self.store, self.engine, args[0])
+                else:
+                    result = {"issue": self.store.show(args[0])}
             elif method == "List":
                 result = self.store.list()
             else:
@@ -578,8 +596,12 @@ class IssueService:
             result = {"ok": False, "apiVersion": API_VERSION, "error": "io-error",
                       "message": f"Błąd odczytu lub zapisu sprawy: {exc}."}
         except Exception as exc:
-            print(f"tide-daemon: sprawy: {exc!r}", flush=True)
-            result = {"ok": False, "apiVersion": API_VERSION, "error": "internal",
-                      "message": "Błąd usługi spraw — szczegóły w dzienniku usługi."}
+            from .cardflow.engine import FlowError
+            if isinstance(exc, FlowError):
+                result = {"ok": False, "apiVersion": API_VERSION, "error": exc.code, "message": str(exc)}
+            else:
+                print(f"tide-daemon: sprawy: {exc!r}", flush=True)
+                result = {"ok": False, "apiVersion": API_VERSION, "error": "internal",
+                          "message": "Błąd usługi spraw — szczegóły w dzienniku usługi."}
         encoded = json.dumps(result, ensure_ascii=False)
         return (encoded, raw if result["ok"] else b"") if method == "ReadAttachment" else encoded

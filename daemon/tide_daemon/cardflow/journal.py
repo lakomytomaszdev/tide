@@ -95,13 +95,14 @@ class Journal:
             events = self.read(card)
             event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
             line = json.dumps(event, ensure_ascii=False) + "\n"
-            os.makedirs(self.mirror, mode=0o700, exist_ok=True)
+            _mkdir(self.mirror)
             if not os.path.isfile(self.mirror_path(card)) and events:
                 _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
             with open(self.mirror_path(card), "a", encoding="utf-8") as fh:
                 fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
+            _sync_dir(self.mirror)
             self._restore(card)
             return event
 
@@ -149,7 +150,7 @@ class Journal:
 
     def _restore(self, card: str) -> None:
         text = _read(self.mirror_path(card))
-        os.makedirs(os.path.dirname(self.path(card)), exist_ok=True)
+        _mkdir(os.path.dirname(self.path(card)))
         _write(self.path(card), text)
         self._dirty.add(self.rel_path(card))
 
@@ -174,6 +175,27 @@ def _write(path: str, text: str) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+    _sync_dir(os.path.dirname(path))
+
+
+def _sync_dir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _mkdir(path):
+    if os.path.isdir(path):
+        return
+    parent = os.path.dirname(path)
+    _mkdir(parent)
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    _sync_dir(parent)
 
 
 def _parse(text: str) -> list[dict]:

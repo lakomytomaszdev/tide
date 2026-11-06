@@ -5,6 +5,8 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 import "tide" as Tide
 import "issues.js" as Logic
+import "../../board/qml" as Board
+import "../../board/qml/board.js" as BoardLogic
 
 Item {
     id: view
@@ -13,6 +15,37 @@ Item {
     property bool active: true
     property var preview: ({})
     readonly property var modelState: backend ? JSON.parse(backend.stateJson) : ({})
+    readonly property var launchState: backend ? JSON.parse(backend.launchJson) : ({})
+    readonly property var launchContext: launchState.context || null
+    readonly property var currentStart: modelState.start || null
+    property string loadedLaunch: ""
+    onModelStateChanged: {
+        issueLaunch.busy = !!modelState.busy
+        if (launchContext) issueLaunch.error = modelState.notice || ""
+    }
+    onLaunchStateChanged: {
+        if (!launchContext) { loadedLaunch = ""; return }
+        const key = launchContext.issue + ":" + launchContext.version
+        if (key !== loadedLaunch) {
+            loadedLaunch = key
+            Qt.callLater(() => {
+                if (!launchContext) return
+                issueLaunch.load()
+                const d = launchContext.defaults || {}
+                issueLaunch.entry = d.entry || "planning"
+                issueLaunch.mode = d.mode || "light"
+                issueLaunch.preferredProvider = d.preferredProvider || "anthropic"
+                issueLaunch.executor = d.executor || ""
+                issueLaunch.manualCheck = d.check === "manual"
+                issueLaunch.basePicker.pendingTag = "issue"
+                issueLaunch.basePicker.receive("issue", launchContext.branches)
+                issueLaunch.forceActiveFocus()
+            })
+        } else if (launchContext.branches) {
+            issueLaunch.basePicker.pendingTag = "issue"
+            issueLaunch.basePicker.receive("issue", launchContext.branches)
+        }
+    }
     readonly property string selectedIssue: modelState.selected || ""
     readonly property var issue: modelState.issue || null
     readonly property var draft: modelState.draft || ({})
@@ -33,7 +66,7 @@ Item {
     function showItem(item) { if (backend) { backend.selectIssue(item); editing = false } }
     function cancelPendingDialogs() {
         // Wejście z CLI może zmienić sprawę mimo modalnego potwierdzenia.
-        for (const dialog of [attachmentDialog, discardDialog, rejectDialog, detachDialog]) {
+        for (const dialog of [attachmentDialog, discardDialog, rejectDialog, detachDialog, retryDialog]) {
             if (dialog) {
                 dialog.issueId = ""
                 dialog.close()
@@ -302,6 +335,14 @@ Item {
                             Layout.fillWidth: true
                             spacing: 8
                             Action {
+                                objectName: "issueGo"
+                                text: "Zleć…"
+                                primary: true
+                                visible: !!view.issue && view.issue.state === "ready"
+                                enabled: view.canAct && !!modelState.goAvailable && !modelState.dirty && !view.editing
+                                onClicked: backend.beginIssueLaunch(view.issue.version)
+                            }
+                            Action {
                                 objectName: "issueAccept"
                                 text: "Do Backlogu"
                                 primary: true
@@ -344,6 +385,24 @@ Item {
                                 enabled: view.canAct && !modelState.dirty
                                 onClicked: backend.transition("Reopen")
                             }
+                        }
+                        Label {
+                            objectName: "issueOperationResult"
+                            visible: !!modelState.operation
+                            text: modelState.operation ? "Wynik zapisanej operacji: "
+                                  + (modelState.operation.start ? modelState.operation.start.state : modelState.operation.message || "brak odpowiedzi") : ""
+                        }
+                        Label {
+                            objectName: "issueCurrentStart"
+                            visible: !!view.currentStart
+                            text: view.currentStart ? "Bieżący stan startu: " + view.currentStart.state : ""
+                        }
+                        Action {
+                            objectName: "issueRetryStart"
+                            text: "Ponów start"
+                            visible: !!view.currentStart && !!view.currentStart.retryable
+                            enabled: view.canAct
+                            onClicked: retryDialog.open()
                         }
                         Label { text: "Dowody"; font.pixelSize: 18; color: Tide.Tokens.textPrimary }
                         Label {
@@ -404,6 +463,38 @@ Item {
         fileMode: FileDialog.OpenFile
         onVisibleChanged: if (visible) issueId = view.selectedIssue
         onAccepted: if (view.backend && !view.backend.preview && issueId && issueId === view.selectedIssue) view.backend.attach(selectedFile)
+    }
+    Board.LaunchDialog {
+        id: issueLaunch
+        objectName: "issueLaunchDialog"
+        anchors.fill: parent
+        z: 50
+        visible: !!view.launchContext
+        sourceIssue: view.launchContext ? view.launchContext.issue + " · wersja " + view.launchContext.version : ""
+        snapshot: view.launchContext ? view.launchContext.snapshot : null
+        cardId: view.launchContext ? view.launchContext.card : ""
+        modelsStatus: view.launchState.models || null
+        busy: !!view.modelState.busy
+        onCancelRequested: view.backend.cancelIssueLaunch()
+        onBranchesRequested: text => { if (view.backend) view.backend.issueLaunchBranches(text) }
+        onLaunchRequested: (choice, description, changed) => {
+            if (view.backend) view.backend.confirmIssueLaunch(JSON.stringify(BoardLogic.startCardRequest(choice, [])))
+        }
+    }
+    Confirm {
+        id: retryDialog
+        objectName: "issueRetryDialog"
+        property string issueId: ""
+        property string intentId: ""
+        property int startVersion: 0
+        heading: "Ponowić start tej samej karty?"
+        message: "Zachowamy kartę, intencję i zapisane ustawienia. To nowa decyzja; odtworzenie wcześniejszej odpowiedzi samo nie uruchamia pracy."
+        onAboutToShow: {
+            issueId = view.selectedIssue
+            intentId = view.currentStart ? view.currentStart.intentId : ""
+            startVersion = view.currentStart ? view.currentStart.startVersion : 0
+        }
+        onAccepted: if (view.backend && issueId === view.selectedIssue) view.backend.retryIssueStart(intentId, startVersion)
     }
     Confirm {
         id: discardDialog

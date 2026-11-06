@@ -445,7 +445,8 @@ ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
   {''.join('<method name="' + method + '"><arg name="id" type="s" direction="in"/>'
            '<arg name="request" type="s" direction="in"/>'
            '<arg name="json" type="s" direction="out"/></method>'
-           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach', 'AcceptIssue'))}
+           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach', 'AcceptIssue',
+                          'RetryIssueStart', 'PreviewIssueLaunch'))}
   <method name="Attach">
     <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
     <arg name="data" type="ay" direction="in"/><arg name="json" type="s" direction="out"/>
@@ -983,11 +984,28 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
 @pyqtClassInfo("D-Bus Interface", ISSUES_IFACE)
 @pyqtClassInfo("D-Bus Introspection", ISSUES_XML)
 class IssuesAdaptor(QDBusAbstractAdaptor):
-    def __init__(self, parent, board=None):
+    def __init__(self, parent, board=None, bus=None):
         super().__init__(parent)
         from .issues import IssueService
         self.board = board
-        self.service = IssueService(board.store if board is not None else None)
+        self.bus = bus
+        flow = getattr(board, "flow", None)
+        self.service = IssueService(board.store if board is not None else None,
+                                    flow.engine if flow is not None else None)
+
+    def _flow_call(self, method, ident, request, message):
+        if message is None or self.bus is None or self.board is None or self.board.flow is None:
+            args = (ident,) if request is None else (ident, request)
+            result = self.service.call(method, *args)
+            if method in ("AcceptIssue", "RetryIssueStart") and self.board is not None and json.loads(result).get("ok"):
+                self.board.publish()
+            return result
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        args = (ident,) if request is None else (ident, request)
+        self.board.flow.issue_call(self.service, method, args,
+                                  lambda text: self.bus.send(pending.createReply([text])))
+        return ""
 
     @pyqtSlot(result=str)
     def Info(self):
@@ -1001,9 +1019,9 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     def List(self):
         return self.service.call("List")
 
-    @pyqtSlot(str, result=str)
-    def Show(self, ident):
-        return self.service.call("Show", ident)
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Show(self, ident, message=None):
+        return self._flow_call("Show", ident, None, message)
 
     @pyqtSlot(str, str, result=str)
     def Update(self, ident, request):
@@ -1013,12 +1031,17 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     def Submit(self, ident, request):
         return self.service.call("Submit", ident, request)
 
-    @pyqtSlot(str, str, result=str)
-    def AcceptIssue(self, ident, request):
-        result = self.service.call("AcceptIssue", ident, request)
-        if self.board is not None and json.loads(result).get("ok"):
-            self.board.publish()
-        return result
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def AcceptIssue(self, ident, request, message=None):
+        return self._flow_call("AcceptIssue", ident, request, message)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def RetryIssueStart(self, ident, request, message=None):
+        return self._flow_call("RetryIssueStart", ident, request, message)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewIssueLaunch(self, ident, request, message=None):
+        return self._flow_call("PreviewIssueLaunch", ident, request, message)
 
     @pyqtSlot(str, str, result=str)
     def Reject(self, ident, request):
@@ -1509,7 +1532,7 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         raise RuntimeError("brak połączenia z magistralą sesji D-Bus")
     holder = QObject()
     holder.issues = QObject(holder)
-    holder.issues.adaptor = IssuesAdaptor(holder.issues, board)
+    holder.issues.adaptor = IssuesAdaptor(holder.issues, board, bus)
     if not bus.registerObject(ISSUES_PATH, holder.issues):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {ISSUES_PATH}")
     holder.agents = QObject(holder)

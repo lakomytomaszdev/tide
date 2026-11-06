@@ -769,7 +769,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                          repo=project.repo, branch=branch, worktree=worktree, base=start,
                          baseRef=base["baseRef"], baseBranch=base["baseBranch"])
 
-    def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
+    def start(self, card_id: str, request: dict, *, _resume=False, _order=None) -> dict:
+        # Ta sama granica dla zwykłego StartCard, go i jawnego retry. Flock Tablicy
+        # chroni również drugą instancję usługi, RLock — dziennik w tym procesie.
+        try:
+            card_id = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        with self.journal.lock, self.store.transaction():
+            from . import startorder
+            return startorder.start(self, card_id, request, resume=_resume, order=_order)
+
+    def _start(self, card_id: str, request: dict, *, _resume=False, _prepare=None, _order=None) -> dict:
         try:
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
@@ -784,11 +795,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("single-project", "Od razu i Mam plan pracują w jednym projekcie karty; "
                                               "kilka projektów zlecenia — wybierz Planowanie")
         if request.get("entry") == "import":
-            return self.start_import(card_id, request)
+            return self.start_import(card_id, request, _prepare=_prepare, _order=_order)
         if request.get("entry") == "plan":
+            if _prepare is not None or _order is not None:
+                raise FlowError("bad-request", "Mam plan wymaga entry: import oraz planPath")
             return self.propose_plan(card_id, str(request.get("planPath") or ""), request=request)
         if request.get("entry") == "planning" and request.get("mode") in ("full", "light"):
-            return self.start_planning(card_id, request)
+            return self.start_planning(card_id, request, _prepare=_prepare, _order=_order)
         if (request.get("entry") or "") != "now":
             raise FlowError("bad-request", "w przepływie karty działa na razie wejście „Od razu” (entry: now)")
         try:
@@ -796,7 +809,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         board = self.store.load()
-        card = board.cards.get(num)
+        card = _prepare if _prepare is not None else board.cards.get(num)
         if card is None:
             raise FlowError("not-found", f"nie ma karty K-{num}")
         if card.column in ("done", "archived"):
@@ -857,7 +870,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
-        source_evidence = self._issue_evidence(card)
+        source_evidence = None if _prepare is not None else self._issue_evidence(card)
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
@@ -870,7 +883,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
             except reservations.ReservationError as exc:
                 raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
+            if _prepare is not None:
+                return {**request, "baseRef": base["baseRef"], "baseCommit": base["baseCommit"],
+                        "cardBranch": card_branch, "executor": selected.name, "reviewer": reviewer.name,
+                        "preferredProvider": preferred, "check": check}
             started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
+                                      **({"orderId": _order} if _order else {}),
                                       program=selected.tool, model=selected.model, provider=selected.provider,
                                       executorRouteUrl=selected.route.url if selected.route else "",
                                       executorRouteKind=selected.route.kind if selected.route else "",
@@ -933,10 +951,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "step": step_id, "session": step["session"], "executor": selected.name,
                 "queued": "step" not in step, **({'map': {'#1': ticket}} if project.youtrack else {})}
 
-    def start_import(self, card_id: str, request: dict) -> dict:
+    def start_import(self, card_id: str, request: dict, *, _prepare=None, _order=None) -> dict:
         """Przejmuje wskazany plan; źródło pozostaje w repozytorium bez zmian."""
         card_id = f"K-{card_num(card_id)}"
-        item, project = self._project(card_id)
+        item, project = self._start_project(card_id, _prepare)
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", "karta jest zakończona")
         busy = fold(self.journal.read(card_id)).busy_reason()
@@ -980,7 +998,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
-        source_evidence = self._issue_evidence(item)
+        source_evidence = None if _prepare is not None else self._issue_evidence(item)
         with open(path, "rb") as fh:
             source_bytes = fh.read(source_plans.MAX_BYTES + 1)
         if len(source_bytes) > source_plans.MAX_BYTES:
@@ -997,8 +1015,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     not loose_text and all(row.agent and row.work_class and row.reviewer and row.note for row in source.rows))
         with lock_for(project.repo):
             base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
+        if _prepare is not None:
+            return {**request, "baseRef": base["baseRef"], "baseCommit": base["baseCommit"],
+                    "cardBranch": base["cardBranch"], "executor": selected.name, "check": check}
         self.store.update_card(card_id, {"planPath": path})
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
+                            **({"orderId": _order} if _order else {}),
                             column=item.column, moveId=item.move_id, check=check, images=images,
                             sourceEvidence=source_evidence.source if source_evidence else None,
                             executor=selected.name, program=selected.tool, model=selected.model,
@@ -1017,9 +1039,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {"ok": True, "id": card_id, "imported": True, "needsCompletion": True,
                 "step": st.last_step, "executor": selected.name}
 
-    def start_planning(self, card_id: str, request: dict) -> dict:
+    def _start_project(self, card_id, prepared):
+        if prepared is None:
+            return self._project(card_id)
+        project = self.store.load().projects.get(prepared.project)
+        if project is None:
+            raise FlowError("no-project", "sprawa potrzebuje projektu z repozytorium")
+        return prepared, project
+
+    def start_planning(self, card_id: str, request: dict, *, _prepare=None, _order=None) -> dict:
         card_id = f"K-{card_num(card_id)}"
-        item, project = self._project(card_id)
+        item, project = self._start_project(card_id, _prepare)
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", "karta jest zakończona")
         if not project.repo:
@@ -1029,9 +1059,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         busy = fold(self.journal.read(card_id)).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
+        prepared_board = None
         if "projects" in request:
-            item = self._save_order_projects(card_id, item, request["projects"])
-        order = self._order_projects(item, project)
+            if _prepare is not None:
+                item, prepared_board = self._prepare_order_projects(item, request["projects"])
+            else:
+                item = self._save_order_projects(card_id, item, request["projects"])
+        order = self._order_projects(item, project, board=prepared_board)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -1055,7 +1089,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
-        source_evidence = self._issue_evidence(item)
+        source_evidence = True if _prepare is not None else self._issue_evidence(item)
         if mode == "full":
             self._require_safe_evidence_console(selected.tool, source_evidence)
         with lock_for(project.repo):
@@ -1067,7 +1101,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 prefix = reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
             except reservations.ReservationError as exc:
                 raise FlowError("no-ticket-number", str(exc)) from None
+        if _prepare is not None:
+            return {**request, "baseRef": base["baseRef"], "baseCommit": base["baseCommit"],
+                    "cardBranch": base["cardBranch"], "executor": selected.name,
+                    "preferredProvider": preferred, "check": check}
         self.journal.append(card_id, "card.started", entry="planning", mode=mode, repo=project.repo,
+                            **({"orderId": _order} if _order else {}),
                             project=project.slug, column=item.column, moveId=item.move_id,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, preferredProvider=preferred, prefix=prefix,
@@ -1095,6 +1134,26 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "limitWarning": flow_limits.planning_warning(low) if low else "",
                 "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
 
+    def _prepare_order_projects(self, item, value):
+        from dataclasses import replace
+        from ..board.store import Change, _card_values
+        from ..board.frontmatter import Document
+        from ..board.model import parse_project
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+        board = self.store.load()
+        change = Change()
+        values = _card_values({"projects": value})
+        wanted = self.store._extra_projects(board, values["projects"], item.project, change)
+        for _message, writes in change.commits:
+            for path, text in writes:
+                slug = os.path.basename(path).removesuffix(".md")
+                errors = []
+                board.projects[slug] = parse_project(Document.parse(text), path, slug, errors)
+                if errors:
+                    raise FlowError("bad-request", "nie można przygotować dodatkowego projektu")
+        return replace(item, projects=wanted), board
+
     def _save_order_projects(self, card_id: str, item, value):
         """Pole `projects` żądania (dodatkowe projekty zlecenia: slugi albo ścieżki repozytoriów) trafia do
         `projects` karty, gdy różni się od zapisanego; zapis i sprawdzenie (PROJECTS_MAX) robi Tablica."""
@@ -1117,12 +1176,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         return self.store.load().cards[card_num(card_id)]
 
-    def _order_projects(self, item, project) -> list[dict]:
+    def _order_projects(self, item, project, *, board=None) -> list[dict]:
         """Projekty zlecenia (K-33 #4): projekt karty i jej dodatkowe projekty, każdy z dostępnym repozytorium.
         Źródło numerów: klucz YouTracka projektu Tablicy albo lokalny prefiks repozytorium. Repozytorium, które
         numeruje w YouTracku, a projekt Tablicy nie ma klucza YouTracka, dostaje `configured: false` —
         sprawdzanie propozycji odrzuci jego tickety. Projekt bez repozytorium kończy zlecenie błędem `no-repo`."""
-        board = self.store.load()
+        board = self.store.load() if board is None else board
         out = []
         for slug in [project.slug, *item.projects]:
             found = board.projects.get(slug)
@@ -2405,8 +2464,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
 
     def tick(self) -> None:
+        from ..issue_start import recover as recover_issue_starts
+        from ..issues import IssueStore
+        recover_issue_starts(IssueStore(self.store), self)
         from .basegeneration import BaseGeneration
+        from . import startorder
+        unreadable_starts = set()
         for card in self.journal.cards():
+            if any(e["type"].startswith("order.") for e in self.journal.read(card)):
+                try:
+                    startorder.events(self, card)
+                except (OSError, ValueError):
+                    unreadable_starts.add(card)
+                    continue
             try:
                 BaseGeneration(self).recover(card)
             except Exception as exc:
@@ -2428,6 +2498,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         hidden_ids, hidden_places, busy = set(), set(), set()
         guarded: set[str] = set()
         for card in self.journal.cards():
+            if card in unreadable_starts:
+                continue
             warning = self.journal.check(card)
             if warning:
                 self._warnings[card] = warning
@@ -2493,7 +2565,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
                     and not st.steps and st.started.get('request'):
                 _, project = self._project(card)
-                if project.youtrack:
+                if project.youtrack or st.started.get("orderId"):
                     self.start(card, st.started['request'], _resume=True)
             if not blocking_tracker_error and st.plan_proposed and st.plan_reviewed and not st.plan_approved and any(
                     e['type'] == 'plan.approval_requested' and e.get('proposal') == st.plan_proposed['seq']

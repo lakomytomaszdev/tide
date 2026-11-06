@@ -122,12 +122,15 @@ def _finish(store, intent):
     _complete(store, ident)
 
 
-def accept(store, ident, request):
+def accept(store, ident, request, *, prepare=None):
     ident = store._id(ident)
-    if (not isinstance(request, dict) or request.keys() != {"expectedVersion", "destination", "requestId"} or
+    required = {"expectedVersion", "destination", "requestId"}
+    go = isinstance(request, dict) and request.get("destination") == "go" and prepare is not None
+    if (not isinstance(request, dict) or not required <= request.keys() or
+            request.keys() - required - ({"launch"} if go else set()) or
             type(request.get("expectedVersion")) is not int or request["expectedVersion"] < 1 or
-            request.get("destination") != "backlog"):
-        fail("Podaj expectedVersion, destination: backlog oraz requestId.")
+            request.get("destination") not in (("backlog", "go") if go else ("backlog",))):
+        fail("Podaj expectedVersion, destination: backlog/go oraz requestId; launch jest opcjonalny dla go.")
     validate({"title": "request", "report": "", "requestId": request["requestId"]})
     if not store.board.exists():
         fail(f"Nie ma sprawy {ident}.", "not-found")
@@ -136,13 +139,23 @@ def accept(store, ident, request):
     receipt_path = f"{REQUESTS}/{key}.json"
     with store._lock():
         previous = _read(store, receipt_path)
-        if previous is not None and previous != payload:
+        if previous is not None and _encoded(previous) != _encoded(payload):
             fail("requestId był już użyty z innymi danymi.", "conflict")
         intent = (_read(store, f"{INTENTS}/{ident}.json") or
                   _read(store, f"{INTENTS}/{ident}.done.json"))
         if intent:
             if request["expectedVersion"] != intent["issue"]["version"]:
                 raise VersionConflict(store._show(ident)["version"])
+            if go and "startIntent" in intent and _encoded(intent["startIntent"]["acceptRequest"]) != _encoded({
+                    k: v for k, v in request.items() if k != "requestId"}):
+                fail("Sprawa ma już intencję z innymi ustawieniami; retry zachowuje zapisane zlecenie.", "conflict")
+            if go and "startIntent" not in intent:
+                from .board.model import card_num
+                card = store.board._load().cards.get(card_num(intent["card"]))
+                if card is None:
+                    fail("Brakuje przyjętej karty.", "broken-file")
+                intent["startIntent"] = prepare(card, intent["issue"])
+                _save(store, f"{INTENTS}/{ident}.done.json", intent)
             _save(store, receipt_path, payload)
             return _result(store, intent, True)
         busy = store.repo.busy()
@@ -178,6 +191,13 @@ def accept(store, ident, request):
                   "reportText": store._report_text(issue), "manifestText": manifest, "cardText": doc.text(),
                   "updated": datetime.fromtimestamp(store.board.clock(), timezone.utc).isoformat(),
                   "published": False, "done": False, "commitError": ""}
+        if go:
+            from .board.model import parse_card
+            errors = []
+            card = parse_card(doc, f"cards/{card_id}.md", int(card_id[2:]), errors)
+            if errors:
+                fail("Nie można przygotować karty sprawy.", "broken-file")
+            intent["startIntent"] = prepare(card, issue)
         # Żaden numer K-N nie został jeszcze zużyty. Oba zapisy poprzedzają rezerwację.
         _save(store, receipt_path, payload)
         _save(store, f"{INTENTS}/{ident}.json", intent)

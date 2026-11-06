@@ -88,6 +88,8 @@ class Backend(QObject):
         self._issues, self._list_errors, self._projects = [], [], []
         self._buffers = {}
         self._accept_requests = {}
+        self._launch = None
+        self._models = None
         self._selected = ""
         self._notice = ""
         self._available = data is not None
@@ -143,7 +145,12 @@ class Backend(QObject):
             selected=self._selected, notice=self._notice, available=self._available, busy=self._busy,
             issue=buf.get("issue"), draft=buf.get("draft", {}), dirty=self._dirty(buf),
             conflict=buf.get("conflict", 0), current=buf.get("current"), error=buf.get("error", ""),
-            evidence=buf.get("evidence", {})), ensure_ascii=False)
+            goAvailable="issue.go" in self._capabilities,
+            evidence=buf.get("evidence", {}), start=buf.get("start"), operation=buf.get("operation")), ensure_ascii=False)
+
+    @pyqtProperty(str, notify=changed)
+    def launchJson(self):
+        return json.dumps(dict(context=self._launch, models=self._models), ensure_ascii=False)
 
     def _dirty(self, buf):
         return bool(buf.get("issue") and buf.get("draft") != self._fields(buf["issue"]))
@@ -214,7 +221,8 @@ class Backend(QObject):
                     self._notice = ""
                 buf = self._buffers.get(self._selected, {})
                 meta = next((i for i in self._issues if i["id"] == self._selected), None)
-                if not self._busy and meta and buf.get("issue") and meta["version"] != buf["issue"]["version"]:
+                if not self._busy and meta and buf.get("issue") and (meta["version"] != buf["issue"]["version"] or
+                                                                      meta["state"] == "accepted"):
                     ident = self._selected
                     self._call("Show", [ident], lambda reply, _: self._shown(ident, reply))
             self.changed.emit()
@@ -229,6 +237,8 @@ class Backend(QObject):
         if not re.fullmatch(r"S-[1-9][0-9]{0,8}", ident) or self._busy:
             return
         self._selected = ident
+        if self._launch and self._launch["issue"] != ident:
+            self.cancelIssueLaunch()
         self._generation += 1
         self._images.clear()
         if self._provider:
@@ -247,6 +257,14 @@ class Backend(QObject):
             buf["error"] = result.get("message", "Nie można odczytać sprawy.")
         else:
             issue = result["issue"]
+            # Bieżąca projekcja pochodzi wyłącznie z Show; odpowiedź mutacji jest
+            # zapisem konkretnej operacji i może być historycznym replay.
+            if "start" in result:
+                previous = buf.get("start") or {}
+                if result["start"].get("startVersion", 0) >= previous.get("startVersion", 0):
+                    buf["start"] = result["start"]
+            else:
+                buf.pop("start", None)
             if buf.get("issue") and issue["version"] < buf["issue"]["version"]:
                 return
             buf["error"] = ""
@@ -315,6 +333,97 @@ class Backend(QObject):
         self._mutate("AcceptIssue", {"destination": "backlog", "requestId": request_id},
                      expected_version=expected_version)
 
+    @pyqtSlot(int)
+    def beginIssueLaunch(self, version):
+        if not self._can_write("AcceptIssue") or self._dirty(self._buffers[self._selected]) or "issue.go" not in self._capabilities:
+            return
+        ident = self._selected
+        self._busy = True
+        self._notice = ""
+        self._buffers[ident]["acceptingVersion"] = version
+        self.changed.emit()
+        def opened(result, _):
+            self._busy = False
+            if result.get("ok") and self._selected == ident:
+                self._launch = {"issue": ident, "version": version, **result}
+            else:
+                self._buffers[ident].pop("acceptingVersion", None)
+                self._notice = result.get("message", "Nie można otworzyć ustawień zlecenia.")
+                if result.get("error") == "version-conflict":
+                    self._record_conflict(ident, result)
+            self.changed.emit()
+        self._call("PreviewIssueLaunch", [ident, json.dumps({"expectedVersion": version})], opened)
+        self._call("Status", [], lambda result, _: self._got_models(result), "/Models", "org.tide.Daemon.Models")
+
+    def _got_models(self, result):
+        self._models = result
+        self.changed.emit()
+
+    @pyqtSlot()
+    def cancelIssueLaunch(self):
+        if self._launch:
+            self._buffers.get(self._launch["issue"], {}).pop("acceptingVersion", None)
+            self._launch = None
+            self.changed.emit()
+
+    @pyqtSlot(str)
+    def issueLaunchBranches(self, text):
+        context = self._launch
+        if not context or self._busy:
+            return
+        token = uuid.uuid4().hex
+        context["branchRequest"] = token
+        def got(result, _):
+            if self._launch is context and context.get("branchRequest") == token:
+                context["branches"] = result.get("branches", result)
+                self.changed.emit()
+        self._call("PreviewIssueLaunch", [context["issue"], json.dumps({"expectedVersion": context["version"],
+                                                                     "text": text})], got)
+
+    @pyqtSlot(str)
+    def confirmIssueLaunch(self, raw):
+        context = self._launch
+        if not context or context["issue"] != self._selected or self._busy or self._preview:
+            return
+        try:
+            launch = json.loads(raw)
+        except ValueError:
+            return
+        key = (context["issue"], context["version"], json.dumps(launch, sort_keys=True))
+        request_id = self._accept_requests.setdefault(key, str(uuid.uuid4()))
+        self._mutate("AcceptIssue", {"destination": "go", "requestId": request_id, "launch": launch},
+                     expected_version=context["version"])
+
+    @pyqtSlot(str, int)
+    def retryIssueStart(self, intent_id, version):
+        buf = self._buffers.get(self._selected, {})
+        current = buf.get("start", {})
+        if (self._preview or self._busy or not self._available or "issue.retry-start" not in self._capabilities or
+                not current.get("retryable") or current.get("intentId") != intent_id or current.get("startVersion") != version):
+            return
+        self._busy = True
+        ident = self._selected
+        key = (ident, intent_id, version)
+        request_id = self._accept_requests.setdefault(key, str(uuid.uuid4()))
+        self.changed.emit()
+        def done(result, _):
+            self._busy = False
+            buf["operation"] = result
+            self._refresh_start(ident)
+            self.changed.emit()
+        self._call("RetryIssueStart", [ident, json.dumps({"intentId": intent_id, "expectedStartVersion": version,
+                                                        "requestId": request_id})], done)
+
+    def _refresh_start(self, ident):
+        def shown(result, _):
+            if result.get("ok"):
+                self._shown(ident, result, discard=True)
+            else:
+                self._buffers[ident].pop("start", None)
+                self._notice = result.get("message", "Nie można odczytać bieżącego startu.")
+                self.changed.emit()
+        self._call("Show", [ident], shown)
+
     def _mutate(self, method, patch, raw=None, expected_version=None):
         ident = self._selected
         buf = self._buffers[ident]
@@ -332,7 +441,12 @@ class Backend(QObject):
             self._busy = False
             buf.pop("acceptingVersion", None)
             if result.get("ok"):
-                self._shown(ident, result, discard=method in ("Update", "AcceptIssue"))
+                if "start" in result:
+                    buf["operation"] = result
+                    self._launch = None
+                    self._refresh_start(ident)
+                else:
+                    self._shown(ident, result, discard=method in ("Update", "AcceptIssue"))
                 # Attach/Detach są zablokowane przy niezapisanym tekście; przejścia również.
                 self._notice = result.get("commitError", "")
                 self.reload()

@@ -17,7 +17,7 @@ PATH = "/Issues"
 IFACE = "org.tide.Daemon.Issues"
 FILE_MAX = 20 * 1024 * 1024
 EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
-              "conflict": 4, "version-conflict": 4, "not-found": 5,
+              "conflict": 4, "version-conflict": 4, "start-conflict": 4, "not-found": 5,
               "git-busy": 6, "io-error": 7, "broken-file": 7,
               "console-open": 4, "no-step": 5, "no-terminal": 3}
 
@@ -47,6 +47,12 @@ def parser():
     backlog.add_argument("--expected-version", required=True, type=int)
     backlog.add_argument("--request-id", help="klucz identycznych ponowień; domyślnie nowy UUID")
     backlog.set_defaults(action="accept")
+    go = commands.add_parser("go", help="przyjmij przeczytaną wersję i zleć tę samą kartę")
+    go.add_argument("id", help="S-N")
+    go.add_argument("--expected-version", required=True, type=int)
+    go.add_argument("--launch", help="plik JSON z ustawieniami StartCard; domyślnie Planowanie Lekkie")
+    go.add_argument("--request-id", help="klucz odtworzenia odpowiedzi; domyślnie nowy UUID")
+    go.set_defaults(action="go")
     next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
     next_id.add_argument("repo")
     next_id.add_argument("--prefix", default="")
@@ -59,6 +65,11 @@ def parser():
     check.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     issue = commands.add_parser("issue", help="sprawy")
     actions = issue.add_subparsers(dest="action", required=True, parser_class=Parser)
+    retry = actions.add_parser("retry-start", help="jawnie ponów nieudane przekazanie zaakceptowanej karty")
+    retry.add_argument("id", help="S-N")
+    retry.add_argument("--intent", required=True)
+    retry.add_argument("--expected-start-version", required=True, type=int)
+    retry.add_argument("--request-id", required=True, help="nowy klucz decyzji retry")
     create = actions.add_parser("create", help="zapisz szkic")
     create.add_argument("--report", required=True, help="plik UTF-8 Markdown bez frontmatteru")
     create.add_argument("--title", required=True, help="tytuł sprawy")
@@ -97,7 +108,7 @@ def parser():
     attachment.add_argument("--attachment", required=True)
     attachment.add_argument("--output", required=True)
     attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
-    for command in (info, card, card_opening, backlog, issue, create, listing, show, opening,
+    for command in (info, card, card_opening, backlog, go, retry, issue, create, listing, show, opening,
                     update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
@@ -326,11 +337,25 @@ def main(argv=None):
                                       env=env, check=False).returncode
             except OSError:
                 raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
-        if result["ok"] and args.command in ("issue", "backlog"):
+        if result["ok"] and args.command in ("issue", "backlog", "go"):
             capability = "show" if args.action == "open" else args.action
             if f"issue.{capability}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
-            if args.action == "accept":
+            if args.action == "go":
+                data = {"expectedVersion": args.expected_version, "destination": "go",
+                        "requestId": args.request_id or str(uuid.uuid4())}
+                if args.launch is not None:
+                    try:
+                        data["launch"] = json.loads(read_report(args.launch))
+                    except ValueError:
+                        raise CliError("bad-request", "Ustawienia zlecenia muszą być poprawnym JSON.") from None
+                    if not isinstance(data["launch"], dict):
+                        raise CliError("bad-request", "Ustawienia zlecenia muszą być obiektem JSON.")
+                result = api.call("AcceptIssue", args.id, json.dumps(data, ensure_ascii=False))
+            elif args.action == "retry-start":
+                result = api.call("RetryIssueStart", args.id, json.dumps({"intentId": args.intent,
+                    "expectedStartVersion": args.expected_start_version, "requestId": args.request_id}))
+            elif args.action == "accept":
                 result = api.call("AcceptIssue", args.id, json.dumps({"expectedVersion": args.expected_version,
                     "destination": "backlog", "requestId": args.request_id or str(uuid.uuid4())}))
             elif args.action == "open":
@@ -379,6 +404,11 @@ def main(argv=None):
                 result = api.call(args.action.capitalize(), args.id, json.dumps(data, ensure_ascii=False))
             else:
                 result = api.call("Show", args.id)
+            if args.action in ("go", "retry-start") and result.get("accepted"):
+                # To osobny odczyt: historyczny startError pozostaje w wyniku
+                # operacji, nawet gdy nowe, jawne retry już naprawiło start.
+                current = api.call("Show", args.id)
+                result["currentStart"] = current.get("start") if current.get("ok") else None
     except CliError as exc:
         result = exc.reply
     if as_json:
@@ -389,7 +419,15 @@ def main(argv=None):
         issue = result["issue"]
         print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
         if result.get("card"):
-            print(f"{result['card']}: przyjęto wersję {result['acceptedVersion']} do Backlogu")
+            if "start" in result:
+                print(f"{result['card']}: wynik zapisanej operacji: {result['start']['state']}")
+                current = result.get("currentStart")
+                print("Bieżący stan startu: " + (current["state"] if current else "nie udało się odczytać"))
+                if current and current.get("retryable"):
+                    print("Ponów start osobnym poleceniem tide issue retry-start z intencją "
+                          + current["intentId"] + " i wersją " + str(current["startVersion"]))
+            else:
+                print(f"{result['card']}: przyjęto wersję {result['acceptedVersion']} do Backlogu")
         if args.action == "show":
             print(issue["report"], end="")
     elif "issues" in result:
@@ -405,7 +443,7 @@ def main(argv=None):
         print(f"Tide API v{result['apiVersion']}")
     if result.get("commitError") and not as_json:
         print("Zapisano sprawę; commit czeka w kolejce: " + result["commitError"], file=sys.stderr)
-    return 0 if result["ok"] else EXIT_CODES.get(result.get("error"), 1)
+    return 5 if result.get("startError") else 0 if result["ok"] else EXIT_CODES.get(result.get("error"), 1)
 
 
 if __name__ == "__main__":

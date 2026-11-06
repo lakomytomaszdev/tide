@@ -73,6 +73,17 @@ class CardFlowMonitor(QObject):
 
     # --- akcje -----------------------------------------------------------------------------------
 
+    def issue_call(self, service, method, args, reply):
+        # Go i retry biegną w tym samym wątku co StartCard i tick, poza Qt.
+        def answer(future):
+            text = future.result()
+            if method in ("AcceptIssue", "RetryIssueStart") and self.board is not None:
+                self.board.publish()
+            reply(text)
+        if not self._submit(lambda: service.call(method, *args), answer):
+            reply(json.dumps({"ok": False, "apiVersion": 1, "error": "unavailable",
+                              "message": "Usługa się zamyka."}, ensure_ascii=False))
+
     def start_card(self, card_id: str, request: str, reply) -> None:
         """StartCard(id, json): reply(json) po zleceniu (w wątku roboczym) — {ok, ticket, …} albo {ok: false, error, message}."""
         try:

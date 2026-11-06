@@ -8,7 +8,8 @@ odczyt załączników — PT-228. Utworzenie sprawy nie uruchamia modelu, nie za
 
 Magistrala sesji, usługa `org.tide.Daemon`, obiekt `/Issues`, interfejs `org.tide.Daemon.Issues`.
 Metody zwracają jeden napis JSON; wyjątkiem jest `ReadAttachment`, zwracające JSON oraz tablicę bajtów.
-Nie przyjmują ścieżek do plików klienta ani ścieżek odczytu Tablicy.
+Operacje raportów i dowodów nie przyjmują ścieżek do plików klienta ani ścieżek odczytu Tablicy.
+Ustawienia go korzystają z istniejącego kontraktu StartCard, opisanego osobno poniżej.
 CLI jest samodzielnym klientem tego interfejsu; nie importuje pakietu `tide_daemon`.
 
 Rozmowa opiekuna karty ma oddzielny kontrakt `/Board` z PT-149; opis poniżej
@@ -16,15 +17,17 @@ w sekcji [CLI rozmowy opiekuna](#cli-rozmowy-opiekuna--pt-226).
 
 | Metoda | Argumenty D-Bus | Wynik przy sukcesie, poza wspólną kopertą |
 | --- | --- | --- |
-| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment", "issue.accept"]` |
+| `Info` | brak | możliwości spraw; przy włączonym przepływie także `issue.go`, `issue.retry-start`, `issue.preview-launch` |
 | `Create` | `s request` (obiekt JSON opisany niżej) | `issue`, `existing: bool`, `commitError: string` |
 | `List` | brak | `issues: [...]` (metadane bez treści raportu), `errors: [...]` |
-| `Show` | `s id` (dokładnie `S-N`, N = 1…999999999) | `issue` (metadane i treść) |
+| `Show` | `s id` (dokładnie `S-N`, N = 1…999999999) | `issue` (metadane i treść), opcjonalny bieżący `start` |
 | `Update` | `s id, s request` | `issue`, `commitError: string` |
 | `Submit` | `s id, s request` | `issue`, `commitError: string` |
 | `Reject` | `s id, s request` | `issue`, `commitError: string` |
 | `Reopen` | `s id, s request` | `issue`, `commitError: string` |
 | `AcceptIssue` | `s id, s request` | `issue`, `card`, `acceptedVersion`, `alreadyAccepted`, `commitError` |
+| `RetryIssueStart` | `s id, s request` | `accepted`, `issue`, `card`, `acceptedVersion`, `started`, `queued`, `startError`, `start` |
+| `PreviewIssueLaunch` | `s id, s request` | `snapshot`, proponowany `card`, `branches`, `defaults`; bez zapisu |
 | `Attach` | `s id, s request, ay data` | `issue`, `commitError: string` |
 | `Detach` | `s id, s request` | `issue`, `commitError: string` |
 | `ReadAttachment` | `s id, s request` | **dwa argumenty wyjściowe**: `s result, ay data`; opis poniżej |
@@ -195,7 +198,7 @@ tide backlog S-N --expected-version N [--request-id klucz] [--json]
 
 API przyjmuje dokładnie `{"expectedVersion":N,"destination":"backlog","requestId":"klucz"}`.
 Wersja jest dodatnią liczbą całkowitą, klucz podlega regułom `requestId` z Create. Brak,
-powtórzenie i nieznane pola są błędem. Inne destination pozostają niedostępne w tym etapie.
+powtórzenie i nieznane pola są błędem. Zlecenie `destination: go` opisano poniżej.
 CLI wymaga jawnej wersji; nie pobiera jej przez Show. Bez podanego klucza generuje nowy UUID.
 Przy utracie odpowiedzi najlepiej ponowić jawny klucz i identyczne dane. Samo ponowne przyjęcie
 tej samej wersji sprawy, również z innym kluczem, zwraca tę samą kartę.
@@ -233,6 +236,64 @@ Rezerwacja zachowuje numer, a istniejąca karta nie jest przepisywana podczas od
 ani replay. Po ukończeniu publikacji commit zapisuje historię; jego błąd nie cofa accepted,
 wraca jako `commitError` i nie rezerwuje nowego numeru przy ponowieniu. Intencje i klucze
 są lokalnym stanem w `.git` i wymagają jego kopii zapasowej, podobnie jak rejestr Create.
+
+### Go i jawne ponowienie startu (PT-222)
+
+```text
+tide go S-N --expected-version N [--launch ustawienia.json] [--request-id klucz] --json
+tide issue retry-start S-N --intent identyfikator --expected-start-version N --request-id nowy-klucz --json
+```
+
+Możliwości `issue.go`, `issue.retry-start` i `issue.preview-launch` są dostępne przy włączonym
+silniku przepływu. Go wywołuje AcceptIssue z `destination: go`, `expectedVersion`, `requestId`
+oraz opcjonalnym obiektem `launch` o polach StartCard. Brak launch wybiera Planowanie Lekkie,
+ostatniego wykonawcę, dostawcę i sprawdzenie zlecenia projektu; przy pierwszym zleceniu korzysta
+z narzędzia projektu i katalogu. Walidacja StartCard przypina pełny ref i SHA przed akceptacją,
+bez fallbacku do HEAD. Wejścia to `now`, `planning` (`light`/`full`) oraz `import` z `planPath`.
+Odmowa interaktywnego Claude z dowodami, walidacja Mam plan, limity i kolejki pozostają wspólne.
+Niepoprawne ustawienia nie tworzą karty. Jawne `launch: null` jest błędem.
+
+Odpowiedź go rozdziela `accepted`, `card`, `started`, `queued`, `startError` oraz projekcję:
+
+```json
+{"intentId":"…","startVersion":3,"state":"start-error","retryable":true,"orderId":"…","attemptId":"…","error":{"code":"…","message":"…"}}
+```
+
+`accepted: true` pozostaje prawdą również przy późniejszym błędzie startu. Sprawa pozostaje
+accepted i wskazuje tę samą K-N. Start ma własny licznik `startVersion`, niezależny od wersji
+raportu. Stany to `prepared`, `dispatching`, `queued`, `started`, `completed`, `start-error`
+i `reconciling`. Każda zmiana projekcji zwiększa startVersion. `startError` jest obiektem
+błędu albo null; CLI zwraca **5** przy zapisanym startError.
+
+Identyczny klucz i ładunek odtwarzają niezmienny wynik operacji, także pierwotny startError
+po udanym retry, po restarcie i po completed. Inny ładunek tego klucza daje conflict. Replay
+nie uruchamia pracy. Bieżący start pochodzi z osobnego Show; CLI dodaje go jako `currentStart`.
+Widok pokazuje osobno wynik zapisanej operacji i aktualny stan. Historyczny błąd nie włącza retry.
+
+RetryIssueStart przyjmuje **wyłącznie** `{intentId,expectedStartVersion,requestId}`. Nie przyjmuje
+wersji raportu ani nowych ustawień i nie woła ponownie AcceptIssue. Wymaga osobnej decyzji,
+aktualnej startVersion, accepted powiązanego z K-N, stanu start-error z retryable=true,
+zgodnej generacji karty i zapisanej bazy. Odmowa `start-conflict` zawiera aktualny `start`
+i daje kod CLI 4. Dwie decyzje o tej samej wersji mają jednego zwycięzcę. Retry zachowuje
+intencję, K-N, launch i orderId, tworząc nowe trwałe attemptId. Klucz retry jest oddzielny
+od pierwotnego go; jego identyczne ponowienie także odtwarza zapisaną odpowiedź.
+
+Akceptacja utrwala startIntent razem z S-N/K-N. Bieżący stan trafia do
+`.git/tide-issue-starts/`, odpowiedzi operacji do `.git/tide-issue-start-results/`; obejmuje je
+kopia `.git`. Przed przekazaniem dziennik utrwala orderId i attemptId. `card.started.orderId`
+wiąże istniejącą rezerwację ticketu, gałęzie i procesy z tym zleceniem. Odzyskiwanie po tym
+zdarzeniu kontynuuje zwykły silnik karty, bez drugiego `card.started`. Wyłącznie dowiedziona
+odmowa przed przyjęciem StartCard daje retryable=true. Niejednoznaczny zapis lub urwana linia
+dziennika oznaczają reconciling, retryable=false i odmowę nowego przekazania. Błąd po przyjęciu
+może mieć start-error z retryable=false; rozlicza go istniejące odzyskiwanie przyjętego zlecenia.
+Nie kasujemy i nie przepisujemy historii. Zmiana launch wymaga nowej decyzji poza retry;
+ponowne go nie zmienia ustawień już zapisanej intencji.
+
+PreviewIssueLaunch przyjmuje `{expectedVersion,text?}`. Zwraca dane istniejącego okna
+zlecenia i listę znanych lokalnie baz, bez akceptacji, rezerwacji numeru i gałęzi.
+Potwierdzenie „Zleć…” wysyła dokładnie wersję zapamiętaną przy otwarciu okna. Nowa wersja
+powoduje konflikt. Zamknięcie/Esc nie przyjmują sprawy. „Ponów start” otwiera osobne
+potwierdzenie i używa wyłącznie intencji oraz startVersion z aktualnego Show.
 
 ### Attach i Detach — wdrożone w PT-228 (D2/D5)
 
@@ -412,7 +473,7 @@ zmienione pola i `expectedVersion`. „Bez projektu” wysyła `null`. Zmiana go
 szkic. Konflikt zachowuje lokalny tekst na czas życia okna, pokazuje aktualną wersję i blokuje
 zapis do jawnego ponownego wczytania z potwierdzeniem. Zmiana zaznaczenia zachowuje bufory odwiedzonych
 spraw. Nie są to pliki odzyskiwania po zamknięciu okna. Submit/reject/reopen używają istniejącego API;
-przyjęcie do Backlogu używa AcceptIssue; zlecenie pozostaje kolejnym etapem.
+przyjęcie do Backlogu oraz „Zleć…” używają wspólnego AcceptIssue.
 
 Raport przechodzi przez parser Markdown Qt z wyłączonym HTML. Obrazy muszą wskazywać dokładną
 ścieżkę `attachments/A-…` z manifestu tej sprawy. Nie otwieramy jej na dysku: publiczne `ReadAttachment`
