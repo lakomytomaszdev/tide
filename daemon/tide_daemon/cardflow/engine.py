@@ -93,8 +93,8 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
-OUTSIDE_PER_PROJECT = 4         # polecenia poza piaskownicą naraz w projekcie (06.11 18:51: próba 6 — obciążenie >30 trzy razy z rzędu, powrót do 4)
-OUTSIDE_TOTAL = 5               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
+OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
 OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
 
 
