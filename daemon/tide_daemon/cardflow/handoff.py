@@ -17,7 +17,8 @@ OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect"
 
 RERUN_RUNNER = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
                 "różny od 0), każdy tym samym interpreterem co `make test`:\n"
-                "`/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`.")
+                "`XDG_STATE_HOME=\"$(mktemp -d)\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`\n"
+                "(osobny katalog stanu jak w uruchamiaczu: test bez izolacji nadpisał kiedyś stan działającej Tablicy).")
 RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem\n"
                  "na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.")
 
@@ -33,7 +34,8 @@ W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżk
 (ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
 pełne polecenie z akapitu wyżej. Ponowienie zmienia tylko to, co uruchamiasz, nie ocenę: porażka pierwszego
 przebiegu zostaje wynikiem, a udane ponowienie jej nie zastępuje. Rozlicz ją jak każde odstępstwo
-(`docs/testing.md`, „Wyjątki od testów”: ten sam test na bazie i na master, obciążenie, zakres, właściciel).
+według zasad wyjątków od testów projektu (w Tide: `docs/testing.md`, „Wyjątki od testów”): ten sam test na bazie
+ticketu i na głównej gałęzi projektu, obciążenie, zakres, właściciel.
 """
 
 
