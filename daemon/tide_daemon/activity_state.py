@@ -179,6 +179,8 @@ class NotificationFilter(QObject):
         watcher.finished.connect(lambda w: self._inhibited(w))
 
     def _inhibited(self, watcher: QDBusPendingCallWatcher, release_now: bool = True) -> None:
+        if watcher not in self._pending:
+            return  # spóźniony sygnał Qt po ręcznym odebraniu odpowiedzi podczas zatrzymania
         self._pending.discard(watcher)
         reply = QDBusPendingReply(watcher).reply()
         if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments():
@@ -216,6 +218,7 @@ class NotificationFilter(QObject):
             # Zatrzymanie usługi: pętla Qt już nie działa, więc odpowiedź na Inhibit odbieramy tutaj
             # i zwalniamy niżej, czekając na UnInhibit.
             for watcher in list(self._pending):
+                watcher.finished.disconnect()
                 watcher.waitForFinished()
                 self._inhibited(watcher, release_now=False)
         if self.cookie:
