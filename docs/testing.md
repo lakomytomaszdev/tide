@@ -126,7 +126,8 @@ albo obciążenia), nie powtarza całego `make test-changed`/`make test`. Urucha
 
 W notce zapisuje pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, raport) i ponowienie (ten sam HEAD,
 czysty `git status`, lista modułów, wynik). Recenzent uznaje ponowienie tylko przy tym samym HEAD co pełny przebieg.
-Każda zmiana pliku przywraca pełne polecenie zasady testów. Pełny `make test` przy domknięciu karty zostaje.
+Każda zmiana pliku przywraca pełne polecenie zasady testów. Pełny `make test` przy domknięciu karty zostaje;
+jeśli padnie, agent domknięcia także ponawia tylko padnięte moduły na tym samym HEAD.
 Projekty w innych technologiach stosują tę samą zasadę narzędziem testów projektu z filtrem na padnięte testy.
 Tekst zasady w kartkach kroków: `rerun_failed` w `daemon/tide_daemon/cardflow/handoff.py`.
 
