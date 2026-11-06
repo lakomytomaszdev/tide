@@ -377,7 +377,10 @@ class GenericSentenceTest(unittest.TestCase):
 
     def empty_inputs(self):
         tracker = Events().add("result", action="youtrack-create", key="k", ok=False, permanent=True, error="")
+        care = Events().add("card.stalled").add("caretaker.started", problem="stalled:card", step="care", n=1)
+        care.add("caretaker.escalated", problem="stalled:card", step="care")
         return {
+            "caretaker": care,
             "question": Events().step("s", ticket="", result="question", question=""),
             "permission": Events().step("s", ticket="", kind="", result="denied", command=""),
             "error": Events().step("s0", ticket="", kind="", result="error", reason="")
@@ -405,12 +408,15 @@ class GenericSentenceTest(unittest.TestCase):
 
     def test_every_kind_with_empty_input_gets_its_generic_sentences(self):
         inputs = self.empty_inputs()
-        self.assertEqual(set(inputs), set(KINDS), "tabela obejmuje każdy rodzaj decyzji")
+        # `plan-fix-failed` (PT-146) wymaga dziennika opiekuna; jego zdania ogólne sprawdza test_cardflow_caretaker_plan.
+        self.assertEqual(set(inputs), set(KINDS) - {"plan-fix-failed"}, "tabela obejmuje każdy rodzaj decyzji")
         for kind, events in inputs.items():
             with self.subTest(kind=kind):
                 [decision] = events.decisions()
                 self.assertEqual(decision["kind"], kind)
-                self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                if kind != "caretaker":
+                    self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                self.assertTrue(decision["happened"] and decision["why"])
                 self.assertTrue(all(GENERIC[kind]))
 
 

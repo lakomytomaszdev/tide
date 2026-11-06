@@ -3,6 +3,7 @@
 Fixture'y w fixtures/step-logs/ to końcówki `out/step.log` kroku (Claude stream-json, Codex JSON) dla katalogu
 wyjściowego `/wt/K-33-plan-2.step/out` — jak w scenariuszu B makiety K-35 (review planu bez wyniku).
 """
+import json
 import os
 import unittest
 
@@ -73,7 +74,49 @@ class FaultFromStepLogTest(unittest.TestCase):
                          "stary dziennik bez pola fault")
 
 
+class MaskJsonTest(unittest.TestCase):
+    def test_masked_key_keeps_original_secret_field_semantics_in_nested_lists(self):
+        value = [{ENV["TIDE_SECRET_KEY"]: ["wartość ze spacjami", 123456789], "count": 7}]
+        self.assertEqual(faults.mask_json(value, env=ENV),
+                         [{faults.MASK: [faults.MASK, faults.MASK], "count": 7}])
+
+
 class SignatureAndExcerptTest(unittest.TestCase):
+    def test_incomplete_json_is_omitted_and_complete_event_without_newline_is_kept(self):
+        secret = "correct horse battery staple"
+        event = json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": f'password: "{secret}"'}]}})
+        text = faults.excerpt(["  " + event[:-1], "[stderr] diagnoza", event], env={})
+        for part in secret.split():
+            self.assertNotIn(part, text)
+        self.assertIn("pominięto", text)
+        self.assertIn("[stderr] diagnoza", text)
+        self.assertIn("[assistant] password: " + faults.MASK, text)
+
+    def test_tool_inputs_mask_decoded_values_before_json_and_shortening(self):
+        secret = "correct horse battery staple"
+        inputs = [
+            {"payload": f'password: "{secret}"', "status": "readable"},
+            {"payload": [{"text": f"password: '{secret}'"}], "status": "readable"},
+            {"password": secret, "status": "readable"},
+            {"payload": {"secret": [secret, 123456789]}, "status": "readable"},
+        ]
+        for tool_input in inputs:
+            events = [
+                {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "mcp__demo", "input": tool_input}]}},
+                {"type": "result", "permission_denials": [
+                    {"tool_name": "mcp__demo", "tool_input": tool_input}]},
+            ]
+            for event in events:
+                with self.subTest(tool_input=tool_input, event=event["type"]):
+                    text = faults.excerpt([json.dumps(event)], env={})
+                    for part in (*secret.split(), "123456789"):
+                        self.assertNotIn(part, text)
+                    self.assertIn(faults.MASK, text)
+                    self.assertIn("mcp__demo", text)
+                    self.assertIn("readable", text)
+
     def test_signature_is_kind_fault_and_cause(self):
         self.assertEqual(faults.signature("plan-review", "tide", "write-denied"), "plan-review/tide/write-denied")
         self.assertEqual(faults.signature("", "unknown", "Konflikt: nierozwiązany!"),

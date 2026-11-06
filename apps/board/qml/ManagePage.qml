@@ -24,6 +24,15 @@ Rectangle {
     property bool flowSettingsDirty: false
     property bool flowSettingsBusy: false
     property string flowSettingsError: ""
+    // Opiekun karty (PT-151): wyłącznik, wykonawca („” — domyślny), limit działań i minuty czekania; zapis jednym
+    // SetCardFlowSettings z czterema kluczami, walidacja zakresów w usłudze (tu tylko granice pól).
+    property bool caretakerEnabled: true
+    property string caretakerExecutor: ""
+    property int caretakerActionLimit: 3
+    property int caretakerDecisionMinutes: 10
+    property bool caretakerDirty: false
+    property bool caretakerBusy: false
+    property string caretakerError: ""
     property string openProject: ""     // slug projektu z otwartym formularzem
     property string openTag: ""         // nazwa tagu z otwartym formularzem ("+" — nowy)
     property string projectError: ""
@@ -53,8 +62,33 @@ Rectangle {
         flowSettingsDirty = false
     }
 
-    onFlowSettingsChanged: if (!flowSettingsDirty && !flowSettingsBusy) loadFlowSettings()
-    onVisibleChanged: if (visible) { flowSettingsDirty = false; loadFlowSettings() }
+    function loadCaretakerSettings() {
+        const value = flowSettings || {}
+        caretakerEnabled = value.caretakerEnabled !== false
+        caretakerExecutor = typeof value.caretakerExecutor === "string" ? value.caretakerExecutor : ""
+        caretakerActionLimit = Number.isInteger(value.caretakerActionLimit) ? value.caretakerActionLimit : 3
+        caretakerDecisionMinutes = Number.isInteger(value.caretakerDecisionMinutes) ? value.caretakerDecisionMinutes : 10
+        caretakerDirty = false
+    }
+
+    function saveCaretakerSettings() {
+        caretakerBusy = true
+        caretakerError = ""
+        flowSettingsSaveRequested(nextTag("caretaker-settings"),
+            { caretakerEnabled: caretakerEnabled, caretakerExecutor: caretakerExecutor,
+              caretakerActionLimit: caretakerActionLimit, caretakerDecisionMinutes: caretakerDecisionMinutes })
+    }
+
+    onFlowSettingsChanged: {
+        if (!flowSettingsDirty && !flowSettingsBusy) loadFlowSettings()
+        if (!caretakerDirty && !caretakerBusy) loadCaretakerSettings()
+    }
+    onVisibleChanged: if (visible) {
+        flowSettingsDirty = false
+        loadFlowSettings()
+        caretakerDirty = false
+        loadCaretakerSettings()
+    }
 
     function nextTag(prefix) {
         serial++
@@ -123,6 +157,10 @@ Rectangle {
             flowSettingsBusy = false
             flowSettingsError = error
             if (!error) flowSettingsDirty = false
+        } else if (tag.indexOf("caretaker-settings:") === 0) {
+            caretakerBusy = false
+            caretakerError = error
+            if (!error) caretakerDirty = false
         } else if (tag.indexOf("yt-resolve:") === 0) {
             youtrackError = error
         }
@@ -279,6 +317,127 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: page.flowSettingsError !== ""
                         text: page.flowSettingsError
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+
+                    SectionTitle { text: "PRZEPŁYW KARTY · OPIEKUN" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Opiekun karty sprawdza problem karty, zanim Tide zapyta Ciebie. Karta „Tylko lokalnie” zawsze dostaje wykonawcę lokalnego."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Toggle {
+                            objectName: "caretakerEnabled"
+                            checked: page.caretakerEnabled
+                            accessibleName: "Opiekun karty"
+                            onToggled: value => {
+                                page.caretakerEnabled = value
+                                page.caretakerDirty = true
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Opiekun karty"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 13
+                        }
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: 8
+                        rowSpacing: 6
+                        Text {
+                            text: "Wykonawca"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        QQC2.ComboBox {
+                            // Kółko myszy przewija panel, nie zmienia wyboru (03.11: przypadkowa zmiana wykonawcy).
+                            wheelEnabled: false
+                            objectName: "caretakerExecutor"
+                            Layout.fillWidth: true
+                            model: Logic.caretakerExecutorOptions(page.modelsStatus, page.caretakerExecutor)
+                            textRole: "label"
+                            valueRole: "value"
+                            currentIndex: Math.max(0, model.findIndex(option => option.value === page.caretakerExecutor))
+                            onActivated: index => {
+                                page.caretakerExecutor = model[index].value
+                                page.caretakerDirty = true
+                            }
+                            Accessible.name: "Wykonawca opiekuna karty"
+                        }
+                        Text {
+                            text: "Limit działań"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        QQC2.SpinBox {
+                            objectName: "caretakerActionLimit"
+                            wheelEnabled: false
+                            editable: true
+                            from: 1
+                            to: 10
+                            value: page.caretakerActionLimit
+                            onValueModified: {
+                                page.caretakerActionLimit = value
+                                page.caretakerDirty = true
+                            }
+                            Accessible.name: "Limit działań opiekuna na problem"
+                        }
+                        Text {
+                            text: "Minuty czekania"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                        }
+                        QQC2.SpinBox {
+                            objectName: "caretakerDecisionMinutes"
+                            wheelEnabled: false
+                            editable: true
+                            from: 1
+                            to: 1440
+                            value: page.caretakerDecisionMinutes
+                            onValueModified: {
+                                page.caretakerDecisionMinutes = value
+                                page.caretakerDirty = true
+                            }
+                            Accessible.name: "Minuty czekania decyzji na opiekuna"
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Item { Layout.fillWidth: true }
+                        PillButton {
+                            objectName: "caretakerSave"
+                            text: "Zapisz"
+                            enabled: page.caretakerDirty && !page.caretakerBusy
+                            onClicked: page.saveCaretakerSettings()
+                        }
+                    }
+                    Text {
+                        objectName: "caretakerError"
+                        Layout.fillWidth: true
+                        visible: page.caretakerError !== ""
+                        text: page.caretakerError
                         textFormat: Text.PlainText
                         color: Tide.Tokens.rose
                         font.family: Tide.Theme.uiFamily

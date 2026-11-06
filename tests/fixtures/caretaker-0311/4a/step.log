@@ -1,0 +1,4 @@
+Krok: K-33-PT-7-2
+{"type":"result","is_error":false,"permission_denials":[{"tool_name":"Write","tool_input":{"file_path":"/workspace/proj-worktrees/pt-7-2.step/out/result.json"}}]}
+GITHUB_TOKEN=•••
+TIDE_FAKE_SECRET_TOKEN=•••
