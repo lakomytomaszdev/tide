@@ -46,6 +46,10 @@ class Response(C.Structure):
                 ("error", C.c_int), ("flags", C.c_uint)]
 
 
+class OpenHow(C.Structure):
+    _fields_ = [("flags", C.c_ulonglong), ("mode", C.c_ulonglong), ("resolve", C.c_ulonglong)]
+
+
 # nr -> (nazwa, indeks ścieżki, indeks dirfd lub None). Drugi cel rename/link
 # sprawdzamy osobno, bo chronimy obie strony operacji.
 PATHS = {
@@ -146,8 +150,18 @@ def _targets(notification):
     if nr == 280 and not args[1]:  # futimens: utimensat(fd, NULL, times, 0)
         return name, [_fd_path(pid, args[0])]
     if nr in (2, 257, 437):
-        flags = (args[1] if nr == 2 else args[2] if nr == 257 else
-                 int.from_bytes(_memory(pid, args[2], 8), sys.byteorder))
+        if nr == 437:
+            if args[3] < C.sizeof(OpenHow):
+                raise ValueError("openat2: niepełne open_how")
+            how = OpenHow.from_buffer_copy(_memory(pid, args[2], C.sizeof(OpenHow)))
+            flags = how.flags
+            if flags & MUTATING_OPEN and how.resolve & 0x10:  # RESOLVE_IN_ROOT
+                # Jądro zakotwicza także /, .. i absolutne dowiązania w dirfd.
+                # Zwykłe realpath nie odwzoruje tego trybu. Odmowa trafia do
+                # trwałego rejestru naruszeń, również gdy cel był poza ochroną.
+                raise PermissionError(errno.EPERM, "openat2: zapis z RESOLVE_IN_ROOT nie jest obsługiwany")
+        else:
+            flags = args[1] if nr == 2 else args[2]
         if not flags & MUTATING_OPEN:
             return name, []
     result = [_path(pid, args[index], args[directory] if directory is not None else None)]

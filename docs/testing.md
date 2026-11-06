@@ -101,6 +101,10 @@ Rozróżniamy mutację celu dowiązania od zmiany samego wpisu: unlink/rename ze
 dowiązania jest legalne, jeśli jego wpis i katalog nadrzędny leżą poza ochroną; operacja na pliku
 wewnątrz dowiązanego katalogu nadal jest blokowana. Obsługujemy także `utimensat(fd, NULL, …)`
 (futimens używany przez tar): oceniany jest plik deskryptora, nie adres NULL.
+Mutujące `openat2` z `RESOLVE_IN_ROOT` jest zawsze odrzucane przez `EPERM` i powoduje
+kod 125 scenariusza, także dla celu poza chronionymi korzeniami. Ten tryb zmienia znaczenie
+`/`, `..` i absolutnych dowiązań względem `dirfd`; strażnik nie próbuje zastępować jego
+semantyki zwykłym `realpath`. Odczyt przez ten tryb pozostaje dozwolony.
 Nie polegamy na monkeypatchu `open`, argv potomka ani obserwowaniu zmian po fakcie.
 Nadzorca nie podlega filtrowi i zachowuje informację o naruszeniu do końca całego drzewa.
 Każda odmowa wypisuje na jego stderr `TIDE TEST GUARD:` i JSON z `scenario` (PID testu),

@@ -80,6 +80,40 @@ class StateGuardTest(unittest.TestCase):
                 with self.subTest(root=root, action=action):
                     self.probe("shell-" + action, root / ("missing" if action == "create" else "existing"))
 
+    def check_openat2_in_root(self, entry):
+        for root in [*self.roots, self.alias]:
+            for action, name in (("create", "missing"), ("overwrite", "existing")):
+                for path in ("/" + name, "../../" + name):
+                    with self.subTest(entry=entry, root=root, action=action, path=path):
+                        self.env["TIDE_GUARD_PROBE_OPENAT2_PATH"] = path
+                        result, records = self.probe("openat2-" + action, root / name, entry=entry)
+                        self.assertIn("OPENAT2 RESULT: -1 errno=1", result.stdout)
+                        self.assertTrue(any("RESOLVE_IN_ROOT" in record.get("error", "")
+                                            for record in records), records)
+
+    def test_openat2_in_root_cannot_mutate_state_despite_ignored_denial(self):
+        self.check_openat2_in_root("unittest")
+
+    @unittest.skipUnless(importlib.util.find_spec("pytest"), "pytest niedostępny")
+    def test_pytest_openat2_in_root_cannot_mutate_state_despite_ignored_denial(self):
+        self.check_openat2_in_root("pytest")
+
+    def test_openat2_in_root_read_remains_allowed(self):
+        before = self.snapshot()
+        env = dict(self.probe_env("openat2-read"), TIDE_GUARD_PROBE_OPENAT2_PATH="/existing")
+        result = subprocess.run(self.command("unittest"), cwd=runner.ROOT, env=env,
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("INNER GREEN", result.stdout)
+        self.assertNotIn("TIDE TEST GUARD:", result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_openat2_without_resolve_still_checks_protected_target(self):
+        self.env["TIDE_GUARD_PROBE_OPENAT2_PATH"] = str(self.alias / "missing")
+        result, records = self.probe("openat2-plain-create", self.alias / "missing")
+        self.assertIn("OPENAT2 RESULT: -1 errno=1", result.stdout)
+        self.assertTrue(any(record.get("operation") == "openat2" for record in records), records)
+
     def test_service_and_grandchild_default_journal_cannot_turn_violation_green(self):
         for action in ("service", "grandchild", "cleanenv"):
             with self.subTest(action=action):

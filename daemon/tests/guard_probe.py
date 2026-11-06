@@ -3,6 +3,7 @@
 Nazwa bez test* wyklucza automatyczne discover. Cele pochodzą z syntetycznego
 HOME/XDG testu kontrolnego, nigdy z katalogów bieżącego użytkownika.
 """
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,34 @@ done.write_text("done")
                 while not done.exists() and time.monotonic() < deadline:
                     time.sleep(.01)
                 self.assertTrue(done.exists(), "osierocony proces stracił ochronę lub prawo legalnego zapisu")
+        elif action.startswith("openat2-"):
+            class How(ctypes.Structure):
+                _fields_ = [("flags", ctypes.c_ulonglong), ("mode", ctypes.c_ulonglong),
+                            ("resolve", ctypes.c_ulonglong)]
+
+            flags = (os.O_RDONLY if action == "openat2-read" else
+                     os.O_WRONLY | (os.O_CREAT if action.endswith("create") else os.O_TRUNC))
+            resolve = 0 if action.startswith("openat2-plain-") else 0x10  # RESOLVE_IN_ROOT
+            how = How(flags, 0o600 if flags & os.O_CREAT else 0, resolve)
+            directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                libc = ctypes.CDLL(None, use_errno=True)
+                path = os.fsencode(os.environ["TIDE_GUARD_PROBE_OPENAT2_PATH"])
+                ctypes.set_errno(0)
+                fd = libc.syscall(437, directory, path, ctypes.byref(how), ctypes.sizeof(how))
+                error = ctypes.get_errno()
+                # Celowo ignorujemy odmowę; samo open z CREAT/TRUNC już mutuje cel.
+                if fd >= 0:
+                    try:
+                        if action == "openat2-read":
+                            self.assertEqual(os.read(fd, 100), b"synthetic original")
+                    finally:
+                        os.close(fd)
+                elif action == "openat2-read":
+                    self.fail(f"legalny odczyt openat2 nie powiódł się: {error}")
+                print(f"OPENAT2 RESULT: {fd} errno={error}", flush=True)
+            finally:
+                os.close(directory)
         elif action == "futimens":
             with other.open("r+b") as stream:
                 os.utime(stream.fileno(), ns=(123000000000, 123000000000))
