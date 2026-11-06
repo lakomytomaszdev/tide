@@ -50,7 +50,7 @@ def source_archive(slug, worktree):
 
 
 @contextmanager
-def in_box(incus, box, source, env):
+def in_box(incus, box, source, env, *, agent_uid, agent_gid):
     if source is None:
         yield {}
         return
@@ -68,9 +68,9 @@ def in_box(incus, box, source, env):
         incus.file_push(source.archive, box, root + "/source.tar")
         require(["chmod", "0755", root])
         require(["chmod", "0644", root + "/source.tar"])
-        require(["install", "-d", "-o", "1000", "-g", "1000", work])
+        require(["install", "-d", "-o", str(agent_uid), "-g", str(agent_gid), work])
         require(["tar", "-xf", root + "/source.tar", "--no-same-owner", "--no-same-permissions", "-C", work],
-                user=1000)
-        yield {"user": 1000, "cwd": work}
+                user=agent_uid, group=agent_gid)
+        yield {"user": agent_uid, "group": agent_gid, "cwd": work}
     finally:
         require(["rm", "-rf", "--", root])

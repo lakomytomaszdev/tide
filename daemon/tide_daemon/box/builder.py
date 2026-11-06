@@ -276,7 +276,8 @@ class Builder:
         if full["verify"]:
             steps.append("verify")
             v_start = self.clock()
-            with bverify.in_box(self.incus, name, source, env) as context:
+            with bverify.in_box(self.incus, name, source, env,
+                                agent_uid=self.settings.agent_uid, agent_gid=self.settings.agent_gid) as context:
                 verify_env = {**env, "HOME": "/home/agent"} if source else env
                 for command in full["verify"]:
                     if self.incus.exec(name, ["bash", "-c", command], verify_env, **context) != 0:
