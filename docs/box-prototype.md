@@ -445,3 +445,11 @@ Moduł statusline korzysta z istniejącego trybu szeregowego po wszystkich równ
 próg 150 ms i liczba pomiarów pozostają bez zmian. Lokalnie 14 testów statusline i harmonogramu runnera
 przechodzi. Kolejne outside dotyczy wyłącznie `make test`; próby na wspólnym `.git` pozostają zablokowane
 po incydencie strażnika, a pierwszy rzeczywisty krok agenta nadal wymaga zatwierdzonej karty testowej.
+
+Drugie niezależne `make test`: 4172 testy, 230 modułów, 4 pominięte, 494,59 s; review i statusline
+po poprawkach przeszły. [Pełny log](box-prototype/pt191-make-test-resume-10.log) zawiera jeden błąd
+testu odwracania animacji tła blokady: stały timer odczytał już zakończone przenikanie.
+Kontrolowane opóźnienie próbkowania o 400 ms odtworzyło dokładnie błąd `1 not less than 1`.
+Harness odwraca teraz animację na sygnale zmiany krycia, przy wartości między 0,25 a 0,75,
+z zachowaniem asercji ciągłości. Kod produkcyjny animacji pozostaje bez zmian. 18 testów modułu
+przechodzi lokalnie; pełne testy po poprawce wymagają outside. Stan dowodów Incusa nie zmienił się.
