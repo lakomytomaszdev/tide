@@ -647,7 +647,8 @@ class BoxRunner:
                 f"--setenv=TIDE_STEP={bg.step_dir}", "--",
                 *self.tide_step, *bg.argv]
 
-    def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None
+    def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None,
+              pass_fds: tuple[int, ...] = ()
               ) -> Started:
         bg = self._background(step)
         self.ensure_devices(step)
@@ -676,7 +677,7 @@ class BoxRunner:
             self._risk_logged = True
         with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
             proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                               env=self._client_env(), start_new_session=True)
+                               env=self._client_env(), start_new_session=True, pass_fds=pass_fds)
         return Started(bg, proc)
 
     def _client_env(self) -> dict:
@@ -815,11 +816,11 @@ def _demo_run(runner, pool, step, profile, command, marker) -> int:
     # Kolejne demo odzyska rezerwacje po przerwaniu lub śmierci klienta. Nieaktywny
     # systemd jest dowodem końca dopiero, gdy proces startujący nie trzyma już blokady.
     pool.recover_demos(lambda unit: runner.unit_state(runner.box, unit))
-    with pool.demo_guard(step.step_id):
-        return _demo_guarded(runner, pool, step, profile, command, marker)
+    with pool.demo_guard(step.step_id) as guard:
+        return _demo_guarded(runner, pool, step, profile, command, marker, guard)
 
 
-def _demo_guarded(runner, pool, step, profile, command, marker) -> int:
+def _demo_guarded(runner, pool, step, profile, command, marker, guard) -> int:
     from .ports import PoolExhausted
     step_id, step_dir = step.step_id, step.step_dir
     try:
@@ -833,7 +834,7 @@ def _demo_guarded(runner, pool, step, profile, command, marker) -> int:
         bg.argv = list(command)
 
     try:
-        bg, proc = runner.start(step, before_start=use_command)
+        bg, proc = runner.start(step, before_start=use_command, pass_fds=(guard.fileno(),))
     except BaseException:
         if port_env:
             pool.release(step_id)
@@ -847,7 +848,7 @@ def _demo_guarded(runner, pool, step, profile, command, marker) -> int:
         raise
     finally:
         if port_env:
-            if runner.unit_state(runner.box, runner.unit_for(bg)) == "inactive":
+            if proc.poll() is not None and runner.unit_state(runner.box, runner.unit_for(bg)) == "inactive":
                 pool.release(step_id)
             else:
                 print(f"porty {step_id} pozostają zarezerwowane; kolejne demo ponowi sprawdzenie jednostki",

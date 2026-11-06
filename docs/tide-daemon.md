@@ -2535,12 +2535,13 @@ również zakończone kroki, nieudane zamiary startu i rezerwacje sprzed zamiaru
 Błąd utrwalenia udanego startu pozostawia rezerwację przy otwartym zamiarze; odzyskiwanie
 odnajduje jednostkę i zachowuje jej porty do końca kroku.
 Tryb `BoxRunner --demo` korzysta z tej samej puli zatwierdzonego profilu. Zwalnia przydział dopiero
-po potwierdzeniu `inactive` jednostki w pudełku. Przerwanie oczekiwania wywołuje zatrzymanie jednostki;
+po końcu klienta i potwierdzeniu `inactive` jednostki w pudełku. Przerwanie oczekiwania wywołuje zatrzymanie jednostki;
 stan aktywny lub nieznany pozostawia trwałą rezerwację. Kolejne demo sprawdza osierocone przydziały
 tego pudełka i zwalnia wyłącznie te z potwierdzonym końcem jednostki. Identyfikator właściciela
-`demo-<czas>-<losowy sufiks>` określa nazwę jednostki; osobna blokada procesu demo chroni również
-okno między przydzieleniem portów a utworzeniem jednostki. Śmierć procesu zwalnia blokadę systemową,
-ale zachowuje rezerwację do bezpiecznego odzyskania.
+`demo-<czas>-<losowy sufiks>` określa nazwę jednostki; osobna blokada demo jest dziedziczona
+przez klienta Incusa (`pass_fds`) i chroni również okno przed utworzeniem jednostki. Śmierć rodzica
+lub zamknięcie jego deskryptora nie zwalnia blokady żywego klienta. Dopiero zamknięcie ostatniej
+kopii deskryptora pozwala kolejnemu demo sprawdzić jednostkę i bezpiecznie odzyskać rezerwację.
 
 **Ryzyko K1.** Grupa `docker` daje użytkownikowi `agent` prawa roota pudełka, w tym możliwość
 zamontowania rootfs. Wewnętrzne `denyRead` nie chroni poświadczeń agenta przed kodem testów.

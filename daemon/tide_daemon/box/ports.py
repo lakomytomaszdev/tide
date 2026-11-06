@@ -79,10 +79,12 @@ class PortPool:
 
     @contextlib.contextmanager
     def demo_guard(self, owner: str, *, blocking: bool = True):
-        """Blokada życia klienta demo, także przed utworzeniem jednostki; znika po śmierci procesu.
+        """Blokada życia demo i klienta, także przed utworzeniem jednostki.
 
         Plik zostaje na dysku, żeby konkurujące procesy zawsze blokowały ten sam inode.
         Trwały właściciel przydziału określa jednostkę bez dodatkowego pliku metadanych.
+        Zwrócony plik można przekazać klientowi przez Popen(pass_fds=…). Zamknięcie
+        rodzica nie odblokowuje wtedy klienta: blokada znika po zamknięciu ostatniej kopii.
         """
         if not DEMO_OWNER.fullmatch(owner):
             raise ValueError("niepoprawny identyfikator demo")
@@ -94,10 +96,9 @@ class PortPool:
             except BlockingIOError:
                 yield False
                 return
-            try:
-                yield True
-            finally:
-                fcntl.flock(guard, fcntl.LOCK_UN)
+            # Bez LOCK_UN: deskryptor odziedziczony przez klienta wskazuje tę samą
+            # blokadę, więc jawne odblokowanie zwolniłoby ją także żywemu klientowi.
+            yield guard
 
     def recover_demos(self, unit_state) -> None:
         """Odzyskuje osierocone demo tylko po potwierdzonym końcu jednostki w tym pudełku."""
