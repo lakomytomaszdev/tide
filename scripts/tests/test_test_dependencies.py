@@ -11,7 +11,7 @@ from unittest.mock import patch
 from tools import test_runner as runner
 from tools import test_changed_benchmark as benchmark
 from tools.test_dependencies import ImportGraph
-from tools.test_suites import SERVICE_CONTRACT_MODULES, SUITES
+from tools.test_suites import FILE_TEST_MODULES, SERVICE_CONTRACT_MODULES, SUITES
 
 
 class DependencySelectionTest(unittest.TestCase):
@@ -180,7 +180,8 @@ class DependencySelectionTest(unittest.TestCase):
 
     def test_documentation_only_in_root_docs_and_component_selects_zero_without_ast(self):
         # Także usunięty dokument: nie wymaga odczytu ani nie ma wpływu na kod.
-        paths = ("README.md", "docs/testing.md", "daemon/tide_daemon/cardflow/README.md")
+        paths = ("README.md", "docs/testing.md", "docs/guide.rst", "docs/images/flow.svg",
+                 "daemon/tide_daemon/cardflow/README.md")
         with patch.object(runner, "ImportGraph", side_effect=AssertionError("niepotrzebna analiza")):
             for path in paths:
                 with self.subTest(path=path):
@@ -197,6 +198,7 @@ class DependencySelectionTest(unittest.TestCase):
         self.assertEqual(self.select("README.md", "docs/testing.md", source), expected)
         for path in ("tools/README.md", "mk/README.md", "Makefile",
                      "daemon/tests/fixtures/instructions.md", "daemon/tests/README.md",
+                     "docs/fixtures/input.md",
                      "docs/example.py", "docs/settings.json", "unknown.py"):
             with self.subTest(path=path):
                 self.assertTrue(self.select("docs/testing.md", path).full)
@@ -231,8 +233,41 @@ class DependencySelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "kontraktowego"):
                 self.select(source)
 
+    def test_explicit_tool_contract_is_not_silently_lost_if_a_test_is_missing(self):
+        tool = self.write("tools/known.py")
+        with patch.dict(runner.FILE_TEST_MODULES, {tool: ("daemon/tests/missing.py",)}):
+            with self.assertRaisesRegex(ValueError, "jawnie przypisanego"):
+                self.select(tool)
+
 
 class RepositorySelectionTest(unittest.TestCase):
+    def test_component_and_known_tool_changes_select_only_their_registered_tests(self):
+        entries = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
+        all_modules = runner.modules_for(entries)
+        cases = [("widgets/build_orders.py", runner.modules_for(SUITES["widgets"])),
+                 ("apps/board/qml/BoardPage.qml", runner.modules_for(SUITES["board"])),
+                 ("scripts/appearance.py", runner.modules_for(SUITES["scripts"])),
+                 ("theme/palette/compare.py", runner.modules_for(SUITES["palette"]))]
+        cases += [(path, list(modules)) for path, modules in FILE_TEST_MODULES.items()]
+        for path, expected in cases:
+            with self.subTest(path=path):
+                self.assertTrue((runner.ROOT / path).is_file())
+                selected = runner.changed_modules([path], entries)
+                self.assertFalse(selected.full)
+                self.assertEqual(selected.modules, sorted(expected))
+                self.assertLess(len(selected.modules), len(all_modules))
+                print(f"[PT-258] {path}: {len(selected.modules)}/{len(all_modules)} modułów")
+
+    def test_infrastructure_and_unknown_tools_still_select_full_suite(self):
+        entries = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
+        whole = runner.modules_for(entries)
+        for path in ("tools/test_runner.py", "tools/test_suites.py", "tools/test_dependencies.py",
+                     "tools/test_changed_benchmark.py", "tools/unknown.py", "mk/tests.mk", "Makefile"):
+            with self.subTest(path=path):
+                selected = runner.changed_modules([path], entries)
+                self.assertTrue(selected.full)
+                self.assertEqual(selected.modules, whole)
+
     def test_cardflow_selection_preserves_known_consumers_and_contract(self):
         entries = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
         whole = runner.modules_for(SUITES["cardflow"])
@@ -251,10 +286,10 @@ class RepositorySelectionTest(unittest.TestCase):
 
 
 class SelectionBenchmarkTest(unittest.TestCase):
-    def test_public_verification_and_five_commits_share_identical_real_measurements_on_resume(self):
+    def test_five_commits_then_public_verification_and_resume_reuses_measurements(self):
         self.check_verification(0)
 
-    def test_failed_verification_keeps_failed_status_but_still_produces_five_commit_report(self):
+    def test_failed_verification_keeps_failed_status_and_five_commit_report(self):
         self.check_verification(1)
 
     def check_verification(self, returncode):
@@ -264,6 +299,8 @@ class SelectionBenchmarkTest(unittest.TestCase):
             results = [dict(module=m, tests=1, returncode=0, seconds=1) for m in modules]
 
             def verification(command, **kwargs):
+                recorded = json.loads((output / "comparison.json").read_text())
+                self.assertEqual(len(recorded["commits"]), 5, "benchmark przed walidacją")
                 parent = Path(kwargs["env"]["TEST_OUTPUT"]) / "run-1"
                 parent.mkdir()
                 (parent / "summary.json").write_text(json.dumps({"seconds": 12, "results": results}))
@@ -272,8 +309,11 @@ class SelectionBenchmarkTest(unittest.TestCase):
 
             def git(*args):
                 if args[0] == "rev-parse":
+                    if args[-1] == "history-source^{commit}":
+                        return "history-sha\n"
                     return "tested-tree\n" if args[1] == "HEAD^{tree}" else "tested-head\n"
                 if args[0] == "log":
+                    self.assertEqual(args[-1], "history-sha", "historia niezależna od bazy walidacji")
                     return "\n".join(f"commit{i}" for i in range(5))
                 if args[0] == "show":
                     return "fix: sample\n"
@@ -285,13 +325,15 @@ class SelectionBenchmarkTest(unittest.TestCase):
                     patch.object(benchmark, "legacy_modules", return_value=modules), \
                     patch.object(benchmark.runner, "changed_modules", return_value=runner.Selection({modules[0]: ["AST"]})), \
                     patch.object(benchmark.subprocess, "run", side_effect=verification) as public, \
-                    patch.object(benchmark.runner, "execute", return_value=results[:1]) as execute, \
-                    patch("sys.argv", ["benchmark", "--base", "pinned-base", "--jobs", "2", "--output", temp]), \
+                    patch.object(benchmark.runner, "execute",
+                                 side_effect=lambda selected, *a: [r for r in results if r["module"] in selected]) as execute, \
+                    patch("sys.argv", ["benchmark", "--base", "pinned-base", "--history-ref", "history-source",
+                                       "--jobs", "2", "--output", temp]), \
                     redirect_stdout(io.StringIO()):
                 self.assertEqual(benchmark.main(), returncode)
                 self.assertEqual(benchmark.main(), returncode)
             self.assertEqual(public.call_count, 1)
-            self.assertEqual(execute.call_count, 1)
+            self.assertEqual(execute.call_count, 2)
             data = json.loads((output / "comparison.json").read_text())
             self.assertEqual(len(data["commits"]), 5)
             self.assertEqual(len(data["measurements"]), 2)
@@ -299,8 +341,10 @@ class SelectionBenchmarkTest(unittest.TestCase):
             self.assertEqual(data["head"], "tested-head")
             self.assertEqual(data["tree"], "tested-tree")
             self.assertEqual(data["base"], "pinned-base")
+            self.assertEqual(data["history_commit"], "history-sha")
             self.assertIn("--base pinned-base", data["command"])
             for row in data["commits"]:
-                self.assertEqual(data["measurements"][row["before"]]["seconds"], 12)
+                self.assertEqual(data["measurements"][row["before"]]["results"], results)
+                self.assertGreaterEqual(data["measurements"][row["before"]]["seconds"], 0)
                 self.assertEqual(len(data["measurements"][row["after"]]["modules"]), 1)
             self.assertIn("| commit4 | 2 | 1 |", (output / "report.md").read_text())

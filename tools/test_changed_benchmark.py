@@ -1,7 +1,7 @@
 """Porównanie selektorów dla ostatnich commitów, na jednym niezmienianym drzewie kodu.
 
-Najpierw wykonuje wymagane make test-changed względem przypiętej bazy. Każdy
-unikalny zestaw modułów mierzy raz; identyczne zestawy współdzielą ten sam pomiar.
+Porównuje historię zmian, potem wykonuje wymagane make test-changed względem
+przypiętej bazy. Identyczne zestawy benchmarku współdzielą jeden pomiar.
 Pełne testy uruchamiają własne piaskownice, więc procedura wymaga środowiska hosta.
 """
 import argparse
@@ -47,6 +47,7 @@ def legacy_modules(paths, entries):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
+    parser.add_argument("--history-ref", help="punkt historii do porównania (domyślnie --base); nie zmienia bazy testów")
     parser.add_argument("--count", type=int, default=5)
     parser.add_argument("--jobs", type=int, default=runner.default_jobs())
     parser.add_argument("--output", type=Path, default=runner.ROOT / "build/test-changed-benchmark")
@@ -56,18 +57,23 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     output = args.output.resolve()
     fingerprint = snapshot(args.base)
+    history_ref = args.history_ref or args.base
+    history_commit = git("rev-parse", "--verify", history_ref + "^{commit}").strip()
     entries = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
-    full_modules = runner.modules_for(entries)
     report_file = output / "comparison.json"
     report = {"started": datetime.now().astimezone().isoformat(), "snapshot": fingerprint,
               "head": git("rev-parse", "HEAD").strip(),
               "tree": git("rev-parse", "HEAD^{tree}").strip(),
               "command": " ".join([sys.executable, *sys.argv]),
+              "history_ref": history_ref, "history_commit": history_commit, "count": args.count,
               "base": args.base, "jobs": args.jobs, "commits": [], "measurements": {}}
     if report_file.exists():
         previous = json.loads(report_file.read_text())
         if previous["snapshot"] != fingerprint or previous["jobs"] != args.jobs:
             parser.error("Drzewo kodu lub JOBS zmienione: wskaż nowy katalog --output")
+        if (previous.get("history_commit", history_commit) != history_commit or
+                previous.get("count", args.count) != args.count or previous["base"] != args.base):
+            parser.error("Historia, baza lub liczba commitów zmienione: wskaż nowy katalog --output")
         report = {**report, **previous}
 
     def save():
@@ -94,33 +100,7 @@ def main():
         print(f"Pomiar {identifier}: {len(modules)} modułów, {data['seconds']:.2f} s", flush=True)
         return identifier
 
-    # Publiczne polecenie ticketu, wraz z logiem, wynikiem i możliwością wznowienia.
-    if "verification" not in report:
-        command = ["make", "test-changed", f"BASE={args.base}"]
-        parent = Path(tempfile.mkdtemp(prefix="verification-", dir=output))
-        log_path = parent / "make.log"
-        print("Sprawdzam: " + " ".join(command), flush=True)
-        with log_path.open("w", encoding="utf-8") as log:
-            proc = subprocess.run(command, cwd=runner.ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                  env={**os.environ, "TEST_OUTPUT": str(parent), "JOBS": str(args.jobs)})
-        report["verification"] = {"command": " ".join(command), "returncode": proc.returncode,
-                                  "log": str(log_path)}
-        summaries = list(parent.glob("run-*/summary.json"))
-        if len(summaries) == 1:
-            summary = json.loads(summaries[0].read_text())
-            report["verification"]["summary"] = str(summaries[0])
-            # Zmiany narzędzi wybierają pełny przebieg. Nie powtarzamy go w pomiarze.
-            if sorted(r["module"] for r in summary["results"]) == full_modules:
-                report["measurements"][key(full_modules)] = {
-                    "modules": full_modules, "seconds": summary["seconds"],
-                    "results": summary["results"], "origin": str(summaries[0]),
-                }
-        save()
-    if report["verification"]["returncode"]:
-        print(f"Nieudany test-changed: {report['verification']['log']}; "
-              "pomiar będzie kontynuowany, końcowy wynik pozostanie nieudany.", flush=True)
-
-    commits = git("log", "--no-merges", f"-{args.count}", "--format=%H", args.base).splitlines()
+    commits = git("log", "--no-merges", f"-{args.count}", "--format=%H", history_commit).splitlines()
     report["commits"] = []
     for commit in commits:
         paths = list(filter(None, git("diff", "--name-only", "--no-renames", "-z",
@@ -137,16 +117,34 @@ def main():
                "reasons": selection.reasons}
         report["commits"].append(row)
         save()
+
+    # Publiczna walidacja następuje po pomiarze; nie zastępujemy jej wynikiem benchmarku.
+    if "verification" not in report:
+        command = ["make", "test-changed", f"BASE={args.base}"]
+        parent = Path(tempfile.mkdtemp(prefix="verification-", dir=output))
+        log_path = parent / "make.log"
+        print("Sprawdzam: " + " ".join(command), flush=True)
+        with log_path.open("w", encoding="utf-8") as log:
+            proc = subprocess.run(command, cwd=runner.ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                  env={**os.environ, "TEST_OUTPUT": str(parent), "JOBS": str(args.jobs)})
+        report["verification"] = {"command": " ".join(command), "returncode": proc.returncode,
+                                  "log": str(log_path)}
+        summaries = list(parent.glob("run-*/summary.json"))
+        if len(summaries) == 1:
+            report["verification"]["summary"] = str(summaries[0])
+        save()
     text = ("# PT-258 — pomiar selektora zmian\n\n"
             f"Data: {report['started']}. JOBS={args.jobs}.\n\n"
             f"HEAD: `{report['head']}`. Drzewo HEAD: `{report['tree']}`.\n\n"
             f"Baza: `{report['base']}`. Odcisk drzewa roboczego: `{report['snapshot']}`.\n\n"
+            f"Historia do pomiaru: `{report['history_ref']}` → `{report['history_commit']}`.\n\n"
             f"Polecenie: `{report['command']}`.\n\n"
-            "Pięć ostatnich commitów bez merge względem przypiętej bazy (także poprawki z 06.11). "
+            f"Ostatnie {args.count} commitów bez merge ze wskazanego punktu historii. "
             "Diff każdego commita porównuje oba selektory na **tym samym bieżącym kodzie**; "
             "nie jest to pomiar historycznych wersji usługi. Czas to rzeczywisty przebieg wybranych "
             "modułów, z oczekiwaniem na wspólną pulę i serializacją; analiza AST ma osobny licznik "
-            "w JSON. Identyczne zestawy współdzielą jeden pomiar, także pełne test-changed.\n\n"
+            "w JSON. Identyczne zestawy benchmarku współdzielą jeden pomiar. "
+            "Potem niezależnie wykonywane jest publiczne test-changed z przypiętą bazą ticketu.\n\n"
             "| Commit | Moduły przed | Moduły po | Czas przed | Czas po |\n"
             "| --- | ---: | ---: | ---: | ---: |\n")
     for row in report["commits"]:

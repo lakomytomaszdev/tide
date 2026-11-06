@@ -15,11 +15,11 @@ import unittest
 from dataclasses import dataclass
 
 if __package__:
-    from .test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
+    from .test_suites import (CHANGE_MAP, FILE_TEST_MODULES, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
                              SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
     from .test_dependencies import ImportGraph, is_test_support
 else:
-    from test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
+    from test_suites import (CHANGE_MAP, FILE_TEST_MODULES, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
     from test_dependencies import ImportGraph, is_test_support
 
@@ -161,12 +161,15 @@ def changed_modules(paths, entries, root=ROOT):
     # Dokumentacja w komponencie też nie zmienia kodu. Wyjątek nie obejmuje
     # infrastruktury uruchamiacza ani danych testów, nawet gdy mają rozszerzenie .md.
     def documentation(path):
-        return (path.endswith(".md") and not path.startswith(("tools/", "mk/")) and
+        document = path.endswith(".md") or (path.startswith("docs/") and Path(path).suffix in
+                   {".rst", ".txt", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"})
+        return (document and "fixtures" not in Path(path).parts and
+                not path.startswith(("tools/", "mk/")) and
                 not is_test_support(path, test_dirs, SHARED_TEST_MODULES))
 
     paths = sorted({path for path in paths if not documentation(path)})
     for path in paths:
-        if changed_suites([path]) is None:
+        if path not in FILE_TEST_MODULES and changed_suites([path]) is None:
             return full(path, "ścieżka poza mapą")
         if is_test_support(path, test_dirs, SHARED_TEST_MODULES):
             return full(path, "wspólna infrastruktura lub dane testów")
@@ -195,6 +198,11 @@ def changed_modules(paths, entries, root=ROOT):
     for path in paths:
         if path in all_modules:
             add(path, f"{path} → zmieniony moduł testów")
+        elif path in FILE_TEST_MODULES:
+            for module in FILE_TEST_MODULES[path]:
+                if module not in all_modules:
+                    raise ValueError(f"Brak jawnie przypisanego modułu testów: {module}")
+                add(module, f"{path} → jawny kontrakt narzędzia")
         elif path in precise:
             affected = graph.affected(path, set(all_modules))
             for module, chain in affected.items():

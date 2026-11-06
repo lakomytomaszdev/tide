@@ -45,6 +45,17 @@ CHANGE_MAP = {
 CHANGE_MAP["daemon/tide_daemon/cardflow/"] = "cardflow"
 CHANGE_MAP["daemon/tests/test_cardflow"] = "cardflow"
 
+# Narzędzia użytkowe ładowane po ścieżce lub uruchamiane jako proces nie tworzą
+# zwykłej krawędzi importu. Jawny kontrakt obejmuje wszystkich znanych odbiorców.
+# Pozostałe tools/, zwłaszcza test_*.py, są infrastrukturą: pełny przebieg.
+FILE_TEST_MODULES = {
+    "tools/board_compat_check.py": ("daemon/tests/test_board_compat_check.py",),
+    "tools/question_corpus.py": ("daemon/tests/test_question_corpus.py",),
+    "tools/next_id.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
+    "tools/check_plans.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
+    "tools/sessions_preview.py": ("apps/sessions/tests/test_window.py",),
+}
+
 # Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty
 # (QML, generatory ładowane po ścieżce) zachowują bezpieczny dobór katalogowy.
 IMPORT_ROOTS = {"daemon/tide_daemon/": "tide_daemon"}
