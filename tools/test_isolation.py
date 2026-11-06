@@ -21,7 +21,7 @@ def inherited_state(env):
 
 
 def original_roots(env):
-    """Korzenie sprzed izolacji dla przyszłego strażnika PT-254; żadnych zapisów ani odczytu stanu."""
+    """Korzenie sprzed izolacji dla strażnika; żadnych zapisów ani odczytu stanu."""
     # Fixture może już świadomie zmienić XDG. Nie tracimy wtedy pierwotnych korzeni
     # przy przekazaniu kolejnego katalogu testowemu potomkowi.
     declared = env.get(STATE_DIR, "")
@@ -46,12 +46,17 @@ def state_environment(state, env=None):
 
 def initialize():
     """Przed importem produktu: dziedziczymy jawną izolację albo zakładamy własną do końca procesu."""
+    from tools.test_guard import initialize as guard
+
     inherited = inherited_state(os.environ)
     if inherited:
         os.environ[ORIGINAL_ROOTS] = json.dumps(original_roots(os.environ))
+        guard(json.loads(os.environ[ORIGINAL_ROOTS]))
         return inherited
     state = os.path.abspath(tempfile.mkdtemp(prefix="tide-test-state-"))
     env = state_environment(state)
+    os.environ.update(env)
+    guard(json.loads(env[ORIGINAL_ROOTS]))
     owner = os.getpid()
 
     def cleanup():
@@ -60,5 +65,4 @@ def initialize():
             shutil.rmtree(state, ignore_errors=True)
 
     atexit.register(cleanup)
-    os.environ.update(env)
     return state
