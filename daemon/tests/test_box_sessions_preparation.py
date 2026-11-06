@@ -8,6 +8,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tide_daemon import codex_homes
+from tide_daemon.agents.scanner import AgentScanner
+from tide_daemon.agents.jsonl import JsonlTail, read_head
+from tide_daemon.coordination.codex import CodexThreadLog, excerpt
+from tide_daemon.reports.sessions import scheduled_runs, read_automations
+from tide_daemon.worktrees import sessions as session_mod
 from tide_daemon.box import homes
 from tide_daemon.box.incus import Incus
 from tide_daemon.box.runner import BoxRunner
@@ -81,6 +86,102 @@ class BoxSessionTest(LogFixture):
         index = SessionIndex("/missing", "/missing")
         self.assertEqual([s.session_id for s in index.refresh(NOW)], ["card-session"])
         self.assertEqual(index.link([(wt, wt)])[wt].session_id, "card-session")
+
+    def test_agent_scanner_rejects_box_symlinks_at_every_level(self):
+        source = self.codex_session("host-thread", "/srv/proj", NOW - DAY)
+        root = os.path.join(self.home, ".codex")
+        os.mkdir(root)
+        sessions = os.path.join(root, "sessions")
+        os.symlink(os.path.join(self.codex, "sessions"), sessions)
+        scanner = AgentScanner("/missing", codex_homes.default_homes(dict(os.environ, CODEX_HOME="/missing")))
+        scanner.discover(NOW)
+        scanner.update()
+        self.assertEqual(scanner.logs, {})
+        os.unlink(sessions)
+        self.claude_session("host-claude", "/srv/proj", NOW - DAY)
+        os.symlink(os.path.join(self.claude, "projects"), sessions)
+        scanner.discover(NOW)
+        scanner.update()
+        self.assertEqual(scanner.logs, {})
+        os.unlink(sessions)
+        target = os.path.join(root, os.path.relpath(source, self.codex))
+        os.makedirs(os.path.dirname(target))
+        os.symlink(source, target)
+        scanner.discover(NOW)
+        scanner.update()
+        self.assertEqual(scanner.logs, {})
+        self.assertEqual(JsonlTail(target).read_new(), [])
+        self.assertEqual(read_head(target, 65536), [])
+        self.assertFalse(CodexThreadLog(target).read_meta())
+        self.assertFalse(CodexThreadLog(target).update())
+        self.assertEqual(excerpt(target), [])
+        self.assertEqual(scheduled_runs(target, 0, NOW), [])
+
+    def test_agent_scanner_parent_swap_between_discover_and_read(self):
+        source = self.codex_session("host-thread", "/srv/proj", NOW - DAY)
+        root = os.path.join(self.home, ".codex")
+        target = os.path.join(root, os.path.relpath(source, self.codex))
+        os.makedirs(os.path.dirname(target))
+        with open(target, "w") as fh:
+            fh.write("{}\n")
+        scanner = AgentScanner("/missing", [root])
+        scanner.discover(NOW)
+        self.assertIn(target, scanner.logs)
+        parent = os.path.dirname(target)
+        os.rename(parent, parent + ".old")
+        os.symlink(os.path.dirname(source), parent)
+        self.assertFalse(scanner.update())
+        self.assertEqual(scanner.logs[target][0].cwd, "")
+
+    def test_session_index_parent_swap_before_open_for_both_tools(self):
+        for tool in ("claude", "codex"):
+            with self.subTest(tool=tool):
+                source = (self.claude_session("host", "/srv/proj", NOW - DAY) if tool == "claude"
+                          else self.codex_session("host", "/srv/proj", NOW - DAY))
+                host_root = self.claude if tool == "claude" else self.codex
+                target = os.path.join(self.home, "." + tool, os.path.relpath(source, host_root))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "w") as fh:
+                    fh.write("{}\n")
+                original = session_mod.head_and_tail
+
+                def swapped(path):
+                    self.assertEqual(path, target)
+                    parent = os.path.dirname(path)
+                    os.rename(parent, parent + ".old")
+                    os.symlink(os.path.dirname(source), parent)
+                    return original(path)
+
+                with mock.patch.object(session_mod, "head_and_tail", side_effect=swapped) as reader:
+                    self.assertEqual(SessionIndex("/missing", "/missing").refresh(NOW), [])
+                    reader.assert_called_once()
+                shutil.rmtree(os.path.join(self.home, "." + tool))
+
+    def test_resolve_preserves_box_path_and_metadata_readers_reject_parent_links(self):
+        root = os.path.join(self.home, ".codex")
+        os.mkdir(root)
+        steps = os.path.join(root, "steps")
+        os.mkdir(steps)
+        step = os.path.join(steps, "one")
+        os.mkdir(step)
+        roots = codex_homes.default_homes(dict(os.environ, CODEX_HOME="/missing"))
+        os.rmdir(step)
+        os.symlink(self.codex, step)
+        self.assertIn(step, codex_homes.resolve(roots))
+        self.assertNotIn(self.codex, codex_homes.resolve(roots))
+        self.assertEqual(SessionIndex("/missing", roots).refresh(NOW), [])
+        os.makedirs(os.path.join(self.codex, "automations", "one"))
+        with open(os.path.join(self.codex, "automations", "one", "automation.toml"), "w") as fh:
+            fh.write('target_thread_id = "host"\n')
+        os.symlink(os.path.join(self.codex, "automations"), os.path.join(root, "automations"))
+        self.assertEqual(read_automations([root]), {})
+        host_index = os.path.join(self.codex, "session_index.jsonl")
+        with open(host_index, "w") as fh:
+            fh.write('{"id":"host","thread_name":"Tytuł hosta"}\n')
+        boxed_index = os.path.join(root, "session_index.jsonl")
+        os.symlink(host_index, boxed_index)
+        self.assertEqual(JsonlTail(boxed_index).read_new(), [])
+        self.assertEqual(SessionIndex("/missing", [root])._read_codex_titles(boxed_index), {})
 
 
 class PreparationTest(unittest.TestCase):

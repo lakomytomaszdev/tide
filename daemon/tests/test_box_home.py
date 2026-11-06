@@ -2,7 +2,9 @@
 import io
 import json
 import os
+import subprocess
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,38 @@ from .test_box_builder import BoxCase
 
 
 class HomeMigrationTest(BoxCase):
+    def test_attach_preserves_multiline_idmap_and_full_config_from_json(self):
+        builder = self.builder()
+        builder.settings = replace(builder.settings, agent_uid=1001, agent_gid=1002)
+        builder.incus.init("tide-base", "plasma-tide")
+        builder.incus.config_set("plasma-tide", {"raw.idmap": "uid 1000 1001\ngid 1000 1002"})
+        run = builder.incus._run
+        edits = []
+
+        def cli(argv, **kwargs):
+            if argv[1:3] == ["config", "show"]:
+                return subprocess.CompletedProcess(argv, 0, 'config:\n  raw.idmap: |-\n'
+                                                   '    uid 1000 1001\n    gid 1000 1002\n', "")
+            if argv[1:3] == ["config", "edit"]:
+                edits.append(json.loads(kwargs["input"]))
+            result = run(argv, **kwargs)
+            if argv[1] == "list":
+                instances = json.loads(result.stdout)
+                for instance in instances:
+                    instance.update(architecture="x86_64", profiles=["tide"], ephemeral=False,
+                                    description="Pudełko", stateful=False)
+                result.stdout = json.dumps(instances)
+            return result
+
+        builder.incus._run = cli
+        builder.ensure_home("plasma-tide")
+        self.assertEqual(edits[-1]["config"]["raw.idmap"], f"uid {os.getuid()} 1001\ngid {os.getgid()} 1002")
+        self.assertEqual(edits[-1]["devices"]["home"]["source"], home.path("plasma-tide"))
+        self.assertEqual(edits[-1]["profiles"], ["tide"])
+        self.assertEqual(edits[-1]["description"], "Pudełko")
+        self.assertEqual(edits[-1]["architecture"], "x86_64")
+        self.assertNotIn("expanded_devices", edits[-1])
+
     def legacy(self, card=""):
         name = bs.card_box_name("plasma-tide", card) if card else "plasma-tide"
         incus = self.builder().incus

@@ -2927,13 +2927,20 @@ Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie p
 `$XDG_DATA_HOME/tide/box/<slug>/home` (domyślnie `~/.local/share/tide/box/<slug>/home`):
 `.claude/projects`, `.codex` i `.codex/steps/*` dla sesji K3. Odkrywanie jest ponawiane przy odświeżeniu.
 Kopie per-card mają osobne domy `<slug>/cards/<karta>/home`, skanowane na tych samych zasadach.
-Skaner pomija dowiązania w korzeniach pudełek; kopie Claude łączy po identyfikatorze, a Codexa po względnej
+Wspólny czytnik `box/logfiles.py` otwiera każdy składnik ścieżki pudełka względem deskryptora katalogu
+z `O_NOFOLLOW`, także po podmianie rodzica między wykryciem a odczytem. Ochrona obejmuje Sesje,
+Agents, KRunner, koordynację, raporty i indeksy JSONL. Ścieżek pudełek nie rozwiązujemy przez `realpath`.
+Bazy SQLite pudełek pomijamy (SQLite sam otwiera WAL po nazwie); tytuły pochodzą z `session_index.jsonl`
+albo dziennika. Domy hosta zachowują obsługę dowiązania snapa `current`.
+Kopie Claude skaner łączy po identyfikatorze, a Codexa po względnej
 ścieżce pliku dziennika, zachowując osobne segmenty. Katalog roboczy sesji pozostaje ścieżką worktree,
 więc powiązanie z krokiem karty nie wymaga przepisywania ścieżek. Wyszukiwanie dziennika do przekazania
 (`tasks/stepstop.py`) korzysta z tych samych dodatkowych korzeni.
 
 **Przejście ze starego wolumenu.** `Builder.ensure_home`, przed krokiem, przebudową i resetem, sprawdza
-montowanie domu. Dla dawnego `<pudełko>-home` zatrzymuje instancję (bez czynnych kroków) i wykonuje
+montowanie domu. Atomowa zmiana urządzenia czyta konfigurację z `incus list --format json`, zachowując
+zapisywalne pola instancji i wielowierszowy `raw.idmap`, bez ograniczeń parsera YAML.
+Dla dawnego `<pudełko>-home` zatrzymuje instancję (bez czynnych kroków) i wykonuje
 [`incus storage volume export`](https://linuxcontainers.org/incus/docs/main/howto/storage_backup_volume/)
 z `--volume-only --compression=none`. Inna instancja korzystająca z tego wolumenu blokuje migrację.
 Eksport pozostaje w prywatnym `.home-migration-*` obok domu. Rozpakowanie przyjmuje tylko `backup/volume`,

@@ -33,6 +33,7 @@ przyrostkiem `_<segment>`) to różne pliki: raport i worktrees widzą je osobno
 Agents i KRunner łączą je po id same (newest()).
 """
 import os
+from .box import logfiles
 
 SESSIONS = "sessions"
 SNAP_DIR = os.path.join("snap", "codex")
@@ -63,7 +64,8 @@ def resolve(roots) -> list[str]:
     for root in roots or ():
         if not root:
             continue
-        real = os.path.realpath(os.path.expanduser(os.fspath(root)))
+        path = os.path.abspath(os.path.expanduser(os.fspath(root)))
+        real = path if logfiles.is_box(path) else os.path.realpath(path)
         if real not in out:
             out.append(real)
     return out

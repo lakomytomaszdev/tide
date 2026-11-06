@@ -39,6 +39,7 @@ from dataclasses import dataclass
 
 from .. import codex_homes
 from ..box import homes as box_homes
+from ..box import logfiles
 from ..agents.claude import shorten
 from ..agents.timeutil import parse_ts
 
@@ -153,7 +154,7 @@ class SessionIndex:
     def _read_codex_titles(self, index: str) -> dict[str, str]:
         """Nazwy wątków z jednego session_index.jsonl; plik bez zmian rozmiaru i mtime nie jest czytany."""
         try:
-            st = os.stat(index)
+            st = logfiles.stat_log(index)
         except OSError:
             self._codex_titles.pop(index, None)
             return {}
@@ -163,7 +164,7 @@ class SessionIndex:
             return old[1]
         titles = {}
         try:
-            with os.fdopen(os.open(index, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+            with logfiles.open_log(index) as fh:
                 for line in fh:
                     record = _loads(line)
                     if record and record.get("id") and isinstance(record.get("thread_name"), str):
@@ -185,6 +186,9 @@ def _deepest(bases, real: str) -> str:
 # --- pliki ------------------------------------------------------------------------------
 
 def _claude_files(projects: str):
+    if logfiles.is_box(projects):
+        yield from ((p, st) for p, st in logfiles.files(projects, 1) if p.endswith(".jsonl"))
+        return
     if os.path.islink(projects):
         return
     try:
@@ -206,6 +210,10 @@ def _claude_files(projects: str):
 
 
 def _codex_files(sessions: str):
+    if logfiles.is_box(sessions):
+        yield from ((p, st) for p, st in logfiles.files(sessions)
+                    if os.path.basename(p).startswith("rollout-") and p.endswith(".jsonl"))
+        return
     if os.path.islink(sessions):
         return
     for dirpath, _dirs, names in os.walk(sessions):
@@ -222,7 +230,7 @@ def _codex_files(sessions: str):
 def head_and_tail(path: str) -> tuple[list[bytes], list[bytes]]:
     """Pełne linie z początku i z końca pliku (cały plik, gdy jest mały)."""
     try:
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as fh:
+        with logfiles.open_log(path) as fh:
             size = os.fstat(fh.fileno()).st_size
             if size <= HEAD_BYTES + TAIL_BYTES:
                 lines = fh.read().split(b"\n")

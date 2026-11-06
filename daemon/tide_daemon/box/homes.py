@@ -1,21 +1,23 @@
 """Domy agentów pudełek dostępne na hoście; skaner nie podąża za dowiązaniami z pudełka."""
 import os
+from . import logfiles
 
 
 def directories(path):
     try:
-        return [entry.path for entry in os.scandir(path) if entry.is_dir(follow_symlinks=False)]
+        return [child for name in logfiles.names(path) if (child := safe_child(path, name))]
     except OSError:
         return []
 
 
 def safe_child(root, *parts):
-    path = root
-    for part in parts:
-        path = os.path.join(path, part)
-        if os.path.islink(path) or not os.path.isdir(path):
-            return ""
-    return path
+    path = os.path.join(root, *parts)
+    try:
+        fd = logfiles._fd(path, directory=True)
+        os.close(fd)
+        return path
+    except OSError:
+        return ""
 
 
 def homes(env=None):

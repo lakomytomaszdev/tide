@@ -157,7 +157,15 @@ class Incus:
 
     def device_replace(self, name: str, device: str, kind: str, values: dict):
         """Atomowa zmiana całego urządzenia; błąd nie zostawia instancji bez starego domu."""
-        data = self.config_show(name)
+        # `config show` zwraca YAML, m.in. blok raw.idmap nieobsługiwany przez yamlmini.
+        # Lista JSON niesie pełną konfigurację; do edit przekazujemy pola zapisywalne,
+        # bez statusu i expanded_devices odziedziczonych z profili.
+        instance = self.instance(name)
+        if instance is None:
+            raise ValueError(f"brak instancji Incusa: {name}")
+        data = {key: instance[key] for key in
+                ("architecture", "config", "devices", "ephemeral", "profiles", "stateful", "description")
+                if key in instance}
         data.setdefault("devices", {})[device] = {"type": kind, **values}
         argv = self._argv(["config", "edit", name])
         result = self._run(argv, input=json.dumps(data), capture_output=True, text=True)
