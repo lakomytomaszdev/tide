@@ -34,6 +34,7 @@ def _parser():
     p = sub.add_parser("build", help="buduje pudełko z profilu w Tablicy")
     p.add_argument("slug")
     p.add_argument("--worktree", default="", help="czysty worktree projektu: verify na kopii jego commita w pudełku")
+    p.add_argument("--verify-worktree", help="kopiuje śledzone pliki HEAD do verify, bez montowania hosta")
     p = sub.add_parser("status", help="stan pudełka, hash i filtrowanie NIC")
     p.add_argument("slug")
     p.add_argument("--card", help="kopia pudełka dla karty (box: per-card)")
@@ -175,6 +176,13 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             settings = _settings(err)
             service, own = bbase.ensure_proxy(settings)
             try:
+                if args.verify_worktree:
+                    from .command import project_repo
+                    from .verify_source import snapshot
+                    with snapshot(args.verify_worktree, project_repo(args.slug)) as (archive, commit):
+                        print(f"źródła verify: {commit} (śledzone pliki HEAD)", file=out)
+                        return run_build(bb.Builder(settings, policy=service, verify_archive=archive,
+                                                    verify_commit=commit), args.slug, out, args.worktree)
                 return run_build(bb.Builder(settings, policy=service), args.slug, out, args.worktree)
             finally:
                 if own:

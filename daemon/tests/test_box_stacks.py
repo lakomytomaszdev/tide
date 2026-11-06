@@ -331,6 +331,33 @@ class LibTest(unittest.TestCase):
 # ------------------------------------------------------------ node.sh, playwright.sh, dotnet.sh, python-qt.sh
 
 class StackFunctionsTest(unittest.TestCase):
+    def test_chromium_userns_profile_is_scoped_to_browser_paths_in_the_box(self):
+        root = tempfile.mkdtemp(prefix="tide-chromium-root-")
+        self.addCleanup(shutil.rmtree, root, True)
+        bash(sourced("playwright", f"write_chromium_profile {shlex.quote(root)}"), case=self)
+        path = os.path.join(root, "etc/apparmor.d/tide-chromium-userns")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+        text = read(path)
+        for binary in ("chromium-*/chrome-linux*/chrome",
+                       "chromium_headless_shell-*/chrome-linux/headless_shell",
+                       "chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell"):
+            self.assertIn("/opt/ms-playwright/" + binary + " flags=(unconfined)", text)
+        self.assertEqual(text.count("  userns,"), 3)
+        self.assertNotIn("capability", text)
+        self.assertNotIn("--no-sandbox", read(script("node")))
+        # Prawdziwa main, atrapy wszystkich operacji systemowych: profil ładuje się przed końcem budowy.
+        body = """
+stack_main() { :; }
+check_node() { :; }
+install_browsers() { :; }
+write_chromium_profile() { echo profile; }
+apparmor_parser() { printf 'parser %s\\n' "$*"; }
+write_stack_env() { echo env; }
+main
+"""
+        proc = bash(sourced("playwright", body), case=self)
+        self.assertEqual(proc.stdout.splitlines(), ["profile", "parser -r /etc/apparmor.d/tide-chromium-userns", "env"])
+
     def test_node_version_resolution(self):
         pins = dict(re.findall(r"\[(\d+)\]=(\S+)",
                                re.search(r"^declare -A NODE_PINS=\((.*)\)$", read(script("node")), re.M).group(1)))

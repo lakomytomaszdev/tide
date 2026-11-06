@@ -57,7 +57,7 @@ NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/
 # Zapisana wersja szablonów stosów: `templates_version()` katalogu `box/stacks` (dane `*.yaml` i skrypty `*.sh`).
 # Wchodzi do hasha przepisu jako `templates`. Test (`test_box_stacks.py`) porównuje ją z sumą katalogu, więc każda
 # zmiana szablonu wymaga świadomego podbicia tej stałej — a pudełka zbudowane wcześniej stają się nieaktualne.
-STACKS_VERSION = "52c4b33c8752e52c721f3eb72720e1e7d9715082454e72f135d587856c6add63"
+STACKS_VERSION = "20fee305ca168db14c2971e742425a8be1e11a28fdd3ae1d3bdcdce8f60bb6fe"
 
 
 class BuildError(RuntimeError):
@@ -127,13 +127,15 @@ def state_dir(slug: str) -> str:
 
 class Builder:
     def __init__(self, settings: BoxSettings, incus: Incus | None = None, policy=None, clock=time.monotonic,
-                 wall=time.time, sleep=time.sleep, scripts_dir: str | None = None):
+                 wall=time.time, sleep=time.sleep, scripts_dir: str | None = None,
+                 verify_archive: str | None = None, verify_commit: str = ""):
         self.settings = settings
         self.incus = incus or Incus(settings.project)
         # Polityka i adres proxy: jawnie podane (testy) albo proxy uruchomione w tym procesie (PT-168).
         self.policy = policy or bproxy.running() or ProxyMissing()
         self.clock, self.wall, self.sleep = clock, wall, sleep
         self.scripts_dir = scripts_dir or SCRIPTS_DIR
+        self.verify_archive, self.verify_commit = verify_archive, verify_commit
         self.steps_source = None
 
     def running_steps(self, slug, name):
@@ -279,7 +281,11 @@ class Builder:
         if full["verify"]:
             steps.append("verify")
             v_start = self.clock()
-            if source is not None:
+            if self.verify_archive:
+                failed = self._verify(name, full["verify"], env)
+                bs.record(slug, "box.verify", name, self.wall, result="ok" if not failed else "fail", failed=failed,
+                          duration=round(self.clock() - v_start, 3), source_commit=self.verify_commit)
+            elif source is not None:
                 with bverify.in_box(self.incus, name, source, env,
                                     agent_uid=self.settings.agent_uid, agent_gid=self.settings.agent_gid) as context:
                     verify_env = {**env, "HOME": "/home/agent"} if source else env
@@ -318,6 +324,20 @@ class Builder:
         bs.record(slug, "box.ready", name, self.wall, hash=stamp["hash"], warning=warning, failed_images=failed_images,
                   duration=round(self.clock() - snap_start, 3))
         return BuildResult(name, stamp["hash"], warning, failed, list(steps), failed_images=failed_images)
+
+    def _verify(self, name, commands, env):
+        # Oba warianty CLI używają tej samej kopii i tożsamości agenta z PT-184.
+        source = bverify.Source(self.verify_archive, self.verify_commit) if self.verify_archive else None
+        failed = []
+        with bverify.in_box(self.incus, name, source, env,
+                            agent_uid=self.settings.agent_uid, agent_gid=self.settings.agent_gid) as context:
+            verify_env = {**env, "HOME": "/home/agent"} if source else env
+            for command in commands:
+                if self.incus.exec(name, ["bash", "-c", command], verify_env, **context) != 0:
+                    failed.append(command)
+                    if source:
+                        break
+        return failed
 
     def _run(self, name, command, env, what):
         code = self.incus.exec(name, command, env)

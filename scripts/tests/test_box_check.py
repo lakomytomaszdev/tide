@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE = r'''#!/usr/bin/python3
@@ -126,6 +127,38 @@ class RedListTest(unittest.TestCase):
         self.assertIn("box-check:", text)
         self.assertIn('scripts/box/check-project.py "$(BOX)"', text)
 
+
+    def test_check_runs_in_foreign_project_without_copying_tide_files(self):
+        spec = importlib.util.spec_from_file_location("run_check", ROOT / "scripts/box/run-check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        project = self.base / "foreign-project"
+        project.mkdir()
+        captured = []
+
+        def run(argv):
+            captured.append(argv)
+            self.assertEqual(argv[:5], ["run", "proj", "--worktree", str(project), "--"])
+            # Wykonujemy rzeczywisty skrypt poza repozytorium Tide, z atrapami czerwonej listy.
+            result = subprocess.run(["/bin/bash", *argv[6:]], cwd=project, env=self.env,
+                                    capture_output=True, text=True, timeout=20)
+            self.assertIn("podszycie IP + curl --interface", result.stdout)
+            self.assertIn("brak roota/narzędzi/obrazu", result.stdout)
+            return result.returncode
+
+        with mock.patch.object(module, "project_repo", return_value=str(project)), \
+                mock.patch.object(module.cli, "main", side_effect=run):
+            self.assertEqual(module.main(["proj", "--spoof-ip", "10.173.184.250"]), 0)
+        self.assertEqual(captured[0][-2:], ["--spoof-ip", "10.173.184.250"])
+        self.assertEqual(list(project.iterdir()), [])
+
+    def test_check_preserves_failure_from_cli(self):
+        spec = importlib.util.spec_from_file_location("run_check", ROOT / "scripts/box/run-check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with mock.patch.object(module, "project_repo", return_value="/project"), \
+                mock.patch.object(module.cli, "main", return_value=37):
+            self.assertEqual(module.main(["proj"]), 37)
 
 class ProjectCheckTest(unittest.TestCase):
     @classmethod
