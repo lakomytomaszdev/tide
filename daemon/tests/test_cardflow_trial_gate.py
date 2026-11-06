@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from dataclasses import replace
 import io
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -177,6 +178,9 @@ class EngineGateTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root / "state")})
+        env.start()
+        self.addCleanup(env.stop)
         self.store = SimpleNamespace(root=str(self.root / "board"))
         (Path(self.store.root) / "projects").mkdir(parents=True)
         self.journal = Journal(self.store.root, mirror=str(self.root / "mirror"))
@@ -248,6 +252,86 @@ class EngineGateTest(unittest.TestCase):
                 self.engine._start_outside("K-38", step, "echo old")
         with self.assertRaises(FlowError):
             self.engine._start_outside("K-38", {}, "echo unknown")
+
+    def test_restart_with_historical_finish_preserves_process_wip_and_box_resources(self):
+        for column in ("done", "archived"):
+            for runner in ("host", "box"):
+                with self.subTest(column=column, runner=runner):
+                    step = self.old_step(result=None)
+                    if runner == "box":
+                        self.journal.append("K-38", "step.started", **{k: v for k, v in step.items()
+                                            if k not in ("type", "seq", "v", "ts", "card")}, runner="box",
+                                            box="plasma-tide", boxSlug="plasma-tide")
+                    self.journal.append("K-38", "card.moved", to=column)
+                    before = self.journal.read("K-38")
+                    engine = self.restart()
+                    engine.store.load = lambda: SimpleNamespace(cards={})
+                    with mock.patch.object(engine, "_unit_state", return_value="unknown"), \
+                            mock.patch.object(engine, "_tracker_notes"), \
+                            mock.patch.object(engine, "_stop", wraps=engine._stop) as stop, \
+                            mock.patch.object(engine, "_kill") as kill, \
+                            mock.patch.object(engine, "_finish") as finish, \
+                            mock.patch("tide_daemon.cardflow.engine.stepstop.stop_step") as wip, \
+                            mock.patch("tide_daemon.box.refguard.finish") as refs, \
+                            mock.patch.object(boxstep, "release_ports") as ports, \
+                            mock.patch.object(boxstep, "_release_resources") as resources, \
+                            mock.patch("subprocess.run") as run, mock.patch("subprocess.Popen") as spawn:
+                        engine._tick_card("K-38", fold(before))
+                        for action in (stop, kill, finish, wip, refs, ports, resources, run, spawn):
+                            action.assert_not_called()
+                    events = self.journal.read("K-38")
+                    self.assertEqual(events[:len(before)], before)
+                    self.assertFalse(fold(events).card_finished)
+                    self.assertNotIn(step["step"], fold(events).finished)
+                    self.assertEqual((self.root / "PT-176/wip.txt").read_text(), "zachowany WIP")
+
+    def test_manual_finish_checks_protected_start_intent_before_stopping_other_steps(self):
+        ordinary = self.old_step("PT-999", result=None)
+        self.journal.append("K-38", "intent", action="step-start", key="K-38-PT-176-1",
+                            ticket="PT-176", unit="old-unit")
+        before = self.journal.read("K-38")
+        with mock.patch.object(self.engine, "_stop") as stop:
+            self.assertFalse(self.engine._complete_manual_finish("K-38", "done"))
+            stop.assert_not_called()
+        self.assertEqual(self.journal.read("K-38"), before)
+        self.assertNotIn(ordinary["step"], fold(before).finished)
+
+    def test_unresolved_start_or_live_launcher_denies_final_diagnostic_check(self):
+        name = "K-38-PT-176-1"
+        step_dir = self.root / "old-start.step"
+        self.journal.append("K-38", "intent", action="step-start", key=name, ticket="PT-176",
+                            unit="old-unit", stepDir=str(step_dir))
+        procedure = HostProcedure(self.tmp.name)
+        store = HostStore()
+        store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
+        for started in (False, True):
+            if started:
+                self.old_step(result=None)
+            for client in ("missing", "alive", "exited", "unknown"):
+                with self.subTest(started=started, client=client):
+                    engine = self.restart()
+                    if client != "missing":
+                        engine.procs[name] = mock.Mock()
+                        if client == "unknown":
+                            engine.procs[name].poll.side_effect = OSError("brak stanu klienta")
+                        else:
+                            engine.procs[name].poll.return_value = None if client == "alive" else 0
+                    safe = started and client in ("missing", "exited")
+                    inventory = lambda: trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38")))
+                    with mock.patch.object(engine, "_unit_state", return_value="inactive"):
+                        self.assertEqual(inventory(), safe)
+                        trial_gate = gate.TrialGate(store=store, procedure=procedure)
+                        trial_gate.register_bootstrap("diagnostic")
+                        for bootstrap in (True, False):
+                            if safe:
+                                continue
+                            with self.assertRaises(gate.TrialDenied):
+                                trial_gate.start_registered("diagnostic", consent=True, inventory=inventory,
+                                                            bootstrap=bootstrap)
+                        self.assertEqual(procedure.calls, [])
+                        if not safe:
+                            item = self.journal.read("K-38")[-1]["items"][0]
+                            self.assertEqual(item["state"], "unknown")
 
     def test_recovery_does_not_restore_refs_release_ports_or_revoke_old_mounts(self):
         step = self.old_step()

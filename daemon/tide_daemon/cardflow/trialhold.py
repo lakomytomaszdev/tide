@@ -29,6 +29,13 @@ def inventory(engine, card, st):
                     state = "unknown" if state == "inactive" else state
             else:
                 state = engine._unit_state(step) if step.get("unit") else "unknown"
+                proc = engine.procs.get(name)
+                if proc is not None and proc.poll() is None:
+                    state = "unknown" if state == "inactive" else state
+                # Sam brak scope nie rozstrzyga okna Popen(systemd-run) → step.started.
+                # Zakończenie klienta też nie dowodzi zakończenia uruchamianej jednostki.
+                if name not in st.steps and state == "inactive":
+                    state = "unknown"
         except Exception:
             state = "unknown"
         items.append({"step": name, "ticket": step.get("ticket"), "state": state,

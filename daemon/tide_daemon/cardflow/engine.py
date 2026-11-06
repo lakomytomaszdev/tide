@@ -1808,6 +1808,12 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         if st.card_finished:
             return True
+        # Dawny ruch do Gotowe/Archiwum nie uprawnia do zatrzymania chronionej próby.
+        # Sprawdzamy całą kartę przed pierwszym stopem, także okno sprzed step.started.
+        if any(trialhold.held(step) for step in st.steps.values()) or any(
+                trialhold.held({**intent, "step": name})
+                for (action, name), intent in st.intents.items() if action == "step-start"):
+            return False
         for step in st.running():
             if not self._stop(card, step, "stopped", ""):
                 return False
