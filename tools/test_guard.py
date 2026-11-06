@@ -139,8 +139,12 @@ def _targets(notification):
     pid, nr, args = notification.pid, notification.data.nr, notification.data.args
     if nr in UNSUPPORTED:
         return "unsupported", []
-    if nr == 9:  # mmap: tylko współdzielone mapowanie z prawem zapisu
-        if not (args[2] & 2 and args[3] & 1) or args[3] & 0x20:
+    if nr == 9:
+        # MAP_SHARED (także MAP_SHARED_VALIDATE) może później dostać PROT_WRITE
+        # przez mprotect lub pkey_mprotect. Odmawiamy już mapowania chronionego
+        # pliku, niezależnie od początkowego PROT_NONE/READ/WRITE. MAP_PRIVATE
+        # i MAP_ANONYMOUS nie zapisują pliku, więc nie wymagają kontroli celu.
+        if not args[3] & 1 or args[3] & 0x20:
             return "mmap", []
         return "mmap", [_fd_path(pid, args[4])]
     if nr in FDS:

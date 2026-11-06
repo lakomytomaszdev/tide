@@ -95,7 +95,14 @@ odziedziczoną ochronę potwierdza bezskutkowa próba `prctl` obsługiwana przez
 
 Nadzorca odczytuje cele wywołań systemowych przed ich wykonaniem. Odmawia zapisywalnego
 open/creat, truncate, unlink/rmdir, mkdir, rename, link/symlink i zmian metadanych w chronionych
-korzeniach; kontroluje też zapisy przez deskryptory i współdzielone mapowanie pliku do zapisu.
+korzeniach; kontroluje też zapisy przez deskryptory i współdzielone mapowania pliku.
+W chronionych korzeniach odrzuca każde plikowe `MAP_SHARED`/`MAP_SHARED_VALIDATE`, także
+z początkowym `PROT_READ` lub `PROT_NONE`: późniejsze `mprotect` lub `pkey_mprotect` mogłoby
+umożliwić zapis bez kolejnego kontrolowanego wywołania plikowego. Dotyczy to również
+odziedziczonego deskryptora O_RDWR. Odmowa następuje już przy `mmap`, daje EPERM i trwały
+kod 125 scenariusza. To zachowawcze ograniczenie obejmuje również współdzielone mapowania
+używane wyłącznie do odczytu. Zwykły odczyt, prywatne mapowania `MAP_PRIVATE` i mapowania
+anonimowe pozostają dozwolone; prywatna zmiana pamięci nie zmienia pliku.
 Python dostaje `PermissionError`, a np. `/bin/sh`, `rm` czy `mv` — systemowy `EPERM`.
 Rozróżniamy mutację celu dowiązania od zmiany samego wpisu: unlink/rename zewnętrznego
 dowiązania jest legalne, jeśli jego wpis i katalog nadrzędny leżą poza ochroną; operacja na pliku

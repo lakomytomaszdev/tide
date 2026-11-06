@@ -270,6 +270,46 @@ finally:
             self.env["TIDE_GUARD_PROBE_FD"] = str(stream.fileno())
             self.probe("fdwrite", target, pass_fds=(stream.fileno(),))
 
+    def check_shared_mapping_upgrade(self, entry):
+        for root in [*self.roots, self.alias]:
+            for protection in (0, 1):  # PROT_NONE i PROT_READ
+                for upgrade in ("mprotect", "pkey_mprotect"):
+                    with self.subTest(entry=entry, root=root, protection=protection, upgrade=upgrade):
+                        target = root / "existing"
+                        with target.open("r+b") as stream:
+                            self.env["TIDE_GUARD_PROBE_FD"] = str(stream.fileno())
+                            result, records = self.probe(f"mmap-shared-{protection}-{upgrade}", target,
+                                                         entry=entry, pass_fds=(stream.fileno(),))
+                        self.assertIn("MMAP RESULT: -1 errno=1", result.stdout)
+                        self.assertNotIn("MMAP UPGRADED AND WRITTEN", result.stdout)
+                        self.assertTrue(any(record.get("operation") == "mmap" for record in records), records)
+
+    def test_shared_mapping_cannot_gain_write_access_through_inherited_fd(self):
+        self.check_shared_mapping_upgrade("unittest")
+
+    @unittest.skipUnless(importlib.util.find_spec("pytest"), "pytest niedostępny")
+    def test_pytest_shared_mapping_cannot_gain_write_access_through_inherited_fd(self):
+        self.check_shared_mapping_upgrade("pytest")
+
+    def test_legal_mappings_can_still_gain_write_access(self):
+        for sharing, target in (("private", self.roots[0] / "existing"),
+                                ("shared", self.root / "other")):
+            for upgrade in ("mprotect", "pkey_mprotect"):
+                with self.subTest(sharing=sharing, upgrade=upgrade):
+                    before = self.snapshot()
+                    with target.open("r+b") as stream:
+                        env = dict(self.probe_env(f"mmap-{sharing}-1-{upgrade}", target),
+                                   TIDE_GUARD_PROBE_FD=str(stream.fileno()))
+                        result = subprocess.run(self.command("unittest"), cwd=runner.ROOT, env=env,
+                                                pass_fds=(stream.fileno(),), capture_output=True,
+                                                text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("MMAP UPGRADED AND WRITTEN", result.stdout)
+                    self.assertNotIn("TIDE TEST GUARD:", result.stderr)
+                    self.assertEqual(self.snapshot(), before)
+                    if sharing == "shared":
+                        self.assertTrue(target.read_bytes().startswith(b"MUTATED!"))
+
     def test_exit_zero_without_atexit_does_not_clear_violation(self):
         isolated = self.root / "isolated"
         isolated.mkdir()

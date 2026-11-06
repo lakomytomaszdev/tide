@@ -119,6 +119,33 @@ done.write_text("done")
                 print(f"OPENAT2 RESULT: {fd} errno={error}", flush=True)
             finally:
                 os.close(directory)
+        elif action.startswith("mmap-"):
+            # Deskryptor O_RDWR pochodzi sprzed uruchomienia strażnika. Samo
+            # mapowanie nie żąda zapisu; dopiero mprotect/pkey_mprotect go dodaje.
+            _, sharing, protection, upgrade = action.split("-")
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.mmap.restype = ctypes.c_void_p
+            fd = int(os.environ["TIDE_GUARD_PROBE_FD"])
+            ctypes.set_errno(0)
+            address = libc.mmap(None, 8, int(protection), 1 if sharing == "shared" else 2, fd, 0)
+            error = ctypes.get_errno()
+            if address != ctypes.c_void_p(-1).value:
+                try:
+                    pointer = ctypes.c_void_p(address)
+                    if upgrade == "mprotect":
+                        result = libc.mprotect(pointer, 8, 3)
+                    else:
+                        result = libc.pkey_mprotect(pointer, 8, 3, -1)
+                    self.assertEqual(result, 0, f"{upgrade}: errno={ctypes.get_errno()}")
+                    ctypes.memmove(address, b"MUTATED!", 8)
+                    self.assertEqual(libc.msync(pointer, 8, 4), 0)
+                    print("MMAP UPGRADED AND WRITTEN", flush=True)
+                finally:
+                    self.assertEqual(libc.munmap(ctypes.c_void_p(address), 8), 0)
+            # Celowo ignorujemy odmowę mmap, aby zielony test wewnętrzny nie
+            # mógł ukryć naruszenia zachowanego przez nadzorcę.
+            value = -1 if address == ctypes.c_void_p(-1).value else address
+            print(f"MMAP RESULT: {value} errno={error}", flush=True)
         elif action == "futimens":
             with other.open("r+b") as stream:
                 os.utime(stream.fileno(), ns=(123000000000, 123000000000))
