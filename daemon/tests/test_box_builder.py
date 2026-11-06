@@ -391,8 +391,9 @@ class BuildTest(BoxCase):
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
                                 "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
-                                "-c", "security.nesting=true", "-c", "security.syscalls.intercept.mknod=true",
-                                "-c", "security.syscalls.intercept.setxattr=true"])
+                                "-c", "security.nesting=true"])
+        self.assertFalse(any("security.syscalls.intercept." in arg for arg in init),
+                         "runc 1.2.6 działa bez intercept zabronionego w projekcie ograniczonym")
         self.assertIn(["config", "device", "override", "--project", "user-1000", "plasma-tide", "root", "size=25GB"],
                       self.incus_calls())
 

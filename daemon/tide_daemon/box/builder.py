@@ -2,7 +2,7 @@
 
 Kolejność budowy (`build`):
  1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
-    z profilu i nesting oraz intercept mknod/setxattr tylko dla Dockera; nigdy
+    z profilu i nesting tylko dla Dockera; bez syscall intercept (runc 1.2.6, decyzja PT-164); nigdy
     `security.privileged`; rozmiar dysku głównego `resources.disk`; prywatny katalog hosta na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
@@ -214,8 +214,6 @@ class Builder:
         config = limits(full)
         if full["docker"]["enabled"]:
             config["security.nesting"] = True
-            config["security.syscalls.intercept.mknod"] = True
-            config["security.syscalls.intercept.setxattr"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
         self._attach_home(name, slug)
