@@ -256,6 +256,8 @@ class ConfirmMergeDbusTest(FlowCase):
         card = self.card()
         self.assertTrue(self.start(card)["ok"])
         self.wait_column(card, "review", timeout=40)
+        # Review ticketu może pokazać tę kolumnę przed startem i ukończeniem domknięcia.
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"].get("closed"), timeout=40))
         package = stage(os.path.join(self.base, "pkg"))
         spec = importlib.util.spec_from_file_location("confirm_backend", package + "/views/board/backend.py")
         module = importlib.util.module_from_spec(spec)

@@ -21,12 +21,12 @@ from .labels import result_label, step_name
 
 LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
-          "ticket.rejected", "result")
+          "ticket.rejected", "result", "caretaker.escalated", "caretaker.action", "caretaker.reported")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "card.merged", "step.decision", "plan.approved",
                "ticket.rejected", "review.decision")
 RESUMABLE = ("question", "denied", "stopped")
 KIND_LABELS = {"step": "krok", "review": "review", "decision": "decyzja", "plan": "plan", "card": "karta",
-               "merge": "scalanie"}
+               "merge": "scalanie", "caretaker": "opiekun"}
 RESULT_PHRASES = {"": "pracuje", "done": "gotowe", "question": "pyta", "denied": "prosi o zgodę",
                   "error": "błąd", "stopped": "zatrzymany"}
 CHOICES = {"retry": "ponowienie kroku", "wait-limit": "czekanie na limit", "transfer": "przekazanie kroku",
@@ -35,8 +35,10 @@ CHOICES = {"retry": "ponowienie kroku", "wait-limit": "czekanie na limit", "tran
 VERDICTS = {"APPROVE": "zatwierdza", "REQUEST_CHANGES": "prosi o zmiany"}
 
 
-def build(st, steps: list[dict]) -> list[dict]:
-    """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`)."""
+def build(st, steps: list[dict], *, mask_event=None) -> list[dict]:
+    """Historia karty: chronologicznie (od najstarszego); `steps` to `flow.steps[]` (stąd `canEnter`).
+    `mask_event` pozwala kontekstowi opiekuna maskować zdarzenie przed formatowaniem i normalizacją tekstu,
+    bez zmiany stanu karty ani identyfikatorów używanych do grupowania prób."""
     last_started = max((int(e.get("seq") or 0) for e in st.log if e.get("type") == "card.started"), default=0)
     last_started = max(last_started, st.base_change.get("seq", 0))
     enter = {item.get("id"): item.get("canEnter") is True for item in steps}
@@ -55,7 +57,7 @@ def build(st, steps: list[dict]) -> list[dict]:
         elif kind == "step.finished":
             continue
         else:
-            entry = _event_entry(event, st)
+            entry = _event_entry(mask_event(event) if mask_event else event, st)
             if entry:
                 entry["old"] = seq < last_started
                 items.append(entry)
@@ -111,6 +113,18 @@ def _step_label(st, name) -> str:
 def _event_entry(e: dict, st=None) -> dict | None:
     kind, ticket = e.get("type"), e.get("ticket") or ""
     who = e.get("executor") or e.get("reviewer") or ""
+    if kind in ("caretaker.escalated", "caretaker.action", "caretaker.reported"):
+        # Opiekun karty (PT-143): tekst z rejestru etykiet opiekuna, aktor `caretaker`.
+        from .caretaker import ACTOR, history_text
+        text = history_text(e)
+        if not text:
+            return None
+        return {"id": f"{kind}#{e.get('seq')}", "ts": _epoch(e.get("ts")), "kind": "caretaker",
+                "kindLabel": KIND_LABELS["caretaker"], "text": text,
+                "actor": ACTOR, "actorLabel": "Opiekun (rozmowa)" if e.get("mode") == "chat" else "Opiekun",
+                "mode": e.get("mode") or "background", "old": False,
+                "step": e.get("target") or e.get("step") or "", "ticket": ticket, "result": "",
+                "attempts": [], "canResume": False}
     if kind == "card.started":
         group, text = "card", "Zlecenie: karta wystartowała" + (f" ({who})" if who else "")
     elif kind == "card.paused":
@@ -123,6 +137,8 @@ def _event_entry(e: dict, st=None) -> dict | None:
         from .state import merge_of
         target = merge_of(e)["targetBranch"]
         group, text = "merge", "Karta scalona" + (f" do {target}" if target else " (cel niezapisany)")
+    elif kind == "step.decision" and "caretaker" in e:
+        return None         # decyzja zapisana akcją opiekuna (PT-150): wpis daje jego `caretaker.action`
     elif kind == "step.decision":
         group = "decision"
         automatic = bool(e.get("auto") or e.get("automatic"))
