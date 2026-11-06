@@ -2,7 +2,7 @@
 import json
 import os
 
-from . import execution, findings as review_findings, plans, planappend
+from . import execution, findings as review_findings, plans, planappend, planartifacts
 from .state import fold, ticket_of
 
 
@@ -66,7 +66,8 @@ class PlanEditing:
             self._plan_step_decision(card, st, step, done)
             return True
         if step["kind"] == "plan-revise":
-            reply = self.propose_plan(card, os.path.join(step["stepDir"], "out", "plan.md"), continuation=True, step=step["step"])
+            source = done.get("snapshotDir") or os.path.join(step["stepDir"], "out")
+            reply = self.propose_plan(card, os.path.join(source, "plan.md"), continuation=True, step=step["step"])
             if reply["ok"]:
                 self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
                                     findings=self._reviewed_findings(latest_review, step.get("reviewTip")), corrected=True)
@@ -158,6 +159,21 @@ class PlanEditing:
         generation = (st.plan_revision or {}).get("seq") if kind == "plan-amend" else st.plan_proposed["seq"]
         step_id = f"{card}-{kind}-{generation}"
         out = worktree + f".{kind}-{step_id}.step/out"
+        if st.plan_proposed.get("artifactPath"):
+            ticket_paths = {}
+            ticket_bodies = {}
+            if kind == "plan-amend":
+                ticket_bodies = {f"tickets/{r['id']}.md": r["body"].encode("utf-8")
+                                 for r in (st.plan_revision or {}).get("baseline", []) if r.get("id") and "body" in r}
+            # Tylko zatwierdzony pakiet zmienia numery robocze na ID. Propozycja pending
+            # ma już własne nazwy, a jej nowe #n nie należą do mapy starego planu.
+            if (kind == "plan-amend" and st.plan_approved and
+                    st.plan_proposed["artifactPath"] == planartifacts.source_for_commit(st).get("artifactPath")):
+                ticket_paths = {f"tickets/{(r.get('workId') or r['id']).lstrip('#')}.md": f"tickets/{r['id']}.md"
+                                for r in st.plan_approved["rows"]}
+            text += planartifacts.prepare(st.plan_proposed["artifactPath"], os.path.dirname(out), seed=kind != "plan-review",
+                                          plan_name=os.path.basename(st.plan_proposed["planPath"]), ticket_paths=ticket_paths,
+                                          ticket_bodies=ticket_bodies)
         text += f"\nKatalog wyjściowy: {out}\nPlik wyniku: {out}/result.json\n"
         text += 'Po zapisaniu plików zapisz {"result":"done","notes":[]}.\n'
         self._launch(item, project, selected, "", made, made, step_id, [], kind=kind, prompt_text=text, review_tip=findings)
@@ -452,14 +468,15 @@ class PlanEditing:
             return
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
-        path = os.path.join(step["stepDir"], "out", "plan.md")
+        source = done.get("snapshotDir") or os.path.join(step["stepDir"], "out")
+        path = os.path.join(source, "plan.md")
         # Kartki istniejących ticketów zatwierdzonego planu dokłada Tide (z planu bazowego) — planujący pisze tylko
         # kartki nowych ticketów, a walidator wymaga kartki dla każdego wiersza (K-16, 03.11).
         running = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         for base in revision["baseline"]:
             ident = base.get("id") or base.get("workId") or ""
             if ident and not ident.startswith("#") and base.get("body"):
-                card_file = os.path.join(step["stepDir"], "out", "tickets", ident + ".md")
+                card_file = os.path.join(source, "tickets", ident + ".md")
                 if ident in running or not os.path.exists(card_file):
                     os.makedirs(os.path.dirname(card_file), exist_ok=True)
                     with open(card_file, "w", encoding="utf-8") as fh:

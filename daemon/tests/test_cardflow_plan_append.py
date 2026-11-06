@@ -1,6 +1,7 @@
 """PT-248: dopisanie przez użytkownika, review i osobne zatwierdzenie różnicy."""
 import copy
 import json
+from pathlib import Path
 from unittest import mock
 
 from tide_daemon.cardflow import planappend
@@ -31,6 +32,44 @@ class AppendPlanTest(FlowInProcess):
                 "## Dla recenzenta\nSprawdź liczbę kolumn.", "class": "mocny", "executor": "Codex mocny",
                 "reviewer": "Codex standard", "blockers": [], "requestKey": "append-test",
                 "planFingerprint": planappend.fingerprint(self.state(card)), **changes}
+
+    def test_append_preserves_approved_sketches_and_manual_plan_text(self):
+        card = self.card()
+        path = Path(self.proposal(card))
+        draft = path.parent / "followups/nested/scope.md"
+        draft.parent.mkdir(parents=True)
+        draft.write_text("# Zakres\n[plan](../../2026-10-29-plan.md)\n[kartka](../../tickets/1.md)\n")
+        path.write_text(path.read_text() + "\n[szkic](followups/nested/scope.md)\n")
+        body_path = path.parent / "tickets/1.md"
+        body_path.write_text(body_path.read_text() + "\n[szkic](../followups/nested/scope.md)\n")
+        self.assertTrue(self.submit(card, str(path))["ok"])
+        self.flow.stop()
+        engine = self.flow.engine
+        self.assertTrue(engine.approve_plan(card)["ok"])
+        before = self.state(card)
+        # Pliki docelowe bez uruchamiania piaskownicy gita: sprawdzamy treść kolejnego commita.
+        worktree = Path(self.repo) / "committed-plan"
+        for name, content in engine._plan_files(card, before, set()).items():
+            target = worktree / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        plan_file = before.plan_approved["planFile"]
+        committed = worktree / plan_file
+        committed.write_text(committed.read_text() + "\nRęczny dopisek użytkownika.\n")
+        reply = engine.edit_plan(card, self.request(card))
+        self.assertTrue(reply["ok"], reply)
+        pending = self.state(card)
+        with mock.patch.object(engine, "_launch") as launch:
+            engine._plan_step(card, pending, engine.catalog().get("Codex standard"), "plan-review", "Review")
+        prompt = launch.call_args.kwargs["prompt_text"]
+        self.assertIn("Zamrożony komplet", prompt)
+        engine._record_plan_review(card, verdict="APPROVE", reviewer="Codex standard", findings=[], corrected=False)
+        self.assertTrue(engine.approve_plan(card)["ok"])
+        files = engine._plan_files(card, self.state(card), set(), worktree=str(worktree))
+        self.assertIn("Ręczny dopisek użytkownika.", files[plan_file].decode())
+        scope_file = str(Path(plan_file).parent / "followups/nested/scope.md")
+        self.assertEqual(files[scope_file], engine._plan_files(card, before, set())[scope_file])
+        self.assertEqual(len(self.state(card).plan_approved["rows"]), 3)
 
     def test_append_reviews_without_planner_and_approval_alone_allocates_one_id(self):
         card = self.prepared()

@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 
-from . import baseproposal, execution, plans
+from . import baseproposal, execution, plans, planartifacts
 
 
 def digest(value):
@@ -83,10 +83,24 @@ def append(engine, card, st, request):
     cfg = engine.models_config() if engine.models_config else None
     catalog = cfg.catalog if cfg else engine.catalog()
     proposal = {k: v for k, v in st.plan_proposed.items() if k != "appendRevision"}
+    source = planartifacts.source_for_commit(st)
     # plans.read jest jedynym walidatorem przydziałów, kartek i grafu. Plik tymczasowy nie
     # stanowi publikacji propozycji ani rezerwacji ID; niepowodzenie nie zmienia dziennika.
     with tempfile.TemporaryDirectory(prefix="plan-append-", dir=engine.tmp_root) as folder:
-        os.makedirs(os.path.join(folder, "tickets"))
+        if source.get("artifactPath"):
+            # Walidator dostaje także zatwierdzone szkice. Ich linki zwrotne muszą
+            # używać tych samych ID co istniejące kartki w tymczasowym planie.
+            try:
+                planartifacts.prepare(source["artifactPath"], folder, seed=True,
+                                      plan_name=os.path.basename(source["planPath"]),
+                                      ticket_paths={f"tickets/{(r.get('workId') or r['id']).lstrip('#')}.md":
+                                                    f"tickets/{r['id']}.md" for r in baseline},
+                                      ticket_bodies={f"tickets/{r['id']}.md": r["body"].encode() for r in baseline})
+            except (OSError, UnicodeError, ValueError) as error:
+                return {"ok": False, "id": card, "error": "invalid-plan", "errors": [str(error)],
+                        "message": str(error)}
+            folder = os.path.join(folder, "out")
+        os.makedirs(os.path.join(folder, "tickets"), exist_ok=True)
         path = os.path.join(folder, "plan.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(f"---\ntide-plan: 1\ncard: {card}\ntracker: local\nticket-prefix: {proposal['prefix']}\n---\n"
@@ -118,7 +132,8 @@ def append(engine, card, st, request):
     engine.journal.append(card, "plan.proposed", title=proposal.get("title", ""), prefix=proposal["prefix"],
                           coordinator=proposal.get("coordinator", "codex"), session="", rows=rows[:-1] + [new],
                           planner=proposal.get("planner") or new["executor"], reviewAuthor=new["executor"],
-                          sourceKind="append", sourceStep="", planPath="",
+                          sourceKind="append", sourceStep="", planPath=source.get("planPath") or "",
+                          **({"artifactPath": source["artifactPath"]} if source.get("artifactPath") else {}),
                           specification=proposal.get("specification") or item.description,
                           appendRequest={"key": key, "hash": request_hash, "workId": work_id},
                           appendRevision={"pending": True, "kind": "append", "baseline": rows[:-1],
