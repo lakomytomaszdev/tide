@@ -1,0 +1,9 @@
+{
+  "failures": [
+    "build-missing-box",
+    "make-test",
+    "box-status",
+    "preflight"
+  ],
+  "firstAgentStep": "pending-approved-test-card"
+}

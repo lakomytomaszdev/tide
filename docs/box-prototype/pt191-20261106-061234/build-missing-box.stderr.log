@@ -1,0 +1,3 @@
+tide-daemon: proxy pudełka: incus network get incusbr0 ipv4.address: Error: User does not have permission for project "default" — czytam adres interfejsu
+tide-daemon: proxy pudełka: słucha na 10.173.184.1:18080
+tide box build: incus snapshot create --project…: kod 1: Error: Project "user-1000" doesn't allow for snapshot creation

@@ -3259,6 +3259,10 @@ Opcja `--prepare-missing` tego skryptu odtwarza brakujące środowisko: pozostaw
 buduje tylko brakujące pudełko, a przy braku profilu zatwierdza jawny
 `docs/agents/pt-191/plasma-tide-proof.box.yaml`. Pakiety narzędzi prób są instalowane w pudełku, bez zmian
 pakietów i ustawień hosta. Domyślne wywołanie skryptu nie zatwierdza profilu ani nie buduje pudełka.
+Przy starszej konfiguracji projektu Incusa osobna, jawna opcja `--enable-snapshots` ustawia przez sudo
+`restricted.snapshots=allow`, zgodnie z instalatorem PT-182 (trwale, po odczycie i z kontrolą wyniku).
+`--retry-failed-build` ponawia tylko pudełko w stanie błędu budowy z hashem zgodnym z profilem i bez kroków,
+z zachowaniem zabezpieczeń buildera. Nie zastępuje istniejącego profilu ani nie przebudowuje pudełka clean.
 
 ### Krok w pudełku w silniku (PT-181)
 

@@ -376,3 +376,17 @@ i profil; buduje tylko brakujące pudełko, a przy braku profilu zatwierdza jawn
 `docs/agents/pt-191/plasma-tide-proof.box.yaml` (python-qt, porty, narzędzia prób i domena npm).
 Pakiety trafiają do pudełka, bez instalowania czegokolwiek na hoście. Profil i pudełko pozostają do dowodów.
 To przygotowanie środowiska nie zatwierdza planu rzeczywistej karty testowej.
+
+Druga runda PT-191 (`pt191-20261106-061234`): profil próbny został zatwierdzony. Budowa dotarła do migawki clean,
+ale Incus odmówił: `Project "user-1000" doesn't allow for snapshot creation`. Pudełko pozostało w stanie
+`błąd budowy`, z poprawnym filtrowaniem NIC i zgodnym hashem; **prób środowiska/argv i czerwonej listy nie wykonano**.
+`make test`: 4156 testów, 229 modułów, 4 pominięte, 318,59 s; poprzedni błąd publikacji JSON-a zniknął,
+pozostał jeden błąd ręcznego odesłania karty do poprawy podczas domknięcia. Naprawa `fold` zachowuje ręczne todo
+po późnym wyniku starszego domknięcia; test regresyjny odtwarza kolejność z dziennika, bez zmiany pierwotnego
+testu integracyjnego. Kontrole lokalne po poprawce: 100 testów OK; pełne testy pozostają do ponowienia.
+
+Następne polecenie: `python3 scripts/box/boundary-trial.py --enable-snapshots --retry-failed-build`.
+Pierwsza flaga jawnie i trwale ustawia w skonfigurowanym projekcie Incusa `restricted.snapshots=allow`
+przez sudo, zgodnie z instalatorem PT-182, i sprawdza wynik. Nie zmienia innych uprawnień ani pakietów hosta.
+Druga ponawia przez builder tylko nieudaną budowę z hashem zgodnym z profilem i bez kroków; profil nie jest
+zastępowany. Pozostałe istniejące pudełka są zachowane. Potem wykonywane są pełne testy i próby granicy.

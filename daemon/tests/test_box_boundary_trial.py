@@ -1,6 +1,8 @@
 """Przygotowanie próby PT-191: brakujące środowisko można zbudować bez zastępowania istniejących danych."""
 import importlib.util
 import json
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import tempfile
@@ -16,21 +18,22 @@ spec.loader.exec_module(trial)
 
 
 class PrepareTest(unittest.TestCase):
-    def prepare(self, *, exists=False, profile=False, status_code=0, approve_code=0, status_error=""):
+    def prepare(self, *, exists=False, profile=False, status_code=0, approve_code=0, status_error="",
+                state=None, retry_failed=False):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "box.yaml"
             if profile:
                 path.write_text("existing profile")
 
-            def response(name, argv):
+            def response(name, argv, **_kwargs):
                 if name == "prepare-status":
                     return subprocess.CompletedProcess(argv, status_code,
-                                                       json.dumps({"exists": exists, "error": status_error}), "")
+                                                       json.dumps(state or {"exists": exists, "error": status_error}), "")
                 return subprocess.CompletedProcess(argv, approve_code if name == "approve-proof-profile" else 0, "", "")
 
             with mock.patch.object(trial, "run", side_effect=response) as run, \
                     mock.patch.object(trial.bp, "project_path", return_value=str(path)):
-                trial.prepare_missing()
+                trial.prepare_missing(retry_failed=retry_failed)
             if profile:
                 self.assertEqual(path.read_text(), "existing profile")
             return [c.args for c in run.call_args_list]
@@ -56,6 +59,51 @@ class PrepareTest(unittest.TestCase):
     def test_unknown_status_is_not_treated_as_a_missing_box(self):
         with self.assertRaisesRegex(ValueError, "nie potwierdzono"):
             self.prepare(status_error="incus unavailable")
+
+    def test_retry_only_rebuilds_failed_box_matching_profile_without_steps(self):
+        state = {"exists": True, "state": "błąd budowy", "recipeHash": "hash", "profileHash": "hash", "steps": []}
+        calls = self.prepare(state=state, retry_failed=True, status_code=3)
+        self.assertEqual([c[0] for c in calls], ["prepare-status", "retry-failed-build"])
+        for diff in ({"steps": ["active"]}, {"profileHash": "changed"}, {"diff": ["recipe"]}):
+            with self.subTest(diff=diff), self.assertRaisesRegex(ValueError, "odmowa ponowienia"):
+                self.prepare(state={**state, **diff}, retry_failed=True)
+        calls = self.prepare(state={**state, "state": "clean"}, retry_failed=True)
+        self.assertEqual([c[0] for c in calls], ["prepare-status"])
+
+    def test_enabling_snapshots_changes_only_documented_project_property(self):
+        replies = [subprocess.CompletedProcess([], 0, "deny\n", ""),
+                   subprocess.CompletedProcess([], 0, "", ""),
+                   subprocess.CompletedProcess([], 0, "allow\n", "")]
+        with mock.patch.object(trial.bsettings, "load", return_value=mock.Mock(project="user-1000")), \
+                mock.patch.object(trial, "sudo_command", return_value=(["sudo", "-n"], {})), \
+                mock.patch.object(trial, "run", side_effect=replies) as run:
+            self.assertTrue(trial.enable_snapshots())
+        self.assertEqual(run.call_args_list[1].args[1],
+                         ["sudo", "-n", "incus", "project", "set", "user-1000", "restricted.snapshots=allow"])
+
+    def test_unknown_snapshot_policy_is_never_changed(self):
+        with mock.patch.object(trial.bsettings, "load", return_value=mock.Mock(project="user-1000")), \
+                mock.patch.object(trial, "run", return_value=subprocess.CompletedProcess([], 1, "", "denied")) as run:
+            self.assertFalse(trial.enable_snapshots())
+        self.assertEqual(run.call_count, 1)
+
+    def test_status_three_is_accepted_only_for_explicit_retry(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(trial, "OUT", Path(tmp)), mock.patch.object(trial, "failures", []), \
+                mock.patch.object(trial.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, "{}", "")), \
+                redirect_stdout(io.StringIO()):
+            trial.run("known-status", ["incus"], ok_codes=(0, 3))
+            self.assertEqual(trial.failures, [])
+            trial.run("unexpected-status", ["incus"])
+            self.assertEqual(trial.failures, ["unexpected-status"])
+
+    def test_sudo_uses_password_window_without_a_terminal(self):
+        with mock.patch.dict(trial.os.environ, {}, clear=True), \
+                mock.patch.object(trial.sys, "stdin", mock.Mock(isatty=lambda: False)), \
+                mock.patch.object(trial.os, "access", side_effect=lambda path, _mode: path == "/usr/bin/ksshaskpass"):
+            argv, env = trial.sudo_command()
+        self.assertEqual(argv, ["sudo", "-A"])
+        self.assertEqual(env["SUDO_ASKPASS"], "/usr/bin/ksshaskpass")
 
     def test_proof_profile_is_valid_python_qt_with_ports_and_probe_tools(self):
         text = (ROOT / "docs/agents/pt-191/plasma-tide-proof.box.yaml").read_text()

@@ -3,6 +3,8 @@
 
 Domyślnie nie buduje ani nie zatwierdza profili. --prepare-missing odtwarza brakujące środowisko próby PT-192
 z profilem testowym tego ticketu; istniejące pudełko lub profil zachowuje. Nie tworzy karty testowej.
+--enable-snapshots ustawia jedną właściwość istniejącego projektu zgodnie z instalatorem PT-182 (sudo).
+--retry-failed-build ponawia tylko nieudaną budowę zgodną z bieżącym profilem, bez kroków.
 Przy działającym proxy innego procesu CLI odmawia zgodnie z kontraktem ensure_proxy.
 Logi pozostają w docs/box-prototype/pt191-<czas>/; nie zbieramy argv obcych procesów do pliku.
 """
@@ -10,6 +12,7 @@ import argparse
 import datetime
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,19 +21,19 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "daemon"))
-from tide_daemon.box import netenv, profile as bp, settings as bsettings
+from tide_daemon.box import netenv, profile as bp, settings as bsettings, state as bs
 
 OUT = None
 failures = []
 
 
-def run(name, argv):
+def run(name, argv, *, ok_codes=(0,), **kwargs):
     print(f"PRÓBA {name}: {argv}", flush=True)
-    result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, errors="replace")
+    result = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, errors="replace", **kwargs)
     (OUT / (name + ".stdout.log")).write_text(result.stdout)
     (OUT / (name + ".stderr.log")).write_text(result.stderr)
     print(f"WYNIK {name}: {result.returncode}", flush=True)
-    if result.returncode:
+    if result.returncode not in ok_codes:
         failures.append(name)
     return result
 
@@ -41,14 +44,51 @@ def check(name, ok, detail):
         failures.append(name)
 
 
-def prepare_missing():
-    result = run("prepare-status", [sys.executable, "daemon/tide.py", "box", "status", "plasma-tide", "--json"])
-    if result.returncode:
+def sudo_command():
+    env = dict(os.environ)
+    if sys.stdin.isatty():
+        return ["sudo"], env
+    if not env.get("SUDO_ASKPASS"):
+        for path in ("/usr/bin/ksshaskpass", "/usr/bin/ssh-askpass", "/usr/lib/ssh/x11-ssh-askpass"):
+            if os.access(path, os.X_OK):
+                env["SUDO_ASKPASS"] = path
+                break
+    return (["sudo", "-A"] if env.get("SUDO_ASKPASS") else ["sudo", "-n"]), env
+
+
+def enable_snapshots():
+    project = bsettings.load().project
+    before = run("snapshots-before", ["incus", "project", "get", project, "restricted.snapshots"])
+    if before.returncode:
+        return False  # Nie zmieniamy nieznanego stanu.
+    if before.stdout.strip() == "allow":
+        return True
+    sudo, env = sudo_command()
+    changed = run("snapshots-enable", [*sudo, "incus", "project", "set", project, "restricted.snapshots=allow"], env=env)
+    if changed.returncode:
+        return False
+    after = run("snapshots-after", ["incus", "project", "get", project, "restricted.snapshots"])
+    ok = after.returncode == 0 and after.stdout.strip() == "allow"
+    check("snapshots-policy", ok, f"{project}: restricted.snapshots=allow (zgodnie z instalatorem PT-182)")
+    return ok
+
+
+def prepare_missing(*, retry_failed=False):
+    codes = (0, 3) if retry_failed else (0,)
+    result = run("prepare-status", [sys.executable, "daemon/tide.py", "box", "status", "plasma-tide", "--json"],
+                 ok_codes=codes)
+    if result.returncode not in codes:
         return
     state = json.loads(result.stdout)
     if not isinstance(state, dict) or not isinstance(state.get("exists"), bool) or state.get("error"):
         raise ValueError("nie potwierdzono stanu pudełka — bez zmiany profilu i budowy")
     if state.get("exists"):
+        if retry_failed and state.get("state") == bs.FAILED:
+            if (state.get("steps") or not state.get("recipeHash") or state.get("diff")
+                    or state.get("recipeHash") != state.get("profileHash")):
+                raise ValueError("odmowa ponowienia: kroki lub niezgodny profil nieudanej budowy")
+            run("retry-failed-build", [sys.executable, "daemon/tide.py", "box", "build", "plasma-tide"])
+            return
         print("Przygotowanie: istniejące pudełko zachowane, bez przebudowy.", flush=True)
         return
     if not Path(bp.project_path("plasma-tide")).exists():
@@ -127,14 +167,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-missing", action="store_true",
                         help="zbuduj brakujące pudełko; nie zastępuj istniejącego profilu")
+    parser.add_argument("--enable-snapshots", action="store_true",
+                        help="ustaw restricted.snapshots=allow w projekcie Incusa, zgodnie z instalatorem (sudo)")
+    parser.add_argument("--retry-failed-build", action="store_true",
+                        help="ponów wyłącznie nieudaną, zgodną budowę bez kroków; istniejący profil pozostaje")
     options = parser.parse_args(argv)
     OUT = ROOT / "docs" / "box-prototype" / ("pt191-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     OUT.mkdir(parents=True)
     failures = []
     print(f"PT-191: {OUT}", flush=True)
-    if options.prepare_missing:
+    if options.prepare_missing or options.enable_snapshots or options.retry_failed_build:
         try:
-            prepare_missing()
+            ready = enable_snapshots() if options.enable_snapshots else True
+            if ready and (options.prepare_missing or options.retry_failed_build):
+                prepare_missing(retry_failed=options.retry_failed_build)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             failures.append("prepare-missing")
             print(f"BŁĄD przygotowania: {exc}", flush=True)
