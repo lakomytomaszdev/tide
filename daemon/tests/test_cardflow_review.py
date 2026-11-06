@@ -10,6 +10,13 @@ from .test_cardflow_dbus import git
 
 
 class ReviewFlowTest(FlowInProcess):
+    def wait_closed(self, card, timeout=30):
+        # „Do sprawdzenia” pojawia się już po merge; domknięcie uruchamia się dalej w ticku.
+        self.wait_column(card, "review", timeout=timeout)
+        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["closed"],
+                                   timeout=timeout), f"{card}: domknięcie nie zakończyło się")
+        return self.wait_column(card, "review", timeout=timeout)
+
     def test_default_reviewer_stays_with_custom_authors_provider(self):
         from tide_daemon.models import executors
 
@@ -111,7 +118,7 @@ class ReviewFlowTest(FlowInProcess):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: gotowe")
         reply = self.start(card, reviewer="Opus")
         self.assertTrue(reply["ok"], reply)
-        shown = self.wait_column(card, "review")
+        shown = self.wait_closed(card)
         steps = self.of(card, "step.started")
         self.assertEqual([s["kind"] for s in steps], ["ticket", "review", "close"])
         self.assertEqual((steps[0]["executor"], steps[1]["executor"]), ("Sonnet", "Opus"))
@@ -136,7 +143,7 @@ class ReviewFlowTest(FlowInProcess):
     def test_two_request_changes_rounds_then_approve(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 2")
         self.assertTrue(self.start(card)["ok"])
-        self.wait_column(card, "review", timeout=50)
+        self.wait_closed(card, timeout=50)
         verdicts = self.of(card, "review.verdict")
         self.assertEqual([(v["round"], v["verdict"], v["majors"]) for v in verdicts],
                          [(1, "REQUEST_CHANGES", 1), (2, "REQUEST_CHANGES", 1), (3, "APPROVE", 0)])
