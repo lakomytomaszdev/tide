@@ -217,6 +217,37 @@ def container_fd_exemption(process, source):
     return {"container": container, "checked_disks": disks}
 
 
+def host_fd_exemption(process):
+    """Drugi wyjątek koordynatora: czytelne metadane procesu hosta spoza Tide/testów."""
+    pid = int(process.name)
+    phase = "read-host-cgroup"
+    try:
+        before = (process / "cgroup").read_text()
+        if not before.strip() or incus_container(before) is not None:
+            return None
+        components = [part for line in before.splitlines()
+                      for part in line.split(":", 2)[2].split("/") if part]
+        if any(part.startswith("tide-") for part in components):
+            return None
+        units = [part for part in components if part.endswith((".service", ".scope"))]
+        if not units:
+            return None
+        phase = "read-host-cmdline"
+        argv = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
+        if not argv or process_kind(argv) is not None:
+            return None
+        phase = "read-host-comm"
+        comm = (process / "comm").read_text().strip()
+        if not comm or "\n" in comm:
+            return None
+        phase = "recheck-host-cgroup"
+        if (process / "cgroup").read_text() != before:
+            return None
+    except (OSError, ValueError) as error:
+        raise InspectionError(pid, phase, getattr(error, "errno", None)) from None
+    return {"comm": comm, "cgroup_unit": units[-1], "cgroup_units": units}
+
+
 def check_processes(source, allowed_daemon=None, *, audit=None):
     """Bez argv/środowiska w raporcie i bez odczytywania otwartych plików."""
     checked = 0
@@ -262,15 +293,18 @@ def check_processes(source, allowed_daemon=None, *, audit=None):
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as error:
-            # Korekta koordynatora: tylko kontener z potwierdzonym brakiem
-            # montażu źródła. Nigdy MainPID, nazwa procesu ani samo EACCES.
+            # Wyjątki koordynatora wymagają dowodów; nie wystarcza nazwa ani EACCES.
             pid = int(process.name)
             if (error.errno == errno.EACCES
                     and phase in {"list-fds", "read-fdinfo", "read-fdlink"}):
                 evidence = container_fd_exemption(process, source)
+                reason = "incus-container-without-source-mount"
+                if evidence is None:
+                    evidence = host_fd_exemption(process)
+                    reason = "host-non-tide-non-test-fd-eacces"
                 if evidence is not None:
                     skip = {"pid": pid, "phase": phase, "errno": error.errno, **evidence,
-                            "reason": "incus-container-without-source-mount"}
+                            "reason": reason}
                     if audit is not None:
                         audit.event("process-inspection-skipped", **skip)
                     skips.append(skip)
