@@ -4,9 +4,11 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 SERVICE = "org.tide.Daemon"
@@ -15,7 +17,8 @@ IFACE = "org.tide.Daemon.Issues"
 FILE_MAX = 20 * 1024 * 1024
 EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
               "conflict": 4, "version-conflict": 4, "not-found": 5,
-              "git-busy": 6, "io-error": 7, "broken-file": 7}
+              "git-busy": 6, "io-error": 7, "broken-file": 7,
+              "console-open": 4, "no-step": 5, "no-terminal": 3}
 
 
 class CliError(Exception):
@@ -29,10 +32,15 @@ class Parser(argparse.ArgumentParser):
 
 
 def parser():
-    root = Parser(description="Tide — szkice spraw przez publiczną usługę.")
+    root = Parser(description="Tide — sprawy i karty przez publiczną usługę.")
     root.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     commands = root.add_subparsers(dest="command", required=True, parser_class=Parser)
     info = commands.add_parser("info", help="wersja i możliwości API")
+    card = commands.add_parser("card", help="karty")
+    card_actions = card.add_subparsers(dest="action", required=True, parser_class=Parser)
+    opening = card_actions.add_parser("open", help="otwórz rozmowę opiekuna przez PT-149")
+    opening.add_argument("id", help="K-N")
+    opening.add_argument("--problem", help="identyfikator problemu opiekuna")
     next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
     next_id.add_argument("repo")
     next_id.add_argument("--prefix", default="")
@@ -81,7 +89,7 @@ def parser():
     attachment.add_argument("--attachment", required=True)
     attachment.add_argument("--output", required=True)
     attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
-    for command in (info, issue, create, listing, show, update, attach, detach, attachment, *transitions):
+    for command in (info, card, opening, issue, create, listing, show, update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
 
@@ -99,17 +107,20 @@ class PublicApi:
         if not self.bus.isConnected():
             raise CliError("unavailable", "Brak połączenia z magistralą sesji D-Bus.")
 
-    def call(self, method, *args):
-        message = self.QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, method)
+    def request(self, path, iface, method, *args):
+        message = self.QDBusMessage.createMethodCall(SERVICE, path, iface, method)
         message.setArguments(list(args))
         reply = self.bus.call(message, self.QDBus.CallMode.Block, 30000)
         if reply.type() == self.QDBusMessage.MessageType.ErrorMessage:
             incompatible = reply.errorName().endswith(("UnknownMethod", "UnknownInterface", "UnknownObject"))
             raise CliError("api-incompatible" if incompatible else "unavailable",
-                           "Usługa nie udostępnia API spraw v1." if incompatible else
-                           "Usługa Tide jest niedostępna albo nie odpowiedziała; ponów z tym samym request-id.")
+                           "Usługa nie udostępnia wymaganego publicznego API." if incompatible else
+                           "Usługa Tide jest niedostępna albo nie odpowiedziała.")
+        return reply.arguments()
+
+    def call(self, method, *args):
+        values = self.request(PATH, IFACE, method, *args)
         try:
-            values = reply.arguments()
             read = method == "ReadAttachment"
             result = json.loads(values[0]) if len(values) == (2 if read else 1) and isinstance(values[0], str) else None
             if (not isinstance(result, dict) or type(result.get("apiVersion")) is not int or
@@ -123,6 +134,62 @@ class PublicApi:
                 raise CliError("api-incompatible", "Nieprawidłowe bajty odpowiedzi ReadAttachment.")
             return result, bytes(values[1])
         return result
+
+
+class BoardApi(PublicApi):
+    path, iface = "/Board", "org.tide.Daemon.Board"
+
+    def available(self):
+        try:
+            values = self.request(self.path, "org.freedesktop.DBus.Introspectable", "Introspect")
+        except CliError as exc:
+            if exc.reply["error"] == "api-incompatible":
+                return False
+            raise
+        try:
+            if len(values) != 1 or not isinstance(values[0], str):
+                raise ValueError()
+            node = ET.fromstring(values[0])
+        except (ValueError, ET.ParseError):
+            raise CliError("api-incompatible", "Nieprawidłowy opis publicznego API Tablicy.") from None
+        for method in node.findall(f"interface[@name='{self.iface}']/method[@name='TalkToCaretaker']"):
+            inputs = [a.get("type") for a in method.findall("arg") if a.get("direction", "in") == "in"]
+            outputs = [a.get("type") for a in method.findall("arg") if a.get("direction") == "out"]
+            if inputs == ["s", "s"] and outputs == ["s"]:
+                return True
+        return False
+
+    def open(self, card_id, problem=None):
+        if not re.fullmatch(r"K-[1-9][0-9]*", card_id) or (problem is not None and not problem.strip()):
+            raise CliError("bad-request", "Podaj K-N i niepusty identyfikator problemu, jeśli jest wskazany.")
+        if not self.available():
+            raise CliError("api-incompatible", "Brak publicznego TalkToCaretaker(s, s) → s z PT-149.")
+        data = {} if problem is None else {"problem": problem}
+        values = self.request(self.path, self.iface, "TalkToCaretaker", card_id, json.dumps(data, ensure_ascii=False))
+        try:
+            result = json.loads(values[0]) if len(values) == 1 and isinstance(values[0], str) else None
+            if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+                raise ValueError()
+            if result["ok"]:
+                if not isinstance(result.get("step"), str) or not result["step"]:
+                    raise ValueError()
+            elif not isinstance(result.get("error"), str) or not result["error"]:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise CliError("api-incompatible", "Nieprawidłowa odpowiedź TalkToCaretaker z PT-149.") from None
+        return result
+
+
+def card_info():
+    # Introspekcja potwierdza wyłącznie wejście; nie uruchamia rozmowy ani testu kontraktu.
+    try:
+        available = BoardApi().available()
+        error = ""
+    except CliError as exc:
+        available, error = False, exc.reply["error"]
+    return {"available": available, "contract": "PT-149", "contractVerified": False,
+            "verification": "Wymaga testu daemona na prywatnym D-Bus z atrapą Konsoli.",
+            **({"error": error} if error else {})}
 
 
 def read_attachment_source(path):
@@ -200,8 +267,15 @@ def main(argv=None):
     as_json = "--json" in argv
     try:
         args = parser().parse_args(argv)
-        api = PublicApi()
-        result = api.call("Info")
+        if args.command == "card":
+            result = BoardApi().open(args.id, args.problem)
+        else:
+            api = PublicApi()
+            result = api.call("Info")
+        if result["ok"] and args.command == "info":
+            result["operations"] = {"card.open": card_info()}
+            if result["operations"]["card.open"]["available"]:
+                result["capabilities"] = [*result.get("capabilities", []), "card.open"]
         if result["ok"] and args.command in ("next-id", "check-plans"):
             asset = result.get("resources", {}).get(args.command, {})
             if not asset.get("available") or not os.path.isfile(asset.get("path", "")):
@@ -227,7 +301,7 @@ def main(argv=None):
                                       env=env, check=False).returncode
             except OSError:
                 raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
-        if result["ok"] and args.command != "info":
+        if result["ok"] and args.command == "issue":
             if f"issue.{args.action}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
             if args.action == "create":
@@ -275,7 +349,7 @@ def main(argv=None):
     if as_json:
         print(json.dumps(result, ensure_ascii=False))
     elif not result["ok"]:
-        print(result.get("message", "Błąd usługi Tide."), file=sys.stderr)
+        print(result.get("message", result.get("error", "Błąd usługi Tide.")), file=sys.stderr)
     elif "issue" in result:
         issue = result["issue"]
         print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
@@ -288,6 +362,8 @@ def main(argv=None):
             print(error["message"], file=sys.stderr)
     elif "attachment" in result:
         print(f"{result['id']}: zapisano {result['attachment']['name']} do {args.output}")
+    elif "step" in result:
+        print(f"Rozmowa opiekuna: {result['step']}")
     else:
         print(f"Tide API v{result['apiVersion']}")
     if result.get("commitError") and not as_json:
