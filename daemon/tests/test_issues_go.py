@@ -269,13 +269,18 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(len(self.of("K-1", "card.started")), 1)
 
     def assert_import_recovery(self, boundary, *, restart=False, complete=False, hard=False,
-                               partial=False, remove_source=False):
+                               partial=False, remove_source=False, change_source=False):
         from . import test_cardflow_import_plan as imports
         from tide_daemon.cardflow.state import fold
 
         self.ready()
         path = imports.PlanImportTest.source(self, "K-1", old=not complete)
         source = Path(path).read_bytes()
+        source_cards = {p: p.read_bytes() for p in Path(path).parent.glob("tickets/*.md")}
+        spec_path = Path(path).with_name("spec.md")
+        if complete:
+            spec_path.write_text("# Przyjęta specyfikacja\nPierwotne wymagania.\n")
+        source_spec = spec_path.read_bytes() if complete else b""
         launch = {"entry": "import", "planPath": path, "executor": "Sonnet"}
         journal = self.flow.engine.journal
         append, write_file = journal.append, journal.write_file
@@ -293,8 +298,9 @@ class IssueGoTest(FlowInProcess):
             return result
 
         def interrupted_write(card, rel, data):
-            result = write_file(card, rel, b"urwana kopia" if partial and rel == "plan/source.md" else data)
-            if boundary == "source.md" and rel == "plan/source.md":
+            target = {"source.md": "plan/source.md", "ticket.md": "plan/import/tickets/PT-8.md"}.get(boundary)
+            result = write_file(card, rel, b"urwana kopia" if partial and rel == target else data)
+            if target and rel == target:
                 interrupt()
             return result
 
@@ -316,6 +322,15 @@ class IssueGoTest(FlowInProcess):
             self.assertEqual(self.of("K-1", "order.delivery-error"), [])
         if remove_source:
             Path(path).unlink()
+            for card_path in source_cards:
+                card_path.unlink()
+            if complete:
+                spec_path.unlink()
+        elif change_source:
+            Path(path).write_bytes(source.replace(b"Przekazanie", b"Zmienione").replace(b"po gotowym", b"zmienione"))
+            for card_path in source_cards:
+                card_path.write_text("# Zmieniona kartka\n\n- [ ] Inne wymaganie.\n")
+            spec_path.write_text("# Zmieniona specyfikacja\n")
         if restart:
             self.restart()
             self.flow.stop()
@@ -326,6 +341,14 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(Path(self.root, "flow/K-1/plan/source.md").read_bytes(), source)
         if complete:
             self.assertIsNotNone(state.plan_proposed)
+            self.assertEqual(state.plan_proposed["title"], "Przekazanie")
+            self.assertEqual(state.plan_proposed["specification"].encode(), source_spec)
+            self.assertEqual(Path(self.root, "flow/K-1/plan/plan.md").read_bytes(), source)
+            for row in state.plan_proposed["rows"]:
+                self.assertEqual(row["body"].encode(), source_cards[Path(path).parent / "tickets" / (row["workId"] + ".md")])
+                self.assertEqual(Path(row["cardPath"]).read_bytes(), row["body"].encode())
+            self.assertEqual(state.plan_proposed["rows"][1]["note"], "po gotowym")
+            self.assertEqual(state.imported["path"], path)
         else:
             self.assertEqual([s["kind"] for s in state.steps.values()], ["plan-import"])
         def reviewed():
@@ -347,8 +370,14 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(len(self.store.snapshot()["cards"]), 1)
         if remove_source:
             self.assertFalse(Path(path).exists())
+            self.assertTrue(all(not p.exists() for p in source_cards))
+        elif change_source:
+            self.assertIn(b"Zmienione", Path(path).read_bytes())
+            self.assertTrue(all(b"Inne wymaganie" in p.read_bytes() for p in source_cards))
+            self.assertEqual(spec_path.read_text(), "# Zmieniona specyfikacja\n")
         else:
             self.assertEqual(Path(path).read_bytes(), source)
+            self.assertTrue(all(p.read_bytes() == body for p, body in source_cards.items()))
 
     def test_import_recovers_after_started(self):
         self.assert_import_recovery("card.started")
@@ -364,6 +393,24 @@ class IssueGoTest(FlowInProcess):
 
     def test_complete_import_restart_after_started(self):
         self.assert_import_recovery("card.started", restart=True, complete=True, hard=True)
+
+    def test_complete_import_recovers_without_original(self):
+        self.assert_import_recovery("card.started", complete=True, hard=True, remove_source=True)
+
+    def test_complete_import_restart_without_original(self):
+        self.assert_import_recovery("card.started", restart=True, complete=True, hard=True, remove_source=True)
+
+    def test_complete_import_restart_after_imported_without_original(self):
+        self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True, remove_source=True)
+
+    def test_complete_import_recovers_without_reading_changed_original(self):
+        self.assert_import_recovery("card.started", complete=True, hard=True, change_source=True)
+
+    def test_complete_import_restart_after_imported_ignores_changed_original(self):
+        self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True, change_source=True)
+
+    def test_complete_import_restart_repairs_partial_ticket_without_original(self):
+        self.assert_import_recovery("ticket.md", restart=True, complete=True, hard=True, partial=True, remove_source=True)
 
     def test_complete_import_restart_after_imported(self):
         self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True)

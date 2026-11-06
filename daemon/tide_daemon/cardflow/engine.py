@@ -1023,6 +1023,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # przed przyjęciem zlecenia, aby restart mógł dokończyć oba późniejsze zapisy.
         prepared = self.journal.append(card_id, "plan.import-prepared", path=path,
                                        source=source_bytes.decode("utf-8"), rows=import_rows,
+                                       **({"cards": proposal.cards, "specification": self._plan_spec(path)} if complete else {}),
                                        needsCompletion=not complete)
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                             importPreparation=prepared["seq"],
@@ -1034,9 +1035,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             prefix=prefix, trackerProject=project.youtrack,
                             trackerUrl=yt.load_config()["url"] if project.youtrack else "", **base)
         self._project_base(card_id)
-        self._recover_import(card_id, fold(self.journal.read(card_id)))
+        st = self._recover_import(card_id, fold(self.journal.read(card_id)))
         if complete:
-            result = self.propose_plan(card_id, path, import_source=True)
+            result = self.propose_plan(card_id, st.imported.get("snapshotPath") or path, import_source=True)
             return {**result, "imported": True, "needsCompletion": False}
         self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
         st = fold(self.journal.read(card_id))
@@ -1053,8 +1054,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if prepared is None:
             raise FlowError("broken-import", "brakuje zapisanego źródła przejęcia planu")
         self.journal.write_file(card, os.path.join("plan", "source.md"), prepared["source"].encode("utf-8"))
+        snapshot = {}
+        if "cards" in prepared:
+            # Wejścia przejęcia są osobne od później edytowanej propozycji.
+            folder = os.path.join("plan", "import")
+            rel = self.journal.write_file(card, os.path.join(folder, "source.md"), prepared["source"].encode("utf-8"))
+            for ident, body in prepared["cards"].items():
+                self.journal.write_file(card, os.path.join(folder, "tickets", ident.lstrip("#") + ".md"),
+                                        body.encode("utf-8"))
+            self.journal.write_file(card, os.path.join(folder, "spec.md"), prepared["specification"].encode("utf-8"))
+            snapshot = {"snapshotPath": os.path.join(self.store.root, rel)}
         self.journal.append(card, "plan.imported", path=prepared["path"], rows=prepared["rows"],
-                            needsCompletion=prepared["needsCompletion"])
+                            needsCompletion=prepared["needsCompletion"], **snapshot)
         return fold(self.journal.read(card))
 
     def _start_project(self, card_id, prepared):
@@ -1464,7 +1475,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                  and step.get("seq", 0) > st.started["seq"] and step["step"] not in st.superseded]
         if not steps:
             if st.imported is not None and not st.imported.get("needsCompletion", True):
-                self.propose_plan(card, st.imported["path"], import_source=True)
+                self.propose_plan(card, st.imported.get("snapshotPath") or st.imported["path"], import_source=True)
                 return True
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
             cfg = self.models_config() if self.models_config else None
@@ -1782,6 +1793,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
                  (finished.get("snapshotDir") or os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
         imported = fold(self.journal.read(card_id)).imported
+        if import_source and (imported or {}).get("snapshotPath") == os.path.realpath(path):
+            roots = (*roots, os.path.dirname(imported["snapshotPath"]))
         source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
         # Projekty zlecenia z card.started (Planowanie); inne wejścia i dawne dzienniki — tylko projekt karty.
         order = ((fold(self.journal.read(card_id)).started or {}).get("projects") or []
