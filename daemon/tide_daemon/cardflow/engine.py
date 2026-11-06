@@ -1056,6 +1056,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
         source_evidence = self._issue_evidence(item)
+        if mode == "full":
+            self._require_safe_evidence_console(selected.tool, source_evidence)
         with lock_for(project.repo):
             base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         if project.youtrack:
@@ -1203,6 +1205,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         context_state = fold(self.journal.read(item.id))
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
+        self._require_safe_evidence_console(selected.tool, source_evidence)
         if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
         context_prompt, base_context = self._step_base_context(context_state)
@@ -1244,8 +1247,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
         order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
         read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
-        if source_evidence and selected.tool == "claude":
-            read_dirs += [os.path.join(inp, "evidence"), os.path.join(inp, "images")]
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
                                        selected.route)
         if read_dirs:
@@ -1487,6 +1488,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy.")
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
+        if (source_step.get("program") or "claude") == "claude":
+            item, _ = self._project(card_id)
+            self._require_safe_evidence_console("claude", self._issue_evidence(item, started=st.started))
         if self.terminal is None or not self.terminal.available():
             raise FlowError("no-terminal", "nie znaleziono Konsoli")
         worktree = source_step.get("worktree") or ""
@@ -1856,6 +1860,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return evidence.load(self.store, card.id, ref)
         except (BoardError, OSError, ValueError, UnicodeError) as exc:
             raise FlowError("broken-evidence", f"{card.id}: odmowa dostarczenia dowodów sprawy: {exc}") from None
+
+    @staticmethod
+    def _require_safe_evidence_console(tool, source_evidence):
+        # Konsola Claude nie wymusza piaskownicy Bash; Edit i tryb 0444 nie chronią przed powłoką.
+        # Dotyczy też przejęcia sesji w tle, której argv z --settings nie przechodzi do resume.
+        if tool == "claude" and source_evidence:
+            raise FlowError("interactive-evidence-unsafe",
+                            "Interaktywny Claude nie zapewnia dowodów sprawy tylko do odczytu. "
+                            "Wybierz Lekkie planowanie lub Codexa; krok Claude można wznowić w tle.")
 
     def _wait_cause(self, reason: str, selected) -> tuple[str, str]:
         """(przyczyna, odnowienie) czekania do `step.waiting` (pełna karta, PT-128): `quota` (okno limitu, z godziną

@@ -2,6 +2,8 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 from unittest import mock
 
 from tide_daemon.issues import IssueStore
@@ -168,6 +170,102 @@ class EvidenceFlowTest(AcceptedFixture):
         inp = Path(self.of(card, "step.started")[0]["stepDir"], "in")
         self.assertEqual((inp / "images/1-manual.png").read_bytes(), image.read_bytes())
         self.assertFalse((inp / "evidence").exists())
+
+
+class EvidenceInteractiveTest(AcceptedFixture):
+    @staticmethod
+    def shell_write(path):
+        # Właściciel pliku 0444 może zmienić tryb, zapisać bajty i podmienić plik przez powłokę.
+        return subprocess.run(["/bin/sh", "-ec", 'chmod u+w "$1"; printf zmiana > "$1"; '
+                               'rm -- "$1"; printf podmiana > "$1"', "probe", str(path)],
+                              capture_output=True)
+
+    def writing_terminal(self, card):
+        from .test_cardflow_full_planning import _Terminal
+        fixture = self
+
+        class WritingTerminal(_Terminal):
+            launchers = SimpleNamespace(agents=fixture.fakes)
+
+            def open(self, plan):
+                super().open(plan)
+                step = next(step for step in reversed(fixture.of(card, "step.started"))
+                            if Path(step["stepDir"], "in/evidence/attachments.json").exists())
+                folder = Path(step["stepDir"], "in/evidence")
+                manifest = json.loads((folder / "attachments.json").read_text())
+                for path in [folder / "report.md", folder / "attachments.json",
+                             *(folder / entry["path"] for entry in manifest["attachments"])]:
+                    result = fixture.shell_write(path)
+                    fixture.assertEqual(result.returncode, 0, result.stderr)
+                return "tab"
+
+        return WritingTerminal()
+
+    def assert_console_refused(self, action, terminal):
+        from tide_daemon.cardflow.engine import FlowError
+        with self.assertRaises(FlowError) as refused:
+            action()
+        self.assertEqual(refused.exception.code, "interactive-evidence-unsafe")
+        self.assertIn("tylko do odczytu", str(refused.exception))
+        self.assertEqual(terminal.opened, [], "powłoka nie może dostać dowodów bez ochrony zapisu")
+
+    def test_shell_probe_can_replace_owned_read_only_file(self):
+        target = Path(self.base, "probe")
+        target.write_bytes(b"dowod")
+        target.chmod(0o444)
+        result = self.shell_write(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(target.read_bytes(), b"podmiana")
+
+    def test_full_claude_refuses_before_shell_can_mutate_evidence(self):
+        card, _ = self.accepted()
+        terminal = self.writing_terminal(card)
+        engine = self.flow.engine
+        engine.terminal = terminal
+        self.assert_console_refused(
+            lambda: engine.start(card, {"entry": "planning", "mode": "full", "executor": "Sonnet"}),
+            terminal)
+        self.assertEqual(self.events(card), [], "odmowa nie rozpoczyna zlecenia")
+
+    def test_interactive_transfer_to_claude_refuses_before_shell_can_mutate_evidence(self):
+        from .test_cardflow_full_planning import _Terminal
+        from tide_daemon.cardflow.state import fold
+        card, _ = self.accepted()
+        engine = self.flow.engine
+        engine.terminal = _Terminal()
+        self.assertTrue(self.start(card, entry="planning", mode="full", executor="Codex Astra")["ok"])
+        self.flow.stop()
+        state = fold(engine.journal.read(card))
+        step = state.steps[state.last_step]
+        terminal = self.writing_terminal(card)
+        engine.terminal = terminal
+        before = self.events(card)
+        self.assert_console_refused(
+            lambda: engine._resume_step(card, state, step, {"choice": "transfer", "executor": "Sonnet"}),
+            terminal)
+        self.assertEqual(self.events(card), before)
+        self.assert_step_evidence_unchanged(step)
+
+    def test_enter_claude_refuses_before_shell_can_mutate_existing_evidence(self):
+        card, _ = self.accepted()
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "step.finished"), timeout=15), self.events(card))
+        self.flow.stop()
+        engine = self.flow.engine
+        step = self.of(card, "step.started")[0]
+        terminal = self.writing_terminal(card)
+        engine.terminal = terminal
+        before = self.events(card)
+        self.assert_console_refused(lambda: engine.enter(card, step["step"]), terminal)
+        self.assertEqual(self.events(card), before)
+        self.assert_step_evidence_unchanged(step)
+
+    def assert_step_evidence_unchanged(self, step):
+        folder = Path(step["stepDir"], "in/evidence")
+        manifest = json.loads((folder / "attachments.json").read_text())
+        for entry in manifest["attachments"]:
+            self.assertEqual(hashlib.sha256((folder / entry["path"]).read_bytes()).hexdigest(),
+                             entry["sha256"])
 
 
 class EvidenceProcessTest(AcceptedFixture):
