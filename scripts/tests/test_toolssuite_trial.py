@@ -12,7 +12,8 @@ spec.loader.exec_module(trial)
 
 def run(name, port, start, end):
     marker = {"port": str(port), "e2e": str(port), "base": str(port), "chrome": "/usr/local/bin/tide-chrome",
-              "NO_PROXY": trial.BOX_NO_PROXY, "no_proxy": trial.BOX_NO_PROXY, "cwd": f"/repo-worktrees/{name}"}
+              "bridge": "10.173.184.1", "NO_PROXY": trial.box_no_proxy("10.173.184.1"),
+              "no_proxy": trial.box_no_proxy("10.173.184.1"), "cwd": f"/repo-worktrees/{name}"}
     return {"name": name, "code": 0, "proxy_denied": "",
             "markers": [{**marker, "phase": "start", "ms": start}, {**marker, "phase": "end", "ms": end}]}
 
@@ -45,7 +46,7 @@ class EvidenceTest(unittest.TestCase):
     def test_karma_requires_chrome_and_full_no_proxy(self):
         one = [self.runs[0]]
         self.assertEqual(trial.assess(one, "karma"), [])
-        for key in ("chrome", "NO_PROXY", "no_proxy"):
+        for key in ("chrome", "NO_PROXY", "no_proxy", "bridge"):
             with self.subTest(key=key):
                 broken = copy.deepcopy(one)
                 broken[0]["markers"][0][key] = ""

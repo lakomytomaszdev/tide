@@ -15,13 +15,13 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "daemon"))
-from tide_daemon.box.netenv import BOX_NO_PROXY
+from tide_daemon.box.runner import box_no_proxy
 
 MARK = "PT185 "
 # Wyłącznie jawne pola próby, bez tokenów ani adresów uwierzytelnionego proxy.
 PROBE = """console.log('PT185 '+JSON.stringify({
 phase:process.argv[1],ms:Date.now(),port:process.env.PORT,e2e:process.env.E2E_PORT,
-base:process.env.TIDE_PORT_BASE,chrome:process.env.CHROME_BIN,
+base:process.env.TIDE_PORT_BASE,chrome:process.env.CHROME_BIN,bridge:process.env.TIDE_BOX_BRIDGE,
 no_proxy:process.env.no_proxy,NO_PROXY:process.env.NO_PROXY,cwd:process.cwd()}))"""
 
 
@@ -62,7 +62,7 @@ def assess(runs, stage):
             if end["ms"] <= start["ms"] or end["cwd"] != start["cwd"]:
                 raise ValueError("niespójny czas lub worktree")
             for key in ("NO_PROXY", "no_proxy"):
-                if start.get(key) != BOX_NO_PROXY:
+                if not start.get("bridge") or start.get(key) != box_no_proxy(start["bridge"]):
                     raise ValueError(f"niepełne {key}")
             if stage == "karma" and not start.get("chrome"):
                 raise ValueError("brak CHROME_BIN")

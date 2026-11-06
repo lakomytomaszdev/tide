@@ -86,6 +86,10 @@ def _save_run(slug, runner, step):
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"repo": step.repo, "card": runner.card, "box": runner.box, "stepDir": step.step_dir,
                    "packs": {dev.name: dev.values() for dev in runner.extra_devices}}, fh)
+    # Brak odmów też musi mieć czytelny dowód; proxy dopisuje wiersze dopiero przy odmowie.
+    fd = os.open(os.path.join(folder, "proxy-denied.log"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
 
 
 def _finish(slug, runner, pool, owner):

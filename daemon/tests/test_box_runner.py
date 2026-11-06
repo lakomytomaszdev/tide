@@ -855,6 +855,27 @@ class TideStepTest(unittest.TestCase):
         with open(os.path.join(self.step, "in", "exit-code"), encoding="utf-8") as fh:
             self.assertEqual(fh.read().strip(), "0")
 
+    def test_stack_browser_settings_survive_clean_environment_without_evaluating_shell(self):
+        stack_env = os.path.join(self.tmp, "stack-environment")
+        with open(stack_env, "w", encoding="utf-8") as fh:
+            fh.write('CHROME_BIN="/usr/local/bin/tide-chrome"\n'
+                     'PLAYWRIGHT_BROWSERS_PATH="/opt/ms-playwright"\n'
+                     'NODE_USE_ENV_PROXY="1"\nUNRELATED=secret\n'
+                     'DOTNET_ROOT="$(touch /must-not-exist)"\n')
+        # Podmieniamy wyłącznie lokalizację pliku obrazu, nie parser ani ścieżkę wykonania.
+        wrapper = os.path.join(self.tmp, "tide-step")
+        with open(br.TIDE_STEP_SCRIPT, encoding="utf-8") as fh:
+            script = fh.read().replace("stackfile=/etc/environment", "stackfile=" + stack_env)
+        with open(wrapper, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        self.write_env(f"TIDE_CWD={self.cwd}\n")
+        with mock.patch.object(br, "TIDE_STEP_SCRIPT", wrapper):
+            proc = self.run_step("/bin/sh", "-c", 'printf "%s|%s|%s|%s|%s" "$CHROME_BIN" '
+                                 '"$PLAYWRIGHT_BROWSERS_PATH" "$NODE_USE_ENV_PROXY" '
+                                 '"${UNRELATED:-absent}" "${DOTNET_ROOT:-absent}"')
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.log(), "/usr/local/bin/tide-chrome|/opt/ms-playwright|1|absent|absent")
+
 
 if __name__ == "__main__":
     unittest.main()

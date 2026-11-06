@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 from unittest import mock
 
@@ -92,6 +93,10 @@ class CommandTest(BoxRunnerCase):
             code, out, err = self.run_cli()
         self.assertEqual(code, 0, err)
         folder, env = self.env_for_launch()
+        denied_path = re.search(r"^dziennik proxy: (.+)$", err, re.M).group(1)
+        with open(denied_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "")
+        self.assertEqual(os.stat(denied_path).st_mode & 0o777, 0o600)
         self.assertIn("HTTPS_PROXY=http://tide:", out)
         self.assertEqual(env["NO_PROXY"], br.box_no_proxy(self.proxy.listen))
         self.assertEqual(env["TIDE_PORT_BASE"], "49123")

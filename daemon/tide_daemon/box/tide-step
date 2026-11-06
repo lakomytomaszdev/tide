@@ -3,7 +3,7 @@
 #
 # Uruchamiane przez BoxRunner jako usługa użytkownika `agent` (systemd-run --user … -- tide-step <argv agenta>)
 # z jedną zmienną TIDE_STEP=<katalog kroku>. Kolejno:
-#  1. czyści środowisko (env -i): zostaje tylko to, co jest w <krok>/in/env,
+#  1. czyści środowisko (env -i), odczytuje jawne ustawienia stosów obrazu i <krok>/in/env,
 #  2. sprawdza <krok>/in/env: zwykły plik (nie dowiązanie), tryb 0600, właściciel = bieżący użytkownik — inaczej
 #     odmawia (kod 125), bo tokeny punktu lokalnego nie mogą leżeć w pliku czytelnym dla innych,
 #  3. eksportuje wiersze KLUCZ=wartość bez `eval` (wartości nigdy nie trafiają do argv — `ps` hosta widzi argv
@@ -26,6 +26,25 @@ unset TIDE_STEP_CLEAN
 # in/env może ją potem nadpisać.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# Szablony stosów zapisują te wartości w obrazie. Nie dziedziczymy środowiska hosta ani nie
+# wykonujemy /etc/environment jako powłoki. Ustawienia kroku poniżej mają pierwszeństwo.
+stackfile=/etc/environment
+if [ -f "$stackfile" ] && [ ! -L "$stackfile" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        key=${line%%=*}
+        case $key in
+            CHROME_BIN | PLAYWRIGHT_BROWSERS_PATH | NODE_USE_ENV_PROXY | DOTNET_ROOT | \
+            DOTNET_CLI_TELEMETRY_OPTOUT | DOTNET_NOLOGO | DOTNET_SKIP_FIRST_TIME_EXPERIENCE | QT_QPA_PLATFORM) ;;
+            *) continue ;;
+        esac
+        [ "$line" != "$key" ] || continue
+        value=${line#*=}
+        case $value in \"*\") value=${value#\"}; value=${value%\"} ;; esac
+        case $value in *[!A-Za-z0-9._/:,-]*) continue ;; esac
+        export "$key=$value"
+    done < "$stackfile"
+fi
+unset stackfile line key value
 envfile="$step/in/env"
 
 if [ ! -f "$envfile" ] || [ -L "$envfile" ]; then
