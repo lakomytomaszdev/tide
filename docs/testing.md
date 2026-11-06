@@ -82,6 +82,12 @@ bez dodatkowych fixture w modułach. Chronimy pierwotne `HOME/.local/state/tide`
 `<pierwotny XDG_STATE_HOME>/tide`. Zapamiętujemy ścieżki oryginalne i rozwiązane przez `realpath`;
 sprawdzamy także dowiązania do katalogów i plików, nieistniejące jeszcze cele, ścieżki względem
 `cwd`/`dirfd`, obie strony rename/link i usuwanie lub przeniesienie przodka chronionego katalogu.
+Dowiązania rozwiązujemy komponent po komponencie w kontekście zgłaszającego procesu.
+`/proc/self` i `/proc/thread-self` zachowują jego identyfikator procesu/wątku również wtedy,
+gdy pojawią się dopiero w celu kolejnego dowiązania, np. przez `/dev/fd/N` albo własny łańcuch
+aliasów. Ponowne otwarcie chronionego pliku przez legalny deskryptor O_RDONLY z O_TRUNC
+jest blokowane przed wyzerowaniem, także w potomnej powłoce. Legalne aliasy poza ochroną
+zachowują prawo zapisu; usunięcie samego zewnętrznego dowiązania nadal jest dozwolone.
 
 Strażnik wymaga Linux x86-64, seccomp user notification (z obsługą CONTINUE) i dostępu przodka
 do `/proc/<pid>/{mem,fd,cwd}`. Nie wymaga kompilatora, roota, zmiany praw katalogu ani montowań.

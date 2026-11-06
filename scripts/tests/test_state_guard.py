@@ -80,6 +80,47 @@ class StateGuardTest(unittest.TestCase):
                 with self.subTest(root=root, action=action):
                     self.probe("shell-" + action, root / ("missing" if action == "create" else "existing"))
 
+    def check_descriptor_alias(self, entry):
+        for root in self.roots:
+            for mode in ("python", "thread", "shell"):
+                for alias in ("dev-fd", "indirect-self", "indirect-thread-self"):
+                    with self.subTest(entry=entry, root=root, mode=mode, alias=alias):
+                        (root / "existing").write_text("synthetic original")
+                        self.env["TIDE_GUARD_PROBE_ALIAS"] = alias
+                        result, records = self.probe("fd-alias-" + mode, root / "existing", entry=entry)
+                        self.assertIn("SHELL DENIED" if mode == "shell" else "PYTHON SWALLOWED", result.stdout)
+                        self.assertTrue(any(record.get("operation") in ("open", "openat")
+                                            and record.get("targets") for record in records), records)
+                        if mode in ("thread", "shell"):
+                            self.assertTrue(any(record["pid"] != record["scenario"] for record in records), records)
+                        for name in ("fd-alias-chain", "fd-alias-link"):
+                            (self.root / name).unlink(missing_ok=True)
+
+    def test_descriptor_alias_cannot_truncate_protected_file(self):
+        self.check_descriptor_alias("unittest")
+
+    @unittest.skipUnless(importlib.util.find_spec("pytest"), "pytest niedostępny")
+    def test_pytest_descriptor_alias_cannot_truncate_protected_file(self):
+        self.check_descriptor_alias("pytest")
+
+    def test_descriptor_alias_can_truncate_unprotected_file(self):
+        for mode in ("python", "shell"):
+            for alias in ("dev-fd", "indirect-self", "indirect-thread-self"):
+                with self.subTest(mode=mode, alias=alias):
+                    target = self.root / "other"
+                    target.write_text("synthetic other")
+                    before = self.snapshot()
+                    env = dict(self.probe_env("fd-alias-" + mode, target), TIDE_GUARD_PROBE_ALIAS=alias)
+                    result = subprocess.run(self.command("unittest"), cwd=runner.ROOT, env=env,
+                                            capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(mode.upper() + " ALLOWED", result.stdout)
+                    self.assertNotIn("TIDE TEST GUARD:", result.stderr)
+                    self.assertEqual(target.read_bytes(), b"")
+                    self.assertEqual(self.snapshot(), before)
+                    for name in ("fd-alias-chain", "fd-alias-link"):
+                        (self.root / name).unlink(missing_ok=True)
+
     def check_openat2_in_root(self, entry):
         for root in [*self.roots, self.alias]:
             for action, name in (("create", "missing"), ("overwrite", "existing")):

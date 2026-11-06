@@ -130,9 +130,46 @@ def _path(pid, address, dirfd=None):
         base = (os.readlink(f"/proc/{pid}/cwd") if dirfd is None or C.c_int(dirfd).value == -100
                 else _fd_path(pid, dirfd))
         value = os.path.join(base, value)
-    # /proc/self musi oznaczać zgłaszający proces, nie nadzorcę.
-    value = value.replace("/proc/self/", f"/proc/{pid}/").replace("/proc/thread-self/", f"/proc/{pid}/")
     return value
+
+
+def _realpath(path, pid):
+    """Rozwiązuje także dowiązania odkryte po drodze w kontekście sprawcy syscall."""
+    pending = path.split("/")[::-1]
+    resolved = "/"
+    links = 0
+    while pending:
+        part = pending.pop()
+        if not part or part == ".":
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, part)
+        if candidate in ("/proc/self", "/proc/thread-self"):
+            # Powiadomienie niesie TID. self wskazuje TGID, a thread-self
+            # konkretny wątek; odczyt readlink w nadzorcy podałby jego własne ID.
+            with open(f"/proc/{pid}/status", encoding="ascii") as stream:
+                tgid = next(line.split()[1] for line in stream if line.startswith("Tgid:"))
+            target = f"/proc/{tgid}"
+            if part == "thread-self":
+                target += f"/task/{pid}"
+        else:
+            try:
+                target = os.readlink(candidate)
+            except OSError as exc:
+                if exc.errno not in (errno.EINVAL, errno.ENOENT, errno.ENOTDIR):
+                    raise
+                # Nieistniejący jeszcze plik nadal ma chroniony katalog nadrzędny.
+                resolved = candidate
+                continue
+        links += 1
+        if links > 40:
+            raise OSError(errno.ELOOP, "zbyt wiele dowiązań w celu mutacji", path)
+        if os.path.isabs(target):
+            resolved = "/"
+        pending.extend(target.split("/")[::-1])
+    return resolved
 
 
 def _targets(notification):
@@ -183,11 +220,11 @@ def protected_roots(roots):
     return sorted({path for raw in paths for path in (os.path.abspath(raw), os.path.realpath(raw))})
 
 
-def _protected(path, roots, ancestors=False, follow_leaf=True):
+def _protected(path, roots, ancestors=False, follow_leaf=True, *, pid):
     if not path.startswith("/"):
         return False  # pipe:[...], socket:[...], anon_inode:...
-    resolved = (os.path.realpath(path) if follow_leaf else
-                os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path)))
+    resolved = (_realpath(path, pid) if follow_leaf else
+                os.path.join(_realpath(os.path.dirname(path), pid), os.path.basename(path)))
     for candidate in (os.path.abspath(path), resolved):
         for root in roots:
             if candidate == root or candidate.startswith(root + os.sep):
@@ -282,7 +319,8 @@ def _supervise(pid, listener, roots):
             else:
                 ancestors = operation.startswith(("rename", "rmdir", "unlink"))
                 denied = [target for target in targets
-                          if _protected(target, roots, ancestors, follow_leaf=not ancestors)]
+                          if _protected(target, roots, ancestors, follow_leaf=not ancestors,
+                                        pid=request.pid)]
                 if denied:
                     violated = True
                     error = errno.EPERM

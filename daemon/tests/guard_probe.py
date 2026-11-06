@@ -3,6 +3,7 @@
 Nazwa bez test* wyklucza automatyczne discover. Cele pochodzą z syntetycznego
 HOME/XDG testu kontrolnego, nigdy z katalogów bieżącego użytkownika.
 """
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import json
 import os
@@ -33,7 +34,42 @@ class GuardProbe(unittest.TestCase):
         action = os.environ["TIDE_GUARD_PROBE_ACTION"]
         target = Path(os.environ["TIDE_GUARD_PROBE_TARGET"])
         other = Path(os.environ["TIDE_GUARD_PROBE_OTHER"])
-        if action.startswith("shell-"):
+        if action in ("fd-alias-python", "fd-alias-thread", "fd-alias-shell"):
+            fd = os.open(target, os.O_RDONLY)
+            try:
+                alias = f"/dev/fd/{fd}"
+                kind = os.environ.get("TIDE_GUARD_PROBE_ALIAS", "dev-fd")
+                if kind != "dev-fd":
+                    link = other.with_name("fd-alias-link")
+                    if kind == "indirect-self":
+                        link.symlink_to(f"/proc/../proc//self/fd/{fd}")
+                    elif kind == "indirect-thread-self":
+                        link.symlink_to(f"/proc/thread-self/fd/{fd}")
+                    else:
+                        raise AssertionError(kind)
+                    chain = other.with_name("fd-alias-chain")
+                    chain.symlink_to(link.name)  # względne dowiązanie do kolejnego dowiązania
+                    alias = str(chain)
+                if action == "fd-alias-shell":
+                    result = subprocess.run(["/bin/sh", "-c", ': > "$1"', "probe", alias],
+                                            pass_fds=(fd,), check=False)
+                    print(f"SHELL {'ALLOWED' if result.returncode == 0 else 'DENIED'}", flush=True)
+                else:
+                    def truncate_alias():
+                        try:
+                            output = os.open(alias, os.O_WRONLY | os.O_TRUNC)
+                            os.close(output)
+                            print("PYTHON ALLOWED", flush=True)
+                        except PermissionError:
+                            print("PYTHON SWALLOWED", flush=True)
+                    if action == "fd-alias-thread":
+                        with ThreadPoolExecutor(1) as pool:
+                            pool.submit(truncate_alias).result()
+                    else:
+                        truncate_alias()
+            finally:
+                os.close(fd)
+        elif action.startswith("shell-"):
             script = {"shell-create": 'printf danger > "$TIDE_GUARD_PROBE_TARGET"',
                       "shell-overwrite": 'printf danger > "$TIDE_GUARD_PROBE_TARGET"',
                       "shell-unlink": 'rm -- "$TIDE_GUARD_PROBE_TARGET"',
