@@ -15,6 +15,26 @@ OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect"
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
 
 
+RERUN_RUNNER = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
+                "różny od 0), każdy tym samym interpreterem co `make test`:\n"
+                "`/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`.")
+RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem\n"
+                 "na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.")
+
+
+def rerun_failed(worktree: str = "") -> str:
+    """Etap A (06.11: 31% czasu testów to powtórki całego zestawu na tym samym kodzie). Przepis zależy od
+    projektu: repozytorium z `tools/test_runner.py` dostaje dokładne polecenie, inne technologie — zasadę."""
+    runner = not worktree or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))
+    how = RERUN_RUNNER if runner else RERUN_GENERIC
+    return f"""Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
+niestabilności lub obciążenia), nie powtarzaj całego zestawu. {how}
+W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie
+(ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
+pełne polecenie z akapitu wyżej.
+"""
+
+
 OLD_BRANCH_TESTS = """Testy ticketu (także po poprawkach): ta gałąź karty powstała przed celem `make test-changed`
 i go nie ma. Obowiązuje dla niej dotychczasowa zasada: przed oddaniem uruchom raz pełny `make test` i zapisz
 polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie twórz zamiennika celu.
@@ -39,7 +59,7 @@ def has_changed_target(worktree: str) -> bool:
 
 def ticket_tests(base: str = "", worktree: str = "") -> str:
     if not has_changed_target(worktree):
-        return OLD_BRANCH_TESTS
+        return OLD_BRANCH_TESTS + rerun_failed(worktree)
     command = f"make test-changed BASE={shlex.quote(base)}" if base else \
         "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
     return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
@@ -48,7 +68,7 @@ Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania 
 jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
 w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
 Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
-"""
+""" + rerun_failed(worktree)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -279,6 +299,8 @@ Dla recenzenta:
    if has_changed_target(worktree) else
    "- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);" + chr(10) +
    "  nie uruchamiaj go ponownie na potrzeby review,"}
+- ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
+  (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 
