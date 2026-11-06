@@ -3770,8 +3770,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None or not executor or catalog.get(executor) is None:
             raise FlowError("bad-executor", "wybierz autora z katalogu wykonawców")
+        source = next((s for name, s in reversed(list(st.steps.items()))
+                       if ticket == PLAN_AUTHOR and s.get("kind") in ("plan-amend", "plan-revise")
+                       and name not in st.superseded), {})
+        resumable = ((st.finished.get(source.get("step")) or {}).get("result") in ("question", "denied", "error")
+                     and not any(s.get("parentStep") == source.get("step") for s in st.steps.values()))
         try:
-            execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            if resumable:
+                # Sukces API musi oznaczać, że istniejący krok da się wznowić tym wykonawcą.
+                self._resume_executor(card, st, source, executor, changed=True)
+            else:
+                execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
         event = self.journal.append(card, "author.reassigned", ticket=ticket, executor=executor)

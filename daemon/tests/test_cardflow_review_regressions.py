@@ -44,15 +44,16 @@ class ReviewRegressionsTest(unittest.TestCase):
     def state(self, card="K-1"):
         return fold(self.journal.read(card))
 
-    def step(self, name="a", ticket="PT-1", kind="ticket", card="K-1", **extra):
+    def step(self, name="a", ticket="PT-1", kind="ticket", card="K-1", executor="Sonnet", **extra):
         folder = self.root / name
         (folder / "in").mkdir(parents=True)
         (folder / "out").mkdir()
         (folder / "in/prompt.txt").write_text("Zrób krok. Wynik: " + str(folder / "out"))
-        selected = default_catalog().get("Sonnet")
+        selected = self.engine.catalog().get(executor)
         return self.journal.append(card, "step.started", step=name, ticket=ticket, kind=kind,
-                                   executor="Sonnet", program=selected.program, model=selected.model,
+                                   executor=executor, program=selected.program, model=selected.model,
                                    provider=selected.provider, effort=selected.effort, session="old-session",
+                                   local=selected.provider == "local",
                                    worktree=str(self.root), branch="ticket/pt-1", stepDir=str(folder),
                                    attempt=1, **extra)
 
@@ -169,6 +170,34 @@ class ReviewRegressionsTest(unittest.TestCase):
                     # Kolejny podprzypadek ma nowy, pierwotny krok Sonneta.
                     self.journal.append("K-1", "step.started", step=name + "-superseded", parentStep=name, kind=kind)
                     self.journal.append("K-1", "step.finished", step=name + "-superseded", result="done")
+
+    def test_local_plan_resume_rejects_cloud_reassignment_without_journal_write(self):
+        for kind in ("plan-amend", "plan-revise"):
+            for result in ("question", "error"):
+                for restart in (False, True):
+                    with self.subTest(kind=kind, result=result, restart=restart):
+                        catalog = default_catalog()
+                        local = replace(catalog.get("Lokalny"), program="codex", model="local-model")
+                        catalog = replace(catalog, executors=tuple(
+                            local if e.name == local.name else e for e in catalog.executors))
+                        self.engine.catalog = lambda: catalog
+                        name = f"{kind}-{result}-{restart}"
+                        self.step(name, "", kind, executor=local.name,
+                                  routeUrl="http://127.0.0.1:11434", routeKind="ollama")
+                        self.journal.append("K-1", "step.finished", step=name, result=result,
+                                            question="Który wariant?")
+                        if restart:
+                            self.engine = self.new_engine()
+                            self.engine.catalog = lambda: catalog
+                        before = self.journal.read("K-1")
+                        with self.assertRaises(FlowError) as failure:
+                            self.engine.resolve_step("K-1", {"choice": "reassign-author", "ticket": "plan",
+                                                               "executor": "Codex standard"})
+                        self.assertEqual(failure.exception.code, "bad-executor-provider")
+                        self.assertIn("lokalny albo chmurowy zakres", str(failure.exception))
+                        self.assertEqual(self.journal.read("K-1"), before)
+                        self.engine = self.new_engine()
+                        self.assertNotIn("plan", self.state().author_overrides)
 
     def test_reassigning_future_planner_does_not_change_proposal_author(self):
         # Nowa propozycja wymaga review i nie jest jeszcze zatwierdzona.
