@@ -62,6 +62,7 @@ class FlowState:
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
+    step_notes: dict = field(default_factory=dict)  # noteId → step.note-added
     finished: dict = field(default_factory=dict)    # step → step.finished
     verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
     review_questions: dict = field(default_factory=dict)
@@ -345,6 +346,8 @@ def fold(events: list[dict]) -> FlowState:
             if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or "") and \
                     not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
+        elif kind == "step.note-added":
+            st.step_notes[e["noteId"]] = e
         elif kind == "step.started":
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
             if e.get("ticket") and e.get("kind") in ("ticket", "fix"):
@@ -363,6 +366,9 @@ def fold(events: list[dict]) -> FlowState:
             st.flow_error = st.flow_error_action = ""
         elif kind == "step.entered" and e.get("step") in st.steps:
             st.steps[e["step"]] = {**st.steps[e["step"]], "mode": "interactive",
+                                   "deliveredNoteIds": list(dict.fromkeys([
+                                       *st.steps[e["step"]].get("deliveredNoteIds", []),
+                                       *e.get("deliveredNoteIds", [])])),
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",

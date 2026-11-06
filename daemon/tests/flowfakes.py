@@ -222,6 +222,14 @@ if word == "pytanie-bez-pracy" and "Odpowiedź użytkownika:" not in prompt:
     finish("question", question="Który format daty?")
     sys.exit(0)
 
+if word == "poza-uwagi":
+    if "Wznowienie tego samego kroku" not in prompt:
+        until = time.monotonic() + 30
+        while not os.path.isfile(os.path.join(cwd, "release-notes")) and time.monotonic() < until:
+            time.sleep(0.05)
+        os.unlink(os.path.join(cwd, "release-notes"))
+    word = "poza"
+
 write("start")
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)

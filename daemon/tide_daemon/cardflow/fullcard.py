@@ -56,6 +56,8 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["executor"] = assigned.get("executor") or row.get("executor") or ""
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
+    from .stepnotes import enrich as enrich_notes
+    enrich_notes(st, flow)
     flow["running"] = running_steps(flow.get("steps") or [], st)
     flow["history"] = history.build(st, flow.get("steps") or [])
     # Skutek ręcznego zakończenia (Gotowe / Archiwum → `_complete_manual_finish`): zatrzymane kroki i odrzucone tickety.

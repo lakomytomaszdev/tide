@@ -2030,6 +2030,37 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
 
+### Uwagi do najbliższego wznowienia kroku (PT-245)
+
+`/Board AddCardStepNote(s id, s request) → s` przyjmuje obiekt JSON:
+`{step, orderSeq, requestId, text}`. `step` to konkretny bieżący krok, `orderSeq` pochodzi z
+`derived.flow.orderSeq` (numer zdarzenia `card.started`), a `requestId` to niepusty klucz klienta do
+200 znaków. Treść musi być niepusta po usunięciu białych znaków i mieć najwyżej 16 KiB UTF-8.
+Odpowiedź `{ok: true, id, noteId}` potwierdza trwały zapis `step.note-added` w dzienniku, bez
+zatrzymywania procesu ani uruchamiania sesji. Ta sama treść, krok i klucz w tym zleceniu zwracają
+ten sam `noteId` (również po doręczeniu); inna treść lub krok daje `note-conflict`. Nieaktualne
+zlecenie daje `stale-order`, krok zakończony albo zastąpiony — `stale-step`, błędna treść — `bad-note`.
+Zapis i sprawdzenie idempotencji są pod jedną blokadą dziennika.
+
+Wspólne przygotowanie wznowienia dołącza oczekujące uwagi w kolejności zapisu. Dotyczy odpowiedzi,
+retry, zmiany lub przekazania wykonawcy, przejęcia w Konsoli oraz automatycznego wznowienia po
+poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.started`; intencja
+`step-start` przechowuje tę samą listę do odtworzenia po awarii. Nieudany start bez trwałego
+następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
+Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
+nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
+
+Kolejka jest ograniczona do łańcucha `parentStep` tego samego ticketu i zlecenia. Niezależne
+review, inny ticket i nowe zlecenie nie otrzymują uwag. Uwaga nie rozszerza zgód na polecenia,
+nie zatwierdza planu i nie wymusza wznowienia po końcu pracy.
+
+Pełna karta w Tablicy i Sesjach pokazuje formularz przy konkretnym kroku oraz
+`flow.stepNotes[] = {noteId, step, text, orderSeq, requestId, status, statusLabel, successor, …}`.
+Stan to `pending` („oczekuje”), `delivered` („przekazana — <następca>”) albo `undelivered`
+(„nieprzekazana — krok zakończony”). `flow.steps[].canAddNote` określa dostępność formularza.
+Błąd/pytanie/zgoda nadal mogą czekać na wznowienie; zakończenie bez wznowienia zachowuje widoczną
+uwagę jako nieprzekazaną. Formularz zachowuje treść i klucz ponowienia po błędzie zapisu.
+
 ### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
 
 Zakończenie kroku z wynikiem `error` albo `stopped` ma w `step.finished` pola `fault` (`tide`, `model`, `user`,

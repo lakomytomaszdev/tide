@@ -356,6 +356,14 @@ class FlowEngine(PlanEditing):
     def has_journal(self, card_id: str) -> bool:
         return self.journal.has(card_id)
 
+    def add_step_note(self, card_id: str, request: dict) -> dict:
+        from . import stepnotes
+        try:
+            card = f"K-{card_num(card_id)}"
+            return stepnotes.add(self.journal, card, request, fold)
+        except (BoardError, stepnotes.NoteError) as exc:
+            raise FlowError(exc.code, str(exc)) from None
+
     def _settings_data(self) -> dict:
         try:
             with open(self.settings, encoding="utf-8") as fh:
@@ -1046,6 +1054,8 @@ class FlowEngine(PlanEditing):
         context_prompt, base_context = self._step_base_context(context_state)
         prompt += context_prompt
         worktree = made["worktree"]
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(context_state, parent_step, prompt)
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
         step_dir = worktree + f".{suffix}-{step_id}.step"
@@ -1110,7 +1120,8 @@ class FlowEngine(PlanEditing):
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip, **base_context)
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip,
+                            deliveredNoteIds=note_ids, **base_context)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
@@ -1378,6 +1389,8 @@ class FlowEngine(PlanEditing):
         kind = "interactive" if old_result == "done" else current.get("kind") or "ticket"
         console_unit = "tide-console-" + uuid.uuid4().hex
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(st, step_id, prompt)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
@@ -1395,10 +1408,12 @@ class FlowEngine(PlanEditing):
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
+                                parentStep=step_id, deliveredNoteIds=note_ids,
                                 baseVersion=current.get("baseVersion", 0),
                                 baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
+                            deliveredNoteIds=note_ids,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file,
                             enteredAt=self.clock())
@@ -1790,6 +1805,8 @@ class FlowEngine(PlanEditing):
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(fold(self.journal.read(card.id)), parent_step, prompt)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
@@ -1858,7 +1875,8 @@ class FlowEngine(PlanEditing):
                               routeKind=selected.route.kind if selected.route else "",
                               routeTokenFile=selected.route.token_file if selected.route else "",
                               local=selected.local, branch=made_ticket["branch"],
-                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt, **base_context)
+                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
+                              deliveredNoteIds=note_ids, **base_context)
         except (agentcmd.StepError, OSError) as exc:
             self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
@@ -1870,6 +1888,7 @@ class FlowEngine(PlanEditing):
                                    routeKind=selected.route.kind if selected.route else "",
                                    routeTokenFile=selected.route.token_file if selected.route else "",
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
+                                   deliveredNoteIds=note_ids,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    repo=project.repo, **base_context)
@@ -3680,6 +3699,7 @@ class FlowEngine(PlanEditing):
                                 branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
+                                deliveredNoteIds=intent.get("deliveredNoteIds") or [],
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 baseVersion=intent.get("baseVersion", 0),
                                 baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""))

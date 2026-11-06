@@ -148,6 +148,26 @@ class CardOpenTest(unittest.TestCase):
                                        "result['page'] = js('cardOpen')")
         self.assertEqual((out["cardOpen"], out["page"]), ("full", "full"))
 
+    def test_step_note_uses_board_api_and_keeps_draft_after_rejected_save(self):
+        out = self.probe(self.working, r"""
+click_entry(0)
+step = js('cardFullView.noteSteps[0].id')
+js("cardFullView.editNote(" + json.dumps(step) + ", 'Uwagi z Sesji')")
+js('cardFullView.sendNote(' + json.dumps(step) + ')')
+QTest.qWait(200)
+result['calls'] = calls()
+result['step'] = step
+result['draft'] = json.loads(js('JSON.stringify(cardFullView.noteDraft(' + json.dumps(step) + '))'))
+""")
+        self.assertEqual(out["calls"][0][:2], ["AddCardStepNote", CARD])
+        request = json.loads(out["calls"][0][2])
+        self.assertEqual((request["step"], request["text"]), (out["step"], "Uwagi z Sesji"))
+        self.assertTrue(request["requestId"])
+        self.assertGreater(request["orderSeq"], 0)
+        self.assertEqual(out["draft"]["text"], "Uwagi z Sesji")
+        self.assertFalse(out["draft"]["busy"])
+        self.assertTrue(out["draft"]["error"])
+
     def test_base_refusal_opens_shared_preview_and_escape_keeps_question(self):
         from apps.board.tests.test_base_change import PREVIEW
         response = json.dumps({"ok": True, "waiting": True, "changed": False, "preview": PREVIEW})

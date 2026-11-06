@@ -85,6 +85,7 @@ Item {
         const b = view.backend
         if (!b) return
         if (method === "ResolveCardStep") b.resolveCardStep(tag, cardId, JSON.stringify(params))
+        else if (method === "AddCardStepNote") b.addCardStepNote(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardReview") b.resolveCardReview(tag, cardId, params.choice || "")
         else if (method === "ApproveCardPlan") b.approveCardPlan(tag, cardId)
         else if (method === "EditCardPlan") b.editCardPlan(tag, cardId, JSON.stringify(params))
