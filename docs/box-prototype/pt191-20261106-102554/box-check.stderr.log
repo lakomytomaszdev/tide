@@ -1,0 +1,6 @@
+tide-daemon: proxy pudełka: incus network get incusbr0 ipv4.address: Error: User does not have permission for project "default" — czytam adres interfejsu
+tide-daemon: proxy pudełka: słucha na 10.173.184.1:18080
+pudełko: plasma-tide; jednostka: tide-step-demo-20261106103548-700b107e.service; worktree: /home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box
+katalog kroku: /home/user/DevWorkspace/plasma-tide-worktrees/demo-20261106103548-700b107e.8qgwimac.step
+dziennik proxy: /home/user/.local/state/tide/box/plasma-tide/steps/demo-20261106103548-700b107e/proxy-denied.log
+make: *** [mk/box.mk:21: box-check] Błąd 2

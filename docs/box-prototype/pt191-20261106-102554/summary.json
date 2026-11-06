@@ -1,0 +1,8 @@
+{
+  "failures": [
+    "make-test",
+    "cli-env",
+    "box-check"
+  ],
+  "firstAgentStep": "pending-approved-test-card"
+}

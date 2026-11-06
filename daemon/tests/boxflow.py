@@ -168,7 +168,7 @@ class BoxFlow(FlowInProcess):
 
         return Runner(settings, slug, card=card, per_card=per_card, incus=self.incus(),
                       proxy_base=f"http://{PROXY_LISTEN}:{PROXY_PORT}", systemd_run=self.box_run,
-                      systemctl=self.box_ctl, tide_step=("/bin/sh", br.TIDE_STEP_SCRIPT), sleep=lambda s: None)
+                      systemctl=self.box_ctl, sleep=lambda s: None)
 
     def wire(self, engine):
         engine.box_settings_source = self.box_settings

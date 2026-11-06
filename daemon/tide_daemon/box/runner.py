@@ -10,11 +10,11 @@ Uruchomienie (argv na hoście, widoczne w `ps` — bez żadnej wartości z `in/e
       /usr/bin/env -i TIDE_STEP=<katalog kroku> XDG_RUNTIME_DIR=/run/user/1000
       /usr/bin/systemd-run --user --unit=tide-step-<id> --collect --wait --quiet -p CPUWeight=40 -p IOWeight=40
         --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> --
-      /usr/local/bin/tide-step <argv agenta>
+      /bin/sh <katalog kroku>/in/bin/tide-step <argv agenta>
 
 Krok jest **usługą** użytkownika `agent`, nie scope (decyzja `krok-jako-usluga-user` po P-9: proces w scope ginie
-razem z klientem `incus exec`, czyli z restartem usługi Tide). Opakowanie `tide-step` (plik obok, instaluje je
-obraz bazowy #16 w `/usr/local/bin`) czyta `<krok>/in/env` (0600, właściciel = usługa), eksportuje zmienne,
+razem z klientem `incus exec`, czyli z restartem usługi Tide). Opakowanie `tide-step` (plik obok, kopiowany
+bezpiecznie do `in/bin` każdego kroku) czyta `<krok>/in/env` (0600, właściciel = usługa), eksportuje zmienne,
 przechodzi do `TIDE_CWD`, uruchamia agenta z `in/prompt.txt` na stdin i `out/step.log` na wyjściu, zapisuje kod
 w `in/exit-code` — jak `EXIT_WRAPPER` na hoście.
 
@@ -360,7 +360,7 @@ class BoxRunner:
                  incus: Incus | None = None, proxy_base: str = "", sandbox: bool = BOX_SANDBOX,
                  step_env: Callable[[agentcmd.Step], dict] | None = None,
                  journal: Callable[[str, dict], None] | None = None, env: dict | None = None,
-                 systemd_run: str = SYSTEMD_RUN, systemctl: str = SYSTEMCTL, tide_step=(TIDE_STEP,),
+                 systemd_run: str = SYSTEMD_RUN, systemctl: str = SYSTEMCTL, tide_step=None,
                  popen=subprocess.Popen, sleep=time.sleep, extra_devices=()):
         self.settings = settings
         self.slug = slug
@@ -373,7 +373,7 @@ class BoxRunner:
         self.journal = journal
         self.host_env = dict(os.environ if env is None else env)
         self.systemd_run, self.systemctl = systemd_run, systemctl
-        self.tide_step = tuple(tide_step)
+        self.tide_step = tuple(tide_step) if tide_step is not None else None
         self._popen, self._sleep = popen, sleep
         self._risk_logged = False
         self.extra_devices = tuple(extra_devices)
@@ -646,13 +646,15 @@ class BoxRunner:
         return self.incus._argv(args + ["--"])
 
     def argv(self, bg: agentcmd.Background) -> list:
+        wrapper = self.tide_step if self.tide_step is not None else (
+            "/bin/sh", os.path.join(bg.step_dir, "in", "bin", "tide-step"))
         runtime = f"/run/user/{self.settings.agent_uid}"
         return [*self.exec_prefix(cwd=bg.cwd),
                 "/usr/bin/env", "-i", f"TIDE_STEP={bg.step_dir}", f"XDG_RUNTIME_DIR={runtime}",
                 self.systemd_run, "--user", f"--unit={self.unit_for(bg)}", "--collect", "--wait", "--quiet",
                 "-p", "CPUWeight=40", "-p", "IOWeight=40", f"--working-directory={bg.cwd}",
                 f"--setenv=TIDE_STEP={bg.step_dir}", "--",
-                *self.tide_step, *bg.argv]
+                *wrapper, *bg.argv]
 
     def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None,
               pass_fds: tuple[int, ...] = ()
@@ -661,6 +663,10 @@ class BoxRunner:
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
         fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
         fs.prepare(bg)
+        # Opakowanie i argv pochodzą z tej samej wersji runnera, także dla starszego obrazu bazowego.
+        # Nie instalujemy nic jako root pudełka; zapis podlega tym samym kontrolom dowiązań co reszta kroku.
+        with open(TIDE_STEP_SCRIPT, encoding="utf-8") as source:
+            fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-step"), source.read(), mode=0o700)
         from . import test_artifacts
         with open(test_artifacts.__file__, encoding="utf-8") as source:
             fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-test"), source.read(), mode=0o755)
@@ -832,7 +838,7 @@ def _demo(argv: list) -> int:
     # Znacznik ze zmiennej środowiska (nie z argv — ten widać w `ps`), żeby skrypt próby mógł go szukać.
     marker = os.environ.get("TIDE_DEMO_MARKER") or "tide-demo-" + secrets.token_hex(8)
     settings = bsettings.load()
-    tide_step = (TIDE_STEP,)
+    tide_step = None
     if args.push_tide_step:
         remote = "/opt/tide/tide-step"
         box = bs.card_box_name(args.slug, args.card) if args.card else bs.box_name(args.slug)

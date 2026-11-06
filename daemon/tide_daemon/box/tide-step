@@ -1,5 +1,5 @@
 #!/bin/sh
-# tide-step — opakowanie kroku w pudełku karty (PT-169, #6; instaluje je obraz bazowy #16 w /usr/local/bin).
+# tide-step — opakowanie kroku w pudełku karty (PT-169, #6; runner zapisuje je w <krok>/in/bin).
 #
 # Uruchamiane przez BoxRunner jako usługa użytkownika `agent` (systemd-run --user … -- tide-step <argv agenta>)
 # z jedną zmienną TIDE_STEP=<katalog kroku>. Kolejno:

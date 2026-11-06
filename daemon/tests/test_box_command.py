@@ -62,7 +62,7 @@ class CommandTest(BoxRunnerCase):
 
     def command_runner(self, settings, slug, **kw):
         kw.update(systemd_run=self.systemd, systemctl=self.box_systemctl,
-                  tide_step=("/bin/sh", br.TIDE_STEP_SCRIPT), popen=self.spawn)
+                  popen=self.spawn)
         runner = self.real_runner(settings, slug, **kw)
         runner.unit_state = lambda box, unit: self.unit_state
         return runner
@@ -120,6 +120,17 @@ class CommandTest(BoxRunnerCase):
         self.assertEqual(code, 37, err)
         self.assertEqual(out, "--card\na b\n$(false)\n\n")
         self.assertEqual(self.launches[-1][0][-len(tail):], tail)
+
+    def test_default_wrapper_matches_runner_without_relying_on_the_image_version(self):
+        code, out, err = self.run_cli(["run", "proj", "--worktree", self.worktree,
+                                       "--", "/bin/sh", "-c", "printf compatible; exit 23"])
+        self.assertEqual(code, 23, err)
+        self.assertEqual(out, "compatible")
+        folder, _env = self.env_for_launch()
+        wrapper = os.path.join(folder, "in", "bin", "tide-step")
+        with open(wrapper) as actual, open(br.TIDE_STEP_SCRIPT) as expected:
+            self.assertEqual(actual.read(), expected.read())
+        self.assertIn(wrapper, self.launches[-1][0])
 
     def test_card_mounts_only_accepted_prepared_copies_readonly_and_removes_them(self):
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": ["logs"], "accepted_red": ["pack:logs"]})

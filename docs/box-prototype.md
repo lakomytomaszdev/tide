@@ -399,3 +399,21 @@ Przy braku uwierzytelnienia podaje konkretne polecenie administratora do wykonan
 (`sudo incus project set user-1000 restricted.snapshots=allow` dla projektu tej próby), pomija budowę
 i kontynuuje pełne testy. Ich wynik można zebrać także wtedy, gdy środowisko Incusa nadal jest zablokowane.
 Nie należy ponawiać identycznej operacji oczekującej na hasło w kroku w tle.
+
+Czwarta runda (`pt191-20261106-102554`): polityka migawek była już `allow`, więc sudo nie było potrzebne.
+Ponowienie budowy zakończyło się poprawnie w 67,3 s; status potwierdza `clean`, zgodne hashe i filtrowanie NIC.
+Pełne `make test`: 4166 testów, 230 modułów, 4 pominięte, 516,42 s, dwa błędy w module `/Tasks`.
+Poprzednie regresje publikacji JSON-a i ręcznego odesłania do poprawy przeszły; w tej rundzie test czytał
+dziennik programu wcześniej niż program go zapisał. Scenariusze czekają teraz na rzeczywiste wywołania
+zamiast utożsamiać przejęcie zadania z wykonaniem programu.
+
+CLI środowiska i `make box-check` zakończyły się kodem 2 przed zapisem `step.log`, więc w tej rundzie
+**nie ma dowodu środowiska ani tabeli odmów**. Źródła ujawniły niezgodne kontrakty opakowania w obrazie
+i runnerze. Runner dostarcza teraz własne opakowanie do `in/bin/tide-step` każdego kroku przez chroniony
+`StepDir`; domyślne argv używa `/bin/sh <krok>/in/bin/tide-step`. Nie zmienia to obrazu, profilu,
+wyboru runnera w silniku ani szablonów stosów. Testy CLI już nie zastępują tej domyślnej drogi.
+Potwierdzenie poprawki na rzeczywistym Incusie wymaga kolejnej rundy:
+`python3 scripts/box/boundary-trial.py` — bez opcji przygotowania i zmiany polityki, bo pudełko jest gotowe.
+Dodatkowa lokalna kontrola przebiegu ujawniła też przedwczesny odczyt rezerwacji w teście zatrzymania po
+restarcie: `step.finished` poprzedza zwolnienie pudełka. Test czeka teraz na zakończenie zwalniania
+z ograniczonym czasem; nie zmienia to kodu produkcyjnego zatrzymywania.

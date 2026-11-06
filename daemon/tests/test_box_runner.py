@@ -102,6 +102,19 @@ class BoxRunnerCase(unittest.TestCase):
 
 
 class ArgvTest(BoxRunnerCase):
+    def test_staged_wrapper_symlink_refuses_start_without_touching_its_target(self):
+        folder = os.path.join(self.step_dir, "in", "bin")
+        os.makedirs(folder)
+        target = os.path.join(self.tmp, "wrapper-target")
+        with open(target, "w") as fh:
+            fh.write("nie ruszać")
+        os.symlink(target, os.path.join(folder, "tide-step"))
+        with self.assertRaises(agentcmd.StepError):
+            self.runner().start(self.step())
+        with open(target) as fh:
+            self.assertEqual(fh.read(), "nie ruszać")
+        self.assertFalse(self.popen_calls)
+
     def test_tide_test_is_executable_on_agent_path_and_writes_only_step_output(self):
         bg, _ = self.runner().start(self.step())
         env = self.env_file()
@@ -149,7 +162,8 @@ class ArgvTest(BoxRunnerCase):
         self.assertIn("--unit=tide-step-s1.service", tail)
         self.assertIn("--wait", tail)
         self.assertIn("CPUWeight=40", tail)
-        self.assertEqual(tail[tail.index("--", run) + 1], br.TIDE_STEP)
+        self.assertEqual(tail[tail.index("--", run) + 1:][:2],
+                         ["/bin/sh", os.path.join(self.step_dir, "in", "bin", "tide-step")])
         # Żadna wartość z in/env (token z pliku, zmienne kroku) nie występuje w argv.
         values = self.env_file()
         self.assertEqual(values[local.TOKEN_ENV], MARKER)

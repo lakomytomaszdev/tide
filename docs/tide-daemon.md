@@ -2993,7 +2993,7 @@ co na hoście. Wyboru runnera w silniku jeszcze nie ma (#18): silnik dalej dosta
 incus exec <pudełko> --project <p> -T --user 1000 --group 1000 --cwd <worktree> --
   /usr/bin/env -i TIDE_STEP=<katalog kroku> XDG_RUNTIME_DIR=/run/user/1000
   /usr/bin/systemd-run --user --unit=tide-step-<id>.service --collect --wait --quiet -p CPUWeight=40 -p IOWeight=40
-    --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> -- /usr/local/bin/tide-step <argv agenta>
+    --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> -- /bin/sh <katalog kroku>/in/bin/tide-step <argv agenta>
 ```
 
 Krok jest usługą użytkownika `agent`, a nie scope — decyzja `krok-jako-usluga-user` (P-9): proces w scope ginie
@@ -3023,8 +3023,11 @@ czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku). Node (nvm) i Chro
 pudełka, nie z hosta: `box_step` zeruje `node_home` i `chrome_bin` kroku (silnik ustawia je z `~` hosta), więc `PATH`
 zaczyna się od `BOX_PATH`, a `CHROME_BIN` nie trafia do `in/env` ani `env(step)`.
 
-Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh; obraz bazowy #16 instaluje je jako
-`/usr/local/bin/tide-step`): czyści środowisko, sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
+Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh) runner kopiuje przez `StepDir` do `in/bin/tide-step`
+każdego kroku, z ochroną przed dowiązaniami. Dzięki temu argv i opakowanie mają tę samą wersję;
+starsze `/usr/local/bin/tide-step` w obrazie bazowym nie jest używane przez domyślną ścieżkę runnera.
+Nie wymaga to instalowania pliku jako root ani przebudowy obrazu. Opakowanie czyści środowisko,
+sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
 użytkownik — inaczej kod 125; `PATH` = `BOX_PATH` ustawiane jawnie przed pierwszym poleceniem), eksportuje wiersze
 bez `eval`, przechodzi do `TIDE_CWD`, zakłada
 `CLAUDE_CODE_TMPDIR` w `/tmp` pudełka, uruchamia agenta z `in/prompt.txt` na stdin i wyjściem dopisywanym do
