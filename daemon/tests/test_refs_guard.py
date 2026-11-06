@@ -446,6 +446,7 @@ class GuardTest(unittest.TestCase):
                     setattr(engine, name, mock.Mock())
                 engine._codex_broken_mcp = mock.Mock(return_value=False)
                 engine.tmp_root = str(self.root / "tmp")
+                engine.settings = str(self.root / "cardflow.json")
                 engine.procs, engine.watch = {}, {}
                 engine._local_claims, engine._warnings, engine._worktree_heads = {}, {}, {}
                 engine.box_proxy = mock.Mock()

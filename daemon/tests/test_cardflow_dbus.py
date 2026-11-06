@@ -428,9 +428,10 @@ class JournalTest(FlowCase):
         git(self.board, "rm", "-q", "-r", os.path.join("flow", card_id), env=self.git_env)
         git(self.board, "commit", "-q", "-m", "ręczne cofnięcie", env=self.git_env)
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
-        snapshot = self.call("Snapshot")
-        self.assertTrue([e for e in snapshot["errors"] if "dziennik" in e["message"] and card_id in e["message"]],
-                        snapshot["errors"])
+        # Plik odtwarza wątek roboczy; migawka z ostrzeżeniem jest publikowana później w wątku głównym.
+        warnings = lambda: [e for e in self.call("Snapshot")["errors"]
+                            if "dziennik" in e["message"] and card_id in e["message"]]
+        self.assertTrue(wait_until(warnings, timeout=15), self.call("Snapshot")["errors"])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
 
 

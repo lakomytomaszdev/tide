@@ -19,6 +19,7 @@ Builder (PT-167):
 - `agents-version` — nadpisuje wersję agentów obrazu bazowego `box/agents.py` `AGENTS_VERSION` w hashu przepisu
   (puste = `AGENTS_VERSION`; jedno źródło: `builder.agents_version`),
 - `ip-wait-seconds` — ile czekać na adres IP pudełka po starcie (domyślnie 30),
+- `idle-hours` — ile godzin bez kroków przed auto-stopem (domyślnie 4, > 0),
 - `agent-uid`, `agent-gid` — właściciel nowego wolumenu `/home/agent` w pudełku (inicjalizacja po starcie,
   domyślnie 1000;
   ostateczną wartość ustala obraz bazowy #16).
@@ -60,6 +61,7 @@ class BoxSettings:
     ip_wait_seconds: float = 30.0
     agent_uid: int = DEFAULT_AGENT_ID
     agent_gid: int = DEFAULT_AGENT_ID
+    idle_hours: float = 4.0
 
 
 _TEXT = (("project", "project", None), ("base-image", "base_image", "tide-base"), ("pool", "pool", "tide"),
@@ -102,6 +104,10 @@ def from_dict(data) -> BoxSettings:
         warnings.append("box.ip-wait-seconds: oczekiwano liczby 0–600 — 30")
         wait = 30
     ids = {}
+    idle = box.get("idle-hours", 4)
+    if isinstance(idle, bool) or not isinstance(idle, (int, float)) or not 0 < idle <= 8760:
+        warnings.append("box.idle-hours: oczekiwano liczby > 0 i ≤ 8760 — 4")
+        idle = 4
     for key in ("agent-uid", "agent-gid"):
         value = box.get(key, DEFAULT_AGENT_ID)
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
@@ -109,7 +115,7 @@ def from_dict(data) -> BoxSettings:
             value = DEFAULT_AGENT_ID
         ids[key.replace("-", "_")] = value
     return BoxSettings(enabled=enabled, proxy_port=port, bridge=bridge, warnings=tuple(warnings),
-                       ipv6_filtering=ipv6, ip_wait_seconds=float(wait), **extra, **ids)
+                       ipv6_filtering=ipv6, ip_wait_seconds=float(wait), idle_hours=float(idle), **extra, **ids)
 
 
 def settings_path(env=None) -> str:

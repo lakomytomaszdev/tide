@@ -221,6 +221,7 @@ project_config=(
 if [[ $mode == restricted ]]; then
     project_config+=(
         restricted=true
+        restricted.snapshots=allow
         restricted.containers.nesting=allow
         restricted.devices.disk=allow
         "restricted.devices.disk.paths=$home"

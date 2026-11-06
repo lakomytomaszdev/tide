@@ -2,7 +2,7 @@
 
 Dziennik: `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, tylko dopisywanie pod blokadą `flock`).
 Zdarzenie: `v`, `ts`, `type`, `box` (nazwa instancji Incusa) i pola typu; `box.build`, `box.ready`, `box.reset`,
-`box.verify` mają `duration` (sekundy). Stan pudełka wynika z ostatniego zdarzenia, a potem jest korygowany tym,
+`box.stop`, `box.verify` mają `duration` (sekundy). Stan pudełka wynika z ostatniego zdarzenia, a potem jest korygowany tym,
 co mówi Incus (brak instancji, brak filtrowania NIC, hash migawki różny od profilu, zatrzymane).
 
 Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset → zatrzymane`, plus `niezgodne` (karta sieciowa
@@ -14,6 +14,9 @@ import json
 import os
 import re
 import time
+import threading
+from contextlib import contextmanager
+from functools import wraps
 from dataclasses import dataclass, field
 
 from . import profile as bp
@@ -32,7 +35,7 @@ FAILED = "błąd budowy"
 
 EVENTS = ("box.build", "box.ready", "box.reset", "box.stop", "box.verify", "box.approved",
           "box.use", "box.release", "box.destroy")
-TIMED = ("box.build", "box.ready", "box.reset", "box.verify")
+TIMED = ("box.build", "box.ready", "box.reset", "box.stop", "box.verify")
 
 RECIPE_KEY = "user.tide.recipe"      # odcisk przepisu (JSON z profile.recipe_stamp) — zapisany w migawce clean
 COPY_OF_KEY = "user.tide.copy-of"    # kopia per karta: nazwa pudełka projektu
@@ -61,7 +64,7 @@ def card_box_name(slug: str, card: str) -> str:
     card_id = str(card).strip().lower()
     if not re.match(r"^k-[1-9][0-9]{0,8}$", card_id):
         raise ValueError(f"niepoprawny identyfikator karty: {card!r}")
-    return f"{box_name(slug)}-{card_id}"[:63]
+    return f"{box_name(slug)[:62 - len(card_id)]}-{card_id}"
 
 
 def home_volume(name: str) -> str:
@@ -69,6 +72,40 @@ def home_volume(name: str) -> str:
 
 
 # ------------------------------------------------------------ dziennik
+
+_held = threading.local()
+
+
+@contextmanager
+def lifecycle_lock(slug):
+    """Wspólna blokada projektu dla CLI, demona i rezerwacji kroku; zagnieżdżalna w wątku.
+
+    Osobny plik od blokady montowań i dziennika: kolejność to cykl życia → montowania/dziennik.
+    Blokada projektu obejmuje też kopiowanie migawki oraz destroy wszystkich kopii.
+    """
+    path = journal_path(slug) + ".lifecycle.lock"
+    held = getattr(_held, "paths", set())
+    if path in held:
+        yield
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        _held.paths = held | {path}
+        try:
+            yield
+        finally:
+            _held.paths = held
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def serialized(method):
+    @wraps(method)
+    def run(self, slug, *args, **kwargs):
+        with lifecycle_lock(slug):
+            return method(self, slug, *args, **kwargs)
+    return run
+
 
 def journal_path(slug: str) -> str:
     return os.path.join(bp.board_dir(), "projects", bp._check_slug(slug, "projekt"), "box", "journal.jsonl")
@@ -115,7 +152,8 @@ def events(slug: str, box: str | None = None) -> list:
 
 def mark_in_use(slug: str, box: str, step: str, clock=time.time) -> dict:
     """Krok wszedł do pudełka (woła #18); `reset` i `destroy` odmawiają do `mark_released`."""
-    return record(slug, "box.use", box, clock, step=step)
+    with lifecycle_lock(slug):
+        return record(slug, "box.use", box, clock, step=step)
 
 
 def mark_released(slug: str, box: str, step: str, clock=time.time) -> dict:
@@ -149,7 +187,10 @@ def journal_state(slug: str, box: str) -> tuple:
         elif kind == "box.ready":
             state, warning = CLEAN, bool(event.get("warning"))
         elif kind == "box.reset":
-            state = CLEAN if event.get("result", "ok") == "ok" else RESETTING
+            if event.get("removed"):
+                state = ABSENT
+            elif event.get("result") != "deferred":
+                state = CLEAN if event.get("result", "ok") == "ok" else RESETTING
         elif kind == "box.stop":
             state = STOPPED
         elif kind == "box.destroy":

@@ -1611,7 +1611,7 @@ class FlowEngine(PlanEditing):
                 if placement is not None:
                     boxstep.before_start(self, placement, card.id, step_id,
                                          selected.tool if selected.route is None else "")
-                bg, proc = runner.start(agentcmd.Step(
+                runner_step = agentcmd.Step(
                     tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
                     step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
                     branch=made_ticket["branch"],
@@ -1623,8 +1623,10 @@ class FlowEngine(PlanEditing):
                     enforce_command_policy=selected.tool == "claude",
                     tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
                     codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                    chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else ""),
-                    before_start=copy_images)
+                    chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "")
+                if placement is not None:
+                    boxstep.prepare_runner(self, placement, runner_step)
+                bg, proc = runner.start(runner_step, before_start=copy_images)
             except BaseException:
                 if placement is not None:
                     boxstep.start_failed(self, placement, step_id)
@@ -1808,6 +1810,7 @@ class FlowEngine(PlanEditing):
                 busy.add(ticket_of(st)["cardWorktree"])
         self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
         self._busy = tuple(sorted(busy))
+        boxstep.lifecycle.tick(self)
 
     def _tick_card(self, card: str, st: FlowState) -> None:
         self._recover_transfer_requests(card, st)

@@ -1,6 +1,6 @@
-"""`tide box base|build|status|reset|destroy|approve|login` — pudełko projektu z wiersza poleceń.
+"""`tide box base|build|status|reset|stop|start|destroy|approve|login` — pudełko projektu z wiersza poleceń.
 
-`base` i `login` należą do obrazu bazowego (#16, `box/base.py`), `stop|start` doda #19, `run` — #28.
+`base` i `login` należą do obrazu bazowego (#16, `box/base.py`), `run` — #28.
 Kody wyjścia: 0 sukces, 1 błąd (profil, Incus, budowa), 2 zły argument, 3 odmowa (biegną kroki, pudełko niezgodne
 albo nieaktualne w `status`). Opis: docs/tide-daemon.md (Budowa pudełka → CLI, Obraz bazowy Tide).
 """
@@ -14,6 +14,8 @@ from . import builder as bb
 from . import k3
 from . import profile as bp
 from . import settings as bset
+from . import lifecycle
+from . import state as bs
 from .incus import IncusError
 
 
@@ -32,6 +34,10 @@ def _parser():
     p = sub.add_parser("reset", help="przywraca migawkę clean (tylko bez kroków)")
     p.add_argument("slug")
     p.add_argument("--card")
+    for command in ("stop", "start"):
+        p = sub.add_parser(command, help="zatrzymuje pudełko" if command == "stop" else "uruchamia pudełko")
+        p.add_argument("slug")
+        p.add_argument("--card")
     p = sub.add_parser("destroy", help="usuwa pudełko i jego kopie per karta")
     p.add_argument("slug")
     p.add_argument("--yes", action="store_true", help="potwierdzenie (wymagane)")
@@ -157,8 +163,16 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             return run_build(b, args.slug, out)
         if args.cmd == "status":
             st = b.status(args.slug, args.card)
-            print(json.dumps(st.to_dict(), ensure_ascii=False, indent=2) if args.json else format_status(st), file=out)
+            text = format_status(st)
+            for event in bs.events(args.slug, st.box):
+                if event.get("type") in ("box.stop", "box.reset") and "duration" in event:
+                    text += f"\n{event['type']}: {event['duration']:.3f} s ({event.get('reason', 'użytkownik')})"
+            print(json.dumps(st.to_dict(), ensure_ascii=False, indent=2) if args.json else text, file=out)
             return 0 if (st.usable or st.state == "brak") else 3
+        if args.cmd in ("stop", "start"):
+            took = getattr(lifecycle.Lifecycle(b), args.cmd)(args.slug, args.card)
+            print(f"{args.cmd}: {args.slug} ({took:.3f} s)", file=out)
+            return 0
         if args.cmd == "reset":
             took = b.reset(args.slug, args.card)
             print(f"przywrócono migawkę clean ({took:.1f} s)", file=out)

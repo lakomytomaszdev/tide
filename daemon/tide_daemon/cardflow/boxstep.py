@@ -46,6 +46,7 @@ from ..box import profile as bp
 from ..box import proxy as bproxy
 from ..box import settings as bsettings
 from ..box import state as bs
+from ..box import lifecycle
 from ..box.incus import IncusError
 from ..box.runner import BoxRunner
 from ..tasks import agentcmd
@@ -100,7 +101,9 @@ def settings_of(engine) -> bsettings.BoxSettings:
 
 def builder_of(engine, settings) -> bb.Builder:
     factory = getattr(engine, "box_builder", None)
-    return factory() if factory is not None else bb.Builder(settings)
+    builder = factory() if factory is not None else bb.Builder(settings)
+    builder.steps_source = lambda slug, name: lifecycle.active_steps(builder, slug, name, engine)
+    return builder
 
 
 def proxy_of(engine):
@@ -198,13 +201,12 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     if per_card and not forced:
         name = bs.card_box_name(slug, card_id)
         try:
-            if builder.incus.instance(name) is None:
-                builder.copy_for_card(slug, card_id)        # raz na kartę: kopia z migawki `clean`
-        except (bb.BuildError, IncusError, OSError) as exc:
+            builder.copy_for_card(slug, card_id)        # nowy przepis odtwarza nieaktywną kopię
+        except (bb.BoxBusy, bb.BuildError, IncusError, OSError) as exc:
             raise BoxWaiting(f"czeka na pudełko (kopia karty: {exc})") from None
         _require_compatible(engine, card_id, builder, builder.status(slug, card=card_id, profile=profile))
     runner = runner_of(engine, settings, slug, card_id, per_card)
-    ip = _ready(engine, card_id, builder, runner, settings, name)
+    ip = _ready(engine, card_id, builder, runner, settings, name, slug, per_card)
     if boxwait.card_box_wait(fold(engine.journal.read(card_id))) in (boxwait.START, boxwait.REBUILD):
         boxwait.set_box_wait(engine.journal, card_id, "", box=name)
     return Placement(slug, name, ip, per_card, profile, runner, bool(full["docker"]["enabled"]))
@@ -231,7 +233,7 @@ def _require_compatible(engine, card_id: str, builder, status: bs.BoxStatus) -> 
     raise BoxWaiting(WAIT_REBUILD)
 
 
-def _ready(engine, card_id: str, builder, runner, settings, name: str) -> str:
+def _ready(engine, card_id: str, builder, runner, settings, name: str, slug: str, per_card: bool) -> str:
     """Pudełko działa i odpowiada; zwraca jego adres IP. Zatrzymane → `boxWait: start` i `incus start`."""
     incus = builder.incus
     try:
@@ -245,13 +247,9 @@ def _ready(engine, card_id: str, builder, runner, settings, name: str) -> str:
     if str(inst.get("status", "")).lower() != "running":
         boxwait.set_box_wait(engine.journal, card_id, boxwait.START, box=name)
         try:
-            incus.start(name)
-            while incus.exec(name, ["true"]) != 0:
-                if time.monotonic() >= deadline:
-                    raise BoxWaiting(WAIT_START)
-                sleep(0.5)
+            lifecycle.Lifecycle(builder).start(slug, card_id if per_card else None)
             runner.wait_user_manager(name)
-        except (IncusError, OSError, agentcmd.StepError) as exc:
+        except (bb.BuildError, IncusError, OSError, agentcmd.StepError) as exc:
             raise BoxWaiting(f"{WAIT_START}: {exc}") from None
     while True:
         try:
@@ -306,6 +304,40 @@ def _apply_policy(engine, slug: str, box: str, ip: str, cards: list, contexts=()
 
 def before_start(engine, placement: Placement, card_id: str, step_id: str, program: str = "claude") -> str:
     """`set_box_policy` przed startem kroku; zwraca ścieżkę dziennika odmów kroku."""
+    try:
+        return _reserve_start(engine, placement, card_id, step_id, program)
+    except BoxWaiting as exc:
+        # Po zapisaniu intent trzeba utrwalić także nieudany start przez standardową ścieżkę _act.
+        raise agentcmd.StepError(exc.reason) from exc
+
+
+def _reserve_start(engine, placement, card_id, step_id, program):
+    with bs.lifecycle_lock(placement.slug):
+        # Od wyboru miejsca CLI mogło zatrzymać/resetować/usunąć pudełko. Ponowna kontrola
+        # i gotowość są atomowe względem operacji destrukcyjnych aż do trwałego box.use.
+        builder = builder_of(engine, settings_of(engine))
+        _require_compatible(engine, card_id, builder,
+                            builder.status(placement.slug, card_id if placement.per_card else None))
+        placement.ip = _ready(engine, card_id, builder, placement.runner, settings_of(engine),
+                              placement.box, placement.slug, placement.per_card)
+        if boxwait.card_box_wait(fold(engine.journal.read(card_id))) == boxwait.START:
+            boxwait.set_box_wait(engine.journal, card_id, "", box=placement.box)
+        return _before_start(engine, placement, card_id, step_id, program)
+
+
+def prepare_runner(engine, placement, step):
+    """Limity z aktualnego profilu przed ewentualnym restartem na montowania, kontrola swapu po nim."""
+    with bs.lifecycle_lock(placement.slug):
+        builder = builder_of(engine, settings_of(engine))
+        try:
+            builder.incus.config_set(placement.box, lifecycle.limits(builder.load_profile(placement.slug)))
+            placement.runner.ensure_devices(step)
+            lifecycle.require_no_swap(builder.incus, placement.box)
+        except (bb.BuildError, IncusError) as exc:
+            raise agentcmd.StepError(f"przygotowanie pudełka {placement.box}: {exc}") from exc
+
+
+def _before_start(engine, placement, card_id, step_id, program):
     log_path = denied_log_path(placement.slug, step_id)
     os.makedirs(os.path.dirname(log_path), mode=0o700, exist_ok=True)
     try:

@@ -202,6 +202,8 @@ def main(argv):
             inst = inst_or_die(data, name)
             if action == "set":
                 values = kv(args[3:])
+                if "limits.memory.swap" in values:
+                    die("atrapa: limits.memory.swap jest zabronione w projekcie ograniczonym")
                 if values.get("security.privileged") == "true":
                     die("atrapa: security.privileged jest zabronione w projekcie ograniczonym")
                 inst["config"].update(values)
