@@ -277,7 +277,8 @@ class Builder:
             steps.append("verify")
             v_start = self.clock()
             source_revision = ""
-            with verification.project_source(self.incus, slug, name, full, env) as source:
+            with verification.project_source(self.incus, slug, name, full, env,
+                                             self.settings.agent_uid, self.settings.agent_gid) as source:
                 if source is not None:
                     source_revision = source.revision
                 restored = source is None or source.restore() == 0

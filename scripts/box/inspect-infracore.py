@@ -14,11 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "daemon"))
 
 from tide_daemon.box import profile as bp
+from tide_daemon.gitcommand import git_argv
 from tide_daemon.tasks import stack
 
 
 def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, timeout=60).stdout
+    return subprocess.run(git_argv("-C", str(repo), *args), check=True, capture_output=True, timeout=60).stdout
 
 
 def main():
@@ -33,8 +34,8 @@ def main():
     candidate = bp.parse((ROOT / "docs/box-profiles/infracore.yaml").read_text(encoding="utf-8"))
     data = {"repo": str(repo), "head": git(repo, "rev-parse", "HEAD").decode().strip(),
             "status": git(repo, "status", "--porcelain=v1").decode(),
-            "trackedDiffSha256": hashlib.sha256(git(repo, "diff", "--binary", "HEAD")).hexdigest(),
-            "indexDiffSha256": hashlib.sha256(git(repo, "diff", "--cached", "--binary")).hexdigest(),
+            "trackedDiffSha256": hashlib.sha256(git(repo, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD")).hexdigest(),
+            "indexDiffSha256": hashlib.sha256(git(repo, "diff", "--no-ext-diff", "--no-textconv", "--cached", "--binary")).hexdigest(),
             "report": report.to_dict(), "proposal": bp.validate(proposal), "items": items,
             "candidate": candidate,
             "detectedSdkOutsideCandidate": [v for v in report.dotnet.get("sdk", [])

@@ -1,5 +1,9 @@
 """PT-186: profil projektu i odmowa automatycznego udostępnienia lokalnego NuGet."""
 from pathlib import Path
+import importlib.util
+import json
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -10,6 +14,58 @@ from tide_daemon.cardflow import envconsent, environment
 from tide_daemon.tasks import stack
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class InspectionGitTest(unittest.TestCase):
+    def test_inspection_disables_fsmonitor_external_diff_and_textconv(self):
+        spec = importlib.util.spec_from_file_location("inspect_coretools", ROOT / "scripts/box/inspect-infracore.py")
+        inspection = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inspection)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            repo = root / "repo"
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+            git("init")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            (repo / "App.csproj").write_text("<Project />\n")
+            (repo / ".gitattributes").write_text("*.csproj diff=probe\n")
+            git("add", ".")
+            git("commit", "-m", "Initial fixture")
+            (repo / "App.csproj").write_text("<Project>staged</Project>\n")
+            git("add", ".")
+            (repo / "App.csproj").write_text("<Project>working</Project>\n")
+            marker = root / "executed"
+            probe = root / "probe"
+            probe.write_text(f"#!{sys.executable}\nfrom pathlib import Path\n"
+                             f"Path({str(marker)!r}).write_text('executed')\nprint('converted')\n")
+            probe.chmod(0o700)
+            git("config", "core.fsmonitor", str(probe))
+            git("status", "--porcelain=v1")
+            self.assertTrue(marker.exists(), "fixture fsmonitor nie został wykonany")
+            marker.unlink()
+            git("config", "core.fsmonitor", "false")
+            for setting in ("diff.probe.command", "diff.probe.textconv"):
+                with self.subTest(setting=setting):
+                    git("config", setting, str(probe))
+                    git("diff", "HEAD")
+                    self.assertTrue(marker.exists(), "fixture diff nie został wykonany")
+                    marker.unlink()
+                    git("config", "core.fsmonitor", str(probe))
+                    output = root / "inspection.json"
+                    with mock.patch.object(sys, "argv", ["inspect", "--repo", str(repo), "--output", str(output)]), \
+                            mock.patch("builtins.print"):
+                        inspection.main()
+                    self.assertFalse(marker.exists())
+                    data = json.loads(output.read_text())
+                    self.assertIn("App.csproj", data["status"])
+                    self.assertNotEqual(data["trackedDiffSha256"], data["indexDiffSha256"])
+                    git("config", "core.fsmonitor", "false")
+                    git("config", "--unset", setting)
 
 
 class LocalNugetTest(unittest.TestCase):

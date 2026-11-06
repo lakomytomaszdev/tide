@@ -208,11 +208,11 @@ class Incus:
     # --- polecenia w pudełku -----------------------------------------------------------------------
 
     def exec_argv(self, name: str, command: list, env: dict | None = None, user: int | None = None,
-                  cwd: str | None = None, tty: bool = False) -> list:
+                  cwd: str | None = None, tty: bool = False, group: int | None = None) -> list:
         """argv `incus exec`; `tty=True` (`-t`) tylko dla poleceń interaktywnych użytkownika (`tide box login`)."""
         args = ["exec", name, "-t" if tty else "-T"]
         if user is not None:
-            args += ["--user", str(user), "--group", str(user)]
+            args += ["--user", str(user), "--group", str(user if group is None else group)]
         if cwd:
             args += ["--cwd", cwd]
         for key, value in (env or {}).items():
@@ -220,8 +220,8 @@ class Incus:
         return self._argv([*args, "--", *command])
 
     def exec(self, name: str, command: list, env: dict | None = None, user: int | None = None,
-             cwd: str | None = None) -> int:
-        argv = self.exec_argv(name, command, env, user, cwd)
+             cwd: str | None = None, group: int | None = None) -> int:
+        argv = self.exec_argv(name, command, env, user, cwd, group=group)
         if self.log is None:
             return self._run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True).returncode
         # Wyjście strumieniowane do dziennika budowy na bieżąco (długie `apt-get install` widać w trakcie).

@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from tide_daemon.box import builder as bb, profile as bp, verification as v
+from tide_daemon.box.incus import Incus
 from tide_daemon.box.settings import BoxSettings
 
 
@@ -54,7 +55,7 @@ class SourceTest(unittest.TestCase):
         restore = next(c for c in self.incus.exec.call_args_list if c.args[1][:2] == ["dotnet", "restore"])
         self.assertEqual(restore.args[1], ["dotnet", "restore", "--configfile", source.config,
                                           "--source", v.PUBLIC_NUGET])
-        self.assertEqual(restore.kwargs, {"user": 1000, "cwd": source.cwd})
+        self.assertEqual(restore.kwargs, {"user": 1000, "group": 1000, "cwd": source.cwd})
         self.assertEqual(restore.args[2]["HOME"], "/home/agent")
         self.assertEqual(restore.args[2]["HTTPS_PROXY"], self.env["HTTPS_PROXY"])
         config = next(content for target, content in pushed if target.endswith("/nuget.config"))
@@ -62,6 +63,25 @@ class SourceTest(unittest.TestCase):
         self.assertEqual(config.count(b"<add "), 1)
         self.assertNotIn(b"devhost", config)
         self.assertEqual([c.args[1][0] for c in self.incus.exec.call_args_list][-2:], ["rm", "rm"])
+
+    def test_distinct_agent_uid_gid_for_preparation_restore_verify_and_cleanup(self):
+        with mock.patch.object(v, "archive_head", side_effect=self.source_archive):
+            with v.project_source(self.incus, "proj", "box", {"stacks": ["dotnet"]}, self.env,
+                                  1001, 1002) as source:
+                source.restore()
+                source.run(["dotnet", "build", "--no-restore"])
+        agent_calls = [c for c in self.incus.exec.call_args_list if c.kwargs["user"] is not None]
+        self.assertEqual([c.args[1][0] for c in agent_calls], ["mkdir", "tar", "dotnet", "dotnet", "rm"])
+        for call in agent_calls:
+            self.assertEqual((call.kwargs["user"], call.kwargs["group"]), (1001, 1002))
+            self.assertEqual(call.args[2]["HOME"], "/home/agent")
+            self.assertEqual(call.args[2]["DOTNET_CLI_HOME"], "/home/agent")
+        incus = Incus("tide-test")
+        with mock.patch.object(incus, "_run", return_value=mock.Mock(returncode=0)) as run:
+            incus.exec("box", ["true"], user=1001, group=1002)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--user") + 1], "1001")
+        self.assertEqual(argv[argv.index("--group") + 1], "1002")
 
     def test_sources_are_removed_even_when_verify_raises(self):
         with mock.patch.object(v, "archive_head", side_effect=self.source_archive):
@@ -163,7 +183,7 @@ class BuildVerifyTest(unittest.TestCase):
 
         incus = mock.Mock()
         incus.exec.return_value = 0
-        builder = bb.Builder(BoxSettings(), incus=incus, policy=mock.Mock())
+        builder = bb.Builder(BoxSettings(agent_uid=1001, agent_gid=1002), incus=incus, policy=mock.Mock())
         full = bp.with_defaults({"tide-box": 1, "verify": ["dotnet build --no-restore"]})
         with mock.patch.object(v, "project_source", side_effect=prepared):
             with self.assertRaises(v.VerificationError):
@@ -190,11 +210,12 @@ class BuildVerifyTest(unittest.TestCase):
             order.append("source-cleaned")
 
         incus.snapshot_create.side_effect = lambda *args: order.append("snapshot")
-        builder = bb.Builder(BoxSettings(), incus=incus, policy=mock.Mock())
+        builder = bb.Builder(BoxSettings(agent_uid=1001, agent_gid=1002), incus=incus, policy=mock.Mock())
         full = bp.with_defaults({"tide-box": 1, "stacks": ["dotnet"], "dotnet": {"sdk": ["8.0.415"]},
                                  "verify": ["dotnet build --no-restore"]})
-        with mock.patch.object(v, "project_source", side_effect=prepared), mock.patch.object(bb.bs, "record") as record:
+        with mock.patch.object(v, "project_source", side_effect=prepared) as prepare, mock.patch.object(bb.bs, "record") as record:
             result = builder._provision("proj", "box", full, "http://proxy:1234", [])
+        self.assertEqual(prepare.call_args.args[-2:], (1001, 1002))
         self.assertEqual(order, ["source-cleaned", "snapshot"])
         self.assertEqual(result.warning, bool(restore_code))
         event = next(c for c in record.call_args_list if c.args[1] == "box.verify")

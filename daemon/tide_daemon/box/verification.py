@@ -64,10 +64,12 @@ class Source:
     config: str
     revision: str
     env: dict
+    uid: int
+    gid: int
     projects: tuple = ()
 
     def run(self, command):
-        return self.incus.exec(self.box, command, self.env, user=1000, cwd=self.cwd)
+        return self.incus.exec(self.box, command, self.env, user=self.uid, group=self.gid, cwd=self.cwd)
 
     def restore(self):
         for project in self.projects or (None,):
@@ -78,13 +80,13 @@ class Source:
         return 0
 
 
-def checked(incus, box, command, env, user=None):
-    if incus.exec(box, command, env, user=user) != 0:
+def checked(incus, box, command, env, user=None, group=None):
+    if incus.exec(box, command, env, user=user, group=group) != 0:
         raise VerificationError("nie udało się przygotować lub usunąć kopii verify: " + command[0])
 
 
 @contextmanager
-def project_source(incus, slug, box, profile, env):
+def project_source(incus, slug, box, profile, env, uid=1000, gid=1000):
     if "dotnet" not in profile.get("stacks", []):
         yield None
         return
@@ -104,17 +106,17 @@ def project_source(incus, slug, box, profile, env):
                      "DOTNET_NOLOGO": "1", "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
                      "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1"}
         try:
-            checked(incus, box, ["mkdir", "-p", remote + "/src"], agent_env, user=1000)
+            checked(incus, box, ["mkdir", "-p", remote + "/src"], agent_env, user=uid, group=gid)
             incus.file_push(str(archive), box, remote_archive)
             incus.file_push(str(config), box, remote + "/nuget.config")
             checked(incus, box, ["chmod", "0644", remote_archive, remote + "/nuget.config"], env)
             checked(incus, box, ["tar", "-xf", remote_archive, "-C", remote + "/src",
-                                 "--no-same-owner", "--no-same-permissions"], agent_env, user=1000)
-            yield Source(incus, box, remote + "/src", remote + "/nuget.config", revision, agent_env,
+                                 "--no-same-owner", "--no-same-permissions"], agent_env, user=uid, group=gid)
+            yield Source(incus, box, remote + "/src", remote + "/nuget.config", revision, agent_env, uid, gid,
                          tuple(profile.get("dotnet", {}).get("restore-projects", [])))
         finally:
             # Nie tworzymy migawki zawierającej źródła, nawet jeśli build lub sprzątanie zawiedzie.
             try:
-                checked(incus, box, ["rm", "-rf", "--", remote], agent_env, user=1000)
+                checked(incus, box, ["rm", "-rf", "--", remote], agent_env, user=uid, group=gid)
             finally:
                 checked(incus, box, ["rm", "-f", "--", remote_archive], env)
