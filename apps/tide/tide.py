@@ -379,6 +379,9 @@ def main(argv=None) -> int:
 
     engine = QQmlApplicationEngine()
     network_factory = guard_network(engine)  # noqa: F841 — żyje tak długo jak main(), czyli silnik
+    for backend in backends.values():
+        if hasattr(backend, "install_image_provider"):
+            backend.install_image_provider(engine)
     engine.setInitialProperties({"shell": shell, "grabPath": os.path.abspath(args.grab) if args.grab else "",
                                  "initialView": args.initial_view, "initialItem": args.select,
                                  "preview": args.preview_map})

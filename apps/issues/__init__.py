@@ -1,0 +1,1 @@
+"""Widok Sprawy okna Tide."""

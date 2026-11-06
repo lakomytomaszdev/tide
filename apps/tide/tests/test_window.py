@@ -40,7 +40,7 @@ from tide_daemon.worktrees.launchers import Launchers  # noqa: E402
 
 QML_PROBLEMS = r"Unable to assign|TypeError|ReferenceError|is not a type|overrides a member|is not defined|" \
                r"Cannot read|unavailable|Invalid property|Binding loop|failed to load|Only binding to one"
-VIEWS = ["board", "sessions", "worktrees", "docker", "reports", "models"]
+VIEWS = ["board", "issues", "sessions", "worktrees", "docker", "reports", "models"]
 WINDOW = ("org.tide.Window", "/Window", "org.tide.Window")
 
 
@@ -106,7 +106,7 @@ class PackageTest(unittest.TestCase):
         with open(os.path.join(APP_DIR, "views.json"), encoding="utf-8") as fh:
             views = json.load(fh)["views"]
         self.assertEqual([v["id"] for v in views], VIEWS, "kolejność paska jak na mocku")
-        self.assertEqual([v["title"] for v in views], ["Tablica", "Sesje", "Worktrees", "Docker", "Raporty", "Modele"])
+        self.assertEqual([v["title"] for v in views], ["Tablica", "Sprawy", "Sesje", "Worktrees", "Docker", "Raporty", "Modele"])
         self.assertEqual(sum(1 for v in views if v.get("default")), 1)
         with open(os.path.join(APP_DIR, "qml", "RailIcon.qml"), encoding="utf-8") as fh:
             icons = fh.read()

@@ -82,7 +82,7 @@ Categories=Development;
 Keywords=agent;claude;codex;tablica;sesje;worktree;docker;raport;model;ollama;
 StartupNotify=true
 StartupWMClass=tide
-Actions=board;sessions;worktrees;docker;reports;models;
+Actions=board;issues;sessions;worktrees;docker;reports;models;
 $marker
 
 [Desktop Action board]
@@ -92,6 +92,10 @@ Exec=$(exec_line " --view board")
 [Desktop Action sessions]
 Name=Sesje
 Exec=$(exec_line " --view sessions")
+
+[Desktop Action issues]
+Name=Sprawy
+Exec=$(exec_line " --view issues")
 
 [Desktop Action worktrees]
 Name=Worktrees
