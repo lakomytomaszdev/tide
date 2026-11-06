@@ -493,6 +493,10 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
         # Co-Authored-By, którą Claude Code dopisuje domyślnie).
         "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}
+    if step.read_dirs:
+        # --add-dir udostępnia także katalog sesji; zakaz Edit nie obejmuje poleceń Bash.
+        # Jawny denyWrite utrzymuje granicę dla materiałów wejścia i pozostałych katalogów tylko do odczytu.
+        settings["sandbox"]["filesystem"]["denyWrite"] = list(step.read_dirs)
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
         token = step.local.token_file
@@ -519,7 +523,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         skill_dirs = skills_mod.read_dirs(skills)
         settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
                                    "deny": read_only_rules(skill_dirs)}
-        settings["sandbox"]["filesystem"]["denyWrite"] = skill_dirs
+        settings["sandbox"]["filesystem"].setdefault("denyWrite", []).extend(skill_dirs)
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),

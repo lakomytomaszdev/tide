@@ -145,6 +145,7 @@ class EvidenceFlowTest(AcceptedFixture):
         for folder in (inp / "evidence", inp / "images"):
             self.assertIn(str(folder), policy["allowRead"])
             self.assertNotIn(str(folder), policy["allowWrite"])
+            self.assertIn(str(folder), policy["denyWrite"])
         self.assertNotIn(self.root, policy["allowRead"])
         call = json.loads(Path(step["stepDir"], "out/fake-call.json").read_text())
         for folder in (inp / "evidence", inp / "images"):
