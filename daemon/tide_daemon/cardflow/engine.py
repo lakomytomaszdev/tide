@@ -60,7 +60,7 @@ from . import fullcard
 from . import guard
 from . import limits as flow_limits
 from . import planning
-from .planediting import PlanEditing
+from .planediting import PLAN_AUTHOR, PlanEditing
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
@@ -3756,7 +3756,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
         ticket = str(request.get("ticket") or "").strip()
         executor = str(request.get("executor") or "").strip()
-        if ticket == CLOSE_AUTHOR:
+        if ticket == PLAN_AUTHOR:
+            # Planista kolejnych poprawek planu (06.11, K-38: poprawka czekała na limit Claude do soboty).
+            if not st.plan_proposed or st.card_finished or any(
+                    s.get("kind") in ("plan-amend", "plan-revise", "planning") for s in st.running()):
+                raise FlowError("not-waiting", f"{card}: planista karty właśnie pracuje albo karta nie ma planu")
+        elif ticket == CLOSE_AUTHOR:
             # Domknięcie karty (06.11, K-37: domknięcie planisty Opus czekało na limit Claude do soboty).
             if st.card_finished or any(s.get("kind") == "close" for s in st.running()):
                 raise FlowError("not-waiting", f"{card}: domknięcie karty właśnie trwa albo karta jest skończona")

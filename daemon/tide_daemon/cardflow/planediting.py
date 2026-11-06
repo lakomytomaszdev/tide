@@ -10,6 +10,16 @@ def _text_of(value) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+
+PLAN_AUTHOR = "plan"    # `reassign-author` z ticket=plan przepina planistę kolejnych poprawek planu
+
+
+def planner_of(st, proposal) -> str:
+    """Planista poprawek i review planu: przepięty przez użytkownika/koordynatora (06.11, K-38: poprawka planu czekała
+    na limit Claude do soboty, bo zawsze szła do pierwotnego planisty), inaczej planista propozycji."""
+    override = (st.author_overrides.get(PLAN_AUTHOR) or {}).get("executor")
+    return override or (proposal or {}).get("planner") or ""
+
 class PlanEditing:
     @staticmethod
     def _plan_spec(path):
@@ -43,7 +53,7 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            author = catalog.get(planner_of(st, proposal) or proposal["rows"][0]["executor"])
             options = [e for e in catalog.executors if e.name != author.name and plans.independent_reviewer(author, e)
                        and (e.provider == "local") == (author.provider == "local")]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
@@ -88,7 +98,7 @@ class PlanEditing:
         if report["verdict"] == "REQUEST_CHANGES":
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            selected = execution.resolve(proposal["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
+            selected = execution.resolve(planner_of(st, proposal), catalog, config=cfg, probe=self.model_probe, which=self.which)
             # Bez człowieka w pętli poprawka dostaje to, co okno zaznaczyłoby domyślnie (blocker, major; nie nit).
             sent = review_findings.render(review_findings.selection(report["findings"]))
             self._plan_step(card, st, selected, "plan-revise", self._revision_prompt(card, proposal, sent), sent)
@@ -301,7 +311,7 @@ class PlanEditing:
                 raise FlowError("review-active", "przegląd planu już wystartował")
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            author = catalog.get(planner_of(st, proposal) or proposal["rows"][0]["executor"])
             selected = catalog.get(str(request.get("executor") or ""))
             if not author or not selected or author.name == selected.name or \
                     author.model.lower() == selected.model.lower() or \
@@ -453,7 +463,7 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            selected = execution.resolve(st.plan_proposed["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
+            selected = execution.resolve(planner_of(st, st.plan_proposed), catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-amend", self._revision_prompt(card, {**st.plan_proposed, "rows": revision["baseline"]}, revision["feedback"]))
             return
         step = steps[-1]
