@@ -19,6 +19,7 @@ Zasady:
 import os
 import re
 import time
+from threading import RLock
 
 from ..worktrees.git import Git
 
@@ -41,6 +42,8 @@ class BoardRepo:
         self.proc_root = proc_root
         self.pending: list[tuple[str, list[str]]] = []   # (komunikat, ścieżki) commitów, które się nie udały
         self.last_error = ""
+        # Kolejkę współdzielą wątki przepływu oraz synchronizacja z wątku głównego.
+        self._commit_lock = RLock()
 
     @property
     def git_dir(self) -> str:
@@ -121,12 +124,17 @@ class BoardRepo:
     def commit(self, message: str, paths: list[str]) -> str:
         """Commit tylko podanych ścieżek; najpierw zaległe. Pusty napis albo opis błędu (wtedy
         commit czeka w `pending`)."""
-        self.pending.append((message, list(paths)))
-        return self.flush()
+        with self._commit_lock:
+            self.pending.append((message, list(paths)))
+            return self.flush()
 
     def flush(self) -> str:
         """Próbuje zaległych commitów po kolei. Przejściowy błąd (zajęty indeks, zawieszony git)
         zatrzymuje kolejkę; trwały — usuwa wpis (jego zmiany zbierze `sync()`)."""
+        with self._commit_lock:
+            return self._flush_locked()
+
+    def _flush_locked(self) -> str:
         while self.pending:
             message, paths = self.pending[0]
             error, transient = self._commit_now(message, paths)
@@ -142,20 +150,21 @@ class BoardRepo:
 
     def sync(self, message: str) -> bool:
         """Zaległe commity, a potem wszystko inne (zmiany z zewnątrz) jednym commitem."""
-        if not self.initialized() or self.busy():
-            return False
-        before = len(self.pending)
-        if self.flush():
-            return False
-        committed = before > 0
-        status = self.git.run(self.root, "status", "--porcelain", "-uall")
-        if not status.ok or not status.out.strip():
-            return committed
-        error, _ = self._commit_now(message, [])
-        if error:
-            self.last_error = error
-            return committed
-        return True
+        with self._commit_lock:
+            if not self.initialized() or self.busy():
+                return False
+            before = len(self.pending)
+            if self.flush():
+                return False
+            committed = before > 0
+            status = self.git.run(self.root, "status", "--porcelain", "-uall")
+            if not status.ok or not status.out.strip():
+                return committed
+            error, _ = self._commit_now(message, [])
+            if error:
+                self.last_error = error
+                return committed
+            return True
 
     # --- wnętrze -------------------------------------------------------------------------------
 

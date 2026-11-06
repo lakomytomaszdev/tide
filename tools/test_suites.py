@@ -7,7 +7,7 @@ SUITES = {
     "scripts": [("scripts/tests", "test*.py")],
     "board": [("apps/board/tests", "test*.py")],
     "daemon": [("daemon/tests", "test*.py")],
-    "issues": [("daemon/tests", "test_issues*.py")],
+    "issues": [("daemon/tests", "test_issues*.py"), ("apps/issues/tests", "test*.py")],
     "decoration": [("theme/decoration/tests", "test*.py")],
     "docker": [("apps/docker/tests", "test*.py")],
     "icons": [("theme/icons/tests", "test*.py")],
@@ -49,6 +49,7 @@ CHANGE_MAP["daemon/tide_daemon/issues.py"] = "issues"
 CHANGE_MAP["daemon/tests/test_issues"] = "issues"
 CHANGE_MAP["cli/"] = "issues"
 CHANGE_MAP["mk/cli.mk"] = "issues"
+CHANGE_MAP["apps/issues/"] = "issues"
 
 # Klucz to ścieżka modułu; wartość musi wyjaśniać wspólny zasób. Takie moduły
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.

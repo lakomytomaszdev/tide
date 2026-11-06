@@ -1,11 +1,11 @@
 #!/usr/bin/python3
-"""Okno „Tide”: pasek widoków (Tablica, Sesje, Worktrees, Docker, Raporty, Modele) i widok na wierzchu —
+"""Okno „Tide”: pasek widoków (Tablica, Sprawy, Sesje, Worktrees, Docker, Raporty, Modele) i widok na wierzchu —
 QML (qml/Main.qml), dane widoków z tide-daemon przez D-Bus.
 
 Użycie: /usr/bin/python3 tide.py [--view WIDOK] [--select ELEMENT] [--data [WIDOK=]PLIK.json ...]
                                  [--preview KLUCZ=WARTOŚĆ ...] [--grab PLIK.png] [--width N --height N]
 
---view     widok na start: board, sessions, worktrees, docker, reports, models (bez — domyślny z views.json;
+--view     widok na start: board, issues, sessions, worktrees, docker, reports, models (bez — domyślny z views.json;
            gdy okno już działa, bez --view zostaje na bieżącym widoku i tylko się pokazuje),
 --select   element widoku: koordynator w Sesjach (claude:<sesja>), ścieżka worktree w Worktrees,
            kontener w Dockerze, serwer w Modelach (nazwa z models.json), w przyszłości karta, dzień raportu,
@@ -379,6 +379,9 @@ def main(argv=None) -> int:
 
     engine = QQmlApplicationEngine()
     network_factory = guard_network(engine)  # noqa: F841 — żyje tak długo jak main(), czyli silnik
+    for backend in backends.values():
+        if hasattr(backend, "install_image_provider"):
+            backend.install_image_provider(engine)
     engine.setInitialProperties({"shell": shell, "grabPath": os.path.abspath(args.grab) if args.grab else "",
                                  "initialView": args.initial_view, "initialItem": args.select,
                                  "preview": args.preview_map})

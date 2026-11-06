@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -53,6 +54,8 @@ def parser():
     listing = actions.add_parser("list", help="lista spraw")
     show = actions.add_parser("show", help="treść i metadane sprawy")
     show.add_argument("id", help="S-N")
+    opening = actions.add_parser("open", help="otwórz sprawę w oknie Tide")
+    opening.add_argument("id", help="S-N")
     update = actions.add_parser("update", help="popraw szkic; zmiana ready wraca do draft")
     update.add_argument("id", help="S-N")
     update.add_argument("--expected-version", required=True, type=int)
@@ -81,7 +84,7 @@ def parser():
     attachment.add_argument("--attachment", required=True)
     attachment.add_argument("--output", required=True)
     attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
-    for command in (info, issue, create, listing, show, update, attach, detach, attachment, *transitions):
+    for command in (info, issue, create, listing, show, opening, update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
 
@@ -123,6 +126,22 @@ class PublicApi:
                 raise CliError("api-incompatible", "Nieprawidłowe bajty odpowiedzi ReadAttachment.")
             return result, bytes(values[1])
         return result
+
+    def open_window(self, ident):
+        message = self.QDBusMessage.createMethodCall("org.tide.Window", "/Window", "org.tide.Window", "Show")
+        message.setArguments(["issues", ident])
+        reply = self.bus.call(message, self.QDBus.CallMode.Block, 5000)
+        if reply.type() == self.QDBusMessage.MessageType.ReplyMessage and reply.arguments() == [True]:
+            return
+        # Ten sam zainstalowany launcher co pozostałe wejścia do jednego okna Tide.
+        path = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "tide/tide-window/tide.py"
+        if not path.is_file():
+            raise CliError("unavailable", "Okno Tide nie jest zainstalowane.")
+        try:
+            subprocess.Popen(["/usr/bin/python3", "-s", str(path), "--view", "issues", "--select", ident],
+                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            raise CliError("unavailable", "Nie można uruchomić okna Tide.") from None
 
 
 def read_attachment_source(path):
@@ -228,9 +247,16 @@ def main(argv=None):
             except OSError:
                 raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
         if result["ok"] and args.command != "info":
-            if f"issue.{args.action}" not in result.get("capabilities", []):
+            capability = "show" if args.action == "open" else args.action
+            if f"issue.{capability}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
-            if args.action == "create":
+            if args.action == "open":
+                if not re.fullmatch(r"S-[1-9][0-9]{0,8}", args.id):
+                    raise CliError("bad-request", "Podaj numer sprawy S-N.")
+                result = api.call("Show", args.id)
+                if result["ok"]:
+                    api.open_window(args.id)
+            elif args.action == "create":
                 data = {"report": read_report(args.report), "title": args.title}
                 if args.project is not None:
                     data["project"] = args.project

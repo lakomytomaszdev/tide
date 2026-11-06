@@ -93,7 +93,14 @@ class TasksContractTest(unittest.TestCase):
         return reply.arguments()[0]
 
     def start(self, **request):
-        return json.loads(self.call("Start", json.dumps(request, ensure_ascii=False)))
+        before = len(self.agent_calls())
+        result = json.loads(self.call("Start", json.dumps(request, ensure_ascii=False)))
+        if result.get("ok"):
+            # Start potwierdza przejęcie pliku, zanim exec uruchomi atrapę agenta.
+            # Czekamy na obserwowany skutek, aby wpis nie trafił do kolejnego scenariusza.
+            self.assertTrue(wait_until(lambda: len(self.agent_calls()) >= before + 1, timeout=5),
+                            "Przejęte zadanie nie zapisało wywołania agenta w ciągu 5 s.")
+        return result
 
     def agent_calls(self):
         try:
