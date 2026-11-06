@@ -427,6 +427,8 @@ class StepDecisionTest(FlowInProcess):
         self.wait_column(card_id, "waiting")
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
                          [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("ticket", "Haiku"),
@@ -441,6 +443,8 @@ class StepDecisionTest(FlowInProcess):
         # 03.11 (decyzja użytkownika): ten sam model co autor nie blokuje — wybór użytkownika wygrywa.
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
                          [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
