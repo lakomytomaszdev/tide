@@ -754,7 +754,7 @@ Rectangle {
                             wrapMode: Text.Wrap
                             color: Tide.Tokens.textSecondary
                             font.family: Tide.Theme.uiFamily
-                            font.pixelSize: 13
+                            font.pointSize: Tide.Tokens.fontSizePt
                         }
                         Tide.TextButton {
                             objectName: "revokeTicketConsent"
@@ -777,7 +777,7 @@ Rectangle {
                     wrapMode: Text.Wrap
                     color: Tide.Tokens.peach
                     font.family: Tide.Theme.uiFamily
-                    font.pixelSize: 13
+                    font.pointSize: Tide.Tokens.fontSizePt
                 }
             }
 
