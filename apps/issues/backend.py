@@ -248,11 +248,12 @@ class Backend(QObject):
             issue = result["issue"]
             if buf.get("issue") and issue["version"] < buf["issue"]["version"]:
                 return
+            buf["error"] = ""
             if not discard and (self._dirty(buf) or buf.get("conflict")):
                 if issue["version"] != buf["issue"]["version"]:
                     buf.update(current=issue, conflict=issue["version"])
             else:
-                buf.update(issue=issue, draft=self._fields(issue), conflict=0, current=None, error="")
+                buf.update(issue=issue, draft=self._fields(issue), conflict=0, current=None)
             if ident == self._selected:
                 self._load_evidence(buf["issue"])
         self.changed.emit()

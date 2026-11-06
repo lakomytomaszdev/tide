@@ -12,6 +12,7 @@ Item {
     property bool active: true
     property var preview: ({})
     readonly property var modelState: backend ? JSON.parse(backend.stateJson) : ({})
+    readonly property string selectedIssue: modelState.selected || ""
     readonly property var issue: modelState.issue || null
     readonly property var draft: modelState.draft || ({})
     readonly property bool editable: !!issue && ["draft", "ready"].indexOf(issue.state) >= 0
@@ -29,11 +30,22 @@ Item {
     }
 
     function showItem(item) { if (backend) { backend.selectIssue(item); editing = false } }
+    function cancelPendingDialogs() {
+        // Wejście z CLI może zmienić sprawę mimo modalnego potwierdzenia.
+        for (const dialog of [attachmentDialog, discardDialog, rejectDialog, detachDialog]) {
+            if (dialog) {
+                dialog.issueId = ""
+                dialog.close()
+            }
+        }
+        pendingDetach = ""
+    }
     function takeFocus() { search.forceActiveFocus() }
     function chooseFirst() {
         if (!modelState.selected && rows.length > 0) showItem(rows[0].id)
     }
     onRowsChanged: chooseFirst()
+    onSelectedIssueChanged: cancelPendingDialogs()
     Component.onCompleted: chooseFirst()
 
     ColumnLayout {
@@ -370,26 +382,38 @@ Item {
     }
     FileDialog {
         id: attachmentDialog
+        objectName: "issueAttachmentDialog"
+        property string issueId: ""
         title: "Dołącz trwały dowód sprawy"
         fileMode: FileDialog.OpenFile
-        onAccepted: if (view.backend && !view.backend.preview) view.backend.attach(selectedFile)
+        onVisibleChanged: if (visible) issueId = view.selectedIssue
+        onAccepted: if (view.backend && !view.backend.preview && issueId && issueId === view.selectedIssue) view.backend.attach(selectedFile)
     }
     Confirm {
         id: discardDialog
+        objectName: "issueDiscardDialog"
+        property string issueId: ""
         heading: "Wczytać zapisaną wersję?"
         message: "Lokalne zmiany tej sprawy zostaną zastąpione aktualną wersją z usługi."
-        onAccepted: if (view.backend) view.backend.reloadSelected()
+        onAboutToShow: issueId = view.selectedIssue
+        onAccepted: if (view.backend && issueId && issueId === view.selectedIssue) view.backend.reloadSelected()
     }
     Confirm {
         id: rejectDialog
+        objectName: "issueRejectDialog"
+        property string issueId: ""
         heading: "Odrzucić sprawę?"
         message: "Raport i dowody pozostaną do odczytu. Możesz później otworzyć sprawę jako szkic."
-        onAccepted: if (view.backend) view.backend.transition("Reject")
+        onAboutToShow: issueId = view.selectedIssue
+        onAccepted: if (view.backend && issueId && issueId === view.selectedIssue) view.backend.transition("Reject")
     }
     Confirm {
         id: detachDialog
+        objectName: "issueDetachDialog"
+        property string issueId: ""
         heading: "Odłączyć dowód?"
         message: "Dowód zniknie z bieżącego manifestu. Sprawa wróci do szkicu."
-        onAccepted: if (view.backend) view.backend.detach(view.pendingDetach)
+        onAboutToShow: issueId = view.selectedIssue
+        onAccepted: if (view.backend && issueId && issueId === view.selectedIssue) view.backend.detach(view.pendingDetach)
     }
 }

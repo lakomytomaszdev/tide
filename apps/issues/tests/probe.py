@@ -70,6 +70,10 @@ def live_script():
         QTimer.singleShot(1, lambda: callback(result, b""))
     backend._call = call
     backend.reload = lambda: None
+    # preview jest stałą Qt. Po zmianie transportu podepnij backend ponownie,
+    # aby QML odczytał tę stałą tak jak przy starcie z usługą.
+    engine.rootContext().setContextProperty("liveSource", backend)
+    js("view.backend = null; view.backend = liveSource")
     return calls, replies
 
 

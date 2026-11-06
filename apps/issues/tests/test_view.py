@@ -168,6 +168,158 @@ out['lost'] = state()
         self.assertFalse(out["lost"]["available"])
         self.assertEqual(out["lost"]["draft"]["title"], "Zachowaj")
 
+    def test_successful_show_after_read_failure_keeps_local_report_and_unblocks_save(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script()
+issue = dict(state()['issue'])
+backend.updateDraft('report', 'Lokalny raport po awarii')
+replies.append(dict(ok=False, error='unavailable', message='Chwilowa awaria'))
+js('view.showItem("S-2")')
+wait()
+out['failed'] = state()
+out['blocked'] = not obj('issueSave').property('enabled')
+replies.append(dict(ok=True, issue=issue))
+js('view.showItem("S-2")')
+wait()
+out['recovered'] = state()
+out['enabled'] = obj('issueSave').property('enabled')
+replies.append(dict(ok=True, issue=dict(issue, report='Lokalny raport po awarii', version=2)))
+backend.save()
+wait()
+out['calls'] = calls
+out['saved'] = state()
+''')
+        self.assertEqual(out['failed']['error'], 'Chwilowa awaria')
+        self.assertTrue(out['blocked'])
+        self.assertEqual(out['recovered']['error'], '')
+        self.assertEqual(out['recovered']['draft']['report'], 'Lokalny raport po awarii')
+        self.assertTrue(out['recovered']['dirty'])
+        self.assertTrue(out['enabled'])
+        self.assertEqual(out['calls'][-1][:2], ['Update', 'S-2'])
+        self.assertEqual(json.loads(out['calls'][-1][2]),
+                         {'expectedVersion': 1, 'report': 'Lokalny raport po awarii'})
+        self.assertEqual(out['saved']['issue']['report'], 'Lokalny raport po awarii')
+        self.assertFalse(out['saved']['dirty'])
+
+    def test_successful_show_clears_read_error_without_clearing_version_conflict(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script()
+backend.updateDraft('report', 'Lokalny raport')
+current = dict(state()['issue'], report='Nowsza treść', version=2)
+replies.extend([dict(ok=True, issue=current),
+               dict(ok=False, error='unavailable', message='Chwilowa awaria'),
+               dict(ok=True, issue=current)])
+for _ in range(3):
+    js('view.showItem("S-2")')
+    wait()
+out['recovered'] = state()
+before = len(calls)
+backend.save()
+out['blocked'] = len(calls) == before and not obj('issueSave').property('enabled')
+''')
+        self.assertEqual(out['recovered']['error'], '')
+        self.assertEqual(out['recovered']['draft']['report'], 'Lokalny raport')
+        self.assertEqual(out['recovered']['current']['report'], 'Nowsza treść')
+        self.assertEqual(out['recovered']['conflict'], 2)
+        self.assertTrue(out['blocked'])
+
+    def test_external_selection_cancels_pending_dialogs_without_acting_on_another_issue(self):
+        for dialog in ('issueRejectDialog', 'issueDiscardDialog', 'issueDetachDialog', 'issueAttachmentDialog'):
+            with self.subTest(dialog=dialog):
+                out = self.run_scenario('''
+from unittest.mock import patch
+dialog_name = %r
+discard = dialog_name == 'issueDiscardDialog'
+first_report = state()['draft']['report']
+if discard:
+    backend.updateDraft('report', 'Lokalny raport S-1')
+backend.selectIssue('S-2')
+second_report = state()['draft']['report']
+if discard:
+    backend.updateDraft('report', 'Lokalny raport S-2')
+backend.selectIssue('S-1')
+calls, replies = live_script()
+engine.rootContext().setContextProperty('pendingDialog', obj(dialog_name))
+js('view.pendingDetach = "A-11111111111111111111111111111111"')
+js('pendingDialog.open()')
+wait()
+out['opened'] = js('pendingDialog.visible')
+replies.append(dict(ok=True, issue=dict(backend._issues[1])))
+js('view.showItem("S-2")')
+wait()
+out['closed'] = not js('pendingDialog.visible')
+out['selected'] = state()['selected']
+calls.clear()
+# Opóźnione potwierdzenie, także z natywnego selektora, nie może zmienić nowego celu.
+with patch.object(module, 'read_source') as source:
+    js('pendingDialog.accepted()')
+    wait()
+    out['sourceReads'] = source.call_count
+out['calls'] = calls[:]
+out['draft'] = state()['draft']['report']
+out['expectedDraft'] = 'Lokalny raport S-2' if discard else second_report
+replies.append(dict(ok=True, issue=dict(backend._issues[0], attachments=[])))
+js('view.showItem("S-1")')
+wait()
+out['firstDraft'] = state()['draft']['report']
+out['expectedFirstDraft'] = 'Lokalny raport S-1' if discard else first_report
+calls.clear()
+with patch.object(module, 'read_source') as source:
+    js('pendingDialog.accepted()')
+    wait()
+    out['staleSourceReads'] = source.call_count
+out['staleCalls'] = calls[:]
+''' % dialog)
+                self.assertTrue(out['opened'])
+                self.assertTrue(out['closed'])
+                self.assertEqual(out['selected'], 'S-2')
+                self.assertEqual(out['calls'], [])
+                self.assertEqual(out['sourceReads'], 0)
+                self.assertEqual(out['draft'], out['expectedDraft'])
+                self.assertEqual(out['firstDraft'], out['expectedFirstDraft'])
+                self.assertEqual(out['staleCalls'], [])
+                self.assertEqual(out['staleSourceReads'], 0)
+
+    def test_dialog_confirmation_still_acts_on_the_issue_it_was_opened_for(self):
+        for dialog, method in (('issueRejectDialog', 'Reject'), ('issueDiscardDialog', 'Show'),
+                               ('issueDetachDialog', 'Detach'), ('issueAttachmentDialog', 'Attach')):
+            with self.subTest(dialog=dialog):
+                out = self.run_scenario('''
+from unittest.mock import patch
+backend.selectIssue('S-1')
+calls, replies = live_script()
+issue = dict(state()['issue'])
+engine.rootContext().setContextProperty('pendingDialog', obj(%r))
+js('view.pendingDetach = "A-11111111111111111111111111111111"')
+if %r == 'Show':
+    backend.updateDraft('report', 'Lokalny szkic')
+js('pendingDialog.open()')
+wait()
+# Ten sam cel może być ponownie otwarty przez CLI bez unieważniania potwierdzenia.
+replies.append(dict(ok=True, issue=issue))
+js('view.showItem("S-1")')
+wait()
+out['stillOpen'] = js('pendingDialog.visible')
+calls.clear()
+replies.append(dict(ok=True, issue=dict(issue, version=2, report='Odczytany raport', attachments=[])))
+with patch.object(module, 'read_source', return_value=('dowod.txt', b'dowod')) as source:
+    js('pendingDialog.accepted()')
+    wait()
+    out['sourceReads'] = source.call_count
+out['calls'] = [call[:3] for call in calls]
+out['report'] = state()['draft']['report']
+''' % (dialog, method))
+                self.assertTrue(out['stillOpen'])
+                self.assertEqual(len(out['calls']), 1)
+                self.assertEqual(out['calls'][0][:2], [method, 'S-1'])
+                if method == 'Show':
+                    self.assertEqual(out['report'], 'Odczytany raport')
+                else:
+                    self.assertEqual(json.loads(out['calls'][0][2])['expectedVersion'], 1)
+                self.assertEqual(out['sourceReads'], int(method == 'Attach'))
+
     def test_renderer_denies_foreign_images_html_and_provider_paths(self):
         out = self.run_scenario('''
 from PyQt6.QtGui import QColor
