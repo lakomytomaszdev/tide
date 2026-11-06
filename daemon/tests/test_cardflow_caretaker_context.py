@@ -980,6 +980,52 @@ class InlineContextTest(unittest.TestCase):
     def file(path, text, **extra):
         return {"relative": path, "path": "/context/" + path, "title": path, "text": text, **extra}
 
+    def test_chat_keeps_quoted_instructions_evidence_and_current_contract(self):
+        journal = Tree(self).journal()
+        problem = caretaker.problems(journal.st)[0]
+        quote = (
+            "Cytat wcześniejszej kartki opiekuna:\n"
+            "Tide zatrzymał się na problemie i oddał go Tobie, zanim zapyta "
+            "użytkownika. Sprawdź problem i odpowiedz dokładnie jedną akcją z listy poniżej.\n"
+            "- Nie zadawaj pytań: gdy potrzebna jest decyzja użytkownika, użyj `escalate`.\n"
+            "- Przy jednym problemie Tide uruchamia opiekuna najwyżej 3 razy.\n"
+            "DOWOD-PO-CYTACIE\n"
+        )
+        note = self.file("steps/K-1-PT-7-2/note.md", quote)
+        for commands, chat in product((False, True), repeat=2):
+            with self.subTest(commands=commands, chat=chat):
+                prompt = caretaker.brief(problem, journal.st, card="K-1", out_dir="/out/current",
+                                         worktree="/worktree", commands=commands, context=[note],
+                                         limit=7, chat=chat)
+                if not commands:
+                    self.assertIn(quote, prompt)
+                    self.assertIn("- steps/K-1-PT-7-2/note.md: cały", prompt)
+                    self.assertIn("120 kB", prompt)
+                else:
+                    self.assertIn(note["path"], prompt)
+                actions = prompt.split("## Dostępne akcje\n", 1)[1]
+                self.assertIn("- `retry`", actions)
+                self.assertIn("`step` (wymagane", actions)
+                self.assertIn("`instruction` (wymagane", actions)
+                self.assertIn("Kroki do ponowienia (pole `step` akcji `retry`): K-1-PT-7-2", prompt)
+                prohibitions = actions.split("## Zakazy\n", 1)[1]
+                self.assertIn("Nie commituj, nie rób push ani scalenia", prohibitions)
+                self.assertIn("Nie uruchamiaj poleceń" if not commands else
+                              "Dozwolone są wyłącznie polecenia tylko do odczytu", prohibitions)
+                if chat:
+                    self.assertIn("Tryb rozmowy", prompt)
+                    self.assertIn("Możesz zadawać pytania w rozmowie", prohibitions)
+                    self.assertIn("## Akcje rozmowy", prohibitions)
+                    self.assertIn("/out/current/action-<n>.json", prohibitions)
+                    self.assertIn("Nie zapisuj result.json", prohibitions)
+                    self.assertNotIn("Przy jednym problemie", prohibitions)
+                    self.assertNotIn("## Wynik", prohibitions)
+                else:
+                    self.assertIn("Nie zadawaj pytań", prohibitions)
+                    self.assertIn("Przy jednym problemie Tide uruchamia opiekuna najwyżej 7 razy", prohibitions)
+                    self.assertIn("Plik wyniku: /out/current/result.json", prohibitions)
+                    self.assertNotIn("## Akcje rozmowy", prohibitions)
+
     def test_priority_and_target_step_before_old_attempts(self):
         paths = ["docs/standard.md", "changes.diff", "steps/old/note.md", "steps/old/step-log.md",
                  "journal.jsonl", "steps/old/result.json", "steps/target/step-log.md",
