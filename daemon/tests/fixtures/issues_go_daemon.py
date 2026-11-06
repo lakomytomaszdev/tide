@@ -41,7 +41,7 @@ FlowEngine._start = start
 original_append = Journal.append
 
 
-def append(self, card, kind, **data):
+def append(self, card, kind, /, **data):
     trigger("before-" + kind)
     result = original_append(self, card, kind, **data)
     trigger("after-" + kind)
