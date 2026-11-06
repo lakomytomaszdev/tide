@@ -131,6 +131,16 @@ class ArtifactsTest(unittest.TestCase):
         self.assertEqual(package[new_file], b'# Nowy szkic\n')
         self.assertIn(b'[Nowy szkic](followups/new.md)', package[plan_file])
 
+    def test_retaining_artifact_source_preserves_the_approval_event(self):
+        proposal = dict(type='plan.proposed', seq=1, planPath=str(self.root / 'plan.md'),
+                        artifactPath=str(self.root))
+        approval = dict(type='plan.approved', seq=2, rows=[], planFile='plan.md')
+        state = fold([proposal, approval])
+        self.assertEqual(state.plan_approved, approval)
+        self.assertEqual(planartifacts.source_for_commit(state), proposal)
+        restarted = fold([proposal, approval, dict(type='card.started', seq=3)])
+        self.assertEqual(planartifacts.source_for_commit(restarted), {})
+
     def test_pending_commit_is_not_a_commit_of_the_approved_revision(self):
         from .test_cardflow_plan_extra import PLAN
         plan_file = 'docs/agents/plans/k-1.md'

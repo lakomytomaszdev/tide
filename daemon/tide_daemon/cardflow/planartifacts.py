@@ -16,7 +16,7 @@ def source_for_commit(state):
     Bieżąca propozycja może już zawierać poprawkę czekającą na decyzję użytkownika.
     Stan z fold przechowuje źródło poprzednio zatwierdzonego pakietu niezależnie od niej.
     """
-    return (state.plan_approved or {}).get('artifactSource', state.plan_proposed or {})
+    return state.plan_artifact_source if state.plan_artifact_source is not None else state.plan_proposed or {}
 
 
 def keep_committed_plan_text(state):

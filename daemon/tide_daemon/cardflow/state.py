@@ -84,6 +84,7 @@ class FlowState:
     plan_proposed: dict | None = None
     approval_requested: dict | None = None
     plan_approved: dict | None = None
+    plan_artifact_source: dict | None = None  # propozycja pakietu z ostatniego zatwierdzenia
     plan_reviewed: dict | None = None
     plan_reviewer: str = ""  # ręczny wybór modelu do niezależnego review planu
     plan_review_wait: dict | None = None  # blokada limitu pozostaje po restarcie i próbie review
@@ -247,6 +248,7 @@ def fold(events: list[dict]) -> FlowState:
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+            st.plan_artifact_source = None
             st.imported = None
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
@@ -290,6 +292,7 @@ def fold(events: list[dict]) -> FlowState:
                     # Propozycja i review planu także dotyczą dawnego kodu, nawet jeśli
                     # powstały wyłącznie poza repo i nie ma jeszcze commitu planu.
                     st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+                    st.plan_artifact_source = None
                     st.plan_reviewed = st.plan_revision = None
                     st.plan_reviewer = ""
                     st.plan_review_wait = None
@@ -437,8 +440,9 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "plan.revision-ready":
             st.plan_revision = e
         elif kind == "plan.revision-approved":
+            if st.plan_approved:
+                st.plan_artifact_source = st.plan_proposed or {}
             st.plan_approved = {**st.plan_approved, **e["plan"],
-                                "artifactSource": st.plan_proposed or {},
                                 "textApprovedSeq": e.get("seq", 0)} if st.plan_approved else None
             st.plan_revision = None
             st.plan_finished = False
@@ -453,7 +457,8 @@ def fold(events: list[dict]) -> FlowState:
                     plan = {**plan, "rows": [{**r, **e["changes"]} if (r.get("id") or r["workId"]) == e["ticket"] else r for r in plan["rows"]]}
                     setattr(st, name, plan)
         elif kind == "plan.approved":
-            st.plan_approved = {**e, "artifactSource": st.plan_proposed or {}}
+            st.plan_approved = e
+            st.plan_artifact_source = st.plan_proposed or {}
             for row in e.get("rows") or []:
                 if row.get("sourceState") == "gotowe":
                     st.imported_done.add(row.get("id"))
