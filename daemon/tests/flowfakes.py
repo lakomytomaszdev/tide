@@ -156,6 +156,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
             json.dump({"result": "done", "notes": []}, fh)
         sys.exit(0)
     rows = proposal["rows"]
+    broken_structure = "ATRAPA: amend-bad-structure" in prompt
+    if broken_structure:
+        rows[0]["blockers"] = ["#99"]
     if "Dodaj ticket" in prompt:
         rows.append({**rows[-1], "workId": "#3", "title": "Dodatkowy ticket", "blockers": []})
         if "Dodaj ticket na migrację formatu" in prompt:
@@ -172,6 +175,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
             kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
             fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+    if broken_structure:
+        with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Eksport\nCo zbudować: eksport danych.\n## Dla recenzenta\nSprawdź format.\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "notes": ["plan.md"]}, fh)
     sys.exit(0)

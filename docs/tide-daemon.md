@@ -1754,8 +1754,10 @@ Procedura ręczna, poza `make test`:
    wykonawcy w Konsoli, z repozytorium tylko do odczytu. Zanotuj nazwę wykonawcy,
    model, ustawienia rozumowania, datę i identyfikator sesji. Nie dawaj mu `expected.md`.
 2. Przekaż `journal.jsonl`, `step.log`, `docs/agent-plan-standard.md` i
-   `docs/sandbox-and-permissions.md`. W przypadku 2 dołącz treść odrzuconego
-   `plan.md`: „błędny plan”; poprzednia propozycja i błędy są w dzienniku.
+   `docs/sandbox-and-permissions.md`. W przypadku 2 dołącz odrzucony
+   `2/plan.md` i kartki `2/tickets/1.md`, `2/tickets/2.md` z katalogu materiałów;
+   poprzednia propozycja i błędy są w dzienniku. Nagłówek „Krok” w wycinkach
+   przypadków 1, 2 i 4a wskazuje konkretne zdarzenie `step.started`.
    W przypadku 3 zatwierdzona baza i decyzja A są w dzienniku. Dla 4b oceń oba
    przebiegi, a nie tylko ostatnią linię błędu.
 3. Użyj zadania: „Jesteś opiekunem karty Tide. Na podstawie dołączonych źródeł

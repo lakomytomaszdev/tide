@@ -11,8 +11,10 @@ import time
 from unittest import TestCase, mock
 
 from tide_daemon.cardflow import caretaker
+from tide_daemon.cardflow import plans as plan_validation
 from tide_daemon.cardflow.gitops import FlowGitError
 from tide_daemon.cardflow.state import fold
+from tide_daemon.models.executors import default_catalog
 
 from . import test_cardflow_fault_report as faults
 from . import test_cardflow_plan_integration as plans
@@ -23,6 +25,11 @@ FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/caretaker-0311"
 RETRY = {"result": "done", "action": "retry", "step": "$target",
          "instruction": "Zapisz result.json w katalogu out wskazanym w kartce, poza worktree.",
          "reason": "Dziennik pokazuje zapis wyniku w złym katalogu."}
+PLAN_ERRORS = ["#1: kartka nie ma kryteriów akceptacji", "#1: bloker #99 jest spoza planu",
+               "plan zawiera cykl blokerów"]
+PLAN_FEEDBACK = ("Wiersz #1: bloker #99 jest spoza planu; kartka tickets/1.md nie ma kryteriów akceptacji. "
+                 "Błąd standardu 1.2: blokery muszą wskazywać tickety tej tabeli, a kartka wymaga punktu - [ ]. "
+                 "Usuń bloker #99 i uzupełnij kryteria kartki #1.")
 
 
 class Scenario0311Test(faults.FaultReportCase):
@@ -117,7 +124,7 @@ class Scenario0311Test(faults.FaultReportCase):
                       "feedback": "Dodaj ticket na migrację formatu z decyzji A; rozpoczęte tickety przepisz bez zmian."}
         if case == "2":
             self.reply.update(reason="Poprawka planu nie przeszła sprawdzania formatu.",
-                              feedback="Wiersz #1: bloker — brak kryterium; błąd standardu 1.2. Uzupełnij kartkę.")
+                              feedback=PLAN_FEEDBACK)
         if bad:
             self.reply = bad
         card = self.card(description="Scenariusz 03.11")
@@ -135,7 +142,7 @@ class Scenario0311Test(faults.FaultReportCase):
             self.assertTrue(self.approve(card)["ok"])
         else:
             box = []
-            self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: invalid-amend"}), box.append)
+            self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-bad-structure"}), box.append)
             self.wait_for(lambda: box, card)
             self.assertTrue(json.loads(box[0])["ok"])
         return card
@@ -156,9 +163,17 @@ class Scenario0311Test(faults.FaultReportCase):
                                     for name, body in files.items() if name.endswith("step-log.md")))
                 self.assertIn("•••", text)
             elif case == "2":
-                self.assertIn("plan-fix/errors.md", files)
-                self.assertIn("plan-fix/failed-plan.md", files)
-                self.assertIn("błędny plan", files["plan-fix/failed-plan.md"])
+                for error in PLAN_ERRORS:
+                    self.assertIn(error, files["plan-fix/errors.md"])
+                failed = files["plan-fix/failed-plan.md"]
+                self.assertIn("tide-plan: 1", failed)
+                row = next(line for line in failed.splitlines() if line.startswith("| #1 |"))
+                self.assertEqual(row.split("|")[-2].strip(), "#99")
+                standard = files["docs/agent-plan-standard.md"]
+                self.assertIn("blokery", standard)
+                self.assertIn("- [ ]", standard)
+                [checked] = [e for e in self.of(card, "plan.checked") if not e["valid"]]
+                self.assertEqual(checked["errors"], PLAN_ERRORS)
             elif case == "3":
                 self.assertIn("plan/approved.md", files)
                 self.assertIn("Decyzja A: migracja", files["plan/spec.md"])
@@ -219,6 +234,15 @@ class Scenario0311Test(faults.FaultReportCase):
             self.assertEqual(revision["difference"]["removed"], [])
         elif case == "2":
             self.assertIsNone(fold(self.events(card)).plan_approved)
+            [returned] = [e for e in self.of(card, "plan.returned") if e.get("caretaker")]
+            self.assertEqual(returned["feedback"], PLAN_FEEDBACK)
+            amended = [s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]
+            self.assertEqual(len(amended), 2)
+            call = json.loads((Path(amended[-1]["stepDir"]) / "out/fake-call.json").read_text())
+            self.assertIn("Uwagi: " + PLAN_FEEDBACK, call["prompt"])
+            revised = fold(self.events(card)).plan_proposed
+            self.assertEqual(revised["rows"][0]["blockers"], [])
+            self.assertIn("- [ ]", revised["rows"][0]["body"])
         elif case == "4b":
             self.assertEqual(len(self.of(card, "flow.error-persisted")), 1)
             self.assertEqual(len(self.of(card, "stage.retry")), 1)
@@ -358,6 +382,44 @@ for _case in ("1", "2", "3", "4a", "4b"):
 
 
 class ManualFixturesTest(TestCase):
+    def test_rejected_plan_sources_produce_the_recorded_errors(self):
+        folder = FIXTURES / "2"
+        proposal = plan_validation.read(str(folder / "plan.md"), "K-33", default_catalog(),
+                                        allowed_roots=[str(folder)])
+        self.assertEqual(proposal.errors, PLAN_ERRORS)
+        self.assertEqual(proposal.rows[0]["blockers"], ["#99"])
+        self.assertNotIn("- [ ]", proposal.cards["#1"])
+        events = [json.loads(line) for line in (folder / "journal.jsonl").read_text().splitlines()]
+        for event_type in ("plan.checked", "plan.revision-failed"):
+            [event] = [e for e in events if e["type"] == event_type]
+            self.assertEqual(event["errors"], proposal.errors)
+        log = (folder / "step.log").read_text()
+        for error in proposal.errors:
+            self.assertIn("Sprawdzanie: " + error, log)
+        expected = (folder / "expected.md").read_text()
+        for evidence in ("#1", "#99", "tickets/1.md", "kryteriów akceptacji", "standard 1.2"):
+            self.assertIn(evidence, expected)
+
+    def test_step_log_paths_match_the_named_journal_step(self):
+        for case in ("1", "4a"):
+            with self.subTest(case=case):
+                folder = FIXTURES / case
+                header, *lines = (folder / "step.log").read_text().splitlines()
+                self.assertTrue(header.startswith("Krok: "))
+                step_id = header.removeprefix("Krok: ")
+                events = [json.loads(line) for line in (folder / "journal.jsonl").read_text().splitlines()]
+                [step] = [e for e in events if e["type"] == "step.started" and e["step"] == step_id]
+                expected = str(Path(step["stepDir"]) / "out/result.json")
+                if case == "1":
+                    written = lines[0].removeprefix("Zapisano wynik: ")
+                    self.assertEqual(written, str(Path(step["worktree"]) / "result.json"))
+                    self.assertNotEqual(written, expected)
+                    self.assertEqual(lines[1], "Oczekiwany wynik: " + expected)
+                else:
+                    [denial] = json.loads(lines[0])["permission_denials"]
+                    self.assertEqual(denial["tool_name"], "Write")
+                    self.assertEqual(denial["tool_input"]["file_path"], expected)
+
     def test_five_reconstructed_logs_are_masked_and_have_diagnosis_criteria(self):
         for case, action in (("1", "retry"), ("2", "return-plan"), ("3", "return-plan"),
                              ("4a", "retry"), ("4b", "retry-stage")):
@@ -371,7 +433,7 @@ class ManualFixturesTest(TestCase):
                 events = [json.loads(line) for line in (folder / "journal.jsonl").read_text().splitlines() if line]
                 self.assertEqual(events[0]["type"], "card.started")
                 self.assertEqual([e["seq"] for e in events], list(range(1, len(events) + 1)))
-                text = log + json.dumps(events) + expected
+                text = "\n".join(p.read_text() for p in folder.rglob("*") if p.is_file())
                 for secret in (faults.TOKEN, faults.ENV_SECRET):
                     self.assertNotIn(secret, text)
                 self.assertNotRegex(text, r"ghp_[A-Za-z0-9]{20,}|/home/[^/\s]+/")
