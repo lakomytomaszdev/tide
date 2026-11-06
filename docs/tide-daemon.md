@@ -356,6 +356,79 @@ Udany start zapamiętuje wybór (`$XDG_STATE_HOME/tide/new-task.json`: repozytor
 
 Wątek główny (D-Bus) nie czeka na gita: `Repos`, `SuggestBranch` i `Start` pracują w jednym wątku roboczym i odpowiadają z opóźnieniem. `--no-tasks` wyłącza obiekt.
 
+## Zatrzymanie i odtworzenie po restarcie (PT-253)
+
+SIGTERM prosi Qt o zakończenie pętli; budzik Pythona daje obsłudze sygnału sterowanie co 500 ms.
+Powrót z `app.exec()` i nawet z `app.main()` nie oznacza końca procesu: Python przy wyjściu
+dołącza wątki `ThreadPoolExecutor`, także po `shutdown(wait=False)`. Kontrolowany wolny
+`git worktree list --porcelain` odtworzył przekroczenie 5 s: wątek `tide-worktrees` czekał w
+`subprocess.run/communicate/select`, a główny w `_python_exit/threading.join`, już po powrocie
+z `app.main()`. Limit każdego polecenia wynosił 60 s, a skaner mógł przejść do kolejnego
+repozytorium. To odtworzenie mechanizmu dojścia do limitu zatrzymania systemd; nie identyfikuje
+konkretnego wolnego repozytorium z wcześniejszego zatrzymania na pulpicie.
+
+Monitor worktrees po rozpoczęciu zamykania odrzuca nową pracę, anuluje kolejkę i sygnalizuje
+anulowanie skanerowi. Bieżący git ma własną grupę procesów; anulowanie jest sprawdzane co 50 ms,
+następnie grupa dostaje SIGTERM, a najpóźniej po 200 ms SIGKILL. Dotyczy to wyłącznie gita
+uruchomionego przez skaner, wraz z jego pomocnikami. Wątek zostaje dołączony przed końcem usługi.
+Przegląd katalogów i pomiar zajętości sprawdzają ten sam znacznik anulowania. Pozostałe użycia
+klasy `Git` zachowują dotychczasowe limity; nie ma zmiany `TimeoutStopSec` ani wymuszonego wyjścia
+interpretera. Blokujący w jądrze odczyt z niedostępnego systemu plików pozostaje ograniczeniem
+anulowania kooperatywnego.
+
+Zamknięcie Tablicy zatrzymuje też jej monitor przepływu: nie przyjmuje nowych akcji, usuwa
+oczekujące akcje z kolejki, pozwala bieżącej operacji zostawić trwały zamiar/wynik i commituje
+zmiany dziennika bez oczekiwania na callback Qt. Operacje przepływu zachowują dotychczasowe
+limity. Dziennik ma kopię usługi zapisaną z `fsync`; po starcie karty i oczekujące decyzje są
+projekcją tego dziennika. Zwykły restart nie zapisuje zdarzenia ręcznego przeniesienia do Backlogu.
+Procesy kroków i poleceń poza piaskownicą pracują w osobnych jednostkach systemd; zatrzymanie
+usługi ich nie zatrzymuje. Nowy proces usługi podejmuje te same jednostki i pliki wyników.
+
+Filtr powiadomień Stream odbiera każdą odpowiedź `Inhibit` tylko raz: `waitForFinished()` podczas
+zatrzymania może także dostarczyć callback `finished`. Przy zamykaniu oba odbiory nie mogą osobno
+zwolnić tego samego ciasteczka. `stop()` zachowuje jedno synchroniczne `UnInhibit` i odrzuca późne
+sygnały aktywności oraz próby ponownego wstrzymania powiadomień. Zwykłe wyjście ze Stream nadal
+zwalnia inhibicję asynchronicznie, także gdy odpowiedź przyszła dopiero po wyjściu.
+
+`python3 -m unittest -v daemon.tests.test_daemon_lifecycle` mierzy monotonicznie koniec własnego
+procesu po SIGTERM (limit 5 s), restart do działającego D-Bus i aktualnej migawki (limit 10 s),
+zachowanie decyzji, wyników i gałęzi oraz brak powtórzenia kroków/scalenia. Scenariusze systemd
+używają wyłącznie jednostek `tide-pt253-test-<los>.service` i zakresów z osobnym losowym prefiksem,
+prywatnej magistrali oraz tymczasowych HOME/XDG/repozytoriów. Sprawdzają jednocześnie żywy krok
+i polecenie poza piaskownicą: grupy cgroup, PID-y, postęp obu procesów po restarcie oraz pojedyncze
+podjęcie obu wyników. Brak prywatnego D-Bus lub menedżera użytkownika oznacza pominięcie scenariusza,
+a nie dowód poprawnego restartu.
+
+Ręczne sprawdzenie po wdrożeniu na pulpit:
+
+1. Rozpocznij kontrolowany, dłuższy krok w tle oraz na drugiej karcie kontrolowane polecenie
+   poza piaskownicą. Zapisz ich PID-y z dzienników procesów, kolumny i dane gałęzi obu kart.
+2. Gdy oba procesy pracują, wykonaj poniższy pomiar. Wywołuje dokładnie
+   `systemctl --user restart tide-daemon` i sprawdza tożsamość obu żywych procesów po restarcie:
+
+   ```python
+   import subprocess, time
+   from pathlib import Path
+   pids = [int(input("PID kroku: ")), int(input("PID polecenia poza piaskownicą: "))]
+   def identity(pid):
+       fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+       assert fields[0] != "Z", f"proces {pid} zakończony"
+       return fields[19]  # starttime, bez pomylenia z ponownie użytym PID-em
+   before = [identity(pid) for pid in pids]
+   started = time.monotonic()
+   subprocess.run(["systemctl", "--user", "restart", "tide-daemon"], check=True)
+   elapsed = time.monotonic() - started
+   assert elapsed < 10, elapsed
+   assert [identity(pid) for pid in pids] == before
+   print(f"restart: {elapsed:.3f} s; oba procesy żyją")
+   ```
+
+3. Potwierdź przyrost dziennika/postęp obu procesów. Odczytaj aktualną migawkę przez
+   `qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot`; sprawdź kolumny i dane gałęzi,
+   także dla karty czekającej na decyzję i karty Do sprawdzenia. Poczekaj na naturalny koniec obu
+   kontrolowanych prac: wynik każdego ma zostać podjęty raz, bez dodatkowego kroku, scalenia ani decyzji.
+   Testy automatyczne nie uruchamiają tego polecenia na docelowej usłudze.
+
 ## KRunner
 
 Wtyczka KRunnera: po wpisaniu nazwy projektu, gałęzi albo fragmentu tytułu rozmowy wznawia sesję Claude Code albo Codexa w jej katalogu, a po nazwie gałęzi otwiera worktree.

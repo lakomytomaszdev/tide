@@ -156,6 +156,8 @@ class BoardMonitor(QObject):
             self.youtrack.start()
 
     def stop(self) -> None:
+        if self.flow is not None:
+            self.flow.stop()
         if self.youtrack is not None:
             self.youtrack.stop()
         self._poll.stop()

@@ -75,14 +75,14 @@ class FlowInProcess(unittest.TestCase):
 
         class IsolatedFlowMonitor(CardFlowMonitor):
             def stop(self):
-                # Produkcyjne stop() nie czeka na wątki. Fixture musi je zakończyć
-                # przed restartem silnika, cofnięciem patch.dict i usunięciem repozytorium.
+                # Produkcja dołącza zapis przepływu; fixture dodatkowo dołącza odczyty hostingu
+                # i opróżnia kolejkę Qt przed cofnięciem patch.dict oraz usunięciem danych.
                 pools = (self._pool, self._hosting_pool)
                 super().stop()
                 for pool in pools:
                     if pool is not None:
                         pool.shutdown(wait=True, cancel_futures=True)
-                app().processEvents()  # dostarczenie _done przed kolejnym testem
+                app().processEvents()  # odrzucenie _done zamkniętego monitora przed kolejnym testem
                 self._ticking = False
 
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),

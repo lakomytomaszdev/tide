@@ -2,10 +2,11 @@
 import threading
 
 from .test_cardflow import FlowInProcess
+from .privatebus import app
 
 
 class FixtureIsolationTest(FlowInProcess):
-    def test_stop_joins_running_worker_and_delivers_pending_callback(self):
+    def test_stop_joins_running_worker_and_discards_pending_callback(self):
         entered, release, finished, delivered = (threading.Event() for _ in range(4))
 
         def work():
@@ -20,4 +21,7 @@ class FixtureIsolationTest(FlowInProcess):
         self.addCleanup(timer.join)
         self.flow.stop()
         self.assertTrue(finished.is_set(), "fixture nie może usuwać danych działającego wątku")
-        self.assertTrue(delivered.is_set(), "callback nie może przejść do następnego testu")
+        self.assertFalse(delivered.is_set(), "po zamknięciu monitor nie dostarcza wyników Qt")
+        self.flow = self.make_flow()
+        app().processEvents()
+        self.assertFalse(delivered.is_set(), "stary callback nie może przejść do kolejnego monitora")
