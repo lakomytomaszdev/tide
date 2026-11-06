@@ -15,7 +15,7 @@ import os
 import stat
 
 CLAUDE = r'''#!/usr/bin/python3
-import json, os, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time, tempfile
 args = sys.argv[1:]
 if args[:3] == ["mcp", "list", "--json"]:
     print("[]")
@@ -29,8 +29,15 @@ result = re.search(r"Plik wyniku: (\S+)", prompt)
 result = result.group(1) if result else ""
 out = os.path.dirname(result) if result else os.path.join(os.path.dirname(cwd), "missing-out")
 os.makedirs(out, exist_ok=True)
-with open(os.path.join(out, "fake-call.json"), "w", encoding="utf-8") as fh:
-    json.dump({"argv": args, "prompt": prompt, "cwd": cwd, "pid": os.getpid(), "env": dict(os.environ)}, fh)
+fd, call_tmp = tempfile.mkstemp(prefix=".fake-call-", suffix=".tmp", dir=out)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"argv": args, "prompt": prompt, "cwd": cwd, "pid": os.getpid(), "env": dict(os.environ)}, fh)
+    # Testy czekają na istnienie tego pliku: publikacja musi oznaczać kompletny JSON.
+    os.replace(call_tmp, os.path.join(out, "fake-call.json"))
+finally:
+    if os.path.exists(call_tmp):
+        os.unlink(call_tmp)
 logs = os.path.join(os.environ["HOME"], ".claude", "projects", re.sub(r"[/.]", "-", cwd))
 os.makedirs(logs, exist_ok=True)
 with open(os.path.join(logs, sid + ".jsonl"), "a", encoding="utf-8") as fh:
