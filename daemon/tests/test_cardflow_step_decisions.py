@@ -933,3 +933,37 @@ class ContentRefusalTest(unittest.TestCase):
             fh.write('{"type":"error","message":"exit code 1"}\n')
         self.assertFalse(content_refusal({"stepDir": base}))
         self.assertFalse(content_refusal({"stepDir": "/nie/ma"}))
+
+
+class ReviewerOverrideAfterRefusalTest(unittest.TestCase):
+    """06.11 K-60/PT-254: po odmowie dostawcy Tide sam wybrał Sonnet (limit Claude 96%); późniejsze przepięcie
+    recenzenta na Codex Astra musi wygrać przy wznowieniu review."""
+
+    def state(self, reassign_seq):
+        from tide_daemon.cardflow.state import fold
+        events = [
+            {"v": 1, "seq": 1, "type": "card.started", "entry": "now"},
+            {"v": 1, "seq": 2, "type": "step.started", "step": "K-1-PT-1-2", "kind": "review", "ticket": "PT-1",
+             "executor": "Codex standard"},
+            {"v": 1, "seq": 3, "type": "step.finished", "step": "K-1-PT-1-2", "ticket": "PT-1", "result": "error",
+             "reason": "exit"},
+            {"v": 1, "seq": 4, "type": "step.decision", "step": "K-1-PT-1-2", "ticket": "PT-1", "kind": "review",
+             "choice": "change-executor", "executor": "Sonnet", "auto": True, "refusal": True},
+            {"v": 1, "seq": reassign_seq, "type": "reviewer.reassigned", "ticket": "PT-1",
+             "sourceStep": "K-1-PT-1-2", "reviewer": "Codex Astra"},
+        ]
+        return fold(sorted(events, key=lambda e: e["seq"]))
+
+    def test_later_user_reassignment_wins_over_automatic_decision(self):
+        from tide_daemon.cardflow.engine import reviewer_override
+        st = self.state(5)
+        step, decision = st.steps["K-1-PT-1-2"], st.step_decisions["K-1-PT-1-2"]
+        self.assertEqual(reviewer_override(st, step, decision, "Sonnet"), "Codex Astra")
+
+    def test_older_reassignment_and_other_kinds_do_not_override(self):
+        from tide_daemon.cardflow.engine import reviewer_override
+        st = self.state(5)
+        step = st.steps["K-1-PT-1-2"]
+        self.assertEqual(reviewer_override(st, step, {"seq": 9}, "Sonnet"), "", "decyzja nowsza od przepięcia")
+        self.assertEqual(reviewer_override(st, {**step, "kind": "fix"}, {"seq": 4}, "Sonnet"), "")
+        self.assertEqual(reviewer_override(st, step, {"seq": 4}, "Codex Astra"), "", "ten sam wykonawca")
