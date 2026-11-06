@@ -187,7 +187,6 @@ class PlanEditing:
         elif own and own.strip():
             findings = (findings + "\nUwagi użytkownika:\n" if findings else "") + own.strip()
         from .. import resources
-        findings = resources.instructions() + findings
         # Krok poprawki nie widzi Tablicy (piaskownica), a gałąź karty może nie mieć aktualnego standardu planu
         # (K-35: plik z `tide-plan: 1.2` i dwiema tabelami). Dlatego dostaje oryginalny plan.md i wzór wprost.
         original = ""
@@ -196,7 +195,7 @@ class PlanEditing:
         if any(not str(r.get("workId") or "").startswith("#") for r in rows):
             # Plan już zatwierdzony (wiersze mają numery ticketów): pierwotny plan.md jest nieaktualny — planujący
             # przepisywał z niego `#1…#8` i zmieniał tickety, które już ruszyły (K-16, 03.11). Dostaje aktualną tabelę.
-            return self._approved_revision_prompt(card, proposal, rows, findings)
+            return self._approved_revision_prompt(card, proposal, rows, findings) + resources.instructions()
         if path and os.path.isfile(path):
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -204,6 +203,7 @@ class PlanEditing:
             except OSError:
                 original = ""
         return (f"Popraw propozycję planu karty {card}. To jedyna runda poprawy po review.\n"
+                f"{resources.instructions()}"
                 f"Specyfikacja: {proposal.get('specification', 'Sprawdź opis karty i kartki przekazania.')}\nUwagi: {findings}\n"
                 f"Poprzednia propozycja: {json.dumps(proposal, ensure_ascii=False)}\n"
                 + (f"Poprzedni plan.md (zachowaj nagłówek i układ tabeli, zmieniaj wiersze):\n{original}\n" if original else "")

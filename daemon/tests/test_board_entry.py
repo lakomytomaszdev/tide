@@ -6,8 +6,8 @@
   `mode: spec` działa jak dotąd,
 - zapis uruchomienia karty i domyślne wejście projektu przez `entry`, kolejne wejścia dochodzą bez przebudowy,
 - szablony: nietknięty dawny zaczyn spec podmieniamy, zmieniony przez użytkownika zostaje (z ostrzeżeniem),
-- D-Bus na prywatnej szynie: polecenie z każdego wejścia i trybu jest bajt w bajt takie jak przed zmianą
-  (fixtures/launch-pt77/commands.json, wygenerowane z kodu sprzed PT-77).
+- D-Bus na prywatnej szynie: dawne i nowe żądania dają ten sam przenośny tekst polecenia
+  (fixtures/launch-pt223; historyczne snapshoty sprzed PT-77 pozostają w launch-pt77).
 Każdy test ma własną tablicę i konfigurację gita — prawdziwej tablicy nikt nie dotyka.
 """
 import json
@@ -22,6 +22,7 @@ from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_board_core import BoardCase, git_out
 from .test_board_dbus import NOW_TEXT, git_config
 from tide_daemon.board import flows
+from tide_daemon import resources
 from tide_daemon.board.model import BoardError
 
 def read(path: str) -> str:
@@ -275,13 +276,31 @@ class TemplatesTest(BoardCase):
         self.assertEqual(self.store.snapshot()["errors"], [])
 
 
-COMMANDS = os.path.join(FIXTURES, "launch-pt77", "commands.json")
-SPEC_PROJECT = os.path.join(FIXTURES, "launch-pt77", "spec-project.json")  # z kodu sprzed PT-77, projekt `mode: spec`
+COMMANDS = os.path.join(FIXTURES, "launch-pt223", "commands.json")
+SPEC_PROJECT = os.path.join(FIXTURES, "launch-pt223", "spec-project.json")
+
+
+class PortableCommandSnapshotTest(BoardCase):
+    """Snapshoty przenośnych poleceń sprawdzamy także bez dostępnej magistrali."""
+
+    def test_commands_match_portable_snapshots(self):
+        for name, tool, docs in (("mobileapp", "claude", False), ("plasma-tide", "codex", True)):
+            self.store.upsert_project({"repo": self.repo(name, agents_docs=docs), "tool": tool})
+        self.store.create_card({"title": "Historia diagnoz z filtrem po VIN", "project": "mobileapp",
+                                "description": "Opis {title}"})
+        self.store.create_card({"title": "Okno Dockera", "project": "plasma-tide"})
+        with open(COMMANDS, encoding="utf-8") as fh:
+            expected = json.load(fh)
+        for key, want in expected.items():
+            card, mode, check = key.split("/")
+            got = self.store.render_launch(card, {"mode": mode, "check": check})["text"]
+            got = got.replace(self.ws, "{WS}").replace(str(resources.resolve("plan-standard")), "{TIDE_STANDARD}")
+            self.assertEqual(got, want, key)
 
 
 @requires_dbus
 class SameCommandDBusTest(unittest.TestCase):
-    """Polecenie z każdego wejścia i trybu przez D-Bus jest takie jak przed zmianą."""
+    """Dawne i nowe żądania zachowują semantykę wejścia i korzystają z bieżących zasobów."""
 
     @classmethod
     def setUpClass(cls):
@@ -329,12 +348,14 @@ class SameCommandDBusTest(unittest.TestCase):
                     for request in ({"mode": flow_key, "check": check}, dict(new, check=check)):
                         reply = self.call("RenderLaunch", card, request)
                         self.assertTrue(reply["ok"], reply)
-                        got = reply["text"].replace(self.ws, "{WS}")
+                        got = reply["text"].replace(self.ws, "{WS}").replace(
+                            str(resources.resolve("plan-standard")), "{TIDE_STANDARD}")
                         self.assertEqual(got, want, (card, flow_key, check, request))
 
     def normal(self, text: str, card: str) -> str:
         """Tekst bez tymczasowej ścieżki i z numerem karty z fixture (K-1)."""
-        return text.replace(self.ws, "{WS}").replace(card, "K-1").replace(card.lower(), "k-1")
+        return text.replace(self.ws, "{WS}").replace(card, "K-1").replace(card.lower(), "k-1").replace(
+            str(resources.resolve("plan-standard")), "{TIDE_STANDARD}")
 
     def test_project_defaulting_to_spec_keeps_old_requests_meaning(self):
         # Projekt ze starym `mode: spec` i z nowym `entry: spec`: {} to spec, a sam tryb to Planowanie — jak przed zmianą.
