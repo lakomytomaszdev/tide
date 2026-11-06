@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from tide_daemon.box import trialgate as gate, cli, command, runner as br
+from tide_daemon.box.ports import PortPool
 from tide_daemon.cardflow import trialhold, boxstep
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
@@ -318,22 +319,82 @@ class EngineGateTest(unittest.TestCase):
                             engine.procs[name].poll.side_effect = OSError("brak stanu klienta")
                         else:
                             engine.procs[name].poll.return_value = None if client == "alive" else 0
-                    safe = phase == "confirmed" and client in ("missing", "exited")
                     inventory = lambda: trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38")))
                     with mock.patch.object(engine, "_unit_state", return_value="inactive"):
-                        self.assertEqual(inventory(), safe)
+                        self.assertFalse(inventory())
                         trial_gate = gate.TrialGate(store=store, procedure=procedure)
                         trial_gate.register_bootstrap("diagnostic")
                         for bootstrap in (True, False):
-                            if safe:
-                                continue
                             with self.assertRaises(gate.TrialDenied):
                                 trial_gate.start_registered("diagnostic", consent=True, inventory=inventory,
                                                             bootstrap=bootstrap)
                         self.assertEqual(procedure.calls, [])
-                        if not safe:
-                            item = self.journal.read("K-38")[-1]["items"][0]
-                            self.assertEqual(item["state"], "unknown")
+                        entry = next(e for e in reversed(self.journal.read("K-38"))
+                                     if e["type"] == "k38.inventory")
+                        item = entry["items"][0]
+                        self.assertEqual(item["state"], "unknown")
+
+    def assert_history_denies_new_procedure(self, engine, procedure, store):
+        inventory = lambda: trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38")))
+        with mock.patch.object(engine, "_unit_state", return_value="inactive"), \
+                mock.patch.object(trialhold.stepstop, "unit_state", return_value="inactive"), \
+                mock.patch("subprocess.Popen") as spawn, mock.patch("subprocess.run") as run, \
+                mock.patch.object(engine, "_kill") as kill, \
+                mock.patch("tide_daemon.box.refguard.finish") as refs, \
+                mock.patch.object(PortPool, "release") as release, \
+                mock.patch.object(PortPool, "recover_demos") as recover:
+            self.assertFalse(inventory())
+            for bootstrap in (True, False):
+                with self.subTest(bootstrap=bootstrap):
+                    trial_gate = gate.TrialGate(store=store, procedure=procedure)
+                    trial_gate.register_bootstrap("diagnostic")
+                    with self.assertRaises(gate.TrialDenied):
+                        trial_gate.start_registered("diagnostic", consent=True, inventory=inventory,
+                                                    bootstrap=bootstrap)
+            for action in (spawn, run, kill, refs, release, recover):
+                action.assert_not_called()
+        self.assertEqual(procedure.calls, [])
+
+    def test_recovered_started_and_historical_done_do_not_resolve_launch(self):
+        name = "K-38-PT-176-1"
+        self.journal.append("K-38", "intent", action="step-start", key=name, ticket="PT-176",
+                            unit="old-unit", stepDir=str(self.root / "old.step"), kind="ticket")
+        self.journal.append("K-38", "result", action="step-start", key=name, ok=True, unit="old-unit")
+        procedure = HostProcedure(self.tmp.name)
+        store = HostStore()
+        store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
+        for phase in ("result", "recovered", "done"):
+            engine = self.restart()
+            if phase == "recovered":
+                engine._recover_started_steps("K-38", fold(self.journal.read("K-38")))
+                self.assertIn(name, fold(self.journal.read("K-38")).steps)
+            if phase == "done":
+                self.journal.append("K-38", "step.finished", step=name, ticket="PT-176", result="done")
+            with self.subTest(phase=phase):
+                self.assert_history_denies_new_procedure(engine, procedure, store)
+
+    def test_outside_without_started_stays_unknown_at_every_recording_window(self):
+        step = self.old_step()
+        procedure = HostProcedure(self.tmp.name)
+        store = HostStore()
+        store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
+        # Przed/po Popen dziennik jest identyczny: outside nie utrwalało zamiaru.
+        for phase in ("pending", "approved-before-or-after-popen", "started", "finished"):
+            if phase == "approved-before-or-after-popen":
+                self.journal.append("K-38", "step.decision", step=step["step"], choice="run", auto=True)
+            elif phase == "started":
+                self.journal.append("K-38", "outside.started", step=step["step"], unit="old-outside")
+            elif phase == "finished":
+                self.journal.append("K-38", "outside.finished", step=step["step"], exit=0)
+            before = self.journal.read("K-38")
+            for engine in (self.engine, self.restart()):
+                with self.subTest(phase=phase, restart=engine is not self.engine):
+                    self.assert_history_denies_new_procedure(engine, procedure, store)
+                    entry = next(e for e in reversed(self.journal.read("K-38")) if e["type"] == "k38.inventory")
+                    self.assertEqual([(i["kind"], i["state"]) for i in entry["items"]],
+                                     [("step", "unknown"), ("outside", "unknown")])
+            self.assertEqual(self.journal.read("K-38")[:len(before)], before)
+        self.assertEqual((self.root / "PT-176/wip.txt").read_text(), "zachowany WIP")
 
     def test_recovery_does_not_restore_refs_release_ports_or_revoke_old_mounts(self):
         step = self.old_step()
@@ -378,7 +439,7 @@ class EngineGateTest(unittest.TestCase):
                     action.assert_not_called()
             inventory = next(e for e in reversed(self.journal.read("K-38")) if e["type"] == "k38.inventory")
             self.assertEqual([(i["kind"], i["state"]) for i in inventory["items"]],
-                             [("step", "inactive"), ("outside", "unknown")])
+                             [("step", "unknown"), ("outside", "unknown")])
         self.assertEqual(self.journal.read("K-38")[:len(before)], before)
         self.assertEqual((self.root / "PT-176/wip.txt").read_text(), "zachowany WIP")
         self.assertFalse(exit_file.exists())
@@ -468,6 +529,58 @@ class EngineGateTest(unittest.TestCase):
         self.assertEqual(self.journal.read("K-38")[-1]["items"][0]["state"], "unknown")
         path.write_text(old + "malformed\n")
         self.assertFalse(trialhold.public_inventory(self.restart()))
+
+    def test_raw_demo_guard_and_leases_survive_inventory_and_restart(self):
+        path = Path(self.store.root) / "projects/proj/box/journal.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"type":"box.ready","box":"proj"}\n')
+        pool = PortPool("proj", "proj")
+        owner = "demo-20261106120000-abcd1234"
+        procedure = HostProcedure(self.tmp.name)
+        store = HostStore()
+        store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
+        for profile in ({}, {"ports": {"pool": [4300, 4399]}}):
+            with self.subTest(profile=profile), pool.demo_guard(owner):
+                pool.acquire(owner, profile)
+                before = {p.name: (p.read_bytes(), p.stat().st_ino)
+                          for p in Path(pool.folder).iterdir()}
+                for engine in (self.engine, self.restart()):
+                    self.assert_history_denies_new_procedure(engine, procedure, store)
+                    with pool.demo_guard(owner, blocking=False) as available:
+                        self.assertFalse(available)
+                self.assertEqual({p.name: (p.read_bytes(), p.stat().st_ino)
+                                  for p in Path(pool.folder).iterdir()}, before)
+        # Wolna blokada nie jest dowodem końca jednostki w pudełku.
+        self.assert_history_denies_new_procedure(self.restart(), procedure, store)
+        self.assertEqual(path.read_text(), '{"type":"box.ready","box":"proj"}\n')
+
+    def test_public_state_without_project_journal_is_not_lost(self):
+        pool = PortPool("removed-project", "old-box")
+        owner = "demo-20261106120000-abcd1234"
+        with pool.demo_guard(owner):
+            self.assertFalse(trialhold.public_inventory(self.restart()))
+
+    def test_orphan_public_lease_and_unreadable_registry_deny_without_mutation(self):
+        folder = self.root / "state/tide/box/proj/ports"
+        folder.mkdir(parents=True)
+        path = folder / "proj.json"
+        for content in ('{}', '{"K-60-PT-999-1":4300}',
+                        '{"demo-20261106120000-abcd1234":4300}', '{"K-38-PT-176-1":4300}',
+                        'malformed', '[]'):
+            path.write_text(content)
+            with self.subTest(content=content):
+                self.assertEqual(trialhold.public_inventory(self.restart()),
+                                 content in ('{}', '{"K-60-PT-999-1":4300}'))
+                self.assertEqual(path.read_text(), content)
+        path.unlink()
+        path.symlink_to(folder / "missing")
+        self.assertFalse(trialhold.public_inventory(self.restart()))
+        self.assertTrue(path.is_symlink())
+        path.unlink()
+        folder.rmdir()
+        folder.symlink_to(self.root / "missing-ports")
+        self.assertFalse(trialhold.public_inventory(self.restart()))
+        self.assertTrue(folder.is_symlink())
 
     def test_unrelated_outside_still_runs_as_before_k60(self):
         step = self.old_step("PT-999")

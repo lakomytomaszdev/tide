@@ -32,11 +32,11 @@ def inventory(engine, card, st):
                 proc = engine.procs.get(name)
                 if proc is not None and proc.poll() is None:
                     state = "unknown" if state == "inactive" else state
-                # Sam brak scope nie rozstrzyga okna Popen(systemd-run) → step.started.
-                # Zakończenie klienta też nie dowodzi zakończenia uruchamianej jednostki.
-                unresolved = ("step-start", name) in st.intents and ("step-start", name) not in st.results
-                if state == "inactive" and (name not in st.steps or unresolved):
-                    state = "unknown"
+            # result i step.started zapisywano po Popen, bez potwierdzenia scope.
+            # Także odtworzony step.started, dawne done i brak klienta po restarcie
+            # nie dowodzą końca uruchamiania. Nie mamy chronionego dowodu hosta.
+            if state == "inactive":
+                state = "unknown"
         except Exception:
             state = "unknown"
         items.append({"step": name, "ticket": step.get("ticket"), "state": state,
@@ -48,9 +48,18 @@ def inventory(engine, card, st):
                                   instruction=trialgate.MESSAGE, preserved=True,
                                   excluded=step.get("ticket") in trialgate.EXCLUDED)
     protected = {i["step"] for i in items}
+    outside = [e for e in events if e.get("type") == "outside.started"]
+    recorded = {e.get("step") for e in outside}
     for event in events:
-        if event.get("type") != "outside.started":
-            continue
+        # Stare outside nie miało intent przed Popen. Oczekująca prośba lub zgoda
+        # bez outside.started może oznaczać awarię tuż po utworzeniu klienta.
+        pending = event.get("type") == "step.finished" and event.get("outside")
+        approved = event.get("type") == "step.decision" and event.get("choice") == "run"
+        name = event.get("step")
+        if (pending or approved) and name not in recorded:
+            outside.append({"step": name, "ticket": event.get("ticket")})
+            recorded.add(name)
+    for event in outside:
         if event.get("step") not in protected and not trialgate.blocked(event.get("ticket") or ""):
             continue
         try:
@@ -79,7 +88,7 @@ def public_inventory(engine):
     CLI. Aktywne/osierocone demo wymaga osobnego ustalenia stanu przez hosta.
     """
     root = os.path.join(engine.journal.root, "projects")
-    items = []
+    items = _public_process_inventory()
     try:
         slugs = sorted(os.listdir(root))
     except FileNotFoundError:
@@ -127,6 +136,65 @@ def public_inventory(engine):
     if items != previous.get("items", []):
         engine.journal.append("K-38", "k38.public-inventory", version=1, items=items)
     return not items
+
+
+def _public_process_inventory():
+    """Trwałe ślady bezpośredniego runner --demo, także bez projektu w Tablicy.
+
+    Sama wolna blokada życia nie dowodzi końca jednostki w pudełku. Do czasu
+    chronionego rozstrzygnięcia hostowego każdy taki ślad pozostaje unknown.
+    Nie bierzemy blokad PortPool ani nie wywołujemy recover_demos/refguard.
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    root = os.path.join(base, "tide", "box")
+    items = []
+
+    def entries(path):
+        try:
+            if not stat.S_ISDIR(os.lstat(path).st_mode):
+                raise ValueError("rejestr nie jest katalogiem")
+            return sorted(os.listdir(path))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError):
+            items.append({"state": "unknown", "path": path})
+            return []
+
+    for slug in entries(root):
+        project = os.path.join(root, slug)
+        # Sprawdzamy również katalog pośredni: nie podążamy za dowiązaniem.
+        if "ports" not in entries(project):
+            continue
+        folder = os.path.join(project, "ports")
+        for name in entries(folder):
+            path = os.path.join(folder, name)
+            if ".demo-" in name:
+                items.append({"project": slug, "state": "unknown", "path": path, "kind": "demo-guard"})
+                continue
+            try:
+                if not stat.S_ISREG(os.lstat(path).st_mode):
+                    raise ValueError("rejestr nie jest zwykłym plikiem")
+                if name.endswith(".lock"):
+                    continue  # zwykła blokada transakcji puli nie identyfikuje próby
+                if not name.endswith(".json"):
+                    raise ValueError("nieznany plik rejestru")
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, encoding="utf-8") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("rejestr nie jest zwykłym plikiem")
+                    content = source.read(4 * 1024 * 1024 + 1)
+                if len(content) > 4 * 1024 * 1024:
+                    raise ValueError("rejestr przekracza limit odczytu")
+                leases = json.loads(content)
+                if not isinstance(leases, dict):
+                    raise ValueError("nieznany format rejestru")
+                for owner in leases:
+                    if owner.startswith("demo-") or held({"step": owner}):
+                        items.append({"project": slug, "box": name[:-5], "step": owner,
+                                      "state": "unknown", "path": path, "kind": "port-lease"})
+            except (OSError, ValueError, UnicodeError):
+                items.append({"state": "unknown", "path": path})
+    return items
 
 
 def view(engine, card, out):
