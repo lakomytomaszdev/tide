@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 from . import gitrepos
-from .privatebus import SERVICE, PrivateBus, requires_dbus
+from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
 from .test_tasks_core import FAKE_AGENT, TRICKY, write_exec
 
 PATH, IFACE = "/Tasks", "org.tide.Daemon.Tasks"
@@ -185,10 +185,21 @@ class TasksContractTest(unittest.TestCase):
                             newWorktree=False, addDirs=[docs])
         self.assertTrue(result["ok"], result)
         self.assertEqual((result["cwd"], result["worktree"]), (self.alpha, ""))
-        runs = self.agent_calls()[before:]
-        self.assertEqual([(r["name"], r["argv"]) for r in runs],
-                         [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
-                          ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])])
+        expected = [("codex", ["--add-dir", docs, "--", "Karta K-1: plan w tablicy"]),
+                    ("claude", ["--add-dir", docs, "--", "Karta K-1: tylko specyfikacja"])]
+        observed = []
+
+        def complete_calls():
+            nonlocal observed
+            try:
+                observed = [(r["name"], r["argv"]) for r in self.agent_calls()[before:]]
+            except json.JSONDecodeError:
+                return False  # Atrapa może właśnie dopisywać linię.
+            return observed == expected
+
+        # Odpowiedź Start potwierdza przejęcie zadania, nie koniec zapisu atrapy.
+        wait_until(complete_calls)
+        self.assertEqual(observed, expected, "Nie zapisano kompletnych wywołań obu bieżących startów")
         refused = self.start(repoPath=self.alpha, tool="claude", prompt="Zapisz coś poza tablicą", newWorktree=False,
                              addDirs=[self.beta])
         self.assertEqual((refused["ok"], refused["error"]), (False, "bad-add-dir"))
