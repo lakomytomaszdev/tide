@@ -79,6 +79,16 @@ class ArtifactsTest(unittest.TestCase):
         self.assertEqual(planartifacts.read(step / 'in/proposal'), original)
         self.assertEqual(planartifacts.read(self.root), original)
 
+    def test_current_ticket_bodies_are_checked_before_preparing_any_files(self):
+        for body, error in ((b'x' * (512 * 1024 + 1), '512 KiB'),
+                            (b'[szkic](../followups/missing.md)', 'celu followups')):
+            with self.subTest(error=error):
+                step = self.root / 'invalid-revision'
+                with self.assertRaisesRegex(ValueError, error):
+                    planartifacts.prepare(self.root, str(step), seed=True,
+                                          ticket_bodies={'tickets/1.md': body})
+                self.assertFalse(step.exists())
+
     def test_new_proposal_text_replaces_old_plan_only_until_committed(self):
         from .test_cardflow_plan_extra import PLAN
         self.put('plan.md', PLAN.replace('Wstęp planu.', 'Nowy wstęp.').replace(
@@ -108,6 +118,37 @@ class ArtifactsTest(unittest.TestCase):
                 '[plik](../other.md) [fragment](#zakres)\n'
                 '[zewnętrzny]: //example.org/followups/draft.md\n')
         self.assertEqual(planartifacts.relocate_ticket_links(text, '../../plans/followups'), text)
+
+    def test_discarded_revision_without_pending_commit_keeps_manual_plan_text(self):
+        from .test_cardflow_plan_extra import PLAN
+        plan = PLAN.replace('followups/replay-code.md', 'followups/nested/draft.md')
+        self.put('plan.md', plan)
+        plan_file = 'docs/agents/plans/k-1.md'
+        self.put('work/' + plan_file, plan + '\nRęczny dopisek planu.\n')
+        row = dict(id='PT-1', workId='#1', title='Szkic', executor='Sonnet', reviewer='Opus',
+                   blockers=[], body='- [ ] Działa.\n')
+        events = [
+            dict(type='plan.proposed', seq=1, planPath=str(self.root / 'plan.md'), artifactPath=str(self.root)),
+            dict(type='plan.approved', seq=2, planFile=plan_file, rows=[row]),
+            dict(type='result', seq=3, action='plan-commit', key='2:2', ok=True),
+            # Konflikt wstrzymuje commit starego planu podczas oczekiwania na decyzję.
+            dict(type='step.started', seq=4, step='conflict', kind='conflict', ticket='PT-1'),
+            dict(type='plan.proposed', seq=5, planPath='pending/plan.md', artifactPath='pending'),
+            dict(type='plan.revision-ready', seq=6, pending=True),
+            dict(type='plan.reviewed', seq=7, verdict='APPROVE'),
+            dict(type='plan.returned', seq=8),
+            dict(type='plan.revision-failed', seq=9, failed=True),
+            dict(type='plan.revision-discarded', seq=10),
+            dict(type='step.finished', seq=11, step='conflict', result='done'),
+            dict(type='ticket.rejected', seq=12, ticket='PT-1'),
+        ]
+        state = fold(events)
+        self.assertIsNone(state.plan_revision)
+        files = FlowEngine.__new__(FlowEngine)._plan_files('K-1', state, set(), worktree=str(self.root / 'work'))
+        self.assertIn('Ręczny dopisek planu.', files[plan_file].decode())
+        self.assertIn('| odrzucone |', files[plan_file].decode())
+        self.assertEqual(files['docs/agents/plans/followups/nested/draft.md'],
+                         (self.root / 'followups/nested/draft.md').read_bytes())
 
     def test_sketch_links_use_the_committed_plan_name_and_ticket_ids(self):
         self.put('custom.md', '[szkic](followups/nested/draft.md)\n')
@@ -266,6 +307,48 @@ class ArtifactsTest(unittest.TestCase):
 class ArtifactsFlowTest(FlowInProcess):
     proposal = integration.PlanFlowTest.proposal
     submit = integration.PlanFlowTest.submit
+
+    def test_amendment_keeps_user_edited_unstarted_ticket(self):
+        card = self.card()
+        path = Path(self.proposal(card))
+        draft = path.parent / 'followups/nested/scope.md'
+        draft.parent.mkdir(parents=True)
+        draft.write_text('# Zakres\nBieżący szkic.\n')
+        original_body = (path.parent / 'tickets/1.md').read_text()
+        self.assertTrue(self.submit(card, str(path))['ok'])
+        self.flow.stop()
+        engine = self.flow.engine
+        mapping = engine.approve_plan(card)['map']
+        ticket = mapping['#1']
+        new_body = ('# Zmieniona kartka\n\n- [ ] Nowe kryterium użytkownika.\n'
+                    '\n[szkic](../followups/nested/scope.md)\n')
+        self.assertTrue(engine.edit_plan(card, {'action': 'edit', 'ticket': ticket, 'body': new_body})['ok'])
+        with mock.patch.object(engine, '_launch') as launch:
+            self.assertTrue(engine.edit_plan(card, {'action': 'return', 'feedback': 'Popraw tytuł drugiego ticketu.'})['ok'])
+        out = Path(launch.call_args.kwargs['prompt_text'].split('Katalog wyjściowy: ')[1].split('\n')[0])
+        self.assertEqual((out / f'tickets/{ticket}.md').read_text(), new_body)
+        self.assertEqual((out.parent / 'in/proposal/tickets/1.md').read_text(), original_body)
+        # Planista zmienia tylko tabelę; istniejące kartki zapewnia Tide.
+        text = (out / 'plan.md').read_text().replace('Drugi plasterek', 'Poprawiony drugi plasterek')
+        for work, ident in mapping.items():
+            text = text.replace(work, ident)
+        (out / 'plan.md').write_text(text)
+        step = launch.call_args.args[6]
+        engine.journal.append(card, 'step.started', step=step, kind='plan-amend',
+                              stepDir=str(out.parent), executor='Sonnet')
+        snapshot = engine._freeze_planning_output(card, step, str(out))
+        self.assertEqual((Path(snapshot) / f'tickets/{ticket}.md').read_text(), new_body)
+        engine.journal.append(card, 'step.finished', step=step, result='done', snapshotDir=snapshot)
+        engine._advance_user_revision(card, fold(engine.journal.read(card)))
+        state = fold(engine.journal.read(card))
+        self.assertTrue(state.plan_revision['pending'])
+        self.assertEqual(next(r['body'] for r in state.plan_proposed['rows'] if r['workId'] == ticket), new_body)
+        self.assertEqual(state.plan_proposed['rows'][1]['title'], 'Poprawiony drugi plasterek')
+        self.assertNotIn(ticket, [r['ticket'] for r in state.plan_revision['difference']['changed']])
+        engine.journal.append(card, 'plan.reviewed', verdict='APPROVE')
+        self.assertTrue(engine.approve_plan(card)['ok'])
+        state = fold(engine.journal.read(card))
+        self.assertEqual(next(r['body'] for r in state.plan_approved['rows'] if r['id'] == ticket), new_body)
 
     def test_amendment_relocates_sketch_ticket_links_to_assigned_ids(self):
         card = self.card()

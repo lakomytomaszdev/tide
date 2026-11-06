@@ -161,6 +161,10 @@ class PlanEditing:
         out = worktree + f".{kind}-{step_id}.step/out"
         if st.plan_proposed.get("artifactPath"):
             ticket_paths = {}
+            ticket_bodies = {}
+            if kind == "plan-amend":
+                ticket_bodies = {f"tickets/{r['id']}.md": r["body"].encode("utf-8")
+                                 for r in (st.plan_revision or {}).get("baseline", []) if r.get("id") and "body" in r}
             # Tylko zatwierdzony pakiet zmienia numery robocze na ID. Propozycja pending
             # ma już własne nazwy, a jej nowe #n nie należą do mapy starego planu.
             if (kind == "plan-amend" and st.plan_approved and
@@ -168,7 +172,8 @@ class PlanEditing:
                 ticket_paths = {f"tickets/{(r.get('workId') or r['id']).lstrip('#')}.md": f"tickets/{r['id']}.md"
                                 for r in st.plan_approved["rows"]}
             text += planartifacts.prepare(st.plan_proposed["artifactPath"], os.path.dirname(out), seed=kind != "plan-review",
-                                          plan_name=os.path.basename(st.plan_proposed["planPath"]), ticket_paths=ticket_paths)
+                                          plan_name=os.path.basename(st.plan_proposed["planPath"]), ticket_paths=ticket_paths,
+                                          ticket_bodies=ticket_bodies)
         text += f"\nKatalog wyjściowy: {out}\nPlik wyniku: {out}/result.json\n"
         text += 'Po zapisaniu plików zapisz {"result":"done","notes":[]}.\n'
         self._launch(item, project, selected, "", made, made, step_id, [], kind=kind, prompt_text=text, review_tip=findings)

@@ -25,9 +25,9 @@ def keep_committed_plan_text(state):
     Późniejsze zmiany stanu zachowują też ręczne dopiski w worktree. Liczy się sukces
     po zatwierdzeniu wersji, bo podczas pending nadal zapisujemy stary plan.
     """
-    proposed = state.plan_proposed or {}
+    source = source_for_commit(state)
     approved = state.plan_approved or {}
-    boundary = max(int(proposed.get('seq') or 0), int(approved.get('seq') or 0),
+    boundary = max(int(source.get('seq') or 0), int(approved.get('seq') or 0),
                    int(approved.get('textApprovedSeq') or 0))
     return bool(state.plan_revision) or any(
         action == 'plan-commit' and result.get('ok') and
@@ -168,7 +168,7 @@ def save(journal, card, relative, files):
         journal.write_file(card, os.path.join(relative, name), body)
 
 
-def prepare(source, step_dir, *, seed=False, plan_name='plan.md', ticket_paths=None):
+def prepare(source, step_dir, *, seed=False, plan_name='plan.md', ticket_paths=None, ticket_bodies=None):
     """Oryginał do odczytu; wyjście poprawki ma linki według wymaganych nazw planu i kartek."""
     files = read(source)
     seeded, paths = {}, {}
@@ -179,11 +179,14 @@ def prepare(source, step_dir, *, seed=False, plan_name='plan.md', ticket_paths=N
         seeded = {paths[name]: body for name, body in files.items()}
         seeded.update(followup_files(files, {'planPath': plan_name}, 'plan.md',
                                      {name: path for name, path in paths.items() if name.startswith('tickets/')}))
-    for name, body in files.items():
-        targets = [(os.path.join(step_dir, 'in', 'proposal', name), body)]
-        if seed:
-            targets.append((os.path.join(step_dir, 'out', paths[name]), seeded[paths[name]]))
-        for target, content in targets:
+        # Migawka pozostaje oryginalna; istniejące kartki w poprawce pochodzą z bieżącego planu bazowego.
+        seeded.update(ticket_bodies or {})
+        if any(len(body) > MAX_FILE for body in seeded.values()) or sum(map(len, seeded.values())) > MAX_TOTAL:
+            raise ValueError('artefakty planowania przekraczają 512 KiB/pliku lub 16 MiB/całości')
+        check_links(seeded)
+    for prefix, package in (('in/proposal', files), ('out', seeded)):
+        for name, content in package.items():
+            target = os.path.join(step_dir, prefix, name)
             relative = os.path.relpath(target, step_dir)
             current = step_dir
             if os.path.islink(current):

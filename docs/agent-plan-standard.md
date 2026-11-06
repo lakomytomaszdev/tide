@@ -165,6 +165,8 @@ własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
 Kopia do odczytu zachowuje oryginalne nazwy i treści. W wyjściu poprawki plan ma nazwę `plan.md`,
 a linki ze szkiców wskazują tę nazwę; przy poprawce zatwierdzonego planu kartki i linki do nich
 używają już nadanych ID zamiast numerów roboczych. Szkice zachowują podkatalogi, fragmenty i parametry URL.
+Istniejące kartki w wyjściu poprawki zatwierdzonego planu mają aktualną treść z planu bazowego,
+w tym edycje użytkownika w panelu; pierwotna migawka w `in/proposal/` pozostaje bez zmian.
 
 Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
 Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze
@@ -182,7 +184,9 @@ zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy uda
 poprawki bierze tekst poza tabelą i szkice z nowej zamrożonej propozycji. Podczas oczekiwania
 na decyzję commity stanu nadal korzystają z pakietu poprzednio zatwierdzonej wersji:
 nie nadpisują szkiców treścią poprawki ani nie dodają jej nowych szkiców. Późniejsze aktualizacje stanu
-zachowują tekst z worktree, w tym ręczne dopiski. Szkic opisuje zakres do osobnego
+zachowują tekst z worktree, w tym ręczne dopiski. Próg pierwszego udanego zapisu dotyczy wersji
+faktycznie zatwierdzonej; odrzucenie niezatwierdzonej poprawki nie unieważnia wcześniejszego zapisu.
+Szkic opisuje zakres do osobnego
 zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
 
 ## Przepływ karty prowadzony przez Tide (1.2)
