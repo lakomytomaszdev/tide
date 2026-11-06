@@ -131,6 +131,12 @@ jeśli padnie, agent domknięcia także ponawia tylko padnięte moduły na tym s
 Projekty w innych technologiach stosują tę samą zasadę narzędziem testów projektu z filtrem na padnięte testy.
 Tekst zasady w kartkach kroków: `rerun_failed` w `daemon/tide_daemon/cardflow/handoff.py`.
 
+Tide wymusza tę zasadę sam (`daemon/tide_daemon/cardflow/testrerun.py`): gdy polecenie poza piaskownicą to
+pełny przebieg (`make test`, `make test-changed …`), a ostatni taki przebieg w tym samym worktree padł na tym samym
+HEAD przy czystym drzewie, Tide uruchamia zamiast niego tylko moduły z `summary.json` tamtego przebiegu i zapisuje
+w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
+oznaczają zwykły pełny przebieg. Dotyczy repozytoriów z `tools/test_runner.py`.
+
 ## Starsze gałęzie bez celu test-changed
 
 Wyjątek dotyczy wyłącznie gałęzi, której Makefile (wraz z `mk/*.mk`) nie udostępnia jeszcze
