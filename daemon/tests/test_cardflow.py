@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import unittest
 from unittest import mock
 
@@ -158,6 +159,46 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def wait_now_closed(self, card_id, ticket="PT-1", timeout=30.0):
+        """Koniec całego scenariusza Od razu, a nie przejściowe review po scaleniu ticketu."""
+        journal = self.flow.engine.journal
+        last = {}
+
+        def completed():
+            # Nie czytaj połowy zapisu ani nie czekaj na blokadzie dłużej niż timeout.
+            if not journal.lock.acquire(blocking=False):
+                return False
+            try:
+                events = self.events(card_id)
+                mirror = journal.read(card_id)
+                card = self.shown(card_id)
+                last.update(journal=events, mirror=mirror, snapshot=card)
+                starts = [e for e in events if e["type"] == "step.started"]
+                finishes = [e for e in events if e["type"] == "step.finished"]
+                verdicts = [e for e in events if e["type"] == "review.verdict"]
+                closed = [e for e in events if e["type"] == "card.closed"]
+                if ([s["kind"] for s in starts] != ["ticket", "review", "close"] or
+                        [s.get("ticket") for s in starts[:2]] != [ticket, ticket] or
+                        [f["step"] for f in finishes] != [s["step"] for s in starts] or
+                        any(f["result"] != "done" for f in finishes)):
+                    return False
+                if (len(verdicts) != 1 or verdicts[0].get("ticket") != ticket or
+                        verdicts[0].get("step") != starts[1]["step"] or
+                        verdicts[0].get("verdict") != "APPROVE" or len(closed) != 1 or
+                        closed[0].get("step") != starts[2]["step"] or
+                        closed[0]["seq"] <= finishes[2]["seq"]):
+                    return False
+                flow = (card.get("derived") or {}).get("flow") or {}
+                return (events == mirror and card["boardColumn"] == "review" and flow.get("closed") and
+                        card["derived"] == self.flow.engine.derived(card) and card)
+            finally:
+                journal.lock.release()
+
+        found = wait_until(completed, timeout=timeout)
+        self.assertTrue(found, f"{card_id}: brak spójnego zakończenia ticket → review → close\n"
+                        + json.dumps(last, ensure_ascii=False, indent=1))
+        return found
+
     def test_codex_executor_completes_from_start_to_review(self):
         card_id = self.card()
         reply = self.start(card_id, executor="Codex mocny", preferredProvider="openai")
@@ -295,7 +336,7 @@ class NowInProcessTest(FlowInProcess):
         self.assertTrue(reply["cardBranch"].startswith("card/k-2-"), reply)
         self.assertTrue(reply["branch"].startswith("ticket/pt-1-"), reply)
 
-        card = self.wait_column(card_id, "review")
+        card = self.wait_now_closed(card_id)
         self.assertIn("PT-1", card["derived"]["note"])
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
@@ -304,6 +345,16 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
                          ["ticket", "review", "close"])
         self.assertEqual(types.count("review.verdict"), 1, types)
+        starts = self.of(card_id, "step.started")
+        self.assertEqual([f["step"] for f in self.of(card_id, "step.finished")],
+                         [s["step"] for s in starts])
+        self.assertEqual([f["result"] for f in self.of(card_id, "step.finished")], ["done"] * 3)
+        verdict = self.of(card_id, "review.verdict")[0]
+        self.assertEqual((verdict["ticket"], verdict["step"], verdict["verdict"], verdict["reviewer"]),
+                         ("PT-1", starts[1]["step"], "APPROVE", starts[1]["executor"]))
+        self.assertNotEqual(starts[0]["model"], starts[1]["model"], "niezależne review")
+        self.assertEqual(self.of(card_id, "card.closed")[0]["step"], starts[2]["step"])
+        self.assertTrue(card["derived"]["flow"]["closed"])
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         launched = self.of(card_id, "card.started")[0]
@@ -364,6 +415,59 @@ class NowInProcessTest(FlowInProcess):
         self.assertFalse([s for s in monitor.sessions if s.get("sessionId") == step["session"]], monitor.sessions)
         work = json.loads(self.board.work_json())
         self.assertEqual([i["kind"] for i in work["items"] if step["session"] in json.dumps(i)], [])
+
+    def test_now_waits_for_close_and_its_published_snapshot(self):
+        engine = self.flow.engine
+        release = threading.Event()
+        advance = engine._advance_close
+
+        def delayed_close(card, state):
+            if release.is_set():
+                return advance(card, state)
+
+        with mock.patch.object(engine, "_advance_close", side_effect=delayed_close):
+            card_id = self.card()
+            self.assertTrue(self.start(card_id)["ok"])
+            # Poprzedni warunek kończy oczekiwanie, choć close jeszcze nie wystartował.
+            card = self.wait_column(card_id, "review")
+            self.assertFalse(card["derived"]["flow"]["closed"])
+            self.assertEqual(len(self.of(card_id, "step.finished")), 2)
+            with self.assertRaises(AssertionError) as missing:
+                self.wait_now_closed(card_id, timeout=0.15)
+            for key in ("journal", "mirror", "snapshot"):
+                self.assertIn(key, str(missing.exception))
+            # Teraz dziennik może się domknąć, lecz migawka nadal pokazuje dawny stan.
+            with mock.patch.object(self.board, "_apply", return_value=None):
+                release.set()
+                self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30),
+                                self.events(card_id))
+                with self.assertRaises(AssertionError) as unpublished:
+                    self.wait_now_closed(card_id, timeout=0.15)
+                self.assertIn('"card.closed"', str(unpublished.exception))
+                self.assertIn('"closed": false', str(unpublished.exception))
+            self.board.publish()
+            self.wait_now_closed(card_id)
+
+    def test_now_wait_rejects_failed_close_with_diagnostics(self):
+        engine = self.flow.engine
+        finish = engine._finish
+
+        def failed_close(card, step, **kwargs):
+            if step.get("kind") == "close":
+                kwargs["forced"] = {"result": "error", "reason": "kontrolowana awaria domknięcia"}
+            return finish(card, step, **kwargs)
+
+        with mock.patch.object(engine, "_finish", side_effect=failed_close):
+            card_id = self.card()
+            self.assertTrue(self.start(card_id)["ok"])
+            self.assertTrue(wait_until(lambda: any(
+                e.get("reason") == "kontrolowana awaria domknięcia"
+                for e in self.of(card_id, "step.finished")), timeout=30), self.events(card_id))
+            with self.assertRaises(AssertionError) as failed:
+                self.wait_now_closed(card_id, timeout=0.15)
+            for text in ("journal", "snapshot", "kontrolowana awaria domknięcia"):
+                self.assertIn(text, str(failed.exception))
+            self.assertEqual(self.of(card_id, "card.closed"), [])
 
     def test_second_start_is_refused_while_the_card_works(self):
         card_id = self.card(description="ATRAPA: czekaj")
