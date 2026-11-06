@@ -2,6 +2,8 @@
 
 Typy zdarzeń (schemat 1, PT-58):
 - `card.started` — zlecenie: entry (now), executor, program, model, check,
+- `plan.import-prepared` — trwałe źródło i wiersze przejęcia; `card.started.importPreparation`
+  wskazuje zdarzenie do odtworzenia kopii planu i `plan.imported` po przerwaniu zapisu,
 - `intent` / `result` — para „zamiar → wynik” akcji ze skutkami poza dziennikiem: action (reserve, card-branch,
   ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
 - `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,

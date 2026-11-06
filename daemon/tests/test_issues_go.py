@@ -268,6 +268,109 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(self.go(), original)
         self.assertEqual(len(self.of("K-1", "card.started")), 1)
 
+    def assert_import_recovery(self, boundary, *, restart=False, complete=False, hard=False,
+                               partial=False, remove_source=False):
+        from . import test_cardflow_import_plan as imports
+        from tide_daemon.cardflow.state import fold
+
+        self.ready()
+        path = imports.PlanImportTest.source(self, "K-1", old=not complete)
+        source = Path(path).read_bytes()
+        launch = {"entry": "import", "planPath": path, "executor": "Sonnet"}
+        journal = self.flow.engine.journal
+        append, write_file = journal.append, journal.write_file
+
+        class Interrupted(BaseException):
+            pass
+
+        def interrupt():
+            raise Interrupted() if hard else OSError("Przerwanie przekazania planu")
+
+        def interrupted_append(card, kind, **data):
+            result = append(card, kind, **data)
+            if kind == boundary:
+                interrupt()
+            return result
+
+        def interrupted_write(card, rel, data):
+            result = write_file(card, rel, b"urwana kopia" if partial and rel == "plan/source.md" else data)
+            if boundary == "source.md" and rel == "plan/source.md":
+                interrupt()
+            return result
+
+        with mock.patch.object(journal, "append", side_effect=interrupted_append), \
+                mock.patch.object(journal, "write_file", side_effect=interrupted_write):
+            if hard:
+                with self.assertRaises(Interrupted):
+                    self.go(launch=launch)
+            else:
+                failed = self.go(launch=launch)
+                self.assertEqual(failed["start"]["state"], "start-error", failed)
+                self.assertFalse(failed["start"]["retryable"])
+
+        started = self.of("K-1", "card.started")[0]
+        intent = issue_start._load(self.issues, "S-1")
+        self.assertEqual(len(self.of("K-1", "plan.imported")), int(boundary == "plan.imported"))
+        self.assertEqual(self.of("K-1", "step.started"), [])
+        if hard:
+            self.assertEqual(self.of("K-1", "order.delivery-error"), [])
+        if remove_source:
+            Path(path).unlink()
+        if restart:
+            self.restart()
+            self.flow.stop()
+            self.service = IssueService(self.store, self.flow.engine)
+        self.flow.engine.tick()
+        state = fold(self.flow.engine.journal.read("K-1"))
+        self.assertIsNotNone(state.imported, self.events("K-1"))
+        self.assertEqual(Path(self.root, "flow/K-1/plan/source.md").read_bytes(), source)
+        if complete:
+            self.assertIsNotNone(state.plan_proposed)
+        else:
+            self.assertEqual([s["kind"] for s in state.steps.values()], ["plan-import"])
+        def reviewed():
+            self.flow.engine.tick()
+            return self.of("K-1", "plan.reviewed")
+        self.assertTrue(wait_until(reviewed, timeout=25), self.events("K-1"))
+        current = self.call("Show")["start"]
+        self.assertEqual(current["state"], "started")
+        self.assertFalse(current["retryable"])
+        self.assertEqual(current["intentId"], intent["intentId"])
+        self.assertEqual(current["orderId"], started["orderId"])
+        replay = self.go(launch=launch)
+        if not hard:
+            self.assertEqual(replay, failed)
+        self.assertEqual(self.go(launch=launch), replay)
+        self.assertEqual(self.retry(current, key="refused")["error"], "start-conflict")
+        self.assertEqual(self.of("K-1", "card.started"), [started])
+        self.assertEqual(len(self.of("K-1", "plan.imported")), 1)
+        self.assertEqual(len(self.store.snapshot()["cards"]), 1)
+        if remove_source:
+            self.assertFalse(Path(path).exists())
+        else:
+            self.assertEqual(Path(path).read_bytes(), source)
+
+    def test_import_recovers_after_started(self):
+        self.assert_import_recovery("card.started")
+
+    def test_import_recovers_after_source_copy(self):
+        self.assert_import_recovery("source.md")
+
+    def test_import_restart_after_started_without_error_handler(self):
+        self.assert_import_recovery("card.started", restart=True, hard=True)
+
+    def test_import_restart_after_source_copy_without_error_handler(self):
+        self.assert_import_recovery("source.md", restart=True, hard=True)
+
+    def test_complete_import_restart_after_started(self):
+        self.assert_import_recovery("card.started", restart=True, complete=True, hard=True)
+
+    def test_complete_import_restart_after_imported(self):
+        self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True)
+
+    def test_import_restart_repairs_partial_copy_from_journal_without_original(self):
+        self.assert_import_recovery("source.md", restart=True, hard=True, partial=True, remove_source=True)
+
     def test_omitted_launch_pins_light_and_saved_preferences(self):
         self.ready()
         # Ostatnie zlecenie zapisuje dostawcę i wykonawcę; nowy go nie przejmuje

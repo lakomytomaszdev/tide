@@ -1019,7 +1019,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return {**request, "baseRef": base["baseRef"], "baseCommit": base["baseCommit"],
                     "cardBranch": base["cardBranch"], "executor": selected.name, "check": check}
         self.store.update_card(card_id, {"planPath": path})
+        # Kopia robocza nie jest granicą trwałości. Dziennik zachowuje dane przejęcia
+        # przed przyjęciem zlecenia, aby restart mógł dokończyć oba późniejsze zapisy.
+        prepared = self.journal.append(card_id, "plan.import-prepared", path=path,
+                                       source=source_bytes.decode("utf-8"), rows=import_rows,
+                                       needsCompletion=not complete)
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
+                            importPreparation=prepared["seq"],
                             **({"orderId": _order} if _order else {}),
                             column=item.column, moveId=item.move_id, check=check, images=images,
                             sourceEvidence=source_evidence.source if source_evidence else None,
@@ -1028,9 +1034,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             prefix=prefix, trackerProject=project.youtrack,
                             trackerUrl=yt.load_config()["url"] if project.youtrack else "", **base)
         self._project_base(card_id)
-        self.journal.write_file(card_id, os.path.join("plan", "source.md"), source_bytes)
-        self.journal.append(card_id, "plan.imported", path=path, rows=import_rows,
-                            needsCompletion=not complete)
+        self._recover_import(card_id, fold(self.journal.read(card_id)))
         if complete:
             result = self.propose_plan(card_id, path, import_source=True)
             return {**result, "imported": True, "needsCompletion": False}
@@ -1038,6 +1042,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
         st = fold(self.journal.read(card_id))
         return {"ok": True, "id": card_id, "imported": True, "needsCompletion": True,
                 "step": st.last_step, "executor": selected.name}
+
+    def _recover_import(self, card: str, st: FlowState) -> FlowState:
+        """Dokańcza przejęcie planu tej samej generacji, bez nowego zlecenia."""
+        preparation = st.started.get("importPreparation")
+        if st.imported is not None or preparation is None:
+            return st
+        prepared = next((e for e in self.journal.read(card)
+                         if e["seq"] == preparation and e["type"] == "plan.import-prepared"), None)
+        if prepared is None:
+            raise FlowError("broken-import", "brakuje zapisanego źródła przejęcia planu")
+        self.journal.write_file(card, os.path.join("plan", "source.md"), prepared["source"].encode("utf-8"))
+        self.journal.append(card, "plan.imported", path=prepared["path"], rows=prepared["rows"],
+                            needsCompletion=prepared["needsCompletion"])
+        return fold(self.journal.read(card))
 
     def _start_project(self, card_id, prepared):
         if prepared is None:
@@ -1440,9 +1458,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return False
         if st.paused or st.plan_proposed is not None:
             return True
+        if st.started.get("entry") == "plan":
+            st = self._recover_import(card, st)
         steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix", "plan-import")
                  and step.get("seq", 0) > st.started["seq"] and step["step"] not in st.superseded]
         if not steps:
+            if st.imported is not None and not st.imported.get("needsCompletion", True):
+                self.propose_plan(card, st.imported["path"], import_source=True)
+                return True
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg is not None else self.catalog()
