@@ -113,8 +113,8 @@ def main():
                 }
         save()
     if report["verification"]["returncode"]:
-        print(f"Nieudany test-changed: {report['verification']['log']}", flush=True)
-        return 1
+        print(f"Nieudany test-changed: {report['verification']['log']}; "
+              "pomiar będzie kontynuowany, końcowy wynik pozostanie nieudany.", flush=True)
 
     commits = git("log", "--no-merges", f"-{args.count}", "--format=%H", args.base).splitlines()
     report["commits"] = []
@@ -156,7 +156,7 @@ def main():
     (output / "report.md").write_text(text, encoding="utf-8")
     save()
     print(text, flush=True)
-    return int(bool(failures))
+    return int(bool(failures) or bool(report["verification"]["returncode"]))
 
 
 if __name__ == "__main__":

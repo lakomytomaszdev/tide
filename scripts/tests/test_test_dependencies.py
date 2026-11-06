@@ -180,6 +180,12 @@ class RepositorySelectionTest(unittest.TestCase):
 
 class SelectionBenchmarkTest(unittest.TestCase):
     def test_public_verification_and_five_commits_share_identical_real_measurements_on_resume(self):
+        self.check_verification(0)
+
+    def test_failed_verification_keeps_failed_status_but_still_produces_five_commit_report(self):
+        self.check_verification(1)
+
+    def check_verification(self, returncode):
         with tempfile.TemporaryDirectory(dir=runner.ROOT) as temp:
             output = Path(temp)
             modules = ["daemon/tests/test_a.py", "daemon/tests/test_b.py"]
@@ -190,7 +196,7 @@ class SelectionBenchmarkTest(unittest.TestCase):
                 parent.mkdir()
                 (parent / "summary.json").write_text(json.dumps({"seconds": 12, "results": results}))
                 self.assertEqual(command, ["make", "test-changed", "BASE=pinned-base"])
-                return subprocess.CompletedProcess(command, 0)
+                return subprocess.CompletedProcess(command, returncode)
 
             def git(*args):
                 if args[0] == "log":
@@ -208,13 +214,14 @@ class SelectionBenchmarkTest(unittest.TestCase):
                     patch.object(benchmark.runner, "execute", return_value=results[:1]) as execute, \
                     patch("sys.argv", ["benchmark", "--base", "pinned-base", "--jobs", "2", "--output", temp]), \
                     redirect_stdout(io.StringIO()):
-                self.assertEqual(benchmark.main(), 0)
-                self.assertEqual(benchmark.main(), 0)
+                self.assertEqual(benchmark.main(), returncode)
+                self.assertEqual(benchmark.main(), returncode)
             self.assertEqual(public.call_count, 1)
             self.assertEqual(execute.call_count, 1)
             data = json.loads((output / "comparison.json").read_text())
             self.assertEqual(len(data["commits"]), 5)
             self.assertEqual(len(data["measurements"]), 2)
+            self.assertEqual(data["verification"]["returncode"], returncode)
             for row in data["commits"]:
                 self.assertEqual(data["measurements"][row["before"]]["seconds"], 12)
                 self.assertEqual(len(data["measurements"][row["after"]]["modules"]), 1)

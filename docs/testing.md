@@ -80,6 +80,8 @@ modułów i rzeczywisty czas wykonania, a osobno czas selekcji AST. `--output <k
 logi, `comparison.json` i tabelę `report.md`; wznowienie w tym samym katalogu wykorzystuje
 ukończone pomiary, o ile drzewo kodu i JOBS się nie zmieniły. To pełna procedura testowa wymagająca
 środowiska, w którym działają prywatne gniazda i piaskownice testów.
+Nieudana walidacja nie przerywa zbierania porównania, ale pozostaje zapisana w raporcie i powoduje
+niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udanego `test-changed`.
 
 ## Równoległość i wynik
 
