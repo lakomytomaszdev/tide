@@ -1,14 +1,17 @@
 #!/usr/bin/python3
 """CLI Tide: wyłącznie klient publicznego D-Bus, bez zależności od checkoutu."""
 import argparse
+import hashlib
 import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 SERVICE = "org.tide.Daemon"
 PATH = "/Issues"
 IFACE = "org.tide.Daemon.Issues"
+FILE_MAX = 20 * 1024 * 1024
 EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
               "conflict": 4, "version-conflict": 4, "not-found": 5,
               "git-busy": 6, "io-error": 7, "broken-file": 7}
@@ -54,7 +57,20 @@ def parser():
         command.add_argument("id", help="S-N")
         command.add_argument("--expected-version", required=True, type=int)
         transitions.append(command)
-    for command in (info, issue, create, listing, show, update, *transitions):
+    attach = actions.add_parser("attach", help="dołącz trwałą kopię jawnie wskazanego pliku")
+    attach.add_argument("id", help="S-N")
+    attach.add_argument("--file", required=True)
+    attach.add_argument("--expected-version", required=True, type=int)
+    detach = actions.add_parser("detach", help="odłącz załącznik od sprawy")
+    detach.add_argument("id", help="S-N")
+    detach.add_argument("--attachment", required=True)
+    detach.add_argument("--expected-version", required=True, type=int)
+    attachment = actions.add_parser("attachment", help="zapisz bajty załącznika w nowym pliku")
+    attachment.add_argument("id", help="S-N")
+    attachment.add_argument("--attachment", required=True)
+    attachment.add_argument("--output", required=True)
+    attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
+    for command in (info, issue, create, listing, show, update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
 
@@ -83,13 +99,73 @@ class PublicApi:
                            "Usługa Tide jest niedostępna albo nie odpowiedziała; ponów z tym samym request-id.")
         try:
             values = reply.arguments()
-            result = json.loads(values[0]) if len(values) == 1 and isinstance(values[0], str) else None
+            read = method == "ReadAttachment"
+            result = json.loads(values[0]) if len(values) == (2 if read else 1) and isinstance(values[0], str) else None
             if (not isinstance(result, dict) or type(result.get("apiVersion")) is not int or
                     result["apiVersion"] != 1 or type(result.get("ok")) is not bool):
                 raise ValueError()
         except (ValueError, TypeError):
             raise CliError("api-incompatible", "Nieprawidłowa odpowiedź API spraw v1.") from None
+        if read:
+            from PyQt6.QtCore import QByteArray
+            if not isinstance(values[1], QByteArray) or len(values[1]) > FILE_MAX or (not result["ok"] and values[1]):
+                raise CliError("api-incompatible", "Nieprawidłowe bajty odpowiedzi ReadAttachment.")
+            return result, bytes(values[1])
         return result
+
+
+def read_attachment_source(path):
+    # Każdy komponent otwieramy bez dowiązań; FIFO i urządzenia nigdy nie są czytane.
+    if not path or "://" in path or "\x00" in path or ".." in Path(path).parts:
+        raise CliError("bad-request", "Podaj lokalny plik bez URL i przejść '..'.")
+    target = Path(path).absolute()
+    fd = None
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        for part in target.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        source = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        with os.fdopen(source, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > FILE_MAX:
+                raise CliError("bad-request", "Załącznik musi być zwykłym plikiem do 20 MiB.")
+            data = stream.read(FILE_MAX + 1)
+            stream.seek(0)
+            digest = hashlib.sha256(stream.read(FILE_MAX + 1)).digest()
+            after = os.fstat(stream.fileno())
+            current = os.stat(target.name, dir_fd=fd, follow_symlinks=False)
+            signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+            if (len(data) > FILE_MAX or signature(before) != signature(after) or
+                    signature(before) != signature(current) or hashlib.sha256(data).digest() != digest):
+                raise CliError("bad-request", "Źródło zmieniło się podczas kopiowania; ponów import.")
+        return target.name, data
+    except OSError as exc:
+        raise CliError("bad-request", f"Nie można importować pliku: {exc.strerror}.") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def write_attachment(path, result, data):
+    entry = result.get("attachment", {})
+    if len(data) != entry.get("size") or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        raise CliError("api-incompatible", "Bajty odpowiedzi są niezgodne z metadanymi.")
+    if not path or "\x00" in path:
+        raise CliError("bad-request", "Podaj poprawną ścieżkę nowego pliku wyjściowego.")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            os.unlink(path)
+            raise
+    except OSError as exc:
+        raise CliError("io-error", f"Nie można utworzyć nowego pliku wyjściowego: {exc.strerror}.") from None
 
 
 def read_report(path):
@@ -127,6 +203,25 @@ def main(argv=None):
                 result = api.call("Create", json.dumps(data, ensure_ascii=False))
             elif args.action == "list":
                 result = api.call("List")
+            elif args.action == "attach":
+                from PyQt6.QtCore import QByteArray
+                name, raw = read_attachment_source(args.file)
+                result = api.call("Attach", args.id, json.dumps({"name": name, "expectedVersion": args.expected_version}),
+                                  QByteArray(raw))
+            elif args.action == "detach":
+                result = api.call("Detach", args.id, json.dumps({"attachmentId": args.attachment,
+                                                                 "expectedVersion": args.expected_version}))
+            elif args.action == "attachment":
+                version = args.expected_version
+                if version is None:
+                    result = api.call("Show", args.id)
+                    if result["ok"]:
+                        version = result["issue"]["version"]
+                if result["ok"]:
+                    result, raw = api.call("ReadAttachment", args.id, json.dumps({"attachmentId": args.attachment,
+                                                                                "expectedVersion": version}))
+                    if result["ok"]:
+                        write_attachment(args.output, result, raw)
             elif args.action in ("update", "submit", "reject", "reopen"):
                 data = {"expectedVersion": args.expected_version}
                 if args.action == "update":
@@ -155,6 +250,8 @@ def main(argv=None):
             print(f"{issue['id']}: {issue['title']}")
         for error in result.get("errors", []):
             print(error["message"], file=sys.stderr)
+    elif "attachment" in result:
+        print(f"{result['id']}: zapisano {result['attachment']['name']} do {args.output}")
     else:
         print(f"Tide API v{result['apiVersion']}")
     if result.get("commitError") and not as_json:

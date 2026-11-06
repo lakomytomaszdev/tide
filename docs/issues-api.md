@@ -7,12 +7,13 @@ odczyt załączników — PT-228. Utworzenie sprawy nie uruchamia modelu, nie za
 ## Publiczna granica
 
 Magistrala sesji, usługa `org.tide.Daemon`, obiekt `/Issues`, interfejs `org.tide.Daemon.Issues`.
-Metody zwracają jeden napis JSON. Nie przyjmują ścieżek do plików klienta ani ścieżek odczytu Tablicy.
+Metody zwracają jeden napis JSON; wyjątkiem jest `ReadAttachment`, zwracające JSON oraz tablicę bajtów.
+Nie przyjmują ścieżek do plików klienta ani ścieżek odczytu Tablicy.
 CLI jest samodzielnym klientem tego interfejsu; nie importuje pakietu `tide_daemon`.
 
 | Metoda | Argumenty D-Bus | Wynik przy sukcesie, poza wspólną kopertą |
 | --- | --- | --- |
-| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen"]` |
+| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment"]` |
 | `Create` | `s request` (obiekt JSON opisany niżej) | `issue`, `existing: bool`, `commitError: string` |
 | `List` | brak | `issues: [...]` (metadane bez treści raportu), `errors: [...]` |
 | `Show` | `s id` (dokładnie `S-N`, N = 1…999999999) | `issue` (metadane i treść) |
@@ -20,6 +21,9 @@ CLI jest samodzielnym klientem tego interfejsu; nie importuje pakietu `tide_daem
 | `Submit` | `s id, s request` | `issue`, `commitError: string` |
 | `Reject` | `s id, s request` | `issue`, `commitError: string` |
 | `Reopen` | `s id, s request` | `issue`, `commitError: string` |
+| `Attach` | `s id, s request, ay data` | `issue`, `commitError: string` |
+| `Detach` | `s id, s request` | `issue`, `commitError: string` |
+| `ReadAttachment` | `s id, s request` | **dwa argumenty wyjściowe**: `s result, ay data`; opis poniżej |
 
 Wspólna koperta sukcesu: `{"ok":true,"apiVersion":1,...}`.
 Błąd: `{"ok":false,"apiVersion":1,"error":"bad-request","message":"…"}`.
@@ -110,10 +114,11 @@ ani ponowieniem z kluczem; zwraca odmowę. Przyjęcie sprawy dostarczy PT-221. `
 odmawiają wszystkich powyższych operacji.
 
 Submit ponownie sprawdza tytuł, treść UTF-8 i istniejący manifest. Raport nie może być pusty ani
-złożony wyłącznie z białych znaków. Projekt, jeśli przypisany, musi nadal istnieć. Manifest musi
-mieć dokładnie postać `{"version":1,"attachments":[]}` (liczba całkowita, bez bool i powtórzonych
-pól). Błąd danych na dysku, brak manifestu albo nieobsługiwany manifest daje `broken-file`.
-Obsługę i weryfikację niepustego manifestu dostarczy PT-228.
+złożony wyłącznie z białych znaków. Projekt, jeśli przypisany, musi nadal istnieć. Manifest ma
+postać `{"version":1,"attachments":[...]}` (liczba całkowita, bez bool i powtórzonych pól).
+Każda pozycja musi mieć bezpieczną ścieżkę, istniejącą zwykłą kopię oraz zgodny rozmiar i SHA-256.
+Brak kopii, dowiązanie, niedozwolona ścieżka, uszkodzony manifest lub hash daje `broken-file`
+bez zmiany stanu, wersji, dat ani treści raportu. Pusty manifest pozostaje poprawny.
 
 Usługa nie interpretuje treści raportu i nie przechowuje listy oczekiwanych, niedostarczonych dowodów.
 Sam opis braku pliku przy pustym manifeście nie blokuje jawnego submit. Pozostawienie `draft` po
@@ -125,6 +130,90 @@ tide issue submit S-N --expected-version N [--json]
 tide issue reject S-N --expected-version N [--json]
 tide issue reopen S-N --expected-version N [--json]
 ```
+
+### Attach i Detach — wdrożone w PT-228 (D2/D5)
+
+`Attach(s id, s request, ay data)` przyjmuje JSON **wyłącznie**
+`{"name":"dowod.png","expectedVersion":N}` i bajty pliku jako osobny argument `ay`.
+`name` to nazwa wyświetlana, 1–255 znaków, bez `/`, `\\`, `:`, znaków sterujących i niepoprawnego
+Unicode; `.` i `..` są zabronione. Usługa nie otwiera źródła klienta. CLI otwiera jawny `--file`,
+odrzucając URL, traversal, symlinki w każdym komponencie ścieżki, katalogi, urządzenia i FIFO.
+Przed wysłaniem porównuje metadane źródła i hash dwóch odczytów, odmawiając po jego zmianie
+lub podmianie. Usunięcie źródła po ukończonym imporcie nie wpływa na sprawę.
+
+`Detach(s id, s request)` przyjmuje **wyłącznie** `{"attachmentId":"A-…","expectedVersion":N}`.
+Usuwa pozycję z aktualnego manifestu; nie usuwa źródła. Nieobecny identyfikator daje `not-found`.
+Załącznik innej sprawy ani odłączony załącznik nie są dostępne przez odczyt tej sprawy.
+
+Obie mutacje wymagają dodatniego całkowitego `expectedVersion`, bez bool; nieobsługiwane
+i powtórzone pola są błędem. Przy konflikcie zwracają `version-conflict` z `currentVersion`.
+Sukces zwiększa `version` dokładnie raz i ustawia `draft`, również gdy stanem wejściowym jest
+`ready`. `rejected` wymaga `Reopen`, a `accepted` i `archived` odmawiają mutacji. Równoległe
+update/attach/detach tej samej wersji mają najwyżej jednego zwycięzcę.
+
+Granice przed publikacją wersji: **20 aktywnych plików**, **20 MiB (20971520 bajtów) na plik**,
+**100 MiB (104857600 bajtów) łącznie**. Równość jest dozwolona, przekroczenie daje `bad-request`.
+Pusty plik jest dozwolony. PNG/JPEG/WebP rozpoznajemy po sygnaturze lub wymagamy ich przy takim
+rozszerzeniu; niezgodność nazwy i zawartości oraz niekompletny/uszkodzony obraz dają odmowę.
+Rzeczywisty dekoder Qt sprawdza obraz, a rozmiar **do 40000000 pikseli** jest sprawdzany przed
+dekompresją. Limit alokacji dekodera uwzględnia obraz RGB(A) przy tej granicy i obrazy 16-bitowe.
+Wymagane są działające dekodery Qt dla PNG/JPEG/WebP; brak obsługi formatu oznacza odmowę importu.
+Animowane obrazy są odrzucane. SVG/HTML można zachować jako zwykły dowód: nigdy nie są wykonywane
+ani dekodowane jako podgląd. Odbiorca GUI może używać podglądu wyłącznie dla typów
+`image/png`, `image/jpeg`, `image/webp`; nie powinien otwierać ścieżek ani `file://` z manifestu.
+
+Przykładowa pozycja `issue.attachments` (lista jest manifestem zwracanym przez `Show`):
+
+```json
+{"id":"A-0123456789abcdef0123456789abcdef","name":"dowod.png","path":"attachments/A-0123456789abcdef0123456789abcdef","type":"image/png","size":1234,"sha256":"<64 małe cyfry szesnastkowe>"}
+```
+
+`id` to `A-` i 32 małe cyfry szesnastkowe, generowane przez usługę. Równe nazwy nie łączą plików:
+każdy import otrzymuje osobne ID i kopię. `path` to dokładnie `attachments/<id>`, względem katalogu
+sprawy. Nie zawiera nazwy ani lokalizacji źródła. `type` to MIME określony przez usługę, `size` to
+liczba bajtów, a `sha256` to skrót dokładnie zaimportowanych bajtów. Nieznane pola są niedozwolone.
+
+### ReadAttachment — publiczny kontrakt dla odbiorcy PT-220 (D4)
+
+```text
+ReadAttachment(s id, s request) → (s result, ay data)
+request = {"attachmentId":"A-0123456789abcdef0123456789abcdef","expectedVersion":3}
+```
+
+Lista pól jest zamknięta: **wyłącznie** `attachmentId` i `expectedVersion`. Reguły ID i wersji są
+takie same jak dla detach. Metoda nie przyjmuje ścieżki, URL, typu pliku ani docelowej nazwy.
+Odpowiedź sukcesu `result` jest JSON:
+
+```json
+{"ok":true,"apiVersion":1,"id":"S-1","version":3,"attachment":{"id":"A-0123456789abcdef0123456789abcdef","name":"dowod.png","path":"attachments/A-0123456789abcdef0123456789abcdef","type":"image/png","size":1234,"sha256":"<64 małe cyfry szesnastkowe>"}}
+```
+
+`data` to oryginalne bajty, najwyżej 20 MiB, **bez base64**. Przy każdym błędzie `result` używa
+wspólnej koperty JSON, a `data` jest **puste** (`ay`, także przy błędzie wersji, wyłączonej usłudze
+i uszkodzeniu kopii). Nie jest to błąd transportu D-Bus. Przykład konfliktu:
+
+```json
+{"ok":false,"apiVersion":1,"error":"version-conflict","message":"Wersja sprawy uległa zmianie.","currentVersion":4}
+```
+
+Pod tą samą blokadą co mutacje usługa odczytuje wersję raportu i manifest, porównuje wersję,
+wyszukuje ID, sprawdza realpath wewnątrz sprawy, otwiera każdy komponent bez dowiązań i weryfikuje
+rozmiar oraz hash całej kopii. Dopiero wtedy zwraca metadane i bajty. To jedna spójna granica
+odczytu; konflikt i obcy ID nie zwracają żadnego fragmentu pliku. `Show` kontroluje strukturę
+manifestu; sprawdzenie bajtów kopii wykonują `ReadAttachment` i `Submit`.
+
+```text
+tide issue attach S-N --file <plik> --expected-version N [--json]
+tide issue detach S-N --attachment <id> --expected-version N [--json]
+tide issue attachment S-N --attachment <id> --output <nowy-plik> [--expected-version N] [--json]
+```
+
+Bez `--expected-version` polecenie `attachment` pobiera bieżącą wersję przez `Show`, a potem
+przesyła ją do `ReadAttachment`. Równoległa zmiana daje konflikt; CLI nie ponawia odczytu z nową
+wersją samodzielnie. Przed zapisem sprawdza hash i rozmiar odpowiedzi. Cel tworzy przez
+`O_EXCL|O_NOFOLLOW` z prawami 0600: istniejący plik i dowiązanie dają `io-error` (kod 7),
+bez nadpisania. Bajty nie są wykonywane i nie dostają prawa wykonania. Błąd zapisu usuwa
+nieukończony plik utworzony przez to polecenie. Błąd API nie tworzy celu.
 
 ## Pliki i trwałość
 
@@ -139,7 +228,25 @@ Frontmatter `report.md` jest płaski: wartości są skalarami JSON (poprawnymi t
 klucze to dokładnie `tide-issue: 1`, `id`, `title`, `project` (tekst/null), `state` (początkowo
 `"draft"`), `version` (początkowo 1), `created`, `updated` (ISO 8601 UTC), `card` (początkowo null).
 Za zamykającą linią `---` jest dokładnie treść raportu. Początkowy manifest to
-`{"version":1,"attachments":[]}`. Niepusty manifest wymaga PT-228.
+`{"version":1,"attachments":[]}`. Pierwsza mutacja załączników dodaje opcjonalny skalarny
+klucz frontmatteru `attachmentManifest: "manifests/<sha256>.json"`; od tej chwili ten plik
+jest aktualnym manifestem zamiast początkowego `attachments.json`. SHA-256 w nazwie musi
+odpowiadać bajtom manifestu. `version: 1` manifestu oznacza format, a nie wersję sprawy.
+
+```text
+issues/S-1/attachments/A-<32 cyfry hex>
+issues/S-1/manifests/<sha256>.json
+```
+
+Attach utrwala najpierw pełną kopię (`fsync` pliku, rename, `fsync` katalogu), następnie
+niezmienny manifest w analogiczny sposób i dopiero na końcu atomowo podmienia `report.md`
+z nowym wskaźnikiem i wersją. Detach publikuje nowy manifest bez odłączonej pozycji. Awaria
+pozostawia starą pełną wersję albo nową pełną wersję; źródło nie jest potrzebne do odtworzenia.
+Niepowodzenie po punkcie publikacji może pozostawić skutecznie zapisaną nową wersję mimo błędu
+odpowiedzi: po odzyskaniu należy użyć `Show`, zamiast ponawiać mutację ze starą wersją.
+Historyczne i osierocone kopie, manifesty oraz pliki `.tide-tmp-*` nie mają publicznego odczytu
+przez ID, jeżeli nie występują w aktualnym manifeście. Nie usuwamy ich automatycznie; limity
+100 MiB/20 plików dotyczą aktywnego manifestu, nie całej historii gita i zachowanych kopii.
 
 Update i przejścia stanu używają tej samej blokady `.git/tide-issues.lock` co create. Odczyt,
 porównanie `expectedVersion` i atomowa podmiana `report.md` odbywają się pod blokadą. Raport i całe
@@ -148,8 +255,9 @@ manifest pozostaje bez zmiany. Przegrana równoległa mutacja nie zapisuje żadn
 Cykl nie rezerwuje kolejnego S-N, K-N ani PT-N. Replay create z `requestId` nadal zwraca pierwotną
 odpowiedź, ale nie cofa późniejszych zmian na dysku; aktualną wersję odczytuje się przez Show.
 
-Obiekt `issue` ma powyższe pola metadanych poza `tide-issue`, ponadto `report`, `attachments:[]`
-i `paths:{report:"issues/S-N/report.md",manifest:"issues/S-N/attachments.json"}`. Są to samodzielne
+Obiekt `issue` ma powyższe pola metadanych poza `tide-issue` i wewnętrznym `attachmentManifest`,
+ponadto `report`, `attachments:[...]` i `paths:{report:"issues/S-N/report.md",manifest:"…"}`.
+`paths.manifest` wskazuje aktualny manifest (początkowy lub niezmienny). Są to samodzielne
 ścieżki względem Tablicy, niezależne od projektu i karty; API nie służy do odczytu dowolnej ścieżki.
 Odczyt odrzuca dowiązania, pliki specjalne, nadmierny rozmiar, niezgodne metadane i złe UTF-8.
 `List` zwraca poprawne sprawy oraz osobne błędy uszkodzonych spraw; `Show` uszkodzonej sprawy
@@ -225,3 +333,7 @@ Kody zakończenia:
 Zestaw `issues` w rejestrze `tools/test_suites.py` obejmuje testy magazynu i publicznej granicy,
 instalację w tymczasowym HOME/XDG oraz proces zainstalowanego CLI z prawdziwym daemonem na
 prywatnym D-Bus. Weryfikuje także restart, równoległość, stare karty, niezgodne API i brak usługi.
+Testy `test_issues_attachments*` obejmują dodatkowo identyczne nazwy, usunięcie źródeł,
+odczyt bajtów po restarcie, granice limitów, rzeczywiste dekodery, spójność submit i odmowę
+niebezpiecznych źródeł/celów. Testowy proces usługi wymusza ENOSPC i przerwania na granicach
+kopii/manifestu/publikacji; żaden przełącznik awarii nie jest dostępny w produkcyjnym API.

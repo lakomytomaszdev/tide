@@ -13,9 +13,11 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
 from datetime import datetime, timezone
 
 from .board.model import BoardError, SLUG_RE
+from . import issue_attachments as attachments
 
 API_VERSION = 1
 REPORT_MAX = 64 * 1024
@@ -163,6 +165,13 @@ class IssueStore:
 
     def show(self, ident):
         ident = self._id(ident)
+        if not self.board.exists():
+            fail(f"Nie ma sprawy {ident}.", "not-found")
+        with self._lock():
+            return self._show(ident)
+
+    def _show(self, ident):
+        ident = self._id(ident)
         try:
             text = self._read(f"issues/{ident}/report.md")
             header, sep, body = text.partition("\n---\n")
@@ -174,6 +183,10 @@ class IssueStore:
                 if not colon or key in meta:
                     raise ValueError("niepoprawny frontmatter")
                 meta[key] = json.loads(value)
+            manifest_ref = meta.pop("attachmentManifest", "attachments.json")
+            if (manifest_ref != "attachments.json" and
+                    (not isinstance(manifest_ref, str) or not attachments.MANIFEST_RE.fullmatch(manifest_ref))):
+                raise ValueError("niepoprawne wskazanie manifestu")
             if (meta.keys() != META_FIELDS or type(meta["tide-issue"]) is not int or
                     meta["tide-issue"] != 1 or meta["id"] != ident):
                 raise ValueError("niezgodne metadane")
@@ -187,12 +200,16 @@ class IssueStore:
             if meta["card"] is not None and not re.fullmatch(r"K-[1-9][0-9]*", meta["card"]):
                 raise ValueError("niepoprawne powiązanie karty")
             validate({"title": meta["title"], "project": meta["project"], "report": body})
-            manifest = _json(self._read(f"issues/{ident}/attachments.json"))
-            if (not isinstance(manifest, dict) or manifest.keys() != {"version", "attachments"} or
-                    type(manifest["version"]) is not int or manifest["version"] != 1 or
-                    manifest["attachments"] != []):
-                raise ValueError("nieobsługiwany manifest załączników")
-            return self._issue(meta, body)
+            raw = attachments.read_file(self.root / "issues" / ident, manifest_ref, REPORT_MAX)
+            if manifest_ref != "attachments.json":
+                if hashlib.sha256(raw).hexdigest() != attachments.MANIFEST_RE.fullmatch(manifest_ref)[1]:
+                    raise ValueError("niezgodny SHA-256 manifestu")
+            manifest = _json(raw.decode("utf-8"))
+            entries = attachments.manifest_valid(manifest)
+            issue = self._issue(meta, body)
+            issue["attachments"] = entries
+            issue["paths"]["manifest"] = f"issues/{ident}/{manifest_ref}"
+            return issue
         except FileNotFoundError:
             if not os.path.lexists(self.root / "issues" / ident):
                 fail(f"Nie ma sprawy {ident}.", "not-found")
@@ -369,7 +386,7 @@ class IssueStore:
             if busy:
                 fail(self.repo.busy_message(busy), "git-busy")
             # Odczyt i kontrola wersji pod tą samą blokadą co publikacja.
-            issue = self.show(ident)
+            issue = self._show(ident)
             if data["expectedVersion"] != issue["version"]:
                 raise VersionConflict(issue["version"])
             allowed = {"Update": {"draft", "ready"}, "Submit": {"draft"},
@@ -391,13 +408,15 @@ class IssueStore:
                     fail("Nie można przygotować sprawy z pustym raportem.")
                 if issue["project"] is not None and issue["project"] not in self.board.load().projects:
                     fail(f"Nie ma projektu „{issue['project']}”.")
+                for entry in issue["attachments"]:
+                    attachments.checked_copy(self.root / "issues" / ident, entry)
                 issue["state"] = "ready"
             else:
                 issue["state"] = "rejected" if operation == "Reject" else "draft"
             issue["version"] += 1
             issue["updated"] = datetime.fromtimestamp(self.board.clock(), timezone.utc).isoformat()
-            # Jedyny zmieniany plik zawiera treść oraz całą wersję metadanych.
-            # Manifest pozostaje nietknięty, a rename publikuje cały nowy stan naraz.
+            # Treść, metadane i wskazanie niezmiennego manifestu są jednym plikiem.
+            # Rename publikuje cały nowy stan naraz.
             _atomic(self._path(f"issues/{ident}/report.md"), self._report_text(issue))
             error = self.repo.commit(f"{ident}: {operation.lower()} issue", [f"issues/{ident}/report.md"])
             return {"issue": issue, "commitError": error}
@@ -405,6 +424,9 @@ class IssueStore:
     @staticmethod
     def _report_text(issue):
         meta = {"tide-issue": 1, **{key: issue[key] for key in META_FIELDS - {"tide-issue"}}}
+        manifest_ref = issue["paths"]["manifest"].removeprefix(f"issues/{issue['id']}/")
+        if manifest_ref != "attachments.json":
+            meta["attachmentManifest"] = manifest_ref
         return ("---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in sorted(meta.items()))
                 + "---\n" + issue["report"])
 
@@ -414,7 +436,7 @@ class IssueStore:
         folder.mkdir(exist_ok=True)
         target = self._path(f"issues/{ident}")
         if target.exists():
-            if self.show(ident) != issue:
+            if self._show(ident) != issue:
                 fail(f"Sprawa {ident} różni się od zapisanej intencji.", "broken-file")
             return
         tmp = Path(tempfile.mkdtemp(prefix=".tide-tmp-", dir=folder))
@@ -427,6 +449,85 @@ class IssueStore:
             if tmp.exists():
                 shutil.rmtree(tmp)
 
+    def read_attachment(self, ident, request):
+        ident = self._id(ident)
+        data = attachments.request(request, "attachmentId")
+        if not self.board.exists():
+            fail(f"Nie ma sprawy {ident}.", "not-found")
+        with self._lock():
+            issue = self._show(ident)
+            if data["expectedVersion"] != issue["version"]:
+                raise VersionConflict(issue["version"])
+            entry = next((item for item in issue["attachments"] if item["id"] == data["attachmentId"]), None)
+            if entry is None:
+                fail("Nie ma załącznika w tej wersji sprawy.", "not-found")
+            raw = attachments.checked_copy(self.root / "issues" / ident, entry)
+            return {"id": ident, "version": issue["version"], "attachment": entry}, raw
+
+    def change_attachment(self, ident, request, operation, raw=b""):
+        ident = self._id(ident)
+        data = attachments.request(request, "name" if operation == "Attach" else "attachmentId")
+        if operation == "Attach" and (not isinstance(raw, bytes) or len(raw) > attachments.FILE_MAX):
+            fail("Załącznik przekracza 20 MiB albo nie jest tablicą bajtów.")
+        if not self.board.exists():
+            fail(f"Nie ma sprawy {ident}.", "not-found")
+        with self._lock():
+            busy = self.repo.busy()
+            if busy:
+                fail(self.repo.busy_message(busy), "git-busy")
+            issue = self._show(ident)
+            if data["expectedVersion"] != issue["version"]:
+                raise VersionConflict(issue["version"])
+            if issue["state"] not in {"draft", "ready"}:
+                fail(f"Operacja {operation} jest niedozwolona w stanie {issue['state']}.")
+            entries = list(issue["attachments"])
+            if operation == "Attach":
+                if len(entries) >= attachments.COUNT_MAX or sum(e["size"] for e in entries) + len(raw) > attachments.TOTAL_MAX:
+                    fail("Przekroczono limit 20 plików albo 100 MiB załączników.")
+                kind = attachments.media_type(data["name"], raw)
+                attachment_id = "A-" + uuid.uuid4().hex
+                entry = {"id": attachment_id, "name": data["name"], "path": "attachments/" + attachment_id,
+                         "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(), "type": kind}
+                folder = self._path(f"issues/{ident}/attachments")
+                folder.mkdir(mode=0o700, exist_ok=True)
+                _sync_dir(folder.parent)
+                # Kopia jest trwała zanim powstanie manifest, który ją wymienia.
+                self._write_blob(self._path(f"issues/{ident}/{entry['path']}"), raw)
+                entries.append(entry)
+            else:
+                entries = [entry for entry in entries if entry["id"] != data["attachmentId"]]
+                if len(entries) == len(issue["attachments"]):
+                    fail("Nie ma załącznika w tej wersji sprawy.", "not-found")
+            manifest = (_encoded({"version": 1, "attachments": entries}) + "\n").encode("utf-8")
+            folder = self._path(f"issues/{ident}/manifests")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            _sync_dir(folder.parent)
+            ref = "manifests/" + hashlib.sha256(manifest).hexdigest() + ".json"
+            self._write_blob(self._path(f"issues/{ident}/{ref}"), manifest)
+            issue["attachments"] = entries
+            issue["paths"]["manifest"] = f"issues/{ident}/{ref}"
+            issue["state"] = "draft"
+            issue["version"] += 1
+            issue["updated"] = datetime.fromtimestamp(self.board.clock(), timezone.utc).isoformat()
+            # Jedyny punkt publikacji wersji: atomowy raport wskazuje niezmienny manifest.
+            _atomic(self._path(f"issues/{ident}/report.md"), self._report_text(issue))
+            error = self.repo.commit(f"{ident}: {operation.lower()} issue attachment", [f"issues/{ident}"])
+            return {"issue": issue, "commitError": error}
+
+    @staticmethod
+    def _write_blob(path, raw):
+        fd, tmp = tempfile.mkstemp(prefix=".tide-tmp-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, path)
+            _sync_dir(path.parent)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
 
 class IssueService:
     """Publiczne odpowiedzi JSON; brak wyjątków wydostających się do QtDBus."""
@@ -434,16 +535,23 @@ class IssueService:
         self.store = IssueStore(board) if board is not None else None
 
     def call(self, method, *args):
+        raw = b""
         try:
             if method == "Info":
                 result = {"capabilities": ["issue." + action for action in
-                          ("create", "list", "show", "update", "submit", "reject", "reopen")] if self.store else []}
+                          ("create", "list", "show", "update", "submit", "reject", "reopen",
+                           "attach", "detach", "attachment")] if self.store else []}
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":
                 result = self.store.create(_json(args[0]))
             elif method in ("Update", "Submit", "Reject", "Reopen"):
                 result = self.store.mutate(args[0], _json(args[1]), method)
+            elif method in ("Attach", "Detach"):
+                result = self.store.change_attachment(args[0], _json(args[1]), method,
+                                                      args[2] if method == "Attach" else b"")
+            elif method == "ReadAttachment":
+                result, raw = self.store.read_attachment(args[0], _json(args[1]))
             elif method == "Show":
                 result = {"issue": self.store.show(args[0])}
             elif method == "List":
@@ -462,4 +570,5 @@ class IssueService:
             print(f"tide-daemon: sprawy: {exc!r}", flush=True)
             result = {"ok": False, "apiVersion": API_VERSION, "error": "internal",
                       "message": "Błąd usługi spraw — szczegóły w dzienniku usługi."}
-        return json.dumps(result, ensure_ascii=False)
+        encoded = json.dumps(result, ensure_ascii=False)
+        return (encoded, raw if result["ok"] else b"") if method == "ReadAttachment" else encoded

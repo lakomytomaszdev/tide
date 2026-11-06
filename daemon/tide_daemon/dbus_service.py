@@ -200,7 +200,7 @@ monitors.py; układ ekranów w KWin bez zmian):
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
 - sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
-from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QByteArray, QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 
 SERVICE = "org.tide.Daemon"
@@ -443,7 +443,15 @@ ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
   {''.join('<method name="' + method + '"><arg name="id" type="s" direction="in"/>'
            '<arg name="request" type="s" direction="in"/>'
            '<arg name="json" type="s" direction="out"/></method>'
-           for method in ('Update', 'Submit', 'Reject', 'Reopen'))}
+           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach'))}
+  <method name="Attach">
+    <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
+    <arg name="data" type="ay" direction="in"/><arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ReadAttachment">
+    <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
+    <arg name="result" type="s" direction="out"/><arg name="data" type="ay" direction="out"/>
+  </method>
 </interface>"""
 
 BOARD_XML = f"""<interface name="{BOARD_IFACE}">
@@ -999,6 +1007,22 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, str, result=str)
     def Reopen(self, ident, request):
         return self.service.call("Reopen", ident, request)
+
+    @pyqtSlot(str, str, QByteArray, result=str)
+    def Attach(self, ident, request, data):
+        return self.service.call("Attach", ident, request, bytes(data))
+
+    @pyqtSlot(str, str, result=str)
+    def Detach(self, ident, request):
+        return self.service.call("Detach", ident, request)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ReadAttachment(self, ident, request, message):
+        # Qt/Python nie eksportuje wielu wartości wyjściowych przez result=tuple.
+        message.setDelayedReply(True)
+        result, data = self.service.call("ReadAttachment", ident, request)
+        QDBusConnection.sessionBus().send(message.createReply([result, QByteArray(data)]))
+        return ""
 
 
 @pyqtClassInfo("D-Bus Interface", BOARD_IFACE)
