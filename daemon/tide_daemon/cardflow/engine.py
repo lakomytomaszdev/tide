@@ -1753,7 +1753,7 @@ class FlowEngine(PlanEditing):
         prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
-                                                     images=shots)
+                                                     images=shots, test_base=made_ticket.get("base") or "")
         context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
         prompt += context_prompt
         read_dirs, context_dirs = [], []
@@ -2513,7 +2513,8 @@ class FlowEngine(PlanEditing):
             out = worktree + ".step/out"
             prompt = handoff.ticket_card(card_id=card, title=row["title"], description=body,
                                          project=project.name, ticket=ticket, branch=branch,
-                                         card_branch=card_branch, worktree=worktree, out_dir=out)
+                                         card_branch=card_branch, worktree=worktree, out_dir=out,
+                                         test_base=made_ticket.get("base") or "")
             step_id = self._next_step_id(card, ticket, st)
             try:
                 self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
@@ -3501,7 +3502,8 @@ class FlowEngine(PlanEditing):
         prompt = handoff.review_card(card_id=card, title=title, description=description, ticket=ticket,
                                      round_no=round_no, card_branch=info["cardBranch"],
                                      ticket_branch=info["branch"], worktree=path, out_dir=out,
-                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo))
+                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo),
+                                     test_base=info["base"])
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": path}, step_id, [],
@@ -3546,7 +3548,7 @@ class FlowEngine(PlanEditing):
         title, description = self._ticket_text(card, st, ticket, item)
         prompt = handoff.fix_card(card_id=card, title=title, description=description, ticket=ticket,
                                   round_no=round_no, branch=info["branch"], worktree=info["worktree"],
-                                  out_dir=out, review=self._note(card, review_step))
+                                  out_dir=out, review=self._note(card, review_step), test_base=info["base"])
         self._launch(item, project, executor, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": info["worktree"]},
