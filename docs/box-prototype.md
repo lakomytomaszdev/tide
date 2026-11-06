@@ -453,3 +453,11 @@ Kontrolowane opóźnienie próbkowania o 400 ms odtworzyło dokładnie błąd `1
 Harness odwraca teraz animację na sygnale zmiany krycia, przy wartości między 0,25 a 0,75,
 z zachowaniem asercji ciągłości. Kod produkcyjny animacji pozostaje bez zmian. 18 testów modułu
 przechodzi lokalnie; pełne testy po poprawce wymagają outside. Stan dowodów Incusa nie zmienił się.
+
+Trzecie niezależne `make test` po piątej rundzie zakończyło się **kodem 0**: 4172 testy,
+230 modułów, 4 pominięte, 382,65 s. [Pełny zielony przebieg](box-prototype/pt191-make-test-resume-11.log)
+potwierdza wcześniejsze poprawki, w tym próbę odwracania animacji. Kryteria automatyczne PT-191 są zaliczone.
+Nie ponawiano prób Incusa: ponowny odczyt zainstalowanego `commit_plan` nadal pokazuje brak osłony
+`host_operation`. Pozostają końcowy box-check i rzeczywisty krok agenta. Przygotowana
+[propozycja planu karty testowej](agents/pt-191/first-step-proposal.md) została przekazana do zatwierdzenia;
+samo zatwierdzenie nie jest dowodem wykonania i nie usuwa blokady po incydencie strażnika.
