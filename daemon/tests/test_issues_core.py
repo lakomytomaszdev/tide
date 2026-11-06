@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest import mock
 
 from . import DAEMON_DIR
@@ -286,7 +287,7 @@ class IssuesCoreTest(unittest.TestCase):
         self.assertEqual(self.board.repo.pending, [])
         self.assertIn("S-2: create issue", git_out(str(self.root), "log", "--format=%s"))
 
-    def test_update_contract_is_closed_without_enabling_mutation(self):
+    def test_update_contract_is_closed(self):
         for data in ({"expectedVersion": 1, "title": "Nowy"}, {"expectedVersion": 1, "project": None},
                      {"expectedVersion": 2, "report": ""}):
             self.assertEqual(validate(data, update=True), data)
@@ -296,3 +297,106 @@ class IssuesCoreTest(unittest.TestCase):
                      {"expectedVersion": 1, "title": "x", "version": 8}):
             with self.assertRaises(BoardError):
                 validate(data, update=True)
+
+    def mutation(self, method, version, **fields):
+        return json.loads(self.service.call(method, "S-1", json.dumps({"expectedVersion": version, **fields})))
+
+    def test_independent_stores_serialize_update_and_submit_at_the_same_version(self):
+        self.create()
+        barrier = Barrier(2)
+        def mutate(method):
+            service = IssueService(BoardStore(str(self.root)))
+            data = {"expectedVersion": 1}
+            if method == "Update":
+                data["report"] = "Zwycięska poprawka"
+            barrier.wait(timeout=10)
+            return json.loads(service.call(method, "S-1", json.dumps(data)))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            replies = list(pool.map(mutate, ("Update", "Submit")))
+        self.assertEqual(sum(reply["ok"] for reply in replies), 1)
+        winner = next(reply["issue"] for reply in replies if reply["ok"])
+        loser = next(reply for reply in replies if not reply["ok"])
+        self.assertEqual((loser["error"], loser["currentVersion"]), ("version-conflict", 2))
+        self.assertEqual(self.store.show("S-1"), winner)
+        self.assertEqual((self.root / "issues/S-1/report.md").read_text(), self.store._report_text(winner))
+        self.assertEqual(git_out(str(self.root), "status", "--porcelain"), "")
+
+    def test_mutation_before_rename_failure_leaves_old_version_and_no_partial_file(self):
+        original = self.create()["issue"]
+        before = {p.name: p.read_bytes() for p in (self.root / "issues/S-1").iterdir()}
+        head = git_out(str(self.root), "rev-parse", "HEAD")
+        with mock.patch("tide_daemon.issues.os.replace", side_effect=OSError("awaria przed rename")):
+            reply = self.mutation("Update", 1, report="Nie publikuj", title="Nie publikuj", project=None)
+        self.assertEqual(reply["error"], "io-error")
+        self.assertEqual(self.store.show("S-1"), original)
+        self.assertEqual({p.name: p.read_bytes() for p in (self.root / "issues/S-1").iterdir()}, before)
+        self.assertEqual(git_out(str(self.root), "rev-parse", "HEAD"), head)
+        self.assertEqual(self.mutation("Update", 1, title="Ponowienie")["issue"]["version"], 2)
+
+    def test_mutations_refuse_busy_git_and_keep_successful_write_when_commit_is_queued(self):
+        original = self.create()["issue"]
+        busy = self.root / ".git/MERGE_HEAD"
+        busy.write_text("konflikt")
+        for method in ("Update", "Submit", "Reject", "Reopen"):
+            fields = {"title": "Nie zapisuj"} if method == "Update" else {}
+            self.assertEqual(self.mutation(method, 1, **fields)["error"], "git-busy")
+            self.assertEqual(self.store.show("S-1"), original)
+        busy.unlink()
+        lock = self.root / ".git/index.lock"
+        lock.write_text("")
+        updated = self.mutation("Update", 1, title="Zapis mimo kolejki")
+        self.assertTrue(updated["ok"], updated)
+        self.assertTrue(updated["commitError"])
+        self.assertTrue(self.board.repo.pending)
+        lock.unlink()
+        restarted = BoardStore(str(self.root))
+        self.assertEqual(IssueStore(restarted).show("S-1"), updated["issue"])
+        restarted.sync()
+        self.assertEqual(git_out(str(self.root), "status", "--porcelain"), "")
+
+    def test_noop_ready_keeps_version_and_state_but_checks_project_and_version(self):
+        self.board.upsert_project({"name": "Dom"})
+        self.create(project="dom", requestId="pierwotne")
+        ready = self.mutation("Submit", 1)["issue"]
+        head = git_out(str(self.root), "rev-parse", "HEAD")
+        unchanged = self.mutation("Update", 2, title=ready["title"], project="dom", report=ready["report"])
+        self.assertEqual(unchanged["issue"], ready)
+        self.assertEqual(git_out(str(self.root), "rev-parse", "HEAD"), head)
+        self.assertEqual(self.mutation("Update", 1, title=ready["title"])["currentVersion"], 2)
+        (self.root / "projects/dom.md").unlink()
+        self.assertEqual(self.mutation("Update", 2, project="dom")["error"], "bad-request")
+        self.assertEqual(self.store.show("S-1"), ready)
+        # Pominięte przypisanie pozostaje bez zmiany; jawne czyszczenie umożliwia submit.
+        self.assertEqual(self.mutation("Update", 2, title="Poprawiony")["issue"]["project"], "dom")
+        self.assertEqual(self.mutation("Submit", 3)["error"], "bad-request")
+        self.assertEqual(self.mutation("Update", 3, project=None)["issue"]["version"], 4)
+        self.assertEqual(self.mutation("Submit", 4)["issue"]["state"], "ready")
+        # Replay create odtwarza pierwotny wynik, ale nie cofa późniejszej wersji na dysku.
+        self.assertEqual(self.create(project="dom", requestId="pierwotne")["issue"]["version"], 1)
+        self.assertEqual(self.store.show("S-1")["version"], 5)
+
+    def test_transition_matrix_and_missing_issue_never_publish_invalid_state(self):
+        for method in ("Update", "Submit", "Reject", "Reopen"):
+            fields = {"title": "x"} if method == "Update" else {}
+            self.assertEqual(self.mutation(method, 1, **fields)["error"], "not-found")
+        self.assertFalse(self.root.exists())
+        original = self.create()["issue"]
+        allowed = {"draft": {"Update": "draft", "Submit": "ready", "Reject": "rejected"},
+                   "ready": {"Update": "draft", "Reject": "rejected"},
+                   "rejected": {"Reopen": "draft"}, "accepted": {}, "archived": {}}
+        path = self.root / "issues/S-1/report.md"
+        for state, transitions in allowed.items():
+            for method in ("Update", "Submit", "Reject", "Reopen"):
+                with self.subTest(state=state, method=method):
+                    baseline = {**original, "state": state}
+                    path.write_text(self.store._report_text(baseline))
+                    before = path.read_bytes()
+                    fields = {"title": "Zmieniony"} if method == "Update" else {}
+                    result = self.mutation(method, 1, **fields)
+                    if method in transitions:
+                        self.assertTrue(result["ok"], result)
+                        self.assertEqual((result["issue"]["state"], result["issue"]["version"]),
+                                         (transitions[method], 2))
+                    else:
+                        self.assertEqual(result["error"], "bad-request")
+                        self.assertEqual(path.read_bytes(), before)

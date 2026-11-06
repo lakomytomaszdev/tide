@@ -440,6 +440,10 @@ ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  {''.join('<method name="' + method + '"><arg name="id" type="s" direction="in"/>'
+           '<arg name="request" type="s" direction="in"/>'
+           '<arg name="json" type="s" direction="out"/></method>'
+           for method in ('Update', 'Submit', 'Reject', 'Reopen'))}
 </interface>"""
 
 BOARD_XML = f"""<interface name="{BOARD_IFACE}">
@@ -979,6 +983,22 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=str)
     def Show(self, ident):
         return self.service.call("Show", ident)
+
+    @pyqtSlot(str, str, result=str)
+    def Update(self, ident, request):
+        return self.service.call("Update", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def Submit(self, ident, request):
+        return self.service.call("Submit", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def Reject(self, ident, request):
+        return self.service.call("Reject", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def Reopen(self, ident, request):
+        return self.service.call("Reopen", ident, request)
 
 
 @pyqtClassInfo("D-Bus Interface", BOARD_IFACE)

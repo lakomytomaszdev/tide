@@ -28,6 +28,12 @@ UPDATE_FIELDS = {"expectedVersion", "report", "title", "project"}
 META_FIELDS = {"tide-issue", "id", "title", "project", "state", "version", "created", "updated", "card"}
 
 
+class VersionConflict(BoardError):
+    def __init__(self, current):
+        super().__init__("Wersja sprawy uległa zmianie.", "version-conflict")
+        self.current = current
+
+
 def fail(message, code="bad-request"):
     raise BoardError(message, code)
 
@@ -48,7 +54,7 @@ def _json(text):
 
 
 def validate(data, *, update=False):
-    """Wspólne reguły create/update; update jest kontraktem dla PT-219, bez zapisu."""
+    """Wspólne reguły create/update, przed jakimkolwiek zapisem."""
     if not isinstance(data, dict):
         fail("Żądanie musi być obiektem JSON.")
     allowed = UPDATE_FIELDS if update else CREATE_FIELDS
@@ -181,8 +187,10 @@ class IssueStore:
             if meta["card"] is not None and not re.fullmatch(r"K-[1-9][0-9]*", meta["card"]):
                 raise ValueError("niepoprawne powiązanie karty")
             validate({"title": meta["title"], "project": meta["project"], "report": body})
-            manifest = json.loads(self._read(f"issues/{ident}/attachments.json"))
-            if manifest != {"version": 1, "attachments": []}:
+            manifest = _json(self._read(f"issues/{ident}/attachments.json"))
+            if (not isinstance(manifest, dict) or manifest.keys() != {"version", "attachments"} or
+                    type(manifest["version"]) is not int or manifest["version"] != 1 or
+                    manifest["attachments"] != []):
                 raise ValueError("nieobsługiwany manifest załączników")
             return self._issue(meta, body)
         except FileNotFoundError:
@@ -345,6 +353,61 @@ class IssueStore:
             error = self.repo.commit(f"{issue['id']}: create issue", [f"issues/{issue['id']}"])
             return {"issue": issue, "existing": bool(previous), "commitError": error}
 
+    def mutate(self, ident, request, operation):
+        ident = self._id(ident)
+        if operation == "Update":
+            data = validate(request, update=True)
+        else:
+            if (not isinstance(request, dict) or request.keys() != {"expectedVersion"} or
+                    type(request["expectedVersion"]) is not int or request["expectedVersion"] < 1):
+                fail("Podaj wyłącznie expectedVersion jako dodatnią liczbę całkowitą.")
+            data = request
+        if not self.board.exists():
+            fail(f"Nie ma sprawy {ident}.", "not-found")
+        with self._lock():
+            busy = self.repo.busy()
+            if busy:
+                fail(self.repo.busy_message(busy), "git-busy")
+            # Odczyt i kontrola wersji pod tą samą blokadą co publikacja.
+            issue = self.show(ident)
+            if data["expectedVersion"] != issue["version"]:
+                raise VersionConflict(issue["version"])
+            allowed = {"Update": {"draft", "ready"}, "Submit": {"draft"},
+                       "Reject": {"draft", "ready"}, "Reopen": {"rejected"}}
+            if issue["state"] not in allowed[operation]:
+                fail(f"Operacja {operation} jest niedozwolona w stanie {issue['state']}.")
+            if operation == "Update":
+                if data.get("project") is not None and data["project"] not in self.board.load().projects:
+                    fail(f"Nie ma projektu „{data['project']}”.")
+                changes = {key: value for key, value in data.items() if key != "expectedVersion"}
+                if all(issue[key] == value for key, value in changes.items()):
+                    return {"issue": issue, "commitError": self.repo.last_error}
+                issue.update(changes)
+                issue["state"] = "draft"
+            elif operation == "Submit":
+                # show zweryfikował metadane i istniejący manifest. Nie interpretujemy prozy.
+                validate({key: issue[key] for key in ("title", "report", "project")})
+                if not issue["report"].strip():
+                    fail("Nie można przygotować sprawy z pustym raportem.")
+                if issue["project"] is not None and issue["project"] not in self.board.load().projects:
+                    fail(f"Nie ma projektu „{issue['project']}”.")
+                issue["state"] = "ready"
+            else:
+                issue["state"] = "rejected" if operation == "Reject" else "draft"
+            issue["version"] += 1
+            issue["updated"] = datetime.fromtimestamp(self.board.clock(), timezone.utc).isoformat()
+            # Jedyny zmieniany plik zawiera treść oraz całą wersję metadanych.
+            # Manifest pozostaje nietknięty, a rename publikuje cały nowy stan naraz.
+            _atomic(self._path(f"issues/{ident}/report.md"), self._report_text(issue))
+            error = self.repo.commit(f"{ident}: {operation.lower()} issue", [f"issues/{ident}/report.md"])
+            return {"issue": issue, "commitError": error}
+
+    @staticmethod
+    def _report_text(issue):
+        meta = {"tide-issue": 1, **{key: issue[key] for key in META_FIELDS - {"tide-issue"}}}
+        return ("---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in sorted(meta.items()))
+                + "---\n" + issue["report"])
+
     def _publish(self, issue):
         ident = self._id(issue["id"])
         folder = self._path("issues")
@@ -356,9 +419,7 @@ class IssueStore:
             return
         tmp = Path(tempfile.mkdtemp(prefix=".tide-tmp-", dir=folder))
         try:
-            meta = {"tide-issue": 1, **{key: issue[key] for key in META_FIELDS - {"tide-issue"}}}
-            text = "---\n" + "".join(f"{k}: {json.dumps(v, ensure_ascii=False)}\n" for k, v in sorted(meta.items()))
-            _atomic(tmp / "report.md", text + "---\n" + issue["report"])
+            _atomic(tmp / "report.md", self._report_text(issue))
             _atomic(tmp / "attachments.json", '{"version":1,"attachments":[]}\n')
             os.rename(tmp, target)
             _sync_dir(folder)
@@ -375,11 +436,14 @@ class IssueService:
     def call(self, method, *args):
         try:
             if method == "Info":
-                result = {"capabilities": ["issue.create", "issue.list", "issue.show"] if self.store else []}
+                result = {"capabilities": ["issue." + action for action in
+                          ("create", "list", "show", "update", "submit", "reject", "reopen")] if self.store else []}
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":
                 result = self.store.create(_json(args[0]))
+            elif method in ("Update", "Submit", "Reject", "Reopen"):
+                result = self.store.mutate(args[0], _json(args[1]), method)
             elif method == "Show":
                 result = {"issue": self.store.show(args[0])}
             elif method == "List":
@@ -389,6 +453,8 @@ class IssueService:
             result = {"ok": True, "apiVersion": API_VERSION, **result}
         except BoardError as exc:
             result = {"ok": False, "apiVersion": API_VERSION, "error": exc.code, "message": str(exc)}
+            if isinstance(exc, VersionConflict):
+                result["currentVersion"] = exc.current
         except (OSError, UnicodeError) as exc:
             result = {"ok": False, "apiVersion": API_VERSION, "error": "io-error",
                       "message": f"Błąd odczytu lub zapisu sprawy: {exc}."}

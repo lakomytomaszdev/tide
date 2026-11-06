@@ -39,7 +39,22 @@ def parser():
     listing = actions.add_parser("list", help="lista spraw")
     show = actions.add_parser("show", help="treść i metadane sprawy")
     show.add_argument("id", help="S-N")
-    for command in (info, issue, create, listing, show):
+    update = actions.add_parser("update", help="popraw szkic; zmiana ready wraca do draft")
+    update.add_argument("id", help="S-N")
+    update.add_argument("--expected-version", required=True, type=int)
+    update.add_argument("--report", help="plik UTF-8 Markdown bez frontmatteru")
+    update.add_argument("--title", help="tytuł sprawy")
+    project = update.add_mutually_exclusive_group()
+    project.add_argument("--project", help="slug projektu Tablicy")
+    project.add_argument("--clear-project", action="store_true", help="usuń przypisanie projektu")
+    transitions = []
+    for action, help_text in (("submit", "przygotuj sprawę do przyjęcia"),
+                              ("reject", "odrzuć sprawę"), ("reopen", "otwórz odrzuconą sprawę jako szkic")):
+        command = actions.add_parser(action, help=help_text)
+        command.add_argument("id", help="S-N")
+        command.add_argument("--expected-version", required=True, type=int)
+        transitions.append(command)
+    for command in (info, issue, create, listing, show, update, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
 
@@ -112,6 +127,16 @@ def main(argv=None):
                 result = api.call("Create", json.dumps(data, ensure_ascii=False))
             elif args.action == "list":
                 result = api.call("List")
+            elif args.action in ("update", "submit", "reject", "reopen"):
+                data = {"expectedVersion": args.expected_version}
+                if args.action == "update":
+                    if args.report is not None:
+                        data["report"] = read_report(args.report)
+                    if args.title is not None:
+                        data["title"] = args.title
+                    if args.project is not None or args.clear_project:
+                        data["project"] = None if args.clear_project else args.project
+                result = api.call(args.action.capitalize(), args.id, json.dumps(data, ensure_ascii=False))
             else:
                 result = api.call("Show", args.id)
     except CliError as exc:

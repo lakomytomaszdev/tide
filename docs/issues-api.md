@@ -1,7 +1,7 @@
 # Sprawy i CLI Tide — API v1
 
 Sprawa (`S-N`) jest trwałym raportem rozmowy, niezależnym od karty (`K-N`), ticketu i specyfikacji.
-PT-218 dostarcza zapis szkicu i odczyty. Edycję oraz cykl życia wdraża PT-219; magazyn i publiczny
+PT-218 dostarcza zapis szkicu i odczyty, PT-219 edycję oraz cykl życia; magazyn i publiczny
 odczyt załączników — PT-228. Utworzenie sprawy nie uruchamia modelu, nie zakłada karty ani gałęzi projektu.
 
 ## Publiczna granica
@@ -12,10 +12,14 @@ CLI jest samodzielnym klientem tego interfejsu; nie importuje pakietu `tide_daem
 
 | Metoda | Argumenty D-Bus | Wynik przy sukcesie, poza wspólną kopertą |
 | --- | --- | --- |
-| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show"]` |
+| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen"]` |
 | `Create` | `s request` (obiekt JSON opisany niżej) | `issue`, `existing: bool`, `commitError: string` |
 | `List` | brak | `issues: [...]` (metadane bez treści raportu), `errors: [...]` |
 | `Show` | `s id` (dokładnie `S-N`, N = 1…999999999) | `issue` (metadane i treść) |
+| `Update` | `s id, s request` | `issue`, `commitError: string` |
+| `Submit` | `s id, s request` | `issue`, `commitError: string` |
+| `Reject` | `s id, s request` | `issue`, `commitError: string` |
+| `Reopen` | `s id, s request` | `issue`, `commitError: string` |
 
 Wspólna koperta sukcesu: `{"ok":true,"apiVersion":1,...}`.
 Błąd: `{"ok":false,"apiVersion":1,"error":"bad-request","message":"…"}`.
@@ -53,7 +57,7 @@ pierwotną odpowiedź `issue`, również po restarcie (nawet po usunięciu proje
 Inny ładunek pod tym samym kluczem daje `conflict`, bez nowej sprawy. Bez klucza każde wywołanie
 jest nową intencją. Po utracie odpowiedzi klient powinien ponowić ten sam klucz i ładunek.
 
-### Update — kontrakt dla PT-219, operacja jeszcze niedostępna
+### Update — wdrożone w PT-219
 
 ```json
 {"expectedVersion":1,"report":"Poprawiona treść","title":"Nowy tytuł","project":null}
@@ -72,16 +76,55 @@ CLI zwraca kod wyjścia 4 i zachowuje `currentVersion` w wyniku `--json`.
 Skuteczna zmiana zwiększa wersję o jeden; `id` i `created` pozostają
 bez zmiany, `updated` ustala usługa. Samo ponowne przesłanie tych samych wartości nie zmienia
 wersji. Usługa sprawdza warunek także przy takim żądaniu. Nie jest to idempotencja `requestId`.
-Wspólna funkcja walidacji create/update jest już dostępna po stronie usługi.
+Zmieniać można `draft` i `ready`; rzeczywista zmiana `ready` wraca do `draft` i wymaga ponownego
+submit. Żądanie identycznych wartości zachowuje także stan `ready`. `rejected` wymaga najpierw
+reopen, a `accepted` i `archived` odmawiają zmian. Niepoprawny stan daje `bad-request`.
 
-Docelowe polecenie PT-219:
+Polecenie:
 
 ```text
 tide issue update S-N --expected-version N [--report <plik>] [--title <tekst>] [--project <slug> | --clear-project] [--json]
 ```
 
 `--project` i `--clear-project` wzajemnie się wykluczają. Brak obu nie zmienia projektu.
-CLI PT-218 nie udaje wdrożonej mutacji: `update` nie jest jeszcze poleceniem ani możliwością API.
+Projekt jest sprawdzany, gdy pole `project` jest podane i nie jest `null`, także przy żądaniu
+identycznych wartości. Pominięcie projektu zachowuje przypisanie, również gdy projekt usunięto;
+przed submit należy je poprawić albo jawnie wyczyścić.
+
+### Submit, Reject, Reopen — wdrożone w PT-219
+
+Wszystkie trzy operacje przyjmują wyłącznie `{"expectedVersion":N}`. Wersja musi być dodatnią
+liczbą całkowitą. Nieznane i powtórzone pola, bool, ułamek i brak wersji dają `bad-request`.
+Obowiązuje ta sama kontrola wersji i odpowiedź `version-conflict` z `currentVersion` co dla update.
+Warunek wersji jest sprawdzany przed przejściem stanu; każda skuteczna operacja zwiększa `version`
+raz i aktualizuje `updated`, zachowując `id`, `created`, tytuł, projekt, raport i manifest.
+
+| Operacja | Stan wejściowy | Stan po sukcesie |
+| --- | --- | --- |
+| `Submit` | `draft` | `ready` |
+| `Reject` | `draft`, `ready` | `rejected` |
+| `Reopen` | `rejected` | `draft` |
+
+Inne przejścia dają `bad-request` bez zapisu. Powtórny submit na `ready` nie jest nową zmianą
+ani ponowieniem z kluczem; zwraca odmowę. Przyjęcie sprawy dostarczy PT-221. `accepted` i `archived`
+odmawiają wszystkich powyższych operacji.
+
+Submit ponownie sprawdza tytuł, treść UTF-8 i istniejący manifest. Raport nie może być pusty ani
+złożony wyłącznie z białych znaków. Projekt, jeśli przypisany, musi nadal istnieć. Manifest musi
+mieć dokładnie postać `{"version":1,"attachments":[]}` (liczba całkowita, bez bool i powtórzonych
+pól). Błąd danych na dysku, brak manifestu albo nieobsługiwany manifest daje `broken-file`.
+Obsługę i weryfikację niepustego manifestu dostarczy PT-228.
+
+Usługa nie interpretuje treści raportu i nie przechowuje listy oczekiwanych, niedostarczonych dowodów.
+Sam opis braku pliku przy pustym manifeście nie blokuje jawnego submit. Pozostawienie `draft` po
+niedostępnym dowodzie jest obowiązkiem skilla PT-224; użytkownik może świadomie zrezygnować z obrazu,
+poprawić raport i wykonać submit. Nie ma dodatkowego pola ani operacji rozstrzygania braków.
+
+```text
+tide issue submit S-N --expected-version N [--json]
+tide issue reject S-N --expected-version N [--json]
+tide issue reopen S-N --expected-version N [--json]
+```
 
 ## Pliki i trwałość
 
@@ -96,8 +139,14 @@ Frontmatter `report.md` jest płaski: wartości są skalarami JSON (poprawnymi t
 klucze to dokładnie `tide-issue: 1`, `id`, `title`, `project` (tekst/null), `state` (początkowo
 `"draft"`), `version` (początkowo 1), `created`, `updated` (ISO 8601 UTC), `card` (początkowo null).
 Za zamykającą linią `---` jest dokładnie treść raportu. Początkowy manifest to
-`{"version":1,"attachments":[]}`. Pozostałe stany i operacje cyklu życia dostarcza PT-219;
-niepusty manifest wymaga PT-228.
+`{"version":1,"attachments":[]}`. Niepusty manifest wymaga PT-228.
+
+Update i przejścia stanu używają tej samej blokady `.git/tide-issues.lock` co create. Odczyt,
+porównanie `expectedVersion` i atomowa podmiana `report.md` odbywają się pod blokadą. Raport i całe
+metadane wersji są jednym plikiem, synchronizowanym przez fsync i publikowanym przez rename;
+manifest pozostaje bez zmiany. Przegrana równoległa mutacja nie zapisuje żadnego pola.
+Cykl nie rezerwuje kolejnego S-N, K-N ani PT-N. Replay create z `requestId` nadal zwraca pierwotną
+odpowiedź, ale nie cofa późniejszych zmian na dysku; aktualną wersję odczytuje się przez Show.
 
 Obiekt `issue` ma powyższe pola metadanych poza `tide-issue`, ponadto `report`, `attachments:[]`
 i `paths:{report:"issues/S-N/report.md",manifest:"issues/S-N/attachments.json"}`. Są to samodzielne
@@ -134,7 +183,7 @@ jest wznawiana przy ponowieniu create, a nie przez sam odczyt listy.
 Wyłącznie daemon zapisuje i commituje sprawy. Korzysta z tej samej instancji `BoardRepo` co
 Tablica: konflikt merge/revert/rebase daje `git-busy` bez zapisu, a błąd commita po zapisie
 pozostawia sprawę i kolejkę commita. `commitError` informuje o tej sytuacji; nie oznacza
-niepowodzenia create. Synchronizacja Tablicy dokończy commit, także po restarcie. CLI nie
+niepowodzenia mutacji. Synchronizacja Tablicy dokończy commit, także po restarcie. CLI nie
 otwiera Tablicy, nie wykonuje gita i nie ma lokalnej ścieżki zapisu zastępującej usługę.
 
 ## Instalacja i użycie
@@ -151,6 +200,11 @@ tide issue create --report raport.md --title "Opis rozmowy" --request-id rozmowa
 tide issue create --report raport.md --title "Opis projektu" --project plasma-tide --json
 tide issue list --json
 tide issue show S-1 --json
+tide issue update S-1 --expected-version 1 --title "Poprawiony tytuł" --project plasma-tide --json
+tide issue submit S-1 --expected-version 2 --json
+tide issue reject S-1 --expected-version 3 --json
+tide issue reopen S-1 --expected-version 4 --json
+tide issue update S-1 --expected-version 5 --clear-project --json
 ```
 
 W trybie `--json` stdout zawiera pojedynczy obiekt JSON, również dla błędu; w zwykłym trybie
@@ -163,7 +217,7 @@ Kody zakończenia:
 | 1 | nieoczekiwany błąd usługi (`internal`, pozostałe nieznane kody) |
 | 2 | argumenty lub dane (`bad-request`), np. „Raport przekracza 64 KiB.” |
 | 3 | brak usługi/magistrali, wyłączone sprawy lub niezgodne API (`unavailable`, `api-incompatible`) |
-| 4 | konflikt klucza (`conflict`) albo przyszły konflikt wersji (`version-conflict`, z `currentVersion`) |
+| 4 | konflikt klucza (`conflict`) albo konflikt wersji (`version-conflict`, z `currentVersion`) |
 | 5 | brak sprawy (`not-found`), np. „Nie ma sprawy S-99.” |
 | 6 | repozytorium zajęte operacją z konfliktami (`git-busy`) |
 | 7 | błąd odczytu/zapisu albo uszkodzona sprawa (`io-error`, `broken-file`) |

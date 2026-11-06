@@ -58,6 +58,159 @@ class IssuesDbusTest(unittest.TestCase):
         reply = self.bus.call(SERVICE, "/Board", "org.tide.Daemon.Board", method, *args)
         return json.loads(reply.arguments()[0])
 
+    def mutate(self, action, version, *args, code=0):
+        return self.run_cli("issue", action, "S-1", "--expected-version", str(version), *args, code=code)
+
+    def files(self):
+        return {str(p.relative_to(self.board)): p.read_bytes()
+                for p in Path(self.board, "issues").rglob("*") if p.is_file()}
+
+    def test_text_lifecycle_metadata_restart_and_independent_counters(self):
+        self.start()
+        self.board_call("UpsertProject", '{"name":"Dom"}')
+        original = self.run_cli("issue", "create", "--report", self.report, "--title", "Szkic")["issue"]
+        ledger = Path(self.board, ".git/tide-issues.json").read_bytes()
+        updated = self.mutate("update", 1, "--title", "Nowy")["issue"]
+        self.assertEqual((updated["title"], updated["report"], updated["project"]),
+                         ("Nowy", original["report"], None))
+        assigned = self.mutate("update", 2, "--project", "dom")["issue"]
+        self.assertEqual((assigned["title"], assigned["project"]), ("Nowy", "dom"))
+        cleared = self.mutate("update", 3, "--clear-project")["issue"]
+        self.assertIsNone(cleared["project"])
+        Path(self.report).write_text("Brak obrazu; świadomie rezygnuję z pliku. Ocena oparta na tekście.\n")
+        updated = self.mutate("update", 4, "--title", "Raport tekstowy", "--project", "dom",
+                              "--report", self.report)["issue"]
+        self.assertEqual(updated["version"], 5)
+        self.assertEqual(updated["created"], original["created"])
+        self.assertEqual(updated["report"], Path(self.report).read_text())
+        self.assertEqual(self.call("Show", "S-1")["issue"], updated)
+        self.assertEqual(self.mutate("submit", 5)["issue"]["state"], "ready")
+        self.assertEqual(self.mutate("update", 6, "--title", "Poprawiony")["issue"]["state"], "draft")
+        ready = self.mutate("submit", 7)["issue"]
+        rejected = self.mutate("reject", 8)["issue"]
+        self.assertEqual((rejected["state"], rejected["version"]), ("rejected", 9))
+        for key in ("report", "project", "title", "attachments", "created"):
+            self.assertEqual(rejected[key], ready[key])
+        before = self.files()
+        for action, args in (("update", ("--title", "Zabroniony")), ("submit", ()), ("reject", ())):
+            self.assertEqual(self.mutate(action, 9, *args, code=2)["error"], "bad-request")
+            self.assertEqual(self.files(), before)
+        self.assertEqual(self.mutate("reopen", 9)["issue"]["state"], "draft")
+        final = self.mutate("submit", 10)["issue"]
+        self.assertEqual((final["state"], final["version"]), ("ready", 11))
+        self.assertEqual(Path(self.board, ".git/tide-issues.json").read_bytes(), ledger)
+        self.assertEqual(self.board_call("Snapshot")["nextId"], "K-1")
+        self.assertFalse(Path(self.board, ".git/tide-next-card").exists())
+        self.assertFalse(Path(self.board, ".git/tide-ticket-ids.json").exists())
+        self.assertEqual(git_out(self.board, "status", "--porcelain"), "")
+        self.proc.terminate()
+        self.proc.wait(10)
+        deadline = time.monotonic() + 5
+        while self.bus.bus.interface().isServiceRegistered(SERVICE).value() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.start()
+        self.assertEqual(self.run_cli("issue", "show", "S-1")["issue"], final)
+        self.assertEqual(self.run_cli("issue", "list")["issues"][0]["version"], 11)
+        self.assertEqual(self.run_cli("issue", "create", "--title", "Następna", "--report", self.report)
+                         ["issue"]["id"], "S-2")
+
+    def test_parallel_updates_have_one_winner_and_conflict_cannot_write(self):
+        self.start()
+        self.run_cli("issue", "create", "--title", "Start", "--report", self.report)
+        def update(title):
+            process = subprocess.run([self.cli, "issue", "update", "S-1", "--expected-version", "1",
+                                      "--title", title, "--json"], cwd=self.tmp, env=self.env,
+                                     capture_output=True, text=True, timeout=40)
+            return process.returncode, json.loads(process.stdout)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(update, ("Pierwszy", "Drugi")))
+        self.assertEqual(sorted(code for code, _ in results), [0, 4])
+        winner = next(reply["issue"] for code, reply in results if code == 0)
+        loser = next(reply for code, reply in results if code == 4)
+        self.assertEqual((loser["error"], loser["currentVersion"]), ("version-conflict", 2))
+        self.assertEqual(self.call("Show", "S-1")["issue"], winner)
+        raw = Path(self.board, "issues/S-1/report.md").read_text()
+        self.assertIn(winner["title"], raw)
+        self.assertNotIn("Drugi" if winner["title"] == "Pierwszy" else "Pierwszy", raw)
+        before = self.files()
+        for action, args in (("update", ("--title", winner["title"])),
+                             ("submit", ()), ("reject", ()), ("reopen", ())):
+            reply = self.mutate(action, 1, *args, code=4)
+            self.assertEqual(reply["currentVersion"], 2)
+            self.assertEqual(self.files(), before)
+        # To samo żądanie przy aktualnej wersji nie zwiększa jej ani nie commituje.
+        head = git_out(self.board, "rev-parse", "HEAD")
+        self.assertEqual(self.mutate("update", 2, "--title", winner["title"])["issue"], winner)
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
+
+    def test_mutations_reject_invalid_input_without_partial_changes(self):
+        self.start()
+        self.board_call("UpsertProject", '{"name":"Usunięty","slug":"usuniety"}')
+        self.run_cli("issue", "create", "--title", "Start", "--report", self.report)
+        Path(self.board, "projects/usuniety.md").unlink()
+        good = {"expectedVersion": 1, "title": "Nie zapisz", "report": "Nie zapisz"}
+        invalid = [{**good, field: "obce"} for field in
+                   ("id", "state", "version", "created", "updated", "card", "sourceIssue",
+                    "sourceIssueVersion", "attachments", "path", "requestId", "missingEvidence")]
+        invalid += [{**good, "title": ""}, {**good, "title": None}, {**good, "report": None},
+                    {**good, "project": "nieznany"}, {**good, "project": "usuniety"},
+                    {**good, "report": "---\nstate: ready\n---\nx"},
+                    {**good, "report": "\ufeff---\r\nversion: 9\r\n---\r\nx"},
+                    {"expectedVersion": 1}, {"title": "x"}]
+        invalid += [{**good, "expectedVersion": value} for value in (None, True, 0, -1, 1.0, "1")]
+        before = self.files()
+        head = git_out(self.board, "rev-parse", "HEAD")
+        for data in invalid:
+            with self.subTest(data=data):
+                self.assertEqual(self.call("Update", "S-1", json.dumps(data))["error"], "bad-request")
+                self.assertEqual(self.files(), before)
+        for raw in ('{"expectedVersion":1,"title":"a","title":"b"}',
+                    '{"expectedVersion":1,"report":NaN}', '[]', 'null', '{'):
+            self.assertEqual(self.call("Update", "S-1", raw)["error"], "bad-request")
+        for method in ("Submit", "Reject", "Reopen"):
+            for data in ({}, {"expectedVersion": True}, {"expectedVersion": 1, "state": "ready"},
+                         {"expectedVersion": 1, "report": "x"}):
+                self.assertEqual(self.call(method, "S-1", json.dumps(data))["error"], "bad-request")
+        for action in ("update", "submit", "reject", "reopen"):
+            self.run_cli("issue", action, "S-1", code=2)
+        self.mutate("update", 1, "--project", "x", "--clear-project", code=2)
+        self.mutate("update", 1, code=2)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
+
+    def test_submit_checks_text_and_manifest_and_terminal_state_is_protected(self):
+        self.start()
+        Path(self.report).write_text(" \n")
+        self.run_cli("issue", "create", "--title", "Start", "--report", self.report)
+        before = self.files()
+        self.mutate("submit", 1, code=2)
+        self.assertEqual(self.files(), before)
+        Path(self.report).write_text("Nie mogę odczytać pliku obrazu. Raport opisuje ten brak.")
+        self.mutate("update", 1, "--report", self.report)
+        manifest = Path(self.board, "issues/S-1/attachments.json")
+        for invalid in ('{}', '{"version":true,"attachments":[]}',
+                        '{"version":2,"version":1,"attachments":[]}',
+                        '{"version":1,"attachments":[{"id":"nieistniejący"}]}'):
+            manifest.write_text(invalid)
+            before = self.files()
+            self.assertEqual(self.mutate("submit", 2, code=7)["error"], "broken-file")
+            self.assertEqual(self.files(), before)
+        manifest.write_text('{"version":1,"attachments":[]}\n')
+        ready = self.mutate("submit", 2)["issue"]
+        self.assertEqual(ready["state"], "ready")
+        before = self.files()
+        self.mutate("submit", 3, code=2)
+        self.mutate("reopen", 3, code=2)
+        self.assertEqual(self.files(), before)
+        # Przyjęcie dostarczy PT-221; tutaj przygotowujemy jego trwały stan wejściowy.
+        report = Path(self.board, "issues/S-1/report.md")
+        report.write_text(report.read_text().replace('state: "ready"', 'state: "accepted"'))
+        before = self.files()
+        for action, args in (("update", ("--title", "Zabroniony")),
+                             ("submit", ()), ("reject", ()), ("reopen", ())):
+            self.mutate(action, 3, *args, code=2)
+            self.assertEqual(self.files(), before)
+
     def test_installed_cli_roundtrip_restart_parallel_and_old_board(self):
         self.start()
         info = self.run_cli("info")
