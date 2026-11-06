@@ -118,6 +118,12 @@ class SubstituteTest(unittest.TestCase):
         command = testrerun.substitute(events, self.repo, "LC_ALL=C make test-changed BASE=abc JOBS=3")[0]
         self.assertIn("LC_ALL=C /usr/bin/python3 tools/test_runner.py --jobs 3 --modules", command)
 
+    def test_last_jobs_wins_and_test_output_is_kept(self):
+        events = self.failed_run()
+        events[0]["command"] = "JOBS=2 TEST_OUTPUT=/tmp/raporty make test-changed BASE=abc JOBS=4"
+        command = testrerun.substitute(events, self.repo, events[0]["command"])[0]
+        self.assertIn("tools/test_runner.py --jobs 4 --output /tmp/raporty --modules", command)
+
     def test_make_variables_other_than_base_and_jobs_run_in_full(self):
         """Review Astry (runda 2): `make test LC_ALL=C` zmienia recepturę — ponowienie by to zgubiło."""
         self.assertFalse(testrerun.is_full_test("make test LC_ALL=C"))

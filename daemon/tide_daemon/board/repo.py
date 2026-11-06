@@ -127,7 +127,8 @@ class BoardRepo:
 
     def commit(self, message: str, paths: list[str]) -> str:
         """Commit tylko podanych ścieżek; najpierw zaległe. Pusty napis albo opis błędu (wtedy
-        commit czeka w `pending`)."""
+        commit czeka w `pending`). Pusty napis może też znaczyć samo zakolejkowanie, gdy kolejkę opróżnia
+        akurat inny wątek — późniejszy błąd widać w `last_error` i migawce Tablicy."""
         with self._queue:
             self.pending.append((message, list(paths)))
         return self.flush()
