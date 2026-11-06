@@ -63,6 +63,22 @@ class ArtifactsTest(unittest.TestCase):
                 expected = expected.replace('../followups/', '../../plans/followups/')
                 self.assertEqual(body, expected)
 
+    def test_custom_plan_revision_can_be_frozen_again_without_changing_the_original(self):
+        (self.root / 'plan.md').rename(self.root / 'custom.md')
+        self.put('followups/nested/draft.md', '[plan](../../custom.md#plan)\n')
+        original = planartifacts.read(self.root)
+        step = self.root / 'revision'
+        planartifacts.prepare(self.root, str(step), seed=True, plan_name='custom.md')
+        journal = Journal(str(self.root / 'board'), mirror=str(self.root / 'mirror'))
+        engine = mock.Mock(journal=journal, store=mock.Mock(root=str(self.root / 'board')))
+        snapshot = FlowEngine._freeze_planning_output(engine, 'K-1', 'step', str(step / 'out'))
+        corrected = planartifacts.read(snapshot)
+        self.assertEqual(corrected['followups/nested/draft.md'], b'[plan](../../plan.md#plan)\n')
+        self.assertEqual(corrected['plan.md'], original['custom.md'])
+        self.assertNotIn('custom.md', corrected)
+        self.assertEqual(planartifacts.read(step / 'in/proposal'), original)
+        self.assertEqual(planartifacts.read(self.root), original)
+
     def test_new_proposal_text_replaces_old_plan_only_until_committed(self):
         from .test_cardflow_plan_extra import PLAN
         self.put('plan.md', PLAN.replace('Wstęp planu.', 'Nowy wstęp.').replace(
@@ -251,6 +267,49 @@ class ArtifactsFlowTest(FlowInProcess):
     proposal = integration.PlanFlowTest.proposal
     submit = integration.PlanFlowTest.submit
 
+    def test_amendment_relocates_sketch_ticket_links_to_assigned_ids(self):
+        card = self.card()
+        path = Path(self.proposal(card))
+        draft = path.parent / 'followups/nested/scope.md'
+        draft.parent.mkdir(parents=True)
+        draft.write_text(f'[plan](../../{path.name}#plan)\n'
+                         '[kartka](<../../tickets/%31.md?view=1#test> "Tytuł")\n'
+                         '[druga][ticket]\n\n[ticket]: ../../tickets/2.md#test\n')
+        original = draft.read_bytes()
+        self.assertTrue(self.submit(card, str(path))['ok'])
+        self.flow.stop()
+        engine = self.flow.engine
+        mapping = engine.approve_plan(card)['map']
+        with mock.patch.object(engine, '_launch') as launch:
+            self.assertTrue(engine.edit_plan(card, {'action': 'return', 'feedback': 'Popraw tytuł.'})['ok'])
+        prompt = launch.call_args.kwargs['prompt_text']
+        out = Path(prompt.split('Katalog wyjściowy: ')[1].split('\n')[0])
+        self.assertEqual((out.parent / 'in/proposal/followups/nested/scope.md').read_bytes(), original)
+        # Planista przepisuje ID zgodnie z instrukcją; szkicu nie musi naprawiać sam.
+        text = (out / 'plan.md').read_text().replace('Pierwszy plasterek', 'Poprawiony plasterek')
+        for work, ident in mapping.items():
+            text = text.replace(work, ident)
+        (out / 'plan.md').write_text(text)
+        step = launch.call_args.args[6]
+        engine.journal.append(card, 'step.started', step=step, kind='plan-amend',
+                              stepDir=str(out.parent), executor='Sonnet')
+        snapshot = engine._freeze_planning_output(card, step, str(out))
+        engine.journal.append(card, 'step.finished', step=step, result='done', snapshotDir=snapshot)
+        engine._advance_user_revision(card, fold(engine.journal.read(card)))
+        self.assertTrue(self.of(card, 'plan.revision-ready')[-1]['pending'])
+        engine.journal.append(card, 'plan.reviewed', verdict='APPROVE')
+        self.assertTrue(engine.approve_plan(card)['ok'])
+        state = fold(engine.journal.read(card))
+        package = planartifacts.read(state.plan_proposed['artifactPath'])
+        expected = original.decode().replace('../../' + path.name, '../../plan.md')
+        for work, ident in mapping.items():
+            old = '%31' if work == '#1' else work.lstrip('#')
+            expected = expected.replace('../../tickets/' + old + '.md', '../../tickets/' + ident + '.md')
+            self.assertIn('tickets/' + ident + '.md', package)
+            self.assertNotIn('tickets/' + work.lstrip('#') + '.md', package)
+        self.assertEqual(package['followups/nested/scope.md'].decode(), expected)
+        self.assertEqual(draft.read_bytes(), original)
+
     def test_approved_amendment_commits_new_text_then_preserves_manual_additions(self):
         card = self.card()
         path = Path(self.proposal(card))
@@ -406,7 +465,17 @@ class ArtifactsFlowTest(FlowInProcess):
         prompt = launch.call_args.kwargs['prompt_text']
         self.assertIn('Zamrożony komplet', prompt)
         revision_out = prompt.split('Katalog wyjściowy: ')[1].split('\n')[0]
-        self.assertEqual((Path(revision_out) / 'followups/nested/scope.md').read_bytes(), draft_bytes)
+        expected_revision = draft_bytes.decode().replace('../../' + path.name, '../../plan.md').replace('%31.md', '1.md')
+        self.assertEqual((Path(revision_out) / 'followups/nested/scope.md').read_text(), expected_revision)
+        self.assertEqual((Path(revision_out).parent / 'in/proposal/followups/nested/scope.md').read_bytes(), draft_bytes)
+        step = launch.call_args.args[6]
+        engine.journal.append(card, 'step.started', step=step, kind='plan-revise',
+                              stepDir=str(Path(revision_out).parent), executor='Sonnet')
+        snapshot = engine._freeze_planning_output(card, step, revision_out)
+        engine.journal.append(card, 'step.finished', step=step, result='done', snapshotDir=snapshot)
+        self.assertTrue(engine.propose_plan(card, str(Path(snapshot) / 'plan.md'), continuation=True, step=step)['ok'])
+        engine.journal.append(card, 'plan.reviewed', verdict='APPROVE')
+        self.assertEqual((frozen / 'followups/nested/scope.md').read_bytes(), draft_bytes)
         mapping = engine.approve_plan(card)['map']
         with mock.patch.object(engine, '_launch'):
             engine._plan_next(card, fold(engine.journal.read(card)))

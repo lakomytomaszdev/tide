@@ -162,6 +162,9 @@ pełną treść przed przekazaniem propozycji; review otrzymuje kopię pakietu w
 dodatkowo zaczyna z kopiami w swoim wyjściu. Późniejsza edycja wyjścia autora nie zmienia migawki.
 Dotyczy to planowania w tle, Konsoli oraz propozycji wskazanej z pliku. Każda propozycja przechowuje
 własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
+Kopia do odczytu zachowuje oryginalne nazwy i treści. W wyjściu poprawki plan ma nazwę `plan.md`,
+a linki ze szkiców wskazują tę nazwę; przy poprawce zatwierdzonego planu kartki i linki do nich
+używają już nadanych ID zamiast numerów roboczych. Szkice zachowują podkatalogi, fragmenty i parametry URL.
 
 Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
 Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze

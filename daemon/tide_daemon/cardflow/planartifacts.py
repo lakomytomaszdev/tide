@@ -107,7 +107,7 @@ def check_links(files, *, published=None):
 
 
 def followup_files(artifacts, source, plan_file, ticket_paths):
-    """Relokuje linki szkiców według nazw planu i kartek faktycznie zapisywanych w commicie.
+    """Relokuje linki szkiców według docelowych nazw planu i kartek.
 
     Mapa obejmuje wyłącznie sprawdzony pakiet; nie odczytujemy celów linków z dysku.
     Fragmenty, parametry, tytuły i składnia referencji pozostają bez zmian.
@@ -168,14 +168,22 @@ def save(journal, card, relative, files):
         journal.write_file(card, os.path.join(relative, name), body)
 
 
-def prepare(source, step_dir, *, seed=False, plan_name='plan.md'):
-    """Komplet do odczytu dla review; poprawka zaczyna z tymi samymi szkicami i planem."""
+def prepare(source, step_dir, *, seed=False, plan_name='plan.md', ticket_paths=None):
+    """Oryginał do odczytu; wyjście poprawki ma linki według wymaganych nazw planu i kartek."""
     files = read(source)
+    seeded, paths = {}, {}
+    if seed:
+        paths = {name: name for name in files}
+        paths[plan_name] = 'plan.md'
+        paths.update(ticket_paths or {})
+        seeded = {paths[name]: body for name, body in files.items()}
+        seeded.update(followup_files(files, {'planPath': plan_name}, 'plan.md',
+                                     {name: path for name, path in paths.items() if name.startswith('tickets/')}))
     for name, body in files.items():
-        targets = [os.path.join(step_dir, 'in', 'proposal', name)]
+        targets = [(os.path.join(step_dir, 'in', 'proposal', name), body)]
         if seed:
-            targets.append(os.path.join(step_dir, 'out', 'plan.md' if name == plan_name else name))
-        for target in targets:
+            targets.append((os.path.join(step_dir, 'out', paths[name]), seeded[paths[name]]))
+        for target, content in targets:
             relative = os.path.relpath(target, step_dir)
             current = step_dir
             if os.path.islink(current):
@@ -193,7 +201,7 @@ def prepare(source, step_dir, *, seed=False, plan_name='plan.md'):
                 continue
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'wb') as fh:
-                fh.write(body)
+                fh.write(content)
     return ('\nZamrożony komplet Markdownów (plan, kartki i szkice followups, także w podkatalogach): '
             + os.path.join(step_dir, 'in', 'proposal')
             + '\nZachowaj tekst planu poza tabelą oraz szkice i względne linki. '
