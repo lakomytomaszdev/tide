@@ -7,6 +7,8 @@ from .test_board_core import BoardCase
 from .test_agentcmd import BackgroundBase
 from tide_daemon.board.model import BoardError
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
+from tide_daemon.cardflow.journal import Journal
+from tide_daemon.cardflow.state import fold
 from tide_daemon.tasks import agentcmd, readaccess
 
 
@@ -114,6 +116,25 @@ class ProjectReadDirsTest(BoardCase):
         self.assertEqual(engine._configured_reads(*args, order=order), [])
         with self.assertRaisesRegex(FlowError, "obszar zapisu"):
             engine._configured_reads(SimpleNamespace(projects=["extra"]), main, self.data, args[-1])
+
+    def test_start_result_recovery_preserves_read_profile_and_old_journals(self):
+        for stored, expected in ((True, True), (False, False), (None, False)):
+            with self.subTest(stored=stored):
+                card = f"K-{1 if stored is True else 2 if stored is False else 3}"
+                journal = Journal(self.root, mirror=os.path.join(self.tmp, "mirror"))
+                engine = FlowEngine(self.store, journal=journal)
+                journal.append(card, "card.started", repo=self.ws, executor="Sonnet", program="claude")
+                journal.append(card, "intent", action="step-start", key="step-1", ticket="PT-1",
+                               worktree=self.data, branch="ticket/pt-1", repo=self.ws)
+                journal.append(card, "result", action="step-start", key="step-1", ok=True,
+                               **({"readDirsProfile": stored} if stored is not None else {}))
+                engine._recover_started_steps(card, fold(journal.read(card)))
+                recovered = fold(journal.read(card)).steps["step-1"]
+                self.assertIs(recovered.get("readDirsProfile"), expected)
+                self.assertEqual(engine._used_read_profile(card, self.data), expected)
+                before = journal.read(card)
+                engine._recover_started_steps(card, fold(before))
+                self.assertEqual(journal.read(card), before)
 
 
 class ReadOnlyProfileTest(BackgroundBase):

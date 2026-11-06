@@ -1398,7 +1398,7 @@ class FlowEngine(PlanEditing):
         order = ((st.started or {}).get("projects") or []
                  if current.get("kind") in ("planning", "plan-fix") else [])
         project_reads = self._configured_reads(item, project, worktree, step_dir, order=order, route=route)
-        read_profile = bool(project_reads) or bool(current.get("readDirsProfile"))
+        read_profile = bool(project_reads) or self._used_read_profile(card_id, worktree)
         if read_profile:
             board = self.store.load()
             readonly_repos = ([p["repo"] for p in order if not p.get("main")] if order else
@@ -3761,6 +3761,7 @@ class FlowEngine(PlanEditing):
                                 branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
+                                readDirsProfile=bool(result.get("readDirsProfile")),
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 baseVersion=intent.get("baseVersion", 0),
                                 baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""))

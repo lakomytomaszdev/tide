@@ -112,3 +112,15 @@ class ReadDirsEnterTest(unittest.TestCase):
         self.assertEqual(self.terminal.plan.argv, command.argv)
         self.engine.store.load().projects["proj"].read_dirs = []
         self.assertTrue(self.engine._used_read_profile("K-1", self.worktree))
+
+    def test_enter_older_step_keeps_worktree_profile_after_removing_last_directory(self):
+        self.engine.journal.append("K-1", "step.started", step="later", ticket="PT-1", kind="ticket",
+                                   program="claude", worktree=self.worktree, readDirsProfile=True)
+        self.engine.journal.append("K-1", "step.finished", step="later", result="question")
+        command = mock.Mock(argv=["/bin/claude", "restricted"], task_fields=lambda: {})
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True), \
+                mock.patch.object(self.engine, "_restricted_console", return_value=command) as build:
+            self.engine.enter("K-1", self.step_id)
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[7], [])
+        self.assertEqual(self.terminal.plan.argv, command.argv)
