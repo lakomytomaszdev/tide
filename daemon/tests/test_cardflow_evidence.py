@@ -260,6 +260,63 @@ class EvidenceInteractiveTest(AcceptedFixture):
         self.assertEqual(self.events(card), before)
         self.assert_step_evidence_unchanged(step)
 
+    def test_enter_codex_refuses_damaged_evidence_before_stop_or_console(self):
+        from .test_cardflow_full_planning import _Terminal
+        from tide_daemon.cardflow.engine import FlowError
+        self.flow.stop()
+        card, issue = self.accepted()
+        engine = self.flow.engine
+        item = self.store.load().cards[int(card[2:])]
+        data = evidence.load(self.store, card, evidence.source(item))
+        step_dir = Path(self.base, "codex.step")
+        data.materialize(step_dir)
+        (step_dir / "out").mkdir()
+        engine.journal.append(card, "card.started", sourceEvidence=data.source)
+        engine.journal.append(card, "step.started", step="codex", program="codex", kind="ticket",
+                              worktree=self.repo, stepDir=str(step_dir), repo=self.repo)
+        terminal = _Terminal()
+        terminal.launchers = SimpleNamespace(agents=self.fakes,
+                                             codex_for=mock.Mock(return_value=self.fakes["codex"]))
+        engine.terminal = terminal
+        manifest = Path(self.root, data.source["manifest"])
+        original = manifest.read_bytes()
+        copy = Path(self.root, "issues", issue["id"], issue["attachments"][1]["path"])
+        raw = copy.read_bytes()
+        material = step_dir / "in/evidence" / data.copies[1][0]["path"]
+        # EnterStep odmawia również dla zdrowych dowodów: resume nie sprawdza starych
+        # ścieżek z historii sesji. Uszkodzona sprawa ma wcześniejszy błąd broken-evidence.
+        for finished in (False, True):
+            if finished:
+                engine.journal.append(card, "step.finished", step="codex", result="question")
+            for damage in ("manifest", "hash", "missing", "step-copy", "intact"):
+                with self.subTest(finished=finished, damage=damage):
+                    if damage == "manifest":
+                        manifest.unlink()
+                    elif damage == "hash":
+                        copy.write_bytes(b"podmieniony dowod")
+                    elif damage == "missing":
+                        copy.unlink()
+                    elif damage == "step-copy":
+                        material.chmod(0o600)
+                        material.write_bytes(b"podmienione wejscie")
+                    before = self.events(card)
+                    with mock.patch.object(engine, "_stop_for_enter", return_value=True) as stop, \
+                            mock.patch.object(engine, "_session", return_value=(
+                                "00000000-0000-4000-8000-000000000217", "session.jsonl")):
+                        with self.assertRaises(FlowError) as refused:
+                            engine.enter(card, "codex")
+                    expected = ("broken-evidence" if damage in ("manifest", "hash", "missing")
+                                else "interactive-evidence-unsafe")
+                    self.assertEqual(refused.exception.code, expected)
+                    stop.assert_not_called()
+                    self.assertEqual(terminal.opened, [])
+                    self.assertEqual(self.events(card), before)
+                    manifest.write_bytes(original)
+                    copy.write_bytes(raw)
+                    if damage == "step-copy":
+                        material.write_bytes(data.copies[1][1])
+                    material.chmod(0o444)
+
     def assert_step_evidence_unchanged(self, step):
         folder = Path(step["stepDir"], "in/evidence")
         manifest = json.loads((folder / "attachments.json").read_text())

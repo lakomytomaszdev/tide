@@ -1488,9 +1488,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy.")
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
-        if (source_step.get("program") or "claude") == "claude":
-            item, _ = self._project(card_id)
-            self._require_safe_evidence_console("claude", self._issue_evidence(item, started=st.started))
+        item, _ = self._project(card_id)
+        source_evidence = self._issue_evidence(item, started=st.started)
+        self._require_safe_evidence_console(source_step.get("program") or "claude", source_evidence)
+        if source_evidence:
+            # Natywne resume może czytać stare ścieżki z całej historii sesji.
+            # Nowa kopia nie potwierdza integralności wcześniejszych wejść tej sesji.
+            raise FlowError("interactive-evidence-unsafe",
+                            "Nie można bezpiecznie przejąć sesji z dowodami sprawy w Konsoli. "
+                            "Wznów krok w tle, aby otrzymał ponownie sprawdzone dowody.")
         if self.terminal is None or not self.terminal.available():
             raise FlowError("no-terminal", "nie znaleziono Konsoli")
         worktree = source_step.get("worktree") or ""

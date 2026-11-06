@@ -119,7 +119,8 @@ class CardCliDbusTest(flow.CaretakerChatDbusTest):
             self.assertTrue(self.start(card)["ok"])
             self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=30))
             problem = self.of(card, "caretaker.started")[0]["problem"]
-            before = self.shown(card)
+            # Plik dziennika wyprzedza publikację Snapshot w głównym wątku usługi.
+            before = self.wait_column(card, "waiting")
             tasks_before = len(self.console_tasks())
             # Przycisk PT-149 wywołuje tę samą publiczną metodę przez backend Tablicy.
             if cli_first:
