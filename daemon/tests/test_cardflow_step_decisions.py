@@ -546,6 +546,19 @@ class StepDecisionTest(FlowInProcess):
         fix = next(s for s in self.of(card_id, "step.started") if s["kind"] == "fix")
         self.assertEqual(fix["executor"], "Codex standard")
 
+    def test_card_closing_can_be_reassigned_to_another_executor(self):
+        # 06.11, K-37: domknięcie karty prowadzi planista/wykonawca startu; przy limicie Claude czekało do soboty.
+        card_id = self.card(description="Test.\n\nATRAPA: powoli 3")
+        self.assertTrue(self.start(card_id)["ok"])
+        done = self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": "close",
+                                                       "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=40), self.events(card_id))
+        close = next(s for s in self.of(card_id, "step.started") if s["kind"] == "close")
+        ticket = next(s for s in self.of(card_id, "step.started") if s["kind"] == "ticket")
+        self.assertEqual((ticket["executor"], close["executor"]), ("Sonnet", "Codex standard"))
+
     def test_resume_after_answer_uses_the_reassigned_author_in_a_fresh_session(self):
         # 05.11, K-38/PT-192: wznowienie rozmowy Opusa czekało na limit Claude do soboty.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
