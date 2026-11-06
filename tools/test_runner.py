@@ -14,8 +14,10 @@ import time
 import unittest
 
 if __package__:
+    from .test_isolation import state_environment
     from .test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
 else:
+    from test_isolation import state_environment
     from test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,7 +181,7 @@ def _run_module(module, output, root=ROOT):
     # Każdy moduł dostaje własny katalog stanu: test bez izolacji nie czyta ani nie nadpisuje stanu działającej
     # usługi użytkownika (05.11: test tablicy zapisał atrapę K-1 do ~/.local/state/tide/board-derived.json).
     state = tempfile.mkdtemp(prefix="tide-test-state-")
-    env = {**os.environ, "XDG_STATE_HOME": state, SLOT_HELD: "1"}
+    env = {**state_environment(state), SLOT_HELD: "1"}
     with log.open("w", encoding="utf-8") as stream:
         try:
             proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,

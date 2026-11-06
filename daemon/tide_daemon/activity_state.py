@@ -183,7 +183,8 @@ class NotificationFilter(QObject):
         watcher.finished.connect(lambda w: self._inhibited(w))
 
     def _inhibited(self, watcher: QDBusPendingCallWatcher, release_now: bool = True) -> None:
-        # waitForFinished() i sygnał finished mogą odebrać tę samą odpowiedź przy zamykaniu.
+        # Przy stop() odpowiedź odbieramy też synchronicznie. Sygnał finished
+        # może nadejść podczas czekania lub zwalniania — zużywamy odpowiedź tylko raz.
         if watcher not in self._pending:
             return
         self._pending.remove(watcher)

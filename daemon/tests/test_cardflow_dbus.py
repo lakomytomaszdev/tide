@@ -391,7 +391,16 @@ class ManualColumnsTest(FlowCase):
         self.assertTrue(wait_until(busy, timeout=15), "worktree kroku zajęty w oknie Worktrees")
         self.assertTrue(self.call("MoveCard", card_id, "backlog", 0)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=5), self.events(card_id))
-        card = self.wait_column(card_id, "backlog")
+        self.wait_column(card_id, "backlog")
+        # Surowa kolumna jest widoczna przed publikacją wyliczonej notki pauzy.
+        # Zwracamy tę samą migawkę, w której sprawdziliśmy gotowość projekcji.
+        def paused_snapshot():
+            card = self.shown(card_id)
+            return card if card["boardColumn"] == "backlog" and \
+                "wstrzymana" in ((card.get("derived") or {}).get("note") or "") else None
+
+        card = wait_until(paused_snapshot, timeout=10)
+        self.assertTrue(card, self.shown(card_id))
         self.assertIn("wstrzymana", card["derived"]["note"])
         self.assertEqual(len(self.of(card_id, "card.paused")), 1)
         self.assertTrue(flowfakes.alive(pid), "wstrzymanie nie zabija trwającego kroku")
