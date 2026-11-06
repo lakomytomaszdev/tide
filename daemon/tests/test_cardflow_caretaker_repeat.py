@@ -437,6 +437,9 @@ class RepeatFlowTest(FlowInProcess):
     def test_missing_result_twice_after_a_user_retry_starts_the_caretaker_instead_of_a_blind_retry(self):
         card_id = self.card(description="Eksport.\n\nATRAPA: bez-wyniku")
         self.assertTrue(self.start(card_id)["ok"])
+        # Kolumna Czeka pojawia się także pomiędzy błędem kroku i startem opiekuna.
+        # Ponowienie użytkownika dotyczy dopiero problemu oddanego po jego działaniu.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=60), self.events(card_id))
         self.wait_column(card_id, "waiting", timeout=60)
         first = self.caretaker_runs(card_id)
         self.assertEqual([(r["trigger"], r["decision"]) for r in first], [("error", f"step:{first[0]['target']}")])

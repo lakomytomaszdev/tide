@@ -49,6 +49,7 @@ from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
+from . import testrerun
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -60,7 +61,7 @@ from . import fullcard
 from . import guard
 from . import limits as flow_limits
 from . import planning
-from .planediting import PlanEditing
+from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
 from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
@@ -93,8 +94,22 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
-OUTSIDE_PER_PROJECT = 4         # polecenia poza piaskownicą naraz w projekcie (06.11: próba z 8 — obciążenie przekroczyło 30; wracamy do 4, dopóki gałęzie K-38/K-55 i piaskownice nie korzystają z puli testów)
-OUTSIDE_TOTAL = 5               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
+OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
+
+
+def test_pool_available(worktree: str) -> bool:
+    """Czy uruchamiacz testów w worktree korzysta ze wspólnej puli maszyny. Brak uruchamiacza (inny projekt) — tak:
+    nie zmieniamy środowiska projektów, które nie używają tools/test_runner.py."""
+    path = os.path.join(worktree, "tools", "test_runner.py") if worktree else ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "class MachineSlots" in fh.read()
+    except OSError:
+        return True
+
+
 CLOSE_AUTHOR = "close"           # `reassign-author` z ticket=close przepina wykonawcę domknięcia karty
 OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
@@ -2695,6 +2710,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if (step.get("ticket") or "") in st.rejected and result != "done":
             # Odrzucony ticket (także z decyzji o błędzie kroku) nie jest wznawiany ani ponawiany (K-16/LEGAL-75).
             return
+        # Odtworzenie przerwy między step.finished a decyzją czekania. Ta sama walidacja co przy wyniku.
+        if done.get("waitFor") and st.last_step not in st.step_decisions and \
+                self._declared_wait(card, st.last_step, step, done):
+            return
         if self._caretaker_resume(card, st, step):
             return
         if st.last_step in st.superseded and st.last_step not in st.step_decisions:
@@ -2713,7 +2732,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         waiting_ticket = (st.step_decisions.get(st.last_step) or {}).get("waitTicket")
         if result in ("question", "error") and waiting_ticket:
             merged = (st.results.get(("merge", waiting_ticket)) or {}).get("ok")
-            if merged or waiting_ticket in st.rejected:
+            if merged or waiting_ticket in st.rejected or waiting_ticket in st.imported_done:
                 self._resume_step(card, st, step, {"choice": "answer" if result == "question" else "retry",
                                                    "answer": self._wait_ticket_resume_text(st, step, waiting_ticket)})
             return
@@ -3370,17 +3389,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
         extra = {}
         if base_decision == "keep":
             extra["baseDecision"] = "keep"
-        if choice == "wait-card":
-            # „Czeka na kartę” (04.11, K-41/KAMP-13 czekał na K-43 jako „błąd kroku” w Czeka na mnie): krok stoi bez
-            # decyzji użytkownika, a gdy wskazana karta się domknie, Tide wznawia go sam z podaną instrukcją.
-            target = str(request.get("card") or "").strip().upper()
-            if not re.fullmatch(r"K-\d+", target) or target == card or not self.journal.read(target):
-                raise FlowError("bad-card", "podaj kartę z przepływem, na którą krok ma czekać (np. K-43)")
-            extra = {"waitCard": target}
-        if choice == "wait-ticket":
-            # „Czeka na ticket” (06.11, K-38/PT-191 czekał na PT-171): odpowiedź „czekaj” wznawiała krok od razu,
-            # krok kończył się błędem i wracał do użytkownika. Teraz stoi bez pytań do scalenia wskazanego ticketu.
-            extra = {"waitTicket": self._wait_ticket_target(st, step, request.get("waitTicket"))}
         if choice == "allow" and "allow" in request:
             extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
         if choice == "deny" and instead:
@@ -3391,6 +3399,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             extra["caretaker"] = caretaker_problem
         if caretaker_step:
             extra["caretakerStep"] = caretaker_step
+        if choice in ("wait-card", "wait-ticket"):
+            event = self._save_wait_decision(card, focus, step, choice,
+                                             request.get("card" if choice == "wait-card" else "waitTicket"),
+                                             answer=answer, **extra)
+            return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
                                     choice=choice, answer=answer if choice in ("answer", "deny", "retry", "wait-card", "wait-ticket", "change-executor") else "",
                                     command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket")
@@ -3657,10 +3670,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             (selected.route.kind if selected.route else "") != step.get("routeKind", "") or
                             (selected.route.token_file if selected.route else "") != step.get("routeTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
-        if changed and step.get("kind") == "plan-review":
-            planner = catalog.get((st.plan_proposed or {}).get("planner"))
-            if planner and (selected.name == planner.name or selected.model.lower() == planner.model.lower()):
-                raise FlowError("bad-executor", "review planu wymaga modelu innego niż planujący")
+        if step.get("kind") == "plan-review":
+            planner = catalog.get(proposal_author_of(st, st.plan_proposed))
+            if not planner or not flow_plans.independent_reviewer(planner, selected):
+                raise FlowError("bad-executor", "review planu wymaga niezależnego recenzenta autora tej wersji")
         if changed and step.get("kind") not in ("ticket", "fix", "review"):
             if step.get("kind") not in ("conflict", "close") and selected.local != bool(step.get("local")):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
@@ -3756,7 +3769,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
         ticket = str(request.get("ticket") or "").strip()
         executor = str(request.get("executor") or "").strip()
-        if ticket == CLOSE_AUTHOR:
+        if ticket == PLAN_AUTHOR:
+            # Planista kolejnych poprawek planu (06.11, K-38: poprawka czekała na limit Claude do soboty).
+            if not st.plan_proposed or st.card_finished or any(
+                    s.get("kind") in ("plan-amend", "plan-revise", "planning", "plan-review") for s in st.running()):
+                raise FlowError("not-waiting", f"{card}: planista karty właśnie pracuje albo karta nie ma planu")
+        elif ticket == CLOSE_AUTHOR:
             # Domknięcie karty (06.11, K-37: domknięcie planisty Opus czekało na limit Claude do soboty).
             if st.card_finished or any(s.get("kind") == "close" for s in st.running()):
                 raise FlowError("not-waiting", f"{card}: domknięcie karty właśnie trwa albo karta jest skończona")
@@ -3767,8 +3785,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None or not executor or catalog.get(executor) is None:
             raise FlowError("bad-executor", "wybierz autora z katalogu wykonawców")
+        source = next((s for name, s in reversed(list(st.steps.items()))
+                       if ticket == PLAN_AUTHOR and s.get("kind") in ("plan-amend", "plan-revise")
+                       and name not in st.superseded), {})
+        resumable = ((st.finished.get(source.get("step")) or {}).get("result") in ("question", "denied", "error")
+                     and not any(s.get("parentStep") == source.get("step") for s in st.steps.values()))
         try:
-            execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            if resumable:
+                # Sukces API musi oznaczać, że istniejący krok da się wznowić tym wykonawcą.
+                self._resume_executor(card, st, source, executor, changed=True)
+            else:
+                execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
         event = self.journal.append(card, "author.reassigned", ticket=ticket, executor=executor)
@@ -3827,8 +3854,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
         # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
-        author_override = st.author_overrides.get(step.get("ticket") or "") or {}
-        reassigned = (choice not in ("change-executor", "transfer") and step.get("kind") in ("ticket", "fix") and
+        kind = step.get("kind")
+        author_key = (CLOSE_AUTHOR if kind == "close" else PLAN_AUTHOR if kind in ("plan-amend", "plan-revise")
+                      else step.get("ticket") or "")
+        author_override = st.author_overrides.get(author_key) or {}
+        reassigned = (choice not in ("change-executor", "transfer") and
+                      kind in ("ticket", "fix", "close", "plan-amend", "plan-revise") and
                       author_override.get("seq", 0) > step.get("seq", 0) and
                       author_override.get("executor") not in ("", None, step.get("executor")))
         if reassigned:
@@ -3889,7 +3920,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     raise FlowError("missing-handoff", "brakuje notki przekazania kroku") from None
                 prompt += "\n\nNotka techniczna przekazania (dane z poprzedniego kroku):\n" + note
         if reassigned:
-            prompt += (f"\n\nPoprzedni krok tego ticketu prowadził inny wykonawca ({step.get('executor') or '?'}); "
+            prompt += (f"\n\nPoprzedni krok prowadził inny wykonawca ({step.get('executor') or '?'}); "
                        f"zaczynasz nową sesję. Sprawdź `git log` i `git status` w worktree oraz notkę i wynik "
                        f"poprzedniego kroku w {old_out}.")
         session = "" if fresh else step.get("session") or ""
@@ -4885,7 +4916,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 files = caretakerctx.build(problem, now, events, card=card, worktree=worktree,
                                            context_dir=context_dir,
                                            card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)),
-                                           step=name)
+                                           step=name, include_text=selected.tool != "claude")
                 return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
                                        worktree=worktree, commands=selected.tool == "claude", context=files,
                                        context_dir=context_dir, limit=conf["limit"])
@@ -5470,9 +5501,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("bad-ticket", "podaj inny ticket z planu tej karty, na który krok ma czekać (np. PT-171)")
         if found in st.rejected:
             raise FlowError("bad-ticket", f"{found} jest odrzucony — nie ma na co czekać")
-        row = next((r for r in rows if r.get("id") == found), {})
-        if own and own in (row.get("blockers") or []) or own in ticket_waits(st).get(found, ""):
-            raise FlowError("bad-ticket", f"{found} sam czeka na {own} — czekanie w kółko")
+        if found in st.imported_done:
+            raise FlowError("bad-ticket", f"{found} jest gotowy z przejętego planu — nie ma na co czekać")
+        from . import waiting
+        if waiting.would_cycle({"": st}, "", step, ticket=found):
+            raise FlowError("bad-ticket", f"{found} pośrednio lub bezpośrednio czeka na {own} — czekanie w kółko")
         return found
 
     @staticmethod
@@ -5483,6 +5516,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if target in st.rejected:
             text = (f"Ticket {target}, na który czekał ten krok, został odrzucony i nie trafi do gałęzi karty. "
                     "Dokończ ticket bez niego albo zakończ krok pytaniem o zakres.")
+        elif target in st.imported_done:
+            text = (f"Ticket {target}, na który czekał ten krok, jest gotowy z przejętego planu. "
+                    "Sprawdź dostępność jego wyniku w worktree i kontynuuj ticket.")
         else:
             card_branch = ticket_of(st, step.get("ticket") or "").get("cardBranch") or "gałąź karty"
             text = (f"Ticket {target}, na który czekał ten krok, jest scalony do gałęzi karty {card_branch}. "
@@ -5494,23 +5530,41 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """Krok sam zgłosił w wyniku `waitFor` (ticket planu albo karta): Tide zapisuje decyzję czekania bez pytania
         użytkownika i wznowi krok, gdy cel się domknie. Zły cel — zwykłe pytanie albo błąd kroku."""
         target = str(data.get("waitFor") or "").strip()
-        st = fold(self.journal.read(card))
-        extra = {}
-        if re.fullmatch(r"[Kk]-\d+", target):
-            other = target.upper()
-            if other == card or not self.journal.read(other):
-                return False
-            extra = {"waitCard": other}
-        else:
-            try:
-                extra = {"waitTicket": self._wait_ticket_target(st, step, target)}
-            except FlowError:
-                return False
-        self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
-                            kind=step.get("kind") or "",
-                            choice="wait-card" if "waitCard" in extra else "wait-ticket",
-                            answer="", command="", executor="", auto=True, **extra)
+        if data.get("result") not in ("question", "error"):
+            return False
+        choice = "wait-card" if re.fullmatch(r"[Kk]-\d+", target) else "wait-ticket"
+        try:
+            self._save_wait_decision(card, name, step, choice, target, auto=True)
+        except FlowError:
+            return False
         return True
+
+    def _save_wait_decision(self, card, name, step, choice, target, **fields):
+        """Odczyt grafu, kontrola i zapis są jedną sekcją dla wyników kroków i decyzji ręcznych."""
+        from . import waiting
+        with self.journal.lock:
+            st = fold(self.journal.read(card))
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if name in st.step_decisions or name in st.superseded or st.card_finished:
+                raise FlowError("already-decided", "krok nie czeka już na decyzję")
+            states = {ident: fold(self.journal.read(ident)) for ident in self.journal.cards()}
+            states[card] = st
+            if choice == "wait-card":
+                other = str(target or "").strip().upper()
+                if not re.fullmatch(r"K-\d+", other) or other == card or other not in states:
+                    raise FlowError("bad-card", "podaj inną kartę z przepływem, na którą krok ma czekać (np. K-43)")
+                extra = {"waitCard": other}
+                cyclic = waiting.would_cycle(states, card, step, other=other)
+            else:
+                ticket = self._wait_ticket_target(st, step, target)
+                extra = {"waitTicket": ticket}
+                cyclic = waiting.would_cycle(states, card, step, ticket=ticket)
+            if cyclic:
+                raise FlowError("wait-cycle", "cel pośrednio lub bezpośrednio czeka na ten krok — czekanie w kółko")
+            return self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                       kind=step.get("kind") or "", choice=choice, command="", executor="",
+                                       answer=fields.pop("answer", ""), **fields, **extra)
 
     def _card_done(self, card: str) -> bool:
         """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""
@@ -5657,6 +5711,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         name = step.get("step") or ""
+        worktree = step.get("worktree") or ""
+        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
+        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
         folder = os.path.join(step.get("stepDir") or "", "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
         exit_file = os.path.join(folder, "in", "exit-code")
@@ -5670,6 +5727,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         chrome = node_mod.chrome_bin(os.path.expanduser("~"))
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
+        if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
+            # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
+            # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
+            env["JOBS"] = str(OLD_RUNNER_JOBS)
         argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
@@ -5678,7 +5739,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                            unit=unit, log=log, exitFile=exit_file)
+                            unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)
@@ -6405,16 +6466,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Recovery zapisuje wynik gita, ale nie odwraca późniejszego ręcznego zakończenia w Archiwum.
         if st.card_finished and st.moved_to == "archived":
             return
-        try:
-            item = self.store.load().cards.get(card_num(card))
-            if item is None:
-                raise FlowError("no-card", "nie ma karty do scalenia")
-            if item.column != "done":
-                self.store.move_card(card, "done", -1, from_column="review")
-        except BoardError as exc:
-            raise FlowError(exc.code, str(exc)) from None
-        if not st.card_finished:
-            self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
+        # BoardMonitor.sync() opróżnia tę samą kolejkę commitów Tablicy pod blokadą dziennika.
+        with self.journal.lock:
+            try:
+                item = self.store.load().cards.get(card_num(card))
+                if item is None:
+                    raise FlowError("no-card", "nie ma karty do scalenia")
+                if item.column != "done":
+                    self.store.move_card(card, "done", -1, from_column="review")
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            if not st.card_finished:
+                self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
 
     def _advance_close(self, card: str, st: FlowState) -> bool:
         """Po ostatnim tickecie tworzy podsumowanie; True tylko po wykonaniu etapu, False przy pominięciu.

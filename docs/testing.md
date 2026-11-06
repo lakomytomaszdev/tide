@@ -8,7 +8,9 @@ przeszedł dla oddawanych zmian; nie żąda osobnego pełnego `make test`.
 
 Pełny `make test` uruchom raz przy domknięciu karty (krok `close`), na gałęzi karty po scaleniu
 ticketów, przed podsumowaniem. Nieudany przebieg oznacza problem domknięcia: wynik `error`
-z opisem niepowodzeń zamiast `done`, bez scalania do głównej. Brak zgody lub konieczność wykonania
+z opisem niepowodzeń zamiast `done`. Wyjątek dla domknięcia wymaga jawnego rozliczenia i decyzji
+użytkownika według zasad poniżej; scalenie do głównej nadal wymaga osobnego polecenia.
+Brak zgody lub konieczność wykonania
 poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
 przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
 
@@ -119,6 +121,25 @@ ukończone pomiary, o ile drzewo kodu, JOBS, baza i zakres historii się nie zmi
 Nieudana walidacja nie kasuje zebranego porównania, ale pozostaje zapisana w raporcie i powoduje
 niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udanego `test-changed`.
 
+## Wyjątki od testów
+
+Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
+pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
+Odstępstwo w notce ticketu, a przy domknięciu również w podsumowaniu karty, zawiera:
+
+- pierwszy wynik: polecenie, SHA, nieudane testy i odnośnik do logu;
+- wynik tego samego testu na przypiętej bazie ticketu oraz na `master`, z zapisanymi SHA,
+  poleceniami i warunkami porównania (bez zmiany zarządzanej gałęzi);
+- obciążenie maszyny przy niepowodzeniu i porównaniu, w tym równoległe przebiegi i limit procesów;
+- uzasadnienie oraz dokładny zakres odstępstwa: które niepowodzenia obejmuje, a które nadal blokują;
+- właściciela poprawki i sposób śledzenia jej wykonania.
+
+Brak danych oznacz jawnie; nie uznawaj bez dowodu, że problem występował już na bazie albo wynikał
+z obciążenia. Recenzent ocenia uzasadnienie i zakres odstępstwa. Domknięcie karty z nieudanym pełnym
+przebiegiem jest możliwe tylko z takim jawnym rozliczeniem i jawną decyzją użytkownika o przyjęciu
+odstępstwa. Do tego czasu krok zgłasza problem domknięcia, zachowując nieudany wynik. Przyjęcie
+odstępstwa nie zmienia wyniku testu na sukces i nie zastępuje osobnej zgody na scalenie do głównej.
+
 ## Równoległość i wynik
 
 Domyślnie liczba procesów to liczba rdzeni dostępnych procesowi minus dwa, minimum jeden.
@@ -165,3 +186,36 @@ nie urywało się przedwcześnie. Wymaga tego samego środowiska co pełne testy
 gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. Nie uruchamiaj
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
+
+## Ponowienie padniętych modułów
+
+Etap A oszczędzania czasu testów (06.11.2026: 31% czasu testów ticketów to były powtórki całego zestawu na
+niezmienionym kodzie). Gdy przebieg ticketu padł, a autor nie zmienia żadnego pliku (podejrzenie niestabilności
+albo obciążenia), nie powtarza całego `make test-changed`/`make test`. Uruchamia tylko moduły z listy
+„Wszystkie nieudane testy” (albo z `summary.json`, `returncode` różny od 0), każdy osobno:
+
+```sh
+/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>
+```
+
+W notce zapisuje pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, raport) i ponowienie (ten sam HEAD,
+czysty `git status`, lista modułów, wynik). Recenzent uznaje ponowienie tylko przy tym samym HEAD co pełny przebieg.
+Każda zmiana pliku przywraca pełne polecenie zasady testów. Pełny `make test` przy domknięciu karty zostaje;
+jeśli padnie, agent domknięcia także ponawia tylko padnięte moduły na tym samym HEAD.
+Projekty w innych technologiach stosują tę samą zasadę narzędziem testów projektu z filtrem na padnięte testy.
+Tekst zasady w kartkach kroków: `rerun_failed` w `daemon/tide_daemon/cardflow/handoff.py`.
+
+Tide wymusza tę zasadę sam (`daemon/tide_daemon/cardflow/testrerun.py`): gdy polecenie poza piaskownicą to
+pełny przebieg (`make test`, `make test-changed …`), a ostatni taki przebieg w tym samym worktree padł na tym samym
+HEAD przy czystym drzewie, Tide uruchamia zamiast niego tylko moduły z `summary.json` tamtego przebiegu i zapisuje
+w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
+oznaczają zwykły pełny przebieg. Dotyczy repozytoriów z `tools/test_runner.py`.
+
+## Starsze gałęzie bez celu test-changed
+
+Wyjątek dotyczy wyłącznie gałęzi, której Makefile (wraz z `mk/*.mk`) nie udostępnia jeszcze
+`test-changed`: autor i recenzent uruchamiają tam pełny `make test` i zapisują polecenie oraz wynik
+w notce. Tide sprawdza dostępność celu w worktree ticketu podczas tworzenia kartki przekazania
+(`cardflow/handoff.py`). Nie wymaga przenoszenia infrastruktury testów z głównej gałęzi do starej
+karty. Gdy cel jest dostępny, obowiązuje przypięty `BASE` i zwykłe `make test-changed`.
+Ten wyjątek nie znosi pełnego testu gałęzi karty przy domknięciu.

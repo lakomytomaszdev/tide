@@ -4,6 +4,7 @@ Odpowiedź „czekaj” wznawiała krok od razu, krok kończył się błędem i 
 `waitFor` albo użytkownik wybiera „Czekaj na …”, a Tide wznawia go po scaleniu wskazanego ticketu do gałęzi karty."""
 import json
 import os
+from unittest import mock
 
 from .privatebus import wait_until
 from . import test_cardflow_plan_integration as plan_tests
@@ -39,6 +40,10 @@ class TicketWaitTest(FlowInProcess):
     def test_step_declares_wait_and_resumes_by_itself_after_the_other_ticket_merges(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.two_tickets(card, "czeka-na"))["ok"])
+        # Scalenie blokera czeka na sprawdzenie trwałego zaparkowania; bez wyścigu z czasem wykonania atrapy.
+        gate = mock.patch.object(self.flow.engine, "_merge")
+        gate.start()
+        self.addCleanup(gate.stop)
         mapping = self.approve(card)["map"]
         first, second = mapping["#1"], mapping["#2"]
         self.assertTrue(wait_until(lambda: any(d.get("waitTicket") for d in self.of(card, "step.decision")),
@@ -53,6 +58,8 @@ class TicketWaitTest(FlowInProcess):
         if not self.merged(card, first):
             self.assertEqual(row.get("phase"), "kolejka", row)
             self.assertIn(f"czeka na {first}", row.get("why", ""))
+        self.restart()
+        gate.stop()
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=60), self.events(card))
         resumed = self.steps_of(card, second)
         self.assertEqual(len(resumed), 2, "jedno wznowienie — bez automatycznego ponawiania przed scaleniem")
@@ -62,12 +69,17 @@ class TicketWaitTest(FlowInProcess):
             prompt = json.load(fh)["prompt"]
         self.assertIn(f"Ticket {first}, na który czekał ten krok, jest scalony do gałęzi karty", prompt)
         self.assertIn("git merge --no-edit", prompt)
+        with open(os.path.join(resumed[1]["stepDir"], "out", "dependency-read.txt"), encoding="utf-8") as fh:
+            self.assertIn("krok 11", fh.read(), "wznowiony autor odczytał wynik blokera ze swojego worktree")
         self.assertFalse(self.of(card, "step.retry") and any(
             e["ticket"] == second for e in self.of(card, "step.retry")), "bez automatycznego ponowienia")
 
     def test_user_chooses_wait_in_error_window_and_step_resumes_after_merge(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.two_tickets(card, "czeka-na-blad"))["ok"])
+        gate = mock.patch.object(self.flow.engine, "_merge")
+        gate.start()
+        self.addCleanup(gate.stop)
         mapping = self.approve(card)["map"]
         first, second = mapping["#1"], mapping["#2"]
 
@@ -75,14 +87,14 @@ class TicketWaitTest(FlowInProcess):
             found = [d for d in self.shown(card)["derived"]["flow"]["decisions"]
                      if d.get("ticket") == second and d.get("kind") == "error"]
             return found[0] if found else None
-        self.assertTrue(wait_until(lambda: decision() or self.merged(card, first), timeout=30), self.events(card))
-        if self.merged(card, first):
-            self.skipTest("bloker scalił się przed oknem błędu — scenariusz zależny od czasu")
+        self.assertTrue(wait_until(decision, timeout=30), self.events(card))
+        self.assertFalse(self.merged(card, first))
         step = decision()["step"]
         box = []
         self.flow.resolve_step(card, json.dumps({"choice": "wait-ticket", "step": step, "waitTicket": "#1"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
+        gate.stop()
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=60), self.events(card))
         resumed = [s for s in self.steps_of(card, second) if s.get("parentStep") == step]
         self.assertEqual(len(resumed), 1)
