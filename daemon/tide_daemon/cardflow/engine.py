@@ -4904,7 +4904,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 files = caretakerctx.build(problem, now, events, card=card, worktree=worktree,
                                            context_dir=context_dir,
                                            card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)),
-                                           step=name)
+                                           step=name, include_text=selected.tool != "claude")
                 return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
                                        worktree=worktree, commands=selected.tool == "claude", context=files,
                                        context_dir=context_dir, limit=conf["limit"])

@@ -123,6 +123,21 @@ class CaretakerChatTest(EngineOnJournal):
         for feature in agentcmd.CODEX_NO_COMMANDS:
             self.assertIn(f"features.{feature}=false", bg.argv)
 
+    def test_codex_chat_receives_inline_context(self):
+        self.add("K-1", "step.console_closed", step=self.name)
+        selected = execution.Execution("Codex mocny", "codex", "/bin/codex", "test-model", "openai")
+        with mock.patch.object(execution, "resolve", return_value=selected), \
+                mock.patch.object(agentcmd, "list_codex_mcp", return_value=[]):
+            reply = self.engine.talk_to_caretaker("K-1", {"problem": PROBLEM})
+        step = self.st.caretakers[reply["step"]]
+        with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
+            prompt = fh.read()
+        self.assertIn("Kontekst jest w treści", prompt)
+        self.assertIn('"type": "step.finished"', prompt)
+        self.assertIn("120 kB", prompt)
+        self.assertIn("Tryb rozmowy", prompt)
+        self.assertIn("action-<n>.json", prompt)
+
     def test_failed_console_open_releases_the_chat_for_another_attempt(self):
         self.engine._finish_caretaker_chat("K-1", self.step)
         self.engine.terminal.open.return_value = ""
