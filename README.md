@@ -19,6 +19,10 @@ karty do głównej zawsze wymaga osobnej decyzji użytkownika. Planowanie Pełne
 automatyczne przekazanie kroku między dostawcami należą do drugiego etapu. Szczegóły: [standard planu](docs/agent-plan-standard.md)
 i [opis usługi](docs/tide-daemon.md).
 
+Zainstalowane Tide odczytuje standard planu i narzędzia ze swojej kopii zasobów.
+Lokalizacje, wersje i dostępność pokazuje `tide info --json`; konfigurację, zależności
+metodologii i migrację szablonów opisuje [przenośność zasobów](docs/tide-resources.md).
+
 ## Środowisko
 
 KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). Motyw instaluje się do katalogu domowego. Sudo wymagają tylko ekran logowania (SDDM) i ekran startowy systemu (Plymouth).

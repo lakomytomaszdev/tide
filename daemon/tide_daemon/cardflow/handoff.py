@@ -1,6 +1,7 @@
 """Kartka przekazania kroku ticketu przy wejściu „Od razu”: zbudowana z karty (tytuł, opis, zrzuty), z kontraktem
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
+from .. import resources
 
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
@@ -169,6 +170,7 @@ def ticket_card(*, card_id: str, title: str, description: str, project: str, tic
 Karta {card_id}: {title}
 Projekt: {project}
 Ticket: {ticket}
+{resources.instructions()}
 Twój katalog roboczy: {worktree} (gałąź {branch}, odgałęziona od gałęzi karty {card_branch})
 
 Opis karty:

@@ -375,7 +375,9 @@ class IssueService:
     def call(self, method, *args):
         try:
             if method == "Info":
+                from . import resources
                 result = {"capabilities": ["issue.create", "issue.list", "issue.show"] if self.store else []}
+                result["resources"] = resources.info()
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":

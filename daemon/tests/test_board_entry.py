@@ -235,8 +235,11 @@ class TemplatesTest(BoardCase):
         with open(os.path.join(FIXTURES, "launch-pt77", "spec-flow-before.md"), encoding="utf-8", newline="") as fh:
             self.before = fh.read()
 
-    def test_seed_declares_the_entry_and_keeps_the_body(self):
-        self.assertEqual(flows.body_of(flows.SEED_FLOWS["spec"]), flows.body_of(self.before))
+    def test_seed_declares_the_entry_and_keeps_the_specification_workflow(self):
+        body = flows.body_of(flows.SEED_FLOWS["spec"])
+        for instruction in ("bez planu i ticketów", "Rozejrzyj się w kodzie", "Zapisz specyfikację po polsku",
+                            "zleć jej review", "Nie implementuj", "SKILL.md", "Brak wymaganej instrukcji"):
+            self.assertIn(instruction, body)
         self.assertIn("entry: spec", flows.SEED_FLOWS["spec"])
         self.assertNotIn("mode: spec", flows.SEED_FLOWS["spec"])
         self.assertEqual(flows.FLOW_KEYS, ("full", "light", "spec"))

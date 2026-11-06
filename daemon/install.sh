@@ -18,6 +18,7 @@ mkdir -p "$dest" "$(dirname "$unit")" "$(dirname "$activation")"
 tar -C "$src" --exclude=__pycache__ -cf - tide-daemon.py tide_daemon | tar -C "$dest" -xf -
 # Kolory stanów (np. karta Konsole z czekającym agentem) z palety, bo kopia działa bez repozytorium.
 cp "$src/../theme/palette/mist.json" "$dest/palette.json"
+bash "$src/../scripts/install-resources.sh"
 # Jawny zakres produktu w podglądzie odmowy, z działającym odnośnikiem także poza repozytorium.
 mkdir -p "$dest/docs/agents/plans/followups"
 cp "$src/../docs/agents/plans/followups/replay-code.md" "$dest/docs/agents/plans/followups/"
@@ -31,7 +32,7 @@ After=graphical-session.target
 [Service]
 Type=dbus
 BusName=org.tide.Daemon
-ExecStart=/usr/bin/python3 -s $dest/tide-daemon.py
+ExecStart=/usr/bin/python3 -s "$dest/tide-daemon.py"
 Restart=on-failure
 RestartSec=5
 
@@ -42,7 +43,7 @@ EOF
 cat > "$activation" <<EOF
 [D-BUS Service]
 Name=org.tide.Daemon
-Exec=/usr/bin/python3 -s $dest/tide-daemon.py
+Exec=/usr/bin/python3 -s "$dest/tide-daemon.py"
 SystemdService=tide-daemon.service
 EOF
 
@@ -51,7 +52,7 @@ EOF
 cat > "$krunner_activation" <<EOF
 [D-BUS Service]
 Name=org.tide.Daemon.KRunner
-Exec=/usr/bin/python3 -s $dest/tide-daemon.py
+Exec=/usr/bin/python3 -s "$dest/tide-daemon.py"
 SystemdService=tide-daemon.service
 EOF
 
