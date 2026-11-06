@@ -48,9 +48,6 @@ CHANGE_MAP["daemon/tests/test_cardflow"] = "cardflow"
 # Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty
 # (QML, generatory ładowane po ścieżce) zachowują bezpieczny dobór katalogowy.
 IMPORT_ROOTS = {"daemon/tide_daemon/": "tide_daemon"}
-IMPORT_MAX_DEPTH = 3
-IMPORT_MAX_DEPENDENCIES = 12
-IMPORT_MAX_IMPORTERS = 20
 
 # Uruchomienie osobnego procesu usługi nie tworzy krawędzi importu do jej kodu.
 # Te dwa małe moduły sprawdzają start/Agents oraz drogę /Board od ticketu do review.

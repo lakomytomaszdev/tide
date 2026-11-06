@@ -4,11 +4,41 @@ from collections import defaultdict, deque
 from pathlib import PurePosixPath
 
 if __package__:
-    from .test_suites import (IMPORT_ROOTS, IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES,
-                             IMPORT_MAX_IMPORTERS)
+    from .test_suites import IMPORT_ROOTS
 else:
-    from test_suites import (IMPORT_ROOTS, IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES,
-                            IMPORT_MAX_IMPORTERS)
+    from test_suites import IMPORT_ROOTS
+
+
+def dynamic_imports(tree):
+    """Wywołania importerów z aliasami; nierozstrzygalne nazwy pozostają jawne."""
+    module_functions = {"importlib": "import_module", "builtins": "__import__"}
+    modules = {name: {function} for name, function in module_functions.items()}
+    functions = {"__import__"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in module_functions:
+                    modules.setdefault(alias.asname or alias.name, set()).add(module_functions[alias.name])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            function = module_functions.get(node.module)
+            for alias in node.names:
+                if function and alias.name in (function, "*"):
+                    functions.add(alias.asname or function)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if ((isinstance(func, ast.Name) and func.id in functions) or
+                (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and
+                 func.attr in modules.get(func.value.id, ()))):
+            name = node.args[0] if node.args else next(
+                (kw.value for kw in node.keywords if kw.arg == "name"), None)
+            # Import względny wymaga kontekstu pakietu, a fromlist może ładować podmoduły.
+            # Nie zgadujemy: taki importer staje się potencjalnym odbiorcą każdej zmiany.
+            uncertain = (not isinstance(name, ast.Constant) or not isinstance(name.value, str) or
+                         name.value.startswith(".") or len(node.args) > 1 or
+                         any(kw.arg != "name" for kw in node.keywords))
+            yield node.lineno, None if uncertain else name.value
 
 
 class ImportGraph:
@@ -33,6 +63,7 @@ class ImportGraph:
                     self.names[short] = path
         self.dependencies = {}
         self.importers = defaultdict(set)
+        self.uncertain = {}
         for path in sorted(paths):
             try:
                 tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
@@ -51,47 +82,38 @@ class ImportGraph:
                         base = ".".join(parts[:len(parts) - node.level + 1] + ([base] if base else []))
                     names.add(base)
                     names.update(base + "." + alias.name for alias in node.names if alias.name != "*")
-                elif isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant):
-                    # Jawny import dynamiczny ze stałą nazwą też da się rozpoznać bez wykonania.
-                    func = node.func
-                    if ((isinstance(func, ast.Name) and func.id == "__import__") or
-                        (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and
-                         func.value.id == "importlib" and func.attr == "import_module")):
-                        if isinstance(node.args[0].value, str):
-                            names.add(node.args[0].value)
+            for line, name in dynamic_imports(tree):
+                if name is None:
+                    self.uncertain.setdefault(path, []).append(line)
+                else:
+                    names.add(name)
             dependencies = {self.names[name] for name in names if name in self.names} - {path}
             self.dependencies[path] = dependencies
             for dependency in dependencies:
                 self.importers[dependency].add(path)
 
-    def affected(self, source, tests, max_depth=IMPORT_MAX_DEPTH,
-                 max_dependencies=IMPORT_MAX_DEPENDENCIES, max_importers=IMPORT_MAX_IMPORTERS):
-        """Najkrótszy łańcuch do testu, z jawnymi granicami agregatorów i fixture'ów.
+    def affected(self, source, tests, include_uncertain=True):
+        """Wszyscy odbiorcy, z najkrótszym łańcuchem do testu, także przez agregatory.
 
-        Bezpośrednie testy zawsze wygrywają. Nie przechodzimy dalej przez moduł
-        pośredni o dużej liczbie zależności/odbiorców (np. engine lub FlowInProcess).
-        Zmiana samego takiego modułu wybiera bezpośrednich odbiorców; pokrycie
-        integracyjne zapewnia dołączany przez selektor kontrakt procesu usługi.
+        Zbiór odwiedzonych węzłów kończy cykle i ogranicza pracę do rozmiaru grafu.
+        Nierozstrzygalny importer może ładować zmienione źródło: dołączamy jego
+        testy oraz wszystkich pośrednich odbiorców, nawet przy znanych testach źródła.
         """
-        if (len(self.dependencies.get(source, ())) > max_dependencies or
-                len(self.importers[source]) > max_importers):
-            max_depth = min(max_depth, 1)
         found, visited = {}, {source}
         queue = deque([(source, (source,))])
         while queue:
             current, chain = queue.popleft()
-            if len(chain) > max_depth:
-                continue
-            for importer in sorted(self.importers[current]):
+            importers = self.importers[current]
+            if current == source and include_uncertain:
+                importers = importers | self.uncertain.keys()
+            for importer in sorted(importers):
                 if importer in visited:
                     continue
                 visited.add(importer)
                 reason = (importer, *chain)
                 if importer in tests:
                     found[importer] = reason
-                if (len(self.dependencies[importer]) <= max_dependencies and
-                        len(self.importers[importer]) <= max_importers):
-                    queue.append((importer, reason))
+                queue.append((importer, reason))
         return found
 
 

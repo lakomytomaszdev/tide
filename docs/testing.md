@@ -40,20 +40,32 @@ Usunięcia i przeniesienia obejmują także starą ścieżkę i wybierają pełn
 Dla `daemon/tide_daemon/**/*.py` selektor czyta AST kodu usługi i wszystkich katalogów testów,
 bez importowania ani wykonywania tych plików. Śledzi `import`, `from ... import ...` (także
 względne, aliasy i importy wewnątrz funkcji) oraz stałe nazwy w `importlib.import_module` i
-`__import__`. Rozpoznaje zarówno `tide_daemon`, jak i `daemon.tide_daemon`. Wybiera test
+`__import__`, także przez alias modułu lub funkcji (`import importlib as lib`,
+`from importlib import import_module as load`, odpowiedniki z `builtins`). Rozpoznaje
+zarówno `tide_daemon`, jak i `daemon.tide_daemon`. Wybiera test
 importujący zmieniony moduł bezpośrednio albo przez kod pośredni i pomocniki testów,
 również poza `daemon/tests`. Zmieniony samodzielny moduł testów wybiera sam siebie.
 Brak rozpoznanych importów do zmienionego źródła oznacza dawny zestaw katalogowy.
 
-Granice są jawne w `tools/test_suites.py`: maksymalnie trzy krawędzie importu, najwyżej
-12 zależności i 20 odbiorców modułu pośredniego. Przez większe agregatory i fixture'y
-(np. `engine`, `FlowInProcess`) analiza nie przechodzi dalej. Gdy zmienia się sam moduł
-przekraczający te progi (np. `engine.py`, `state.py`), wybiera jego bezpośrednie testy.
+Graf zachowuje wszystkich znanych pośrednich odbiorców, także przez duże agregatory
+i fixture'y (np. `engine`, `FlowInProcess`). Nie odcina łańcuchów według głębokości ani
+liczby zależności/odbiorców: poprzednie progi mogły pomijać znane testy zależne.
+Zbiór odwiedzonych modułów kończy cykle i ogranicza koszt przejścia do rozmiaru grafu.
+Lokalna zmiana bez wielu odbiorców nadal wybiera mały zestaw; wspólny moduł może wybrać szeroki.
+
+Gdy rozpoznanego wywołania importera dynamicznego nie da się rozstrzygnąć (np. nazwa
+w zmiennej, import względny lub `__import__` z `fromlist`), jego moduł traktowany jest
+jako potencjalny odbiorca każdego zmienionego źródła usługi. Do wyboru trafiają ten moduł
+testowy i wszystkie testy pośrednio importujące taki moduł. Poszerzenie następuje również,
+gdy źródło ma zwykły test statyczny; powód zawiera ścieżkę i linię niepewnego importu.
+Nie wykonujemy kodu w celu ustalenia wartości zmiennych.
+
 Każda zmiana w `daemon/` dodatkowo wybiera `test_dbus_contract.py` (start procesu i /Agents)
 oraz `test_service_smoke.py` (ticket → review → domknięcie przez /Board). Dzięki temu
 uruchomienie usługi w osobnym procesie ma pokrycie mimo braku krawędzi importu.
-To ograniczona analiza statyczna: nie dowodzi pokrycia importów wyliczanych dynamicznie,
-zależności danych ani wszystkich scenariuszy D-Bus. Pełny test przy domknięciu pozostaje wymagany.
+To analiza statyczna: dowolne przekazywanie funkcji importera jako wartości lub refleksja
+mogą wykraczać poza rozpoznawane wywołania; zależności danych i wszystkie scenariusze D-Bus
+nie wynikają z grafu importów. Pełny test przy domknięciu pozostaje wymagany.
 
 Zmiana wspólnych danych lub pomocników w katalogach testów, `__init__.py` oraz modułu testów
 importowanego przez inne testy wybiera pełny przebieg. `SHARED_TEST_MODULES` dodatkowo

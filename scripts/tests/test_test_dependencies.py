@@ -65,20 +65,21 @@ class DependencySelectionTest(unittest.TestCase):
         self.assertIn(top_test, self.select(top).modules)
         self.assertNotIn(leaf_test, self.select(top).modules)
 
-    def test_depth_cycle_and_hub_limits_preserve_direct_tests(self):
+    def test_cycle_and_chain_beyond_former_depth_limit_preserve_all_tests(self):
         leaf = self.source("leaf", "from . import middle\n")
         self.source("middle", "from . import leaf\n")
         self.source("top", "from . import middle\n")
+        self.source("fourth", "from . import top\n")
+        self.source("fifth", "from . import fourth\n")
         direct = self.write_test("direct", "from tide_daemon import leaf\n")
-        indirect = self.write_test("indirect", "from tide_daemon import top\n")
+        indirect = self.write_test("indirect", "from tide_daemon import fifth\n")
         graph = ImportGraph(self.root, ["daemon/tests"])
         tests = set(runner.modules_for(self.entries, self.root))
-        self.assertIn(indirect, graph.affected(leaf, tests))
-        self.assertEqual(set(graph.affected(leaf, tests, max_depth=1)), {direct})
-        self.assertEqual(set(graph.affected(leaf, tests, max_dependencies=0)), {direct})
-        self.assertEqual(set(graph.affected(leaf, tests, max_importers=0)), {direct})
+        affected = graph.affected(leaf, tests)
+        self.assertEqual(set(affected), {direct, indirect})
+        self.assertEqual(len(affected[indirect]), 6)
 
-    def test_source_aggregator_does_not_spread_leaf_to_every_integration_test(self):
+    def test_intermediate_aggregator_preserves_all_integration_tests(self):
         leaf = self.source("leaf")
         imports = []
         for i in range(13):
@@ -88,11 +89,12 @@ class DependencySelectionTest(unittest.TestCase):
         direct = self.write_test("leaf", "from tide_daemon import leaf\n")
         integration = self.write_test("integration", "from tide_daemon.engine import Engine\n")
         self.assertIn(direct, self.select(leaf).modules)
-        self.assertNotIn(integration, self.select(leaf).modules)
+        self.assertIn(integration, self.select(leaf).modules)
         self.assertIn(integration, self.select(hub).modules)
 
-    def test_changed_shared_source_keeps_direct_tests_without_spreading_indirectly(self):
-        source = self.source("state")
+    def test_changed_shared_source_and_intermediate_hub_preserve_indirect_tests(self):
+        leaf = self.source("leaf")
+        source = self.source("state", "from . import leaf\n")
         self.source("middle", "from . import state\n")
         direct = self.write_test("direct", "from tide_daemon import state\n")
         indirect = self.write_test("indirect", "from tide_daemon import middle\n")
@@ -100,14 +102,60 @@ class DependencySelectionTest(unittest.TestCase):
             self.source(f"consumer{i}", "from . import state\n")
         selected = self.select(source)
         self.assertIn(direct, selected.modules)
-        self.assertNotIn(indirect, selected.modules)
+        self.assertIn(indirect, selected.modules)
         self.assertIn("daemon/tests/test_contract.py", selected.modules)
+        self.assertTrue({direct, indirect} <= set(self.select(leaf).modules))
 
     def test_constant_dynamic_import_and_service_alias_resolve_to_same_file(self):
         source = self.source("leaf")
         first = self.write_test("first", 'import importlib\nimportlib.import_module("tide_daemon.leaf")\n')
         second = self.write_test("second", "from daemon.tide_daemon import leaf\n")
         self.assertTrue({first, second} <= set(self.select(source).modules))
+
+    def test_dynamic_alias_and_variable_imports_do_not_disappear_beside_static_test(self):
+        imports = (
+            'from importlib import import_module as load\nload("tide_daemon.leaf")\n',
+            'import importlib as loader\nloader.import_module("tide_daemon.leaf")\n',
+            'import importlib\nname = "tide_daemon.leaf"\nimportlib.import_module(name)\n',
+            'from importlib import import_module as load\nname = "tide_daemon.leaf"\nload(name)\n',
+            'from builtins import __import__ as load\nload("tide_daemon.leaf")\n',
+            'import builtins as loader\nloader.__import__(name)\n',
+            '__import__(name)\n',
+            'from importlib import import_module\nimport_module(name="tide_daemon.leaf")\n',
+            'import importlib\nimportlib.import_module(name=module_name)\n',
+            'import importlib\nimportlib.import_module(".leaf", "tide_daemon")\n',
+            '__import__("tide_daemon", fromlist=["leaf"])\n',
+            'def first():\n    import importlib as loader\n    loader.import_module("tide_daemon.leaf")\n'
+            'def second():\n    import builtins as loader\n    loader.__import__("json")\n',
+        )
+        source = self.source("leaf")
+        direct = self.write_test("direct", "from tide_daemon import leaf\n")
+        unrelated = self.write_test("unrelated", "import json\n")
+        for body in imports:
+            with self.subTest(body=body):
+                dynamic = self.write_test("dynamic", body)
+                selection = self.select(source)
+                self.assertTrue({direct, dynamic} <= set(selection.modules))
+                self.assertNotIn(unrelated, selection.modules)
+
+    def test_uncertain_dynamic_helper_selects_indirect_consumers_and_explains_uncertainty(self):
+        source = self.source("leaf")
+        direct = self.write_test("direct", "from tide_daemon import leaf\n")
+        helper = self.source("loader", "from importlib import import_module as load\nload(name)\n")
+        self.source("middle", "from . import loader\n")
+        indirect = self.write_test("indirect", "from tide_daemon import middle\n")
+        selection = self.select(source)
+        self.assertTrue({direct, indirect} <= set(selection.modules))
+        self.assertIn("potencjalny import dynamiczny", selection.reasons[indirect][0])
+        self.assertIn(helper + ":2", selection.reasons[indirect][0])
+
+    def test_uncertain_import_does_not_replace_suite_fallback_for_uncovered_source(self):
+        source = self.source("uncovered")
+        dynamic = self.write_test("dynamic", "__import__(name)\n")
+        other = self.write_test("other")
+        selection = self.select(source)
+        self.assertTrue({dynamic, other} <= set(selection.modules))
+        self.assertIn("brak rozpoznanych importów", selection.reasons[other][0])
 
     def test_unknown_tools_make_shared_fixtures_deletion_and_parse_failure_are_full(self):
         source = self.source("leaf")
@@ -162,9 +210,10 @@ class DependencySelectionTest(unittest.TestCase):
 
 
 class RepositorySelectionTest(unittest.TestCase):
-    def test_cardflow_leaf_and_hub_select_less_than_whole_flow_and_include_contract(self):
+    def test_cardflow_selection_preserves_known_consumers_and_contract(self):
         entries = [(d, "test*.py") for d in sorted({d for pairs in SUITES.values() for d, _ in pairs})]
         whole = runner.modules_for(SUITES["cardflow"])
+        all_modules = runner.modules_for(entries)
         for source, direct in (("basesuggestions", "test_base_suggestions"),
                                ("hostingcli", "test_hostingcli_real"),
                                ("engine", "test_cardflow_caretaker_settings"),
@@ -174,7 +223,7 @@ class RepositorySelectionTest(unittest.TestCase):
                 self.assertFalse(selection.full)
                 self.assertIn(f"daemon/tests/{direct}.py", selection.modules)
                 self.assertTrue(set(SERVICE_CONTRACT_MODULES) <= set(selection.modules))
-                self.assertLess(len(selection.modules), len(whole))
+                self.assertLess(len(selection.modules), len(all_modules))
                 print(f"[PT-258] {source}.py: {len(selection.modules)} modułów; cały cardflow: {len(whole)}")
 
 

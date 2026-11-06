@@ -16,13 +16,11 @@ from dataclasses import dataclass
 
 if __package__:
     from .test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
-                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
-                             IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES, IMPORT_MAX_IMPORTERS)
+                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
     from .test_dependencies import ImportGraph, is_test_support
 else:
     from test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
-                            SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
-                            IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES, IMPORT_MAX_IMPORTERS)
+                            SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES)
     from test_dependencies import ImportGraph, is_test_support
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -194,9 +192,15 @@ def changed_modules(paths, entries, root=ROOT):
         elif path in precise:
             affected = graph.affected(path, set(all_modules))
             for module, chain in affected.items():
-                add(module, f"{path} → import AST: " + " → ".join(chain))
-            if not affected:
+                uncertainty = [f"{item}:{line}" for item in chain[:-1]
+                               for line in graph.uncertain.get(item, ())]
+                reason = f"{path} → import AST: " + " → ".join(chain)
+                if uncertainty:
+                    reason += "; potencjalny import dynamiczny: " + ", ".join(uncertainty)
+                add(module, reason)
+            if not graph.affected(path, set(all_modules), include_uncertain=False):
                 # Brak rozpoznanego testu nie może oznaczać samego dymnego sprawdzenia.
+                # Potencjalni odbiorcy importów dynamicznych nie zastępują starego fallbacku.
                 for suite in changed_suites([path]):
                     for module in modules_for(SUITES[suite], root):
                         add(module, f"{path} → zestaw {suite}: brak rozpoznanych importów testów")
@@ -214,8 +218,7 @@ def changed_modules(paths, entries, root=ROOT):
 
 def explain_selection(selection):
     print("Dobór zmian: " + ("pełny przebieg" if selection.full else "mapa importów i zestawów"))
-    print(f"Granice AST: głębokość {IMPORT_MAX_DEPTH}, zależności {IMPORT_MAX_DEPENDENCIES}, "
-          f"odbiorcy {IMPORT_MAX_IMPORTERS}; wspólny zmieniony moduł: tylko bezpośrednie importy + kontrakt")
+    print("AST: wszyscy pośredni odbiorcy; nierozstrzygalny import dynamiczny poszerza dobór")
     print(f"Wybrane moduły: {len(selection.modules)}")
     for module in selection.modules:
         print(f"- {module}")
