@@ -1,10 +1,12 @@
 """PT-191: cała czerwona lista z atrapami; żadnych prób dostępu do usług i plików hosta."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE = r'''#!/usr/bin/python3
@@ -53,6 +55,7 @@ class RedListTest(unittest.TestCase):
             path.chmod(0o755)
         # PATH celowo nie zawiera gh, także gdy host je ma; timeout jest prawdziwy.
         (self.bin / "timeout").symlink_to("/usr/bin/timeout")
+        (self.bin / "bash").symlink_to("/bin/bash")
         self.log = self.base / "calls.jsonl"
         self.env = {"PATH": str(self.bin), "HOME": str(self.base), "TIDE_BOX_NAME": "proj",
                     "TIDE_HOST_PID_NS": "pid:[host]", "TIDE_BOX_BRIDGE": "10.173.184.1",
@@ -122,4 +125,36 @@ class RedListTest(unittest.TestCase):
     def test_make_target_uses_run(self):
         text = (ROOT / "mk/box.mk").read_text()
         self.assertIn("box-check:", text)
-        self.assertIn('daemon/tide.py box run "$(BOX)" -- bash scripts/box/check.sh', text)
+        self.assertIn('scripts/box/run-check.py "$(BOX)" $(CHECK_ARGS)', text)
+
+    def test_check_runs_in_foreign_project_without_copying_tide_files(self):
+        spec = importlib.util.spec_from_file_location("run_check", ROOT / "scripts/box/run-check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        project = self.base / "foreign-project"
+        project.mkdir()
+        captured = []
+
+        def run(argv):
+            captured.append(argv)
+            self.assertEqual(argv[:5], ["run", "proj", "--worktree", str(project), "--"])
+            # Wykonujemy rzeczywisty skrypt poza repozytorium Tide, z atrapami czerwonej listy.
+            result = subprocess.run(argv[5:], cwd=project, env=self.env,
+                                    capture_output=True, text=True, timeout=20)
+            self.assertIn("podszycie IP + curl --interface", result.stdout)
+            self.assertIn("brak roota/narzędzi/obrazu", result.stdout)
+            return result.returncode
+
+        with mock.patch.object(module, "project_repo", return_value=str(project)), \
+                mock.patch.object(module.cli, "main", side_effect=run):
+            self.assertEqual(module.main(["proj", "--spoof-ip", "10.173.184.250"]), 0)
+        self.assertEqual(captured[0][-2:], ["--spoof-ip", "10.173.184.250"])
+        self.assertEqual(list(project.iterdir()), [])
+
+    def test_check_preserves_failure_from_cli(self):
+        spec = importlib.util.spec_from_file_location("run_check", ROOT / "scripts/box/run-check.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with mock.patch.object(module, "project_repo", return_value="/project"), \
+                mock.patch.object(module.cli, "main", return_value=37):
+            self.assertEqual(module.main(["proj"]), 37)

@@ -18,7 +18,7 @@ BOX ?=
 CHECK_ARGS ?=
 box-check:
 	@test -n "$(BOX)" || { echo "Podaj BOX=<slug>" >&2; exit 2; }
-	$(PYTHON) daemon/tide.py box run "$(BOX)" -- bash scripts/box/check.sh $(CHECK_ARGS)
+	$(PYTHON) scripts/box/run-check.py "$(BOX)" $(CHECK_ARGS)
 
 box-base:
 	$(PYTHON) daemon/tide.py box base
