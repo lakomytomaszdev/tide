@@ -158,17 +158,26 @@ def tick(engine):
     settings = boxstep.settings_of(engine)
     if not settings.enabled:
         return
+    from ..cardflow import trialhold
+    if engine.journal.has("K-38") and not trialhold.public_inventory(engine):
+        return  # nieznany proces dawnego CLI: bez automatycznego stop/reset/cleanup
     projects = os.path.join(bp.board_dir(), "projects")
     try:
         slugs = [s for s in os.listdir(projects) if os.path.isfile(os.path.join(projects, s, "box.yaml"))]
     except FileNotFoundError:
         return
     closed = {}
+    frozen = set()
     for card in engine.journal.cards():
         st = fold(engine.journal.read(card))
+        from ..cardflow.trialhold import held
+        if st.started and any(held(s) for s in st.steps.values()):
+            frozen.add(st.started.get("project"))
         if st.closed and st.started:
             closed.setdefault(st.started.get("project"), set()).add(card)
     for slug in slugs:
+        if slug in frozen:
+            continue  # dawne próby zachowują pudełka, paczki, rezerwacje i WIP
         try:
             b = boxstep.builder_of(engine, settings)
             lifecycle = Lifecycle(b)

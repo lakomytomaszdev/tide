@@ -49,6 +49,8 @@ from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import handoff
 from . import boxstep
+from . import trialhold
+from ..box import trialgate
 from .decisions import clean_options
 from . import environment as flow_environment
 from . import execution
@@ -288,6 +290,58 @@ class FlowEngine(PlanEditing):
         self._box_network_state = None  # proxy i zestaw kroków, których polityki oraz atrapy już odtworzono
         self._box_network_errors = {}   # nieczytelny kontekst zatrzymuje tylko dotknięty krok
         self._env_cache: dict = {}      # karta → (klucz, sekcja „Środowisko karty”)
+        self.trial_gate = trialgate.TrialGate()  # zamknięty magazyn do odbioru PT-270/PT-271
+
+    @staticmethod
+    def _trial_check(ticket):
+        try:
+            if isinstance(ticket, dict):
+                if trialgate.blocked_event(ticket):
+                    raise trialgate.TrialDenied(trialgate.MESSAGE)
+            else:
+                trialgate.require_ticket(ticket)
+        except trialgate.TrialDenied as exc:
+            raise FlowError("k38-trial-held", str(exc)) from None
+
+    def register_trial_diagnostic(self):
+        """Wyłącznie integracja hostowej procedury PT-273; brak polecenia i ścieżek w żądaniu.
+
+        Nie jest metodą D-Bus ani obsługą wyniku agenta. Do odbioru PT-273 odmawia.
+        Każda rejestracja ma nową tożsamość, także po restarcie.
+        """
+        from dataclasses import asdict
+        name = "k38-diagnostic-" + uuid.uuid4().hex
+        try:
+            binding = self.trial_gate.register_bootstrap(name)
+        except trialgate.TrialDenied as exc:
+            raise FlowError("k38-trial-held", str(exc)) from None
+        for event in self.journal.read("K-38"):
+            if event.get("type") != "k38.diagnostic-requested":
+                continue
+            previous = event.get("binding")
+            if (not isinstance(previous, dict) or not previous.get("target") or not previous.get("attempt")
+                    or previous["target"] == binding.target or previous["attempt"] == binding.attempt):
+                raise FlowError("k38-trial-held", "K-38 v1: wymagany nowy cel i próba także po restarcie")
+        self.journal.append("K-38", "k38.diagnostic-requested", step=name, binding=asdict(binding))
+        return {"ok": True, "step": name}
+
+    def _resolve_trial_diagnostic(self, card, request):
+        name = request.get("step")
+        events = self.journal.read(card)
+        if (card != "K-38" or set(request) != {"step", "choice"} or request.get("choice") != "run"
+                or not any(e.get("type") == "k38.diagnostic-requested" and e.get("step") == name for e in events)
+                or any(e.get("type") == "k38.diagnostic-consumed" and e.get("step") == name for e in events)):
+            raise FlowError("k38-trial-held", "brak hostowej zgody na zarejestrowaną diagnostykę")
+        # Dziennik konsumujemy PRZED startem. Restart lub błąd wymaga nowej rejestracji i decyzji.
+        self.journal.append(card, "k38.diagnostic-consumed", step=name)
+        def safe():
+            states = [trialhold.inventory(self, c, fold(self.journal.read(c))) for c in self.journal.cards()]
+            return all(states)
+        try:
+            self.trial_gate.start_registered(name, consent=True, inventory=safe, bootstrap=True)
+        except trialgate.TrialDenied as exc:
+            raise FlowError("k38-trial-held", str(exc)) from None
+        return {"ok": True, "step": name, "id": card}
 
     # --- odczyt (wątek główny) -------------------------------------------------------------------
 
@@ -454,6 +508,7 @@ class FlowEngine(PlanEditing):
         if out:
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out)
+            trialhold.view(self, card.get("id") or "", out)
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
@@ -869,6 +924,7 @@ class FlowEngine(PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip=""):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
+        self._trial_check({"ticket": ticket, "step": step_id})
         worktree = made["worktree"]
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
@@ -914,6 +970,7 @@ class FlowEngine(PlanEditing):
             pass  # spóźniona druga karta bez zadania zamknie się zamiast otworzyć powłokę
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
+                   "flowCard": item.id, "flowTicket": ticket, "flowStep": step_id, "flowKind": kind,
                    "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
                    "processFile": process_file, "resultFile": os.path.join(out, handoff.RESULT_FILE),
                    "consoleUnit": console_unit,
@@ -1111,6 +1168,7 @@ class FlowEngine(PlanEditing):
         card_id = f"K-{num}"
         st = fold(self.journal.read(card_id))
         source_step = st.steps.get(step_id)
+        self._trial_check(source_step or {"step": step_id})
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
         if self.terminal is None or not self.terminal.available():
@@ -1194,6 +1252,8 @@ class FlowEngine(PlanEditing):
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
+                   "flowCard": card_id, "flowTicket": current.get("ticket") or "", "flowStep": new_id,
+                   "flowKind": kind,
                    "title": f"{card_id} · {current.get('ticket') or 'krok'}", "closedFile": closed,
                    "processFile": process_file, "consoleUnit": console_unit,
                    "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
@@ -1540,6 +1600,7 @@ class FlowEngine(PlanEditing):
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
                 attempt=0, resume_session="") -> dict:
+        self._trial_check({"ticket": ticket, "step": step_id})
         self._admit(card.id, selected, ticket, kind, step_id)
         try:
             placement = self._box_place(card.id, project, selected, ticket, kind, parent_step, step_id)
@@ -1626,6 +1687,7 @@ class FlowEngine(PlanEditing):
                     chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "")
                 if placement is not None:
                     boxstep.prepare_runner(self, placement, runner_step)
+                self._trial_check(ticket)
                 bg, proc = runner.start(runner_step, before_start=copy_images)
             except BaseException:
                 if placement is not None:
@@ -1824,6 +1886,7 @@ class FlowEngine(PlanEditing):
         boxstep.lifecycle.tick(self)
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        trialhold.inventory(self, card, st)
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
         self._recover_console_openings(card, st)
@@ -1961,6 +2024,7 @@ class FlowEngine(PlanEditing):
 
     def _repair_wip(self, card: str, st: FlowState, step: dict) -> dict:
         """Po błędzie piaskownicy ponów tylko commit; zatrzymanego programu nie wznawiaj przed zapisem."""
+        self._trial_check(step)
         name = step.get("step") or ""
         previous = self._wip_for(st, name)
         if self._wip_safe(previous):
@@ -2040,6 +2104,8 @@ class FlowEngine(PlanEditing):
 
     def _advance(self, card: str, st: FlowState) -> None:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
+        if trialhold.held(st.steps.get(st.last_step) or {}):
+            return
         if st.open_intents():
             return
         if self._advance_limit(card, st):
@@ -2211,6 +2277,8 @@ class FlowEngine(PlanEditing):
             return
         for row in rows:
             ticket = row["id"]
+            if trialgate.blocked(ticket):
+                continue
             if ticket in merged or ticket in st.rejected:
                 continue
             if any(s.get("ticket") == ticket for s in st.steps.values()):
@@ -2365,6 +2433,7 @@ class FlowEngine(PlanEditing):
         choice = request.get("choice") or ""
         focus = str(request.get("step") or decision_step(st) or "")
         step = st.steps.get(focus) or {}
+        self._trial_check(step)
         done = st.finished.get(focus) or {}
         if st.card_finished or not step:
             raise FlowError("no-transfer-step", f"{card}: nie ma kroku do przekazania")
@@ -2465,6 +2534,8 @@ class FlowEngine(PlanEditing):
         if self.terminal is None or not self.terminal.available():
             return
         for step in st.steps.values():
+            if trialhold.held(step):
+                continue
             name = step.get("step") or ""
             if step.get("mode") != "interactive" or step.get("consoleOpened") or step.get("consoleClosed") or \
                     name in st.finished or (name in st.transfer_requests and name not in st.step_decisions):
@@ -2498,6 +2569,8 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
+        if str(request.get("step") or "").startswith("k38-diagnostic-"):
+            return self._resolve_trial_diagnostic(card, request)
         if "allow" in request and request.get("choice") != "allow" or \
                 "instead" in request and request.get("choice") != "deny":
             raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
@@ -2521,6 +2594,7 @@ class FlowEngine(PlanEditing):
             focus = wanted
         step = st.steps.get(focus) or {}
         done = st.finished.get(focus) or {}
+        self._trial_check(step)
         result = done.get("result")
         valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
                  else ("box-allow", "deny") if done.get("network") else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
@@ -2873,6 +2947,7 @@ class FlowEngine(PlanEditing):
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
+        self._trial_check(step)
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
         done = st.finished.get(step.get("step")) or {}
@@ -3155,6 +3230,7 @@ class FlowEngine(PlanEditing):
                      step_id, [], kind="fix", round_no=round_no, prompt_text=prompt)
 
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
+        self._trial_check(ticket)
         info = ticket_of(st, ticket)
         repo = self._repo(card)
         # Sprzątanie jest powtarzalne: nieudane (np. pliki w worktree, K-15/LEGAL-60) ponawia się przy każdym
@@ -3191,6 +3267,8 @@ class FlowEngine(PlanEditing):
 
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
+        if trialhold.held(intent) or trialgate.blocked(intent.get("key") or ""):
+            return
         action, key = intent.get("action"), intent.get("key")
         if intent.get('youtrack'):
             try:
@@ -3288,6 +3366,8 @@ class FlowEngine(PlanEditing):
         return (st.started or {}).get("repo") or ""
 
     def _poll(self, card: str, step: dict) -> None:
+        if trialhold.held(step):
+            return
         if step.get("mode") == "interactive":
             self._poll_interactive(card, step)
             return
@@ -3389,6 +3469,8 @@ class FlowEngine(PlanEditing):
                     self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
 
     def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
+        if trialhold.held(step):
+            return
         name = step.get("step") or ""
         now = time.monotonic()
         limit = guard_seconds(self.settings)
@@ -3932,6 +4014,7 @@ class FlowEngine(PlanEditing):
     def _outside_ready(self, card: str, step: dict, done: dict, decision: dict):
         """Zgoda na polecenie poza piaskownicą: uruchamia je raz (jednostka systemd, kod wyjścia w pliku) i zwraca
         decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
+        self._trial_check(step)
         name = step.get("step") or ""
         events = [e for e in self.journal.read(card) if e.get("step") == name and
                   e.get("type") in ("outside.started", "outside.finished")]
@@ -4029,6 +4112,8 @@ class FlowEngine(PlanEditing):
 
     def _consent_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba czekająca na zgodę sprzed zmiany reguł: zatwierdzana tak, jak zostałaby zgłoszona dziś."""
+        if trialhold.held(step):
+            return
         if done.get("outside"):
             self._outside_recheck(card, step, done)
             return
@@ -4046,6 +4131,8 @@ class FlowEngine(PlanEditing):
     def _outside_recheck(self, card: str, step: dict, done: dict) -> None:
         """Prośba sprzed zmiany reguł (np. `E2E_PORT=… npm run e2e` odrzucane jako łańcuch, rodziny zamiast dokładnych
         poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
+        if trialhold.held(step):
+            return
         if step.get("runner") == boxstep.RUNNER:
             if done.get("canAllow", True):
                 self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
@@ -4123,6 +4210,9 @@ class FlowEngine(PlanEditing):
         return found.get("exitFile") or "/nonexistent/in/exit-code"
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
+        self._trial_check(step)
+        if card == "K-38" and not step.get("ticket"):
+            raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
         if step.get("runner") == boxstep.RUNNER:
             raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
         name = step.get("step") or ""
@@ -4144,6 +4234,7 @@ class FlowEngine(PlanEditing):
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
                 exit_file, "/bin/sh", "-c", command]
         with open(log, "ab") as out:
+            self._trial_check(step)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,

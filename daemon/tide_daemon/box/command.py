@@ -152,6 +152,12 @@ def _copy_log(path, out):
 
 
 def run_command(args, command, out, err, *, builder=None):
+    from . import trialgate
+    try:
+        trialgate.require_public()
+    except trialgate.TrialDenied as exc:
+        print(str(exc), file=err)
+        return 3
     project = bp.load_project(args.slug)
     if project is None:
         raise bb.BuildError("brak zatwierdzonego profilu projektu")

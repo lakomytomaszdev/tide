@@ -691,6 +691,8 @@ class BoxRunner:
     def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None,
               pass_fds: tuple[int, ...] = ()
               ) -> Started:
+        from . import trialgate
+        trialgate.require_step(step)
         bg = self._background(step)
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
         fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
@@ -727,6 +729,7 @@ class BoxRunner:
             refguard.begin(step.repo, self.card, step.step_id, bg.git_dir,
                            branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
             try:
+                trialgate.require_step(step)
                 proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                    env=self._client_env(), start_new_session=True, pass_fds=pass_fds)
             except BaseException:
@@ -858,6 +861,12 @@ def _demo_finish(runner, repo: str, card: str, step_id: str) -> int:
 
 
 def _demo(argv: list) -> int:
+    from . import trialgate
+    try:
+        trialgate.require_public()
+    except trialgate.TrialDenied as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     args, command = demo_args(argv)
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
