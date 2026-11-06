@@ -4101,7 +4101,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 last = own["runs"][-1]
                 self.journal.append(card, caretaker.ESCALATED, problem=problem["id"], step=last.get("step") or "",
                                     target=problem["step"], ticket=problem["ticket"], action="",
-                                    summary=caretaker.limit_summary(st, problem["id"], limit), recommendation="",
+                                    summary=caretaker.limit_summary(st, problem["id"], limit),
+                                    recommendation="Sprawdź podsumowanie prób i wybierz dalsze działanie w decyzji.",
                                     optionId="", failed=True, limit=True, count=own["count"],
                                     error=f"wyczerpany limit działań opiekuna ({limit})", code=caretaker.LIMIT)
                 st = self._caretaker_state(fold(self.journal.read(card)))
@@ -4152,7 +4153,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         zatrzymany albo niewystartowany): problem od razu wraca do użytkownika (PT-143)."""
         self.journal.append(card, caretaker.ESCALATED, problem=run.get("problem") or "", step=run.get("step") or "",
                             target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
-                            summary=summary, recommendation=recommendation, optionId="", failed=True,
+                            summary=summary, recommendation=recommendation or
+                            "Sprawdź błąd wyniku opiekuna i wybierz dalsze działanie w decyzji.", optionId="", failed=True,
                             error=error[:caretaker.REASON_MAX], code=code, mode=run.get("mode") or "background")
 
     def _caretaker_launch(self, card: str, st: FlowState, run: dict) -> None:

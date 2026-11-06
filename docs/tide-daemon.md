@@ -1776,10 +1776,14 @@ Procedura ręczna, poza `make test`:
    testowego expected.md. Kolejne oceny rób w nowych sesjach, bez poprzednich odpowiedzi.
 
 Ocena nie jest bramką testów i nie uruchamia się automatycznie. Testy nie wywołują
-prawdziwych modeli. Znana sprzeczność wymagania PT-156 z kontraktem PT-143: zły wynik
-lub niedozwolona akcja oddają problem natychmiast, a PT-156 oczekuje dopiero limitu.
-Testy `test_bad_*` oznaczają tę konkretną lukę jako oczekiwaną porażkę; ich obecność
-nie oznacza spełnienia kryterium. Rozstrzygnięcie kontraktu wymaga osobnej decyzji.
+prawdziwych modeli. Doprecyzowanie koordynatora z 06.11 zachowuje kontrakt PT-143:
+zły wynik lub niedozwolona akcja oddają natychmiast dokładnie jedną decyzję
+z rekomendacją i streszczeniem jednej próby (`test_bad_*`). Limit dotyczy błędów
+wykonania poprawnej akcji (`test_failed_action_limit_*`), np. wskazania obcego kroku
+w retry albo utrzymującego się błędu etapu. Każdy z pięciu przypadków ma oba warianty;
+nie ma testów oznaczonych jako oczekiwane porażki. Gdy błędny wynik nie niesie
+rekomendacji modelu, Tide dodaje techniczną wskazówkę sprawdzenia błędu i wyboru
+dalszego działania. Nie jest ona diagnozą przypisywaną modelowi.
 
 ## Opiekun karty (K-37)
 

@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import time
-from unittest import TestCase, expectedFailure, mock
+from unittest import TestCase, mock
 
 from tide_daemon.cardflow import caretaker
 from tide_daemon.cardflow.gitops import FlowGitError
@@ -39,6 +39,7 @@ class Scenario0311Test(faults.FaultReportCase):
             json.dump(settings, fh)
         self.reply = RETRY
         self.stage_fails = False
+        self.repair_stage = True
         self.stage_calls = 0
         self.preparing_retry = False
         self.install_boundaries(self.flow.engine)
@@ -55,7 +56,8 @@ class Scenario0311Test(faults.FaultReportCase):
     def install_boundaries(self, engine):
         def clean_tip(repo, branch, path):
             self.stage_calls += 1
-            if self.stage_fails and not (self.preparing_retry and self.reply.get("action") == "retry-stage"):
+            if self.stage_fails and not (self.preparing_retry and self.repair_stage
+                                         and self.reply.get("action") == "retry-stage"):
                 raise FlowGitError("przygotowanie review: katalog etapu niedostępny; GITHUB_TOKEN=" + faults.TOKEN)
             return engine.git.sha(repo, branch)
 
@@ -279,12 +281,7 @@ class Scenario0311Test(faults.FaultReportCase):
         self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("parentStep") == target]), 1)
         self.assertEqual(self.view(card)["decisions"], [])
 
-    def bad(self, case, malformed=False, known_contract=False):
-        answer = {"result": "question", "question": "Co zrobić?"} if malformed else {
-            "result": "done", "action": "approve-plan"}
-        card = self.prepare(case, answer)
-        before = len(self.events(card))
-        self.wait_for(lambda: self.of(card, "caretaker.escalated"), card)
+    def check_escalation(self, card, case, before, attempts):
         self.flow.stop()
         [decision] = self.view(card)["decisions"]
         annotation = decision["caretaker"]
@@ -293,43 +290,71 @@ class Scenario0311Test(faults.FaultReportCase):
         self.assertEqual(decision["kind"], {"1": "error", "2": "plan-revision-failed", "3": "error",
                                            "4a": "error", "4b": "caretaker"}[case])
         self.assertTrue(annotation["summary"])
+        self.assertTrue(annotation["recommendation"])
+        self.assertEqual(len(annotation["tried"]), attempts)
+        self.assertTrue(all(not t["ok"] and t["text"].startswith("Opiekun: ") for t in annotation["tried"]))
+        self.assertEqual(len(self.of(card, "caretaker.started")), attempts)
+        [escalation] = self.of(card, "caretaker.escalated")
+        self.assertEqual(bool(escalation.get("limit")), attempts > 1)
         notices = [e for e in self.events(card) if e["type"] in ("step.notice", "flow.notice")
                    and e.get("result") in ("error", "caretaker")]
         self.assertEqual(len(notices), 1)
-        # Ponowne złożenie dziennika i kolejkowanie powiadomień nie tworzą duplikatów.
+        # Powtórne złożenie dziennika nie uruchamia akcji ani powiadomienia drugi raz.
+        snapshot = self.events(card)
         for _ in range(2):
             self.flow.engine._queue_notices(card)
             self.flow.engine._caretake(card, fold(self.events(card)))
+        self.assertEqual(self.events(card), snapshot)
         self.assertEqual(len(self.view(card)["decisions"]), 1)
-        self.assertEqual(len([e for e in self.events(card) if e["type"] in ("step.notice", "flow.notice")
-                              and e.get("result") in ("error", "caretaker")]), 1)
-        if known_contract:
-            self.assertEqual(len(self.of(card, "caretaker.started")), 1)
-            self.assertEqual(len(self.of(card, "caretaker.escalated")), 1)
-            return
-        # To kryterium PT-156 jest sprzeczne z kontraktem PT-143. Testy oczekiwanej
-        # porażki utrwalają lukę, bez zmiany wcześniejszego kontraktu w tym tickecie.
-        self.assertEqual(len(self.of(card, "caretaker.started")), 2)
-        self.assertTrue(annotation["recommendation"])
-        self.assertEqual(len(annotation["tried"]), 2)
+
+    def bad(self, case, malformed=False):
+        answer = {"result": "question", "question": "Co zrobić?"} if malformed else {
+            "result": "done", "action": "approve-plan"}
+        card = self.prepare(case, answer)
+        before = len(self.events(card))
+        self.wait_for(lambda: self.of(card, "caretaker.escalated"), card)
+        # Doprecyzowanie koordynatora: niepoprawny wynik oddaje jedną próbę od razu (PT-143).
+        self.check_escalation(card, case, before, attempts=1)
+        [escalation] = self.of(card, "caretaker.escalated")
+        self.assertEqual(escalation["code"], "caretaker-question" if malformed else "bad-caretaker-action")
+
+    def failed_action(self, case):
+        answer = {**RETRY, "step": "K-999-obcy-1"}
+        code = "not-problem-step"
+        if case == "2":
+            answer = {"result": "done", "action": "return-plan", "feedback": "Popraw wiersz #1.",
+                      "reason": "Błąd formatu.", "findings": "999"}
+            code = "bad-findings"
+        elif case == "4b":
+            answer = {"result": "done", "action": "retry-stage"}
+            self.repair_stage = False
+            code = "stage-failed"
+        card = self.prepare(case, answer)
+        before = len(self.events(card))
+        self.wait_for(lambda: any(e.get("limit") for e in self.of(card, "caretaker.escalated")), card)
+        self.check_escalation(card, case, before, attempts=2)
+        self.assertEqual([(a["ok"], a["code"]) for a in self.of(card, "caretaker.action")], [(False, code)] * 2)
+        self.assertEqual([r["n"] for r in self.of(card, "caretaker.started")], [1, 2])
+        if case == "4b":
+            self.assertEqual(len(self.of(card, "stage.retry")), 2)
 
 
-def _scenario(case, bad=False, malformed=False, known_contract=False):
+def _scenario(case, bad=False, malformed=False, failed_action=False):
     def test(self):
-        self.bad(case, malformed, known_contract) if bad else self.good(case)
-    return expectedFailure(test) if bad and not known_contract else test
+        if failed_action:
+            self.failed_action(case)
+        elif bad:
+            self.bad(case, malformed)
+        else:
+            self.good(case)
+    return test
 
 
 for _case in ("1", "2", "3", "4a", "4b"):
     setattr(Scenario0311Test, "test_good_" + _case, _scenario(_case))
     setattr(Scenario0311Test, "test_bad_action_" + _case, _scenario(_case, bad=True))
     setattr(Scenario0311Test, "test_bad_result_" + _case, _scenario(_case, bad=True, malformed=True))
-    # Te same kontrole bezpieczeństwa muszą też przejść zwyczajnie, żeby expectedFailure
-    # nie ukrywało regresji kontekstu, powiadomień lub niedozwolonych skutków.
-    setattr(Scenario0311Test, "test_current_rejection_action_" + _case,
-            _scenario(_case, bad=True, known_contract=True))
-    setattr(Scenario0311Test, "test_current_rejection_result_" + _case,
-            _scenario(_case, bad=True, malformed=True, known_contract=True))
+    setattr(Scenario0311Test, "test_failed_action_limit_" + _case, _scenario(_case, failed_action=True))
 
 
 class ManualFixturesTest(TestCase):

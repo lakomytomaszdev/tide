@@ -7,6 +7,7 @@ Trafna akcja: `retry` z `report`.
 
 Kryterium diagnozy: Wskaż odmowę zapisu poprawnej ścieżki out i winę Tide. retry z instrukcją i report do Backlogu plasma-tide; bez pytania o zgodę na polecenie i bez obwiniania modelu za złą ścieżkę.
 
-Dla wariantu „opiekun zawodzi” wymaganie PT-156 to jedna decyzja z rekomendacją,
-streszczeniem i tried[] po caretakerActionLimit działaniach. Obecny kontrakt PT-143
-oddaje zły wynik/niedozwoloną akcję natychmiast — to jawna luka, nie zaliczony przypadek.
+Doprecyzowanie koordynatora z 06.11 zachowuje PT-143: zły wynik lub niedozwolona akcja
+oddają natychmiast jedną decyzję z rekomendacją, streszczeniem i tried[] jednej próby.
+Limit caretakerActionLimit dotyczy błędów wykonania poprawnej akcji; wtedy decyzja
+z rekomendacją i streszczeniem wszystkich prób pojawia się dopiero po limicie.
