@@ -1789,6 +1789,12 @@ class FlowEngine(PlanEditing):
         image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
+        from .. import resources
+        standard = resources.resolve("plan-standard")
+        if str(standard) not in prompt:
+            prompt += resources.instructions()
+        # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji.
+        read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
         prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji

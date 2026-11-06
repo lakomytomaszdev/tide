@@ -538,9 +538,11 @@ class IssueService:
         raw = b""
         try:
             if method == "Info":
+                from . import resources
                 result = {"capabilities": ["issue." + action for action in
                           ("create", "list", "show", "update", "submit", "reject", "reopen",
                            "attach", "detach", "attachment")] if self.store else []}
+                result["resources"] = resources.info()
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":

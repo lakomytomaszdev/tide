@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +33,16 @@ def parser():
     root.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     commands = root.add_subparsers(dest="command", required=True, parser_class=Parser)
     info = commands.add_parser("info", help="wersja i możliwości API")
+    next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
+    next_id.add_argument("repo")
+    next_id.add_argument("--prefix", default="")
+    next_id.add_argument("--count", type=int, default=1)
+    next_id.add_argument("--title", default="")
+    next_id.add_argument("--dry-run", action="store_true")
+    check = commands.add_parser("check-plans", help="kontrola planów przez zainstalowane narzędzie Tide")
+    check.add_argument("workspace", nargs="?", default=os.path.expanduser("~/DevWorkspace"))
+    check.add_argument("--no-youtrack", action="store_true")
+    check.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     issue = commands.add_parser("issue", help="sprawy")
     actions = issue.add_subparsers(dest="action", required=True, parser_class=Parser)
     create = actions.add_parser("create", help="zapisz szkic")
@@ -191,6 +202,31 @@ def main(argv=None):
         args = parser().parse_args(argv)
         api = PublicApi()
         result = api.call("Info")
+        if result["ok"] and args.command in ("next-id", "check-plans"):
+            asset = result.get("resources", {}).get(args.command, {})
+            if not asset.get("available") or not os.path.isfile(asset.get("path", "")):
+                raise CliError("unavailable", "Brak zainstalowanego narzędzia Tide; sprawdź tide info --json "
+                               "i instalację zasobów (TIDE_RESOURCES_DIR w środowisku usługi).")
+            module_path = asset.get("pythonPath", "")
+            if not module_path or not os.path.isdir(os.path.join(module_path, "tide_daemon")):
+                raise CliError("unavailable", "Brak modułów narzędzia Tide; sprawdź instalację usługi "
+                               "i pythonPath w tide info --json.")
+            if args.command == "next-id":
+                forwarded = [args.repo, "--prefix", args.prefix, "--count", str(args.count), "--title", args.title]
+                if args.dry_run:
+                    forwarded.append("--dry-run")
+            else:
+                forwarded = [args.workspace]
+                if args.no_youtrack:
+                    forwarded.append("--no-youtrack")
+                if as_json:
+                    forwarded.append("--json")
+            try:
+                env = {**os.environ, "PYTHONPATH": module_path}
+                return subprocess.run([sys.executable, asset["path"], *forwarded],
+                                      env=env, check=False).returncode
+            except OSError:
+                raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
         if result["ok"] and args.command != "info":
             if f"issue.{args.action}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")

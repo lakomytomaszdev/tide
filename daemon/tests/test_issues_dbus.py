@@ -215,7 +215,12 @@ class IssuesDbusTest(unittest.TestCase):
         self.start()
         info = self.run_cli("info")
         self.assertEqual(info["apiVersion"], 1)
-        self.assertIn("issue.create", info["capabilities"])
+        self.assertEqual(set(info["capabilities"]), {
+            "issue.create", "issue.list", "issue.show", "issue.update", "issue.submit",
+            "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment",
+        })
+        self.assertEqual(set(info["resources"]), {"plan-standard", "next-id", "check-plans"})
+        self.assertTrue(all(item["available"] for item in info["resources"].values()))
         self.assertEqual(self.run_cli("issue", "list")["issues"], [])
         self.assertFalse(Path(self.board).exists())
         # Istniejąca karta nadal jest kartą, a sprawa nie zużywa jej licznika.

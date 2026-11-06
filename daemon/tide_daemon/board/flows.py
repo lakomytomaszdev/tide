@@ -26,9 +26,11 @@ zaczynów (PREVIOUS_SEEDS: skróty SHA-256) — szablonu zmienionego przez użyt
 import hashlib
 import os
 import re
+import shlex
 
 from .frontmatter import Document, FrontmatterError
 from .model import DEFAULT_ENTRY, ENTRIES, LEGACY_SPEC_MODE, MODES
+from .. import resources
 
 # Klucz szablonu `flows/<klucz>.md` z wejścia i trybu. Każde nowe wejście dostaje tu własny klucz (i własny
 # SEED_FLOWS), a Planowanie — klucz trybu. Plik szablonu zostaje pod starą nazwą, więc polecenie się nie zmienia.
@@ -42,7 +44,8 @@ def flow_key(entry: str, mode: str) -> str:
 
 
 PLACEHOLDERS = ("card_id", "title", "description", "project", "repo", "docs_dir", "branch", "tool",
-                "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit", "projects")
+                "docs_note", "spec", "spec_file", "check", "check_label", "finish", "spec_commit", "projects",
+                "tide_standard", "repo_shell")
 CHECKS = ("auto", "manual")
 _FIELD = re.compile(r"\{(" + "|".join(PLACEHOLDERS) + r")\}")
 
@@ -178,6 +181,27 @@ PREVIOUS_SEEDS = {
              "6ccad84fcb7f14ce65b086dab6d3d6cd2828b6e08cee03bf387be975d66b8b1a"},
 }
 
+# Zachowujemy odciski poprzednich kompletnych treści, zanim zmienimy odsyłacze.
+# W plikach szablonów zostaje pole; lokalizacja jest rozwiązywana dopiero przy użyciu.
+for _key, _seed in SEED_FLOWS.items():
+    PREVIOUS_SEEDS[_key].add(hashlib.sha256(_seed.encode("utf-8")).hexdigest())
+SEED_FLOWS = {key: text.replace(STANDARD, "{tide_standard}").replace(TOOLS_MAKE, "tide")
+              .replace("next-id REPO={repo}", "next-id {repo_shell}")
+              .replace('TITLE="…"', '--title "…"').replace("PREFIX=<prefiks>", "--prefix <prefiks>")
+              .replace("wersja 1.1", "wersja 1.3").replace("tide-flow: 3", "tide-flow: 5")
+              .replace("tide-flow: 4", "tide-flow: 5") for key, text in SEED_FLOWS.items()}
+for _key in SEED_FLOWS:
+    SEED_FLOWS[_key] = SEED_FLOWS[_key].replace(
+        "Użyj skilla `grilling`, jeśli go\n   masz (Claude Code). Jeśli nie (Codex) — zrób to samo słowami: pytaj po kolei, po jedno–trzy pytania\n   naraz,",
+        "Przeczytaj pełny SKILL.md skilla `grilling` i jego zasoby. Pytaj po kolei, po jedno–trzy pytania\n   naraz,").replace(
+        "użyj skilla `grilling`, jeśli go masz (Claude Code). Jeśli nie (Codex) — przepytaj mnie\n   słowami:",
+        "przeczytaj pełny SKILL.md skilla `grilling` i jego zasoby. Przepytaj mnie:")
+    SEED_FLOWS[_key] += (
+        "\nInstrukcje metodologii czytaj z katalogu skilli swojego programu i oryginalnych zasobów SKILL.md. "
+        "Brak wymaganej instrukcji oznacza jawny błąd kroku z nazwą skilla; zainstaluj ją w "
+        "~/.claude/skills (Claude) albo ~/.agents/skills (Codex), zanim ponowisz pracę. "
+        "Nie zastępuj brakujących instrukcji domysłem.\n")
+
 
 CHECK_LABELS = {"auto": "auto — wystarczy review AI, bez testu ręcznego",
                 "manual": "manual — po review AI test ręczny użytkownika"}
@@ -246,8 +270,12 @@ def legacy_mode_warning(rel: str, text: str | None) -> str:
     """Ostrzeżenie o szablonie Tylko specyfikacja zmienionym przez użytkownika, który w nagłówku nadal ma
     `mode: spec` (dawniej tryb, teraz wejście). Szablonu nie ruszamy — nagłówek nie wpływa na polecenie.
     Pusty napis: brak szablonu, nietknięty dawny zaczyn (podmieni go migrate_flows) albo nagłówek bez dawnego zapisu."""
-    if text is None or (rel == os.path.join("flows", "spec.md") and outdated("spec", text)):
+    if text is None or any(outdated(key, text) for key in FLOW_KEYS):
         return ""
+    if "DevWorkspace/plasma-tide" in text and not os.path.isfile(os.path.expanduser(STANDARD)):
+        return (f"{rel.replace(os.sep, '/')}: własny szablon pozostaje bez zmian; odwołanie do checkoutu "
+                "autora jest niedostępne. Odczytaj lokalizację standardu przez tide info --json, "
+                "użyj pola {tide_standard} oraz tide next-id / tide check-plans.")
     try:
         doc = Document.parse(text)
     except FrontmatterError:
@@ -271,6 +299,9 @@ def render(template: str, values: dict) -> str:
     (własny szablon użytkownika sprzed PT-28) dostaje listę dodatkowych repozytoriów na końcu — karta
     z kilkoma projektami nigdy nie traci tej informacji."""
     body = body_of(template)
+    if "{tide_standard}" in body:
+        values = {**values, "tide_standard": str(resources.resolve("plan-standard"))}
+    values = {**values, "repo_shell": shlex.quote(str(values.get("repo") or ""))}
     text = _FIELD.sub(lambda m: str(values.get(m.group(1)) or ""), body)
     if values.get("projects") and "{projects}" not in body:
         text = text.rstrip("\n") + "\n" + str(values["projects"]) + "\n"

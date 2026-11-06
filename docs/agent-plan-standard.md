@@ -92,8 +92,8 @@ Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dla
    Plan w innym worktree jest niewidoczny z głównego katalogu, a i tak zajmuje swoje numery.
    Nowy plan nie zaczyna od 1, a numerów nie używa się ponownie, także po `odrzucone`.
    Plany projektu z dokumentami „w Tide” (`tide-board/docs/<projekt>/plans/`) zajmują numery tak samo.
-   **Nowy numer lokalny bierzesz wyłącznie z** `make -C ~/DevWorkspace/plasma-tide next-id REPO=<repozytorium>
-   [COUNT=N] [TITLE="…"]` (`TITLE` to tytuł wiersza w planie, w języku planu; równoważnie `tools/next_id.py`): liczy to samo pod blokadą i zapisuje rezerwację
+   **Nowy numer lokalny bierzesz wyłącznie z** `tide next-id <repozytorium>
+   [--count N] [--title "…"]` (`--title` to tytuł wiersza w planie, w języku planu): liczy to samo pod blokadą i zapisuje rezerwację
    w `~/.local/state/tide/ticket-ids.json`, więc dwie równoległe sesje nie dostaną tego samego numeru.
    Dla prefiksu z YouTracka odmawia — numer nadaje YouTrack. Ręczne liczenie tylko wtedy, gdy narzędzia nie ma.
 4. **Zanim założysz projekt w trackerze albo zmienisz prefiks**, sprawdź, czy klucz nie jest już
@@ -102,8 +102,10 @@ Jeden numer to zawsze jedno zadanie — w całym repozytorium i w trackerze. Dla
    tytułami w dwóch planach, prefiks lokalny równy kluczowi projektu w YouTracku, prefiks planu
    `youtrack` różny od `tracker-project` bez mapy migracji, a łagodnie: numer zarezerwowany dla innego
    tytułu (często ten sam ticket w innym języku) i nowy plan, który zaczyna numerację od nowa. Koordynator przed nadaniem nowego numeru
-   albo założeniem projektu w trackerze uruchamia `make -C ~/DevWorkspace/plasma-tide check-plans`
-   (albo równoważnie `tools/check_plans.py`; kod wyjścia 1 to kolizja — zatrzymaj się i zapytaj użytkownika).
+   albo założeniem projektu w trackerze uruchamia `tide check-plans`
+   (kod wyjścia 1 to kolizja — zatrzymaj się i zapytaj użytkownika).
+   Lokalizacje standardu i narzędzi podaje `tide info --json`; polecenia korzystają z zasobów instalacji.
+   W checkoutcie odpowiednikami są `make next-id REPO=…` i `make check-plans`.
 
 ## Tabela
 
