@@ -1,6 +1,7 @@
 """Testy unittest w osobnych procesach, z pełnym raportem po wszystkich modułach."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import fcntl
 import fnmatch
 import json
 import os
@@ -23,6 +24,64 @@ ROOT = Path(__file__).resolve().parents[1]
 def default_jobs():
     cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
     return max(1, cores - 2)
+
+
+SLOT_HELD = "TIDE_TEST_SLOT_HELD"
+
+
+def slots_dir():
+    """Katalog wspólnej puli miejsc: jeden dla wszystkich przebiegów testów użytkownika na tej maszynie."""
+    override = os.environ.get("TIDE_TEST_SLOTS_DIR")
+    if override:
+        return Path(override)
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return Path(runtime) / "tide-test-slots"
+
+
+class MachineSlots:
+    """Wspólna pula miejsc na moduły testów dla wszystkich przebiegów naraz (06.11: cztery równoległe `make test`
+    brały po 14 procesów na 16 rdzeniach — obciążenie 24, losowe porażki testów zależnych od czasu i kolejka
+    poleceń poza piaskownicą). Miejsce to blokada `flock` na pliku: zwalnia się samo, gdy proces zginie.
+    Moduł uruchomiony wewnątrz innego modułu (test samego uruchamiacza) nie czeka na pulę."""
+
+    def __init__(self, size=None, directory=None):
+        self.size = max(1, int(size or os.environ.get("TIDE_TEST_SLOTS") or default_jobs()))
+        self.directory = Path(directory) if directory else slots_dir()
+        self.disabled = bool(os.environ.get(SLOT_HELD))
+        self.waited = False
+
+    def acquire(self):
+        if self.disabled:
+            return None
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            (self.directory / "slot-0.lock").touch()
+        except OSError:
+            # Piaskownica kroku albo pudełko bez zapisywalnego katalogu puli: przebieg działa jak dawniej, bez puli.
+            self.disabled = True
+            return None
+        while True:
+            for index in range(self.size):
+                try:
+                    handle = open(self.directory / f"slot-{index}.lock", "a+")
+                except OSError:
+                    continue
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return handle
+                except BlockingIOError:
+                    handle.close()
+            if not self.waited:
+                self.waited = True
+                print(f"Pula testów maszyny zajęta ({self.size} miejsc) — moduły czekają na inne przebiegi.",
+                      flush=True)
+            time.sleep(0.2)
+
+    @staticmethod
+    def release(handle):
+        if handle is not None:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
 
 
 def modules_for(entries, root=ROOT):
@@ -105,14 +164,22 @@ def run_worker(module, report, root=ROOT, directory=False, inventory=False):
     return int(not result.wasSuccessful())
 
 
-def run_module(module, output, root=ROOT):
+def run_module(module, output, root=ROOT, slots=None):
+    handle = slots.acquire() if slots is not None else None
+    try:
+        return _run_module(module, output, root)
+    finally:
+        MachineSlots.release(handle)
+
+
+def _run_module(module, output, root=ROOT):
     started = time.monotonic()
     stem = module.replace("/", "__").removesuffix(".py")
     log, report = output / (stem + ".log"), output / (stem + ".json")
     # Każdy moduł dostaje własny katalog stanu: test bez izolacji nie czyta ani nie nadpisuje stanu działającej
     # usługi użytkownika (05.11: test tablicy zapisał atrapę K-1 do ~/.local/state/tide/board-derived.json).
     state = tempfile.mkdtemp(prefix="tide-test-state-")
-    env = {**os.environ, "XDG_STATE_HOME": state}
+    env = {**os.environ, "XDG_STATE_HOME": state, SLOT_HELD: "1"}
     with log.open("w", encoding="utf-8") as stream:
         try:
             proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,
@@ -134,8 +201,9 @@ def run_module(module, output, root=ROOT):
     return data
 
 
-def execute(modules, jobs, output, root=ROOT):
+def execute(modules, jobs, output, root=ROOT, slots=None):
     output.mkdir(parents=True, exist_ok=True)
+    slots = slots if slots is not None else MachineSlots()
     results = []
     parallel = [m for m in modules if m not in SERIAL_MODULES]
     serial = [m for m in modules if m in SERIAL_MODULES]
@@ -148,12 +216,12 @@ def execute(modules, jobs, output, root=ROOT):
             print(Path(result["log"]).read_text(encoding="utf-8", errors="replace"), flush=True)
 
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = [pool.submit(run_module, module, output, root) for module in parallel]
+        futures = [pool.submit(run_module, module, output, root, slots) for module in parallel]
         for future in as_completed(futures):
             collect(future.result())
     for module in serial:
         print(f"[OSOBNO] {module}: {SERIAL_MODULES[module]}", flush=True)
-        collect(run_module(module, output, root))
+        collect(run_module(module, output, root, slots))
     return sorted(results, key=lambda r: r["module"])
 
 

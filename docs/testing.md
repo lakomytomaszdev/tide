@@ -35,7 +35,10 @@ testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cich
 ## Równoległość i wynik
 
 Domyślnie liczba procesów to liczba rdzeni dostępnych procesowi minus dwa, minimum jeden.
-`JOBS=N` nadpisuje ten limit. Każdy plik `test*.py` jest osobnym procesem systemowego Pythona;
+`JOBS=N` nadpisuje ten limit. Wszystkie przebiegi naraz (np. kilka ticketów Tide) dzielą wspólną pulę
+miejsc maszyny o tej samej wielkości (`$XDG_RUNTIME_DIR/tide-test-slots`, blokady `flock`): drugi
+`make test` nie dokłada kolejnych procesów, tylko czeka na wolne miejsca modułów. `TIDE_TEST_SLOTS=N`
+zmienia wielkość puli, `TIDE_TEST_SLOTS_DIR` jej katalog. Każdy plik `test*.py` jest osobnym procesem systemowego Pythona;
 `unittest discover` używa tego samego katalogu najwyższego `.` i tego samego wzorca jak wcześniej.
 Nie dzielimy klasy ani pojedynczego testu. Zachowujemy także powtórzenia klas importowanych
 przez inne moduły, które uruchamiał dotychczasowy `discover`. Hook pakietu `load_tests` wymaga
