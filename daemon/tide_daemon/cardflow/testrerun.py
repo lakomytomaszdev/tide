@@ -18,7 +18,8 @@ VALUE = r"[A-Za-z0-9_./:@+-]+"
 # zmieniałyby recepturę, więc taki przebieg idzie w całości (review Astry 06.11, runda 2).
 FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS)={VALUE})*$")
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
-JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?: |$)")
+JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?= |$)")
+OUTPUT = re.compile(rf"(?:^| )TEST_OUTPUT=({VALUE})(?= |$)")
 # Nagłówek przebiegu uruchamiacza (pierwsza taka linia dziennika); dowolne późniejsze „logi:” z wyjścia testu
 # nie mogą wskazać cudzego raportu (review Astry 06.11).
 HEADER = re.compile(r"^Moduły: (\d+), JOBS=\d+, logi: (\S+)$", re.M)
@@ -79,11 +80,15 @@ def rerun_command(modules: list[str], sha: str, previous: str, command: str = ""
     jak w pełnym przebiegu; zmienne środowiska sprzed `make` i JOBS zostają."""
     command = command.strip()
     prefix = PREFIX.match(command).group(1) if PREFIX.match(command) else ""
-    jobs = JOBS.search(command)
+    # Zmienna z wiersza `make` ma pierwszeństwo przed środowiskiem, więc wygrywa ostatnie JOBS; TEST_OUTPUT Make
+    # przekłada na --output (review Astry, runda 3).
+    jobs = (JOBS.findall(command) or [None])[-1]
+    output = (OUTPUT.findall(command) or [None])[-1]
     lines = [f"echo 'Tide: ten sam HEAD {sha[:12]} i czyste drzewo co w przebiegu {previous} — "
              f"ponawiam tylko padnięte moduły ({len(modules)}); TIDE_FULL_RUN=1 wymusza pełny przebieg'",
              f"{prefix}/usr/bin/python3 tools/test_runner.py"
-             + (f" --jobs {shlex.quote(jobs.group(1))}" if jobs else "")
+             + (f" --jobs {shlex.quote(jobs)}" if jobs else "")
+             + (f" --output {shlex.quote(output)}" if output else "")
              + " --modules " + " ".join(shlex.quote(module) for module in modules)]
     return "\n".join(lines)
 
