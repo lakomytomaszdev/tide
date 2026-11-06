@@ -10,7 +10,8 @@ SERVICE = "org.tide.Daemon"
 PATH = "/Issues"
 IFACE = "org.tide.Daemon.Issues"
 EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
-              "conflict": 4, "not-found": 5, "git-busy": 6, "io-error": 7, "broken-file": 7}
+              "conflict": 4, "version-conflict": 4, "not-found": 5,
+              "git-busy": 6, "io-error": 7, "broken-file": 7}
 
 
 class CliError(Exception):

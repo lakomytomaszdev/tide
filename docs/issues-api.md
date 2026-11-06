@@ -65,7 +65,11 @@ Co najmniej jedno z tych trzech pól musi być obecne. Pominięte pole pozostaje
 tytułu i istnienia projektu są identyczne jak dla create. Nieobsługiwane/powtórzone pola są
 błędem danych. `expectedVersion` musi być dodatnią liczbą całkowitą (bez bool i ułamka) i jest
 warunkiem zgodności z obecną wersją, a nie żądaniem ustawienia `version`. Niezgodność oznacza
-`conflict`, bez zapisu. Skuteczna zmiana zwiększa wersję o jeden; `id` i `created` pozostają
+`version-conflict`, bez zapisu. Odpowiedź błędu zawiera aktualną wersję jako dodatnią liczbę
+całkowitą `currentVersion`, np.
+`{"ok":false,"apiVersion":1,"error":"version-conflict","message":"Wersja sprawy uległa zmianie.","currentVersion":2}`.
+CLI zwraca kod wyjścia 4 i zachowuje `currentVersion` w wyniku `--json`.
+Skuteczna zmiana zwiększa wersję o jeden; `id` i `created` pozostają
 bez zmiany, `updated` ustala usługa. Samo ponowne przesłanie tych samych wartości nie zmienia
 wersji. Usługa sprawdza warunek także przy takim żądaniu. Nie jest to idempotencja `requestId`.
 Wspólna funkcja walidacji create/update jest już dostępna po stronie usługi.
@@ -103,11 +107,23 @@ Odczyt odrzuca dowiązania, pliki specjalne, nadmierny rozmiar, niezgodne metada
 daje `broken-file`, nie blokując pozostałych.
 
 Numery S-N są osobne od K-N i PT-N. Lokalny rejestr `.git/tide-issues.json`, chroniony `flock`
-(`.git/tide-issues.lock`), zawiera licznik i trwałe potwierdzenia `requestId`. Licznik jest
+(`.git/tide-issues.lock`), zawiera licznik (`format: 2`, `next`). Trwałe potwierdzenia `requestId`
+są osobnymi plikami `.git/tide-issue-requests/<sha256-klucza>.json`, zawierającymi skrót ładunku
+(`fingerprint`), pierwotny wynik (`issue`) i znacznik publikacji (`published`). Odczyt pojedynczego
+klucza nie ładuje całej historii. Limit pliku potwierdzenia uwzględnia maksymalny raport po
+ucieczce JSON; zapis sprawdza tę samą granicę co odczyt, bez limitu łącznego rozmiaru historii.
+Licznik jest
 zapisywany atomowo i synchronizowany na dysk przed publikacją. Nie cofa go usunięcie sprawy ani
-revert. Brak rejestru powoduje odbudowę licznika z plików i historii gita; uszkodzony rejestr
-wstrzymuje create. Rejestru nie należy usuwać: potwierdzenia kluczy są lokalnym stanem usługi
-i muszą być objęte kopią zapasową `.git`, jeżeli potrzebne jest ich przeniesienie na inny komputer.
+revert. Brak rejestru powoduje odbudowę licznika z plików, historii gita i zachowanych potwierdzeń;
+uszkodzony rejestr wstrzymuje create. Rejestru i potwierdzeń nie należy usuwać: są lokalnym stanem
+usługi i muszą być objęte kopią zapasową `.git`, jeżeli potrzebne jest ich przeniesienie na inny komputer.
+
+Przy pierwszym create dawny rejestr formatu 1 jest rozdzielany pod tą samą blokadą, również
+gdy przekroczył dawną granicę 128 MiB. Dopiero po utrwaleniu wszystkich potwierdzeń usługa
+atomowo zastępuje go licznikiem formatu 2. Przerwanie pozostawia pełny rejestr formatu 1;
+ponowienie bezpiecznie powtarza migrację, zachowując także niedokończone intencje. Ten jednorazowy
+odczyt starego rejestru wymaga pamięci proporcjonalnej do jego rozmiaru; dalsze create odczytują
+tylko licznik i potwierdzenie wskazanego klucza.
 
 Intencja z kluczem obejmuje pierwotny wynik i jest utrwalana przed publikacją całego katalogu
 przez rename. Po awarii podczas publikacji ponowienie tego samego `requestId` dokańcza tę
@@ -147,7 +163,7 @@ Kody zakończenia:
 | 1 | nieoczekiwany błąd usługi (`internal`, pozostałe nieznane kody) |
 | 2 | argumenty lub dane (`bad-request`), np. „Raport przekracza 64 KiB.” |
 | 3 | brak usługi/magistrali, wyłączone sprawy lub niezgodne API (`unavailable`, `api-incompatible`) |
-| 4 | konflikt klucza lub przyszły konflikt wersji (`conflict`) |
+| 4 | konflikt klucza (`conflict`) albo przyszły konflikt wersji (`version-conflict`, z `currentVersion`) |
 | 5 | brak sprawy (`not-found`), np. „Nie ma sprawy S-99.” |
 | 6 | repozytorium zajęte operacją z konfliktami (`git-busy`) |
 | 7 | błąd odczytu/zapisu albo uszkodzona sprawa (`io-error`, `broken-file`) |

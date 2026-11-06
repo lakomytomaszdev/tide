@@ -19,6 +19,9 @@ from .board.model import BoardError, SLUG_RE
 
 API_VERSION = 1
 REPORT_MAX = 64 * 1024
+# Raport może wymagać sześciu bajtów na znak po ucieczce JSON (np. U+0001).
+RECEIPT_MAX = 6 * REPORT_MAX + 8192
+KEY_RE = re.compile(r"[0-9a-f]{64}\Z")
 ID_RE = re.compile(r"S-([1-9][0-9]{0,8})\Z")
 CREATE_FIELDS = {"report", "title", "project", "requestId"}
 UPDATE_FIELDS = {"expectedVersion", "report", "title", "project"}
@@ -40,7 +43,7 @@ def _json(text):
     try:
         return json.loads(text, object_pairs_hook=pairs,
                           parse_constant=lambda value: fail("JSON zawiera niedozwoloną liczbę."))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         fail("Żądanie musi być poprawnym JSON.")
 
 
@@ -139,8 +142,8 @@ class IssueStore:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 fail("Sprawa zawiera plik inny niż zwykły plik.", "broken-file")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(limit + 1)
-            if len(raw) > limit:
+                raw = stream.read() if limit is None else stream.read(limit + 1)
+            if limit is not None and len(raw) > limit:
                 fail("Plik sprawy przekracza dopuszczalny rozmiar.", "broken-file")
             return raw.decode("utf-8")
         finally:
@@ -186,7 +189,7 @@ class IssueStore:
             if not os.path.lexists(self.root / "issues" / ident):
                 fail(f"Nie ma sprawy {ident}.", "not-found")
             fail(f"Sprawa {ident} jest uszkodzona: brakuje pliku.", "broken-file")
-        except (OSError, ValueError, TypeError, KeyError, BoardError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, RecursionError, BoardError) as exc:
             fail(f"Sprawa {ident} jest uszkodzona: {exc}.", "broken-file")
 
     def list(self):
@@ -229,12 +232,23 @@ class IssueStore:
         path = self._path(".git/tide-issues.json")
         if path.exists():
             try:
-                ledger = json.loads(self._read(".git/tide-issues.json", limit=128 * 1024 * 1024))
+                # Dawny format mógł przekroczyć 128 MiB. Jednorazowy odczyt migracji
+                # nie ma tej granicy; format 2 zapisuje tu tylko stałej wielkości licznik.
+                ledger = json.loads(self._read(".git/tide-issues.json", limit=None))
                 if (type(ledger["next"]) is not int or ledger["next"] < 1 or
-                        not isinstance(ledger["requests"], dict) or ledger["format"] != 1):
+                        type(ledger["format"]) is not int or ledger["format"] not in (1, 2)):
                     raise ValueError("niepoprawny licznik")
+                if ledger["format"] == 1:
+                    if not isinstance(ledger["requests"], dict):
+                        raise ValueError("niepoprawne potwierdzenia")
+                    for key, receipt in ledger["requests"].items():
+                        self._save_receipt(key, receipt)
+                    # Przełączenie dopiero po utrwaleniu wszystkich potwierdzeń.
+                    # Przerwana migracja powtarza te same zapisy, zachowując format 1.
+                    ledger = {"format": 2, "next": ledger["next"]}
+                    self._save_ledger(ledger)
                 return ledger
-            except (KeyError, ValueError, TypeError) as exc:
+            except (KeyError, ValueError, TypeError, RecursionError) as exc:
                 fail(f"Uszkodzony rejestr numerów spraw: {exc}.", "broken-file")
         # Kopia bez .git/rejestru: odbudowa z historii, także usuniętych spraw.
         history = self.repo.git.run(self.board.root, "log", "--all", "--format=", "--name-only",
@@ -245,10 +259,41 @@ class IssueStore:
         folder = self._path("issues")
         if folder.exists():
             nums += [int(m.group(1)) for m in map(ID_RE.fullmatch, os.listdir(folder)) if m]
-        return {"format": 1, "next": max(nums, default=0) + 1, "requests": {}}
+        receipts = self._path(".git/tide-issue-requests")
+        if receipts.exists():
+            for name in os.listdir(receipts):
+                if name.endswith(".json") and KEY_RE.fullmatch(name[:-5]):
+                    receipt = self._receipt(name[:-5])
+                    nums.append(int(self._id(receipt["issue"]["id"])[2:]))
+        return {"format": 2, "next": max(nums, default=0) + 1}
 
     def _save_ledger(self, ledger):
         _atomic(self._path(".git/tide-issues.json"), _encoded(ledger) + "\n")
+
+    def _receipt(self, key):
+        try:
+            receipt = json.loads(self._read(f".git/tide-issue-requests/{key}.json", limit=RECEIPT_MAX))
+            if (type(receipt["published"]) is not bool or
+                    not KEY_RE.fullmatch(receipt["fingerprint"]) or
+                    not isinstance(receipt["issue"], dict)):
+                raise ValueError("niepoprawne potwierdzenie")
+            self._id(receipt["issue"]["id"])
+            return receipt
+        except FileNotFoundError:
+            return None
+        except (KeyError, ValueError, TypeError, RecursionError, BoardError) as exc:
+            fail(f"Uszkodzone potwierdzenie utworzenia sprawy: {exc}.", "broken-file")
+
+    def _save_receipt(self, key, receipt):
+        if not isinstance(key, str) or not KEY_RE.fullmatch(key):
+            fail("Uszkodzony klucz potwierdzenia sprawy.", "broken-file")
+        text = _encoded(receipt) + "\n"
+        if len(text.encode("utf-8")) > RECEIPT_MAX:
+            fail("Potwierdzenie sprawy przekracza dopuszczalny rozmiar.", "broken-file")
+        folder = self._path(".git/tide-issue-requests")
+        folder.mkdir(exist_ok=True)
+        _sync_dir(folder.parent)
+        _atomic(self._path(f".git/tide-issue-requests/{key}.json"), text)
 
     def create(self, request):
         data = validate(request)
@@ -270,7 +315,7 @@ class IssueStore:
             fingerprint = hashlib.sha256(_encoded(payload).encode("utf-8")).hexdigest()
             request_id = data.get("requestId")
             key = hashlib.sha256(request_id.encode("utf-8")).hexdigest() if request_id else None
-            previous = ledger["requests"].get(key) if key else None
+            previous = self._receipt(key) if key else None
             if previous:
                 if previous["fingerprint"] != fingerprint:
                     fail("requestId był już użyty z innymi danymi.", "conflict")
@@ -291,13 +336,12 @@ class IssueStore:
                         "state": "draft", "version": 1, "created": now, "updated": now, "card": None}
                 issue = self._issue(meta, data["report"])
                 ledger["next"] = number + 1
-                if key:
-                    ledger["requests"][key] = {"fingerprint": fingerprint, "issue": issue, "published": False}
                 self._save_ledger(ledger)
+                if key:
+                    self._save_receipt(key, {"fingerprint": fingerprint, "issue": issue, "published": False})
             self._publish(issue)
             if key:
-                ledger["requests"][key]["published"] = True
-                self._save_ledger(ledger)
+                self._save_receipt(key, {"fingerprint": fingerprint, "issue": issue, "published": True})
             error = self.repo.commit(f"{issue['id']}: create issue", [f"issues/{issue['id']}"])
             return {"issue": issue, "existing": bool(previous), "commitError": error}
 

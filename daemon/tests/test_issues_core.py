@@ -1,4 +1,5 @@
 """Trwałość spraw i reguły granicy zapisu, bez usług pulpitu."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -48,7 +49,8 @@ class IssuesCoreTest(unittest.TestCase):
                 result = self.public(data)
                 self.assertEqual(result["error"], "bad-request", result)
                 self.assertFalse(self.root.exists())
-        for raw in ('{"title":"a","title":"b","report":"x"}', '{"report":NaN}', 'bad'):
+        for raw in ('{"title":"a","title":"b","report":"x"}', '{"report":NaN}', 'bad',
+                    '[' * 35000 + ']' * 35000):
             self.assertEqual(json.loads(self.service.call("Create", raw))["error"], "bad-request")
         self.assertFalse(self.root.exists())
 
@@ -160,6 +162,111 @@ class IssuesCoreTest(unittest.TestCase):
             with self.assertRaises(BoardError) as error:
                 self.store.show(ident)
             self.assertEqual(error.exception.code, "bad-request")
+
+    def test_deep_json_in_manifest_and_frontmatter_is_isolated(self):
+        self.create()
+        self.create()
+        report = self.root / "issues/S-1/report.md"
+        manifest = self.root / "issues/S-1/attachments.json"
+        original = report.read_text()
+        nested = "[" * 35000 + "]" * 35000
+        for source in ("manifest", "frontmatter"):
+            with self.subTest(source=source):
+                report.write_text(original.replace("card: null", "card: " + nested)
+                                  if source == "frontmatter" else original)
+                manifest.write_text(nested if source == "manifest" else
+                                    '{"version":1,"attachments":[]}')
+                result = json.loads(self.service.call("List"))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual([issue["id"] for issue in result["issues"]], ["S-2"])
+                self.assertEqual([(e["id"], e["error"]) for e in result["errors"]],
+                                 [("S-1", "broken-file")])
+                self.assertEqual(json.loads(self.service.call("Show", "S-1"))["error"], "broken-file")
+                self.assertTrue(json.loads(self.service.call("Show", "S-2"))["ok"])
+
+    def test_large_idempotency_history_survives_restart_and_new_creates(self):
+        data = {"title": "Duży raport", "report": "x" * 65536, "requestId": "klucz-1"}
+        first = self.public(data)
+        self.assertTrue(first["ok"], first)
+        # Historia w dotychczasowym formacie przekracza dawny limit 128 MiB.
+        # Pełne wyniki pozostają potrzebne także po późniejszych zmianach spraw.
+        payload = {"title": data["title"], "report": data["report"], "project": None}
+        fingerprint = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                               separators=(",", ":")).encode()).hexdigest()
+        ledger = {"format": 1, "next": 2101, "requests": {}}
+        for number in range(1, 2101):
+            ident = f"S-{number}"
+            key = hashlib.sha256(f"klucz-{number}".encode()).hexdigest()
+            issue = {**first["issue"], "id": ident,
+                     "paths": {"report": f"issues/{ident}/report.md",
+                               "manifest": f"issues/{ident}/attachments.json"}}
+            ledger["requests"][key] = {"fingerprint": fingerprint, "issue": issue, "published": True}
+        self.store._save_ledger(ledger)
+        self.assertGreater((self.root / ".git/tide-issues.json").stat().st_size, 128 * 1024 * 1024)
+        del ledger
+        self.service = IssueService(BoardStore(str(self.root)))
+        replay = self.public(data)
+        self.assertTrue(replay["ok"], replay)
+        self.assertTrue(replay["existing"])
+        self.assertEqual(replay["issue"], first["issue"])
+        created = self.public({**data, "requestId": "nowy"})
+        self.assertTrue(created["ok"], created)
+        self.assertEqual(created["issue"]["id"], "S-2101")
+        self.assertLess((self.root / ".git/tide-issues.json").stat().st_size, 1024)
+        receipts = list((self.root / ".git/tide-issue-requests").glob("*.json"))
+        self.assertEqual(len(receipts), 2101)
+        self.assertGreater(sum(path.stat().st_size for path in receipts), 128 * 1024 * 1024)
+        # Kolejny restart sprawdza już docelowy format i pierwszy/ostatni klucz.
+        self.service = IssueService(BoardStore(str(self.root)))
+        self.assertEqual(self.public(data)["issue"], first["issue"])
+        last = self.public({**data, "requestId": "klucz-2100"})
+        self.assertTrue(last["ok"], last)
+        self.assertEqual(last["issue"]["id"], "S-2100")
+        self.assertTrue(last["existing"])
+        self.assertEqual(self.public({**data, "report": "inny"})["error"], "conflict")
+
+    def test_interrupted_ledger_migration_preserves_pending_intent(self):
+        first = self.create(requestId="gotowe")
+        pending = {"title": "Oczekuje", "report": "Raport", "requestId": "oczekuje"}
+        with mock.patch.object(self.store, "_publish", side_effect=OSError("awaria publikacji")):
+            with self.assertRaises(OSError):
+                self.store.create(pending)
+        keys = [hashlib.sha256(key.encode()).hexdigest() for key in ("gotowe", "oczekuje")]
+        ledger = {"format": 1, "next": 3,
+                  "requests": {key: self.store._receipt(key) for key in keys}}
+        self.store._save_ledger(ledger)
+        shutil.rmtree(self.root / ".git/tide-issue-requests")
+        save = self.store._save_receipt
+        calls = []
+        def crash(key, receipt):
+            save(key, receipt)
+            calls.append(key)
+            if len(calls) == 1:
+                raise OSError("awaria migracji")
+        with mock.patch.object(self.store, "_save_receipt", side_effect=crash):
+            with self.assertRaises(OSError):
+                self.store.create(pending)
+        self.assertEqual(json.loads((self.root / ".git/tide-issues.json").read_text()), ledger)
+        self.service = IssueService(BoardStore(str(self.root)))
+        recovered = self.public(pending)
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertTrue(recovered["existing"])
+        self.assertEqual(recovered["issue"]["id"], "S-2")
+        self.assertEqual(self.public({"title": "Próba", "report": first["issue"]["report"],
+                                     "requestId": "gotowe"})["issue"], first["issue"])
+        # Brak samego licznika nie gubi numerów zapisanych w potwierdzeniach.
+        (self.root / ".git/tide-issues.json").unlink()
+        self.assertEqual(self.public({"title": "Dalej", "report": ""})["issue"]["id"], "S-3")
+
+    def test_idempotency_receipt_fits_maximum_escaped_report(self):
+        data = {"title": "😀" * 200, "report": "\x01" * 65536, "requestId": "ucieczka"}
+        first = self.public(data)
+        self.assertTrue(first["ok"], first)
+        self.service = IssueService(BoardStore(str(self.root)))
+        replay = self.public(data)
+        self.assertTrue(replay["ok"], replay)
+        self.assertTrue(replay["existing"])
+        self.assertEqual(replay["issue"], first["issue"])
 
     def test_busy_repository_refuses_write_and_queue_keeps_written_issue(self):
         self.create()
