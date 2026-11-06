@@ -79,8 +79,11 @@ def run(args):
                            '--title', title, '--project', project, '--report', report_file)['issue'])
 
     def open_issue():
-        cli('issue', 'open', state['id'])
-        return state
+        try:
+            cli('issue', 'open', state['id'])
+        except AdapterError as exc:
+            raise AdapterError('Zapisano ' + state['id'] + '; błąd open: ' + str(exc)) from None
+        return {'ok': True, **state}
 
     if args.action == 'begin':
         if not state:
@@ -112,10 +115,19 @@ def run(args):
     if args.action == 'finish':
         report = args.report.read_text(encoding='utf-8')
         state['missing'] = list(dict.fromkeys([*state['missing'], *args.missing]))
+
+        def described():
+            result = report
+            if state['missing']:
+                result += '\n\nBrak dostępu do bajtów dowodów: ' + ', '.join(state['missing']) + '. Pozostaje draft.\n'
+            if state['attachErrors']:
+                result += '\n\nBłąd attach: ' + ', '.join(state['attachErrors']) + '. Nie potwierdzono załączenia; pozostaje draft.\n'
+            for waiver in state.get('waivers', []):
+                result += '\n\n' + waiver
+            return result
+
         # Zapisz ograniczenia, zanim zaczniesz kopiowanie dowodów.
-        if state['missing']:
-            report += '\n\nBrak dostępu do bajtów dowodów: ' + ', '.join(state['missing']) + '. Pozostaje draft.\n'
-        update(report, args.title, args.project)
+        update(described(), args.title, args.project)
         state.update(title=args.title, project=args.project)
         save(state_path, state)
         for filename in args.file:
@@ -126,16 +138,20 @@ def run(args):
                     state['attachErrors'].remove(filename)
                     save(state_path, state)
             except AdapterError as exc:
-                state['attachErrors'].append(filename)
-                update(report + '\n\nBłąd attach: ' + filename + '. Nie potwierdzono załączenia; pozostaje draft.\n',
-                       args.title, args.project)
+                if filename not in state['attachErrors']:
+                    state['attachErrors'].append(filename)
+                update(described(), args.title, args.project)
                 raise AdapterError('Pozostawiono draft ' + state['id'] + ': ' + str(exc)) from None
+        # Po udanym ponowieniu błędu usuń nieaktualny opis awarii z raportu.
+        update(described(), args.title, args.project)
     else:
         if args.evidence not in state['missing'] or not args.decision.strip():
             raise AdapterError('Wymagana odrębna jawna rezygnacja z konkretnego brakującego dowodu.')
-        report = issue['report'] + ('\n\nJawna rezygnacja użytkownika z dowodu „' + args.evidence +
-                 '”: ' + args.decision + '\nOgraniczenie dowodów pozostaje; pliku nie dołączono.\n')
+        waiver = ('Jawna rezygnacja użytkownika z dowodu „' + args.evidence +
+                  '”: ' + args.decision + '\nOgraniczenie dowodów pozostaje; pliku nie dołączono.\n')
+        report = issue['report'] + '\n\n' + waiver
         update(report, state['title'], state['project'])
+        state.setdefault('waivers', []).append(waiver)
         state['missing'].remove(args.evidence)
         save(state_path, state)
     if not state['missing'] and not state['attachErrors']:

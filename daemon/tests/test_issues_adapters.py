@@ -3,9 +3,11 @@
 Testy nie oceniają syntezy modeli; treść raportu jest jawnym wejściem testowym.
 """
 import json
+import importlib.util
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,9 +20,35 @@ from .privatebus import requires_dbus
 
 REPO = integration.REPO
 PACKAGE = REPO / 'cli/agents'
+SPEC = importlib.util.spec_from_file_location('issue_fixture', PACKAGE / 'eval/fixture.py')
+FIXTURE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(FIXTURE)
 
 
 class PackageTest(unittest.TestCase):
+    def test_evaluator_and_fixture_are_valid_without_running_models(self):
+        import ast
+        import struct
+        for name in ('evaluate.py', 'eval/fixture.py', 'shared/issue_adapter.py', 'install.py'):
+            ast.parse((PACKAGE / name).read_text())
+        image = FIXTURE.png()
+        self.assertTrue(image.startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertEqual(struct.unpack('!II', image[16:24]), (520, 260))
+        self.assertEqual(image, FIXTURE.png())
+        self.assertEqual((PACKAGE / 'eval/filtr.png').read_bytes(), image)
+        from PyQt6.QtGui import QImage
+        decoded = QImage.fromData(image)
+        self.assertFalse(decoded.isNull())
+        artifact = REPO / 'build/test-results/pt-224/filtr.png'
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(image)
+        rubric = json.loads((PACKAGE / 'eval/rubric.json').read_text())
+        self.assertEqual([row['id'] for row in rubric], list(range(1, 8)))
+        conversation = (PACKAGE / 'eval/conversation.txt').read_text()
+        self.assertIn('bez restartu zmiana działa', conversation)
+        self.assertIn('odrzucam ten wariant', conversation)
+        self.assertIn('bez pliku', conversation)
+
     def install(self, env, *args, code=0):
         result = subprocess.run([sys.executable, str(PACKAGE / 'install.py'), *args],
                                 env=env, capture_output=True, text=True)
@@ -69,6 +97,7 @@ class PackageTest(unittest.TestCase):
             self.install(env)
             self.assertFalse(Path(env['HOME'], '.codex/skills/tide-issue/SKILL.md').exists())
             self.assertTrue(Path(env['XDG_DATA_HOME'], 'tide/agents/claude/tide/commands/issue.md').exists())
+            self.assertTrue(Path(env['XDG_DATA_HOME'], 'tide/agents/codex/tide-issue/SKILL.md').exists())
         with tempfile.TemporaryDirectory() as tmp:
             env = make_env(tmp)
             conflict = Path(env['HOME'], '.codex/skills/tide-issue/SKILL.md')
@@ -77,6 +106,54 @@ class PackageTest(unittest.TestCase):
             self.install(env, code=1)
             self.assertEqual(conflict.read_text(), 'obce')
             self.assertFalse(Path(env['XDG_DATA_HOME'], 'tide/agents/manifest.json').exists())
+
+    def test_each_program_can_be_missing_and_later_added(self):
+        for absent in ('claude', 'codex'):
+            with self.subTest(absent=absent), tempfile.TemporaryDirectory() as tmp:
+                env = make_env(tmp)
+                binary = Path(tmp, 'fakebin', absent)
+                content = binary.read_bytes()
+                binary.unlink()
+                self.install(env)
+                root = Path(env['XDG_DATA_HOME'], 'tide/agents')
+                self.assertTrue((root / 'claude/tide/commands/issue.md').exists())
+                self.assertTrue((root / 'codex/tide-issue/SKILL.md').exists())
+                discoverable = Path(env['HOME'], '.codex/skills/tide-issue/SKILL.md')
+                self.assertEqual(discoverable.exists(), absent != 'codex')
+                binary.write_bytes(content)
+                binary.chmod(0o755)
+                self.install(env)
+                self.assertTrue(discoverable.exists())
+
+    def test_update_backs_up_previous_version_and_keeps_foreign_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = make_env(tmp)
+            self.install(env)
+            owned = Path(env['HOME'], '.codex/skills/tide-issue/SKILL.md')
+            old = owned.read_bytes()
+            foreign = owned.parent / 'osobisty.md'
+            foreign.write_text('zachowaj')
+            package_copy = Path(tmp, 'package')
+            shutil.copytree(PACKAGE, package_copy)
+            (package_copy / 'codex/SKILL.md').write_bytes(old + b'\nDodatkowa instrukcja testowa.\n')
+            result = subprocess.run([sys.executable, str(package_copy / 'install.py')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(owned.read_bytes(), old)
+            self.assertEqual(foreign.read_text(), 'zachowaj')
+            backups = Path(env['XDG_DATA_HOME'], 'tide/agents/backups')
+            self.assertTrue(any(p.read_bytes() == old for p in backups.rglob('*') if p.is_file()))
+
+    def test_symlink_does_not_write_outside_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = make_env(tmp)
+            destination = Path(env['HOME'], '.codex/skills/tide-issue')
+            destination.parent.mkdir(parents=True)
+            outside = Path(tmp, 'outside')
+            outside.mkdir()
+            destination.symlink_to(outside, target_is_directory=True)
+            self.install(env, code=1)
+            self.assertEqual(list(outside.iterdir()), [])
 
 
 @requires_dbus
@@ -126,11 +203,17 @@ class AdapterTest(unittest.TestCase):
                 folder = Path(self.tmp, 'session-' + str(n))
                 initial = self.begin(script, folder)
                 source = Path(self.tmp, 'opis.txt')
-                source.write_text('Jawne kroki użytkownika')
-                draft = self.finish(script, folder, '--file', source, '--missing', 'drugi obraz')
+                source.write_bytes((PACKAGE / 'eval/opis.txt').read_bytes())
+                image = Path(self.tmp, 'filtr.png')
+                image.write_bytes(FIXTURE.png())
+                draft = self.finish(script, folder, '--file', source, '--file', image, '--missing', 'drugi obraz')
                 issue = self.run_cli('issue', 'show', draft['id'])['issue']
                 self.assertEqual(issue['state'], 'draft')
-                self.assertEqual(len(issue['attachments']), 1)
+                self.assertEqual(len(issue['attachments']), 2)
+                for entry in issue['attachments']:
+                    copied = Path(self.tmp, entry['id'])
+                    self.run_cli('issue', 'attachment', issue['id'], '--attachment', entry['id'], '--output', str(copied))
+                    self.assertEqual(copied.read_bytes(), Path(self.tmp, entry['name']).read_bytes())
                 self.assertIn('Brak dostępu do bajtów', issue['report'])
                 self.assertFalse(any(c[:2] == ['issue', 'submit'] and c[2] == draft['id'] for c in self.calls()))
                 # Ponowienie finish nie jest rezygnacją.
@@ -143,6 +226,11 @@ class AdapterTest(unittest.TestCase):
                 self.assertIn('pliku nie dołączono', final['report'])
                 self.assertEqual(final['attachments'], issue['attachments'])
                 self.assertTrue(any(c[:3] == ['issue', 'open', ready['id']] for c in self.calls()))
+                # Kolejna poprawka nie usuwa historii jawnej rezygnacji ani dowodów.
+                corrected = self.finish(script, folder)
+                retained = self.run_cli('issue', 'show', corrected['id'])['issue']
+                self.assertIn('rezygnuję z drugiego obrazu', retained['report'])
+                self.assertEqual(retained['attachments'], issue['attachments'])
         # Daemon nie ma ukrytej listy brakujących dowodów wynikającej z prozy.
         fresh = self.run_cli('issue', 'create', '--title', 'Brak obrazu', '--report', self.report)['issue']
         self.assertEqual(self.run_cli('issue', 'submit', fresh['id'], '--expected-version', '1')['issue']['state'], 'ready')
@@ -200,7 +288,47 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(self.finish(script, folder)['id'], saved['id'])
 
     def test_unavailable_api_creates_no_local_session(self):
-        for script in (PACKAGE / 'shared/issue_adapter.py',):
-            folder = Path(self.tmp, 'unavailable')
+        scripts = [Path(self.env['HOME'], '.codex/skills/tide-issue/scripts/issue_adapter.py'),
+                   Path(self.env['XDG_DATA_HOME'], 'tide/agents/claude/tide/scripts/issue_adapter.py')]
+        for n, script in enumerate(scripts):
+            folder = Path(self.tmp, 'unavailable-' + str(n))
             self.begin(script, folder, code=1)
             self.assertFalse(folder.exists())
+
+    def test_both_adapters_resume_updates_version_and_resubmits_existing_issue(self):
+        self.prepare()
+        for n, script in enumerate(self.adapters):
+            issue = self.run_cli('issue', 'create', '--title', 'Przed poprawką', '--project', 'alfa',
+                                 '--report', self.report)['issue']
+            ready = self.run_cli('issue', 'submit', issue['id'], '--expected-version', str(issue['version']))['issue']
+            folder = Path(self.tmp, 'resume-' + str(n))
+            resumed = self.adapter(script, 'resume', '--session', folder, '--id', ready['id'])
+            self.assertEqual(resumed['version'], ready['version'])
+            final = self.finish(script, folder)
+            self.assertEqual((final['id'], final['state']), (ready['id'], 'ready'))
+            self.assertGreater(final['version'], ready['version'])
+            stored = self.run_cli('issue', 'show', final['id'])['issue']
+            self.assertEqual(stored['title'], 'Filtr projektu')
+            self.assertEqual(stored['project'], 'alfa')
+            self.assertEqual(stored['created'], issue['created'])
+
+    def test_both_adapters_frontmatter_and_unknown_project_cannot_create(self):
+        self.prepare()
+        for n, script in enumerate(self.adapters):
+            Path(self.report).write_text('---\nid: S-99\n---\nChronione metadane')
+            self.begin(script, Path(self.tmp, 'frontmatter-' + str(n)), code=1)
+            Path(self.report).write_text('Raport')
+            self.adapter(script, 'begin', '--session', Path(self.tmp, 'project-' + str(n)),
+                         '--title', 'Jawny tytuł', '--project', 'nieznany', '--report', self.report, code=1)
+        self.assertEqual(self.run_cli('issue', 'list')['issues'], [])
+
+    def test_both_adapters_open_failure_keeps_identifiable_draft(self):
+        self.prepare()
+        Path(self.env['XDG_DATA_HOME'], 'tide/tide-window/tide.py').unlink()
+        for n, script in enumerate(self.adapters):
+            folder = Path(self.tmp, 'open-failed-' + str(n))
+            reply = self.begin(script, folder, code=1)
+            state = json.loads((folder / 'session.json').read_text())
+            self.assertIn(state['id'], reply['error'])
+            self.assertEqual(self.run_cli('issue', 'show', state['id'])['issue']['state'], 'draft')
+            self.assertFalse(any(c[:3] == ['issue', 'submit', state['id']] for c in self.calls()))

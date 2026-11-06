@@ -1,5 +1,9 @@
 # Sprawy i CLI Tide — API v1
 
+Przygotowanie raportu z rozmowy przez plugin Claude Code lub skill Codexa:
+[Paczka skilli Sprawy](issue-skills.md). Testy operacji CLI i rzeczywista ocena syntezy
+mają tam opisane osobne procedury i dowody.
+
 Sprawa (`S-N`) jest trwałym raportem rozmowy, niezależnym od karty (`K-N`), ticketu i specyfikacji.
 PT-218 dostarcza zapis szkicu i odczyty, PT-219 edycję oraz cykl życia; magazyn i publiczny
 odczyt załączników — PT-228. Utworzenie sprawy nie uruchamia modelu, nie zakłada karty ani gałęzi projektu.

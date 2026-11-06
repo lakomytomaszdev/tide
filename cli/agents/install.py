@@ -31,30 +31,32 @@ def install(uninstall=False):
         # Zachowaj zainstalowane adaptery także przy chwilowym braku programu w PATH.
         if any('/.codex/skills/tide-issue/' in p for p in owned):
             programs.append('codex')
-        for program in set(programs):
-            destination = root / 'claude/tide' if program == 'claude' else Path.home() / '.codex/skills/tide-issue'
+        for program in ('claude', 'codex'):
+            destination = root / program / ('tide' if program == 'claude' else 'tide-issue')
             for path in (source / program).rglob('*'):
                 if path.is_file():
                     targets[str(destination / path.relative_to(source / program))] = path.read_bytes()
             targets[str(destination / 'references/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
             targets[str(destination / 'scripts/issue_adapter.py')] = (source / 'shared/issue_adapter.py').read_bytes()
+            if program == 'codex' and program in programs:
+                discoverable = Path.home() / '.codex/skills/tide-issue'
+                for name, content in list(targets.items()):
+                    if Path(name).is_relative_to(destination):
+                        targets[str(discoverable / Path(name).relative_to(destination))] = content
         targets[str(root / 'shared/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
-        # Claude plugin nie jest rejestrowany w prywatnej konfiguracji: --plugin-dir wskazuje paczkę.
-        destination = root / 'claude/tide'
-        for path in (source / 'claude').rglob('*'):
-            if path.is_file():
-                targets[str(destination / path.relative_to(source / 'claude'))] = path.read_bytes()
-        targets[str(destination / 'references/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
-        targets[str(destination / 'scripts/issue_adapter.py')] = (source / 'shared/issue_adapter.py').read_bytes()
     # Preflight całej paczki przed pierwszą zmianą. Obce lub lokalnie zmienione pliki zostają.
     for name in set(owned) | set(targets):
         path = Path(name)
+        if ('..' in path.parts or not path.is_absolute() or
+                not (path.is_relative_to(root) or path.is_relative_to(Path.home() / '.codex/skills/tide-issue'))):
+            raise ValueError('Manifest wskazuje plik spoza paczki Tide: ' + name)
         safe(path)
         if path.exists() and (not path.is_file() or name not in owned or digest(path.read_bytes()) != owned[name]):
             raise ValueError('Kolizja; zachowano plik: ' + name)
     existing = [Path(name) for name in owned if Path(name).exists()]
     if existing or manifest.exists():
         backup = root / 'backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+        safe(backup)
         backup.mkdir(parents=True)
         for index, path in enumerate(existing):
             shutil.copy2(path, backup / str(index))

@@ -48,6 +48,10 @@ Można poprawić go ręcznie, używając `{tide_standard}`, `tide next-id` i `ti
 
 `make uninstall` usuwa klienta, usługę i cały katalog zasobów Tide.
 `uninstall-cli` usuwa tylko klienta: zasoby pozostają dla działającej usługi.
+Od PT-224 komponent CLI zarządza także [własną paczką adapterów Sprawy](issue-skills.md)
+w `tide/agents` i natywnym skillem `tide-issue`. Usuwa wyłącznie pliki tej paczki objęte
+manifestem; lokalne zmiany i obce pliki nie są nadpisywane ani usuwane. Kopie zapasowe
+paczki pozostają. Zasoby `tide/resources` nadal pozostają dla działającej usługi.
 `uninstall-daemon` usuwa także `tide/resources`. Własny katalog wskazany przez
 `TIDE_RESOURCES_DIR`, skille użytkownika, projekty i zmodyfikowane szablony Tablicy
 nie są usuwane. Instalacja ani odinstalowanie nie powinny być wykonywane ręcznymi

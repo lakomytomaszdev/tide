@@ -1,0 +1,6 @@
+1. Wybieram Betę.
+2. Zamykam i ponownie uruchamiam Tide.
+3. Oczekuję nadal Bety oraz raportu S-12.
+4. Tekst wyszukiwania i filtr stanu mają pozostać jak przed zamknięciem.
+Relacja: dwa razy po restarcie zostawała Alfa, bez restartu zmiana działa.
+Przypadek brzegowy: po usunięciu wybranego projektu — Wszystkie projekty i informacja o niedostępnym dawnym wyborze.
