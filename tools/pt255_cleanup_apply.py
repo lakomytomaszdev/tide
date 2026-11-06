@@ -8,6 +8,7 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import errno
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
@@ -24,6 +25,8 @@ from pt255_cleanup_preview import service_metadata
 PREVIEW_COUNTS = {"candidate": 480, "no-step-started": 101, "repo-present-or-unknown": 29}
 TOOL_SHA256 = "5d811fff8afc91ddc100be5c7397f947d5653d86212ad8ccd1298a45f70b5ef5"
 NAMES = ("org.tide.Daemon", "org.tide.Daemon.KRunner")
+TEST_COMM_PATTERNS = ("python*", "pytest*", "py.test", "sh", "bash", "dash", "zsh",
+                      "env", "make", "node*", "tide*", "test_*", "*_probe*")
 
 
 def now():
@@ -222,12 +225,15 @@ def host_fd_exemption(process):
     pid = int(process.name)
     phase = "read-host-cgroup"
     units = []
+    classification_source = None
 
     def refuse(reason):
         failure = InspectionError(pid, "host-exemption-refused", None)
         failure.details["host_exemption_reason"] = reason
         if units:
             failure.details["cgroup_units"] = units
+        if classification_source is not None:
+            failure.details["classification_source"] = classification_source
         raise failure from None
 
     try:
@@ -244,16 +250,30 @@ def host_fd_exemption(process):
         if not units:
             refuse("missing-cgroup-unit")
         phase = "read-host-cmdline"
-        argv = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
-        if not argv:
+        cmdline = (process / "cmdline").read_bytes()
+        argv = [os.fsdecode(item) for item in cmdline.split(b"\0") if item]
+        if cmdline and not argv:
             refuse("empty-cmdline")
         kind = process_kind(argv)
         if kind is not None:
             refuse("classified-" + kind)
         phase = "read-host-comm"
-        comm = (process / "comm").read_text().strip()
-        if not comm or "\n" in comm:
+        comm = (process / "comm").read_text().rstrip("\n")
+        if not comm.strip() or "\n" in comm:
             refuse("invalid-comm")
+        classification_source = "cmdline" if cmdline else "comm"
+        if not cmdline:
+            # Wyłącznie 0 bajtów cmdline: nazwa musi być zgodna w obu źródłach.
+            phase = "read-host-stat"
+            data = (process / "stat").read_text()
+            prefix, end = f"{pid} (", data.rfind(")")
+            if (not data.startswith(prefix) or end < len(prefix)
+                    or not data[end + 1:].startswith(" ") or not data[end + 1:].split()):
+                refuse("invalid-stat-comm")
+            if data[len(prefix):end] != comm:
+                refuse("comm-stat-mismatch")
+            if any(fnmatchcase(comm, pattern) for pattern in TEST_COMM_PATTERNS):
+                refuse("test-or-interpreter-comm")
         phase = "recheck-host-cgroup"
         if (process / "cgroup").read_text() != before:
             refuse("cgroup-changed")
@@ -261,7 +281,11 @@ def host_fd_exemption(process):
         raise
     except (OSError, ValueError) as error:
         raise InspectionError(pid, phase, getattr(error, "errno", None)) from None
-    return {"comm": comm, "cgroup_unit": units[-1], "cgroup_units": units}
+    evidence = {"comm": comm, "cgroup_unit": units[-1], "cgroup_units": units,
+                "classification_source": classification_source}
+    if classification_source == "comm":
+        evidence["comm_stat_verified"] = True
+    return evidence
 
 
 def check_processes(source, allowed_daemon=None, *, audit=None):

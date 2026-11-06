@@ -392,6 +392,7 @@ class ContainerIsolationTest(unittest.TestCase):
                 self.assertEqual(skip["comm"], "sd_espeak-ng-mb")
                 self.assertEqual(skip["cgroup_unit"], "speech-dispatcher.service")
                 self.assertEqual(skip["reason"], "host-non-tide-non-test-fd-eacces")
+                self.assertEqual(skip["classification_source"], "cmdline")
                 self.assertEqual(skip["pid"], 999999999)
                 self.assertEqual(skip["phase"], phase)
                 self.assertEqual(events, [("process-inspection-skipped", skip)])
@@ -437,9 +438,9 @@ class ContainerIsolationTest(unittest.TestCase):
                     operation.check_processes(self.SOURCE, audit=audit)
                 self.assertEqual(events, [])
 
-    def test_empty_host_cgroup_or_cmdline_refuses(self):
+    def test_empty_host_cgroup_or_null_only_cmdline_refuses(self):
         for cgroup, argv, reason in (("", b"desktop\0", "empty-cgroup"),
-                                     ("0::/desktop.service\n", b"", "empty-cmdline")):
+                                     ("0::/desktop.service\n", b"\0", "empty-cmdline")):
             with self.subTest(cgroup=cgroup), self.process("list-fds", cgroup=cgroup) as (process, query, audit, events):
                 (process / "cmdline").write_bytes(argv)
                 with self.assertRaises(operation.InspectionError) as failure:
@@ -447,6 +448,85 @@ class ContainerIsolationTest(unittest.TestCase):
                 self.assertEqual(failure.exception.details["host_exemption_reason"], reason)
                 self.assertEqual(failure.exception.details["fd_phase"], "list-fds")
                 self.assertEqual(failure.exception.details["fd_errno"], errno.EACCES)
+                self.assertEqual(events, [])
+
+    def test_empty_cmdline_desktop_comm_requires_matching_stat_and_is_audited(self):
+        for phase in ("list-fds", "read-fdinfo", "read-fdlink"):
+            with self.subTest(phase=phase), self.process(phase, cgroup="0::/speech-dispatcher.service\n") as (process, query, audit, events):
+                (process / "cmdline").write_bytes(b"")
+                (process / "stat").write_text("999999999 (sd_espeak-ng-mb) S 1 2 3\n")
+                result = operation.check_processes(self.SOURCE, audit=audit)
+                skip = result["inspection_skips"][0]
+                self.assertEqual(skip["comm"], "sd_espeak-ng-mb")
+                self.assertEqual(skip["classification_source"], "comm")
+                self.assertTrue(skip["comm_stat_verified"])
+                self.assertEqual(events, [("process-inspection-skipped", skip)])
+                query.assert_not_called()
+
+    def test_empty_cmdline_interpreters_and_test_tool_comms_refuse(self):
+        names = ("python", "python3", "python3.14", "pytest", "pytest-3", "py.test",
+                 "sh", "bash", "dash", "zsh", "env", "make", "node", "nodejs",
+                 "tide-daemon", "test_x", "guard_probe", "x_probe.py")
+        for comm in names:
+            with self.subTest(comm=comm), self.process("list-fds", cgroup="0::/terminal.scope\n") as (process, query, audit, events):
+                (process / "cmdline").write_bytes(b"")
+                (process / "comm").write_text(comm + "\n")
+                (process / "stat").write_text(f"999999999 ({comm}) S 1 2 3\n")
+                with self.assertRaises(operation.InspectionError) as failure:
+                    operation.check_processes(self.SOURCE, audit=audit)
+                self.assertEqual(failure.exception.details["host_exemption_reason"], "test-or-interpreter-comm")
+                self.assertEqual(events, [])
+
+    def test_empty_cmdline_missing_malformed_or_mismatched_stat_refuses(self):
+        for stat in (None, "malformed DO_NOT_DISCLOSE", "1 (sd_espeak-ng-mb) S 1\n",
+                     "999999999 (other) S 1\n", "999999999 (sd_espeak-ng-mb)",
+                     "999999999 (sd_espeak-ng-mb)garbage"):
+            with self.subTest(stat=stat), self.process("list-fds", cgroup="0::/desktop.service\n") as (process, query, audit, events):
+                (process / "cmdline").write_bytes(b"")
+                if stat is not None:
+                    (process / "stat").write_text(stat)
+                with self.assertRaises(operation.InspectionError):
+                    operation.check_processes(self.SOURCE, audit=audit)
+                self.assertEqual(events, [])
+
+    def test_empty_cmdline_unreadable_stat_refuses_with_errno_and_no_text(self):
+        with self.process("list-fds", cgroup="0::/desktop.service\n") as (process, query, audit, events):
+            (process / "cmdline").write_bytes(b"")
+            original_text = Path.read_text
+
+            def read_text(path, *args, **kwargs):
+                if path == process / "stat":
+                    raise PermissionError(errno.EACCES, "DO_NOT_DISCLOSE")
+                return original_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read_text):
+                with self.assertRaises(operation.InspectionError) as failure:
+                    operation.check_processes(self.SOURCE, audit=audit)
+            self.assertEqual(failure.exception.details["phase"], "read-host-stat")
+            self.assertEqual(failure.exception.details["errno"], errno.EACCES)
+            self.assertNotIn("DO_NOT_DISCLOSE", json.dumps(failure.exception.details))
+            self.assertEqual(events, [])
+
+    def test_empty_cmdline_still_requires_non_tide_unchanged_cgroup(self):
+        for changed in (False, True):
+            cgroup = "0::/desktop.service\n" if changed else "0::/tide-outside-x.scope\n"
+            with self.subTest(changed=changed), self.process("list-fds", cgroup=cgroup) as (process, query, audit, events):
+                (process / "cmdline").write_bytes(b"")
+                (process / "stat").write_text("999999999 (sd_espeak-ng-mb) S 1 2 3\n")
+                original_text = Path.read_text
+                reads = 0
+
+                def read_text(path, *args, **kwargs):
+                    nonlocal reads
+                    if path == process / "cgroup":
+                        reads += 1
+                        if changed and reads == 3:
+                            return "0::/tide-step-x.scope\n"
+                    return original_text(path, *args, **kwargs)
+
+                with patch.object(Path, "read_text", read_text):
+                    with self.assertRaises(operation.InspectionError):
+                        operation.check_processes(self.SOURCE, audit=audit)
                 self.assertEqual(events, [])
 
     def test_host_refusal_metadata_distinguishes_conditions_without_cmdline(self):
