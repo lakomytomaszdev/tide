@@ -1,0 +1,6 @@
+tide-box: 1
+box: per-card
+packs:
+  - name: session-logs
+    from: ~/.claude/projects/-home-tomek-DevWorkspace-plasma-tide/*.jsonl
+# To propozycja bez zgody. Przed importem patrz README; accepted_red dopiero po jawnej zgodzie użytkownika.
