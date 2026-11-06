@@ -30,9 +30,13 @@ def now():
 
 class InspectionError(ValueError):
     """Kontrolowane metadane odmowy; bez tekstu wyjątku, ścieżek i argv procesu."""
-    def __init__(self, pid, phase, errno):
+    def __init__(self, pid, phase, errno, fd=None, flags=None):
         super().__init__("process-metadata-unavailable")
         self.details = {"pid": pid, "phase": phase, "errno": errno}
+        if fd is not None:
+            self.details["fd"] = fd
+        if flags is not None:
+            self.details["flags"] = flags
 
 
 class ActivationBlocker:
@@ -109,6 +113,8 @@ def check_processes(source, allowed_daemon=None):
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
         phase = "stat-process"
+        descriptor = None
+        flags = None
         try:
             if process.stat().st_uid != os.getuid():
                 continue
@@ -122,25 +128,29 @@ def check_processes(source, allowed_daemon=None):
                 phase = "list-fds"
                 for fd in (process / "fd").iterdir():
                     try:
+                        descriptor, flags = int(fd.name), None
+                        phase = "read-fdinfo"
+                        lines = (process / "fdinfo" / fd.name).read_text().splitlines()
+                        try:
+                            flags = int(next(line.split()[1] for line in lines
+                                             if line.startswith("flags:")), 8)
+                        except (StopIteration, ValueError, IndexError):
+                            raise InspectionError(pid, "parse-fdinfo", None, descriptor) from None
+                        # O_RDONLY i O_PATH nie dają prawa zapisu do pliku. Nadal
+                        # odmawiamy, jeśli nie potrafimy odczytać samych flags.
+                        if not flags & os.O_ACCMODE or flags & os.O_PATH:
+                            continue
                         phase = "read-fdlink"
                         target = os.path.realpath(os.readlink(fd))
                         if target == source or target.startswith(source + "/"):
-                            phase = "read-fdinfo"
-                            lines = (process / "fdinfo" / fd.name).read_text().splitlines()
-                            try:
-                                flags = int(next(line.split()[1] for line in lines
-                                                 if line.startswith("flags:")), 8)
-                            except (StopIteration, ValueError, IndexError):
-                                raise InspectionError(pid, "parse-fdinfo", None) from None
-                            if flags & os.O_ACCMODE:
-                                raise ValueError(f"active-writer-pid-{pid}")
+                            raise ValueError(f"active-writer-pid-{pid}")
                     except FileNotFoundError:
                         continue
             checked += 1
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as error:
-            raise InspectionError(int(process.name), phase, error.errno) from None
+            raise InspectionError(int(process.name), phase, error.errno, descriptor, flags) from None
     return {"checked_user_processes": checked, "active_tests": 0, "extra_daemons": 0,
             "writable_source_descriptors": 0}
 

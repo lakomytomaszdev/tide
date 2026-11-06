@@ -180,6 +180,32 @@ class ApplyWindowTest(unittest.TestCase):
 
 
 class ProcessClassificationTest(unittest.TestCase):
+    def test_read_only_fd_needs_no_target_but_uninspectable_writable_fd_refuses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = Path(directory) / "999999999"
+            (process / "fd").mkdir(parents=True)
+            (process / "fdinfo").mkdir()
+            (process / "cmdline").write_bytes(b"unknown-program\0")
+            (process / "fd" / "3").touch()
+            original_iterdir = Path.iterdir
+
+            def processes(path):
+                return iter([process]) if str(path) == "/proc" else original_iterdir(path)
+
+            with patch.object(Path, "iterdir", processes), patch.object(
+                    operation.os, "readlink", side_effect=PermissionError(13, "not disclosed")) as target:
+                (process / "fdinfo" / "3").write_text("flags:\t0100000\n")
+                self.assertEqual(operation.check_processes("/synthetic/source")["writable_source_descriptors"], 0)
+                target.assert_not_called()
+                for flags in ("0100001", "0100002"):
+                    with self.subTest(flags=flags):
+                        (process / "fdinfo" / "3").write_text(f"flags:\t{flags}\n")
+                        with self.assertRaisesRegex(ValueError, "process-metadata-unavailable"):
+                            operation.check_processes("/synthetic/source")
+                with patch.object(Path, "read_text", side_effect=PermissionError(13, "not disclosed")):
+                    with self.assertRaisesRegex(ValueError, "process-metadata-unavailable"):
+                        operation.check_processes("/synthetic/source")
+
     def test_metadata_denial_reports_pid_and_phase_without_exception_text(self):
         with tempfile.TemporaryDirectory() as directory:
             process = Path(directory) / "999999999"
