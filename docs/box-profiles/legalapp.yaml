@@ -1,0 +1,15 @@
+# PT-184: propozycja do zatwierdzenia; ten plik nie jest dowodem zgody ani udanej budowy.
+tide-box: 1
+project: legalapp
+stacks: [dotnet, docker, playwright]
+dotnet:
+  sdk: [10.0.100]
+docker:
+  enabled: true
+  images: [pgvector/pgvector:pg16]
+# Domeny stosów pochodzą z szablonów. api.sejm.gov.pl wymaga osobnego profilu karty.
+network:
+  domains: []
+verify:
+  - dotnet build
+notes: "Propozycja PT-184; wymaga obsługi Playwright .NET i kontekstu projektu dla verify przed budową."
