@@ -461,3 +461,14 @@ Nie ponawiano prób Incusa: ponowny odczyt zainstalowanego `commit_plan` nadal p
 `host_operation`. Pozostają końcowy box-check i rzeczywisty krok agenta. Przygotowana
 [propozycja planu karty testowej](agents/pt-191/first-step-proposal.md) została przekazana do zatwierdzenia;
 samo zatwierdzenie nie jest dowodem wykonania i nie usuwa blokady po incydencie strażnika.
+
+Decyzja użytkownika z 6.11.2026 (wznowienie PT-191 nr 13): plan `first-step-proposal.md` jest
+**zatwierdzony**, a rzeczywista próba na wspólnym repozytorium **odroczona** do czasu, gdy
+zainstalowany Tide zapisuje plany przez `host_operation`, po scaleniu K-38. Implementacja trafia do
+review; końcowe kryteria ręczne pozostają niezaliczone. Nie wykonano kolejnej próby.
+
+Ustalenie koordynatora do review K-38: strażnik ma odtwarzać wyłącznie refy kroku. **Nie może
+przywracać refów innych kart ani gałęzi spoza zakresu kroku/pudełka.** Incydent K-55/K-60 z 11:18
+jest dowodem ryzyka do rozwiązania w K-38. Zgodność wersji hosta nie zastępuje ograniczenia zakresu
+odtwarzania. Wymaganie, reflogi i scenariusze regresji opisano w
+[notce incydentu](agents/pt-191/refguard-incident.md); w tym wznowieniu nie zmieniano strażnika.
