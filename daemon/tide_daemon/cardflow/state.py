@@ -438,6 +438,7 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
         elif kind == "plan.revision-approved":
             st.plan_approved = {**st.plan_approved, **e["plan"],
+                                "artifactSource": st.plan_proposed or {},
                                 "textApprovedSeq": e.get("seq", 0)} if st.plan_approved else None
             st.plan_revision = None
             st.plan_finished = False
@@ -452,7 +453,7 @@ def fold(events: list[dict]) -> FlowState:
                     plan = {**plan, "rows": [{**r, **e["changes"]} if (r.get("id") or r["workId"]) == e["ticket"] else r for r in plan["rows"]]}
                     setattr(st, name, plan)
         elif kind == "plan.approved":
-            st.plan_approved = e
+            st.plan_approved = {**e, "artifactSource": st.plan_proposed or {}}
             for row in e.get("rows") or []:
                 if row.get("sourceState") == "gotowe":
                     st.imported_done.add(row.get("id"))

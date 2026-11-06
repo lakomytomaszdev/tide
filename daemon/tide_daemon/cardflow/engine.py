@@ -2573,9 +2573,10 @@ class FlowEngine(PlanEditing):
                  "status: done" if len(merged | st.rejected) == len(approved.get("rows") or []) else "status: active",
                  f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", ""]
         before, after = "", ""
-        artifacts = planartifacts.read(proposed["artifactPath"]) if proposed.get("artifactPath") else {}
-        if proposed.get("planPath") and os.path.basename(proposed["planPath"]) in artifacts:
-            before, after = self._plan_extra(artifacts[os.path.basename(proposed["planPath"])].decode("utf-8"))
+        source = planartifacts.source_for_commit(st)
+        artifacts = planartifacts.read(source["artifactPath"]) if source.get("artifactPath") else {}
+        if source.get("planPath") and os.path.basename(source["planPath"]) in artifacts:
+            before, after = self._plan_extra(artifacts[os.path.basename(source["planPath"])].decode("utf-8"))
         if worktree and approved.get("planFile") and (not artifacts or planartifacts.keep_committed_plan_text(st)):
             try:
                 with open(os.path.join(worktree, approved["planFile"]), encoding="utf-8") as fh:

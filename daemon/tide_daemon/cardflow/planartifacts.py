@@ -10,6 +10,15 @@ MAX_TOTAL = 16 * 1024 * 1024
 LINK = re.compile(r'\]\(\s*(<[^>]*>|[^\s)]+)|^\s*\[[^\]]+\]:\s*(<[^>]*>|\S+)', re.M)
 
 
+def source_for_commit(state):
+    """Źródło pakietu zmienia wyłącznie zatwierdzenie, także przy odtworzeniu dziennika.
+
+    Bieżąca propozycja może już zawierać poprawkę czekającą na decyzję użytkownika.
+    Stan z fold przechowuje źródło poprzednio zatwierdzonego pakietu niezależnie od niej.
+    """
+    return (state.plan_approved or {}).get('artifactSource', state.plan_proposed or {})
+
+
 def keep_committed_plan_text(state):
     """Nowa zatwierdzona propozycja dostarcza tekst do pierwszego udanego commita.
 

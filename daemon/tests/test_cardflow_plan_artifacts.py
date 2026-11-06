@@ -1,6 +1,7 @@
 """PT-247: szkice przechodzą przez migawkę, review, poprawkę i commit gałęzi karty."""
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -90,6 +91,45 @@ class ArtifactsTest(unittest.TestCase):
                 '[plik](../other.md) [fragment](#zakres)\n'
                 '[zewnętrzny]: //example.org/followups/draft.md\n')
         self.assertEqual(planartifacts.relocate_ticket_links(text, '../../plans/followups'), text)
+
+    def test_journal_replay_selects_only_the_approved_artifact_package(self):
+        from .test_cardflow_plan_extra import PLAN
+        old_plan = PLAN.replace('followups/replay-code.md', 'followups/nested/draft.md')
+        self.put('plan.md', old_plan)
+        old_files = planartifacts.read(self.root)
+        for name, body in old_files.items():
+            self.put('revision/' + name, body.decode())
+        self.put('revision/followups/nested/draft.md', '# Zakres\nTreść B.\n')
+        self.put('revision/followups/new.md', '# Nowy szkic\n')
+        self.put('revision/plan.md', old_plan + '\n[Nowy szkic](followups/new.md)\n')
+        plan_file = 'docs/agents/plans/k-1.md'
+        row = dict(id='PT-1', title='Szkic', executor='Sonnet', reviewer='Opus',
+                   blockers=[], body=old_files['tickets/1.md'].decode())
+        events = [
+            dict(type='plan.proposed', seq=1, planPath=str(self.root / 'plan.md'), artifactPath=str(self.root)),
+            dict(type='plan.approved', seq=2, planFile=plan_file, rows=[row]),
+            dict(type='plan.returned', seq=3),
+            dict(type='plan.proposed', seq=4, planPath=str(self.root / 'revision/plan.md'),
+                 artifactPath=str(self.root / 'revision')),
+            dict(type='plan.revision-ready', seq=5, pending=True),
+        ]
+        engine = FlowEngine.__new__(FlowEngine)
+
+        def files(extra):
+            return engine._plan_files('K-1', fold(events + extra), set())
+
+        draft_file = 'docs/agents/plans/followups/nested/draft.md'
+        new_file = 'docs/agents/plans/followups/new.md'
+        for extra in ([], [dict(type='plan.revision-discarded', seq=6)]):
+            with self.subTest(events=extra):
+                package = files(extra)
+                self.assertEqual(package[draft_file], old_files['followups/nested/draft.md'])
+                self.assertNotIn(new_file, package)
+                self.assertNotIn(b'[Nowy szkic]', package[plan_file])
+        package = files([dict(type='plan.revision-approved', seq=6, plan={})])
+        self.assertEqual(package[draft_file], '# Zakres\nTreść B.\n'.encode('utf-8'))
+        self.assertEqual(package[new_file], b'# Nowy szkic\n')
+        self.assertIn(b'[Nowy szkic](followups/new.md)', package[plan_file])
 
     def test_pending_commit_is_not_a_commit_of_the_approved_revision(self):
         from .test_cardflow_plan_extra import PLAN
@@ -181,8 +221,13 @@ class ArtifactsFlowTest(FlowInProcess):
     def test_approved_amendment_commits_new_text_then_preserves_manual_additions(self):
         card = self.card()
         path = Path(self.proposal(card))
+        draft = path.parent / 'followups/nested/scope.md'
+        draft.parent.mkdir(parents=True)
+        draft.write_text('# Szkic\nZatwierdzona treść A.\n')
         with path.open('a') as fh:
-            fh.write('\nStary tekst planu.\n')
+            fh.write('\nStary tekst planu. [szkic](followups/nested/scope.md)\n')
+        with (path.parent / 'tickets/1.md').open('a') as fh:
+            fh.write('\n[szkic](../followups/nested/scope.md)\n')
         self.assertTrue(self.submit(card, str(path))['ok'])
         self.flow.stop()
         engine = self.flow.engine
@@ -208,6 +253,7 @@ class ArtifactsFlowTest(FlowInProcess):
         amendment = amendment.replace('---\n\n', '---\n\nNowy wstęp.\n\n', 1)
         (out / 'plan.md').write_text(amendment)
         (out / 'followups').mkdir(exist_ok=True)
+        (out / 'followups/nested/scope.md').write_text('# Szkic\nNowa treść B.\n')
         (out / 'followups/new.md').write_text('# Nowy szkic\nPełna treść.\n')
         step = launch.call_args.args[6]
         engine.journal.append(card, 'step.started', step=step, kind='plan-amend',
@@ -229,7 +275,18 @@ class ArtifactsFlowTest(FlowInProcess):
         self.assertIn('Stary tekst planu.', pending_body)
         self.assertNotIn('Nowy wstęp.', pending_body)
         self.assertNotIn('[szkic](followups/new.md)', pending_body)
+        scope_file = str(Path(plan_file).parent / 'followups/nested/scope.md')
+        new_file = str(Path(plan_file).parent / 'followups/new.md')
+        with self.subTest('zatwierdzony szkic podczas pending'):
+            self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{scope_file}"),
+                             '# Szkic\nZatwierdzona treść A.\n')
+        with self.subTest('brak nowego szkicu podczas pending'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                git(self.repo, 'show', f"{info['cardBranch']}:{new_file}")
+        self.assertIn('](../../plans/followups/nested/scope.md)',
+                      git(self.repo, 'show', f"{info['cardBranch']}:{ticket_file}"))
         self.assertTrue(engine.approve_plan(card)['ok'])
+        (out / 'followups/nested/scope.md').write_text('zmiana po zamrożeniu')
         (out / 'followups/new.md').write_text('zmiana po zamrożeniu')
 
         def commit_and_check():
@@ -242,6 +299,8 @@ class ArtifactsFlowTest(FlowInProcess):
             target = str(Path(plan_file).parent / 'followups/new.md')
             self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{target}"),
                              '# Nowy szkic\nPełna treść.\n')
+            self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{scope_file}"),
+                             '# Szkic\nNowa treść B.\n')
             self.assertIn('Ręczny dopisek kartki.',
                           git(self.repo, 'show', f"{info['cardBranch']}:{ticket_file}"))
             return body
