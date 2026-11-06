@@ -278,8 +278,10 @@ class TransferFlowTest(FlowInProcess):
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
+        self.stop_flow_worker()  # Start dopuszczony przy 25%, odczyt wyczerpania przed pierwszym poll.
         self.assertTrue(self.start(card)["ok"])
         metric["remaining"] = 0
+        self.flow.start()
         self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
                                         self.of(card, "step.finished")), timeout=30), self.events(card))
         first = self.of(card, "step.started")[0]
@@ -301,11 +303,14 @@ class TransferFlowTest(FlowInProcess):
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
+        self.stop_flow_worker()
         self.assertTrue(self.start(card)["ok"])
         metric["remaining"] = 0
+        self.flow.start()
         self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
                                         self.of(card, "step.finished")), timeout=30), self.events(card))
         first = self.of(card, "step.started")[0]
+        self.assertEqual(self.of(card, "step.limit")[0]["window"], "session")
         self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
         metric.update(remaining=40, readTs=now + 1001)
         self.flow.engine.clock = lambda: now + 1001

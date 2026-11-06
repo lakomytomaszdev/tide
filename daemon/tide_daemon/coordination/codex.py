@@ -22,6 +22,7 @@ import os
 import re
 
 from ..agents.codex import describe_call
+from ..box import logfiles
 from ..agents.timeutil import parse_ts
 from . import plan as plan_mod
 from .model import COMPLETED, KILLED, PROMPT_HEAD, Coordinator, Question, Run, add_plan_write
@@ -66,7 +67,7 @@ class CodexThreadLog:
         if self.meta_read:
             return True
         try:
-            with open(self.path, "rb") as fh:
+            with logfiles.open_log(self.path) as fh:
                 line = fh.readline()
         except OSError:
             return False
@@ -81,7 +82,7 @@ class CodexThreadLog:
 
     def update(self) -> bool:
         try:
-            st = os.stat(self.path)
+            st = logfiles.stat_log(self.path)
         except OSError:
             return False
         if st.st_size < self.offset:
@@ -90,7 +91,7 @@ class CodexThreadLog:
             return False
         self.size, self.mtime = st.st_size, st.st_mtime
         try:
-            with open(self.path, "rb") as fh:
+            with logfiles.open_log(self.path) as fh:
                 fh.seek(self.offset)
                 while True:
                     chunk = fh.read(CHUNK)
@@ -268,8 +269,8 @@ def build(root: CodexThreadLog, children: list[CodexThreadLog], title: str = "")
 def excerpt(path: str, limit: int = 12) -> list[dict]:
     """Ostatnie wypowiedzi i wywołania narzędzi podagenta Codexa (do „Pokaż wynik”)."""
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as fh:
+        with logfiles.open_log(path) as fh:
+            size = os.fstat(fh.fileno()).st_size
             fh.seek(max(0, size - 512 * 1024))
             data = fh.read()
     except OSError:

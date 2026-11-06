@@ -26,6 +26,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from .. import codex_homes
+from ..box import logfiles
 from ..agents import gitinfo
 from ..agents.claude import ClaudeLog
 from ..agents.codex import SCHEDULED_KINDS, CodexLog
@@ -246,13 +247,13 @@ def read_automations(codex_root) -> dict[str, dict]:
 def _read_automations(root: str) -> dict[str, dict]:
     out = {}
     try:
-        names = sorted(os.listdir(root))
+        names = sorted(logfiles.names(root))
     except OSError:
         return out
     for name in names:
         path = os.path.join(root, name, "automation.toml")
         try:
-            with open(path, "rb") as fh:
+            with logfiles.open_log(path) as fh:
                 data = tomllib.load(fh)
         except (OSError, tomllib.TOMLDecodeError):
             continue
@@ -269,7 +270,7 @@ def scheduled_runs(path: str, start: float, end: float) -> list[Run]:
     current: Run | None = None
     scheduled = False
     try:
-        fh = open(path, "rb")
+        fh = logfiles.open_log(path)
     except OSError:
         return runs
     with fh:

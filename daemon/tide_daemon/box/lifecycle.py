@@ -124,8 +124,9 @@ class Lifecycle:
                           reason="karta domknięta", error=str(exc))
             return
         started = b.clock()
+        b.ensure_home(slug, card)
         self.incus.delete(name, force=True)
-        self.incus.volume_delete(b.settings.pool, bs.home_volume(name), check=False)
+        # Dom, eksport i dawny wolumen pozostają do jawnego sprzątania (PT-189).
         bs.record(slug, "box.reset", name, b.wall, duration=round(b.clock() - started, 3),
                   result="ok", reason="karta domknięta", removed=True)
 

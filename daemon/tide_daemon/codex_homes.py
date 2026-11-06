@@ -33,6 +33,7 @@ przyrostkiem `_<segment>`) to różne pliki: raport i worktrees widzą je osobno
 Agents i KRunner łączą je po id same (newest()).
 """
 import os
+from .box import logfiles
 
 SESSIONS = "sessions"
 SNAP_DIR = os.path.join("snap", "codex")
@@ -43,10 +44,16 @@ DESKTOP_CODEX = "/usr/lib/chatgpt/resources/codex"
 def default_homes(env=None) -> list[str]:
     """$CODEX_HOME albo ~/.codex i ~/snap/codex/current (nierozwiązane — resolve() przy użyciu)."""
     env = os.environ if env is None else env
+    extra = box_homes(env)
     if env.get("CODEX_HOME"):
-        return [env["CODEX_HOME"]]
+        return [env["CODEX_HOME"], *extra]
     home = env.get("HOME") or os.path.expanduser("~")
-    return [os.path.join(home, ".codex"), os.path.join(home, SNAP_DIR, "current")]
+    return [os.path.join(home, ".codex"), os.path.join(home, SNAP_DIR, "current"), *extra]
+
+
+def box_homes(env=None) -> list[str]:
+    from .box.homes import codex_roots
+    return codex_roots(env)
 
 
 def resolve(roots) -> list[str]:
@@ -57,7 +64,8 @@ def resolve(roots) -> list[str]:
     for root in roots or ():
         if not root:
             continue
-        real = os.path.realpath(os.path.expanduser(os.fspath(root)))
+        path = os.path.abspath(os.path.expanduser(os.fspath(root)))
+        real = path if logfiles.is_box(path) else os.path.realpath(path)
         if real not in out:
             out.append(real)
     return out

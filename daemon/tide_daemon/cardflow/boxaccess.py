@@ -6,7 +6,9 @@ Nie odtwarzamy ich z `in/env`, które kod projektu może dowolnie zmienić.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
+import subprocess
 import secrets
 import tempfile
 import time
@@ -83,6 +85,20 @@ def configure(proxy, placement, step: str, log: str, bg, *, codex_step_dir: str 
         for rel, content in credentials.files.items():
             fs.write_secret(os.path.join(home, rel), content)
         bg.env["CODEX_HOME"] = os.path.join(home, ".codex")
+        from ..tasks import commands, agentcmd
+        if commands.in_box(placement.runner):
+            # Dom wątku jest trwały także po odtworzeniu rootfs. Katalog rodzica zachowuje tożsamość wznowienia.
+            target = os.path.join(placement.runner.base_env()["HOME"], ".codex", "steps",
+                                  hashlib.sha256(root.encode()).hexdigest())
+            script = ('mkdir -p "$2" && cp "$1/auth.json" "$2/auth.json" || exit 1; '
+                      'if [ -d "$1/sessions" ] && [ ! -L "$1/sessions" ]; then '
+                      'cp -an "$1/sessions" "$2/" || exit 1; fi')
+            result = commands.run(placement.runner, ["/bin/sh", "-c", script, "codex-home",
+                                  bg.env["CODEX_HOME"], target], background=bg, cwd=bg.cwd, env={},
+                                  capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+            if result.returncode:
+                raise agentcmd.StepError("nie udało się przygotować trwałego domu sesji Codexa w pudełku")
+            bg.env["CODEX_HOME"] = target
 
 
 def revoke(proxy, step: str, log: str) -> None:

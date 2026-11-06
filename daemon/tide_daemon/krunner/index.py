@@ -39,6 +39,7 @@ from ..agents.codex import CodexLog
 from ..agents.jsonl import JsonlTail, read_head
 from ..agents.scanner import _claude_files, _codex_files
 from .. import codex_homes
+from ..box import logfiles
 from ..board.place import work_cwd
 from ..codex_app import is_desktop
 
@@ -189,7 +190,7 @@ class SessionIndex:
             elif entry.log.hidden:
                 continue  # wątek podagenta — po pierwszej linii wiadomo, że go nie pokazujemy
             try:
-                size = os.path.getsize(path)
+                size = logfiles.stat_log(path).st_size
             except OSError:
                 continue
             if entry.stamp == (size, mtime):
@@ -304,6 +305,10 @@ def _read_titles(db: str, wanted: set | None = None) -> dict[str, str] | None:
 
 def _state_db(codex_root: str) -> str:
     """Najnowsza baza stanu Codexa (state_<wersja>.sqlite) albo pusty napis."""
+    # SQLite otwiera także pliki WAL po nazwach, poza kontrolą deskryptora. Dla pudełek
+    # źródłem tytułów pozostaje session_index.jsonl czytany przez bezpieczny czytnik.
+    if logfiles.is_box(codex_root):
+        return ""
     def version(path):
         match = re.search(r"state_(\d+)\.sqlite$", path)
         return int(match.group(1)) if match else -1

@@ -28,7 +28,6 @@
 """
 from __future__ import annotations
 
-import glob
 import os
 import shutil
 import signal
@@ -456,19 +455,24 @@ def _codex_messages(records) -> list:
 
 
 def find_claude_log(projects: str, session_id: str) -> str:
-    if not projects or not session_id:
+    if not session_id:
         return ""
-    found = glob.glob(os.path.join(glob.escape(projects), "*", glob.escape(session_id) + ".jsonl"))
-    return max(found, key=lambda p: os.stat(p).st_mtime) if found else ""
+    from ..box.homes import claude_projects
+    from ..worktrees.sessions import _claude_files
+    roots = ([projects] if projects else []) + claude_projects()
+    found = [(path, st.st_mtime) for root in roots for path, st in _claude_files(root)
+             if os.path.basename(path) == session_id + ".jsonl"]
+    return max(found, key=lambda p: p[1])[0] if found else ""
 
 
 def find_codex_log(roots, worktree: str, session_id: str = "") -> str:
     """Najnowszy dziennik Codexa z katalogu kroku (`session_meta.cwd`), w katalogach danych `roots`."""
+    from ..worktrees.sessions import _codex_files
     files = []
-    for folder in codex_homes.sessions_dirs(roots or []):
-        files += glob.glob(os.path.join(glob.escape(folder), "**", "rollout-*.jsonl"), recursive=True)
+    for folder in codex_homes.sessions_dirs([*codex_homes.resolve(roots or []), *codex_homes.box_homes()]):
+        files.extend(_codex_files(folder))
     want = os.path.realpath(worktree)
-    for path in sorted(files, key=lambda p: os.stat(p).st_mtime, reverse=True):
+    for path, _stat in sorted(files, key=lambda p: p[1].st_mtime, reverse=True):
         if session_id and session_id not in os.path.basename(path):
             continue
         for record in read_head(path, 64 * 1024):

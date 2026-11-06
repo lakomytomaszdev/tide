@@ -69,7 +69,7 @@ class PlanFlowTest(FlowInProcess):
         from tide_daemon.coordination import reservations
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.flow.stop()
+        self.stop_flow_worker()
         original = reservations.reserve
         calls = 0
         def fail_second(*args, **kwargs):

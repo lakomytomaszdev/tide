@@ -148,6 +148,18 @@ class FlowInProcess(unittest.TestCase):
                             which=lambda name: self.fakes.get(name), grace=5.0)
         flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
+        stop = flow.stop
+
+        def stop_and_drain():
+            # Monitor w produkcji zamyka pulę bez czekania. Test musi zakończyć jej pracę przed
+            # odtworzeniem os.environ i usunięciem repozytoriów, bo wątek korzysta z obu tych rzeczy.
+            flow._timer.stop()
+            if flow._pool is not None:
+                flow._pool.shutdown(wait=True, cancel_futures=False)
+            stop()
+            app().processEvents()
+
+        flow.stop = stop_and_drain
         flow.start()
         self.addCleanup(flow.stop)
         return flow
@@ -157,6 +169,10 @@ class FlowInProcess(unittest.TestCase):
         self.flow.stop()
         wait_until(lambda: False, timeout=0.3)
         self.flow = self.make_flow()
+
+    def stop_flow_worker(self):
+        """Bariera przed ręcznym wywołaniem silnika: stop() nie czeka na trwające zadanie."""
+        self.flow.stop()
 
     # --- pomocnicze -------------------------------------------------------------------------------
 
@@ -594,7 +610,8 @@ class RestartInProcessTest(FlowInProcess):
         self.flow = self.make_flow()
         self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 1, timeout=10), self.events(card_id))
         self.assertEqual(self.of(card_id, "card.moved")[0]["moveId"], move_id)
-        self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
+        # Tick zapisuje dziennik w workerze, a dopiero callback publikuje migawkę w wątku Qt.
+        self.wait_column(card_id, "todo")
 
     def test_restart_after_store_move_to_backlog_pauses_the_card(self):
         card_id = self.card(description="ATRAPA: czekaj")
@@ -757,6 +774,9 @@ class ManualColumnsInProcessTest(FlowInProcess):
         card_id = self.card()
         first = self.start(card_id)
         self.wait_column(card_id, "review")
+        # Review jest widoczne już po scaleniu ticketu. Ten scenariusz odsyła do poprawy
+        # dopiero domkniętą kartę, więc nie może ścigać się z zapisem card.closed.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30))
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
         self.wait_column(card_id, "todo")
         self.assertTrue(json.loads(self.board.update_card(card_id, json.dumps({"title": "Nowy tytuł"})))["ok"])

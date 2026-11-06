@@ -496,7 +496,8 @@ class NoSecretsInBoxTests(unittest.TestCase):
             if name != "k3.py":
                 self.assertNotIn(".credentials.json", text, name)
                 self.assertNotIn("auth.json", text, name)
-            self.assertNotIn("copyfile", text, name)
+            # copyfileobj strumieniuje już otwarte archiwum migracji; nie otwiera pliku poświadczeń hosta.
+            self.assertNotRegex(text, r"\bcopyfile\b", name)
 
 
 if __name__ == "__main__":

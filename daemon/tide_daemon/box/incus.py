@@ -155,6 +155,23 @@ class Incus:
     def device_add(self, name: str, device: str, kind: str, values: dict):
         self.call("config", "device", "add", name, device, kind, *_kv(values))
 
+    def device_replace(self, name: str, device: str, kind: str, values: dict):
+        """Atomowa zmiana całego urządzenia; błąd nie zostawia instancji bez starego domu."""
+        # `config show` zwraca YAML, m.in. blok raw.idmap nieobsługiwany przez yamlmini.
+        # Lista JSON niesie pełną konfigurację; do edit przekazujemy pola zapisywalne,
+        # bez statusu i expanded_devices odziedziczonych z profili.
+        instance = self.instance(name)
+        if instance is None:
+            raise ValueError(f"brak instancji Incusa: {name}")
+        data = {key: instance[key] for key in
+                ("architecture", "config", "devices", "ephemeral", "profiles", "stateful", "description")
+                if key in instance}
+        data.setdefault("devices", {})[device] = {"type": kind, **values}
+        argv = self._argv(["config", "edit", name])
+        result = self._run(argv, input=json.dumps(data), capture_output=True, text=True)
+        if result.returncode:
+            raise IncusError(argv, result.returncode, result.stderr)
+
     # --- wolumeny i pliki --------------------------------------------------------------------------
 
     def volume_create(self, pool: str, volume: str, config: dict | None = None):
@@ -171,6 +188,16 @@ class Incus:
 
     def volume_exists(self, pool: str, volume: str) -> bool:
         return self.call("storage", "volume", "show", pool, volume, check=False).returncode == 0
+
+    def volume_list(self, pool: str) -> list:
+        data = json.loads(self.call("storage", "volume", "list", pool, "--format", "json").stdout)
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("niepoprawna lista wolumenów Incusa")
+        return data
+
+    def volume_export(self, pool: str, volume: str, path: str):
+        """Przenośne archiwum plików bez migawek ani formatu zoptymalizowanego btrfs."""
+        self.call("storage", "volume", "export", pool, volume, path, "--volume-only", "--compression=none")
 
     def file_push(self, source: str, name: str, path: str):
         self.call("file", "push", source, f"{name}{path}", "--create-dirs")

@@ -3,7 +3,7 @@
 Kolejność budowy (`build`):
  1. kopia obrazu bazowego — `incus init <base> <pudełko>` (launch bez startu) z `limits.cpu`, `limits.memory`
     z profilu i `security.nesting=true` tylko dla `docker.enabled`; nigdy
-    `security.privileged`; rozmiar dysku głównego `resources.disk`; wolumen `<pudełko>-home` na `/home/agent`
+    `security.privileged`; rozmiar dysku głównego `resources.disk`; prywatny katalog hosta na `/home/agent`
     (urządzenie dyskowe, więc reset z migawki go nie rusza),
  2. filtrowanie NIC (`security.mac_filtering`, `security.ipv4_filtering`, `security.ipv6_filtering` wg
     ustawień) — zanim pudełko wystartuje i wyśle pierwszy pakiet,
@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import agents
+from . import home as boxhome
 from . import netenv
 from . import profile as bp
 from . import state as bs
@@ -42,7 +43,6 @@ SCRIPTS_DIR = templates.STACKS_DIR      # `box/stacks/<stos>.sh` obok szablonów
 REMOTE_STACKS = "/opt/tide/stacks"       # gdzie w pudełku lądują skrypty szablonów
 STACKS_LIB = "lib.sh"                    # wspólne funkcje szablonów, wypychane obok `<stos>.sh` (PT-192)
 BUILD_NO_PROXY = netenv.BOX_NO_PROXY     # jedno NO_PROXY dla budowy, obrazu bazowego i kroku (P-6)
-HOME_INIT_KEY = "user.tide.home-init"    # stan trwały w wolumenie: pending → ready, także po przerwanej budowie
 # Incus 6.0 przy twardym limits.memory i pominiętym limits.memory.swap ustawia swap na 0.
 # Jawny klucz swap (także false) jest zabroniony w projekcie ograniczonym. Sprawdzamy efekt w jądrze,
 # zamiast włączać restricted.containers.lowlevel. Brak cgroup v2 albo inny limit przerywa budowę.
@@ -200,6 +200,7 @@ class Builder:
 
     def _build(self, slug, name, full, proxy, domains, steps) -> BuildResult:
         if self.incus.instance(name) is not None:
+            self.ensure_home(slug)  # eksport starych danych przed usunięciem starej instancji
             self.incus.delete(name, force=True)
         # 1. kopia obrazu bazowego z limitami z profilu
         steps.append("base")
@@ -210,7 +211,7 @@ class Builder:
             config["security.nesting"] = True
         self.incus.init(full.get("base") or self.settings.base_image, name, config)
         self.incus.device_override(name, "root", {"size": res["disk"]})
-        home_pending = self._attach_home(name)
+        self._attach_home(name, slug)
         # 2. filtrowanie NIC przed startem
         steps.append("nic")
         self.apply_nic_filter(name)
@@ -224,12 +225,12 @@ class Builder:
         os.chmod(denied, 0o600)
         self.policy.set_box_policy(ip, domains, bool(full["network"].get("host-ollama")), denied)
         try:
-            return self._provision(slug, name, full, proxy, steps, home_pending)
+            return self._provision(slug, name, full, proxy, steps)
         finally:
             # polityka budowy nie zostaje w proxy po budowie (kroki dostaną politykę karty, #18)
             self.policy.clear_box_policy(ip)
 
-    def _provision(self, slug, name, full, proxy, steps, home_pending) -> BuildResult:
+    def _provision(self, slug, name, full, proxy, steps) -> BuildResult:
         # Szablony (lib.sh) sprawdzają, że HTTP(S)_PROXY wywołania = TIDE_BOX_PROXY, a drop-in dockerd (docker.sh)
         # dostaje NO_PROXY wyłącznie z TIDE_BOX_NO_PROXY — obie wartości tylko stąd.
         env = {**netenv.proxy_env(proxy, BUILD_NO_PROXY), "DEBIAN_FRONTEND": "noninteractive",
@@ -240,9 +241,6 @@ class Builder:
             env["TIDE_DOTNET_SDK"] = " ".join(full["dotnet"]["sdk"])
         steps.append("swap")
         self._run(name, NO_SWAP_CHECK, env, "brak potwierdzenia memory.swap.max=0 (wymagane cgroup v2 bez swapu)")
-        if home_pending:
-            steps.append("home")
-            self._initialize_home(name, env)
         # 4. szablony stosów (z lib.sh obok)
         if full["stacks"]:
             self.incus.file_push(os.path.join(self.scripts_dir, STACKS_LIB), name, f"{REMOTE_STACKS}/{STACKS_LIB}")
@@ -301,30 +299,16 @@ class Builder:
                 raise BuildError(f"pudełko {name} nie dostało adresu IPv4 na {self.settings.nic}")
             self.sleep(0.5)
 
-    def _attach_home(self, name):
-        """Podłącza trwały wolumen; zwraca, czy trzeba dokończyć inicjalizację jego katalogu głównego.
+    def _attach_home(self, name, slug=None, card=""):
+        try:
+            boxhome.attach(self, name, slug or name, card)
+        except boxhome.HomeError as exc:
+            raise BuildError(str(exc)) from exc
 
-        Incus 6.0 nie obsługuje `initial.uid/gid/mode`. Znacznik w nowym wolumenie pozwala dokończyć ustawienie
-        właściciela po starcie (także po błędzie). Wolumeny gotowe i istniejące bez znacznika zostają bez zmian.
-        """
-        volume = bs.home_volume(name)
-        created = not self.incus.volume_exists(self.settings.pool, volume)
-        if created:
-            self.incus.volume_create(self.settings.pool, volume, {HOME_INIT_KEY: "pending"})
-        pending = created or self.incus.volume_get(self.settings.pool, volume, HOME_INIT_KEY) == "pending"
-        devices = self.incus.device_show(name)
-        values = {"pool": self.settings.pool, "source": volume, "path": bs.HOME_PATH}
-        if "home" in devices:
-            self.incus.device_set(name, "home", values)
-        else:
-            self.incus.device_add(name, "home", "disk", values)
-        return pending
-
-    def _initialize_home(self, name, env=None):
-        # install -d zmienia tylko katalog główny nowego wolumenu; bez rekursji i bez ścieżek hosta.
-        self._run(name, ["install", "-d", "-m", bs.HOME_MODE, "-o", str(self.settings.agent_uid),
-                         "-g", str(self.settings.agent_gid), bs.HOME_PATH], env, "inicjalizacja /home/agent")
-        self.incus.volume_set(self.settings.pool, bs.home_volume(name), {HOME_INIT_KEY: "ready"})
+    def ensure_home(self, slug, card=""):
+        """Przed krokiem/resetem migracja starych domów; czynne kroki blokują zmianę urządzenia."""
+        name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
+        self._attach_home(name, slug, card)
 
     def apply_nic_filter(self, name):
         """Filtrowanie NIC na karcie pudełka: `set`, gdy karta jest lokalna, `override`, gdy z profilu."""
@@ -351,6 +335,7 @@ class Builder:
             if target == source or config.get(bs.COPY_OF_KEY) != source or config.get(bs.CARD_KEY) != card.upper():
                 raise BuildError(f"{target}: nie jest kopią pudełka karty {card}")
             if self.incus.config_get(target, bs.RECIPE_KEY) == self.incus.config_get(source, bs.RECIPE_KEY):
+                self.ensure_home(slug, card)
                 return target
             self.require_idle(slug, target)
         snaps = [s.get("name") for s in self.incus.snapshot_list(source)] if self.incus.instance(source) else []
@@ -358,25 +343,13 @@ class Builder:
             raise BuildError(f"pudełko projektu {source} nie ma migawki {bs.SNAPSHOT} (tide box build {slug})")
         if existing is not None:
             reset_started = self.clock()
+            self.ensure_home(slug, card)
             self.incus.delete(target, force=True)
         started = self.clock()
         self.incus.copy(f"{source}/{bs.SNAPSHOT}", target)
         self.incus.config_set(target, {bs.COPY_OF_KEY: source, bs.CARD_KEY: str(card).upper()})
-        home_pending = self._attach_home(target)
+        self._attach_home(target, slug, card)
         self.apply_nic_filter(target)
-        if home_pending:
-            # Kopia powstaje zatrzymana. Krótki start tylko do metadanych wolumenu, z filtrowaniem NIC;
-            # polecenie install nie używa sieci, a kopia nie dostaje polityki domen w proxy.
-            try:
-                self.incus.start(target)
-                try:
-                    self._initialize_home(target)
-                finally:
-                    self.incus.stop(target, force=True)
-            except Exception:
-                # Częściowa kopia nie może udawać gotowej przy idempotentnym ponowieniu. Wolumen pending zostaje.
-                self.incus.delete(target, force=True)
-                raise
         self.incus.snapshot_create(target, bs.SNAPSHOT)
         if reset_started is not None:
             bs.record(slug, "box.reset", target, self.wall, reason="zmiana przepisu", result="ok",
@@ -441,14 +414,16 @@ class Builder:
         if self.incus.instance(name) is None:
             raise BuildError(f"pudełko {name} nie istnieje")
         started = self.clock()
+        self.ensure_home(slug, card or "")
         self.incus.snapshot_restore(name, bs.SNAPSHOT)
+        self.ensure_home(slug, card or "")  # stara migawka może przywrócić konfigurację wolumenu
         duration = round(self.clock() - started, 3)
         bs.record(slug, "box.reset", name, self.wall, result="ok", duration=duration)
         return duration
 
     @bs.serialized
     def destroy(self, slug: str) -> list:
-        """Usuwa pudełko projektu i wszystkie jego kopie per karta (z wolumenami `/home/agent`)."""
+        """Usuwa instancje projektu i kopii; zachowuje domy, eksporty i stare wolumeny."""
         source = bs.box_name(slug)
         victims = [inst["name"] for inst in self.incus.list()
                    if inst.get("name") == source
@@ -459,7 +434,7 @@ class Builder:
         victims.sort(key=lambda v: v == source)      # najpierw kopie, potem pudełko projektu
         for victim in victims:
             self.incus.delete(victim, force=True)
-            self.incus.volume_delete(self.settings.pool, bs.home_volume(victim), check=False)
+            # Dom hosta, kopia eksportu i dawny wolumen zostają do osobnego, jawnego sprzątania.
             bs.record(slug, "box.destroy", victim, self.wall)
         return victims
 

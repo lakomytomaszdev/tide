@@ -21,6 +21,7 @@ from tide_daemon.box import netenv
 from tide_daemon.box import profile as bp
 from tide_daemon.box import state as bs
 from tide_daemon.box import templates
+from tide_daemon.box import home as boxhome
 from tide_daemon.box.incus import Incus
 from tide_daemon.box import settings as bset
 from tide_daemon.box.settings import BoxSettings
@@ -276,7 +277,7 @@ class BuildTest(BoxCase):
         self.assertFalse(any("security.privileged" in " ".join(a) for a in argvs))
         dev = self.fake_state()["instances"]["plasma-tide"]["devices"]
         self.assertEqual(dev["eth0"]["security.mac_filtering"], "true")
-        self.assertEqual(dev["home"], {"type": "disk", "pool": "tide", "source": "plasma-tide-home",
+        self.assertEqual(dev["home"], {"type": "disk", "source": boxhome.path("plasma-tide"),
                                        "path": "/home/agent"})
 
     def test_ipv6_filtering_follows_settings(self):
@@ -337,53 +338,15 @@ class BuildTest(BoxCase):
             self.builder().build("plasma-tide")
         self.assertEqual(len(self.policy.cleared), 2)
 
-    def test_home_volume_belongs_to_agent(self):
+    def test_host_home_is_private_and_mapped_to_agent(self):
         self.approve()
         self.builder(BoxSettings(project="user-1000", ip_wait_seconds=0, agent_uid=1001, agent_gid=1002)) \
             .build("plasma-tide")
         create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"]]
-        self.assertEqual(create, [["storage", "volume", "create", "--project", "user-1000", "tide", "plasma-tide-home",
-                                   f"{bb.HOME_INIT_KEY}=pending"]])
-        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"],
-                         {bb.HOME_INIT_KEY: "ready"})
-        argvs = self.incus_calls()
-        prepare = next(a for a in argvs if a[0] == "exec" and a[a.index("--") + 1] == "install")
-        self.assertEqual(prepare[prepare.index("--") + 1:],
-                         ["install", "-d", "-m", "0750", "-o", "1001", "-g", "1002", "/home/agent"])
-        stack = next(a for a in argvs if a[0] == "exec" and f"{bb.REMOTE_STACKS}/node.sh" in a)
-        self.assertLess(argvs.index(prepare), argvs.index(stack))
-
-    def test_rebuild_keeps_existing_home_permissions(self):
-        self.approve()
-        b = self.builder()
-        b.build("plasma-tide")
-        before = len(self.incus_calls())
-        b.build("plasma-tide")
-        after = self.incus_calls()[before:]
-        self.assertFalse([a for a in after if a[:3] == ["storage", "volume", "create"]
-                          or a[0] == "exec" and a[a.index("--") + 1] == "install"])
-
-    def test_unmarked_existing_home_is_not_changed(self):
-        self.approve()
-        b = self.builder()
-        b.incus.volume_create("tide", "plasma-tide-home")
-        b.build("plasma-tide")
-        self.assertFalse([a for a in self.incus_calls() if a[0] == "exec" and a[a.index("--") + 1] == "install"])
-        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"], {})
-
-    def test_home_initialization_failure_is_retried_without_snapshot(self):
-        self.approve()
-        b = self.builder()
-        with mock.patch.dict(os.environ, {"TIDE_FAKE_BOX_FAIL": "install"}):
-            with self.assertRaisesRegex(bb.BuildError, "inicjalizacja /home/agent"):
-                b.build("plasma-tide")
-        state = self.fake_state()
-        self.assertEqual(state["volume_config"]["tide/plasma-tide-home"][bb.HOME_INIT_KEY], "pending")
-        self.assertFalse(state["instances"]["plasma-tide"]["snapshots"])
-        self.assertFalse(state.get("pushed"))
-        self.assertEqual(len(self.policy.calls), len(self.policy.cleared))
-        b.build("plasma-tide")
-        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-home"][bb.HOME_INIT_KEY], "ready")
+        self.assertEqual(create, [])
+        self.assertEqual(os.stat(boxhome.path("plasma-tide")).st_mode & 0o777, 0o700)
+        self.assertEqual(self.fake_state()["instances"]["plasma-tide"]["config"]["raw.idmap"],
+                         f"uid {os.getuid()} 1001\ngid {os.getgid()} 1002")
 
     def test_failed_verify_still_snapshots_with_warning(self):
         self.approve({**PROFILE, "verify": ["true", "exit 3"]})
@@ -480,7 +443,7 @@ class CardCopyTest(BoxCase):
                       argvs)
         inst = self.fake_state()["instances"]["plasma-tide-k-38"]
         self.assertEqual(json.loads(inst["config"][bs.RECIPE_KEY])["hash"], res.hash)
-        self.assertEqual(inst["devices"]["home"]["source"], "plasma-tide-k-38-home")
+        self.assertEqual(inst["devices"]["home"]["source"], boxhome.path("plasma-tide", "K-38"))
         ready = [e for e in bs.events("plasma-tide", name) if e["type"] == "box.ready"]
         self.assertEqual((ready[0]["card"], ready[0]["hash"], ready[0]["copy_of"]), ("K-38", res.hash, "plasma-tide"))
         before = len(self.incus_calls())
@@ -500,18 +463,11 @@ class CardCopyTest(BoxCase):
         self.assertEqual([s["name"] for s in inst["snapshots"]], ["clean"])
         snap = inst["snapshots"][0]
         # migawka kopii już ma własny /home/agent i filtrowanie NIC — reset ich nie cofa
-        self.assertEqual(snap["devices"]["home"]["source"], "plasma-tide-k-38-home")
+        self.assertEqual(snap["devices"]["home"]["source"], boxhome.path("plasma-tide", "K-38"))
         self.assertEqual(snap["devices"]["eth0"]["security.mac_filtering"], "true")
         create = [a for a in self.incus_calls() if a[:3] == ["storage", "volume", "create"] and name + "-home" in a]
-        self.assertIn(f"{bb.HOME_INIT_KEY}=pending", create[0])
-        self.assertEqual(self.fake_state()["volume_config"][f"tide/{name}-home"][bb.HOME_INIT_KEY], "ready")
+        self.assertEqual(create, [])
         self.assertEqual(inst["status"], "Stopped")
-        argvs = self.incus_calls()
-        prepare = next(a for a in argvs if a[0] == "exec" and a[a.index("--") + 1] == "install" and name in a)
-        stop = ["stop", "--project", "user-1000", name, "--force"]
-        snap_argv = next(a for a in argvs if a[:2] == ["snapshot", "create"] and name in a)
-        self.assertLess(argvs.index(prepare), argvs.index(stop))
-        self.assertLess(argvs.index(stop), argvs.index(snap_argv))
         bs.mark_in_use("plasma-tide", name, "PT-2")
         code, _, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
         self.assertEqual(code, 3, err)
@@ -521,7 +477,8 @@ class CardCopyTest(BoxCase):
         self.assertIn(["snapshot", "restore", "--project", "user-1000", name, "clean"], self.incus_calls())
         st = b.status("plasma-tide", "K-38")
         self.assertTrue(st.nic_filtering)
-        self.assertEqual(self.fake_state()["instances"][name]["devices"]["home"]["source"], "plasma-tide-k-38-home")
+        self.assertEqual(self.fake_state()["instances"][name]["devices"]["home"]["source"],
+                         boxhome.path("plasma-tide", "K-38"))
         reset = [e for e in bs.events("plasma-tide", name) if e["type"] == "box.reset"]
         self.assertIsInstance(reset[0]["duration"], (int, float))
 
@@ -537,19 +494,6 @@ class CardCopyTest(BoxCase):
     def test_copy_without_clean_snapshot_is_refused(self):
         with self.assertRaisesRegex(bb.BuildError, "clean"):
             self.builder().copy_for_card("plasma-tide", "K-38")
-
-    def test_failed_home_initialization_removes_partial_copy_and_can_retry(self):
-        self.approve()
-        b = self.builder()
-        b.build("plasma-tide")
-        with mock.patch.dict(os.environ, {"TIDE_FAKE_BOX_FAIL": "install"}):
-            with self.assertRaisesRegex(bb.BuildError, "inicjalizacja /home/agent"):
-                b.copy_for_card("plasma-tide", "K-38")
-        self.assertNotIn("plasma-tide-k-38", self.fake_state()["instances"])
-        self.assertEqual(self.fake_state()["volume_config"]["tide/plasma-tide-k-38-home"][bb.HOME_INIT_KEY], "pending")
-        name = b.copy_for_card("plasma-tide", "K-38")
-        self.assertEqual(self.fake_state()["instances"][name]["status"], "Stopped")
-        self.assertEqual(self.fake_state()["volume_config"][f"tide/{name}-home"][bb.HOME_INIT_KEY], "ready")
 
     def test_card_box_name(self):
         self.assertEqual(bs.card_box_name("toolssuite", "k-7"), "toolssuite-k-7")
@@ -640,9 +584,9 @@ class StatusResetDestroyTest(BoxCase):
         code, out, _ = self.run_cli("reset", "plasma-tide", builder=b)
         self.assertEqual(code, 0, out)
         self.assertIn(["snapshot", "restore", "--project", "user-1000", "plasma-tide", "clean"], self.incus_calls())
-        # reset przywraca rootfs; /home/agent to osobny wolumen (urządzenie dyskowe) — nie jest ruszany
+        # reset przywraca rootfs; /home/agent to katalog hosta (urządzenie dyskowe) — nie jest ruszany
         self.assertFalse([a for a in self.incus_calls() if a[:2] == ["storage", "volume"] and "delete" in a])
-        self.assertIn("tide/plasma-tide-home", self.fake_state()["volumes"])
+        self.assertTrue(os.path.isdir(boxhome.path("plasma-tide")))
 
     def test_destroy_removes_box_and_card_copies(self):
         self.approve()

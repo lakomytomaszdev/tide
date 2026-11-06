@@ -19,6 +19,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tarfile
 
 STATE = os.environ.get("TIDE_FAKE_INCUS_STATE") or os.path.join(os.getcwd(), "incus-state")
 PROFILE_DEVICES = {"eth0": {"name": "eth0", "network": "incusbr0", "type": "nic"},
@@ -87,7 +88,7 @@ def new_instance(data, config, devices, status):
 
 def main(argv):
     with open(os.environ["TIDE_FAKE_LOG"], "a", encoding="utf-8") as fh:
-        fh.write("incus " + shlex.join(argv) + "\n")
+        fh.write("incus " + shlex.join(argv).replace("\n", "\\n") + "\n")
     args, project, i = [], None, 0
     split = argv.index("--") if "--" in argv else len(argv)
     while i < split:
@@ -211,12 +212,19 @@ def main(argv):
                 print(inst["config"].get(args[3], ""))
             elif action == "show":
                 print(json.dumps({"config": inst["config"], "devices": inst["devices"]}))
+            elif action == "edit":
+                content = json.load(sys.stdin)
+                inst["config"] = content["config"]
+                inst["devices"] = content["devices"]
             else:
                 die(f"atrapa: nieznane config {action}", 2)
     elif cmd == "storage":
         action, pool, volume = args[2], args[3], args[4]
         key = f"{pool}/{volume}"
-        if action == "create":
+        if action == "list":
+            print(json.dumps([{"name": v.split("/", 1)[1], "type": "custom"}
+                              for v in data["volumes"] if v.startswith(pool + "/")]))
+        elif action == "create":
             if key in data["volumes"]:
                 die(f"Volume by that name already exists: {key}")
             config = kv(args[5:])
@@ -242,6 +250,13 @@ def main(argv):
                 print(config.get(args[5], ""))
             else:
                 config.update(kv(args[5:]))
+        elif action == "export":
+            if key not in data["volumes"]:
+                die(f"Storage volume not found: {key}")
+            source = os.path.join(STATE, "volumes", volume)
+            os.makedirs(source, exist_ok=True)
+            with tarfile.open(args[5], "w") as archive:
+                archive.add(source, arcname="backup/volume")
         else:
             die(f"atrapa: nieznane storage volume {action}", 2)
     elif cmd == "file":

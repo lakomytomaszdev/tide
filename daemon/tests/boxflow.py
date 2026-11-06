@@ -14,6 +14,7 @@ import shlex
 from unittest import mock
 
 from tide_daemon.box import builder as bb
+from tide_daemon.box import home as boxhome
 from tide_daemon.box import k3
 from tide_daemon.box import profile as bp
 from tide_daemon.box import runner as br
@@ -156,7 +157,7 @@ class BoxFlow(FlowInProcess):
             def base_env(self):
                 # Atrapa `claude` pisze dziennik sesji w $HOME i commituje — katalog domowy testu, nie /home/agent.
                 env = super().base_env()
-                env.update(HOME=os.path.join(test.base, "home"), GIT_CONFIG_GLOBAL=os.environ["GIT_CONFIG_GLOBAL"],
+                env.update(HOME=boxhome.path(slug, card if per_card else ""), GIT_CONFIG_GLOBAL=os.environ["GIT_CONFIG_GLOBAL"],
                            GIT_CONFIG_NOSYSTEM="1")
                 return env
 
@@ -191,6 +192,7 @@ class BoxFlow(FlowInProcess):
         builder = self.builder()
         incus = builder.incus
         incus.init("tide-base", SLUG)
+        builder._attach_home(SLUG)
         if nic:
             builder.apply_nic_filter(SLUG)
         stamp = builder.stamp(bp.with_defaults(stamp_profile or profile))
