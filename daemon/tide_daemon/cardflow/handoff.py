@@ -2,6 +2,9 @@
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
 
+import glob
+import os
+import re
 import shlex
 
 RESULT_FILE = "result.json"
@@ -12,7 +15,31 @@ OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect"
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
 
 
-def ticket_tests(base: str = "") -> str:
+OLD_BRANCH_TESTS = """Testy ticketu (także po poprawkach): ta gałąź karty powstała przed celem `make test-changed`
+i go nie ma. Obowiązuje dla niej dotychczasowa zasada: przed oddaniem uruchom raz pełny `make test` i zapisz
+polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie twórz zamiennika celu.
+"""
+
+
+def has_changed_target(worktree: str) -> bool:
+    """Czy obowiązuje `make test-changed` (06.11: gałęzie K-37/K-38 sprzed K-54 go nie mają, a kartka po K-62
+    kazała go uruchomić — agent pytał, czy przenieść infrastrukturę testów z master). Brak katalogu — nowa zasada."""
+    if not worktree or not os.path.isdir(worktree):
+        return True
+    text = ""
+    for path in [os.path.join(worktree, "Makefile"), *glob.glob(os.path.join(worktree, "mk", "*.mk"))]:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text += fh.read() + "\n"
+        except OSError:
+            continue
+    # Dawna zasada tylko dla gałęzi z celem `test`, ale bez `test-changed`; projekt bez make zostaje przy nowej.
+    return bool(re.search(r"^test-changed\s*:", text, re.M)) or not re.search(r"^test\s*:", text, re.M)
+
+
+def ticket_tests(base: str = "", worktree: str = "") -> str:
+    if not has_changed_target(worktree):
+        return OLD_BRANCH_TESTS
     command = f"make test-changed BASE={shlex.quote(base)}" if base else \
         "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
     return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
@@ -192,7 +219,7 @@ Twój katalog roboczy: {worktree} (gałąź {branch}, odgałęziona od gałęzi 
 
 Opis karty:
 {body}
-{ticket_tests(test_base)}
+{ticket_tests(test_base, worktree)}
 {f'''
 Zrzuty ekranu dołączone do zlecenia (przeczytaj je narzędziem Read):
 {shots}''' if shots else ''}
@@ -239,12 +266,15 @@ Twój katalog: {worktree}
 
 Dla recenzenta:
 - sprawdź zgodność z opisem karty i zasadami projektu,
-- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;
-  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,
+{"- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;" + chr(10) +
+   "  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,"
+   if has_changed_target(worktree) else
+   "- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);" + chr(10) +
+   "  nie uruchamiaj go ponownie na potrzeby review,"}
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 
-{ticket_tests(test_base)}
+{ticket_tests(test_base, worktree)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 
@@ -271,7 +301,7 @@ Karta {card_id}: {title}
 Opis/specyfikacja karty:
 {description.strip() or '(brak opisu)'}
 Twój katalog: {worktree}, gałąź {branch}. Popraw BLOCKER i MAJOR z raportu; uruchom odpowiednie testy.
-{ticket_tests(test_base)}
+{ticket_tests(test_base, worktree)}
 
 Raport review:
 {review}
