@@ -221,28 +221,44 @@ def host_fd_exemption(process):
     """Drugi wyjątek koordynatora: czytelne metadane procesu hosta spoza Tide/testów."""
     pid = int(process.name)
     phase = "read-host-cgroup"
+    units = []
+
+    def refuse(reason):
+        failure = InspectionError(pid, "host-exemption-refused", None)
+        failure.details["host_exemption_reason"] = reason
+        if units:
+            failure.details["cgroup_units"] = units
+        raise failure from None
+
     try:
         before = (process / "cgroup").read_text()
-        if not before.strip() or incus_container(before) is not None:
-            return None
+        if not before.strip():
+            refuse("empty-cgroup")
+        if incus_container(before) is not None:
+            refuse("container-cgroup-on-host-check")
         components = [part for line in before.splitlines()
                       for part in line.split(":", 2)[2].split("/") if part]
-        if any(part.startswith("tide-") for part in components):
-            return None
         units = [part for part in components if part.endswith((".service", ".scope"))]
+        if any(part.startswith("tide-") for part in components):
+            refuse("tide-cgroup-component")
         if not units:
-            return None
+            refuse("missing-cgroup-unit")
         phase = "read-host-cmdline"
         argv = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
-        if not argv or process_kind(argv) is not None:
-            return None
+        if not argv:
+            refuse("empty-cmdline")
+        kind = process_kind(argv)
+        if kind is not None:
+            refuse("classified-" + kind)
         phase = "read-host-comm"
         comm = (process / "comm").read_text().strip()
         if not comm or "\n" in comm:
-            return None
+            refuse("invalid-comm")
         phase = "recheck-host-cgroup"
         if (process / "cgroup").read_text() != before:
-            return None
+            refuse("cgroup-changed")
+    except InspectionError:
+        raise
     except (OSError, ValueError) as error:
         raise InspectionError(pid, phase, getattr(error, "errno", None)) from None
     return {"comm": comm, "cgroup_unit": units[-1], "cgroup_units": units}
@@ -300,7 +316,13 @@ def check_processes(source, allowed_daemon=None, *, audit=None):
                 evidence = container_fd_exemption(process, source)
                 reason = "incus-container-without-source-mount"
                 if evidence is None:
-                    evidence = host_fd_exemption(process)
+                    try:
+                        evidence = host_fd_exemption(process)
+                    except InspectionError as failure:
+                        failure.details.update(fd_phase=phase, fd_errno=error.errno)
+                        if descriptor is not None:
+                            failure.details["fd"] = descriptor
+                        raise
                     reason = "host-non-tide-non-test-fd-eacces"
                 if evidence is not None:
                     skip = {"pid": pid, "phase": phase, "errno": error.errno, **evidence,

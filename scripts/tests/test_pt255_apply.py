@@ -232,7 +232,10 @@ class ProcessClassificationTest(unittest.TestCase):
                 try:
                     operation.check_processes("/synthetic/source")
                 except ValueError as error:
-                    self.assertEqual(error.details, {"pid": 999999999, "phase": "list-fds", "errno": 13})
+                    self.assertEqual(error.details["pid"], 999999999)
+                    self.assertEqual(error.details["fd_phase"], "list-fds")
+                    self.assertEqual(error.details["fd_errno"], 13)
+                    self.assertEqual(error.details["host_exemption_reason"], "tide-cgroup-component")
                     self.assertNotIn("DO_NOT_DISCLOSE", str(error))
                 except OSError:
                     self.fail("Odmowa nie podaje kontrolowanego PID/fazy i kończy się ogólnym błędem")
@@ -435,11 +438,29 @@ class ContainerIsolationTest(unittest.TestCase):
                 self.assertEqual(events, [])
 
     def test_empty_host_cgroup_or_cmdline_refuses(self):
-        for cgroup, argv in (("", b"desktop\0"), ("0::/desktop.service\n", b"")):
+        for cgroup, argv, reason in (("", b"desktop\0", "empty-cgroup"),
+                                     ("0::/desktop.service\n", b"", "empty-cmdline")):
             with self.subTest(cgroup=cgroup), self.process("list-fds", cgroup=cgroup) as (process, query, audit, events):
                 (process / "cmdline").write_bytes(argv)
-                with self.assertRaises(operation.InspectionError):
+                with self.assertRaises(operation.InspectionError) as failure:
                     operation.check_processes(self.SOURCE, audit=audit)
+                self.assertEqual(failure.exception.details["host_exemption_reason"], reason)
+                self.assertEqual(failure.exception.details["fd_phase"], "list-fds")
+                self.assertEqual(failure.exception.details["fd_errno"], errno.EACCES)
+                self.assertEqual(events, [])
+
+    def test_host_refusal_metadata_distinguishes_conditions_without_cmdline(self):
+        cases = (("0::/user.slice\n", b"desktop\0DO_NOT_DISCLOSE\0", "desktop", "missing-cgroup-unit"),
+                 ("0::/tide-outside-other.scope\n", b"desktop\0DO_NOT_DISCLOSE\0", "desktop", "tide-cgroup-component"),
+                 ("0::/desktop.service\n", b"desktop\0DO_NOT_DISCLOSE\0", "", "invalid-comm"))
+        for cgroup, argv, comm, reason in cases:
+            with self.subTest(reason=reason), self.process("list-fds", cgroup=cgroup) as (process, query, audit, events):
+                (process / "cmdline").write_bytes(argv)
+                (process / "comm").write_text(comm)
+                with self.assertRaises(operation.InspectionError) as failure:
+                    operation.check_processes(self.SOURCE, audit=audit)
+                self.assertEqual(failure.exception.details["host_exemption_reason"], reason)
+                self.assertNotIn("DO_NOT_DISCLOSE", json.dumps(failure.exception.details))
                 self.assertEqual(events, [])
 
     def test_host_metadata_is_rechecked_after_fd_denial(self):
@@ -465,8 +486,10 @@ class ContainerIsolationTest(unittest.TestCase):
                     return original_bytes(path)
 
                 with patch.object(Path, "read_text", read_text), patch.object(Path, "read_bytes", read_bytes):
-                    with self.assertRaises(operation.InspectionError):
+                    with self.assertRaises(operation.InspectionError) as failure:
                         operation.check_processes(self.SOURCE, audit=audit)
+                expected = "cgroup-changed" if change == "cgroup" else "classified-test"
+                self.assertEqual(failure.exception.details["host_exemption_reason"], expected)
                 self.assertEqual(events, [])
 
     def test_unreadable_or_changed_cgroup_refuses(self):
