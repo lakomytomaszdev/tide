@@ -273,6 +273,8 @@ class TransferFlowTest(FlowInProcess):
         self.assertEqual(reviewers[0]["provider"], "anthropic")
 
     def test_wait_for_reset_resumes_same_provider_after_known_reset(self):
+        # Pierwszy odczyt sygnału limitu musi już widzieć wyczerpaną metrykę.
+        self.stop_flow()
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,
@@ -284,6 +286,8 @@ class TransferFlowTest(FlowInProcess):
         self.flow.start()
         self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
                                         self.of(card, "step.finished")), timeout=30), self.events(card))
+        limit = self.of(card, "step.limit")[-1]
+        self.assertEqual((limit["window"], limit["resetTs"]), ("session", now + 1000))
         first = self.of(card, "step.started")[0]
         self.assertEqual(len(self.of(card, "step.started")), 1)
         answer = self.resolve(card, {"choice": "wait-limit"})
@@ -298,6 +302,10 @@ class TransferFlowTest(FlowInProcess):
         self.wait_column(card, "review", timeout=50)
 
     def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
+        # StartCard może oddać odpowiedź dopiero po wykryciu szybkiego sygnału atrapy.
+        # Włączamy odpytywanie po zmianie metryki, aby step.limit miało właściwe okno i reset.
+        self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,

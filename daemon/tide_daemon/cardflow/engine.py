@@ -1542,7 +1542,7 @@ class FlowEngine(PlanEditing):
                 attempt=0, resume_session="") -> dict:
         self._admit(card.id, selected, ticket, kind, step_id)
         try:
-            placement = self._box_place(card.id, project, selected, ticket, kind, parent_step)
+            placement = self._box_place(card.id, project, selected, ticket, kind, parent_step, step_id)
         except BaseException:
             self._release_local(step_id)
             raise
@@ -1634,7 +1634,6 @@ class FlowEngine(PlanEditing):
             self.procs[step_id] = proc
             if placement is None:
                 return {"unit": bg.unit, "gitDir": bg.git_dir}
-            boxstep.started(self, placement, card.id, step_id, selected.tool)
             self._box_runners[placement.box] = placement.runner
             return {"unit": bg.unit, "gitDir": bg.git_dir, **placement.entry()}
 
@@ -1651,8 +1650,17 @@ class FlowEngine(PlanEditing):
                               local=selected.local, branch=made_ticket["branch"],
                               reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
         except (agentcmd.StepError, OSError) as exc:
+            # Błąd zapisu wyniku nie cofa uruchomienia jednostki. Otwarty zamiar pozwala
+            # odzyskać krok; porty i miejsce lokalne należą do niego aż do potwierdzonego końca.
+            if step_id in self.procs:
+                raise FlowError("step", f"krok wystartował, ale nie utrwalono startu: {exc}") from None
+            if placement is not None:
+                boxstep.release_ports(placement.entry())
             self._release_local(step_id)
             raise FlowError("step", f"krok nie wystartował: {exc}") from None
+        if placement is not None:
+            # Dodatkowy wpis ryzyka nie może zmienić udanego startu w wynik ok=False.
+            boxstep.started(self, placement, card.id, step_id, selected.tool)
         return self.journal.append(card.id, "step.started", step=step_id, kind=kind, ticket=ticket,
                                    round=round_no, executor=selected.name, program=selected.tool,
                                    model=selected.model, provider=selected.provider, local=selected.local,
@@ -1665,10 +1673,13 @@ class FlowEngine(PlanEditing):
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    repo=project.repo, **box_fields)
 
-    def _box_place(self, card: str, project, selected, ticket: str, kind: str, parent_step: str):
+    def _box_place(self, card: str, project, selected, ticket: str, kind: str, parent_step: str, step_id: str = ""):
         """PT-181: `None` (host), `Placement` (pudełko) albo FlowDeferred/FlowError — nigdy cichy powrót na hosta."""
         try:
-            return boxstep.place(self, card, project.slug, kind, parent_step, BOX_STEP_KINDS)
+            placement = boxstep.place(self, card, project.slug, kind, parent_step, BOX_STEP_KINDS)
+            if placement is not None and step_id:
+                boxstep.reserve_ports(self, placement, card, step_id)
+            return placement
         except boxstep.BoxWaiting as exc:
             previous = fold(self.journal.read(card)).waiting.get((ticket, kind)) or {}
             if previous.get("reason") != exc.reason:
@@ -3223,6 +3234,9 @@ class FlowEngine(PlanEditing):
             code = stepstop.read_exit_code(intent.get("stepDir") or "") if state == "inactive" else None
             if state == "unknown":
                 return
+            proc = self.procs.get(key)
+            if state == "inactive" and code is None and proc is not None and proc.poll() is None:
+                return  # Klient może dopiero tworzyć jednostkę; zachowujemy otwarty zamiar i porty.
             if state == "active" or (code == 0 and os.path.isfile(result)):
                 git_dir = ""
                 try:
@@ -3266,7 +3280,8 @@ class FlowEngine(PlanEditing):
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
-                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if intent.get(k)})
+                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
+                                                         "boxPortOwner") if intent.get(k)})
 
     def _repo(self, card: str) -> str:
         st = fold(self.journal.read(card))

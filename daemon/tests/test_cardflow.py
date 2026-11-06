@@ -134,7 +134,7 @@ class FlowInProcess(unittest.TestCase):
         from tide_daemon.board_monitor import BoardMonitor
         self.store = BoardStore(self.root)
         self.board = BoardMonitor(self.store, debounce_ms=200, poll_ms=60_000)
-        self.addCleanup(self.board.stop)
+        self.addCleanup(self.stop_board)
         self.flow = self.make_flow()
         self.board.start()
         self.assertTrue(json.loads(self.board.upsert_project(json.dumps({"repo": self.repo})))["ok"])
@@ -161,13 +161,26 @@ class FlowInProcess(unittest.TestCase):
 
         flow.stop = stop_and_drain
         flow.start()
-        self.addCleanup(flow.stop)
+        self.addCleanup(self.stop_flow, flow)
         return flow
+
+    def stop_flow(self, flow=None):
+        """Kończymy także bieżącą pracę przed zmianą środowiska testu lub ręcznym użyciem silnika."""
+        flow = flow or self.flow
+        flow.stop()
+
+    def stop_board(self):
+        self.board.stop()
+        # QObject monitora może pozostać w cyklu Python/Qt. Nie zostawiamy instancji inotify
+        # do końca wielotysięcznego zestawu testów w jednym procesie.
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        watcher = self.board._watcher
+        watcher.deleteLater()
+        QCoreApplication.sendPostedEvents(watcher, QEvent.Type.DeferredDelete)
 
     def restart(self):
         """Nowy silnik i monitor na tej samej tablicy (bez procesów kroków w pamięci) — jak usługa po restarcie."""
-        self.flow.stop()
-        wait_until(lambda: False, timeout=0.3)
+        self.stop_flow()
         self.flow = self.make_flow()
 
     def stop_flow_worker(self):

@@ -94,7 +94,7 @@ def docker_note() -> str:
         notes = []
     off = [p for p, active in sorted(k3.K3_PROGRAMS.items()) if not active]
     k3_text = f"K3 nieaktywne ({', '.join(off)})" if off else "K3 aktywne"
-    return " ".join([*notes[:1], f"{k3_text}."]).strip()
+    return " ".join([templates.DOCKER_RISK_NOTE, *notes[:1], f"{k3_text}."]).strip()
 
 
 def _profile_items(profile: dict, known, scope: str, accepted=(), locked_red=False) -> list:

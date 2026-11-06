@@ -132,6 +132,8 @@ class PlanReviewEditingTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        "koniec tyknięcia przed bezpośrednią edycją zatwierdzonego planu")
         approved = self.flow.engine.approve_plan(card)
         self.approve_environment(card)
         ident = approved["map"]["#2"]

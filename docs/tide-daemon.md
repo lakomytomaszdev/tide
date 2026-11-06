@@ -2475,7 +2475,10 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 
 1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
    zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
-   (domyślnie 8 / 24GiB) i `security.nesting=true` tylko przy `docker.enabled`. **Nigdy `security.privileged`.**
+   (domyślnie 8 / 24GiB). Docker (`docker.enabled: true` albo `docker` w `stacks`) dostaje
+   `security.nesting=true`, `security.syscalls.intercept.mknod=true` i
+   `security.syscalls.intercept.setxattr=true`, przed startem i pierwszym szablonem.
+   Bez Dockera te klucze są pomijane. **Nigdy `security.privileged`.**
    `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); prywatny katalog hosta
    `~/.local/share/tide/box/<slug>/home` (0700) jako urządzenie dyskowe na `/home/agent`.
    `raw.idmap` mapuje UID/GID użytkownika hosta na `agent-uid/gid`, tak samo jak BoxRunner.
@@ -2491,13 +2494,63 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
    w pudełku (PT-192)”; brak skryptu albo `lib.sh` = błąd przed `incus`).
 5. `apt-get update` i `apt-get install -y --no-install-recommends` z pakietami szablonów i profilu
    (`templates.build_apt`). 6. Polecenia `setup` (`bash -c`). 7. `docker pull` obrazów (`templates.build_images`),
-   tylko przy `docker.enabled`. 8. `verify` — nieudane polecenie nie przerywa budowy: zdarzenie `box.verify`
+   tylko przy włączonym Dockerze. Nieudany pull nie przerywa pozostałych pobrań ani budowy: lista
+   `failed_images` w `box.ready` i stan „zbudowane z ostrzeżeniem”.
+   8. `verify` — nieudane polecenie nie przerywa budowy: zdarzenie `box.verify`
    z `result: fail` i listą `failed`, stan „zbudowane z ostrzeżeniem” (`clean` z `warning`).
 9. Klucz `user.tide.recipe` = odcisk `profile.recipe_stamp(profile, templates_version, agents-version)`
    (JSON: hash i skróty kluczy do `diff`), potem `incus snapshot create <slug> clean --reuse`. Migawka niesie
    klucz w swojej konfiguracji, więc każda kopia z `<slug>/clean` ma ten sam odcisk. (Incus 6.0 nie ustawia
    opisu migawki przy `snapshot create`, dlatego „opis” to klucz `user.*` konfiguracji migawki.)
    `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh` (zapisany jako `builder.STACKS_VERSION`).
+
+### Docker i pula portów w kroku (PT-171)
+
+`docker.enabled: true` włącza także stos `docker`; sam stos `docker` włącza Docker niezależnie od
+pominiętej lub fałszywej flagi. Normalizacja profilu służy też do hasha przepisu.
+Szablon `box/stacks/docker.sh` należy do PT-192 (#29): instaluje Docker, dodaje `agent` do grupy `docker`
+i zapisuje drop-in `dockerd` z proxy oraz `NO_PROXY=BOX_NO_PROXY`. PT-171 nie zmienia tego skryptu ani proxy.
+Builder ustawia konfigurację Incusa i przez `incus exec` pobiera bez duplikatów obrazy szablonów
+(w tym przypięty Ryuk z `docker.yaml`) oraz `docker.images` profilu, z `HTTPS_PROXY` budowy.
+Nie uruchamia Dockera hosta. Budowa nie przekazuje `DOCKER_HOST`; BoxRunner usuwa tę zmienną również
+z dodatków środowiska kroku. Testcontainers korzystają z gniazda `/var/run/docker.sock` wewnątrz pudełka.
+
+`box/ports.py` rezerwuje 10 kolejnych portów z `ports.pool` (obie granice włącznie). Każdy następny
+zakres zaczyna się 10 portów dalej. Niepełny ogon puli nie jest przydzielany. `PORT`, `E2E_PORT`,
+`TIDE_PORT_BASE` i wszystkie nazwy z `ports.env` mają wartość pierwszego portu zakresu.
+Profil karty zastępuje pulę projektu i sumuje nazwy zgodnie z `profile.merge`. Bez `ports.pool` nie ma
+automatycznego przydziału. Rezerwacja nie wymusza na aplikacji użycia portów; aplikacja musi czytać środowisko.
+
+Stan puli: `$XDG_STATE_HOME/tide/box/<slug>/ports/<pudełko>.json`, blokada `flock` na oddzielnym
+pliku `.lock`, atomowa wymiana stanu. Blokada działa między procesami. Przydziały różnych kart i kroków
+w jednym pudełku nie nachodzą na siebie, również po zmianie granic puli. Osobne pudełka mają osobne pule,
+bo mają oddzielne przestrzenie sieciowe. Pliki stanu leżą poza montowaniami agenta.
+
+Silnik zapisuje zamiar `box.ports` przed przydziałem i `boxPortOwner` w metadanych kroku.
+Wyczerpana pula oznacza `step.waiting` z przyczyną `box`; kolejne tyknięcie ponawia przydział.
+Wartości portów BoxRunner zapisuje tylko w `in/env`, nigdy w argv ani w środowisku klienta Incusa hosta.
+Zakończenie kroku (także `error`) i nieudany start zwalniają przydział; odzyskiwanie po restarcie zwalnia
+również zakończone kroki, nieudane zamiary startu i rezerwacje sprzed zamiaru startu.
+Błąd utrwalenia udanego startu pozostawia rezerwację przy otwartym zamiarze; odzyskiwanie
+odnajduje jednostkę i zachowuje jej porty do końca kroku.
+Tryb `BoxRunner --demo` korzysta z tej samej puli zatwierdzonego profilu. Zwalnia przydział dopiero
+po końcu klienta i potwierdzeniu `inactive` jednostki w pudełku. Przerwanie oczekiwania wywołuje zatrzymanie jednostki;
+stan aktywny lub nieznany pozostawia trwałą rezerwację. Kolejne demo sprawdza osierocone przydziały
+tego pudełka i zwalnia wyłącznie te z potwierdzonym końcem jednostki. Identyfikator właściciela
+`demo-<czas>-<losowy sufiks>` określa nazwę jednostki; osobna blokada demo jest dziedziczona
+przez klienta Incusa (`pass_fds`) i chroni również okno przed utworzeniem jednostki. Śmierć rodzica
+lub zamknięcie jego deskryptora nie zwalnia blokady żywego klienta. Dopiero zamknięcie ostatniej
+kopii deskryptora pozwala kolejnemu demo sprawdzić jednostkę i bezpiecznie odzyskać rezerwację.
+
+**Ryzyko K1.** Grupa `docker` daje użytkownikowi `agent` prawa roota pudełka, w tym możliwość
+zamontowania rootfs. Wewnętrzne `denyRead` nie chroni poświadczeń agenta przed kodem testów.
+Filtrowanie NIC jest po stronie Incusa, pełna ochrona poświadczeń wymaga K3. Ten opis jest widoczny
+w propozycji profilu i w pakiecie zgód; pozycja Docker pozostaje żółta.
+
+**Dalszy zakres, poza PT-171 (decyzja użytkownika 6.11.2026).** Przypisywanie rzeczywistych sesji
+Testcontainers do kart oraz sprzątanie ich kontenerów i obrazów po domknięciu wymagają osobnego ticketu.
+PT-171 nie wykonuje `docker rm` ani `docker image prune`. Szkic wymagań:
+`docs/agents/plans/followups/pt-171-testcontainers-cleanup.md`.
 
 **Swap w projekcie ograniczonym (PT-192).** W Incusie 6.0 jawne `limits.memory.swap=false` jest zabronionym
 kluczem niskiego poziomu. Builder pomija ten klucz: przy twardym `limits.memory` Incus ustawia limit swapu na 0

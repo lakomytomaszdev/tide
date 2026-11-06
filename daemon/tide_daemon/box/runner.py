@@ -450,6 +450,7 @@ class BoxRunner:
         env = dict(bg.env)
         if self.step_env is not None:
             env.update(self.step_env(step) or {})
+        env.pop("DOCKER_HOST", None)
         return env
 
     # --- urządzenia --------------------------------------------------------------------------------
@@ -651,7 +652,8 @@ class BoxRunner:
                 f"--setenv=TIDE_STEP={bg.step_dir}", "--",
                 *self.tide_step, *bg.argv]
 
-    def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None
+    def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None,
+              pass_fds: tuple[int, ...] = ()
               ) -> Started:
         bg = self._background(step)
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
@@ -671,6 +673,7 @@ class BoxRunner:
             fs.write_secret(os.path.join(bg.step_dir, "in", LOCAL_TOKEN_FILE), launch.read_token(step.local.token_file))
         if self.step_env is not None:
             env.update(self.step_env(step) or {})
+        env.pop("DOCKER_HOST", None)
         fs.write_secret(os.path.join(bg.step_dir, "in", ENV_FILE), env_file_text(env))
         for path in (bg.exit_file, bg.exit_file + ".tmp"):
             fs.unlink(path)
@@ -685,7 +688,7 @@ class BoxRunner:
                            branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
             try:
                 proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                   env=self._client_env(), start_new_session=True)
+                                   env=self._client_env(), start_new_session=True, pass_fds=pass_fds)
             except BaseException:
                 refguard.cancel(step.repo, self.card, step.step_id)
                 raise
@@ -833,21 +836,62 @@ def _demo(argv: list) -> int:
         box = bs.card_box_name(args.slug, args.card) if args.card else bs.box_name(args.slug)
         Incus(settings.project).file_push(TIDE_STEP_SCRIPT, box, remote)
         tide_step = ("/bin/sh", remote)
-    runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step,
-                       step_env=lambda _s: {"TIDE_DEMO_SECRET": marker})
+    runner = BoxRunner(settings, args.slug, card=args.card, per_card=bool(args.card), tide_step=tide_step)
     if args.finish_guard:
         return _demo_finish(runner, repo, args.card, step_id)
+    from .ports import PortPool
+    profile = bs.bp.load_project(args.slug) or {"tide-box": bs.bp.SCHEMA_VERSION}
+    if args.card:
+        profile = bs.bp.merge(profile, bs.bp.load_card(args.slug, args.card) or {
+            "tide-box": bs.bp.SCHEMA_VERSION}).profile
+    pool = PortPool(args.slug, runner.box)
     step = agentcmd.Step(tool="claude", binary="claude", prompt="", worktree=worktree, repo=repo, step_dir=step_dir,
                          step_id=step_id, branch=args.branch)
+    return _demo_run(runner, pool, step, profile, command, marker)
+
+
+def _demo_run(runner, pool, step, profile, command, marker) -> int:
+    # Kolejne demo odzyska rezerwacje po przerwaniu lub śmierci klienta. Nieaktywny
+    # systemd jest dowodem końca dopiero, gdy proces startujący nie trzyma już blokady.
+    pool.recover_demos(lambda unit: runner.unit_state(runner.box, unit))
+    with pool.demo_guard(step.step_id) as guard:
+        return _demo_guarded(runner, pool, step, profile, command, marker, guard)
+
+
+def _demo_guarded(runner, pool, step, profile, command, marker, guard) -> int:
+    from .ports import PoolExhausted
+    step_id, step_dir = step.step_id, step.step_dir
+    try:
+        port_env = pool.acquire(step_id, profile)
+    except PoolExhausted as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    runner.step_env = lambda _s: {**port_env, "TIDE_DEMO_SECRET": marker}
 
     def use_command(bg):
         bg.argv = list(command)
 
-    bg, proc = runner.start(step, before_start=use_command)
+    try:
+        bg, proc = runner.start(step, before_start=use_command, pass_fds=(guard.fileno(),))
+    except BaseException:
+        if port_env:
+            pool.release(step_id)
+        raise
     print(f"pudełko: {runner.box}\njednostka: {runner.unit_for(bg)}\nkatalog kroku: {step_dir}\n"
           f"znacznik w in/env (nie może być w `ps -o args` hosta): TIDE_DEMO_SECRET={marker}", flush=True)
-    code = proc.wait()
-    guard_code = _demo_finish(runner, repo, args.card, step_id)
+    try:
+        code = proc.wait()
+    except BaseException:
+        runner.kill({"unit": runner.unit_for(bg), "box": runner.box}, proc=proc)
+        raise
+    finally:
+        if port_env:
+            if proc.poll() is not None and runner.unit_state(runner.box, runner.unit_for(bg)) == "inactive":
+                pool.release(step_id)
+            else:
+                print(f"porty {step_id} pozostają zarezerwowane; kolejne demo ponowi sprawdzenie jednostki",
+                      file=sys.stderr)
+    guard_code = _demo_finish(runner, step.repo, runner.card, step_id)
     for title, path in (("step.log", bg.log_file), (EXEC_LOG, os.path.join(step_dir, "out", EXEC_LOG))):
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:

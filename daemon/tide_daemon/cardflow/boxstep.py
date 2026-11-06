@@ -38,11 +38,12 @@ from __future__ import annotations
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..box import builder as bb
 from ..box import k3
 from ..box import profile as bp
+from ..box.ports import PortPool, PoolExhausted
 from ..box import proxy as bproxy
 from ..box import settings as bsettings
 from ..box import state as bs
@@ -86,10 +87,37 @@ class Placement:
     profile: dict
     runner: object
     docker: bool = False
+    port_owner: str = ""
+    port_env: dict = field(default_factory=dict)
 
     def entry(self) -> dict:
         """Pola wpisu kroku (`intent`, `result`, `step.started`): po nich silnik odnajduje krok po restarcie."""
-        return {"runner": RUNNER, "box": self.box, "boxSlug": self.slug, "boxIp": self.ip, "boxAccess": 1}
+        fields = {"runner": RUNNER, "box": self.box, "boxSlug": self.slug, "boxIp": self.ip, "boxAccess": 1}
+        if self.port_owner:
+            fields["boxPortOwner"] = self.port_owner
+        return fields
+
+
+def reserve_ports(engine, placement: Placement, card: str, step: str) -> None:
+    card_profile = bp.load_card(placement.slug, card) or {"tide-box": bp.SCHEMA_VERSION}
+    profile = bp.merge(placement.profile, card_profile).profile
+    if not (profile.get("ports") or {}).get("pool"):
+        return
+    owner = f"{card}/{step}"
+    # Zamiar przed rezerwacją: restart odzyska także przydział sprzed zamiaru step-start.
+    if not any(e.get("type") == "box.ports" and e.get("owner") == owner
+               for e in engine.journal.read(card)):
+        engine.journal.append(card, "box.ports", step=step, box=placement.box, boxSlug=placement.slug, owner=owner)
+    try:
+        env = PortPool(placement.slug, placement.box).acquire(owner, profile)
+    except PoolExhausted as exc:
+        raise BoxWaiting(str(exc)) from None
+    placement.port_owner, placement.port_env = owner, env
+
+
+def release_ports(step: dict) -> None:
+    if step.get("boxPortOwner"):
+        PortPool(step["boxSlug"], step["box"]).release(step["boxPortOwner"])
 
 
 # ------------------------------------------------------------ zależności (podmieniane w testach przez silnik)
@@ -362,6 +390,7 @@ def _before_start(engine, placement, card_id, step_id, program):
 
 
 def start_failed(engine, placement: Placement, step_id: str) -> None:
+    release_ports(placement.entry())
     boxaccess.revoke(proxy_of(engine), step_id, denied_log_path(placement.slug, step_id))
     if step_id in bs.running_steps(placement.slug, placement.box):
         bs.mark_released(placement.slug, placement.box, step_id)
@@ -402,12 +431,14 @@ def _release_resources(engine, step: dict) -> None:
     name, slug, box = step.get("step") or "", step.get("boxSlug") or "", step.get("box") or ""
     if not slug or not box:
         return
+    release_ports(step)
     boxaccess.revoke(proxy_of(engine), name, denied_log_path(slug, name))
     if name in bs.running_steps(slug, box):
         bs.mark_released(slug, box, name)
 
 
 def configure_background(engine, placement: Placement, card: str, step: str, parent: str, bg) -> None:
+    bg.env.update(placement.port_env)
     root = ""
     st = fold(engine.journal.read(card))
     # Codex zapisuje sesję w CODEX_HOME. Wznowienie zachowuje pierwotny katalog, nawet po kilku próbach.
@@ -427,7 +458,14 @@ def recover_network(engine) -> None:
     active, ended = [], []
     failed_starts = set()
     for card in engine.journal.cards():
-        st = fold(engine.journal.read(card))
+        events = engine.journal.read(card)
+        st = fold(events)
+        # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
+        # oznacza, że nie uruchomiono procesu. Nie dotykamy rezerwacji trwającego zamiaru.
+        for event in events:
+            if event.get("type") == "box.ports" and event["step"] not in st.steps and (
+                    "step-start", event["step"]) not in st.intents:
+                release_ports({**event, "boxPortOwner": event["owner"]})
         active.extend((card, s) for s in st.running() if s.get("runner") == RUNNER)
         active.extend((card, {**i, "step": i["key"]}) for i in st.open_intents(include_background=True)
                       if i.get("action") == "step-start" and i.get("runner") == RUNNER and i["key"] not in st.steps)

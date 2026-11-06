@@ -114,6 +114,11 @@ class BoxFlow(FlowInProcess):
         self.addCleanup(shutil.rmtree, self.boxtmp, True)
         fake = os.path.join(self.boxtmp, "bin")
         os.makedirs(os.path.join(fake, "box"))
+        # Inicjalizacja wolumenu kopii karty też biegnie przez atrapę. Nigdy install /home/agent hosta.
+        install = os.path.join(fake, "box", "install")
+        with open(install, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(install, 0o755)
         self.units = os.path.join(self.boxtmp, "box-units")
         self.boxlog = os.path.join(self.boxtmp, "box.log")
         self.fake_incus = os.path.join(fake, "incus")

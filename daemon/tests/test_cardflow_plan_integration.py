@@ -69,7 +69,7 @@ class PlanFlowTest(FlowInProcess):
         from tide_daemon.coordination import reservations
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.stop_flow_worker()
+        self.stop_flow()
         original = reservations.reserve
         calls = 0
         def fail_second(*args, **kwargs):
@@ -163,7 +163,7 @@ class PlanFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         # Kontrolowane przerwanie zapisu nie może ścigać się z automatycznym odzyskiwaniem monitora.
-        self.flow.stop()
+        self.stop_flow()
         journal = self.flow.engine.journal
         original = journal.append
         interrupted = False
@@ -191,19 +191,19 @@ class PlanFlowTest(FlowInProcess):
         from tide_daemon.coordination.repoplans import RepoPlans
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.flow.stop()
+        self.stop_flow()
         engine = self.flow.engine
         mapping = engine.approve_plan(card)["map"]
         journal = engine.journal
         original = journal.append
         interrupted = False
 
-        def stop_after_commit(ident, kind, **data):
+        def stop_after_commit(ident, event_type, **data):
             nonlocal interrupted
-            if kind == "result" and data.get("action") == "plan-commit" and not interrupted:
+            if event_type == "result" and data.get("action") == "plan-commit" and not interrupted:
                 interrupted = True
                 raise OSError("przerwanie po commicie planu")
-            return original(ident, kind, **data)
+            return original(ident, event_type, **data)
 
         with mock.patch.object(journal, "append", side_effect=stop_after_commit):
             with self.assertRaises(OSError):
@@ -224,6 +224,8 @@ class PlanFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        "koniec tyknięcia przed ręcznym zatwierdzeniem i ponowieniem commita")
         engine = self.flow.engine
         engine.approve_plan(card)
         reserved = [r["ticket"] for r in self.results(card, "reserve")]
