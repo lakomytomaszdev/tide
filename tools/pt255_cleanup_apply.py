@@ -7,6 +7,7 @@ Raport zawiera wyłącznie metadane. Uruchamiać po osobnym, ocenionym podglądz
 import argparse
 from collections import Counter
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -106,9 +107,20 @@ def process_kind(argv):
     return None
 
 
-def check_processes(source, allowed_daemon=None):
+def user_manager_main_pid(unit):
+    """Bieżący MainPID jednostki systemowej; brak pewnego wyniku nie daje wyjątku."""
+    try:
+        value = subprocess.run(["systemctl", "show", unit, "-p", "MainPID", "--value"],
+                               check=True, capture_output=True, text=True, timeout=10).stdout.strip()
+        return int(value) if value.isascii() and value.isdecimal() and int(value) > 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def check_processes(source, allowed_daemon=None, *, audit=None):
     """Bez argv/środowiska w raporcie i bez odczytywania otwartych plików."""
     checked = 0
+    skips = []
     for process in Path("/proc").iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
@@ -150,9 +162,22 @@ def check_processes(source, allowed_daemon=None):
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as error:
+            # Jawny wyjątek koordynatora: niezrzucalny menedżer użytkownika.
+            # Nigdy po nazwie, historycznym PID lub odmowie innych metadanych.
+            pid = int(process.name)
+            unit = f"user@{os.getuid()}.service"
+            if (error.errno == errno.EACCES
+                    and phase in {"list-fds", "read-fdinfo", "read-fdlink"}
+                    and pid == user_manager_main_pid(unit)):
+                skip = {"pid": pid, "phase": phase, "errno": error.errno, "unit": unit,
+                        "reason": "user-manager-mainpid-fd-eacces"}
+                if audit is not None:
+                    audit.event("process-inspection-skipped", **skip)
+                skips.append(skip)
+                continue
             raise InspectionError(int(process.name), phase, error.errno, descriptor, flags) from None
     return {"checked_user_processes": checked, "active_tests": 0, "extra_daemons": 0,
-            "writable_source_descriptors": 0}
+            "writable_source_descriptors": 0, "inspection_skips": skips}
 
 
 def validate_preview(args):
@@ -178,7 +203,7 @@ def run(args, audit):
     audit.event("preview-validated", **validate_preview(args))
     service = service_metadata(args.source)
     audit.event("service-before", **service)
-    audit.event("processes-before", **check_processes(args.source, service["main_pid"]))
+    audit.event("processes-before", **check_processes(args.source, service["main_pid"], audit=audit))
     if getattr(args, "preflight_only", False):
         return {"status": "ok", "preflight_only": True, "service_active": True}
     control, create_backup, remove_candidate = host.systemctl, cleanup.create_backup, cleanup.remove_candidate
@@ -201,7 +226,7 @@ def run(args, audit):
                 raise ValueError("service-not-stopped")
             blocker.require_owned()
             audit.event("service-stopped-activation-held", names=list(NAMES))
-            audit.event("processes-stopped", **check_processes(args.source))
+            audit.event("processes-stopped", **check_processes(args.source, audit=audit))
         return result
 
     def checked_backup(source, backup, rows):
@@ -221,7 +246,7 @@ def run(args, audit):
         if first_delete:
             host.require_stopped()
             blocker.require_owned()
-            audit.event("processes-before-first-delete", **check_processes(args.source))
+            audit.event("processes-before-first-delete", **check_processes(args.source, audit=audit))
             audit.event("first-deletion-authorized-after-backup")
             first_delete = False
         return remove_candidate(source, row)

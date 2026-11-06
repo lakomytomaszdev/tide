@@ -1,5 +1,6 @@
 """Kontrola operacyjnej osłony PT-255 na syntetycznych kopiach i atrapach usługi."""
 import argparse
+import errno
 import importlib.util
 import json
 from pathlib import Path
@@ -180,6 +181,103 @@ class ApplyWindowTest(unittest.TestCase):
 
 
 class ProcessClassificationTest(unittest.TestCase):
+    def setUp(self):
+        # Żaden test syntetycznego /proc nie pyta prawdziwego systemd hosta.
+        self.manager_query = self.enterContext(patch.object(operation.subprocess, "run",
+            return_value=SimpleNamespace(stdout="0\n")))
+
+    def test_only_current_user_manager_fd_eacces_is_skipped_and_audited(self):
+        for phase in ("list-fds", "read-fdinfo", "read-fdlink", "read-cmdline"):
+            for manager_pid, error_number, accepted in (
+                    (999999999, errno.EACCES, phase != "read-cmdline"),
+                    (999999998, errno.EACCES, False),
+                    (999999999, errno.EPERM, False)):
+                with self.subTest(phase=phase, manager_pid=manager_pid, errno=error_number):
+                    with tempfile.TemporaryDirectory() as directory:
+                        process = Path(directory) / "999999999"
+                        (process / "fd").mkdir(parents=True)
+                        (process / "fdinfo").mkdir()
+                        (process / "cmdline").write_bytes(b"systemd\0--user\0")
+                        (process / "fd" / "0").touch()
+                        (process / "fdinfo" / "0").write_text("flags:\t0100002\n")
+                        original_iterdir, original_text = Path.iterdir, Path.read_text
+                        original_bytes = Path.read_bytes
+                        denied = PermissionError(error_number, "DO_NOT_DISCLOSE")
+
+                        def processes(path):
+                            if str(path) == "/proc":
+                                return iter([process])
+                            if phase == "list-fds" and path == process / "fd":
+                                raise denied
+                            return original_iterdir(path)
+
+                        def read_text(path, *args, **kwargs):
+                            if phase == "read-fdinfo" and path == process / "fdinfo" / "0":
+                                raise denied
+                            return original_text(path, *args, **kwargs)
+
+                        def read_bytes(path):
+                            if phase == "read-cmdline" and path == process / "cmdline":
+                                raise denied
+                            return original_bytes(path)
+
+                        events = []
+                        audit = SimpleNamespace(event=lambda kind, **values: events.append((kind, values)))
+                        self.manager_query.return_value.stdout = f"{manager_pid}\n"
+                        self.manager_query.reset_mock()
+                        with patch.object(Path, "iterdir", processes), patch.object(
+                                Path, "read_text", read_text), patch.object(
+                                Path, "read_bytes", read_bytes), patch.object(
+                                operation.os, "readlink", side_effect=denied):
+                            if accepted:
+                                result = operation.check_processes("/synthetic/source", audit=audit)
+                                self.assertEqual(result["checked_user_processes"], 0)
+                                self.assertEqual(result["inspection_skips"], [{
+                                    "pid": 999999999, "phase": phase, "errno": errno.EACCES,
+                                    "unit": f"user@{operation.os.getuid()}.service",
+                                    "reason": "user-manager-mainpid-fd-eacces"}])
+                                self.assertEqual(events, [("process-inspection-skipped",
+                                                           result["inspection_skips"][0])])
+                                self.manager_query.assert_called_once_with([
+                                    "systemctl", "show", f"user@{operation.os.getuid()}.service",
+                                    "-p", "MainPID", "--value"], check=True, capture_output=True,
+                                    text=True, timeout=10)
+                            else:
+                                with self.assertRaises(operation.InspectionError) as failure:
+                                    operation.check_processes("/synthetic/source", audit=audit)
+                                self.assertEqual(failure.exception.details["phase"], phase)
+                                self.assertEqual(failure.exception.details["errno"], error_number)
+                                self.assertEqual(events, [])
+                                if error_number != errno.EACCES or phase == "read-cmdline":
+                                    self.manager_query.assert_not_called()
+
+    def test_missing_or_failed_manager_lookup_never_allows_fd_denial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = Path(directory) / "999999999"
+            process.mkdir()
+            (process / "cmdline").write_bytes(b"systemd\0--user\0")
+            original_iterdir = Path.iterdir
+
+            def processes(path):
+                if str(path) == "/proc":
+                    return iter([process])
+                if path == process / "fd":
+                    raise PermissionError(errno.EACCES, "DO_NOT_DISCLOSE")
+                return original_iterdir(path)
+
+            with patch.object(Path, "iterdir", processes):
+                for output in ("0\n", "", "invalid", "-1", "999999999\n999999998"):
+                    with self.subTest(output=output):
+                        self.manager_query.return_value.stdout = output
+                        with self.assertRaises(operation.InspectionError):
+                            operation.check_processes("/synthetic/source")
+                for error in (subprocess.CalledProcessError(1, ["systemctl"]),
+                              subprocess.TimeoutExpired(["systemctl"], 10), OSError(errno.EACCES, "secret")):
+                    with self.subTest(error=type(error).__name__):
+                        self.manager_query.side_effect = error
+                        with self.assertRaises(operation.InspectionError):
+                            operation.check_processes("/synthetic/source")
+
     def test_read_only_fd_needs_no_target_but_uninspectable_writable_fd_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
             process = Path(directory) / "999999999"
@@ -256,8 +354,12 @@ class ProcessClassificationTest(unittest.TestCase):
                 return iter([process]) if str(path) == "/proc" else original_iterdir(path)
 
             with patch.object(Path, "iterdir", processes):
+                # Nawet potwierdzony MainPID nie pomija wykrytego zapisu;
+                # wyjątek może zadziałać wyłącznie po EACCES inspekcji fd.
+                self.manager_query.return_value.stdout = "999999999\n"
                 with self.assertRaisesRegex(ValueError, "active-writer-pid"):
                     operation.check_processes(str(source))
+                self.manager_query.assert_not_called()
                 (process / "fdinfo" / "3").write_text("flags:\t0100000\n")
                 self.assertEqual(operation.check_processes(str(source))["writable_source_descriptors"], 0)
 
