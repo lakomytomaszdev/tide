@@ -103,7 +103,12 @@ def qualify(data, card):
             if (not isinstance(worktree, str) or not worktree.startswith("/")
                     or "\x00" in worktree):
                 return "unknown-worktree"
-            if not os.path.realpath(worktree).startswith("/tmp/"):
+            try:
+                # Historyczny katalog może już nie istnieć; inne błędy wykluczają kopię.
+                resolved = os.path.realpath(worktree, strict=os.path.ALLOW_MISSING)
+            except OSError:
+                return "unknown-worktree"
+            if not resolved.startswith("/tmp/"):
                 return "worktree-outside-tmp"
         return "candidate"
     except (ValueError, TypeError, UnicodeError, OverflowError, RecursionError):

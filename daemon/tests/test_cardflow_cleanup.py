@@ -88,6 +88,58 @@ class CleanupTests(unittest.TestCase):
             with self.subTest(data=data):
                 self.assertNotEqual(cleanup.qualify(data, "K-1"), "candidate")
 
+    def test_unresolvable_worktrees_are_not_deleted(self):
+        loop = self.base / "loop"
+        loop.symlink_to("loop")
+        not_directory = self.base / "not-directory"
+        not_directory.write_text("synthetic")
+        paths = []
+        for n, worktree in enumerate((loop / "work", not_directory / "work"), 1):
+            data = self.data(f"K-{n}", [{"repo": "", "worktree": str(worktree)}])
+            paths.append(self.put(f"K-{n}.jsonl", data))
+        before = {path: path.read_bytes() for path in paths}
+        plan = cleanup.preview(self.source)
+        self.assertEqual(self.apply(plan)["deleted_count"], 0)
+        self.assertEqual(plan["counts"], {"unknown-worktree": 2})
+        self.assertEqual({path: path.read_bytes() for path in paths}, before)
+        self.assertFalse(self.backup.exists())
+
+    def test_worktree_permission_error_excludes_file(self):
+        worktree = self.base / "denied" / "work"
+        path = self.put(data=self.data(starts=[{"worktree": str(worktree)}]))
+        original = path.read_bytes()
+        lstat = os.lstat
+
+        def deny(path, *args, **kwargs):
+            if os.fspath(path) == str(worktree.parent):
+                raise PermissionError("synthetic-permissions")
+            return lstat(path, *args, **kwargs)
+
+        with patch.object(os, "lstat", side_effect=deny):
+            plan = cleanup.preview(self.source)
+            self.assertEqual(self.apply(plan)["deleted_count"], 0)
+            self.assertEqual(plan["counts"], {"unknown-worktree": 1})
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(self.backup.exists())
+
+    def test_missing_historical_worktree_is_allowed_but_links_are_resolved(self):
+        missing = self.base / "missing"
+        inside = self.base / "inside-link"
+        inside.symlink_to(missing, target_is_directory=True)
+        outside = self.base / "outside-link"
+        outside.symlink_to("/home/synthetic-missing", target_is_directory=True)
+        for worktree, expected in (
+                (missing / "work", "candidate"),
+                (inside / "work", "candidate"),
+                (missing / ".." / "inside-link" / "work", "candidate"),
+                (outside / "work", "worktree-outside-tmp")):
+            with self.subTest(worktree=worktree):
+                data = self.data(starts=[{"worktree": str(worktree)}])
+                self.assertEqual(cleanup.qualify(data, "K-1"), expected)
+        path = self.put(data=self.data(starts=[{"worktree": str(inside / "work")}]))
+        self.assertEqual(self.apply()["deleted_count"], 1)
+        self.assertFalse(path.exists())
+
     def test_preview_and_cli_do_not_write_and_do_not_leak_contents(self):
         path = self.put(data=self.data().replace(b'"repo": ""', b'"repo": "SECRET-REPOSITORY"'))
         before = cleanup.snapshot(self.source)

@@ -24,6 +24,12 @@ wyjście przez `..` lub dowiązanie poza `/tmp` oznaczają pominięcie. Nie jest
 liczba historycznych kopii. Jeden start testowy nie kwalifikuje innych plików ani
 całego skrótu tablicy. Nowe pliki po podglądzie nie są automatycznie dodawane.
 
+Brak historycznego katalogu worktree jest dozwolony. Rozwiązywanie ścieżki toleruje
+wyłącznie brak pliku (`realpath` z `strict=os.path.ALLOW_MISSING`, wymagane także
+w interpreterze uruchamiającym narzędzie). Pętla dowiązań, odmowa dostępu i składnik
+niebędący katalogiem oznaczają `unknown-worktree` i zachowanie kopii. Dowiązanie do
+nieistniejącego celu nadal jest rozwiązywane, więc cel poza `/tmp` wyklucza usunięcie.
+
 ## Okno bez zapisu
 
 Podgląd niczego nie zmienia, chyba że jawnie podano `--plan`: wtedy tworzy wyłącznie
