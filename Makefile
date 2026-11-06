@@ -41,6 +41,7 @@ help:
 	@echo "make box-uninstall         cofnięcie make box-install; usuwa wszystkie pudełka (sudo)"
 	@echo "make box-state [OUT=plik]  stan hosta do porównania przed instalacją i po odinstalowaniu"
 	@echo "make box-base              obraz bazowy pudełka: agenci, proxy, czcionki (tide box base, bez sudo)"
+	@echo "make box-check BOX=slug    czerwona lista w pudełku przez tide box run (CHECK_ARGS=opcje prób)"
 
 install: pre-install-backup $(INSTALL_TARGETS) $(LATE_INSTALL_TARGETS)
 	@echo "Zainstalowano Tide."

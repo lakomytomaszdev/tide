@@ -3213,6 +3213,49 @@ K3 Codexa zapisuje sesje w `/home/agent/.codex/steps/<hash katalogu pierwotnego 
 wznowienie korzysta z tego samego domu. Reset rootfs nie usuwa danych urządzenia domowego.
 Prawdziwy test widoczności Sesji i zrzut ekranu pozostają do wykonania po #28.
 
+### Polecenie i czerwona lista: `tide box run` (PT-191)
+
+`python3 daemon/tide.py box run <slug> [--card K-N] [--worktree /ścieżka] -- <polecenie>` uruchamia
+polecenie bez agenta przez `BoxRunner.start`. Podział po pierwszym `--` zachowuje każdy argument, także
+spacje, puste argumenty i opcje. Kod wyjścia CLI jest kodem polecenia; przygotowanie lub kontrola refów
+może odmówić kodem 1, brak portów/zajęte pudełko — 3. `Ctrl+C` próbuje zatrzymać jednostkę i daje 130.
+Środowisko jest budowane od zera, bez tokenów agentów hosta, z proxy, pełnym `NO_PROXY`, portami z
+`box/ports.py` PT-171 i zabezpieczeniami gita. Wartości `in/env` (0600) nie są argumentami klienta Incusa.
+CLI nie loguje agenta, nie wydaje grantu K3 i nie czyta konfiguracji MCP hosta.
+
+Repozytorium musi odpowiadać slugowi projektu w Tablicy. Domyślnie polecenie działa w bieżącym worktree.
+Z głównego katalogu powstaje worktree `<repo>-worktrees/demo-…`, gałąź `box-run/demo-…` bez upstreamu
+i tymczasowy katalog kroku. Worktree i logi pozostają do obejrzenia, ścieżki trafiają na stderr. Montowania
+są te same co w kroku, w tym nakładki ro na konfigurację i haki `.git`; główny worktree nie jest montowany.
+`--card` respektuje `box: per-card` i dołącza zaakceptowane, już przygotowane kopie paczek PT-173 jako
+`/packs/<nazwa>` ro. CLI nie kopiuje źródeł użytkownika; brak kopii, dowiązanie w ścieżce lub paczki innej
+karty oznaczają odmowę. Po potwierdzonym końcu jednostki paczki są odpinane.
+
+CLI używa `base.ensure_proxy`, czyli tej samej instancji `ProxyService` w procesie albo własnego proxy
+na statycznym porcie mostka, jak `tide box build`. Nie steruje proxy innego procesu: gdy port zajmuje
+działający demon, odmawia zamiast wybierać inny port lub omijać politykę. Wymaga bezczynnego pudełka
+i trzyma blokadę jego cyklu życia na czas polecenia. Domeny pochodzą z `compose_policy` projektu i karty,
+a `boxaccess` nadaje tożsamość dziennika bez tokenu agenta. Po utracie klienta nieznany stan jednostki
+zachowuje rezerwacje; następne `run` ponawia odzyskanie po potwierdzeniu `inactive` i zwolnieniu
+odziedziczonej blokady życia z PT-171. Kontrola refów PT-170 obowiązuje także zwykłe polecenie.
+
+`make box-check BOX=<slug>` woła `scripts/box/check.sh` przez `tide box run` i drukuje tabelę
+„punkt → odmowa/przeszło/nie dotyczy”. Czerwona lista obejmuje SSH i git-credentials hosta, główny worktree,
+HTTP(S) z proxy i bez niego, DNS, Docker i D-Bus hosta, push, brak gh, przestrzeń PID hosta, zapis do `/etc`,
+Postgres hosta, podszycie IP oraz osobny dowód z Bash agenta. Każde „przeszło” daje kod 1. Brak programu,
+origin, uprawnienia do nadania IP lub rzeczywistego Bash agenta to jawne „nie dotyczy”, a nie zaliczona odmowa.
+`CHECK_ARGS="--host-ip <IP-hosta> --spoof-ip <sprawdzony-wolny-IP>"` wskazuje adresy prób; opcjonalny
+`--spoof-image <lokalny-obraz-z-ip-i-curl>` pozwala nadać IP przez Docker `--privileged --net=host`
+bez pobierania obrazu. Skrypt wysyła `curl --interface` dopiero po skutecznym `ip addr add` i usuwa adres
+w trap. HTTP 403 też znaczy „przeszło”: pakiet doszedł do proxy. Na hoście trzeba potwierdzić brak wpisu
+z próbnego IP. Docker bez K3 oznacza „ryzyko resztkowe K1” dla poświadczeń Claude; pozostały wariant wymaga
+sprawdzenia `cat ~/.claude/.credentials.json` narzędziem Bash rzeczywistego agenta według P-2.
+
+Pełny dowód i zasady pierwszego kroku: [Pierwszy krok w pudełku](box-prototype.md#pierwszy-krok-w-pudełku).
+Testy z atrapami nie potwierdzają izolacji prawdziwego Incusa. `scripts/box/boundary-trial.py` zbiera
+próbę CLI, `ps -o args`, tabelę i pełne `make test` poza piaskownicą; osobna karta testowa nadal wymaga
+zatwierdzonego planu, dziennika, runnera oraz czasu kroku bez `envAnswer`/`outside`.
+
 ### Krok w pudełku w silniku (PT-181)
 
 `cardflow/boxstep.py`, wołane z `FlowEngine._launch`, `_poll`, `_kill` i `_finish`. Dowód na prawdziwym pudełku

@@ -361,7 +361,7 @@ class BoxRunner:
                  step_env: Callable[[agentcmd.Step], dict] | None = None,
                  journal: Callable[[str, dict], None] | None = None, env: dict | None = None,
                  systemd_run: str = SYSTEMD_RUN, systemctl: str = SYSTEMCTL, tide_step=(TIDE_STEP,),
-                 popen=subprocess.Popen, sleep=time.sleep):
+                 popen=subprocess.Popen, sleep=time.sleep, extra_devices=()):
         self.settings = settings
         self.slug = slug
         self.card = card
@@ -376,6 +376,7 @@ class BoxRunner:
         self.tide_step = tuple(tide_step)
         self._popen, self._sleep = popen, sleep
         self._risk_logged = False
+        self.extra_devices = tuple(extra_devices)
 
     # --- środowisko ------------------------------------------------------------------------------
 
@@ -493,6 +494,7 @@ class BoxRunner:
                     devices.append(Device(_device_name("wtcfg", name), cfg, readonly=True, is_file=True))
         devices.append(Device(_device_name("worktrees"), root))
         devices.append(Device(_device_name("home"), host_home_dir(self.slug, self.host_env), path=BOX_HOME))
+        devices.extend(self.extra_devices)
         self._check_sources(devices, repo)
         return devices
 

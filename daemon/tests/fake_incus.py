@@ -191,6 +191,11 @@ def main(argv):
                 if dev not in data["profile_devices"]:
                     die(f"The profile device doesn't exist: {dev}")
                 inst["devices"][dev] = {**data["profile_devices"][dev], **kv(args[5:])}
+            elif action == "remove":
+                dev = args[4]
+                if dev not in inst["devices"]:
+                    die(f"Device not found: {dev}")
+                del inst["devices"][dev]
             elif action == "add":
                 dev, kind = args[4], args[5]
                 if dev in inst["devices"]:

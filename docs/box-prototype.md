@@ -331,3 +331,35 @@ wpisu (przebieg 3, `docs/box-prototype/p6-2026-11-04T135145.log`).
 | dotnet `HttpClient` | tak (NuGet) | tak | tak | — |
 | Playwright (Chromium 1.49.1) | tak (pobranie przeglądarki) | tak | tak | — |
 | apt, npm, pip, dockerd, instalator Codexa | tak | nie dotyczy (bez żądań do localhost) | | — |
+## Pierwszy krok w pudełku
+
+PT-191 dostarcza narzędzia do dowodu, ale wynik z atrap nie zastępuje próby na Incusie.
+`python3 daemon/tide.py box run plasma-tide -- env` uruchamia syntetyczny krok przez `BoxRunner.start`,
+z domenami profilu, portami `PortPool` PT-171 i montowaniami kroku. Nie przekazuje tokenów agentów do `in/env`.
+Z istniejącego worktree działa w nim; z głównego repozytorium tworzy osobną gałąź `box-run/demo-…` i worktree,
+które pozostają do kontroli. Log, `in/env` (0600) i kod wyjścia są w katalogu kroku podanym na stderr.
+
+Próba czerwonej listy: `make box-check BOX=plasma-tide`. Skrypt biegnie jako `agent` i drukuje tabelę
+„punkt → odmowa/przeszło/nie dotyczy”. Kod 1 oznacza choć jedno „przeszło”; „nie dotyczy” nie zmienia kodu,
+ale wymaga osobnego dowodu. Próba podszycia wymaga sprawdzonego wolnego IP w podsieci mostka:
+`make box-check BOX=plasma-tide CHECK_ARGS="--spoof-ip <wolny-IP>"` (opcjonalnie `--prefix`, `--interface`,
+`--host-ip`, `--spoof-image <lokalny-obraz-z-ip-i-curl>`). Skrypt nadaje IP przez `sudo -n` lub Docker
+`--privileged --net=host`, wysyła `curl --interface` i usuwa adres w trap. Brak możliwości = „nie dotyczy”
+z powodem. Odpowiedź proxy, także 403, oznacza „przeszło”; oczekujemy braku połączenia **i braku wpisu
+z próbnego IP w dzienniku proxy na hoście**.
+
+`/proc/1/environ` w pudełku jest środowiskiem jego init. O niewidoczności init hosta świadczy porównanie
+przestrzeni PID z wartością dostarczoną przez CLI, a nie samo powodzenie/niepowodzenie `cat`.
+Próba zapisu poza dozwolonymi katalogami używa istniejącego `/etc` w pudełku; nie dowodzi ochrony całego
+systemu plików, np. tymczasowego `/tmp` pudełka. Brak `origin` oznacza pominięcie próby push, nie odmowę.
+
+`cat ~/.claude/.credentials.json` trzeba dodatkowo wykonać narzędziem **Bash rzeczywistego agenta**:
+P-2 i brak Dockera bez K3 → oczekiwana odmowa piaskownicy; Docker bez K3 → „ryzyko resztkowe K1”.
+Zwykły shell uruchomiony przez CLI nie potwierdza działania wewnętrznej piaskownicy agenta.
+
+Końcowy dowód PT-191 obejmuje kartę testową plasma-tide z zatwierdzonym przez użytkownika planem: jeden ticket
+wykonuje `make test` w pudełku i zapisuje `done` bez `envAnswer`/`outside`. Do notki muszą trafić:
+ID karty i ticketu, wpis runnera z `procs`/dziennika, czas kroku, wynik Bash agenta, tabela czerwonej listy,
+środowisko CLI oraz kontrola argv procesów na hoście. Do czasu zebrania tych wyników próba ręczna pozostaje
+niezaliczona. Skrypt `scripts/box/boundary-trial.py` zbiera część CLI/Incus i pełne testy poza piaskownicą;
+nie tworzy ani nie zatwierdza za użytkownika karty testowej.

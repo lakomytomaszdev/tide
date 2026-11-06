@@ -155,6 +155,9 @@ class Incus:
     def device_add(self, name: str, device: str, kind: str, values: dict):
         self.call("config", "device", "add", name, device, kind, *_kv(values))
 
+    def device_remove(self, name: str, device: str):
+        self.call("config", "device", "remove", name, device)
+
     def device_replace(self, name: str, device: str, kind: str, values: dict):
         """Atomowa zmiana całego urządzenia; błąd nie zostawia instancji bez starego domu."""
         # `config show` zwraca YAML, m.in. blok raw.idmap nieobsługiwany przez yamlmini.

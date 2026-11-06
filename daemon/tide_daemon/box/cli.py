@@ -1,8 +1,9 @@
-"""`tide box base|build|status|reset|stop|start|destroy|approve|login` — pudełko projektu z wiersza poleceń.
+"""`tide box base|build|status|reset|stop|start|destroy|approve|login|run` — pudełko projektu z wiersza poleceń.
 
-`base` i `login` należą do obrazu bazowego (#16, `box/base.py`), `run` — #28.
+`base` i `login` należą do obrazu bazowego (#16, `box/base.py`), `run` — PT-191 (#28, `box/command.py`).
 Kody wyjścia: 0 sukces, 1 błąd (profil, Incus, budowa), 2 zły argument, 3 odmowa (biegną kroki, pudełko niezgodne
-albo nieaktualne w `status`). Opis: docs/tide-daemon.md (Budowa pudełka → CLI, Obraz bazowy Tide).
+albo nieaktualne w `status`). `run` przekazuje kod polecenia; błąd przygotowania/kontroli refów daje 1.
+Opis: docs/tide-daemon.md (Budowa pudełka → CLI, Obraz bazowy Tide).
 """
 import argparse
 import json
@@ -17,11 +18,16 @@ from . import settings as bset
 from . import lifecycle
 from . import state as bs
 from .incus import IncusError
+from .ports import PoolExhausted
 
 
 def _parser():
     parser = argparse.ArgumentParser(prog="tide box", description="Pudełko projektu (Incus)")
     sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("run", help="polecenie bez agenta, przez BoxRunner: run <slug> [--card K-N] -- <polecenie>")
+    p.add_argument("slug")
+    p.add_argument("--card", default="")
+    p.add_argument("--worktree", default="", help="istniejący worktree (domyślnie bieżący; z głównego powstaje nowy)")
     sub.add_parser("base", help="buduje obraz bazowy Tide (agenci, proxy, czcionki) — make box-base")
     p = sub.add_parser("login", help="logowanie agentów bez K3 w pudełku projektu (K1, jednorazowo)")
     p.add_argument("slug", nargs="?")
@@ -113,11 +119,22 @@ def run_build(builder, slug, out) -> int:
 def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
     out = out or sys.stdout
     err = err or sys.stderr
+    argv = list(sys.argv[1:] if argv is None else argv)
+    command = []
+    if argv[:1] == ["run"]:
+        if "--" not in argv or argv.index("--") == len(argv) - 1:
+            print("tide box run: podaj polecenie po --", file=err)
+            return 2
+        cut = argv.index("--")
+        argv, command = argv[:cut], argv[cut + 1:]
     try:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         return 2 if exc.code else 0
     try:
+        if args.cmd == "run":
+            from .command import run_command
+            return run_command(args, command, out, err, builder=builder)
         if args.cmd == "base":
             if base_builder is not None:
                 return run_base(base_builder, out)
@@ -138,7 +155,7 @@ def main(argv=None, out=None, err=None, builder=None, base_builder=None) -> int:
             finally:
                 if own:
                     service.stop()
-    except bb.BoxBusy as exc:
+    except (bb.BoxBusy, PoolExhausted) as exc:
         print(f"tide box {args.cmd}: {exc}", file=err)
         return 3
     except (bb.BuildError, bp.ProfileError, IncusError, OSError, ValueError) as exc:

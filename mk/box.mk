@@ -2,7 +2,7 @@
 # sudo i zmienia system, dlatego NIE jest częścią make install ani make uninstall — tylko jawne cele box-*.
 # Testy: scripts/tests/test_box_install.py (scripts/tests jest już w TEST_DIRS). Opis: docs/tide-daemon.md,
 # sekcja „Pudełko → Instalacja”. box-base (#16, PT-179) buduje obraz bazowy Tide bez sudo (projekt ograniczony
-# Incusa, sieć przez proxy Tide) — sekcja „Obraz bazowy Tide”. Cel box-check (#28) dopisze kolejny ticket.
+# Incusa, sieć przez proxy Tide) — sekcja „Obraz bazowy Tide”. box-check (PT-191) wykonuje czerwoną listę.
 SUDO ?= sudo
 PYTHON ?= /usr/bin/python3
 # Port proxy Tide na adresie mostka — ta sama wartość co box.proxy-port usługi; zmiana = ponowne box-install.
@@ -11,7 +11,14 @@ BOX_PROXY_PORT ?= 18080
 BOX_PROJECT_MODE ?= restricted
 OUT ?=
 
-.PHONY: box-install box-uninstall box-state box-base
+.PHONY: box-install box-uninstall box-state box-base box-check
+
+# CHECK_ARGS: np. --host-ip 10.20.1.10 --spoof-ip <sprawdzony-wolny-IP> --spoof-image <lokalny-obraz>.
+BOX ?=
+CHECK_ARGS ?=
+box-check:
+	@test -n "$(BOX)" || { echo "Podaj BOX=<slug>" >&2; exit 2; }
+	$(PYTHON) daemon/tide.py box run "$(BOX)" -- bash scripts/box/check.sh $(CHECK_ARGS)
 
 box-base:
 	$(PYTHON) daemon/tide.py box base
