@@ -45,6 +45,28 @@ CHANGE_MAP = {
 CHANGE_MAP["daemon/tide_daemon/cardflow/"] = "cardflow"
 CHANGE_MAP["daemon/tests/test_cardflow"] = "cardflow"
 
+# Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty
+# (QML, generatory ładowane po ścieżce) zachowują bezpieczny dobór katalogowy.
+IMPORT_ROOTS = {"daemon/tide_daemon/": "tide_daemon"}
+IMPORT_MAX_DEPTH = 3
+IMPORT_MAX_DEPENDENCIES = 12
+IMPORT_MAX_IMPORTERS = 20
+
+# Uruchomienie osobnego procesu usługi nie tworzy krawędzi importu do jej kodu.
+# Te dwa małe moduły sprawdzają start/Agents oraz drogę /Board od ticketu do review.
+SERVICE_CONTRACT_MODULES = (
+    "daemon/tests/test_dbus_contract.py",
+    "daemon/tests/test_service_smoke.py",
+)
+SERVICE_PREFIX = "daemon/"
+
+# Zmiana wspólnej infrastruktury testów wymaga pełnego przebiegu, także gdy
+# pomocnik mieszka w module testowym (FlowCase/FlowInProcess).
+SHARED_TEST_MODULES = (
+    "daemon/tests/test_cardflow.py",
+    "daemon/tests/test_cardflow_dbus.py",
+)
+
 # Klucz to ścieżka modułu; wartość musi wyjaśniać wspólny zasób. Takie moduły
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.

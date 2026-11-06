@@ -12,11 +12,18 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import dataclass
 
 if __package__:
-    from .test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
+    from .test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
+                             SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
+                             IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES, IMPORT_MAX_IMPORTERS)
+    from .test_dependencies import ImportGraph, is_test_support
 else:
-    from test_suites import CHANGE_MAP, SERIAL_MODULES, SUITES
+    from test_suites import (CHANGE_MAP, SERIAL_MODULES, SUITES, IMPORT_ROOTS,
+                            SERVICE_CONTRACT_MODULES, SERVICE_PREFIX, SHARED_TEST_MODULES,
+                            IMPORT_MAX_DEPTH, IMPORT_MAX_DEPENDENCIES, IMPORT_MAX_IMPORTERS)
+    from test_dependencies import ImportGraph, is_test_support
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,6 +132,7 @@ def git_paths(base, root=ROOT):
 
 
 def changed_suites(paths):
+    """Dawna mapa katalogowa: dobór zasobów innych niż importowalny kod usługi."""
     selected = set()
     for path in paths:
         matches = [prefix for prefix in CHANGE_MAP if path.startswith(prefix)]
@@ -132,6 +140,87 @@ def changed_suites(paths):
             return None
         selected.add(CHANGE_MAP[max(matches, key=len)])
     return sorted(selected)
+
+
+@dataclass
+class Selection:
+    reasons: dict
+    full: bool = False
+
+    @property
+    def modules(self):
+        return sorted(self.reasons)
+
+
+def changed_modules(paths, entries, root=ROOT):
+    """Dobór na drzewie roboczym; nieznane lub wspólne wejście oznacza pełny przebieg."""
+    all_modules = modules_for(entries, root)
+    test_dirs = sorted({directory for directory, _ in entries})
+
+    def full(path, reason):
+        return Selection({module: [f"{path} → pełny przebieg: {reason}"] for module in all_modules}, True)
+
+    paths = sorted(set(paths))
+    for path in paths:
+        if changed_suites([path]) is None:
+            return full(path, "ścieżka poza mapą")
+        if is_test_support(path, test_dirs, SHARED_TEST_MODULES):
+            return full(path, "wspólna infrastruktura lub dane testów")
+        if not (root / path).is_file():
+            return full(path, "usunięty lub przeniesiony plik")
+        if path.endswith("/__init__.py"):
+            return full(path, "inicjalizacja pakietu")
+
+    precise = [path for path in paths if path.endswith(".py") and
+               any(path.startswith(prefix) for prefix in IMPORT_ROOTS)]
+    graph = None
+    if precise or any(path in all_modules for path in paths):
+        try:
+            graph = ImportGraph(root, test_dirs)
+        except ValueError as exc:
+            return full("analiza AST", str(exc))
+        for path in paths:
+            if path in all_modules and graph.importers[path]:
+                return full(path, "moduł testów importowany jako wspólna fixture")
+
+    reasons = {}
+
+    def add(module, reason):
+        reasons.setdefault(module, []).append(reason)
+
+    for path in paths:
+        if path in all_modules:
+            add(path, f"{path} → zmieniony moduł testów")
+        elif path in precise:
+            affected = graph.affected(path, set(all_modules))
+            for module, chain in affected.items():
+                add(module, f"{path} → import AST: " + " → ".join(chain))
+            if not affected:
+                # Brak rozpoznanego testu nie może oznaczać samego dymnego sprawdzenia.
+                for suite in changed_suites([path]):
+                    for module in modules_for(SUITES[suite], root):
+                        add(module, f"{path} → zestaw {suite}: brak rozpoznanych importów testów")
+        else:
+            for suite in changed_suites([path]):
+                for module in modules_for(SUITES[suite], root):
+                    add(module, f"{path} → mapa katalogowa: {suite}")
+        if path.startswith(SERVICE_PREFIX):
+            for module in SERVICE_CONTRACT_MODULES:
+                if module not in all_modules:
+                    raise ValueError(f"Brak modułu kontraktowego w pełnym zestawie: {module}")
+                add(module, f"{path} → kontrakt procesu usługi")
+    return Selection(reasons)
+
+
+def explain_selection(selection):
+    print("Dobór zmian: " + ("pełny przebieg" if selection.full else "mapa importów i zestawów"))
+    print(f"Granice AST: głębokość {IMPORT_MAX_DEPTH}, zależności {IMPORT_MAX_DEPENDENCIES}, "
+          f"odbiorcy {IMPORT_MAX_IMPORTERS}; wspólny zmieniony moduł: tylko bezpośrednie importy + kontrakt")
+    print(f"Wybrane moduły: {len(selection.modules)}")
+    for module in selection.modules:
+        print(f"- {module}")
+        for reason in selection.reasons[module]:
+            print(f"    {reason}")
 
 
 class RecordingResult(unittest.TextTestResult):
@@ -247,7 +336,7 @@ def summarize(results, seconds):
     return int(bool(failed))
 
 
-def main():
+def main(root=ROOT):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dirs", nargs="+", default=sorted({d for pairs in SUITES.values() for d, _ in pairs}))
     parser.add_argument("--suite", choices=SUITES)
@@ -270,35 +359,39 @@ def main():
                           inventory=args.inventory)
     if args.jobs < 1:
         parser.error("JOBS musi być dodatnią liczbą całkowitą")
+    if args.suite and args.changed:
+        parser.error("--suite i --changed są osobnymi sposobami doboru testów")
     entries = [(d, "test*.py") for d in args.dirs]
     if args.suite:
         entries = SUITES[args.suite]
+    selection = None
     if args.changed:
         try:
-            paths = git_paths(args.base)
+            paths = git_paths(args.base, root)
         except subprocess.CalledProcessError:
             parser.error(f"Nie można ustalić diff względem {args.base!r}; podaj BASE=<ref>")
-        selected = changed_suites(paths)
-        print("Dobór zmian: " + ("pełny przebieg (ścieżka poza mapą)" if selected is None
-                                else ", ".join(selected) or "brak zmian"))
-        if selected is not None:
-            entries = [pair for name in selected for pair in SUITES[name]]
     try:
-        modules = modules_for(entries)
+        if args.changed:
+            selection = changed_modules(paths, entries, root)
+            explain_selection(selection)
+            modules = selection.modules
+        else:
+            modules = modules_for(entries, root)
     except ValueError as exc:
         parser.error(str(exc))
     if args.list:
         print("\n".join(modules))
         return 0
     # Osobny katalog dla każdego przebiegu zapobiega nadpisywaniu logów innej sesji.
-    parent = args.output or ROOT / "build" / "test-results"
+    parent = args.output or root / "build" / "test-results"
     parent.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     print(f"Moduły: {len(modules)}, JOBS={args.jobs}, logi: {output}", flush=True)
     started = time.monotonic()
-    results = execute(modules, args.jobs, output)
+    results = execute(modules, args.jobs, output, root)
     elapsed = time.monotonic() - started
     (output / "summary.json").write_text(json.dumps({"seconds": elapsed, "jobs": args.jobs,
+        "selection": selection.reasons if selection else None,
         "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
     return summarize(results, elapsed)
 
