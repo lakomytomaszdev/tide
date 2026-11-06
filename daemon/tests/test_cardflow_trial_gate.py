@@ -304,11 +304,13 @@ class EngineGateTest(unittest.TestCase):
         procedure = HostProcedure(self.tmp.name)
         store = HostStore()
         store.record = gate.HostRecord("PT-274", "review-274-1", procedure.binding)
-        for started in (False, True):
-            if started:
+        for phase in ("intent", "started", "confirmed"):
+            if phase == "started":
                 self.old_step(result=None)
+            if phase == "confirmed":
+                self.journal.append("K-38", "result", action="step-start", key=name, ok=True, unit="old-unit")
             for client in ("missing", "alive", "exited", "unknown"):
-                with self.subTest(started=started, client=client):
+                with self.subTest(phase=phase, client=client):
                     engine = self.restart()
                     if client != "missing":
                         engine.procs[name] = mock.Mock()
@@ -316,7 +318,7 @@ class EngineGateTest(unittest.TestCase):
                             engine.procs[name].poll.side_effect = OSError("brak stanu klienta")
                         else:
                             engine.procs[name].poll.return_value = None if client == "alive" else 0
-                    safe = started and client in ("missing", "exited")
+                    safe = phase == "confirmed" and client in ("missing", "exited")
                     inventory = lambda: trialhold.inventory(engine, "K-38", fold(self.journal.read("K-38")))
                     with mock.patch.object(engine, "_unit_state", return_value="inactive"):
                         self.assertEqual(inventory(), safe)

@@ -34,7 +34,8 @@ def inventory(engine, card, st):
                     state = "unknown" if state == "inactive" else state
                 # Sam brak scope nie rozstrzyga okna Popen(systemd-run) → step.started.
                 # Zakończenie klienta też nie dowodzi zakończenia uruchamianej jednostki.
-                if name not in st.steps and state == "inactive":
+                unresolved = ("step-start", name) in st.intents and ("step-start", name) not in st.results
+                if state == "inactive" and (name not in st.steps or unresolved):
                     state = "unknown"
         except Exception:
             state = "unknown"
