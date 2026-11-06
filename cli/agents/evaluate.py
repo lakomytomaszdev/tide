@@ -57,7 +57,8 @@ def write_bus_config(path):
     path.write_text('<busconfig><type>session</type><listen>' + address +
                     '</listen><auth>EXTERNAL</auth><policy context="default">'
                     '<deny user="*"/><allow user="' + str(os.getuid()) + '"/>'
-                    '<allow send_destination="*"/><allow own="*"/></policy></busconfig>')
+                    '<allow send_destination="*"/><allow receive_sender="*"/>'
+                    '<allow own="*"/></policy></busconfig>')
 
 
 @contextmanager

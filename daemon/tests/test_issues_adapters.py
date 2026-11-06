@@ -108,6 +108,54 @@ class EvaluatorTest(unittest.TestCase):
             self.assertFalse((destination / 'auth.json').exists())
 
 
+@requires_dbus
+class EvaluatorBusTest(unittest.TestCase):
+    def test_generated_policy_allows_real_client_to_receive_bus_replies(self):
+        """Rzeczywisty D-Bus na konfiguracji runnera; bez modeli i bez magistrali pulpitu."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp, 'bus.conf')
+            EVALUATOR.write_bus_config(config)
+            with Path(tmp, 'bus.stderr').open('w+') as errors:
+                process = subprocess.Popen(['dbus-daemon', '--config-file=' + str(config),
+                                            '--nofork', '--nopidfile', '--print-address=1'],
+                                           stdout=subprocess.PIPE, stderr=errors, text=True)
+                try:
+                    address = process.stdout.readline().strip()
+                    errors.seek(0)
+                    self.assertTrue(address, errors.read())
+                    probe = '''
+import sys
+from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtDBus import QDBus, QDBusConnection, QDBusMessage
+app = QCoreApplication([])
+bus = QDBusConnection.connectToBus(sys.argv[1], 'issue-eval-probe')
+assert bus.isConnected(), bus.lastError().message()
+message = QDBusMessage.createMethodCall('org.freedesktop.DBus', '/org/freedesktop/DBus',
+                                      'org.freedesktop.DBus', 'GetId')
+reply = bus.call(message, QDBus.CallMode.Block, 1500)
+assert reply.type() == QDBusMessage.MessageType.ReplyMessage, reply.errorMessage()
+assert len(reply.arguments()) == 1 and reply.arguments()[0], reply.arguments()
+QDBusConnection.disconnectFromBus('issue-eval-probe')
+print('received-bus-reply')
+'''
+                    client = subprocess.run([sys.executable, '-c', probe, address],
+                                            capture_output=True, text=True, timeout=8)
+                    self.assertEqual(client.returncode, 0, client.stdout + client.stderr)
+                    self.assertEqual(client.stdout.strip(), 'received-bus-reply')
+                    errors.flush()
+                    errors.seek(0)
+                    self.assertNotIn('Rejected receive message', errors.read())
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                    process.stdout.close()
+
+
 class PackageTest(unittest.TestCase):
     def test_evaluator_and_fixture_are_valid_without_running_models(self):
         import ast
