@@ -109,7 +109,7 @@ def build_decisions(st: FlowState) -> list[dict]:
     for (ticket, round_no), question in st.review_questions.items():
         if (ticket, round_no) in st.review_decisions or ticket in st.rejected:
             continue
-        add(1, question.get("seq"), _review(st, ticket, round_no, question))
+        add(1, question.get("seq"), caretaker.annotate(st, _review(st, ticket, round_no, question)))
     for made in _plan_fix_decisions(st):
         add(0, (st.finished.get(made["step"]) or {}).get("seq"), made)
     plan = _plan_decision(st)
@@ -122,6 +122,7 @@ def build_decisions(st: FlowState) -> list[dict]:
             seq = plan.pop("_seq", 0)
             plan = {**caretaker.annotate(st, plan, target), "_seq": seq}
     if plan:
+        plan = caretaker.annotate(st, plan)
         add(0, plan.pop("_seq", 0), plan)
     for failure in st.tracker_failures():
         if failure.get("action") == "youtrack-note" or st.running():

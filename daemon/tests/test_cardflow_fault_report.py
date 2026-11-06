@@ -47,6 +47,9 @@ class FullPathTest(FaultReportCase):
     def test_write_denial_is_reported_as_tide_card_and_the_step_resumes(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: odmowa-zapisu")
         self.assertTrue(self.start(card_id)["ok"])
+        # Przejściowe „Czeka” po błędzie może wyprzedzać start opiekuna. Zgłoszenie testujemy dopiero,
+        # gdy opiekun odda problem użytkownikowi, a nie podczas przejmowania go w tym samym przebiegu.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=60), self.events(card_id))
         card = self.wait_column(card_id, "waiting", timeout=60)
         tickets = {s["step"] for s in self.of(card_id, "step.started") if s["kind"] == "ticket"}
         finished = [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]   # bez kroku opiekuna

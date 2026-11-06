@@ -174,14 +174,17 @@ out["picked"] = js("page.managePage.importPanel.pickedCount")
 replies.append({{"ok": True, "created": [{{"issue": "LOG-200", "card": "K-16", "project": "logviewer"}}],
                 "skipped": [], "commitError": ""}})
 replies.append(json.loads({issues!r}))
-# Ustawienia opiekuna wydłużają stronę — przycisk importu może być poza obszarem przewijania.
-engine.rootContext().setContextProperty("importButton", obj("importSubmit"))
+# Licznik modelu zmienia się przed przeliczeniem układu po filtrowaniu listy.
+# Przed kliknięciem pokaż przycisk w przewijanym panelu i poczekaj na układ.
+wait(60)
 engine.rootContext().setContextProperty("importFlick", obj("manageProjectsFlick"))
+engine.rootContext().setContextProperty("importButton", obj("importSubmit"))
+js("importFlick.contentY = Math.max(0, Math.min(importFlick.contentHeight - importFlick.height, importFlick.contentY + importButton.mapToItem(importFlick, 0, importButton.height).y - importFlick.height + 12))")
 wait(60)
-js("importFlick.contentY = Math.max(0, importButton.mapToItem(importFlick.contentItem, 0, importButton.height).y - importFlick.height + 20)")
-wait(60)
+assert obj("importSubmit").property("enabled")
+assert named("manageProjectsFlick", fy=0).y() <= named("importSubmit").y() <= named("manageProjectsFlick", fy=1).y()
 click(named("importSubmit"))
-until(lambda: obj("importResult").property("text") and calls()[-1][0] == "YouTrackIssues" and calls()[-1][1] is False)
+assert until(lambda: obj("importResult").property("text") and calls()[-1][0] == "YouTrackIssues" and calls()[-1][1] is False), calls()
 out["import"] = [c for c in calls() if c[0] == "ImportYouTrack"][-1]
 out["result"] = obj("importResult").property("text")
 out["refetch"] = calls()[-1]

@@ -172,8 +172,14 @@ class ResultTest(unittest.TestCase):
         base = {"result": "done", "action": "return-plan", "feedback": "x", "reason": "y"}
         self.assertEqual(caretaker.ACTIONS["return-plan"].kinds, ("plan-fix", "error", "repeat", "waiting"))
         for trigger in ("plan-fix", "error", "repeat", "waiting"):
-            other = {"id": "problem", "trigger": trigger, "step": "K-1-PT-7-2", "options": []}
-            self.assertTrue(caretaker.parse_result(base, other, Journal().st)["ok"])
+            other = {"id": "problem", "trigger": trigger, "step": "K-1-PT-7-2", "options": [],
+                     "decisionKind": "question"}
+            with self.subTest(trigger=trigger):
+                self.assertTrue(caretaker.parse_result(base, other, Journal().st)["ok"])
+        for kind in ("permission", "plan-approval", "plan-revision", "review", ""):
+            other = {"id": "problem", "trigger": "waiting", "decisionKind": kind, "options": []}
+            with self.subTest(kind=kind):
+                self.assertEqual(caretaker.parse_result(base, other, Journal().st)["code"], "bad-caretaker-action")
         for trigger in ("flow-error", "stalled", "no-progress"):
             other = {"id": "problem", "trigger": trigger, "options": []}
             self.assertEqual(caretaker.parse_result(base, other, Journal().st)["code"], "bad-caretaker-action")
@@ -184,7 +190,8 @@ class ResultTest(unittest.TestCase):
                 made = caretaker.parse_result({"result": "done", "action": action, "feedback": "x", "reason": "y"},
                                               self.problem, Journal().st)
                 self.assertEqual((made["ok"], made["code"]), (False, "bad-caretaker-action"))
-        self.assertEqual(sorted(caretaker.ACTIONS), ["escalate", "retry", "retry-stage", "return-plan"])
+        self.assertEqual(sorted(caretaker.ACTIONS), ["answer", "change-executor", "escalate", "retry",
+                                                    "retry-stage", "return-plan"])
 
 
 class BriefAndContextTest(unittest.TestCase):
