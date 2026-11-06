@@ -179,7 +179,10 @@ class NotificationFilter(QObject):
         watcher.finished.connect(lambda w: self._inhibited(w))
 
     def _inhibited(self, watcher: QDBusPendingCallWatcher, release_now: bool = True) -> None:
-        self._pending.discard(watcher)
+        # stop() odbiera odpowiedź ręcznie; finished może dotrzeć podczas lub po oczekiwaniu.
+        if watcher not in self._pending:
+            return
+        self._pending.remove(watcher)
         reply = QDBusPendingReply(watcher).reply()
         if reply.type() != QDBusMessage.MessageType.ReplyMessage or not reply.arguments():
             if self._wanted and release_now:
