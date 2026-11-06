@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -59,12 +60,15 @@ def main():
     full_modules = runner.modules_for(entries)
     report_file = output / "comparison.json"
     report = {"started": datetime.now().astimezone().isoformat(), "snapshot": fingerprint,
+              "head": git("rev-parse", "HEAD").strip(),
+              "tree": git("rev-parse", "HEAD^{tree}").strip(),
+              "command": " ".join([sys.executable, *sys.argv]),
               "base": args.base, "jobs": args.jobs, "commits": [], "measurements": {}}
     if report_file.exists():
         previous = json.loads(report_file.read_text())
         if previous["snapshot"] != fingerprint or previous["jobs"] != args.jobs:
             parser.error("Drzewo kodu lub JOBS zmienione: wskaż nowy katalog --output")
-        report = previous
+        report = {**report, **previous}
 
     def save():
         report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -105,7 +109,7 @@ def main():
         if len(summaries) == 1:
             summary = json.loads(summaries[0].read_text())
             report["verification"]["summary"] = str(summaries[0])
-            # Narzędzia/ i dokumentacja wybierają pełny przebieg. Nie powtarzamy go w pomiarze.
+            # Zmiany narzędzi wybierają pełny przebieg. Nie powtarzamy go w pomiarze.
             if sorted(r["module"] for r in summary["results"]) == full_modules:
                 report["measurements"][key(full_modules)] = {
                     "modules": full_modules, "seconds": summary["seconds"],
@@ -135,6 +139,9 @@ def main():
         save()
     text = ("# PT-258 — pomiar selektora zmian\n\n"
             f"Data: {report['started']}. JOBS={args.jobs}.\n\n"
+            f"HEAD: `{report['head']}`. Drzewo HEAD: `{report['tree']}`.\n\n"
+            f"Baza: `{report['base']}`. Odcisk drzewa roboczego: `{report['snapshot']}`.\n\n"
+            f"Polecenie: `{report['command']}`.\n\n"
             "Pięć ostatnich commitów bez merge względem przypiętej bazy (także poprawki z 06.11). "
             "Diff każdego commita porównuje oba selektory na **tym samym bieżącym kodzie**; "
             "nie jest to pomiar historycznych wersji usługi. Czas to rzeczywisty przebieg wybranych "

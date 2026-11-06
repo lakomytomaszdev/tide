@@ -158,7 +158,13 @@ def changed_modules(paths, entries, root=ROOT):
     def full(path, reason):
         return Selection({module: [f"{path} → pełny przebieg: {reason}"] for module in all_modules}, True)
 
-    paths = sorted(set(paths))
+    # Dokumentacja w komponencie też nie zmienia kodu. Wyjątek nie obejmuje
+    # infrastruktury uruchamiacza ani danych testów, nawet gdy mają rozszerzenie .md.
+    def documentation(path):
+        return (path.endswith(".md") and not path.startswith(("tools/", "mk/")) and
+                not is_test_support(path, test_dirs, SHARED_TEST_MODULES))
+
+    paths = sorted({path for path in paths if not documentation(path)})
     for path in paths:
         if changed_suites([path]) is None:
             return full(path, "ścieżka poza mapą")

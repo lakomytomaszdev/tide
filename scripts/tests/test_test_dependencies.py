@@ -178,6 +178,29 @@ class DependencySelectionTest(unittest.TestCase):
         with patch.object(runner, "ImportGraph", side_effect=AssertionError("niepotrzebna analiza")):
             self.assertEqual(self.select().modules, [])
 
+    def test_documentation_only_in_root_docs_and_component_selects_zero_without_ast(self):
+        # Także usunięty dokument: nie wymaga odczytu ani nie ma wpływu na kod.
+        paths = ("README.md", "docs/testing.md", "daemon/tide_daemon/cardflow/README.md")
+        with patch.object(runner, "ImportGraph", side_effect=AssertionError("niepotrzebna analiza")):
+            for path in paths:
+                with self.subTest(path=path):
+                    selection = self.select(path)
+                    self.assertEqual(selection.modules, [])
+                    self.assertFalse(selection.full)
+            self.assertEqual(self.select(*paths).modules, [])
+
+    def test_documentation_mixed_with_code_keeps_code_selection_and_safe_fallbacks(self):
+        source = self.source("leaf")
+        self.write_test("leaf", "from tide_daemon import leaf\n")
+        self.write_test("other")
+        expected = self.select(source)
+        self.assertEqual(self.select("README.md", "docs/testing.md", source), expected)
+        for path in ("tools/README.md", "mk/README.md", "Makefile",
+                     "daemon/tests/fixtures/instructions.md", "daemon/tests/README.md",
+                     "docs/example.py", "docs/settings.json", "unknown.py"):
+            with self.subTest(path=path):
+                self.assertTrue(self.select("docs/testing.md", path).full)
+
     def test_changed_test_selects_itself_and_contract_and_uncovered_source_uses_old_suite(self):
         changed = self.write_test("changed")
         self.assertEqual(set(self.select(changed).modules),
@@ -248,6 +271,8 @@ class SelectionBenchmarkTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, returncode)
 
             def git(*args):
+                if args[0] == "rev-parse":
+                    return "tested-tree\n" if args[1] == "HEAD^{tree}" else "tested-head\n"
                 if args[0] == "log":
                     return "\n".join(f"commit{i}" for i in range(5))
                 if args[0] == "show":
@@ -271,6 +296,10 @@ class SelectionBenchmarkTest(unittest.TestCase):
             self.assertEqual(len(data["commits"]), 5)
             self.assertEqual(len(data["measurements"]), 2)
             self.assertEqual(data["verification"]["returncode"], returncode)
+            self.assertEqual(data["head"], "tested-head")
+            self.assertEqual(data["tree"], "tested-tree")
+            self.assertEqual(data["base"], "pinned-base")
+            self.assertIn("--base pinned-base", data["command"])
             for row in data["commits"]:
                 self.assertEqual(data["measurements"][row["before"]]["seconds"], 12)
                 self.assertEqual(len(data["measurements"][row["after"]]["modules"]), 1)

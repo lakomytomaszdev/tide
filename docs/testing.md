@@ -71,7 +71,11 @@ Zmiana wspólnych danych lub pomocników w katalogach testów, `__init__.py` ora
 importowanego przez inne testy wybiera pełny przebieg. `SHARED_TEST_MODULES` dodatkowo
 oznacza fixture'y `FlowCase` i `FlowInProcess`. Błąd odczytu/składni podczas analizy AST
 również przełącza na pełny zestaw. Brak zadeklarowanego modułu kontraktowego jest błędem.
-Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspólny moduł motywów lub dokumentacja)
+Dokumenty Markdown (`*.md`) w katalogu głównym, `docs/` i komponentach nie wybierają testów
+kodu, także przy usunięciu dokumentu. W mieszanym diffie dobór wynika z pozostałych plików.
+Wyjątek nie obejmuje Markdown w `tools/`, `mk/` ani katalogach testów: wspólne fixture'y
+mogą zawierać dokumenty używane jako dane. Kod i konfiguracja w `docs/` nie są pomijane.
+Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/` lub wspólny moduł motywów)
 uruchamia pełny przebieg. Pozostałe komponenty zachowują mapę katalogową: najdłuższy
 prefiks wygrywa, np. `apps/board/` wybiera `board`. Ich testy często ładują kod po ścieżce
 albo badają QML, więc nie zawężamy ich na podstawie niekompletnych importów.
@@ -89,7 +93,8 @@ Procedura najpierw uruchamia publiczne `make test-changed BASE=<SHA>`, następni
 pięciu ostatnich commitów bez merge z tej bazy. Testy obu selektorów wykonuje na jednym bieżącym
 drzewie kodu; identyczne zestawy mierzy raz (także pełny przebieg z `test-changed`). Podaje liczbę
 modułów i rzeczywisty czas wykonania, a osobno czas selekcji AST. `--output <katalog>` zachowuje
-logi, `comparison.json` i tabelę `report.md`; wznowienie w tym samym katalogu wykorzystuje
+logi, `comparison.json` i tabelę `report.md`, w tym SHA HEAD i jego drzewa, bazę, polecenie
+oraz odcisk drzewa roboczego; wznowienie w tym samym katalogu wykorzystuje
 ukończone pomiary, o ile drzewo kodu i JOBS się nie zmieniły. To pełna procedura testowa wymagająca
 środowiska, w którym działają prywatne gniazda i piaskownice testów.
 Nieudana walidacja nie przerywa zbierania porównania, ale pozostaje zapisana w raporcie i powoduje
