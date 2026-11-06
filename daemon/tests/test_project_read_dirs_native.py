@@ -24,7 +24,7 @@ from tide_daemon.tasks import agentcmd
 def native_binary(tool):
     binary = (shutil.which(tool) or ("/snap/bin/codex" if tool == "codex" else
                                    os.path.expanduser("~/.local/bin/claude")))
-    if tool == "codex" and os.path.realpath(binary) == "/usr/bin/snap":
+    if tool == "codex" and os.path.realpath(binary) == os.path.realpath("/usr/bin/snap"):
         # Wrapper Snap odmawia startu z obcego scope systemd, zanim dojdzie do profilu.
         # Badamy workspace-write tego samego programu z zainstalowanego pakietu; nie
         # zmieniamy produkcyjnego startu i nie uznajemy błędu wrappera za odmowę zapisu.
@@ -35,9 +35,14 @@ def native_binary(tool):
 
 
 class NativeProgramSelectionTest(unittest.TestCase):
+    @unittest.skipUnless(os.access("/snap/codex/current/bin/codex", os.X_OK), "brak pakietu Snap")
+    def test_real_installed_snap_wrapper_resolves_to_the_packaged_program(self):
+        with mock.patch.object(shutil, "which", return_value="/snap/bin/codex"):
+            self.assertEqual(native_binary("codex"), os.path.realpath("/snap/codex/current/bin/codex"))
+
     def test_snap_wrapper_selects_the_native_program_from_the_installed_package(self):
         def realpath(path):
-            return {"/snap/bin/codex": "/usr/bin/snap",
+            return {"/snap/bin/codex": "/usr/lib/snapd/snapd", "/usr/bin/snap": "/usr/lib/snapd/snapd",
                     "/snap/codex/current/bin/codex": "/snap/codex/42/bin/codex"}[path]
         with mock.patch.object(shutil, "which", return_value="/snap/bin/codex"), \
                 mock.patch.object(os.path, "realpath", side_effect=realpath), \
@@ -46,7 +51,7 @@ class NativeProgramSelectionTest(unittest.TestCase):
 
     def test_other_installations_are_preserved_and_missing_program_is_an_error(self):
         with mock.patch.object(shutil, "which", return_value="/opt/codex"), \
-                mock.patch.object(os.path, "realpath", return_value="/opt/codex"), \
+                mock.patch.object(os.path, "realpath", side_effect=lambda path: path), \
                 mock.patch.object(os, "access", return_value=True):
             self.assertEqual(native_binary("codex"), "/opt/codex")
         with mock.patch.object(os, "access", return_value=False):
@@ -146,6 +151,7 @@ class NativeReadDirsTest(unittest.TestCase):
         self.alias.symlink_to(self.data, target_is_directory=True)
 
     def command(self, tool):
+        (self.evidence / f"{tool}-proof.json").unlink(missing_ok=True)
         binary = native_binary(tool)
         step = agentcmd.Step(tool, binary, "Wykonaj próbę profilu.", str(self.wt), str(self.repo),
             str(self.step_dir), "native-probe", model="test", read_dirs=(str(self.data),),
