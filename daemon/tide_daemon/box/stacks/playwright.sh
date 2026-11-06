@@ -43,10 +43,37 @@ install_browsers() {
     echo "playwright $PLAYWRIGHT_VERSION: ${found[*]}"
 }
 
+write_chromium_profile() {  # write_chromium_profile <root> — przestrzenie użytkownika piaskownicy Chromium
+    local root=$1
+    mkdir -p "$root/etc/apparmor.d"
+    cat > "$root/etc/apparmor.d/tide-chromium-userns" <<'EOF'
+# Tide (PT-185): profil w przestrzeni AppArmor pudełka, analogiczny do bwrap w obrazie bazowym.
+# Pozwala Chromium uruchomić własną piaskownicę; ustawienia i profile hosta pozostają bez zmian.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile tide-chromium /opt/ms-playwright/chromium-*/chrome-linux*/chrome flags=(unconfined) {
+  userns,
+}
+
+profile tide-chromium-headless /opt/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell flags=(unconfined) {
+  userns,
+}
+
+profile tide-chromium-headless-new /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell flags=(unconfined) {
+  userns,
+}
+EOF
+    chmod 0644 "$root/etc/apparmor.d/tide-chromium-userns"
+}
+
 main() {
     stack_main
     check_node
     install_browsers
+    write_chromium_profile ""
+    # Błąd ładowania przerywa budowę. Usługa apparmor z obrazu bazowego wczytuje plik także po restarcie.
+    apparmor_parser -r /etc/apparmor.d/tide-chromium-userns
     write_stack_env "" playwright "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS"
 }
 

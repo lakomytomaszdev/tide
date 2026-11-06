@@ -51,7 +51,7 @@ NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/
 # Zapisana wersja szablonów stosów: `templates_version()` katalogu `box/stacks` (dane `*.yaml` i skrypty `*.sh`).
 # Wchodzi do hasha przepisu jako `templates`. Test (`test_box_stacks.py`) porównuje ją z sumą katalogu, więc każda
 # zmiana szablonu wymaga świadomego podbicia tej stałej — a pudełka zbudowane wcześniej stają się nieaktualne.
-STACKS_VERSION = "8aa43bcc752bf5c08856ef597fdeaa87bfa4578aa3d8f9d12b81131acb190da1"
+STACKS_VERSION = "00eb79140e669f3db331b3fd1aa226b4358f9a9f323ab53244b7ca912777d87b"
 
 
 class BuildError(RuntimeError):
