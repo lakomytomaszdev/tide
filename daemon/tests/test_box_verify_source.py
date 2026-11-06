@@ -109,6 +109,22 @@ class SourceSnapshotTest(unittest.TestCase):
             with verify_source.snapshot(self.repo, self.repo):
                 self.fail("zmiany spoza HEAD")
 
+    def test_snapshot_does_not_execute_repository_fsmonitor(self):
+        monitor = Path(self.tmp.name) / "monitor"
+        marker = Path(str(monitor) + ".ran")
+        monitor.write_text('#!/bin/sh\nprintf ran > "$0.ran"\nprintf "\\n"\n')
+        monitor.chmod(0o700)
+        self.git("config", "core.fsmonitor", str(monitor))
+        # Kontrola czułości próby wyłącznie w jednorazowym repozytorium testowym.
+        self.git("status", "--porcelain", "--untracked-files=no")
+        self.assertTrue(marker.exists())
+        marker.unlink()
+
+        with verify_source.snapshot(self.repo, self.repo) as (archive, commit):
+            self.assertTrue(Path(archive).is_file())
+            self.assertEqual(commit, self.git("rev-parse", "HEAD"))
+        self.assertFalse(marker.exists(), "verify uruchomiło monitor projektu na hoście")
+
 
 if __name__ == "__main__":
     unittest.main()
