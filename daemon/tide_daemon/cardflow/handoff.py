@@ -2,12 +2,26 @@
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
 
+import shlex
+
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
 OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
+
+
+def ticket_tests(base: str = "") -> str:
+    command = f"make test-changed BASE={shlex.quote(base)}" if base else \
+        "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
+    return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
+BASE to przypięty punkt startu ticketu na gałęzi karty, a nie bieżący wierzchołek karty ani master.
+Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania ticketu ani jego review;
+jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
+w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
+Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
+"""
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -34,6 +48,11 @@ def close_card(*, card_id: str, title: str, description: str, worktree: str, out
     return f"""Domknij kartę {card_id}: {title}. Pracuj w worktree karty {worktree}.
 Opis karty: {description}
 Wyniki ticketów: {tickets}
+Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done: zapisz wynik error
+z opisem niepowodzeń, jak przy innych problemach domknięcia. Gdy polecenie wymaga zgody lub wykonania
+poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
+bez nowych zmian.
 Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
 {instruction} Nie scalaj do gałęzi głównej, nie rób push i nie usuwaj worktree.
 Jako ostatnią czynność zapisz plik:
@@ -161,7 +180,7 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
 
 
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
-                card_branch: str, worktree: str, out_dir: str, images=()) -> str:
+                card_branch: str, worktree: str, out_dir: str, images=(), test_base: str = "") -> str:
     shots = "".join(f"- {path}\n" for path in images)
     body = description.strip() or "(karta bez opisu — zrób to, co mówi tytuł)"
     return f"""Krok ticketu {ticket} karty {card_id} w przepływie karty Tide (wejście „Od razu”, krok w tle).
@@ -173,6 +192,7 @@ Twój katalog roboczy: {worktree} (gałąź {branch}, odgałęziona od gałęzi 
 
 Opis karty:
 {body}
+{ticket_tests(test_base)}
 {f'''
 Zrzuty ekranu dołączone do zlecenia (przeczytaj je narzędziem Read):
 {shots}''' if shots else ''}
@@ -205,7 +225,7 @@ Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
                 card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
-                diff: str, note: str, rules: str) -> str:
+                diff: str, note: str, rules: str, test_base: str = "") -> str:
     """Pełne wejście niezależnego przeglądu, przekazane na stdin programu recenzenta."""
     return f"""Krok review {ticket} karty {card_id}, runda {round_no}. Sprawdź wymagania i zmiany, nie edytuj kodu.
 
@@ -219,9 +239,12 @@ Twój katalog: {worktree}
 
 Dla recenzenta:
 - sprawdź zgodność z opisem karty i zasadami projektu,
+- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;
+  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 
+{ticket_tests(test_base)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 
@@ -241,13 +264,14 @@ Liczby mają odpowiadać raportowi. Nie rób push ani merge.
 
 
 def fix_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
-             branch: str, worktree: str, out_dir: str, review: str) -> str:
+             branch: str, worktree: str, out_dir: str, review: str, test_base: str = "") -> str:
     return f"""Krok poprawek ticketu {ticket} karty {card_id} po review, runda {round_no}.
 
 Karta {card_id}: {title}
 Opis/specyfikacja karty:
 {description.strip() or '(brak opisu)'}
 Twój katalog: {worktree}, gałąź {branch}. Popraw BLOCKER i MAJOR z raportu; uruchom odpowiednie testy.
+{ticket_tests(test_base)}
 
 Raport review:
 {review}

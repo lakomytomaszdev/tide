@@ -590,8 +590,8 @@ def _valid_generation(st, event, base):
 
 
 def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
-    """Ostatni ticket karty: {id, title, branch, worktree, cardBranch, cardWorktree} z wyników akcji."""
-    out = {"id": "", "title": "", "branch": "", "worktree": "", "cardBranch": "", "cardWorktree": ""}
+    """Ticket i jego przypięta baza oraz gałąź karty z wyników akcji."""
+    out = {"id": "", "title": "", "branch": "", "worktree": "", "base": "", "cardBranch": "", "cardWorktree": ""}
     wanted = ticket_id or (st.steps.get(st.last_step) or {}).get("ticket") or st.base_restart_ticket
     for (action, _key), res in st.results.items():
         if not res.get("ok"):
@@ -602,6 +602,7 @@ def ticket_of(st: FlowState, ticket_id: str = "") -> dict:
             out["cardBranch"], out["cardWorktree"] = res.get("branch") or "", res.get("worktree") or ""
         elif action == "ticket-branch" and res.get("ticket") == (wanted or out["id"]):
             out["branch"], out["worktree"] = res.get("branch") or "", res.get("worktree") or ""
+            out["base"] = res.get("base") or ""
     return out
 
 
