@@ -268,6 +268,55 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(self.go(), original)
         self.assertEqual(len(self.of("K-1", "card.started")), 1)
 
+    def interrupt_retry_response(self):
+        save = issue_start.acceptance._save
+
+        def interrupted(store, path, value):
+            if (path.startswith(issue_start.RESULTS) and "response" in value and
+                    value["payload"].get("operation") == "retry-start"):
+                raise OSError("Przerwanie przed zapisem odpowiedzi retry")
+            return save(store, path, value)
+        return mock.patch.object(issue_start.acceptance, "_save", side_effect=interrupted)
+
+    def test_retry_result_survives_missing_receipt_response_restart_and_later_retry(self):
+        self.ready()
+        with self.fail_before_handoff():
+            failed = self.go()
+            with self.interrupt_retry_response():
+                self.assertEqual(self.retry(failed["start"], key="retry-a")["error"], "io-error")
+        # Projekcja A jest trwała, ale receipt nie ma jeszcze odpowiedzi.
+        historical = issue_start._response(self.issues, issue_start._load(self.issues, "S-1"))
+        self.assertEqual(historical["start"]["state"], "start-error")
+        path = f"{issue_start.RESULTS}/{issue_start._key('retry-a')}.json"
+        self.assertNotIn("response", issue_start.acceptance._read(self.issues, path))
+        self.restart()
+        self.flow.stop()
+        self.service = IssueService(self.store, self.flow.engine)
+        current = self.call("Show")["start"]
+        success = self.retry(current, key="retry-b")
+        self.assertTrue(success["started"], success)
+        replay = self.retry(failed["start"], key="retry-a")
+        self.assertEqual(replay, {"ok": True, "apiVersion": 1, **historical})
+        self.assertEqual(self.retry(failed["start"], key="retry-a"), replay)
+        self.assertEqual(self.call("Show")["start"]["state"], "started")
+        self.assertEqual(len(self.of("K-1", "card.started")), 1)
+
+    def test_retry_result_survives_missing_receipt_response_and_completed(self):
+        self.ready()
+        with self.fail_before_handoff():
+            failed = self.go()
+        with self.interrupt_retry_response():
+            self.assertEqual(self.retry(failed["start"])["error"], "io-error")
+        historical = issue_start._response(self.issues, issue_start._load(self.issues, "S-1"))
+        self.assertEqual(historical["start"]["state"], "started")
+        self.flow.engine.journal.append("K-1", "card.closed")
+        self.restart()
+        self.flow.stop()
+        self.service = IssueService(self.store, self.flow.engine)
+        self.assertEqual(self.call("Show")["start"]["state"], "completed")
+        self.assertEqual(self.retry(failed["start"]), {"ok": True, "apiVersion": 1, **historical})
+        self.assertEqual(len(self.of("K-1", "card.started")), 1)
+
     def assert_import_recovery(self, boundary, *, restart=False, complete=False, hard=False,
                                partial=False, remove_source=False, change_source=False):
         from . import test_cardflow_import_plan as imports

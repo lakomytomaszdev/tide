@@ -110,6 +110,14 @@ def _refresh(store, engine, intent):
                                      "alreadyAccepted": intent.get("wasAccepted", False),
                                      "commitError": accepted.get("commitError", "")}
         changed = True
+    attempt = intent.get("retryAttemptId")
+    if (attempt == intent["attemptId"] and
+            intent["state"] in ("queued", "started", "completed", "start-error", "reconciling") and
+            attempt not in intent.get("retryResponses", {})):
+        # Wynik próby utrwalamy w tym samym zapisie co jej projekcję, zanim
+        # Show albo kolejna decyzja retry zmienią stan lub bieżącą attemptId.
+        intent.setdefault("retryResponses", {})[attempt] = _response(store, intent)
+        changed = True
     if changed:
         _save(store, intent)
     return _public(intent)
@@ -188,9 +196,10 @@ def retry(store, engine, ident, request):
         if not intent:
             fail("Sprawa nie ma intencji startu.", "start-conflict")
         _refresh(store, engine, intent)
-        if previous and intent["attemptId"] == previous["attemptId"]:
-            # Utracona odpowiedź retry: projekcja tej samej próby, bez nowej decyzji.
-            response = _response(store, intent)
+        if previous and previous["attemptId"] in intent.get("retryResponses", {}):
+            # Receipt mógł nie dostać odpowiedzi przed restartem. Wynik próby
+            # jest niezależny od późniejszych prób i bieżącej projekcji Show.
+            response = intent["retryResponses"][previous["attemptId"]]
             acceptance._save(store, path, {**previous, "response": response})
             return response
         eligible = (issue["state"] == "accepted" and issue["card"] == intent["card"] and
@@ -210,8 +219,9 @@ def retry(store, engine, ident, request):
         acceptance._save(store, f"{acceptance.REQUESTS}/{key}.json", payload)
         acceptance._save(store, path, receipt)
         intent["attemptId"] = attempt
+        intent["retryAttemptId"] = attempt
         _dispatch(store, engine, intent)
-        response = _response(store, intent)
+        response = intent["retryResponses"][attempt]
         acceptance._save(store, path, {**receipt, "response": response})
         return response
 

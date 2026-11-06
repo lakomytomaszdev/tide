@@ -129,6 +129,47 @@ class IssueGoBusTest(FlowCase):
         self.retry(issue, start, "stale", code=4)
         self.assertEqual(self.go(issue, "original", code=5)["currentStart"]["state"], "started")
 
+    def test_crash_before_retry_response_then_later_retry_preserves_failed_result(self):
+        issue = self.ready()
+        self.control.write_text(json.dumps({"stage": "before-handoff", "action": "refuse"}))
+        failed = self.go(issue, "original", code=5)
+        self.control.write_text(json.dumps([
+            {"stage": "before-handoff", "action": "refuse"},
+            {"stage": "before-response", "action": "crash"}]))
+        self.retry(issue, failed["start"], "retry-a", code=3)
+        self.restart()
+        historical = self.issue_call("Show", issue["id"])["start"]
+        self.assertEqual(historical["state"], "start-error")
+        self.assertTrue(historical["retryable"])
+        success = self.retry(issue, historical, "retry-b")
+        replay = self.retry(issue, failed["start"], "retry-a", code=5)
+        self.assertEqual(replay["start"], historical)
+        self.assertEqual(replay["startError"], historical["error"])
+        self.assertFalse(replay["started"])
+        self.assertEqual(replay["currentStart"], success["currentStart"])
+        self.assertEqual(replay["card"], success["card"])
+        self.assertEqual(self.retry(issue, failed["start"], "retry-a", code=5), replay)
+        self.assertEqual(len(self.of(failed["card"], "card.started")), 1)
+
+    def test_crash_before_retry_response_then_completed_preserves_started_result(self):
+        from . import flowfakes
+        flowfakes.install(str(Path(self.base, "fakebin")))
+        issue = self.ready(report="ATRAPA: gotowe")
+        self.control.write_text(json.dumps({"stage": "before-handoff", "action": "refuse"}))
+        failed = self.go(issue, "original", code=5)
+        self.control.write_text(json.dumps({"stage": "before-response", "action": "crash"}))
+        self.retry(issue, failed["start"], "retry-a", code=3)
+        self.restart()
+        self.assertTrue(wait_until(lambda: self.of(failed["card"], "card.closed"), timeout=60),
+                        self.events(failed["card"]))
+        replay = self.retry(issue, failed["start"], "retry-a")
+        self.assertEqual(replay["start"]["state"], "started")
+        self.assertTrue(replay["started"])
+        self.assertIsNone(replay["startError"])
+        self.assertEqual(replay["currentStart"]["state"], "completed")
+        self.assertEqual(self.retry(issue, failed["start"], "retry-a"), replay)
+        self.assertEqual(len(self.of(failed["card"], "card.started")), 1)
+
     def test_successful_replay_after_completed_and_restart_does_not_create_order(self):
         from . import flowfakes
         flowfakes.install(str(Path(self.base, "fakebin")))

@@ -16,11 +16,17 @@ from tide_daemon import issue_acceptance
 def trigger(stage):
     if not control.exists():
         return
-    value = json.loads(control.read_text())
-    if value["stage"] != stage:
+    configured = json.loads(control.read_text())
+    values = configured if isinstance(configured, list) else [configured]
+    value = next((v for v in values if v["stage"] == stage), None)
+    if value is None:
         return
     if not value.get("persistent"):
-        control.unlink()
+        values.remove(value)
+        if values:
+            control.write_text(json.dumps(values))
+        else:
+            control.unlink()
     if value["action"] == "crash":
         os._exit(91)
     if value["action"] == "refuse":
@@ -53,6 +59,8 @@ original_save = issue_acceptance._save
 
 
 def save(store, path, value):
+    if path.startswith(".git/tide-issue-start-results/") and "response" in value:
+        trigger("before-response")
     original_save(store, path, value)
     if path.startswith(".git/tide-issue-starts/") and value.get("state") == "prepared":
         trigger("after-prepared")
