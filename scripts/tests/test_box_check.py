@@ -1,10 +1,12 @@
 """PT-191: cała czerwona lista z atrapami; żadnych prób dostępu do usług i plików hosta."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 FAKE = r'''#!/usr/bin/python3
@@ -122,4 +124,35 @@ class RedListTest(unittest.TestCase):
     def test_make_target_uses_run(self):
         text = (ROOT / "mk/box.mk").read_text()
         self.assertIn("box-check:", text)
-        self.assertIn('daemon/tide.py box run "$(BOX)" -- bash scripts/box/check.sh', text)
+        self.assertIn('scripts/box/check-project.py "$(BOX)"', text)
+
+
+class ProjectCheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("box_check_project", ROOT / "scripts/box/check-project.py")
+        cls.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.helper)
+
+    def test_project_repo_selected_and_script_delivered_as_one_argument(self):
+        with patch.object(self.helper, "project_repo", return_value="/projects/legalapp") as repo, \
+                patch.object(self.helper.cli, "main", return_value=3) as run:
+            code = self.helper.main(["legalapp", "--", "--host-ip", "10.0.0.1", "--interface", "eth 0"])
+        self.assertEqual(code, 3)
+        repo.assert_called_once_with("legalapp")
+        run.assert_called_once_with(["run", "legalapp", "--worktree", "/projects/legalapp", "--",
+                                     "bash", "-c", (ROOT / "scripts/box/check.sh").read_text(),
+                                     "tide-box-check", "--host-ip", "10.0.0.1", "--interface", "eth 0"])
+
+    def test_explicit_worktree_is_forwarded_for_runner_validation(self):
+        with patch.object(self.helper, "project_repo") as repo, patch.object(self.helper.cli, "main", return_value=0) as run:
+            self.assertEqual(self.helper.main(["legalapp", "--worktree", "/projects/legalapp-worktrees/probe"]), 0)
+        repo.assert_not_called()
+        self.assertEqual(run.call_args.args[0][:5],
+                         ["run", "legalapp", "--worktree", "/projects/legalapp-worktrees/probe", "--"])
+
+    def test_missing_board_project_fails_before_run(self):
+        with patch.object(self.helper, "project_repo", side_effect=self.helper.BuildError("brak projektu")), \
+                patch.object(self.helper.cli, "main") as run, patch("sys.stderr"):
+            self.assertEqual(self.helper.main(["missing"]), 1)
+        run.assert_not_called()
