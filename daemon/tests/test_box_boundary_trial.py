@@ -19,6 +19,40 @@ spec.loader.exec_module(trial)
 
 
 class PrepareTest(unittest.TestCase):
+    def test_deployed_plan_writer_without_guard_blocks_the_shared_repository_trial(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(trial, "failures", []), \
+                redirect_stdout(io.StringIO()):
+            path = Path(tmp) / "gitops.py"
+            path.write_text('def commit_plan():\n    work_git.run("commit", "-m", "plan")\n')
+            self.assertFalse(trial.deployed_plan_guard_ready(path))
+            self.assertEqual(trial.failures, ["host-plan-guard"])
+
+    def test_guard_elsewhere_does_not_cover_the_plan_commit(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(trial, "failures", []), \
+                redirect_stdout(io.StringIO()):
+            path = Path(tmp) / "gitops.py"
+            path.write_text('def commit_plan():\n'
+                            '    with refguard.host_operation(repo, ("update-ref", branch)):\n        pass\n'
+                            '    work_git.run("commit", "-m", "plan")\n')
+            self.assertFalse(trial.deployed_plan_guard_ready(path))
+
+    def test_card_branch_plan_writer_has_the_required_guard(self):
+        with mock.patch.object(trial, "failures", []), redirect_stdout(io.StringIO()):
+            self.assertTrue(trial.deployed_plan_guard_ready(ROOT / "daemon/tide_daemon/cardflow/gitops.py"))
+            self.assertEqual(trial.failures, [])
+
+    def test_main_never_starts_the_box_proof_without_a_deployed_guard(self):
+        replies = [subprocess.CompletedProcess([], 0, "", ""),
+                   subprocess.CompletedProcess([], 0, '{"usable":true}', "")]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(trial, "ROOT", Path(tmp)), \
+                mock.patch.object(trial.Path, "home", return_value=Path(tmp)), \
+                mock.patch.object(trial, "OUT"), mock.patch.object(trial, "failures", []), \
+                mock.patch.object(trial, "run", side_effect=replies), \
+                mock.patch.object(trial, "cli_proof") as proof, redirect_stdout(io.StringIO()):
+            self.assertEqual(trial.main([]), 1)
+            proof.assert_not_called()
+            self.assertEqual(trial.failures, ["host-plan-guard"])
+
     def prepare(self, *, exists=False, profile=False, status_code=0, approve_code=0, status_error="",
                 state=None, retry_failed=False):
         with tempfile.TemporaryDirectory() as tmp:

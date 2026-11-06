@@ -417,3 +417,21 @@ Potwierdzenie poprawki na rzeczywistym Incusie wymaga kolejnej rundy:
 Dodatkowa lokalna kontrola przebiegu ujawniła też przedwczesny odczyt rezerwacji w teście zatrzymania po
 restarcie: `step.finished` poprzedza zwolnienie pudełka. Test czeka teraz na zakończenie zwalniania
 z ograniczonym czasem; nie zmienia to kodu produkcyjnego zatrzymywania.
+
+Piąta runda (`pt191-20261106-111049`) potwierdziła środowisko CLI (6,344 s): proxy, pełne
+`NO_PROXY=localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal,10.173.184.1`, port 49100,
+brak tokenów agentów, tryb `in/env` 0600 oraz brak klucza proxy i portu w argv hosta.
+W zapisanym `env.stdout.log` klucz tymczasowego proxy zastąpiono `<revoked>`; jego brak w argv został
+sprawdzony przed redakcją. Opakowanie kroku z runnera zadziałało na rzeczywistym pudełku.
+
+Czerwona lista: 0 „przeszło”, 3 „nie dotyczy” (brak klienta Docker, brak sprawdzonego wolnego IP,
+brak próby rzeczywistego Bash agenta). Pełna tabela jest w `box-check.stdout.log`. Całe box-check
+pozostaje **niezaliczone**: strażnik refów cofnął równoległe zapisy planów innych kart. Przyczyna,
+reflogi i OID-y: [incydent strażnika](agents/pt-191/refguard-incident.md). Zainstalowany zapis planu nie ma
+osłony z PT-170, obecnej w tej gałęzi. Skrypt blokuje teraz próby CLI na współdzielonym repozytorium
+przy tej niezgodności. Kontrola pliku nie potwierdza wersji kodu już załadowanego w procesie.
+
+Pełne testy: 4168 testów, 230 modułów, 4 pominięte, 456,58 s; jeden błąd testu pustej kolejki lokalnej.
+Kolumna review pojawia się przed końcem kroku domknięcia; test czeka teraz na `card.closed` obu kart
+przed zatrzymaniem monitora i sprawdzeniem kolejki. Pełne `make test` po poprawce wymaga osobnego outside,
+które nie uruchamia CLI ani strażnika refów na repozytorium użytkownika.

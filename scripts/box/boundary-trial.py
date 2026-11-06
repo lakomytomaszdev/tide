@@ -8,8 +8,10 @@ Brak uwierzytelnienia sudo zapisuje jako błąd i podaje polecenie administrator
 --retry-failed-build ponawia tylko nieudaną budowę zgodną z bieżącym profilem, bez kroków.
 Przy działającym proxy innego procesu CLI odmawia zgodnie z kontraktem ensure_proxy.
 Logi pozostają w docs/box-prototype/pt191-<czas>/; nie zbieramy argv obcych procesów do pliku.
+Próba współdzielonego repozytorium wymaga osłony zapisów planu także w zainstalowanym daemonie.
 """
 import argparse
+import ast
 import datetime
 import ipaddress
 import json
@@ -43,6 +45,37 @@ def check(name, ok, detail):
     print(f"WYNIK {name}: {'ok' if ok else 'fail'} — {detail}", flush=True)
     if not ok:
         failures.append(name)
+
+
+def deployed_plan_guard_ready(path=None):
+    """Odmowa dla potwierdzonej kolizji wersji PT-170; nie dowodzi wersji już załadowanego procesu.
+
+    Zainstalowany kod bez osłony commit_plan cofał legalne commity innych kart podczas czerwonej listy.
+    Nie wystarcza sama obecność nazwy host_operation gdzie indziej w pliku.
+    """
+    path = path or Path.home() / ".local/share/tide/daemon/tide_daemon/cardflow/gitops.py"
+    ready = False
+    try:
+        tree = ast.parse(Path(path).read_text())
+        for method in ast.walk(tree):
+            if not isinstance(method, ast.FunctionDef) or method.name != "commit_plan":
+                continue
+            for block in ast.walk(method):
+                if not isinstance(block, ast.With):
+                    continue
+                guarded = any(isinstance(item.context_expr, ast.Call)
+                              and isinstance(item.context_expr.func, ast.Attribute)
+                              and item.context_expr.func.attr == "host_operation" for item in block.items)
+                commits = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                              and node.func.attr == "run" and node.args
+                              and isinstance(node.args[0], ast.Constant) and node.args[0].value == "commit"
+                              for statement in block.body for node in ast.walk(statement))
+                ready |= guarded and commits
+    except (OSError, SyntaxError, UnicodeError):
+        pass
+    check("host-plan-guard", ready,
+          f"{path}: wymagany commit_plan pod host_operation; przed próbą także działający daemon musi używać tej wersji")
+    return ready
 
 
 def enable_snapshots():
@@ -183,7 +216,7 @@ def main(argv=None):
     except ValueError:
         usable = False
     check("preflight", bool(usable), "wymagane istniejące pudełko plasma-tide z zatwierdzonym profilem")
-    if usable:
+    if usable and deployed_plan_guard_ready():
         try:
             cli_proof()
             settings = bsettings.load()

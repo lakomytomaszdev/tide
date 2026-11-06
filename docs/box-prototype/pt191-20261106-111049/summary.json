@@ -1,0 +1,7 @@
+{
+  "failures": [
+    "make-test",
+    "box-check"
+  ],
+  "firstAgentStep": "pending-approved-test-card"
+}

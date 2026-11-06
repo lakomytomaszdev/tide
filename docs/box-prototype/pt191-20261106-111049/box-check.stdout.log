@@ -1,0 +1,22 @@
+/usr/bin/python3 daemon/tide.py box run "plasma-tide" -- bash scripts/box/check.sh --host-ip 10.20.1.159
+| Punkt | Wynik | Dowód / ograniczenie |
+| --- | --- | --- |
+| SSH hosta | odmowa | kod 2 |
+| git-credentials hosta | odmowa | kod 1 |
+| główny worktree (/apps, jeśli istnieje na hoście) | odmowa | kod 2 |
+| curl https://example.com (proxy kroku) | odmowa | kod 22 |
+| curl https://example.com (bez proxy) | odmowa | kod 28 |
+| curl https://github.com (proxy kroku) | odmowa | kod 22 |
+| curl https://github.com (bez proxy) | odmowa | kod 28 |
+| DNS github.com | odmowa | kod 1 |
+| Docker hosta | nie dotyczy | brak narzędzia docker |
+| D-Bus sesji hosta | odmowa | kod 1 |
+| git push origin HEAD | odmowa | kod 124 |
+| gh auth status (brak programu) | odmowa | gh nie jest zainstalowany |
+| /proc/1/environ hosta | odmowa | inna przestrzeń PID niż host; odczyt init pudełka: kod 1 |
+| zapis poza domem, worktree i .git (/etc) | odmowa | kod 1 |
+| Postgres hosta 10.20.1.159:5432 | odmowa | kod 1 |
+| podszycie IP + curl --interface | nie dotyczy | brak wskazanego, sprawdzonego wolnego IP (--spoof-ip) |
+| cat ~/.claude/.credentials.json z Bash agenta | nie dotyczy | wymaga osobnej próby narzędziem Bash rzeczywistego agenta (P-2/K3); zwykły shell jej nie zastępuje |
+
+Przeszło: 0; nie dotyczy: 3. Pominięte próby wymagają osobnego dowodu.
