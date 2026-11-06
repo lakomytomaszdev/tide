@@ -56,8 +56,8 @@ decyzji) i `test_cardflow_dbus.py` (odtworzenie pliku dziennika widoczne przed o
 w migawce). Oba przeszły po 3 próby pojedyncze, lecz pod obciążeniem 14 procesów miały
 odpowiednio 1/5 i 2/4 porażek. Uzasadnienia są przy wpisach `SERIAL_MODULES`; testy nadal
 się wykonują i ich błędy trafiają do wspólnego raportu. `FlowInProcess` dodatkowo kończy
-wątki i dostarcza ich callbacki przed restartem lub usunięciem fixture, aby praca starego
-silnika nie przechodziła do następnego testu.
+wątki i opróżnia kolejkę callbacków Qt przed restartem lub usunięciem fixture. Wyniki zamkniętego
+monitora są odrzucane, aby praca starego silnika nie przechodziła do następnego testu.
 
 Logi trafiają do unikalnego `build/test-results/run-*/`: plik `.log` i `.json` na moduł oraz
 `summary.json` z czasem, kodami wyjścia, licznikami i identyfikatorami wykonanych testów.

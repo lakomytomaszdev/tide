@@ -138,6 +138,8 @@ class PlanFlowTest(FlowInProcess):
     def test_restart_between_reservation_and_approval_reuses_ids(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        # Symulacja awarii woła silnik bezpośrednio; zegar nie może równolegle odtwarzać zatwierdzenia.
+        self.flow.stop()
         journal = self.flow.engine.journal
         original = journal.append
         interrupted = False

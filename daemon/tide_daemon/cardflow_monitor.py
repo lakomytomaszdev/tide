@@ -44,14 +44,18 @@ class CardFlowMonitor(QObject):
         self._timer.start()
 
     def stop(self) -> None:
+        if self._stopped:
+            return
         self._timer.stop()
         self._stopped = True
         if self._hosting_pool is not None:
             self._hosting_pool.shutdown(wait=False, cancel_futures=True)
             self._hosting_pool = None
         if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
+            # Bieżąca operacja zostawia trwały zamiar/wynik; niezależne jednostki nie są zatrzymywane.
+            self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+        self.commit()  # callback Qt może już nie dotrzeć po app.exec()
 
     # --- odczyt dla BoardMonitor -----------------------------------------------------------------
 
@@ -321,6 +325,8 @@ class CardFlowMonitor(QObject):
         return True
 
     def _deliver(self, then, future) -> None:
+        if self._stopped:
+            return
         # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
         if self.commit() and self.board is not None:
             self.board.publish()
