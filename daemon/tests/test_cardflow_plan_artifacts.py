@@ -91,6 +91,45 @@ class ArtifactsTest(unittest.TestCase):
                 '[zewnętrzny]: //example.org/followups/draft.md\n')
         self.assertEqual(planartifacts.relocate_ticket_links(text, '../../plans/followups'), text)
 
+    def test_pending_commit_is_not_a_commit_of_the_approved_revision(self):
+        from .test_cardflow_plan_extra import PLAN
+        plan_file = 'docs/agents/plans/k-1.md'
+        old = PLAN.replace('Wstęp planu.', 'Stary wstęp.').replace(
+            'followups/replay-code.md', 'followups/nested/draft.md')
+        self.put('work/' + plan_file, old)
+        self.put('plan.md', old.replace('Stary wstęp.', 'Nowy wstęp.') +
+                 '\n[Nowy zakres](followups/new.md)\n')
+        self.put('followups/new.md', '# Nowy zakres\n')
+        row = dict(id='PT-1', title='Szkic', executor='Sonnet', reviewer='Opus', blockers=[], body='- [ ] Działa.')
+        events = [
+            dict(type='plan.proposed', seq=1),
+            dict(type='plan.approved', seq=2, planFile=plan_file, rows=[row]),
+            dict(type='plan.proposed', seq=3, planPath=str(self.root / 'plan.md'), artifactPath=str(self.root)),
+            dict(type='plan.revision-ready', seq=4, pending=True),
+            dict(type='result', seq=5, action='plan-commit', key='2:4', ok=True),
+        ]
+        engine = FlowEngine.__new__(FlowEngine)
+
+        def body():
+            return engine._plan_files('K-1', fold(events), set(), worktree=str(self.root / 'work'))[plan_file].decode()
+
+        self.assertTrue(planartifacts.keep_committed_plan_text(fold(events)))
+        self.assertIn('Stary wstęp.', body())
+        self.assertNotIn('[Nowy zakres]', body())
+        events.append(dict(type='plan.revision-approved', seq=6, plan={}))
+        self.assertFalse(planartifacts.keep_committed_plan_text(fold(events)))
+        self.assertIn('Nowy wstęp.', body())
+        self.assertIn('[Nowy zakres](followups/new.md)', body())
+        self.assertNotIn('Stary wstęp.', body())
+        events.append(dict(type='result', seq=7, action='plan-commit', key='2:6', ok=False))
+        self.assertFalse(planartifacts.keep_committed_plan_text(fold(events)))
+        self.assertIn('Nowy wstęp.', body())
+        self.put('work/' + plan_file, body() + '\nRęczny dopisek.\n')
+        events.append(dict(type='result', seq=8, action='plan-commit', key='2:6', ok=True))
+        self.assertTrue(planartifacts.keep_committed_plan_text(fold(events)))
+        self.assertIn('Nowy wstęp.', body())
+        self.assertIn('Ręczny dopisek.', body())
+
     def test_symlinks_are_rejected_instead_of_skipped(self):
         for name in ('followups/nested/draft.md', 'tickets/1.md', 'plan.md'):
             with self.subTest(name=name):
@@ -180,6 +219,16 @@ class ArtifactsFlowTest(FlowInProcess):
         proposal = fold(engine.journal.read(card)).plan_proposed
         self.assertNotEqual(proposal['artifactPath'], str(out))
         engine.journal.append(card, 'plan.reviewed', verdict='APPROVE')
+        # Monitor zapisuje stan starego zatwierdzonego planu także podczas pending.
+        with mock.patch.object(engine, '_launch'):
+            engine._plan_next(card, fold(engine.journal.read(card)))
+        pending_commit = self.results(card, 'plan-commit')[-1]
+        self.assertTrue(pending_commit['ok'])
+        self.assertGreater(pending_commit['seq'], proposal['seq'])
+        pending_body = git(self.repo, 'show', f"{info['cardBranch']}:{plan_file}")
+        self.assertIn('Stary tekst planu.', pending_body)
+        self.assertNotIn('Nowy wstęp.', pending_body)
+        self.assertNotIn('[szkic](followups/new.md)', pending_body)
         self.assertTrue(engine.approve_plan(card)['ok'])
         (out / 'followups/new.md').write_text('zmiana po zamrożeniu')
 

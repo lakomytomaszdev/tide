@@ -13,13 +13,16 @@ LINK = re.compile(r'\]\(\s*(<[^>]*>|[^\s)]+)|^\s*\[[^\]]+\]:\s*(<[^>]*>|\S+)', r
 def keep_committed_plan_text(state):
     """Nowa zatwierdzona propozycja dostarcza tekst do pierwszego udanego commita.
 
-    Późniejsze zmiany stanu zachowują też ręczne dopiski w worktree. Numery zdarzeń
-    odróżniają wynik zapisu poprzedniej wersji od zapisu bieżącej propozycji.
+    Późniejsze zmiany stanu zachowują też ręczne dopiski w worktree. Liczy się sukces
+    po zatwierdzeniu wersji, bo podczas pending nadal zapisujemy stary plan.
     """
     proposed = state.plan_proposed or {}
+    approved = state.plan_approved or {}
+    boundary = max(int(proposed.get('seq') or 0), int(approved.get('seq') or 0),
+                   int(approved.get('textApprovedSeq') or 0))
     return bool(state.plan_revision) or any(
         action == 'plan-commit' and result.get('ok') and
-        int(result.get('seq') or 0) > int(proposed.get('seq') or 0)
+        int(result.get('seq') or 0) > boundary
         for (action, _), result in state.results.items())
 
 

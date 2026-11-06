@@ -437,7 +437,8 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "plan.revision-ready":
             st.plan_revision = e
         elif kind == "plan.revision-approved":
-            st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            st.plan_approved = {**st.plan_approved, **e["plan"],
+                                "textApprovedSeq": e.get("seq", 0)} if st.plan_approved else None
             st.plan_revision = None
             st.plan_finished = False
             st.closed = None
