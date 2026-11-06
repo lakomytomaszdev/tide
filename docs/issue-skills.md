@@ -102,6 +102,11 @@ pass tylko przy siedmiu pass; utrata warunku, odrzuconego wariantu lub fikcyjny 
 oznacza fail. Nagłówki ani asercje argumentów procesu nie zastępują tej oceny.
 Nie deklaruj spełnienia kryterium syntezy bez obu rzeczywistych raportów i rubryk.
 
+Zapisana [ocena rzeczywistej syntezy Codexa dla PT-224](agents/pt-224/evidence/codex/evaluation.md)
+zawiera raport, transkrypt, metadane, rubrykę 7/7 i osobne dowody odczytu załączników
+przez CLI. Ocena Claude w tym tickecie pozostaje do uzupełnienia; dowód jednego
+programu nie zamyka kryterium obu syntez.
+
 Odrębny przebieg po świadomej rezygnacji użytkownika może wykonać waive na zachowanej
 sesji i tym samym S-N, z dosłowną odpowiedzią „rezygnuję z drugiego obrazu”. Pierwszy
 przebieg nie otrzymuje tej decyzji. Deterministyczny test sprawdza tę sekwencję oddzielnie.
