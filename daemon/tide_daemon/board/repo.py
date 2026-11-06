@@ -18,6 +18,7 @@ Zasady:
 """
 import os
 import re
+import threading
 import time
 
 from ..worktrees.git import Git
@@ -41,6 +42,9 @@ class BoardRepo:
         self.proc_root = proc_root
         self.pending: list[tuple[str, list[str]]] = []   # (komunikat, ścieżki) commitów, które się nie udały
         self.last_error = ""
+        # 06.11 (PT-246): wątek przepływu kart i wątek Qt opróżniały tę samą kolejkę naraz — dwa commity jednego
+        # wpisu i `IndexError: pop from empty list` w MergeCardToMain. Zapisy repozytorium Tablicy idą po kolei.
+        self.lock = threading.RLock()
 
     @property
     def git_dir(self) -> str:
@@ -121,12 +125,17 @@ class BoardRepo:
     def commit(self, message: str, paths: list[str]) -> str:
         """Commit tylko podanych ścieżek; najpierw zaległe. Pusty napis albo opis błędu (wtedy
         commit czeka w `pending`)."""
-        self.pending.append((message, list(paths)))
-        return self.flush()
+        with self.lock:
+            self.pending.append((message, list(paths)))
+            return self.flush()
 
     def flush(self) -> str:
         """Próbuje zaległych commitów po kolei. Przejściowy błąd (zajęty indeks, zawieszony git)
         zatrzymuje kolejkę; trwały — usuwa wpis (jego zmiany zbierze `sync()`)."""
+        with self.lock:
+            return self._flush()
+
+    def _flush(self) -> str:
         while self.pending:
             message, paths = self.pending[0]
             error, transient = self._commit_now(message, paths)
@@ -142,6 +151,10 @@ class BoardRepo:
 
     def sync(self, message: str) -> bool:
         """Zaległe commity, a potem wszystko inne (zmiany z zewnątrz) jednym commitem."""
+        with self.lock:
+            return self._sync(message)
+
+    def _sync(self, message: str) -> bool:
         if not self.initialized() or self.busy():
             return False
         before = len(self.pending)

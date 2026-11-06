@@ -13,13 +13,18 @@ import re
 import shlex
 import subprocess
 
-FULL_TEST = re.compile(r"^\s*(?:[A-Z_]+=\S+\s+)*make\s+(?:test|test-changed)(?:\s+[A-Z_]+=\S+)*\s*$")
-LOGS = re.compile(r"logi: (\S+)")
+VALUE = r"[A-Za-z0-9_./:@+-]+"
+FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: [A-Z_]+={VALUE})*$")
+PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
+# Nagłówek przebiegu uruchamiacza (pierwsza taka linia dziennika); dowolne późniejsze „logi:” z wyjścia testu
+# nie mogą wskazać cudzego raportu (review Astry 06.11).
+HEADER = re.compile(r"^Moduły: (\d+), JOBS=\d+, logi: (\S+)$", re.M)
 MODULE = re.compile(r"^[\w.-]+(?:/[\w.-]+)*\.py$")
 
 
 def is_full_test(command: str) -> bool:
-    return bool(FULL_TEST.match(command or "")) and "TIDE_FULL_RUN=1" not in command
+    command = (command or "").strip()
+    return bool(FULL_TEST.match(command)) and "TIDE_FULL_RUN=1" not in command
 
 
 def _git(worktree: str, *args: str) -> str | None:
@@ -40,25 +45,33 @@ def head(worktree: str) -> str:
 
 
 def failed_modules(log: str) -> list[str]:
-    """Moduły z returncode różnym od 0 w raporcie przebiegu z dziennika polecenia; pusta lista = nie podmieniaj."""
+    """Moduły z returncode różnym od 0 w raporcie przebiegu wskazanym nagłówkiem dziennika polecenia. Pusta lista
+    (brak nagłówka lub raportu, raport niekompletny albo o innym schemacie, brak porażek) = nie podmieniaj."""
     try:
         with open(log, encoding="utf-8", errors="replace") as fh:
-            found = LOGS.findall(fh.read())
-        with open(os.path.join(found[-1], "summary.json"), encoding="utf-8") as fh:
+            header = HEADER.search(fh.read())
+        with open(os.path.join(header.group(2), "summary.json"), encoding="utf-8") as fh:
             results = json.load(fh)["results"]
-    except (OSError, IndexError, ValueError, KeyError, TypeError):
+    except (OSError, AttributeError, ValueError, KeyError, TypeError):
         return []
-    modules = [r.get("module") or "" for r in results if r.get("returncode")]
+    if not isinstance(results, list) or len(results) != int(header.group(1)) or not all(
+            isinstance(r, dict) and isinstance(r.get("module"), str) and isinstance(r.get("returncode"), int)
+            for r in results):
+        return []
+    modules = [r["module"] for r in results if r["returncode"]]
     return modules if modules and all(MODULE.match(m) and ".." not in m for m in modules) else []
 
 
-def rerun_command(modules: list[str], sha: str, previous: str) -> str:
+def rerun_command(modules: list[str], sha: str, previous: str, command: str = "") -> str:
+    """Każdy moduł z własnym `XDG_STATE_HOME`, jak w `tools/test_runner.py` (test bez izolacji nadpisał kiedyś stan
+    działającej Tablicy), i ze zmiennymi środowiska z oryginalnego polecenia."""
+    prefix = PREFIX.match(command.strip()).group(1) if PREFIX.match(command.strip()) else ""
     lines = [f"echo 'Tide: ten sam HEAD {sha[:12]} i czyste drzewo co w przebiegu {previous} — "
              f"ponawiam tylko padnięte moduły ({len(modules)}); TIDE_FULL_RUN=1 wymusza pełny przebieg'", "rc=0"]
     for module in modules:
         folder, name = os.path.split(module)
-        lines.append(f"/usr/bin/python3 -m unittest discover -t . -s {shlex.quote(folder)} -p {shlex.quote(name)}"
-                     " || rc=1")
+        lines.append(f'XDG_STATE_HOME="$(mktemp -d)" {prefix}/usr/bin/python3 -m unittest discover -t . '
+                     f"-s {shlex.quote(folder)} -p {shlex.quote(name)} || rc=1")
     return "\n".join(lines + ["exit $rc"])
 
 
@@ -75,10 +88,12 @@ def substitute(events: list[dict], worktree: str, command: str) -> tuple[str, st
                 or not is_full_test(event.get("command") or ""):
             continue
         done = finished.get(event.get("step"))
-        if event.get("head") != sha or not done or not done.get("exit"):
+        # Ten sam cel, baza i parametry doboru: inny zakres (np. `make test` po `test-changed`) to pełny przebieg.
+        if event.get("head") != sha or not done or not done.get("exit") or \
+                (event.get("command") or "").strip() != command.strip():
             return command, sha, ""
         modules = failed_modules(event.get("log") or "")
         if not modules:
             return command, sha, ""
-        return rerun_command(modules, sha, event.get("step") or ""), sha, event.get("step") or ""
+        return rerun_command(modules, sha, event.get("step") or "", command), sha, event.get("step") or ""
     return command, sha, ""

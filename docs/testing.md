@@ -195,7 +195,7 @@ albo obciążenia), nie powtarza całego `make test-changed`/`make test`. Urucha
 „Wszystkie nieudane testy” (albo z `summary.json`, `returncode` różny od 0), każdy osobno:
 
 ```sh
-/usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>
+XDG_STATE_HOME="$(mktemp -d)" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>
 ```
 
 W notce zapisuje pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, raport) i ponowienie (ten sam HEAD,

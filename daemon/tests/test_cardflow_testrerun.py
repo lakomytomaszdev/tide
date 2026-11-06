@@ -67,7 +67,8 @@ class SubstituteTest(unittest.TestCase):
         self.write("pkg/tests/test_bad.py", "import unittest\nclass T(unittest.TestCase):\n"
                                              "    def test_no(self):\n        self.fail()\n")
         subprocess.run(self.git + ["commit", "-qam", "bad"], check=True)
-        command, _, _ = testrerun.substitute(self.failed_run(), self.repo, "make test")
+        command, _, _ = testrerun.substitute(self.failed_run(), self.repo, "make test-changed BASE=abc")
+        self.assertIn("unittest", command)
         run = subprocess.run(["/bin/sh", "-c", command], cwd=self.repo, capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 1)
 
@@ -94,10 +95,45 @@ class SubstituteTest(unittest.TestCase):
         subprocess.run(self.git + ["commit", "-qam", "no runner"], check=True)
         self.assertEqual(testrerun.substitute(events, self.repo, "make test"), ("make test", "", ""))
 
+    def test_other_scope_or_parameters_run_in_full(self):
+        """Review Astry: po `test-changed BASE=A` także `make test` albo inna baza to pełny przebieg."""
+        events = self.failed_run()
+        for command in ("make test", "make test-changed BASE=def", "JOBS=2 make test-changed BASE=abc"):
+            self.assertEqual(testrerun.substitute(events, self.repo, command)[0], command, command)
+
+    def test_rerun_keeps_isolated_state_and_command_environment(self):
+        events = self.failed_run()
+        events[0]["command"] = "LC_ALL=C make test-changed BASE=abc"
+        command = testrerun.substitute(events, self.repo, "LC_ALL=C make test-changed BASE=abc")[0]
+        self.assertIn('XDG_STATE_HOME="$(mktemp -d)" LC_ALL=C /usr/bin/python3 -m unittest', command)
+
+    def test_report_comes_only_from_the_run_header_and_must_be_complete(self):
+        events = self.failed_run()
+        log = events[0]["log"]
+        other = os.path.join(self.root, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, "summary.json"), "w", encoding="utf-8") as fh:
+            json.dump({"results": [{"module": "pkg/tests/test_good.py", "returncode": 1}]}, fh)
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(f"wyjście testu: logi: {other}\n")
+        self.assertEqual(testrerun.failed_modules(log), ["pkg/tests/test_bad.py"])
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(f"Moduły: 3, JOBS=2, logi: {self.run_dir()}\n")
+        self.assertEqual(testrerun.failed_modules(log), [], "liczba modułów niezgodna z raportem")
+        with open(os.path.join(self.run_dir(), "summary.json"), "w", encoding="utf-8") as fh:
+            json.dump({"results": [None, {"module": "pkg/tests/test_bad.py", "returncode": 1}]}, fh)
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(f"Moduły: 2, JOBS=2, logi: {self.run_dir()}\n")
+        self.assertEqual(testrerun.failed_modules(log), [], "zły schemat raportu")
+
+    def run_dir(self):
+        return os.path.join(self.repo, "build", "test-results", "run-x")
+
     def test_full_test_recognition(self):
         for command in ("make test", "make test-changed BASE=abc", "JOBS=2 make test-changed BASE=abc JOBS=4"):
             self.assertTrue(testrerun.is_full_test(command), command)
-        for command in ("make test-daemon", "make test && rm -rf x", "bash run.sh", "make test-changed; ls"):
+        for command in ("make test-daemon", "make test && rm -rf x", "bash run.sh", "make test-changed; ls",
+                        "make test BASE=a;true", "make test BASE=$(id)", "make test\nid"):
             self.assertFalse(testrerun.is_full_test(command), command)
 
 
