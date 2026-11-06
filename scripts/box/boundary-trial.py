@@ -1,14 +1,15 @@
 #!/usr/bin/python3
 """PT-191: dowód CLI/Incusa i pełne testy, do jawnego uruchomienia poza piaskownicą kroku.
 
-Nie instaluje, nie buduje ani nie zatwierdza profili. Nie tworzy karty testowej.
+Domyślnie nie buduje ani nie zatwierdza profili. --prepare-missing odtwarza brakujące środowisko próby PT-192
+z profilem testowym tego ticketu; istniejące pudełko lub profil zachowuje. Nie tworzy karty testowej.
 Przy działającym proxy innego procesu CLI odmawia zgodnie z kontraktem ensure_proxy.
 Logi pozostają w docs/box-prototype/pt191-<czas>/; nie zbieramy argv obcych procesów do pliku.
 """
+import argparse
 import datetime
 import ipaddress
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -17,10 +18,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "daemon"))
-from tide_daemon.box import netenv, settings as bsettings
+from tide_daemon.box import netenv, profile as bp, settings as bsettings
 
-OUT = ROOT / "docs" / "box-prototype" / ("pt191-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-OUT.mkdir(parents=True)
+OUT = None
 failures = []
 
 
@@ -39,6 +39,27 @@ def check(name, ok, detail):
     print(f"WYNIK {name}: {'ok' if ok else 'fail'} — {detail}", flush=True)
     if not ok:
         failures.append(name)
+
+
+def prepare_missing():
+    result = run("prepare-status", [sys.executable, "daemon/tide.py", "box", "status", "plasma-tide", "--json"])
+    if result.returncode:
+        return
+    state = json.loads(result.stdout)
+    if not isinstance(state, dict) or not isinstance(state.get("exists"), bool) or state.get("error"):
+        raise ValueError("nie potwierdzono stanu pudełka — bez zmiany profilu i budowy")
+    if state.get("exists"):
+        print("Przygotowanie: istniejące pudełko zachowane, bez przebudowy.", flush=True)
+        return
+    if not Path(bp.project_path("plasma-tide")).exists():
+        profile = ROOT / "docs/agents/pt-191/plasma-tide-proof.box.yaml"
+        approved = run("approve-proof-profile", [sys.executable, "daemon/tide.py", "box", "approve", "plasma-tide",
+                                                 "--file", str(profile)])
+        if approved.returncode:
+            return
+    else:
+        print("Przygotowanie: istniejący profil zachowany, budowa z tego profilu.", flush=True)
+    run("build-missing-box", [sys.executable, "daemon/tide.py", "box", "build", "plasma-tide"])
 
 
 def free_address(settings):
@@ -81,7 +102,8 @@ def cli_proof():
         (OUT / "ps-args.log").write_text("\n".join(selected) + "\n")
         stdout, _ = proc.communicate()
     (OUT / "env.stdout.log").write_text(stdout)
-    check("cli-env", proc.returncode == 0, f"kod {proc.returncode}; {time.monotonic() - started:.3f} s")
+    check("cli-env", proc.returncode == 0 and bool(folder),
+          f"kod {proc.returncode}; katalog kroku: {'tak' if folder else 'brak'}; {time.monotonic() - started:.3f} s")
     if proc.returncode or not folder:
         return
     values = json.loads(stdout.strip())
@@ -100,39 +122,58 @@ def cli_proof():
     check("env-mode", mode == 0o600, f"in/env {mode:o}")
 
 
-print(f"PT-191: {OUT}", flush=True)
-run("make-test", ["make", "test"])
-status = run("box-status", [sys.executable, "daemon/tide.py", "box", "status", "plasma-tide", "--json"])
-try:
-    usable = status.returncode == 0 and json.loads(status.stdout).get("usable")
-except ValueError:
-    usable = False
-check("preflight", bool(usable), "wymagane istniejące pudełko plasma-tide z zatwierdzonym profilem")
-if usable:
+def main(argv=None):
+    global OUT, failures
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepare-missing", action="store_true",
+                        help="zbuduj brakujące pudełko; nie zastępuj istniejącego profilu")
+    options = parser.parse_args(argv)
+    OUT = ROOT / "docs" / "box-prototype" / ("pt191-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    OUT.mkdir(parents=True)
+    failures = []
+    print(f"PT-191: {OUT}", flush=True)
+    if options.prepare_missing:
+        try:
+            prepare_missing()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            failures.append("prepare-missing")
+            print(f"BŁĄD przygotowania: {exc}", flush=True)
+    run("make-test", ["make", "test"])
+    status = run("box-status", [sys.executable, "daemon/tide.py", "box", "status", "plasma-tide", "--json"])
     try:
-        cli_proof()
-        settings = bsettings.load()
-        spoof = free_address(settings)
-        args = ["--spoof-ip", spoof] if spoof else []
-        if spoof:
-            cidr = subprocess.run(["incus", "network", "get", settings.bridge, "ipv4.address"],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-            args += ["--prefix", str(ipaddress.ip_interface(cidr).network.prefixlen)]
-        host_route = subprocess.run(["ip", "-j", "route", "get", "1.1.1.1"], capture_output=True, text=True)
-        if host_route.returncode == 0:
-            src = json.loads(host_route.stdout)[0].get("prefsrc")
-            if src:
-                args += ["--host-ip", str(ipaddress.ip_address(src))]
-        red = run("box-check", ["make", "box-check", "BOX=plasma-tide", "CHECK_ARGS=" + " ".join(args)])
-        # Źródło z nieprzydzielonego IP nie ma polityki, więc gdy pakiet dotarł, proxy zapisuje odmowę na stderr.
-        if spoof:
-            check("spoof-proxy-log", not re.search(re.escape(spoof) + r": brak polityki", red.stderr),
-                  "brak wpisu proxy z próbnego adresu; osobno sprawdzić wiersz próby (może być nie dotyczy)")
-        print(red.stdout, flush=True)
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-        failures.append("proof-exception")
-        print(f"BŁĄD próby: {exc}", flush=True)
-(OUT / "summary.json").write_text(json.dumps({"failures": failures, "firstAgentStep": "pending-approved-test-card"},
-                                             ensure_ascii=False, indent=2) + "\n")
-print(f"WYNIK końcowy: {'fail' if failures else 'ok'}; logi: {OUT}; pierwszy krok agenta: osobna karta", flush=True)
-sys.exit(1 if failures else 0)
+        usable = status.returncode == 0 and json.loads(status.stdout).get("usable")
+    except ValueError:
+        usable = False
+    check("preflight", bool(usable), "wymagane istniejące pudełko plasma-tide z zatwierdzonym profilem")
+    if usable:
+        try:
+            cli_proof()
+            settings = bsettings.load()
+            spoof = free_address(settings)
+            args = ["--spoof-ip", spoof] if spoof else []
+            if spoof:
+                cidr = subprocess.run(["incus", "network", "get", settings.bridge, "ipv4.address"],
+                                      capture_output=True, text=True, check=True).stdout.strip()
+                args += ["--prefix", str(ipaddress.ip_interface(cidr).network.prefixlen)]
+            host_route = subprocess.run(["ip", "-j", "route", "get", "1.1.1.1"], capture_output=True, text=True)
+            if host_route.returncode == 0:
+                src = json.loads(host_route.stdout)[0].get("prefsrc")
+                if src:
+                    args += ["--host-ip", str(ipaddress.ip_address(src))]
+            red = run("box-check", ["make", "box-check", "BOX=plasma-tide", "CHECK_ARGS=" + " ".join(args)])
+            # Źródło z nieprzydzielonego IP nie ma polityki, więc gdy pakiet dotarł, proxy zapisuje odmowę na stderr.
+            if spoof:
+                check("spoof-proxy-log", not re.search(re.escape(spoof) + r": brak polityki", red.stderr),
+                      "brak wpisu proxy z próbnego adresu; osobno sprawdzić wiersz próby (może być nie dotyczy)")
+            print(red.stdout, flush=True)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            failures.append("proof-exception")
+            print(f"BŁĄD próby: {exc}", flush=True)
+    (OUT / "summary.json").write_text(json.dumps({"failures": failures, "firstAgentStep": "pending-approved-test-card"},
+                                                 ensure_ascii=False, indent=2) + "\n")
+    print(f"WYNIK końcowy: {'fail' if failures else 'ok'}; logi: {OUT}; pierwszy krok agenta: osobna karta", flush=True)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

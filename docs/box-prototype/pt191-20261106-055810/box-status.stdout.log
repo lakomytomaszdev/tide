@@ -1,0 +1,17 @@
+{
+  "slug": "plasma-tide",
+  "box": "plasma-tide",
+  "state": "brak",
+  "exists": false,
+  "running": false,
+  "journalState": "brak",
+  "warning": false,
+  "nicFiltering": false,
+  "nic": {},
+  "recipeHash": "",
+  "profileHash": "",
+  "diff": [],
+  "steps": [],
+  "usable": false,
+  "error": ""
+}

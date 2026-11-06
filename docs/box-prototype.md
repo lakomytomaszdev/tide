@@ -363,3 +363,16 @@ ID karty i ticketu, wpis runnera z `procs`/dziennika, czas kroku, wynik Bash age
 środowisko CLI oraz kontrola argv procesów na hoście. Do czasu zebrania tych wyników próba ręczna pozostaje
 niezaliczona. Skrypt `scripts/box/boundary-trial.py` zbiera część CLI/Incus i pełne testy poza piaskownicą;
 nie tworzy ani nie zatwierdza za użytkownika karty testowej.
+
+Pierwsza runda PT-191 (6.11.2026, `pt191-20261106-055810`): `make test` wykonało 4149 testów w 227 modułach
+(4 pominięte, 332,94 s) z jednym błędem `JSONDecodeError` w `test_continue_without_commands_option`.
+Deterministyczna regresja potwierdziła odczyt niepełnego `fake-call.json` z atrapy; naprawa publikuje go
+atomowo po zakończeniu zapisu. Testy CLI i czerwonej listy w tej rundzie były zielone, ale preflight wykazał
+`exists=false` dla pudełka `plasma-tide`, więc **próby na prawdziwym pudełku nie zostały wykonane**.
+Logi: `docs/box-prototype/pt191-20261106-055810/`. Pełne testy po naprawie wymagają ponowienia.
+
+Przy braku środowiska: `python3 scripts/box/boundary-trial.py --prepare-missing` zachowuje istniejące pudełko
+i profil; buduje tylko brakujące pudełko, a przy braku profilu zatwierdza jawny profil testowy
+`docs/agents/pt-191/plasma-tide-proof.box.yaml` (python-qt, porty, narzędzia prób i domena npm).
+Pakiety trafiają do pudełka, bez instalowania czegokolwiek na hoście. Profil i pudełko pozostają do dowodów.
+To przygotowanie środowiska nie zatwierdza planu rzeczywistej karty testowej.

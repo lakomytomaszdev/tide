@@ -3255,6 +3255,10 @@ Pełny dowód i zasady pierwszego kroku: [Pierwszy krok w pudełku](box-prototyp
 Testy z atrapami nie potwierdzają izolacji prawdziwego Incusa. `scripts/box/boundary-trial.py` zbiera
 próbę CLI, `ps -o args`, tabelę i pełne `make test` poza piaskownicą; osobna karta testowa nadal wymaga
 zatwierdzonego planu, dziennika, runnera oraz czasu kroku bez `envAnswer`/`outside`.
+Opcja `--prepare-missing` tego skryptu odtwarza brakujące środowisko: pozostawia istniejące pudełko i profil,
+buduje tylko brakujące pudełko, a przy braku profilu zatwierdza jawny
+`docs/agents/pt-191/plasma-tide-proof.box.yaml`. Pakiety narzędzi prób są instalowane w pudełku, bez zmian
+pakietów i ustawień hosta. Domyślne wywołanie skryptu nie zatwierdza profilu ani nie buduje pudełka.
 
 ### Krok w pudełku w silniku (PT-181)
 
