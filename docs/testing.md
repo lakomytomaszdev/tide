@@ -65,7 +65,7 @@ proces importujący pakiet testów ma korzystać z tego nadpisania.
 Przed zastąpieniem XDG zapamiętujemy w `TIDE_TEST_ORIGINAL_STATE_ROOTS` JSON z polami
 `xdg_state_home` (efektywny pierwotny XDG, z domyślnym HOME/.local/state) i
 `default_tide_state_home` (pierwotny HOME/.local/state/tide). Ten sam zapis dziedziczą potomkowie.
-To wejście dla strażnika PT-254; ten ticket nie wdraża blokowania zapisów poza izolacją.
+Te korzenie wykorzystuje strażnik zapisów opisany niżej.
 
 Przy zwykłym zakończeniu bezpośredniego procesu jego `atexit` usuwa własny katalog. Potomkowie
 muszą zakończyć pracę przed rodzicem; nie usuwają pożyczonego katalogu (także po fork).
@@ -73,6 +73,70 @@ Nagłe zabicie procesu bez wykonania `atexit` może pozostawić katalog tymczaso
 Przy uruchomieniu przez runner właścicielem pozostaje runner: jak dotychczas usuwa katalog po
 zakończeniu modułu, także nieudanego, a diagnostyka pozostaje w `.log`, `.json` i `summary.json`.
 Testy izolacji porównują lokalizacje i zawartość syntetycznych zapisów, nie mtime stanu użytkownika.
+
+## Strażnik zapisów testów usługi
+
+`tools/test_isolation.initialize()` włącza również `tools/test_guard.py`, przed importem produktu.
+Dotyczy to całego pakietu `daemon.tests`, przy bezpośrednim unittest/pytest oraz przez runner,
+bez dodatkowych fixture w modułach. Chronimy pierwotne `HOME/.local/state/tide` oraz
+`<pierwotny XDG_STATE_HOME>/tide`. Zapamiętujemy ścieżki oryginalne i rozwiązane przez `realpath`;
+sprawdzamy także dowiązania do katalogów i plików, nieistniejące jeszcze cele, ścieżki względem
+`cwd`/`dirfd`, obie strony rename/link i usuwanie lub przeniesienie przodka chronionego katalogu.
+
+Strażnik wymaga Linux x86-64, seccomp user notification (z obsługą CONTINUE) i dostępu przodka
+do `/proc/<pid>/{mem,fd,cwd}`. Nie wymaga kompilatora, roota, zmiany praw katalogu ani montowań.
+Proces wejściowy staje się nadzorcą, a jego potomek kontynuuje test. Filtr jądra obejmuje ten proces,
+nowe wątki i potomków przez fork/exec, także obce programy, statyczne pliki wykonywalne oraz procesy
+z wyczyszczonym środowiskiem. Nadzorca jest subreaperem: osierocony proces po double-fork/setsid
+lub zatrzymaniu usługi nadal ma go za przodka, zachowuje ochronę i dostęp do legalnych celów.
+Nie zmieniamy systemowego `ptrace_scope` ani uprawnień innych procesów.
+`TIDE_TEST_GUARD` podaje PID nadzorcy wyłącznie diagnostycznie:
+odziedziczoną ochronę potwierdza bezskutkowa próba `prctl` obsługiwana przez filtr, a nie wartość env.
+
+Nadzorca odczytuje cele wywołań systemowych przed ich wykonaniem. Odmawia zapisywalnego
+open/creat, truncate, unlink/rmdir, mkdir, rename, link/symlink i zmian metadanych w chronionych
+korzeniach; kontroluje też zapisy przez deskryptory i współdzielone mapowanie pliku do zapisu.
+Python dostaje `PermissionError`, a np. `/bin/sh`, `rm` czy `mv` — systemowy `EPERM`.
+Rozróżniamy mutację celu dowiązania od zmiany samego wpisu: unlink/rename zewnętrznego
+dowiązania jest legalne, jeśli jego wpis i katalog nadrzędny leżą poza ochroną; operacja na pliku
+wewnątrz dowiązanego katalogu nadal jest blokowana. Obsługujemy także `utimensat(fd, NULL, …)`
+(futimens używany przez tar): oceniany jest plik deskryptora, nie adres NULL.
+Nie polegamy na monkeypatchu `open`, argv potomka ani obserwowaniu zmian po fakcie.
+Nadzorca nie podlega filtrowi i zachowuje informację o naruszeniu do końca całego drzewa.
+Każda odmowa wypisuje na jego stderr `TIDE TEST GUARD:` i JSON z `scenario` (PID testu),
+`pid` sprawcy, `operation` i `targets`. Po naruszeniu wynik całego uruchomienia to **125**,
+nawet jeśli unittest/pytest wypisze sukces, produkt przechwyci wyjątek, zignoruje błąd potomka
+albo wykona `os._exit(0)`. Runner zachowuje odmowy w logu modułu i traktuje jego kod jako błąd.
+
+Awaria inicjalizacji daje `setup_error` i kod 125, bez kontynuowania niechronionego produktu.
+Utrata dostępu nadzorcy do celu również oznacza odmowę i błąd scenariusza. Mechanizmy bez
+obsługiwanej ścieżki (Linux AIO, io_uring, open-by-handle) dostają `ENOSYS`, aby biblioteka mogła
+użyć kontrolowanych odpowiedników. Nieaktualne powiadomienie po zakończeniu procesu nie jest
+naruszeniem: przed odczytem `/proc` sprawdzamy identyfikator powiadomienia w jądrze.
+Nadzorca odbiera statusy osieroconych procesów. Po zakończeniu głównego procesu testu daje
+pozostałym potomkom sekundę na zakończenie (nadal kontrolując ich mutacje), następnie kończy
+je przez SIGKILL i odbiera ich statusy przed oddaniem wyniku. Dotyczy to wyłącznie jego drzewa,
+również procesów we własnych sesjach; niezależne usługi pozostają poza tym sprzątaniem.
+Sygnał HUP filtra nie zastępuje `waitpid`: po nim nadzorca odbiera wszystkie pozostałe statusy,
+także gdy ostatni proces zakończył się między wcześniejszym WNOHANG a odczytem HUP.
+Fixture nadal powinny sprzątać procesy podczas testu. Zewnętrzny SIGTERM/SIGINT jest przekazywany
+procesowi testu, o ile ten jeszcze żyje.
+
+To ochrona przed przypadkowym przeciekiem testów, nie piaskownica do wykonywania wrogiego kodu.
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` ma wyścig między oceną ścieżki a operacją (np. celowa równoległa
+podmiana dowiązania lub argumentów syscall). Nie gwarantujemy ochrony przed takimi atakami,
+istniejącymi twardymi dowiązaniami poza korzeniami, zmianą przestrzeni montowań ani dowolnym
+urządzeniowym ioctl. Strażnik nie chroni całego HOME; fixture nadal wskazują syntetyczne dane.
+Proces usługi uruchomiony niezależnie od drzewa testu zachowuje swoje prawa. Jego legalne zmiany
+nie są naruszeniem testu: nie porównujemy mtime ani migawki wspólnego katalogu użytkownika.
+
+Test kontrolny `python3 -m unittest scripts.tests.test_state_guard` uruchamia osobne negatywne
+scenariusze pod unittest i pytest (gdy jest dostępny). Oczekuje kodu 125, diagnostyki i identycznych
+plików syntetycznego stanu. Oddzielnie sprawdza Python, potomka z domyślnym `Journal`, dalszego
+potomka, rzeczywisty tide-daemon na prywatnej magistrali oraz `/bin/sh` z rzeczywistymi poleceniami
+zapisu/usunięcia/rename. Próby `daemon/tests/guard*_probe.py` nie należą do automatycznego discover:
+uruchamia je wyłącznie test kontrolny. Brak prywatnej magistrali pomija próbę pełnej usługi,
+nie pozostałe dowody. Do oddania ticketu potrzebny jest przebieg w środowisku z tą magistralą.
 
 ## Równoległość i wynik
 
