@@ -2473,6 +2473,16 @@ nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źród
 
 **Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
 
+Gdy `verify` sprawdza kod projektu (np. `npm ci`, potem `npm run lint`), użyj
+`tide box build <slug> --verify-worktree <katalog>`. CLI sprawdza przynależność katalogu do repozytorium
+projektu w Tablicy i brak zmian śledzonych plików. Przesyła archiwum śledzonych plików HEAD, bez `.git`,
+plików nieśledzonych i ignorowanych zależności hosta. Builder rozpakowuje je w `/opt/tide/verify-source`
+i uruchamia tam wyłącznie `verify`; pierwsze niepowodzenie zatrzymuje następne polecenia tej weryfikacji.
+Kod commita zapisuje w `box.verify.source_commit`. Kopia i jej zależności są usuwane przed migawką, także
+po nieudanym verify; błąd sprzątania przerywa budowę. Nie powstaje montowanie repozytorium hosta.
+Polecenia przygotowania zależności muszą być jawnie zatwierdzone w `verify` profilu. `setup` zachowuje
+dotychczasowy katalog pracy. Bez opcji zachowanie buildera pozostaje dotychczasowe.
+
 1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
    zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
    (domyślnie 8 / 24GiB). Docker (`docker.enabled: true` albo `docker` w `stacks`) dostaje

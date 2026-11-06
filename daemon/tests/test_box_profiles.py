@@ -20,6 +20,7 @@ class toolssuiteProfileTest(unittest.TestCase):
         self.assertEqual(full["node"], {"version": "20"})
         self.assertEqual(full["ports"], {"pool": [4300, 4399], "env": ["PORT", "E2E_PORT"]})
         self.assertIn("npm run lint", full["verify"])
+        self.assertEqual(full["verify"], ["npm ci", "npm run lint"])
         self.assertIn("PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright@1.64.1 install chromium",
                       full["setup"])
         self.assertFalse(full["docker"]["enabled"])

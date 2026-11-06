@@ -1,4 +1,5 @@
 # Propozycja PT-185; zatwierdzony profil przechowuje Tablica, poza repozytorium firma.
+# Budowa z --verify-worktree <repozytorium lub worktree>: npm ci i lint na kopii śledzonych plików HEAD.
 tide-box: 1
 project: toolssuite
 type: container
@@ -15,5 +16,6 @@ ports: { pool: [4300, 4399], env: [PORT, E2E_PORT] }
 docker: { enabled: false, images: [] }
 resources: { cpu: 8, memory: 24GiB, disk: 60GB, swap: false }
 verify:
+  - npm ci
   - npm run lint
 box: per-project
