@@ -16,7 +16,7 @@ w sekcji [CLI rozmowy opiekuna](#cli-rozmowy-opiekuna--pt-226).
 
 | Metoda | Argumenty D-Bus | Wynik przy sukcesie, poza wspólną kopertą |
 | --- | --- | --- |
-| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment"]` |
+| `Info` | brak | `capabilities: ["issue.create", "issue.list", "issue.show", "issue.update", "issue.submit", "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment", "issue.accept"]` |
 | `Create` | `s request` (obiekt JSON opisany niżej) | `issue`, `existing: bool`, `commitError: string` |
 | `List` | brak | `issues: [...]` (metadane bez treści raportu), `errors: [...]` |
 | `Show` | `s id` (dokładnie `S-N`, N = 1…999999999) | `issue` (metadane i treść) |
@@ -24,6 +24,7 @@ w sekcji [CLI rozmowy opiekuna](#cli-rozmowy-opiekuna--pt-226).
 | `Submit` | `s id, s request` | `issue`, `commitError: string` |
 | `Reject` | `s id, s request` | `issue`, `commitError: string` |
 | `Reopen` | `s id, s request` | `issue`, `commitError: string` |
+| `AcceptIssue` | `s id, s request` | `issue`, `card`, `acceptedVersion`, `alreadyAccepted`, `commitError` |
 | `Attach` | `s id, s request, ay data` | `issue`, `commitError: string` |
 | `Detach` | `s id, s request` | `issue`, `commitError: string` |
 | `ReadAttachment` | `s id, s request` | **dwa argumenty wyjściowe**: `s result, ay data`; opis poniżej |
@@ -163,7 +164,7 @@ raz i aktualizuje `updated`, zachowując `id`, `created`, tytuł, projekt, rapor
 | `Reopen` | `rejected` | `draft` |
 
 Inne przejścia dają `bad-request` bez zapisu. Powtórny submit na `ready` nie jest nową zmianą
-ani ponowieniem z kluczem; zwraca odmowę. Przyjęcie sprawy dostarczy PT-221. `accepted` i `archived`
+ani ponowieniem z kluczem; zwraca odmowę. Przyjęcie sprawy obsługuje AcceptIssue. `accepted` i `archived`
 odmawiają wszystkich powyższych operacji.
 
 Submit ponownie sprawdza tytuł, treść UTF-8 i istniejący manifest. Raport nie może być pusty ani
@@ -183,6 +184,55 @@ tide issue submit S-N --expected-version N [--json]
 tide issue reject S-N --expected-version N [--json]
 tide issue reopen S-N --expected-version N [--json]
 ```
+
+### AcceptIssue — przyjęcie do Backlogu (PT-221)
+
+Możliwość `issue.accept` udostępnia wspólną operację dla przycisku **Do Backlogu** i CLI:
+
+```text
+tide backlog S-N --expected-version N [--request-id klucz] [--json]
+```
+
+API przyjmuje dokładnie `{"expectedVersion":N,"destination":"backlog","requestId":"klucz"}`.
+Wersja jest dodatnią liczbą całkowitą, klucz podlega regułom `requestId` z Create. Brak,
+powtórzenie i nieznane pola są błędem. Inne destination pozostają niedostępne w tym etapie.
+CLI wymaga jawnej wersji; nie pobiera jej przez Show. Bez podanego klucza generuje nowy UUID.
+Przy utracie odpowiedzi najlepiej ponowić jawny klucz i identyczne dane. Samo ponowne przyjęcie
+tej samej wersji sprawy, również z innym kluczem, zwraca tę samą kartę.
+
+Przycisk przekazuje wersję wyświetlanego raportu; niezapisane zmiany i konflikt blokują akcję.
+Ponowienie po błędzie transportu używa tego samego klucza w czasie życia okna. Nowy odczyt nie
+podmienia wersji wysyłanej decyzji. Serwer pod wspólną blokadą sprawdza wersję, `ready`, projekt
+i kopie dowodów. Stara wersja daje `version-conflict`, bez rezerwacji K-N. Draft/rejected,
+nieznany lub usunięty projekt i niespójne dowody nie tworzą karty. Brak projektu jest dozwolony.
+
+Sukces tworzy jedną kartę w Backlogu z tytułem, projektem i kopią raportu jako opisem. Sprawa
+przechodzi do `accepted`, dostaje numer karty i wersję N+1. `acceptedVersion` oraz chronione
+`sourceIssueVersion` karty wskazują **N sprzed przejścia**. Powtórzenie zwraca `alreadyAccepted:true`.
+Inny ładunek tego samego klucza daje `conflict`; zakres kluczy AcceptIssue obejmuje całą Tablicę,
+oddzielnie od kluczy Create. Wersja N+1 nie zastępuje N przy ponawianiu decyzji.
+
+Migawka karty zawiera `sourceIssue`, `sourceIssueVersion`, `sourceIssueHash`, `sourceIssueReport`
+i `sourceIssueManifest`. CreateCard/UpdateCard odrzucają te pola; zwykłe karty mają puste
+powiązanie. Nie są to pola specyfikacji. Niezmienny raport z metadanymi wersji ready i manifest
+trafiają do `issues/S-N/accepted/report.md` i `accepted/attachments.json`. Hash to SHA-256
+z bajtów UTF-8 samego raportu, bajtu NUL oraz dokładnych bajtów manifestu. Wpisy manifestu
+wskazują kopie względem katalogu `issues/S-N`, zachowane po akceptacji. Zmiana opisu karty
+nie zmienia raportu ani hasha. Link „Raport i dowody S-N · wersja N” w panelu i pełnej karcie
+otwiera sprawę z przyjętym raportem i publicznym odczytem dowodów. Sprawa wskazuje kartę.
+Accepted odmawia edycji, submit/reject/reopen oraz attach/detach.
+
+Trwała intencja `.git/tide-acceptances/S-N.json` poprzedza rezerwację K-N i wszystkie zapisy
+publikacji; po ukończeniu zmienia nazwę na `S-N.done.json`, aby odświeżenie nie wczytywało
+raportów zakończonych akceptacji. Klucze operacji zapisujemy osobno w `.git/tide-accept-requests/<sha256>.json`.
+Intencja obejmuje wersję ready, wynikową kartę, treść raportu i manifestu oraz etapy publikacji.
+Każdy zapis i utworzenie katalogu są synchronizowane przez fsync. Przy restarcie pierwszy odczyt
+lub zapis Tablicy odtwarza niedokończone intencje pod wspólną blokadą `.git/tide-board.lock`.
+Niepowodzenie odtwarzania daje błąd odczytu, bez pokazania częściowej akceptacji jako gotowej.
+Rezerwacja zachowuje numer, a istniejąca karta nie jest przepisywana podczas odtwarzania
+ani replay. Po ukończeniu publikacji commit zapisuje historię; jego błąd nie cofa accepted,
+wraca jako `commitError` i nie rezerwuje nowego numeru przy ponowieniu. Intencje i klucze
+są lokalnym stanem w `.git` i wymagają jego kopii zapasowej, podobnie jak rejestr Create.
 
 ### Attach i Detach — wdrożone w PT-228 (D2/D5)
 
@@ -362,7 +412,7 @@ zmienione pola i `expectedVersion`. „Bez projektu” wysyła `null`. Zmiana go
 szkic. Konflikt zachowuje lokalny tekst na czas życia okna, pokazuje aktualną wersję i blokuje
 zapis do jawnego ponownego wczytania z potwierdzeniem. Zmiana zaznaczenia zachowuje bufory odwiedzonych
 spraw. Nie są to pliki odzyskiwania po zamknięciu okna. Submit/reject/reopen używają istniejącego API;
-przyjęcie i zlecenie nie są jeszcze dostępne w tym etapie.
+przyjęcie do Backlogu używa AcceptIssue; zlecenie pozostaje kolejnym etapem.
 
 Raport przechodzi przez parser Markdown Qt z wyłączonym HTML. Obrazy muszą wskazywać dokładną
 ścieżkę `attachments/A-…` z manifestu tej sprawy. Nie otwieramy jej na dysku: publiczne `ReadAttachment`

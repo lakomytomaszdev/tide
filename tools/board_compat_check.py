@@ -5,7 +5,8 @@ Użycie:
                                                  [--after-tree KATALOG] [--json]
 
 KOPIA_TABLICY to kopia katalogu Tablicy (nigdy prawdziwa Tablica, nigdy w gicie). Narzędzie jej nie zapisuje:
-odczyt idzie z `GIT_OPTIONAL_LOCKS=0`, bez bajtkodu i z wyłączonym zakładaniem katalogów. Kod „przed” to drzewo
+obie wersje kodu dostają osobne kopie robocze w katalogu tymczasowym. Odczyt idzie z `GIT_OPTIONAL_LOCKS=0`,
+bez bajtkodu i z wyłączonym zakładaniem katalogów dokumentów. Kod „przed” to drzewo
 z `--before-tree` albo wyciąg `git archive` z `--before-ref` (domyślnie wspólny przodek `master` i bieżącej gałęzi,
 czyli `master` sprzed integracji K-28 i K-29); kod „po” to `--after-tree` (domyślnie ten katalog Tide).
 
@@ -25,6 +26,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -200,8 +202,12 @@ def compute(tree: str, board: str, scratch: str, name: str) -> dict:
     out = os.path.join(scratch, name + ".json")
     work = os.path.join(scratch, name + "-work")
     os.makedirs(work)
+    # Nowe magazyny mogą odtwarzać transakcje również przy odczycie. Każda
+    # wersja kodu dostaje własny egzemplarz, bez zapisu do wskazanej kopii Tablicy.
+    working_board = os.path.join(scratch, name + "-board")
+    shutil.copytree(board, working_board)
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "PYTHONDONTWRITEBYTECODE": "1", "QT_QPA_PLATFORM": "offscreen"}
-    done = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--worker", tree, board, out],
+    done = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--worker", tree, working_board, out],
                           cwd=work, env=env, capture_output=True, text=True)
     if done.returncode or not os.path.isfile(out):
         raise SystemExit(f"liczenie kodem „{name}” nie powiodło się (kod {done.returncode}):\n"

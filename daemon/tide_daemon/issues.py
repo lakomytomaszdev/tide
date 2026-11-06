@@ -244,6 +244,12 @@ class IssueStore:
 
     @contextlib.contextmanager
     def _lock(self):
+        with self.board.transaction():
+            with self._issue_lock():
+                yield
+
+    @contextlib.contextmanager
+    def _issue_lock(self):
         # D-Bus serializuje wywołania; flock chroni też dwie instancje magazynu/procesy.
         path = self._path(".git/tide-issues.lock")
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -541,12 +547,15 @@ class IssueService:
                 from . import resources
                 result = {"capabilities": ["issue." + action for action in
                           ("create", "list", "show", "update", "submit", "reject", "reopen",
-                           "attach", "detach", "attachment")] if self.store else []}
+                           "attach", "detach", "attachment", "accept")] if self.store else []}
                 result["resources"] = resources.info()
             elif self.store is None:
                 fail("Sprawy są wyłączone w usłudze.", "unavailable")
             elif method == "Create":
                 result = self.store.create(_json(args[0]))
+            elif method == "AcceptIssue":
+                from .issue_acceptance import accept
+                result = accept(self.store, args[0], _json(args[1]))
             elif method in ("Update", "Submit", "Reject", "Reopen"):
                 result = self.store.mutate(args[0], _json(args[1]), method)
             elif method in ("Attach", "Detach"):

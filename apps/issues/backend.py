@@ -87,6 +87,7 @@ class Backend(QObject):
         self._data = data or {}
         self._issues, self._list_errors, self._projects = [], [], []
         self._buffers = {}
+        self._accept_requests = {}
         self._selected = ""
         self._notice = ""
         self._available = data is not None
@@ -249,7 +250,7 @@ class Backend(QObject):
             if buf.get("issue") and issue["version"] < buf["issue"]["version"]:
                 return
             buf["error"] = ""
-            if not discard and (self._dirty(buf) or buf.get("conflict")):
+            if not discard and (self._dirty(buf) or buf.get("conflict") or buf.get("acceptingVersion")):
                 if issue["version"] != buf["issue"]["version"]:
                     buf.update(current=issue, conflict=issue["version"])
             else:
@@ -282,9 +283,10 @@ class Backend(QObject):
         allowed = {"Update": ("draft", "ready"), "Submit": ("draft",),
                    "Reject": ("draft", "ready"), "Reopen": ("rejected",),
                    "Attach": ("draft", "ready"), "Detach": ("draft", "ready")}
+        allowed["AcceptIssue"] = ("ready",)
         return (not self._preview and self._available and not self._busy and buf.get("issue") and
                 not buf.get("conflict") and not buf.get("error") and buf["issue"]["state"] in allowed[method] and
-                "issue." + method.lower() in self._capabilities)
+                "issue." + ("accept" if method == "AcceptIssue" else method.lower()) in self._capabilities)
 
     @pyqtSlot()
     def save(self):
@@ -304,19 +306,33 @@ class Backend(QObject):
                 return
             self._mutate(method, {})
 
-    def _mutate(self, method, patch, raw=None):
+    @pyqtSlot(int)
+    def acceptIssue(self, expected_version):
+        if not self._can_write("AcceptIssue") or self._dirty(self._buffers[self._selected]):
+            return
+        key = (self._selected, expected_version)
+        request_id = self._accept_requests.setdefault(key, str(uuid.uuid4()))
+        self._mutate("AcceptIssue", {"destination": "backlog", "requestId": request_id},
+                     expected_version=expected_version)
+
+    def _mutate(self, method, patch, raw=None, expected_version=None):
         ident = self._selected
         buf = self._buffers[ident]
         self._busy = True
         self._notice = ""
-        args = [ident, json.dumps(dict(patch, expectedVersion=buf["issue"]["version"]), ensure_ascii=False)]
+        version = buf["issue"]["version"] if expected_version is None else expected_version
+        if method == "AcceptIssue":
+            # Spóźniony Show odświeżenia nie może zastąpić raportu objętego decyzją.
+            buf["acceptingVersion"] = version
+        args = [ident, json.dumps(dict(patch, expectedVersion=version), ensure_ascii=False)]
         if raw is not None:
             args.append(QByteArray(raw))
         self.changed.emit()
         def done(result, _raw):
             self._busy = False
+            buf.pop("acceptingVersion", None)
             if result.get("ok"):
-                self._shown(ident, result, discard=method == "Update")
+                self._shown(ident, result, discard=method in ("Update", "AcceptIssue"))
                 # Attach/Detach są zablokowane przy niezapisanym tekście; przejścia również.
                 self._notice = result.get("commitError", "")
                 self.reload()

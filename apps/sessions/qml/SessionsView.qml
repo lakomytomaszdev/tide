@@ -10,6 +10,7 @@ import "sessions.js" as Logic
 
 Item {
     id: view
+    signal navigateRequested(string viewId, string item)
 
     property var backend: null
     property bool active: true
@@ -49,6 +50,7 @@ Item {
     }
 
     SessionsPage {
+        onNavigateRequested: (viewId, item) => view.navigateRequested(viewId, item)
         id: page
         anchors.fill: parent
         coordinators: view.coordinators

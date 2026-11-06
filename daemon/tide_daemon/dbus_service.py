@@ -200,6 +200,8 @@ monitors.py; układ ekranów w KWin bez zmian):
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
 - sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
+import json
+
 from PyQt6.QtCore import QByteArray, QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 
@@ -443,7 +445,7 @@ ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
   {''.join('<method name="' + method + '"><arg name="id" type="s" direction="in"/>'
            '<arg name="request" type="s" direction="in"/>'
            '<arg name="json" type="s" direction="out"/></method>'
-           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach'))}
+           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach', 'AcceptIssue'))}
   <method name="Attach">
     <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
     <arg name="data" type="ay" direction="in"/><arg name="json" type="s" direction="out"/>
@@ -984,6 +986,7 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     def __init__(self, parent, board=None):
         super().__init__(parent)
         from .issues import IssueService
+        self.board = board
         self.service = IssueService(board.store if board is not None else None)
 
     @pyqtSlot(result=str)
@@ -1009,6 +1012,13 @@ class IssuesAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, str, result=str)
     def Submit(self, ident, request):
         return self.service.call("Submit", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def AcceptIssue(self, ident, request):
+        result = self.service.call("AcceptIssue", ident, request)
+        if self.board is not None and json.loads(result).get("ok"):
+            self.board.publish()
+        return result
 
     @pyqtSlot(str, str, result=str)
     def Reject(self, ident, request):

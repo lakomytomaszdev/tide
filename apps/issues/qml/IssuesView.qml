@@ -8,6 +8,7 @@ import "issues.js" as Logic
 
 Item {
     id: view
+    signal navigateRequested(string viewId, string item)
     property var backend: null
     property bool active: true
     property var preview: ({})
@@ -19,7 +20,7 @@ Item {
     readonly property bool canAct: !!backend && !backend.preview && !!modelState.available && !modelState.busy && !modelState.conflict && !modelState.error
     readonly property var rows: Logic.rows(modelState.issues, search.text, projectFilter.currentValue || "", stateFilter.currentValue || "open")
     readonly property var railInfo: ({label: "Sprawy", value: (modelState.issues || []).length + " raportów",
-        note: "Szkic → gotowa do przyjęcia. Przyjęcie będzie dostępne w kolejnym etapie."})
+        note: "Szkic → gotowa do przyjęcia → karta w Backlogu."})
     property bool editing: false
     property string pendingDetach: ""
     readonly property var projectChoices: {
@@ -177,6 +178,13 @@ Item {
                             text: view.issue ? view.issue.id + " · " + Logic.stateLabel(view.issue.state) + " · wersja " + view.issue.version : ""
                             color: Tide.Tokens.sky
                         }
+                        Action {
+                            objectName: "issueCardLink"
+                            visible: !!view.issue && !!view.issue.card
+                            text: view.issue ? "Otwórz kartę " + (view.issue.card || "") + " · przyjęty raport w wersji " + (view.issue.version - 1) : ""
+                            enabled: !!backend && !backend.preview && !modelState.busy
+                            onClicked: view.navigateRequested("board", view.issue.card)
+                        }
                         Label {
                             Layout.fillWidth: true
                             visible: !view.editing
@@ -293,6 +301,14 @@ Item {
                         Flow {
                             Layout.fillWidth: true
                             spacing: 8
+                            Action {
+                                objectName: "issueAccept"
+                                text: "Do Backlogu"
+                                primary: true
+                                visible: !!view.issue && view.issue.state === "ready"
+                                enabled: view.canAct && !modelState.dirty && !view.editing
+                                onClicked: backend.acceptIssue(view.issue.version)
+                            }
                             Action {
                                 objectName: "issueSave"
                                 text: "Zapisz zmiany"

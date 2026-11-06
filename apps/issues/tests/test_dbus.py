@@ -86,6 +86,26 @@ class BackendDbusTest(unittest.TestCase):
         self.version(9)
         self.assertEqual(self.call("Show", "S-1")["issue"]["state"], "draft")
 
+    def test_accept_uses_rendered_version_conflicts_then_shares_card_with_cli(self):
+        self.backend.transition("Submit")
+        self.version(2)
+        self.run_cli("issue", "update", "S-1", "--expected-version", "2", "--title", "Nowszy raport")
+        self.backend.acceptIssue(2)
+        self.assertTrue(wait_until(lambda: self.state()["conflict"] == 3))
+        self.assertEqual(self.state()["issue"]["version"], 2)
+        self.assertEqual(self.board_call("Snapshot")["cards"], [])
+        self.backend.reloadSelected()
+        self.version(3)
+        self.backend.transition("Submit")
+        self.version(4)
+        self.backend.acceptIssue(4)
+        self.version(5)
+        self.assertEqual(self.state()["issue"]["card"], "K-1")
+        replay = self.run_cli("backlog", "S-1", "--expected-version", "4", "--request-id", "cli-po-przycisku")
+        self.assertTrue(replay["alreadyAccepted"])
+        self.assertEqual(replay["card"], "K-1")
+        self.assertEqual(len(self.board_call("Snapshot")["cards"]), 1)
+
     def test_conflict_keeps_local_report_and_reload_requires_explicit_action(self):
         self.backend.updateDraft("report", "Lokalnie wpisany raport")
         current = self.run_cli("issue", "update", "S-1", "--expected-version", "1", "--title", "Równoległy zapis")["issue"]

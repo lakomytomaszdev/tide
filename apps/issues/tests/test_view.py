@@ -15,6 +15,80 @@ PROBLEMS = r"TypeError|ReferenceError|is not a type|is not defined|Cannot read|I
 
 
 class ViewTest(unittest.TestCase):
+    def test_pending_refresh_cannot_replace_report_while_acceptance_is_in_flight(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script(callback_delay=10)
+issue = dict(state()['issue'])
+new = dict(issue, version=2, report='Nowa wersja', state='draft')
+replies.extend([dict(ok=False, error='version-conflict', currentVersion=2, message='Konflikt'), dict(ok=True, issue=new)])
+backend.acceptIssue(1)
+# Odczyt odświeżenia rozpoczął się przed kliknięciem, lecz kończy po wysłaniu decyzji.
+backend._shown('S-2', dict(ok=True, issue=new))
+settle()
+out['state'] = state()
+out['request'] = calls[0]
+''')
+        self.assertEqual(out['state']['issue']['version'], 1)
+        self.assertEqual(out['state']['conflict'], 2)
+        self.assertEqual(out['state']['current']['report'], 'Nowa wersja')
+        self.assertEqual(json.loads(out['request'][2])['expectedVersion'], 1)
+
+    def test_accept_button_pins_rendered_version_and_retries_same_request(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script()
+issue = dict(state()['issue'])
+out['ready'] = obj('issueAccept').property('visible') and obj('issueAccept').property('enabled')
+replies.append(dict(ok=False, error='unavailable', message='Utracona odpowiedź'))
+js('view.editing = false')
+obj('issueAccept').clicked.emit()
+settle()
+out['first'] = calls[-1]
+replies.append(dict(ok=True, issue=dict(issue, state='accepted', version=2, card='K-8'), card='K-8'))
+obj('issueAccept').clicked.emit()
+settle()
+out['second'] = calls[-1]
+out['accepted'] = state()['issue']
+out['hidden'] = not obj('issueAccept').property('visible')
+out['link'] = obj('issueCardLink').property('text')
+navigation = []
+view.navigateRequested.connect(lambda view_id, item: navigation.append([view_id, item]))
+obj('issueCardLink').clicked.emit()
+out['navigation'] = navigation
+''')
+        self.assertTrue(out['ready'])
+        self.assertEqual(out['first'], out['second'])
+        self.assertEqual(out['first'][:2], ['AcceptIssue', 'S-2'])
+        payload = json.loads(out['first'][2])
+        self.assertEqual((payload['expectedVersion'], payload['destination']), (1, 'backlog'))
+        self.assertTrue(payload['requestId'])
+        self.assertTrue(out['hidden'])
+        self.assertIn('K-8', out['link'])
+        self.assertEqual(out['navigation'], [['board', 'K-8']])
+
+    def test_accept_conflict_keeps_rendered_report_and_cannot_accept_draft_or_dirty(self):
+        out = self.run_scenario('''
+backend.selectIssue('S-2')
+calls, replies = live_script()
+issue = dict(state()['issue'])
+backend.updateDraft('report', 'Niezapisana treść')
+backend.acceptIssue(1)
+out['dirtyBlocked'] = len(calls) == 0 and not obj('issueAccept').property('enabled')
+backend.updateDraft('report', issue['report'])
+new = dict(issue, version=2, report='Nowa wersja', state='draft')
+replies.extend([dict(ok=False, error='version-conflict', currentVersion=2, message='Konflikt'), dict(ok=True, issue=new)])
+obj('issueAccept').clicked.emit()
+settle()
+out['state'] = state()
+out['blocked'] = not obj('issueAccept').property('enabled')
+out['request'] = calls[0]
+''')
+        self.assertTrue(out['dirtyBlocked'] and out['blocked'])
+        self.assertEqual(out['state']['issue']['version'], 1)
+        self.assertEqual(out['state']['current']['report'], 'Nowa wersja')
+        self.assertEqual(json.loads(out['request'][2])['expectedVersion'], 1)
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix="tide-issue-view-")
@@ -155,7 +229,7 @@ backend.updateDraft('title', 'Zachowaj')
 backend.updateDraft('project', 'nieznany')
 replies.append(dict(ok=False, error='bad-request', message='Nieznany projekt'))
 backend.save()
-wait()
+settle()
 out['state'] = state()
 backend._lost()
 out['lost'] = state()

@@ -99,6 +99,11 @@ Window {
                     required property var modelData
                     property bool visited: win.current === modelData.id
                     property string pendingItem: modelData.id === win.initialView ? win.initialItem : ""
+                    Connections {
+                        target: loader.item
+                        ignoreUnknownSignals: true
+                        function onNavigateRequested(viewId, item) { win.showView(viewId, item) }
+                    }
 
                     function deliver(item) {
                         if (loader.item) loader.item.showItem(item)

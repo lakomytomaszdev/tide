@@ -217,7 +217,7 @@ class IssuesDbusTest(unittest.TestCase):
         self.assertEqual(info["apiVersion"], 1)
         self.assertEqual(set(info["capabilities"]), {
             "issue.create", "issue.list", "issue.show", "issue.update", "issue.submit",
-            "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment",
+            "issue.reject", "issue.reopen", "issue.attach", "issue.detach", "issue.attachment", "issue.accept",
             "card.open",
         })
         self.assertEqual(set(info["resources"]), {"plan-standard", "next-id", "check-plans"})

@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -41,6 +42,11 @@ def parser():
     card_opening = card_actions.add_parser("open", help="otwórz rozmowę opiekuna przez PT-149")
     card_opening.add_argument("id", help="K-N")
     card_opening.add_argument("--problem", help="identyfikator problemu opiekuna")
+    backlog = commands.add_parser("backlog", help="przyjmij przeczytaną wersję sprawy do Backlogu")
+    backlog.add_argument("id", help="S-N")
+    backlog.add_argument("--expected-version", required=True, type=int)
+    backlog.add_argument("--request-id", help="klucz identycznych ponowień; domyślnie nowy UUID")
+    backlog.set_defaults(action="accept")
     next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
     next_id.add_argument("repo")
     next_id.add_argument("--prefix", default="")
@@ -91,7 +97,7 @@ def parser():
     attachment.add_argument("--attachment", required=True)
     attachment.add_argument("--output", required=True)
     attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
-    for command in (info, card, card_opening, issue, create, listing, show, opening,
+    for command in (info, card, card_opening, backlog, issue, create, listing, show, opening,
                     update, attach, detach, attachment, *transitions):
         command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
     return root
@@ -320,11 +326,14 @@ def main(argv=None):
                                       env=env, check=False).returncode
             except OSError:
                 raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
-        if result["ok"] and args.command == "issue":
+        if result["ok"] and args.command in ("issue", "backlog"):
             capability = "show" if args.action == "open" else args.action
             if f"issue.{capability}" not in result.get("capabilities", []):
                 raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
-            if args.action == "open":
+            if args.action == "accept":
+                result = api.call("AcceptIssue", args.id, json.dumps({"expectedVersion": args.expected_version,
+                    "destination": "backlog", "requestId": args.request_id or str(uuid.uuid4())}))
+            elif args.action == "open":
                 if not re.fullmatch(r"S-[1-9][0-9]{0,8}", args.id):
                     raise CliError("bad-request", "Podaj numer sprawy S-N.")
                 result = api.call("Show", args.id)
@@ -379,6 +388,8 @@ def main(argv=None):
     elif "issue" in result:
         issue = result["issue"]
         print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
+        if result.get("card"):
+            print(f"{result['card']}: przyjęto wersję {result['acceptedVersion']} do Backlogu")
         if args.action == "show":
             print(issue["report"], end="")
     elif "issues" in result:
