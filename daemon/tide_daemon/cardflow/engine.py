@@ -88,6 +88,7 @@ REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
 ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
 OUTSIDE_PER_PROJECT = 4         # polecenia poza piaskownicą naraz w jednym projekcie (05.11: 1–2 przy make test ~25 min dawały godzinne kolejki; make test to jeden rdzeń z 16)
 OUTSIDE_TOTAL = 5               # … i łącznie (testy i budowanie obciążają całą maszynę)
+CLOSE_AUTHOR = "close"           # `reassign-author` z ticket=close przepina wykonawcę domknięcia karty
 OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
@@ -3230,7 +3231,11 @@ class FlowEngine(PlanEditing):
         Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
         ticket = str(request.get("ticket") or "").strip()
         executor = str(request.get("executor") or "").strip()
-        if not any(s.get("ticket") == ticket for s in st.steps.values()) or \
+        if ticket == CLOSE_AUTHOR:
+            # Domknięcie karty (06.11, K-37: domknięcie planisty Opus czekało na limit Claude do soboty).
+            if st.card_finished or any(s.get("kind") == "close" for s in st.running()):
+                raise FlowError("not-waiting", f"{card}: domknięcie karty właśnie trwa albo karta jest skończona")
+        elif not any(s.get("ticket") == ticket for s in st.steps.values()) or \
                 any(s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix") for s in st.running()):
             raise FlowError("not-waiting", f"{card}: autor ticketu {ticket or '?'} właśnie pracuje")
         cfg = self.models_config() if self.models_config else None
@@ -5496,6 +5501,7 @@ class FlowEngine(PlanEditing):
             executor = st.started.get("executor") or ""
         else:
             return
+        executor = (st.author_overrides.get(CLOSE_AUTHOR) or {}).get("executor") or executor
         last_return = max((int(e.get("seq") or 0) for e in self.journal.read(card)
                            if e.get("type") == "plan.returned"), default=0)
         last_return = max(last_return, st.base_change.get("seq", 0))
