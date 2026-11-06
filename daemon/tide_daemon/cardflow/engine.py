@@ -134,6 +134,17 @@ AUTO_DENY_LONG = ("Tide nie może zezwolić na polecenie dłuższe niż {limit} 
 STEP_READ_NOTE = ("Odczyt własnego katalogu kroku (<krok>/in i <krok>/out) jest zawsze dozwolony i nie wymaga zgody. "
                   "Uruchom te polecenia pojedynczo, bez łączenia, albo czytaj pliki narzędziem Read.")
 
+
+def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
+    """Recenzent przepięty przez użytkownika po decyzji o kroku review (06.11, K-60/PT-254: Codex odmówił review,
+    Tide sam przełączył na Sonnet przy limicie Claude 96%, a późniejsze „Przepnij recenzenta” na Codex Astra nie
+    działało, bo wznowienie brało wykonawcę z automatycznej decyzji). Nowszy wybór użytkownika wygrywa."""
+    if step.get("kind") != "review":
+        return ""
+    chosen = st.reviewer_overrides.get(step.get("ticket") or "") or {}
+    newer = chosen.get("seq", 0) > max(step.get("seq", 0), decision.get("seq", 0) or 0)
+    return chosen.get("reviewer") or "" if newer and chosen.get("reviewer") not in ("", None, current) else ""
+
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
 
@@ -3864,6 +3875,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                       author_override.get("executor") not in ("", None, step.get("executor")))
         if reassigned:
             name = author_override["executor"]
+        override = reviewer_override(st, step, decision, name)
+        if override:
+            name, reassigned = override, True
         fresh = choice in ("change-executor", "transfer") or reassigned
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
