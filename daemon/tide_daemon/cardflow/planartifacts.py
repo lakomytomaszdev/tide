@@ -10,6 +10,19 @@ MAX_TOTAL = 16 * 1024 * 1024
 LINK = re.compile(r'\]\(\s*(<[^>]*>|[^\s)]+)|^\s*\[[^\]]+\]:\s*(<[^>]*>|\S+)', re.M)
 
 
+def keep_committed_plan_text(state):
+    """Nowa zatwierdzona propozycja dostarcza tekst do pierwszego udanego commita.
+
+    Późniejsze zmiany stanu zachowują też ręczne dopiski w worktree. Numery zdarzeń
+    odróżniają wynik zapisu poprzedniej wersji od zapisu bieżącej propozycji.
+    """
+    proposed = state.plan_proposed or {}
+    return bool(state.plan_revision) or any(
+        action == 'plan-commit' and result.get('ok') and
+        int(result.get('seq') or 0) > int(proposed.get('seq') or 0)
+        for (action, _), result in state.results.items())
+
+
 def read(root, *, validate=True, plan_name=None):
     """Czyta tylko *.md obok planu, tickets/*.md i followups/**/*.md, bez dowiązań.
 

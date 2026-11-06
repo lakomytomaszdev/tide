@@ -61,6 +61,29 @@ class ArtifactsTest(unittest.TestCase):
                 expected = expected.replace('../followups/', '../../plans/followups/')
                 self.assertEqual(body, expected)
 
+    def test_new_proposal_text_replaces_old_plan_only_until_committed(self):
+        from .test_cardflow_plan_extra import PLAN
+        self.put('plan.md', PLAN.replace('Wstęp planu.', 'Nowy wstęp.').replace(
+            'followups/replay-code.md', 'followups/nested/draft.md'))
+        plan_file = 'docs/agents/plans/k-1.md'
+        self.put('work/' + plan_file, PLAN.replace('Wstęp planu.', 'Stary wstęp.'))
+        row = dict(id='PT-1', title='Szkic', executor='Sonnet', reviewer='Opus', blockers=[], body='- [ ] Działa.')
+        st = FlowState(plan_proposed=dict(seq=10, planPath=str(self.root / 'plan.md'), artifactPath=str(self.root)),
+                       plan_approved=dict(planFile=plan_file, rows=[row]))
+        st.results[('plan-commit', 'old')] = dict(seq=9, ok=True)
+        engine = FlowEngine.__new__(FlowEngine)
+
+        def body():
+            return engine._plan_files('K-1', st, set(), worktree=str(self.root / 'work'))[plan_file].decode()
+
+        self.assertIn('Nowy wstęp.', body())
+        self.assertNotIn('Stary wstęp.', body())
+        st.results[('plan-commit', 'failed')] = dict(seq=11, ok=False)
+        self.assertIn('Nowy wstęp.', body())
+        st.results[('plan-commit', 'new')] = dict(seq=12, ok=True)
+        self.put('work/' + plan_file, body().replace('Stary wstęp.', 'Ręczny wstęp.'))
+        self.assertIn('Ręczny wstęp.', body())
+
     def test_relocation_keeps_other_links_and_text_unchanged(self):
         text = ('Zwykły tekst ../followups/nested/draft.md\n'
                 '[www](https://example.org/../followups/nested/draft.md#zakres)\n'
@@ -115,6 +138,72 @@ class ArtifactsTest(unittest.TestCase):
 class ArtifactsFlowTest(FlowInProcess):
     proposal = integration.PlanFlowTest.proposal
     submit = integration.PlanFlowTest.submit
+
+    def test_approved_amendment_commits_new_text_then_preserves_manual_additions(self):
+        card = self.card()
+        path = Path(self.proposal(card))
+        with path.open('a') as fh:
+            fh.write('\nStary tekst planu.\n')
+        self.assertTrue(self.submit(card, str(path))['ok'])
+        self.flow.stop()
+        engine = self.flow.engine
+        mapping = engine.approve_plan(card)['map']
+        with mock.patch.object(engine, '_launch'):
+            engine._plan_next(card, fold(engine.journal.read(card)))
+        st = fold(engine.journal.read(card))
+        info = ticket_of(st)
+        plan_file = st.plan_approved['planFile']
+        worktree = Path(info['cardWorktree'])
+        ticket_file = next(p for p in engine._plan_files(card, st, set())
+                           if p.endswith(mapping['#1'].lower() + '.md'))
+        with (worktree / ticket_file).open('a') as fh:
+            fh.write('\nRęczny dopisek kartki.\n')
+
+        # Rzeczywiste przygotowanie plan-amend; zastępujemy tylko wykonawcę kroku.
+        with mock.patch.object(engine, '_launch') as launch:
+            self.assertTrue(engine.edit_plan(card, {'action': 'return', 'feedback': 'Dodaj nowy zakres.'})['ok'])
+        prompt = launch.call_args.kwargs['prompt_text']
+        out = Path(prompt.split('Katalog wyjściowy: ')[1].split('\n')[0])
+        amendment = (worktree / plan_file).read_text().replace('Stary tekst planu.',
+                            'Nowy zakres: [szkic](followups/new.md).')
+        amendment = amendment.replace('---\n\n', '---\n\nNowy wstęp.\n\n', 1)
+        (out / 'plan.md').write_text(amendment)
+        (out / 'followups').mkdir(exist_ok=True)
+        (out / 'followups/new.md').write_text('# Nowy szkic\nPełna treść.\n')
+        step = launch.call_args.args[6]
+        engine.journal.append(card, 'step.started', step=step, kind='plan-amend',
+                              stepDir=str(out.parent), executor='Sonnet')
+        snapshot = engine._freeze_planning_output(card, step, str(out))
+        engine.journal.append(card, 'step.finished', step=step, result='done', snapshotDir=snapshot)
+        engine._advance_user_revision(card, fold(engine.journal.read(card)))
+        self.assertTrue(self.of(card, 'plan.revision-ready')[-1]['pending'])
+        proposal = fold(engine.journal.read(card)).plan_proposed
+        self.assertNotEqual(proposal['artifactPath'], str(out))
+        engine.journal.append(card, 'plan.reviewed', verdict='APPROVE')
+        self.assertTrue(engine.approve_plan(card)['ok'])
+        (out / 'followups/new.md').write_text('zmiana po zamrożeniu')
+
+        def commit_and_check():
+            engine._plan_commit(card, fold(engine.journal.read(card)), self.repo,
+                                info['cardBranch'], info['cardWorktree'])
+            body = git(self.repo, 'show', f"{info['cardBranch']}:{plan_file}")
+            self.assertIn('Nowy wstęp.', body)
+            self.assertIn('Nowy zakres: [szkic](followups/new.md).', body)
+            self.assertNotIn('Stary tekst planu.', body)
+            target = str(Path(plan_file).parent / 'followups/new.md')
+            self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{target}"),
+                             '# Nowy szkic\nPełna treść.\n')
+            self.assertIn('Ręczny dopisek kartki.',
+                          git(self.repo, 'show', f"{info['cardBranch']}:{ticket_file}"))
+            return body
+
+        commit_and_check()
+        with (worktree / plan_file).open('a') as fh:
+            fh.write('\nRęczny dopisek planu po zatwierdzeniu.\n')
+        engine.journal.append(card, 'ticket.rejected', ticket=mapping['#2'])
+        body = commit_and_check()
+        self.assertIn('Ręczny dopisek planu po zatwierdzeniu.', body)
+        self.assertIn('| odrzucone |', body)
 
     def test_missing_followup_does_not_become_a_proposal(self):
         card = self.card()

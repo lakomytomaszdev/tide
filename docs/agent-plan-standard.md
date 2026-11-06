@@ -171,7 +171,9 @@ Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia d
 
 Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
 `../followups/…` są przeliczane względem docelowego katalogu kartek. Kolejne commity stanu planu
-zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Szkic opisuje zakres do osobnego
+zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy udany commit zatwierdzonej
+poprawki bierze tekst poza tabelą z nowej zamrożonej propozycji; późniejsze aktualizacje stanu
+zachowują tekst z worktree, w tym ręczne dopiski. Szkic opisuje zakres do osobnego
 zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
 
 ## Przepływ karty prowadzony przez Tide (1.2)

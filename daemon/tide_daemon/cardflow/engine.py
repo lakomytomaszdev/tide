@@ -2576,7 +2576,7 @@ class FlowEngine(PlanEditing):
         artifacts = planartifacts.read(proposed["artifactPath"]) if proposed.get("artifactPath") else {}
         if proposed.get("planPath") and os.path.basename(proposed["planPath"]) in artifacts:
             before, after = self._plan_extra(artifacts[os.path.basename(proposed["planPath"])].decode("utf-8"))
-        if worktree and approved.get("planFile"):
+        if worktree and approved.get("planFile") and (not artifacts or planartifacts.keep_committed_plan_text(st)):
             try:
                 with open(os.path.join(worktree, approved["planFile"]), encoding="utf-8") as fh:
                     before, after = self._plan_extra(fh.read())
