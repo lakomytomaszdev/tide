@@ -390,3 +390,12 @@ Pierwsza flaga jawnie i trwale ustawia w skonfigurowanym projekcie Incusa `restr
 przez sudo, zgodnie z instalatorem PT-182, i sprawdza wynik. Nie zmienia innych uprawnień ani pakietów hosta.
 Druga ponawia przez builder tylko nieudaną budowę z hashem zgodnym z profilem i bez kroków; profil nie jest
 zastępowany. Pozostałe istniejące pudełka są zachowane. Potem wykonywane są pełne testy i próby granicy.
+
+Trzecia runda (`pt191-20261106-062856`) została przerwana przez limit czasu na `sudo -A`.
+Odczyt `restricted.snapshots` zwrócił pustą wartość; brak wyniku zmiany i odczytu po niej, więc stan
+po przerwaniu pozostaje niepotwierdzony. Nie doszło do budowy, pełnych testów ani prób granicy.
+Skrypt używa teraz wyłącznie `sudo -n`, bez okna hasła, i ponownie odczytuje politykę przed zmianą.
+Przy braku uwierzytelnienia podaje konkretne polecenie administratora do wykonania w terminalu
+(`sudo incus project set user-1000 restricted.snapshots=allow` dla projektu tej próby), pomija budowę
+i kontynuuje pełne testy. Ich wynik można zebrać także wtedy, gdy środowisko Incusa nadal jest zablokowane.
+Nie należy ponawiać identycznej operacji oczekującej na hasło w kroku w tle.

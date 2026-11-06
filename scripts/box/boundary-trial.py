@@ -3,7 +3,8 @@
 
 Domyślnie nie buduje ani nie zatwierdza profili. --prepare-missing odtwarza brakujące środowisko próby PT-192
 z profilem testowym tego ticketu; istniejące pudełko lub profil zachowuje. Nie tworzy karty testowej.
---enable-snapshots ustawia jedną właściwość istniejącego projektu zgodnie z instalatorem PT-182 (sudo).
+--enable-snapshots ustawia jedną właściwość istniejącego projektu zgodnie z instalatorem PT-182 (sudo -n).
+Brak uwierzytelnienia sudo zapisuje jako błąd i podaje polecenie administratora, bez oczekiwania na hasło.
 --retry-failed-build ponawia tylko nieudaną budowę zgodną z bieżącym profilem, bez kroków.
 Przy działającym proxy innego procesu CLI odmawia zgodnie z kontraktem ensure_proxy.
 Logi pozostają w docs/box-prototype/pt191-<czas>/; nie zbieramy argv obcych procesów do pliku.
@@ -12,9 +13,9 @@ import argparse
 import datetime
 import ipaddress
 import json
-import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -44,18 +45,6 @@ def check(name, ok, detail):
         failures.append(name)
 
 
-def sudo_command():
-    env = dict(os.environ)
-    if sys.stdin.isatty():
-        return ["sudo"], env
-    if not env.get("SUDO_ASKPASS"):
-        for path in ("/usr/bin/ksshaskpass", "/usr/bin/ssh-askpass", "/usr/lib/ssh/x11-ssh-askpass"):
-            if os.access(path, os.X_OK):
-                env["SUDO_ASKPASS"] = path
-                break
-    return (["sudo", "-A"] if env.get("SUDO_ASKPASS") else ["sudo", "-n"]), env
-
-
 def enable_snapshots():
     project = bsettings.load().project
     before = run("snapshots-before", ["incus", "project", "get", project, "restricted.snapshots"])
@@ -63,9 +52,12 @@ def enable_snapshots():
         return False  # Nie zmieniamy nieznanego stanu.
     if before.stdout.strip() == "allow":
         return True
-    sudo, env = sudo_command()
-    changed = run("snapshots-enable", [*sudo, "incus", "project", "set", project, "restricted.snapshots=allow"], env=env)
+    command = ["incus", "project", "set", project, "restricted.snapshots=allow"]
+    # Próba w tle nie ma odbiorcy okna hasła. Brak zgody kończy tę operację od razu.
+    changed = run("snapshots-enable", ["sudo", "-n", *command])
     if changed.returncode:
+        print("Nie potwierdzono zmiany polityki migawek. Polecenie administratora w terminalu: "
+              + shlex.join(["sudo", *command]), flush=True)
         return False
     after = run("snapshots-after", ["incus", "project", "get", project, "restricted.snapshots"])
     ok = after.returncode == 0 and after.stdout.strip() == "allow"
@@ -168,7 +160,7 @@ def main(argv=None):
     parser.add_argument("--prepare-missing", action="store_true",
                         help="zbuduj brakujące pudełko; nie zastępuj istniejącego profilu")
     parser.add_argument("--enable-snapshots", action="store_true",
-                        help="ustaw restricted.snapshots=allow w projekcie Incusa, zgodnie z instalatorem (sudo)")
+                        help="ustaw restricted.snapshots=allow w projekcie Incusa (sudo -n, bez okna hasła)")
     parser.add_argument("--retry-failed-build", action="store_true",
                         help="ponów wyłącznie nieudaną, zgodną budowę bez kroków; istniejący profil pozostaje")
     options = parser.parse_args(argv)
