@@ -23,8 +23,9 @@ def counts(text):
         pairs = re.findall(r"\b(\d+)\s+(passed|failed)\b", line)
         if pairs:
             found.append({kind: int(n) for n, kind in pairs})
-        # dotnet test (podsumowanie VSTest).
-        dotnet = re.search(r"Failed:\s*(\d+).*Passed:\s*(\d+)", line)
+        # dotnet test (VSTest po angielsku lub z polską lokalizacją pudełka).
+        dotnet = re.search(r"(?:Failed|\bniepowodzenie):\s*(\d+).*"
+                           r"(?:Passed|\bpowodzenie):\s*(\d+)", line)
         if dotnet:
             found.append({"failed": int(dotnet[1]), "passed": int(dotnet[2])})
         # Mocha (npm test).

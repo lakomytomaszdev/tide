@@ -16,6 +16,14 @@ FIXTURES = Path(__file__).parent / "fixtures" / "test-output"
 
 
 class ParserTest(unittest.TestCase):
+    def test_polish_vstest_summary_from_legalapp(self):
+        for status, failed, passed in (("Niepowodzenie!", 46, 1191), ("Powodzenie!", 0, 1237)):
+            with self.subTest(status=status):
+                output = (f"{status} — niepowodzenie:    {failed}, powodzenie:  {passed}, "
+                          "pominięto:     1, łącznie:  1238, czas trwania: 19 m - "
+                          "LegalApp.Tests.Integration.dll (net10.0)")
+                self.assertEqual(artifacts.counts(output), {"passed": passed, "failed": failed})
+
     def test_known_fixtures(self):
         for name, passed, failed in (("pytest", 5, 2), ("unittest", 5, 2), ("dotnet", 15, 2),
                                      ("playwright", 7, 2), ("npm", 18, 2)):
