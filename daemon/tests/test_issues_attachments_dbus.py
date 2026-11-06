@@ -253,6 +253,26 @@ class AttachmentDbusTest(unittest.TestCase):
                           (b"RIFF\0\0\0\0WEBP", "broken.webp"), (core.png(10, 10)[:-15], "broken.png")):
             self.attach(issue, self.source(raw, name=name), code=2)
 
+    def test_jpeg_truncated_scan_with_eoi_is_refused_through_cli(self):
+        # Ustawienia logowania użytkownika nie mogą wyłączyć ścisłej kontroli JPEG.
+        self.env["QT_LOGGING_RULES"] = "*.warning=false"
+        self.start()
+        raw = core.raster("JPEG", 256, 256)
+        issue = self.attach(self.create(), self.source(raw, name="good.jpg"))["issue"]
+        manifest = Path(self.board) / issue["paths"]["manifest"]
+        original_manifest = manifest.read_bytes()
+        report = Path(self.board) / issue["paths"]["report"]
+        original_report = report.read_bytes()
+        for removed in (10, 50, 100, 300):
+            with self.subTest(removed=removed):
+                source = self.source(raw[:-removed] + b"\xff\xd9", name="broken.jpg")
+                self.assertEqual(self.attach(issue, source, code=2)["error"], "bad-request")
+                self.assertEqual(self.run_cli("issue", "show", issue["id"])["issue"], issue)
+                self.assertEqual(manifest.read_bytes(), original_manifest)
+                self.assertEqual(report.read_bytes(), original_report)
+        self.read(issue, issue["attachments"][0], "good-copy")
+        self.assertEqual(Path(self.tmp, "good-copy").read_bytes(), raw)
+
     def test_process_crashes_and_disk_full_keep_complete_old_or_new_version(self):
         control = self.fault_start()
         source = self.source(b"trwaly dowod")

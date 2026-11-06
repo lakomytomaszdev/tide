@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 import zlib
@@ -30,11 +31,11 @@ def png(width, height, *, rgb=False):
             chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
 
-def raster(fmt):
+def raster(fmt, width=8, height=7):
     from PyQt6.QtCore import QBuffer, QIODevice
     from PyQt6.QtGui import QImage
-    image = QImage(8, 7, QImage.Format.Format_RGB32)
-    image.fill(0xFFFFFFFF)
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    image.fill(0xFF123456)
     buffer = QBuffer()
     buffer.open(QIODevice.OpenModeFlag.WriteOnly)
     if not image.save(buffer, fmt):
@@ -120,6 +121,32 @@ class AttachmentCoreTest(unittest.TestCase):
             version += 1
             self.assertNotIn(issue["attachments"][-1]["type"], ("image/png", "image/jpeg", "image/webp"))
             self.assertEqual(self.read(issue["attachments"][-1], version)[1], raw)
+
+    def test_jpeg_truncated_scan_with_eoi_does_not_publish(self):
+        raw = raster("JPEG", 256, 256)
+        original = self.attach(1, raw, "good.jpg")
+        manifest = self.root / original["paths"]["manifest"]
+        manifest_raw = manifest.read_bytes()
+        for removed in (10, 50, 100, 300):
+            with self.subTest(removed=removed):
+                damaged = raw[:-removed] + b"\xff\xd9"
+                with mock.patch.dict(os.environ, {"QT_LOGGING_RULES": "*.warning=false"}):
+                    result = self.call("Attach", {"name": "broken.jpg", "expectedVersion": 2}, damaged)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["error"], "bad-request")
+                self.assertEqual(self.store.show("S-1"), original)
+                self.assertEqual(manifest.read_bytes(), manifest_raw)
+
+    def test_jpeg_decoder_failure_and_timeout_do_not_publish(self):
+        raw = raster("JPEG")
+        original = self.store.show("S-1")
+        failures = (OSError("brak procesu"), subprocess.TimeoutExpired("dekoder", 15))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch.object(att.subprocess, "run", side_effect=failure):
+                    result = self.call("Attach", {"name": "good.jpg", "expectedVersion": 1}, raw)
+                self.assertEqual(result["error"], "bad-request")
+                self.assertEqual(self.store.show("S-1"), original)
 
     def test_submit_and_read_refuse_missing_changed_symlink_and_traversal_copies(self):
         issue = self.attach(1)

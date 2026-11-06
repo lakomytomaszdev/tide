@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import sys
 
 from .board.model import BoardError
 
@@ -122,6 +124,20 @@ def media_type(name, data):
                 (detected == b"jpeg" and not data.endswith(b"\xff\xd9")) or
                 (detected == b"webp" and int.from_bytes(data[4:8], "little") + 8 != len(data))):
             reject("Obraz jest niekompletny.")
+        if detected == b"jpeg":
+            # Qt potrafi zwrócić obraz mimo ostrzeżenia libjpeg o niepełnym skanie.
+            # Osobny proces izoluje globalny handler Qt i reguły logowania.
+            env = {**os.environ, "QT_LOGGING_RULES": "*.warning=true"}
+            try:
+                decoded = subprocess.run(
+                    [sys.executable, "-s", "-m", "tide_daemon.issue_jpeg"], input=data,
+                    cwd=Path(__file__).resolve().parent.parent, env=env,
+                    capture_output=True, timeout=15, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                reject("Nie udało się sprawdzić obrazu JPEG.")
+            if decoded.returncode != 0:
+                reject("Dekoder odmówił odczytu obrazu JPEG.")
+            return "image/jpeg"
         buffer = QBuffer()
         buffer.setData(QByteArray(data))
         buffer.open(QIODevice.OpenModeFlag.ReadOnly)
