@@ -49,6 +49,7 @@ from ..board.plan_candidates import candidates as plan_candidates
 from ..tasks import agentcmd, launch, stepstop
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
+from . import testrerun
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -5710,6 +5711,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         name = step.get("step") or ""
+        worktree = step.get("worktree") or ""
+        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
+        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
         folder = os.path.join(step.get("stepDir") or "", "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
         exit_file = os.path.join(folder, "in", "exit-code")
@@ -5735,7 +5739,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                            unit=unit, log=log, exitFile=exit_file)
+                            unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)
