@@ -701,6 +701,9 @@ class ManualColumnsInProcessTest(FlowInProcess):
         card_id = self.card()
         first = self.start(card_id)
         self.wait_column(card_id, "review")
+        # Review jest widoczne już po scaleniu ticketu. Ten scenariusz odsyła do poprawy
+        # dopiero domkniętą kartę, więc nie może ścigać się z zapisem card.closed.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30))
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
         self.wait_column(card_id, "todo")
         self.assertTrue(json.loads(self.board.update_card(card_id, json.dumps({"title": "Nowy tytuł"})))["ok"])
