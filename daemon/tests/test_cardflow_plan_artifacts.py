@@ -8,7 +8,7 @@ from unittest import mock
 from tide_daemon.cardflow import planartifacts
 from tide_daemon.cardflow.engine import FlowEngine
 from tide_daemon.cardflow.journal import Journal
-from tide_daemon.cardflow.state import fold, ticket_of
+from tide_daemon.cardflow.state import FlowState, fold, ticket_of
 from .test_cardflow import FlowInProcess
 from . import test_cardflow_plan_integration as integration
 from .test_cardflow_dbus import git
@@ -40,6 +40,33 @@ class ArtifactsTest(unittest.TestCase):
         text = planartifacts.prepare(snapshot, str(self.root / 'revision'), seed=True)
         self.assertIn('Zamrożony komplet', text)
         self.assertEqual((self.root / 'revision/out/followups/nested/draft.md').read_bytes(), files['followups/nested/draft.md'])
+
+    def test_plan_files_relocate_every_validated_ticket_link_syntax(self):
+        for link in ('[szkic](../followups/nested/draft.md#zakres)',
+                     '[szkic](<../followups/nested/draft.md#zakres> "Tytuł")',
+                     '[szkic][scope]\n\n[scope]: ../followups/nested/draft.md#zakres "Tytuł"',
+                     '[szkic][scope]\n\n[scope]: <../followups/nested/draft.md#zakres>',
+                     '[szkic]( ./../followups/nested/%64raft.md?view=1#zakres )'):
+            with self.subTest(link=link):
+                self.put('tickets/1.md', link)
+                artifacts = planartifacts.read(self.root)
+                row = dict(id='PT-1', title='Szkic', executor='Sonnet', reviewer='Opus',
+                           blockers=[], body=artifacts['tickets/1.md'].decode())
+                state = FlowState(plan_proposed=dict(artifactPath=str(self.root)),
+                                  plan_approved=dict(planFile='docs/agents/plans/k-1.md', rows=[row]))
+                engine = FlowEngine.__new__(FlowEngine)
+                files = engine._plan_files('K-1', state, set())
+                body = files['docs/agents/tickets/k-1-flow/pt-1.md'].decode()
+                expected = link.replace('./../followups/nested/%64raft.md', '../../plans/followups/nested/draft.md')
+                expected = expected.replace('../followups/', '../../plans/followups/')
+                self.assertEqual(body, expected)
+
+    def test_relocation_keeps_other_links_and_text_unchanged(self):
+        text = ('Zwykły tekst ../followups/nested/draft.md\n'
+                '[www](https://example.org/../followups/nested/draft.md#zakres)\n'
+                '[plik](../other.md) [fragment](#zakres)\n'
+                '[zewnętrzny]: //example.org/followups/draft.md\n')
+        self.assertEqual(planartifacts.relocate_ticket_links(text, '../../plans/followups'), text)
 
     def test_symlinks_are_rejected_instead_of_skipped(self):
         for name in ('followups/nested/draft.md', 'tickets/1.md', 'plan.md'):
@@ -110,7 +137,10 @@ class ArtifactsFlowTest(FlowInProcess):
             fh.write('\nZakres poza v1: [szkic](followups/nested/scope.md).\n')
         ticket = path.parent / 'tickets/1.md'
         with ticket.open('a') as fh:
-            fh.write('\n[szkic](../followups/nested/scope.md)\n')
+            fh.write('\n[szkic](../followups/nested/scope.md)\n'
+                     '[szkic][scope]\n\n'
+                     '[scope]: ../followups/nested/scope.md#zakres "Zakres"\n'
+                     '[szkic](<../followups/nested/scope.md#zakres> "Zakres")\n')
         self.assertTrue(self.submit(card, str(path))['ok'])
         self.flow.stop()
         engine = self.flow.engine
@@ -138,6 +168,19 @@ class ArtifactsFlowTest(FlowInProcess):
         self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{sketch_file}"), draft_bytes.decode())
         files = engine._plan_files(card, st, set(), worktree=info['cardWorktree'])
         ticket_file = next(p for p in files if p.endswith(mapping['#1'].lower() + '.md'))
+
+        def check_committed_links():
+            for file, link in ((plan_file, 'followups/nested/scope.md'),
+                               (ticket_file, '../../plans/followups/nested/scope.md')):
+                body = git(self.repo, 'show', f"{info['cardBranch']}:{file}")
+                self.assertIn(f']({link})', body)
+                if file == ticket_file:
+                    self.assertIn(f'[scope]: {link}#zakres "Zakres"', body)
+                    self.assertIn(f'](<{link}#zakres> "Zakres")', body)
+                target = os.path.normpath(str(Path(file).parent / link))
+                self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{target}"), draft_bytes.decode())
+
+        check_committed_links()
         for file, link in ((plan_file, 'followups/nested/scope.md'),
                            (ticket_file, '../../plans/followups/nested/scope.md')):
             self.assertIn(f']({link})', files[file].decode())
@@ -146,6 +189,7 @@ class ArtifactsFlowTest(FlowInProcess):
             fh.write('\nRęczny dopisek kartki.\n')
         engine.journal.append(card, 'plan.ticket-edited', ticket=mapping['#2'], changes={'note': 'aktualizacja'})
         engine._plan_commit(card, fold(engine.journal.read(card)), self.repo, info['cardBranch'], info['cardWorktree'])
+        check_committed_links()
         self.assertIn('Ręczny dopisek', git(self.repo, 'show', f"{info['cardBranch']}:{ticket_file}"))
         self.assertIn('Zakres poza v1', git(self.repo, 'show', f"{info['cardBranch']}:{plan_file}"))
         self.assertEqual(git(self.repo, 'show', f"{info['cardBranch']}:{sketch_file}"), draft_bytes.decode())

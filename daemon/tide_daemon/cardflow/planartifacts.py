@@ -3,7 +3,7 @@ import os
 import posixpath
 import re
 import stat
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 MAX_FILE = 512 * 1024
 MAX_TOTAL = 16 * 1024 * 1024
@@ -77,6 +77,29 @@ def check_links(files):
             target = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
             if url.scheme == 'file' or path.startswith('/') or target.startswith('../') or target not in files:
                 raise ValueError(f'{source}: brak lokalnego celu followups lub wyjście poza artefakty: {raw}')
+
+
+def relocate_ticket_links(text, followups):
+    """Przenosi cele szkiców z tickets/ do katalogu kartki, zachowując składnię i fragmenty.
+
+    Używa tych samych dopasowań co kontrola pakietu: inline, <cel> i definicje referencji.
+    Zmienia tylko ścieżkę celu; tytuł, otoczenie i końcówka URL pozostają bez zmian.
+    """
+    def relocate(match):
+        group = 1 if match.group(1) is not None else 2
+        token = match.group(group)
+        raw = token[1:-1] if token.startswith('<') else token
+        url = urlsplit(raw)
+        if url.scheme or url.netloc or not url.path or url.path.startswith('/'):
+            return match.group()
+        target = posixpath.normpath(posixpath.join('tickets', unquote(url.path)))
+        if not target.startswith('followups/'):
+            return match.group()
+        path = quote(posixpath.join(followups, target[len('followups/'):]), safe='/')
+        start = match.start(group) - match.start() + int(token.startswith('<'))
+        return match.group()[:start] + path + match.group()[start + len(url.path):]
+
+    return LINK.sub(relocate, text)
 
 
 def save(journal, card, relative, files):

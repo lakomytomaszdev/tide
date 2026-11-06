@@ -2601,7 +2601,7 @@ class FlowEngine(PlanEditing):
             # obok planu, więc odnośnik wskazuje je względem katalogu kartki (05.11, K-50: martwe linki w PT-201/208).
             followups = os.path.relpath(os.path.join(os.path.dirname(approved["planFile"]), "followups"),
                                         os.path.dirname(ticket_path))
-            text = self._plan_card(card, row).replace("](../followups/", f"]({followups}/")
+            text = planartifacts.relocate_ticket_links(self._plan_card(card, row), followups)
             if worktree:
                 # Dopisek pod kartką z pracy ticketu (np. odnośnik do szkicu) zostaje, gdy reszta kartki się zgadza.
                 try:
