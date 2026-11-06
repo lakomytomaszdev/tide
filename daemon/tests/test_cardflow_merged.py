@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -74,6 +75,26 @@ class MergedCardTest(DurableMergeFixture, FlowInProcess):
 
     def test_legacy_api_finishes_with_general_event_and_all_public_effects(self):
         self.assertEqual(self.merge(), {"ok": True, "id": self.card_id, "main": self.target, "already": False})
+        self.assert_public_completion()
+
+    def test_legacy_merge_serializes_board_write_with_journal_sync(self):
+        original = self.store.move_card
+
+        def move(*args, **kwargs):
+            # BoardMonitor.sync() bierze tę samą blokadę przed opróżnieniem BoardRepo.pending.
+            def can_sync():
+                acquired = self.flow.lock.acquire(blocking=False)
+                if acquired:
+                    self.flow.lock.release()
+                return acquired
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertFalse(pool.submit(can_sync).result(timeout=5),
+                                 "zapis kolumny konkuruje z opróżnianiem kolejki commitów Tablicy")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(self.store, "move_card", side_effect=move):
+            self.assertTrue(self.merge()["ok"])
         self.assert_public_completion()
 
     def test_token_api_finishes_with_general_event_and_all_public_effects(self):

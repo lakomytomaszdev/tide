@@ -6444,16 +6444,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Recovery zapisuje wynik gita, ale nie odwraca późniejszego ręcznego zakończenia w Archiwum.
         if st.card_finished and st.moved_to == "archived":
             return
-        try:
-            item = self.store.load().cards.get(card_num(card))
-            if item is None:
-                raise FlowError("no-card", "nie ma karty do scalenia")
-            if item.column != "done":
-                self.store.move_card(card, "done", -1, from_column="review")
-        except BoardError as exc:
-            raise FlowError(exc.code, str(exc)) from None
-        if not st.card_finished:
-            self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
+        # BoardMonitor.sync() opróżnia tę samą kolejkę commitów Tablicy pod blokadą dziennika.
+        with self.journal.lock:
+            try:
+                item = self.store.load().cards.get(card_num(card))
+                if item is None:
+                    raise FlowError("no-card", "nie ma karty do scalenia")
+                if item.column != "done":
+                    self.store.move_card(card, "done", -1, from_column="review")
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            if not st.card_finished:
+                self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
 
     def _advance_close(self, card: str, st: FlowState) -> bool:
         """Po ostatnim tickecie tworzy podsumowanie; True tylko po wykonaniu etapu, False przy pominięciu.
