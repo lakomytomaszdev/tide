@@ -120,6 +120,66 @@ class TicketEntryTest(unittest.TestCase):
         st.base_version += 1
         self.assertNotEqual(ticketentry.view(st)['revision'], before)
 
+    def outside(self, step):
+        self.append('step.finished', step=step, result='denied', outside=True, command='make test')
+        self.append('step.decision', step=step, choice='run')
+        self.append('outside.started', step=step, unit='tide-outside-' + step)
+
+    def assert_outside_busy(self, outside_step):
+        projected = self.view()
+        attempt = next(a for a in projected['attempts'] if a['id'] == self.step)
+        self.assertFalse(attempt['available'], attempt)
+        self.assertEqual(attempt['error'], 'worktree-busy')
+        with mock.patch.object(self.engine, '_stop_for_enter') as stop:
+            reply = self.engine.enter('K-1', self.request())
+        self.assertEqual(reply['error'], 'worktree-busy', reply)
+        self.assertEqual(reply['attempts'], projected['attempts'])
+        self.assertEqual(self.fixture.order, [])
+        self.assertIn(outside_step, state.fold(self.engine.journal.read('K-1')).outside_started)
+        stop.assert_not_called()
+
+    def test_fresh_selection_during_own_outside_refuses_then_allows_after_finish(self):
+        self.outside(self.step)
+        self.assertEqual(state.fold(self.engine.journal.read('K-1')).running(), [])
+        self.assert_outside_busy(self.step)
+        before = self.view()['revision']
+        self.append('outside.finished', step=self.step, exitCode=0)
+        self.assertNotEqual(self.view()['revision'], before)
+        self.assertTrue(self.view()['attempts'][0]['available'])
+        with mock.patch.object(self.engine, '_stop_for_enter') as stop:
+            reply = self.engine.enter('K-1', self.request())
+        self.assertTrue(reply['ok'], reply)
+        self.assertEqual(self.fixture.order, ['open'])
+        task = json.loads(Path(self.fixture.terminal.plan.task_file).read_text())
+        self.assertEqual(task['workdir'], self.fixture.worktree)
+        self.assertEqual(self.fixture.terminal.plan.argv[:3], ['/bin/claude', '--resume', self.fixture.SID])
+        stop.assert_not_called()
+
+    def test_outside_in_same_worktree_blocks_other_ticket_but_not_separate_worktree(self):
+        self.start('outside-other', ticket='PT-2', worktree=self.fixture.worktree)
+        self.outside('outside-other')
+        self.assert_outside_busy('outside-other')
+        self.append('outside.finished', step='outside-other', exitCode=0)
+        self.start('outside-separate', ticket='PT-3')
+        self.outside('outside-separate')
+        attempt = next(a for a in self.view()['attempts'] if a['id'] == self.step)
+        self.assertTrue(attempt['available'], attempt)
+        with mock.patch.object(self.engine, '_stop_for_enter', return_value=True):
+            reply = self.engine.enter('K-1', self.request())
+        self.assertTrue(reply['ok'], reply)
+
+    def test_outside_started_after_selection_invalidates_request_then_fresh_selection_is_busy(self):
+        self.append('step.finished', step=self.step, result='denied', outside=True, command='make test')
+        self.append('step.decision', step=self.step, choice='run')
+        request = self.request()
+        self.append('outside.started', step=self.step, unit='tide-outside-' + self.step)
+        with mock.patch.object(self.engine, '_stop_for_enter') as stop:
+            reply = self.engine.enter('K-1', request)
+        self.assertEqual(reply['error'], 'stale-context', reply)
+        self.assertEqual(reply['attempts'], self.view()['attempts'])
+        stop.assert_not_called()
+        self.assert_outside_busy(self.step)
+
     def test_merged_rejected_and_finished_cards_have_no_available_attempt(self):
         st = state.fold(self.engine.journal.read('K-1'))
         for field, value in (('card_finished', True), ('rejected', {'PT-1'}),

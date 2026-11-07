@@ -29,6 +29,10 @@ def view(st):
         elif any(other.get("worktree") == step.get("worktree") and other.get("step") != name
                  for other in st.running()):
             reason = "worktree-busy"
+        elif any(st.steps.get(outside, {}).get("worktree") == step.get("worktree")
+                 for outside in st.outside_started):
+            # Polecenie outside zajmuje katalog także po zakończeniu własnego kroku.
+            reason = "worktree-busy"
         elif any(other.get("worktree") == step.get("worktree") for other in st.open_consoles()):
             reason = "console-open"
         attempts.append({"id": name, "ticket": step.get("ticket") or "", "kind": step.get("kind") or "",
