@@ -454,7 +454,21 @@ class AdapterTest(unittest.TestCase):
             self.env['XDG_RUNTIME_DIR'] = str(Path(self.tmp, 'run'))
             Path(self.env['XDG_RUNTIME_DIR']).mkdir(mode=0o700)
             self.env['TIDE_SYSTEMD_RUN'] = str(Path(self.tmp, 'fakebin/systemd-run'))
-        self.start()
+        if with_repo:
+            self.start_control = Path(self.tmp, 'start-fault.json')
+            self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
+                                                       'persistent': True}), encoding='utf-8')
+            wrapper = REPO / 'daemon/tests/fixtures/issues_go_daemon.py'
+            original_spawn = self.bus.spawn
+
+            def spawn(argv, *args, **kwargs):
+                return original_spawn([argv[0], str(wrapper), str(self.start_control), *argv[1:]],
+                                      *args, **kwargs)
+
+            with mock.patch.object(self.bus, 'spawn', side_effect=spawn):
+                self.start()
+        else:
+            self.start()
         project = {'name': 'Alfa', **({'repo': str(repo)} if with_repo else {})}
         self.assertTrue(self.board_call('UpsertProject', json.dumps(project))['ok'])
         self.env['REAL_TIDE'] = self.cli
@@ -542,7 +556,8 @@ class AdapterTest(unittest.TestCase):
                 self.assertTrue(latest['confirmation'].endswith('v6'))
                 accepted = self.adapter(script, 'backlog', '--session', folder, '--id', ready['id'],
                                         '--expected-version', '6', '--decision', latest['confirmation'])
-                self.assertTrue(accepted['accepted'])
+                self.assertEqual(accepted['issue']['state'], 'accepted')
+                self.assertEqual(accepted['acceptedVersion'], 6)
                 self.assertRegex(accepted['card'], r'^K-[1-9][0-9]*$')
 
     def test_both_adapters_go_replays_identical_launch_and_request_after_lost_reply(self):
@@ -564,6 +579,7 @@ class AdapterTest(unittest.TestCase):
                                     '--expected-version', str(ready['version']), '--decision', shown['confirmation'],
                                     '--launch', launch, code=1)
                 self.assertIn('utracona odpowiedź', lost['error'])
+                self.assertFalse(flag.exists())
                 saved = json.loads((folder / 'session.json').read_text())['decisionOperation']
                 self.assertEqual(saved['expectedVersion'], ready['version'])
                 self.assertEqual(saved['launch'], json.loads(launch.read_text(encoding='utf-8')))
@@ -572,8 +588,18 @@ class AdapterTest(unittest.TestCase):
                 self.assertTrue(replay['accepted'])
                 self.assertRegex(replay['card'], r'^K-[1-9][0-9]*$')
                 self.assertIn('currentStart', replay)
+                self.assertEqual(replay['start']['state'], 'start-error')
+                self.assertEqual(replay['startError']['code'], 'test-refusal')
+                # Usunięcie przyczyny nie jest zgodą na ponowny start.
+                self.start_control.unlink()
+                after_repair = self.adapter(script, 'replay', '--session', folder)
+                self.assertEqual(after_repair, replay)
+                journal = Path(self.board, 'flow', replay['card'], 'journal.jsonl')
+                events = [json.loads(line) for line in journal.read_text().splitlines()]
+                self.assertFalse(any(event['type'] == 'card.started' for event in events))
+                self.assertFalse(any(call[:2] == ['issue', 'retry-start'] for call in self.calls()))
                 calls = [call for call in self.calls() if call[:2] == ['go', ready['id']]]
-                self.assertEqual(len(calls), 2)
+                self.assertEqual(len(calls), 3)
                 for call in calls:
                     self.assertEqual(call[call.index('--request-id') + 1], request_id)
                     self.assertEqual(json.loads(Path(call[call.index('--launch') + 1]).read_text(encoding='utf-8')),
@@ -581,6 +607,8 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'accepted')
                 self.env.pop('ISSUE_LOSE_REPLY', None)
                 self.env.pop('ISSUE_LOSE_REPLY_COMMAND', None)
+                self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
+                                                           'persistent': True}), encoding='utf-8')
 
     def test_both_adapters_missing_then_separate_waiver_and_manual_submit(self):
         self.prepare()
