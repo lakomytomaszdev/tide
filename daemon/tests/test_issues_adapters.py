@@ -28,6 +28,184 @@ SPEC.loader.exec_module(FIXTURE)
 EVAL_SPEC = importlib.util.spec_from_file_location('issue_evaluator', PACKAGE / 'evaluate.py')
 EVALUATOR = importlib.util.module_from_spec(EVAL_SPEC)
 EVAL_SPEC.loader.exec_module(EVALUATOR)
+ADAPTER_SPEC = importlib.util.spec_from_file_location('issue_decision_adapter', PACKAGE / 'shared/issue_adapter.py')
+ADAPTER = importlib.util.module_from_spec(ADAPTER_SPEC)
+ADAPTER_SPEC.loader.exec_module(ADAPTER)
+
+
+class DecisionAdapterTest(unittest.TestCase):
+    """Kontrakt atrapowego CLI: potwierdzenie, tożsamość zapisu i ładunek replay."""
+
+    def invoke(self, argv):
+        return ADAPTER.run(ADAPTER.parser().parse_args(argv))
+
+    def test_interleaved_launch_reads_and_replay_select_each_saved_operation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'rozmowa', 'S-8')
+            launch = Path(tmp, 'launch.json')
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.go']}
+            saved = []
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'dispatch_decision', side_effect=lambda payload: saved.append(payload)):
+                for executor in ('wykonawca A', 'wykonawca B'):
+                    launch.write_text(json.dumps({'executor': executor}))
+                    self.invoke(['go', '--session', str(session), '--id', 'S-8', '--expected-version', '4',
+                                 '--decision', 'go S-8 v4', '--launch', str(launch)])
+            self.assertNotEqual(saved[0]['requestId'], saved[1]['requestId'])
+            observed = []
+
+            def read_after_other_dispatch(*argv):
+                key = argv[argv.index('--request-id') + 1]
+                if key == saved[0]['requestId'] and not observed:
+                    # B zapisuje plik pomiędzy przygotowaniem argv A a odczytem przez CLI A.
+                    ADAPTER.dispatch_decision(saved[1])
+                actual = json.loads(Path(argv[argv.index('--launch') + 1]).read_text())
+                expected = next(operation for operation in saved if operation['requestId'] == key)
+                self.assertEqual(actual, expected['launch'])
+                observed.append((key, actual))
+                return {'ok': True}
+
+            with mock.patch.object(ADAPTER, 'decision_cli', side_effect=read_after_other_dispatch):
+                ADAPTER.dispatch_decision(saved[0])
+            self.assertEqual([key for key, _ in observed], [saved[1]['requestId'], saved[0]['requestId']])
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=read_after_other_dispatch):
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'jednoznacznej tożsamości'):
+                    self.invoke(['replay', '--session', str(session)])
+                for operation in saved:
+                    self.invoke(['replay', '--session', str(session), '--request-id', operation['requestId']])
+            self.assertEqual([key for key, _ in observed[-2:]], [operation['requestId'] for operation in saved])
+
+    def test_backlog_inspection_is_read_only_and_conflict_keeps_exact_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'S-4')
+            issue = {'id': 'S-4', 'version': 4, 'state': 'ready', 'title': 'Zażółć',
+                     'project': 'plasma-tide', 'report': 'Pełny raport ; $(dane)', 'attachments': []}
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.accept']}
+            with mock.patch.object(ADAPTER, 'cli', side_effect=[info, {'ok': True, 'issue': issue}]) as cli:
+                shown = self.invoke(['inspect', '--session', str(session), '--id', 'S-4', '--destination', 'backlog'])
+            self.assertEqual(shown['issue']['report'], issue['report'])
+            self.assertEqual(shown['confirmation'], 'Potwierdzam backlog S-4 v4')
+            self.assertEqual(cli.call_count, 2)
+            self.assertFalse((session / 'decisionOperation').exists())
+
+            with mock.patch.object(ADAPTER, 'cli', return_value=info):
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'dokładnej wersji'):
+                    self.invoke(['backlog', '--session', str(session), '--id', 'S-4',
+                                 '--expected-version', '6', '--decision', shown['confirmation']])
+
+            def lose_at_dispatch(*argv):
+                saved = json.loads((session / 'session.json').read_text())['decisionOperation']
+                self.assertEqual((saved['id'], saved['expectedVersion'], saved['verb']), ('S-4', 4, 'backlog'))
+                self.assertTrue(saved['requestId'])
+                self.assertEqual(argv[0:2], ('backlog', 'S-4'))
+                self.assertEqual(argv[argv.index('--expected-version') + 1], '4')
+                raise ADAPTER.AdapterError('version-conflict')
+
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=lose_at_dispatch) as dispatch:
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'version-conflict'):
+                    self.invoke(['backlog', '--session', str(session), '--id', 'S-4',
+                                 '--expected-version', '4', '--decision', shown['confirmation']])
+            self.assertEqual(dispatch.call_count, 1)
+
+    def test_explicit_new_version_decision_overrides_stale_presentation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'S-4')
+            issue = {'id': 'S-4', 'version': 4, 'state': 'ready', 'report': 'Raport v4'}
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.accept']}
+            with mock.patch.object(ADAPTER, 'cli', side_effect=[info, {'ok': True, 'issue': issue}]):
+                self.invoke(['inspect', '--session', str(session), '--id', 'S-4', '--destination', 'backlog'])
+
+            def accept_v6(*argv):
+                operation = json.loads((session / 'session.json').read_text())['decisionOperation']
+                self.assertEqual(operation['expectedVersion'], 6)
+                self.assertEqual(argv[argv.index('--expected-version') + 1], '6')
+                return {'ok': True, 'accepted': True, 'card': 'K-6', 'acceptedVersion': 6}
+
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=accept_v6):
+                accepted = self.invoke(['backlog', '--session', str(session), '--id', 'S-4',
+                                        '--expected-version', '6', '--decision', 'backlog S-4 v6'])
+            self.assertTrue(accepted['accepted'])
+
+    def test_go_lost_answer_replays_same_request_launch_and_retry_has_new_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'S-8')
+            launch = Path(tmp, 'launch.json')
+            launch.write_text('{"executor":"gęś ; $(dane)"}', encoding='utf-8')
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.go', 'issue.retry-start']}
+            issue = {'id': 'S-8', 'version': 4, 'state': 'ready', 'title': 'Go',
+                     'project': 'plasma-tide', 'report': 'Raport', 'attachments': []}
+            with mock.patch.object(ADAPTER, 'cli', side_effect=[info, {'ok': True, 'issue': issue}]):
+                shown = self.invoke(['inspect', '--session', str(session), '--id', 'S-8', '--destination', 'go',
+                                     '--launch', str(launch)])
+            calls = []
+
+            def lose_once(*argv):
+                calls.append(argv)
+                stored = json.loads((session / 'session.json').read_text())['decisionOperation']
+                self.assertEqual(stored['expectedVersion'], 4)
+                self.assertEqual(stored['launch'], json.loads(launch.read_text(encoding='utf-8')))
+                if len(calls) == 1:
+                    raise ADAPTER.AdapterError('utracona odpowiedź')
+                return {'ok': True, 'accepted': True, 'card': 'K-2',
+                        'start': {'state': 'start-error'}, 'currentStart': {'state': 'started'}}
+
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=lose_once):
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'utracona odpowiedź'):
+                    self.invoke(['go', '--session', str(session), '--id', 'S-8', '--expected-version', '4',
+                                 '--decision', shown['confirmation'], '--launch', str(launch)])
+                first_identity = json.loads((session / 'session.json').read_text())['decisionOperation']
+                replay = self.invoke(['replay', '--session', str(session)])
+            self.assertTrue(replay['accepted'])
+            self.assertEqual(calls[0], calls[1])
+            self.assertEqual(json.loads((session / 'session.json').read_text())['decisionOperation'], first_identity)
+            self.assertEqual(replay['start']['state'], 'start-error')
+            self.assertEqual(replay['currentStart']['state'], 'started')
+
+            issue['start'] = {'intentId': 'intent-1', 'startVersion': 7, 'state': 'start-error',
+                              'retryable': True, 'error': {'message': 'błąd'}}
+            with mock.patch.object(ADAPTER, 'cli', side_effect=[info,
+                    {'ok': True, 'issue': issue, 'start': issue['start']}]) as cli:
+                current = self.invoke(['retry-inspect', '--session', str(session), '--id', 'S-8'])
+            self.assertEqual(current['currentStart']['startVersion'], 7)
+            retry_calls = []
+
+            def retry_lost(*argv):
+                retry_calls.append(argv)
+                saved = json.loads((session / 'session.json').read_text())['retryOperation']
+                self.assertEqual((saved['intent'], saved['expectedStartVersion']), ('intent-1', 7))
+                self.assertNotEqual(saved['requestId'], first_identity['requestId'])
+                if len(retry_calls) == 1:
+                    raise ADAPTER.AdapterError('utracona odpowiedź retry')
+                return {'ok': True, 'accepted': True, 'card': 'K-2',
+                        'start': {'state': 'started'}, 'currentStart': {'state': 'completed'}}
+
+            decision = 'ponów start S-8 intent intent-1 v7'
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=retry_lost):
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'utracona odpowiedź retry'):
+                    self.invoke(['retry-start', '--session', str(session), '--id', 'S-8', '--intent', 'intent-1',
+                                 '--expected-start-version', '7', '--decision', decision])
+                retry_result = self.invoke(['retry-replay', '--session', str(session)])
+            self.assertEqual(retry_calls[0], retry_calls[1])
+            self.assertEqual(retry_result['currentStart']['state'], 'completed')
+
+            original_go = {'ok': True, 'accepted': True, 'card': 'K-2', 'startError': {'code': 'failed'},
+                           'start': {'state': 'start-error'}, 'currentStart': {'state': 'completed'}}
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', return_value=original_go) as original_replay:
+                history = self.invoke(['replay', '--session', str(session)])
+            self.assertTrue(history['startError'])
+            self.assertEqual(history['currentStart']['state'], 'completed')
+            self.assertEqual(original_replay.call_args.args[original_replay.call_args.args.index('--request-id') + 1],
+                             first_identity['requestId'])
 
 
 class EvaluatorTest(unittest.TestCase):
@@ -195,6 +373,8 @@ class PackageTest(unittest.TestCase):
             common = (PACKAGE / 'shared/synthesis.md').read_text()
             for adapter in (codex, claude):
                 self.assertEqual((adapter / 'references/synthesis.md').read_text(), common)
+                self.assertEqual((adapter / 'references/decisions.md').read_bytes(),
+                                 (PACKAGE / 'shared/decisions.md').read_bytes())
                 self.assertEqual((adapter / 'scripts/issue_adapter.py').read_bytes(),
                                  (PACKAGE / 'shared/issue_adapter.py').read_bytes())
             for phrase in ('relacje użytkownika', 'oczekiwania', 'hipotezy/założenia', 'odrzucone warianty',
@@ -205,6 +385,10 @@ class PackageTest(unittest.TestCase):
                 self.assertIn(phrase.casefold(), common.casefold())
             self.assertIn('references/synthesis.md', (codex / 'SKILL.md').read_text())
             self.assertIn('references/synthesis.md', (claude / 'commands/issue.md').read_text())
+            self.assertTrue((codex.parent / 'tide-backlog/SKILL.md').is_file())
+            self.assertTrue((codex.parent / 'tide-go/SKILL.md').is_file())
+            self.assertTrue((claude / 'commands/backlog.md').is_file())
+            self.assertTrue((claude / 'commands/go.md').is_file())
             foreign = codex / 'moj-plik'
             foreign.write_text('obcy')
             self.install(env)
@@ -294,9 +478,41 @@ class AdapterTest(unittest.TestCase):
     run_cli = integration.IssuesDbusTest.run_cli
     board_call = integration.IssuesDbusTest.board_call
 
-    def prepare(self):
-        self.start()
-        self.board_call('UpsertProject', '{"name":"Alfa"}')
+    def prepare(self, *, with_repo=False):
+        if with_repo:
+            from . import flowfakes
+            from .test_cardflow_dbus import CLAUDE_MD, git
+            repo = Path(self.tmp, 'alfa')
+            repo.mkdir()
+            git(str(repo), 'init', '-q', '-b', 'master', env=self.env)
+            (repo / 'CLAUDE.md').write_text(CLAUDE_MD, encoding='utf-8')
+            git(str(repo), 'add', 'CLAUDE.md', env=self.env)
+            git(str(repo), 'commit', '-q', '-m', 'init', env=self.env)
+            flowfakes.install(str(Path(self.tmp, 'fakebin')))
+            # Katalog kroku nie może leżeć pod TMPDIR usługi (agentcmd._check).
+            self.env['TMPDIR'] = str(Path(self.tmp, 'tmp'))
+            Path(self.env['TMPDIR']).mkdir()
+            self.env['TIDE_FLOW_POLL_MS'] = '200'
+            self.env['XDG_RUNTIME_DIR'] = str(Path(self.tmp, 'run'))
+            Path(self.env['XDG_RUNTIME_DIR']).mkdir(mode=0o700)
+            self.env['TIDE_SYSTEMD_RUN'] = str(Path(self.tmp, 'fakebin/systemd-run'))
+        if with_repo:
+            self.start_control = Path(self.tmp, 'start-fault.json')
+            self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
+                                                       'persistent': True}), encoding='utf-8')
+            wrapper = REPO / 'daemon/tests/fixtures/issues_go_daemon.py'
+            original_spawn = self.bus.spawn
+
+            def spawn(argv, *args, **kwargs):
+                return original_spawn([argv[0], str(wrapper), str(self.start_control), *argv[1:]],
+                                      *args, **kwargs)
+
+            with mock.patch.object(self.bus, 'spawn', side_effect=spawn):
+                self.start()
+        else:
+            self.start()
+        project = {'name': 'Alfa', **({'repo': str(repo)} if with_repo else {})}
+        self.assertTrue(self.board_call('UpsertProject', json.dumps(project))['ok'])
         self.env['REAL_TIDE'] = self.cli
         self.env['ISSUE_CALLS'] = str(Path(self.tmp, 'calls.jsonl'))
         observer = Path(self.tmp, 'fakebin/tide')
@@ -326,6 +542,150 @@ class AdapterTest(unittest.TestCase):
 
     def calls(self):
         return [json.loads(line) for line in Path(self.env['ISSUE_CALLS']).read_text().splitlines()]
+
+    def ready_issue(self, title='Decyzja backlog/go'):
+        issue = self.run_cli('issue', 'create', '--title', title, '--project', 'alfa',
+                             '--report', self.report)['issue']
+        return self.run_cli('issue', 'submit', issue['id'], '--expected-version',
+                            str(issue['version']))['issue']
+
+    def ready_issue_v4(self):
+        issue = self.run_cli('issue', 'create', '--title', 'Raport przeczytany v4', '--project', 'alfa',
+                             '--report', self.report)['issue']
+        for index in range(2):
+            source = Path(self.tmp, f'dowod-{index}.txt')
+            source.write_text(f'dowód {index}', encoding='utf-8')
+            issue = self.run_cli('issue', 'attach', issue['id'], '--file', str(source),
+                                 '--expected-version', str(issue['version']))['issue']
+        return self.run_cli('issue', 'submit', issue['id'], '--expected-version',
+                            str(issue['version']))['issue']
+
+    def test_both_adapters_keep_presented_version_across_external_change(self):
+        self.prepare()
+        for n, script in enumerate(self.adapters):
+            with self.subTest(adapter=script):
+                ready = self.ready_issue_v4()
+                self.assertEqual(ready['version'], 4)
+                folder = Path(self.tmp, 'backlog-decision-' + str(n))
+                shown = self.adapter(script, 'inspect', '--session', folder, '--id', ready['id'],
+                                     '--destination', 'backlog')
+                self.assertTrue(shown['presented'])
+                self.assertEqual(shown['issue']['version'], 4)
+                self.assertIn(Path(self.report).read_text(encoding='utf-8'), shown['issue']['report'])
+                self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'ready')
+
+                changed = self.run_cli('issue', 'update', ready['id'], '--expected-version', '4',
+                                       '--title', 'Zmieniono w innej sesji')['issue']
+                current = self.run_cli('issue', 'submit', ready['id'], '--expected-version',
+                                       str(changed['version']))['issue']
+                self.assertEqual(current['version'], 6)
+                result = self.adapter(script, 'backlog', '--session', folder, '--id', ready['id'],
+                                      '--expected-version', '4', '--decision',
+                                      'Potwierdzam backlog ' + ready['id'] + ' v4', code=1)
+                self.assertIn('version-conflict', result['error'])
+                saved = json.loads((folder / 'session.json').read_text())['decisionOperation']
+                self.assertEqual((saved['expectedVersion'], saved['verb'], saved['id']), (4, 'backlog', ready['id']))
+                self.assertTrue(saved['requestId'])
+                self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'ready')
+                calls = [call for call in self.calls() if call[:2] == ['backlog', ready['id']]]
+                self.assertEqual(len(calls), 1)
+                self.assertIn(['--expected-version', '4'], [calls[0][i:i + 2] for i in range(len(calls[0]) - 1)])
+
+                # Świeży odczyt pokazuje wersję bieżącą, ale nie zatwierdza jej sam.
+                latest = self.adapter(script, 'inspect', '--session', folder, '--id', ready['id'],
+                                      '--destination', 'backlog')
+                self.assertEqual(latest['issue']['version'], 6)
+                self.assertTrue(latest['confirmation'].endswith('v6'))
+                accepted = self.adapter(script, 'backlog', '--session', folder, '--id', ready['id'],
+                                        '--expected-version', '6', '--decision', latest['confirmation'])
+                self.assertEqual(accepted['issue']['state'], 'accepted')
+                self.assertEqual(accepted['acceptedVersion'], 6)
+                self.assertRegex(accepted['card'], r'^K-[1-9][0-9]*$')
+
+    def test_both_adapters_go_replays_identical_launch_and_request_after_lost_reply(self):
+        self.prepare(with_repo=True)
+        from .privatebus import wait_until
+        Path(self.report).write_text('ATRAPA: gotowe', encoding='utf-8')
+        for n, script in enumerate(self.adapters):
+            with self.subTest(adapter=script):
+                ready = self.ready_issue('Go: zażółć / argument ; dane')
+                self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
+                                                           'persistent': True}), encoding='utf-8')
+                folder = Path(self.tmp, 'go-decision-' + str(n))
+                launch = Path(self.tmp, 'launch-' + str(n) + '.json')
+                launch.write_text('{"entry":"now","executor":"Sonnet"}', encoding='utf-8')
+                shown = self.adapter(script, 'inspect', '--session', folder, '--id', ready['id'],
+                                     '--destination', 'go', '--launch', launch)
+                self.assertEqual(shown['launch'], json.loads(launch.read_text(encoding='utf-8')))
+                flag = Path(self.tmp, 'lose-go-' + str(n))
+                flag.touch()
+                self.env['ISSUE_LOSE_REPLY'] = str(flag)
+                self.env['ISSUE_LOSE_REPLY_COMMAND'] = 'go'
+                lost = self.adapter(script, 'go', '--session', folder, '--id', ready['id'],
+                                    '--expected-version', str(ready['version']), '--decision', shown['confirmation'],
+                                    '--launch', launch, code=1)
+                self.assertIn('utracona odpowiedź', lost['error'])
+                self.assertFalse(flag.exists())
+                saved = json.loads((folder / 'session.json').read_text())['decisionOperation']
+                self.assertEqual(saved['expectedVersion'], ready['version'])
+                self.assertEqual(saved['launch'], json.loads(launch.read_text(encoding='utf-8')))
+                request_id = saved['requestId']
+                replay = self.adapter(script, 'replay', '--session', folder)
+                self.assertTrue(replay['accepted'])
+                self.assertRegex(replay['card'], r'^K-[1-9][0-9]*$')
+                self.assertIn('currentStart', replay)
+                self.assertEqual(replay['start']['state'], 'start-error')
+                self.assertEqual(replay['startError']['code'], 'test-refusal')
+                # Usunięcie przyczyny nie jest zgodą na ponowny start.
+                self.start_control.unlink()
+                after_repair = self.adapter(script, 'replay', '--session', folder)
+                self.assertEqual(after_repair, replay)
+                journal = Path(self.board, 'flow', replay['card'], 'journal.jsonl')
+                events = [json.loads(line) for line in journal.read_text().splitlines()]
+                self.assertFalse(any(event['type'] == 'card.started' for event in events))
+                self.assertFalse(any(call[:3] == ['issue', 'retry-start', ready['id']] for call in self.calls()))
+                current = self.adapter(script, 'retry-inspect', '--session', folder, '--id', ready['id'])['currentStart']
+                self.assertTrue(current['retryable'])
+                self.assertFalse(any(call[:3] == ['issue', 'retry-start', ready['id']] for call in self.calls()))
+                flag.touch()
+                self.env['ISSUE_LOSE_REPLY_COMMAND'] = 'issue retry-start'
+                lost_retry = self.adapter(script, 'retry-start', '--session', folder, '--id', ready['id'],
+                    '--intent', current['intentId'], '--expected-start-version', current['startVersion'],
+                    '--decision', f"ponów start {ready['id']} intent {current['intentId']} v{current['startVersion']}", code=1)
+                self.assertIn('utracona odpowiedź', lost_retry['error'])
+                self.assertFalse(flag.exists())
+                retry_saved = json.loads((folder / 'session.json').read_text())['retryOperation']
+                self.assertNotEqual(retry_saved['requestId'], request_id)
+                retried = self.adapter(script, 'retry-replay', '--session', folder)
+                self.assertEqual(retried['card'], replay['card'])
+                self.assertEqual(retried['start']['state'], 'started', retried)
+
+                def events():
+                    return [json.loads(line) for line in journal.read_text().splitlines()]
+
+                self.assertTrue(wait_until(lambda: any(event['type'] == 'card.closed' for event in events()),
+                                           timeout=60), events())
+                completed_retry = self.adapter(script, 'retry-replay', '--session', folder)
+                self.assertEqual(completed_retry['currentStart']['state'], 'completed')
+                history = self.adapter(script, 'replay', '--session', folder)
+                self.assertEqual(history['card'], replay['card'])
+                self.assertEqual(history['start'], replay['start'])
+                self.assertEqual(history['startError'], replay['startError'])
+                self.assertEqual(history['currentStart']['state'], 'completed')
+                self.assertEqual(sum(event['type'] == 'card.started' for event in events()), 1)
+                retry_calls = [call for call in self.calls() if call[:3] == ['issue', 'retry-start', ready['id']]]
+                self.assertEqual(len(retry_calls), 3)
+                self.assertTrue(all(call == retry_calls[0] for call in retry_calls))
+                self.assertEqual(retry_calls[0][retry_calls[0].index('--request-id') + 1], retry_saved['requestId'])
+                calls = [call for call in self.calls() if call[:2] == ['go', ready['id']]]
+                self.assertEqual(len(calls), 4)
+                for call in calls:
+                    self.assertEqual(call[call.index('--request-id') + 1], request_id)
+                    self.assertEqual(json.loads(Path(call[call.index('--launch') + 1]).read_text(encoding='utf-8')),
+                                     saved['launch'])
+                self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'accepted')
+                self.env.pop('ISSUE_LOSE_REPLY', None)
+                self.env.pop('ISSUE_LOSE_REPLY_COMMAND', None)
 
     def test_both_adapters_missing_then_separate_waiver_and_manual_submit(self):
         self.prepare()

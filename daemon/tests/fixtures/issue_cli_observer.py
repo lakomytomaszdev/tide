@@ -14,7 +14,12 @@ if args[:2] == ['issue', 'open'] and os.environ.get('ISSUE_PAUSE'):
     time.sleep(30)
 process = subprocess.run([os.environ['REAL_TIDE'], *args], capture_output=True)
 flag = Path(os.environ.get('ISSUE_LOSE_REPLY', '/nonexistent/no-flag'))
-if args[:2] == ['issue', 'create'] and process.returncode == 0 and flag.exists():
+match = os.environ.get('ISSUE_LOSE_REPLY_COMMAND', 'issue create').split()
+delivered = process.returncode == 0
+if process.returncode == 5:
+    reply = json.loads(process.stdout)
+    delivered = reply.get('ok') is True and reply.get('accepted') is True and bool(reply.get('startError'))
+if args[:len(match)] == match and delivered and flag.exists():
     flag.unlink()
     print(json.dumps({'ok': False, 'error': 'unavailable', 'message': 'utracona odpowiedź'}))
     raise SystemExit(3)
