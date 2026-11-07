@@ -202,3 +202,18 @@ class ProjectMountTests(BoxRunnerCase):
         self.assertEqual(report["boxViewHead"], oid)
         self.assertEqual((view / "HEAD").read_text(), "ref: refs/heads/feat/pt-1\n")
         self.assertEqual(Git().run(self.repo, "show", oid + ":detached.txt").out, "zachowany commit")
+
+    def test_directory_instead_of_private_head_is_refused_without_recursive_read_or_removal(self):
+        self.newrunner.ensure_devices(self.chosen)
+        from tide_daemon.box import gitview, refguard
+        admin = Path((Path(self.worktree) / ".git").read_text().strip()[8:])
+        boxhome = host_home_dir(self.slug)
+        refguard.begin(self.repo, "K-38", "directory", str(admin), branch="feat/pt-1",
+                       worktree=self.worktree, box_view_home=boxhome)
+        head = Path(boxhome) / gitview.relative_admin(admin) / "HEAD"
+        head.mkdir(parents=True)
+        (head / "preserved").write_text("nie czytaj jako HEAD ani nie usuwaj")
+        report = refguard.finish(self.repo, "K-38", "directory")
+        self.assertTrue(any("box-view/HEAD" in error for error in report["errors"]))
+        self.assertTrue(head.is_dir())
+        self.assertTrue((head / "preserved").exists())

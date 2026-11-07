@@ -689,17 +689,33 @@ def finish(repo, card, step, *, branch="", active_only=False):
                 try:
                     try:
                         with _parent(root, relative_admin(saved["gitDir"]) + "/HEAD") as (parent, name):
-                            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-                            if stat.S_ISREG(info.st_mode) and (info.st_nlink != 1 or info.st_size > 8192):
-                                raise StepError("niebezpieczny prywatny HEAD")
-                            node = _node(parent, name)
+                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                         dir_fd=parent)
+                            with os.fdopen(fd, "rb") as source:
+                                info = os.fstat(source.fileno())
+                                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 8192:
+                                    raise StepError("niebezpieczny prywatny HEAD")
+                                data = source.read(8193)
+                                if len(data) > 8192:
+                                    raise StepError("przekroczony limit prywatnego HEAD")
                             wanted = ("ref: " + saved["branch"] + "\n").encode()
-                            if not node or node.get("kind") != "file" or base64.b64decode(node["data"]) != wanted:
+                            if data != wanted:
                                 report["files"].append("box-view/HEAD")
-                                if node and node.get("kind") == "file":
-                                    report["boxViewHead"] = base64.b64decode(node["data"]).decode("utf-8", "replace").strip()
-                                _restore(parent, name, {"kind": "file", "mode": 0o644,
-                                                       "data": base64.b64encode(wanted).decode("ascii")})
+                                report["boxViewHead"] = data.decode("utf-8", "replace").strip()
+                                temporary = ".tide-head-" + secrets.token_hex(8)
+                                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                             0o644, dir_fd=parent)
+                                try:
+                                    with os.fdopen(fd, "wb") as target:
+                                        target.write(wanted)
+                                        target.flush()
+                                        os.fsync(target.fileno())
+                                    # Katalog podłożony w wyścigu daje odmowę;
+                                    # nigdy nie czytamy ani nie usuwamy go rekurencyjnie.
+                                    os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+                                finally:
+                                    if temporary in os.listdir(parent):
+                                        os.unlink(temporary, dir_fd=parent)
                     except FileNotFoundError:
                         pass  # Krok mógł nie użyć Git; nie czytamy innych prywatnych administracji.
                 finally:
