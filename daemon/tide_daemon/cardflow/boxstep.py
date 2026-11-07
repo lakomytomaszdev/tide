@@ -57,7 +57,7 @@ from .state import fold
 RUNNER = "box"                       # wartość pola `runner` wpisu kroku (brak pola = host)
 DENIED_LOG = "proxy-denied.log"
 NOTE_FILE = "proxy-denied.md"
-RISK_TEXT = "poświadczenia agenta czytelne dla kodu w pudełku (grupa docker); pełna ochrona: K3"
+RISK_TEXT = k3.K1_NOTE
 WAIT_ENVIRONMENT = "czeka na środowisko"
 WAIT_BUILD = "czeka na pudełko (budowa)"
 WAIT_REBUILD = "czeka na pudełko (do przebudowy)"
@@ -179,6 +179,12 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
             return None
     elif kind not in kinds:
         return None          # planowanie i inne rodzaje zostają na hoście (bwrap)
+    # V1 wymaga projektu i odebranych urządzeń PT-264. Ani dawny profil karty,
+    # ani wyłączenie pudełek, ani restart nie przywracają tu HostRunnera.
+    from ..box import exposure
+    if slug == exposure.PROJECT:
+        raise BoxWaiting("czeka na manifest projektu i odebrane montowania PT-264; "
+                         "dawne zgody kart nie aktywują wariantu v1")
     rebuilding = boxwait.card_box_wait(st) == boxwait.REBUILD
     settings = settings_of(engine)
     if not settings.enabled:

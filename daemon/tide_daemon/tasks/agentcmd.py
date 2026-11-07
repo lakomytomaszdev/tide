@@ -153,6 +153,7 @@ class Step:
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
     branch: str = ""               # gałąź przypisana przez silnik; BoxRunner nie ufa HEAD worktree
+    exposure_inputs: object = None # hostowy wybór wejść z wersjonowanego manifestu PT-263, nigdy z promptu
 
 
 @dataclass

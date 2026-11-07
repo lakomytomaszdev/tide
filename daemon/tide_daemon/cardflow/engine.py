@@ -495,6 +495,19 @@ class FlowEngine(PlanEditing):
         flow = out.get("flow") or {}
         flow["boxWait"], flow["boxWaitLabel"] = wait, boxwait.label(wait)
         plan = flow.get("plan")
+        try:
+            slug, _repo = envconsent._project_state(self, card)
+        except FlowError:
+            return
+        if slug == "plasma-tide":
+            try:
+                flow["environment"] = envconsent.model(self, card, st)
+                if plan:
+                    plan["environment"] = flow["environment"]
+            except Exception as exc:
+                flow["environment"] = {"projectExposure": True, "items": [], "notes": [str(exc)],
+                                       "stateLabel": "brak zgodnego manifestu", "yaml": "", "exposure": {}}
+            return
         if not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT):
             return
         proposal = st.plan_proposed or {}

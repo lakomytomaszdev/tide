@@ -81,6 +81,39 @@ class EnvironmentSectionTest(ProbeCase):
         return self.probe(FIND_PY + ALL_PY + scenario + '\nout["calls"] = calls()\n',
                           data=plan_card(self.data, model, **kwargs))
 
+    def test_project_scope_manifest_preview_and_explicit_version_consent(self):
+        # Model liczy rzeczywista usługa na sztucznym projekcie, jak w testach IPC.
+        from daemon.tests import test_box_exposure as fixture
+        case = fixture.ServiceTests("test_consent_model_explains_project_scope_and_k1_and_does_not_scan_packs")
+        case.setUp()
+        try:
+            from tide_daemon.cardflow import envconsent
+            model = envconsent.model(case.engine, "K-38", fixture.fold(case.journal.read("K-38")))
+        finally:
+            case.doCleanups()
+        out = self.probe_card("""
+open_card()
+out['scope'] = text('envProjectScope')
+out['manifest'] = text('envProjectManifest')
+out['initiallyAccepted'] = js(ALL + "(page.cardPanel, 'envProjectConsent')[0].checked")
+out['initiallyEnabled'] = js(ALL + "(page.cardPanel, 'envApprove')[0].enabled")
+press('envProjectPreview')
+wait(150)
+js(ALL + "(page.cardPanel, 'cardEnvironment')[0].exposureAccepted = true")
+press('envApprove')
+""", model)
+        self.assertIn("root przez wspólny Docker", out["scope"][0])
+        self.assertIn("per-card", out["scope"][0])
+        self.assertIn(" → ", out["manifest"][0])
+        self.assertFalse(out["initiallyAccepted"])
+        self.assertFalse(out["initiallyEnabled"])
+        first, second = calls_of(out, "ApproveCardEnvironment")
+        self.assertIn("exposure-action: preview", first[2])
+        self.assertIn("exposure-accepted: false", first[2])
+        self.assertIn("exposure-action: approve", second[2])
+        self.assertIn("exposure-accepted: true", second[2])
+        self.assertIn(model["exposure"]["expected"], second[2])
+
     def test_items_show_risk_from_the_service_and_red_ones_start_unchecked(self):
         model = environment()
         out = self.probe_card("""
