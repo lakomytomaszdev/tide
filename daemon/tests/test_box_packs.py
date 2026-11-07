@@ -128,6 +128,7 @@ class PacksRunnerTest(BoxRunnerCase):
         spec = {"name": "logs", "from": str(source)}
         packs.materialize("proj", "K-38", [spec])
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": [spec], "accepted_red": ["pack:logs"]})
+        self.incus.stop('proj')  # v1: nie uruchamiamy źródła i kopii równocześnie
         self.incus.launch("tide-base", bs.card_box_name("proj", "K-38"))
         return spec
 
@@ -165,6 +166,8 @@ class PacksRunnerTest(BoxRunnerCase):
 
     def test_pack_refused_in_shared_box_even_after_other_step_releases_reservation(self):
         self.prepare_pack()
+        self.incus.stop(bs.card_box_name('proj', 'K-38'))
+        self.incus.start('proj')
         bs.mark_in_use("proj", "proj", "other-card-step")
         bs.mark_released("proj", "proj", "other-card-step")
         self.assertEqual(bs.running_steps("proj", "proj"), [])
