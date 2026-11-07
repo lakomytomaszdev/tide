@@ -22,6 +22,27 @@ RESOURCE_FIELDS = ("runner", "box", "boxSlug")
 NON_PROCESS_ACTIONS = frozenset({"reserve", "card-branch", "ticket-branch", "review-branch",
                                  "step-reopen", "plan-commit", "cleanup", "merge",
                                  "youtrack-create", "youtrack-link", "youtrack-note"})
+# Wyłącznie dokładnie rozpoznane metadane można pominąć. Nowy typ zdarzenia
+# wymaga klasyfikacji tutaj, także gdy nie zawiera żadnych pól procesu.
+NON_PROCESS_EVENTS = frozenset({
+    "card.started", "card.inputs", "card.paused", "card.resumed", "card.finished",
+    "card.closed", "card.main-merged", "card.moved", "card.stalled",
+    "plan.checked", "plan.imported", "plan.proposed", "plan.reviewer-selected",
+    "plan.approval_requested", "plan.returned", "plan.revision-discarded",
+    "plan.revision-failed", "plan.revision-ready", "plan.revision-approved",
+    "plan.reviewed", "plan.ticket-edited", "plan.approved", "plan.finished",
+    "ticket.assigned", "ticket.rejected", "ticket.imported", "reviewer.reassigned",
+    "review.verdict", "review.question", "review.decision", "review.reviewer-note",
+    "step.waiting", "step.retry", "step.transfer_requested", "step.wip", "step.limit",
+    "step.notice", "step.activity", "step.reported", "step.cleanup",
+    "flow.error", "flow.notice", "permission.rechecked", "refs.guard",
+    "box.wait", "box.rebuild-requested", "box.ports", "box.risk", "packs.removed",
+    "k38.handoff", "k38.inventory", "k38.public-inventory",
+    "k38.diagnostic-requested", "k38.diagnostic-consumed", "youtrack.reset", "youtrack.retry",
+})
+PROCESS_EVENTS = frozenset({"intent", "result", "step.started", "step.finished", "step.decision",
+                            "outside.started", "outside.finished", "outside.ticket-consent",
+                            *CONSOLE_EVENTS})
 
 
 @dataclass
@@ -125,21 +146,25 @@ def process_identities(events):
             value = event.get("project")
             project = value if valid_project(value) else ""
             card = event.get("card", "")
+        uncertain_type = not isinstance(kind, str) or kind not in PROCESS_EVENTS | NON_PROCESS_EVENTS
         action = event.get("action")
         uncertain_action = kind in ("intent", "result") and (
             not isinstance(action, str) or (action != "step-start" and action not in NON_PROCESS_ACTIONS))
-        start = kind == "step.started" or (kind == "intent" and (action == "step-start" or uncertain_action))
+        start = uncertain_type or kind == "step.started" or (
+            kind == "intent" and (action == "step-start" or uncertain_action))
         result = kind == "result" and (action == "step-start" or uncertain_action)
         outside = outside_evidence(event)
         if not (start or result or outside or kind in CONSOLE_EVENTS or kind in ("step.decision", "step.finished")):
             continue
         name = event.get("key") if kind in ("intent", "result") else event.get("step")
+        if uncertain_type and "step" not in event:
+            name = event.get("key")
         valid_name = isinstance(name, str) and bool(name.strip())
         key = name if valid_name else (None, index)
         identity = identities.setdefault(key, ProcessIdentity(name if valid_name else ""))
-        if uncertain_action:
-            # Przechowujemy cały ślad bez naprawiania action. Nawet poprawny
-            # późniejszy start/wynik nie rozstrzyga nieznanej operacji z historii.
+        if uncertain_action or uncertain_type:
+            # Przechowujemy cały ślad bez naprawiania dyskryminatorów. Nawet
+            # późniejszy poprawny start/wynik nie rozstrzyga nieznanej operacji.
             identity.worsen("unknown")
         identity.projects.add(project)
         if not project:

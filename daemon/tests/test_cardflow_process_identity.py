@@ -211,6 +211,41 @@ class ProcessIdentityRegression(unittest.TestCase):
                     pass
                 incus.stop.assert_not_called()
 
+    def test_review6_unknown_type_blocks_unrelated_outside_and_box_stop(self):
+        f = self.fixture
+        f.project()
+        f.journal.append("K-38", "card.started", project="proj")
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for source, restarted in itertools.product(
+                ("step.started ", "STEP.STARTED", "intent ", "result "), (False, True)):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            f.journal.append("K-38", source, step="legacy", key="legacy", action="step-start",
+                             ticket="PT-176", kind="ticket", runner="host", unit="legacy.scope",
+                             worktree=str(f.root), stepDir=str(f.root / "legacy.step"))
+            step = f.outside_history()
+            if restarted:
+                f.restart()
+            with self.subTest(source=source, restarted=restarted):
+                identities = process_identities(f.journal.read_complete("K-38"))
+                with self.subTest(barrier="model"):
+                    self.assertIn("legacy", identities)
+                    self.assertEqual(identities["legacy"].state, "unknown")
+                    self.assertTrue(identities["legacy"].protected)
+                    self.assertEqual(identities["legacy"].data["unit"], "legacy.scope")
+                with self.subTest(barrier="inventory"):
+                    self.assertFalse(f.inventory())
+                with self.subTest(barrier="outside"), f.outside_environment() as spawn:
+                    try:
+                        f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    except FlowError:
+                        pass
+                    self.assertEqual(spawn.call_count, 0)
+                with self.subTest(barrier="lifecycle"):
+                    f.assert_lifecycle_preserved()
+
     def test_review5_incomplete_action_blocks_unrelated_outside_and_box_stop(self):
         f = self.fixture
         f.project()
@@ -285,6 +320,33 @@ def generated_bad_histories():
     yield from generated_bad_card_project_histories()
     yield from generated_bad_ticket_histories()
     yield from generated_bad_action_histories()
+    yield from generated_bad_type_histories()
+
+
+def generated_bad_type_histories():
+    """B1 rundy 6: nieznany typ, brak tożsamości, kolejność i uzupełnienia."""
+    sources = ("step.started", "intent", "result", "step.finished", "step.decision",
+               "outside.started", "outside.finished", "step.entered", "step.console_opened",
+               "step.console_closed", "card.started", "plan.approved")
+    variants = [{}] + [{"type": value} for value in (None, [], {}, 17, "", "future.event")]
+    variants += [{"type": value} for source in sources
+                 for value in (source + " ", source.upper(), " " + source)]
+    for ticket, fields in itertools.product(("PT-176", "PT-999"), variants):
+        good = dict(type="step.started", step="legacy-step", ticket=ticket, kind="ticket",
+                    runner="host", unit="old.scope", worktree="/work", stepDir="/step")
+        bad = {k: v for k, v in good.items() if k != "type"}
+        bad.update(fields)
+        done = dict(type="step.finished", step="legacy-step", result="done")
+        prefix = [dict(type="card.started", project="proj")]
+        yield [*prefix, bad]
+        yield [*prefix, good, bad]
+        yield [*prefix, bad, good, done]
+        # Nie zakładamy, że nieznany dyskryminator używa pola step zamiast key.
+        keyed = {k: v for k, v in bad.items() if k != "step"}
+        yield [*prefix, {**keyed, "key": "legacy-step", "action": "step-start"}, good, done]
+        yield [*prefix, keyed, good, done]
+        # Nieznane zdarzenie bez jakichkolwiek dowodów też nie jest metadanymi.
+        yield [*prefix, fields, good, done]
 
 
 def generated_bad_action_histories():
@@ -395,6 +457,28 @@ def generated_project_histories():
 
 
 class ProcessIdentityProperties(unittest.TestCase):
+    def test_unknown_types_remain_unknown_with_valid_context_and_later_completion(self):
+        for index, history in enumerate(generated_bad_type_histories()):
+            with self.subTest(history=index):
+                identities = process_identities(history)
+                self.assertTrue(any(i.state != "ok" for i in identities.values()))
+                if any(e.get("ticket") == "PT-176" for e in history):
+                    self.assertTrue(any(i.protected for i in identities.values()))
+
+    def test_unknown_type_preserves_process_fields_and_protection_without_normalizing(self):
+        for name_field in ("step", "key"):
+            bad = dict(type="intent ", action="step-start", ticket="PT-176", kind="ticket",
+                       runner="host", unit="legacy.scope", branch="ticket/pt-176-old",
+                       consoleUnit="console.scope", processFile="/console.json")
+            bad[name_field] = "legacy"
+            history = [dict(type="card.started", project="proj"), bad]
+            identity = process_identities(history)["legacy"]
+            with self.subTest(name_field=name_field):
+                self.assertEqual(identity.state, "unknown")
+                self.assertTrue(identity.protected)
+                for key, value in bad.items():
+                    self.assertEqual(identity.data[key], value)
+
     def test_noncanonical_tickets_stay_held_with_valid_project_and_later_completion(self):
         for index, history in enumerate(generated_bad_ticket_histories()):
             with self.subTest(history=index):
@@ -558,6 +642,40 @@ class GeneratedHistoryBarriers(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.f.project()
+
+    def test_known_nonprocess_events_allow_inventory_and_outside_after_restart(self):
+        f = self.f
+        # Zdarzenia metadanych emitowane przez przepływ karty nie oznaczają startu.
+        sources = ("card.inputs", "card.paused", "card.resumed", "card.finished", "card.closed",
+                   "card.main-merged", "card.moved", "card.stalled", "plan.checked", "plan.imported",
+                   "plan.proposed", "plan.reviewer-selected", "plan.approval_requested", "plan.returned",
+                   "plan.revision-discarded", "plan.revision-failed", "plan.revision-ready",
+                   "plan.revision-approved", "plan.reviewed", "plan.ticket-edited", "plan.approved",
+                   "plan.finished", "ticket.assigned", "ticket.rejected", "ticket.imported",
+                   "reviewer.reassigned", "review.verdict", "review.question", "review.decision",
+                   "review.reviewer-note", "step.waiting", "step.retry", "step.transfer_requested",
+                   "step.wip", "step.limit", "step.notice", "step.activity", "step.reported", "step.cleanup",
+                   "flow.error", "flow.notice", "permission.rechecked", "refs.guard", "box.wait",
+                   "box.rebuild-requested", "box.ports", "box.risk", "packs.removed", "k38.handoff",
+                   "k38.inventory", "k38.public-inventory", "k38.diagnostic-requested",
+                   "k38.diagnostic-consumed", "youtrack.reset", "youtrack.retry")
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for source in sources:
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            f.journal.append("K-38", source, step="legacy", ticket="PT-176", key="PT-176",
+                             branch="ticket/pt-176-old", worktree=str(f.root), rows=[], map={},
+                             value="", items=[])
+            with self.subTest(source=source):
+                self.assertEqual(process_identities(f.journal.read_complete("K-38")), {})
+                step = f.outside_history()
+                f.restart()
+                self.assertTrue(f.inventory())
+                with f.outside_environment() as spawn:
+                    f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    spawn.assert_called_once()
 
     def test_known_nonprocess_actions_allow_inventory_and_outside_after_restart(self):
         f = self.f
