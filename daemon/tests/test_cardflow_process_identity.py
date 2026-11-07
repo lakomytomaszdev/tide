@@ -70,6 +70,35 @@ class ProcessIdentityRegression(unittest.TestCase):
                     gate.start_registered("new", consent=True, inventory=f.inventory, bootstrap=bootstrap)
                 procedure.start.assert_not_called()
 
+    def test_advance_preserves_selected_ticket_with_fresh_identity(self):
+        f = self.fixture
+        for name, ticket in (("first", "PT-998"), ("second", "PT-999")):
+            f.journal.append("K-38", "step.started", step=name, ticket=ticket, kind="ticket")
+            f.journal.append("K-38", "step.finished", step=name, ticket=ticket, result="done")
+        selected = fold(f.journal.read("K-38"))
+        selected.last_step = "first"
+        # Pętla fal wybiera kolejne tickety przez last_step. Odświeżenie historii
+        # musi zachować wybór, a dane procesu pobrać z nowego, ścisłego odczytu.
+        selected.steps["first"] = {**selected.steps["first"], "branch": "stale-branch"}
+        with mock.patch.object(f.engine, "_review") as review:
+            f.engine._advance("K-38", selected)
+        self.assertEqual(review.call_count, 1)
+        current = review.call_args.args[2]
+        self.assertEqual(current["step"], "first")
+        self.assertNotIn("branch", current)
+
+    def test_advance_checks_new_protection_for_selected_ticket(self):
+        f = self.fixture
+        f.journal.append("K-38", "step.started", step="first", ticket="PT-999", kind="ticket")
+        f.journal.append("K-38", "step.finished", step="first", ticket="PT-999", result="done")
+        selected = fold(f.journal.read("K-38"))
+        f.journal.append("K-38", "step.started", step="first", ticket="PT-999", kind="ticket",
+                         branch="ticket/pt-176-old")
+        f.journal.append("K-38", "step.started", step="second", ticket="PT-998", kind="ticket")
+        with mock.patch.object(f.engine, "_review") as review:
+            f.engine._advance("K-38", selected)
+        self.assertFalse(review.called)
+
 
 def generated_bad_histories():
     """Przestrzeń luk review 9–13: braki, osierocenia, kolizje i kolejność."""

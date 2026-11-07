@@ -60,6 +60,7 @@ class PortFailureTest(unittest.TestCase):
                 engine.tmp_root = self.tmp.name
                 engine.journal = Journal(os.path.join(self.tmp.name, failure),
                                          mirror=os.path.join(self.tmp.name, failure + "-mirror"))
+                engine.journal.append("K-38", "card.started", project="proj", repo=self.tmp.name)
                 append = engine.journal.append
 
                 def fail(card, event, **fields):

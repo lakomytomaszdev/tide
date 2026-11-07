@@ -2174,10 +2174,17 @@ class FlowEngine(PlanEditing):
 
     def _advance(self, card: str, st: FlowState) -> None:
         """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
+        selected = st.last_step
         try:
             st = self._process_state(card)
         except FlowError:
             return
+        # Fale wybierają kolejny ticket przez last_step, niezależnie od kolejności
+        # startów w dzienniku. Zachowujemy wyłącznie selektor, nigdy stare dane.
+        if selected:
+            if selected not in st.steps:
+                return
+            st.last_step = selected
         if trialhold.held(st.steps.get(st.last_step) or {}):
             return
         if st.open_intents():
