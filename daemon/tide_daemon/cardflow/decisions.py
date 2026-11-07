@@ -607,7 +607,8 @@ def _plan_fix_decisions(st: FlowState) -> list[dict]:
 
 
 def _plan_decision(st: FlowState) -> dict | None:
-    if (st.started or {}).get("entry") not in ("plan", "planning") or not st.plan_proposed:
+    if ((st.started or {}).get("entry") not in ("plan", "planning") and
+            (st.plan_revision or {}).get("kind") != "append") or not st.plan_proposed:
         return None
     if any(s.get("kind") in PLAN_WORK_KINDS for s in st.running()):
         # Poprawa albo review planu trwa w tle — decyzja przyjdzie, gdy się skończą (K-38, 03.11).
@@ -638,17 +639,22 @@ def _plan_decision(st: FlowState) -> dict | None:
                 "technical": technical}
     if revision.get("pending") and st.plan_reviewed:
         technical["difference"] = revision.get("difference") or []
+        manual = revision.get("kind") == "append"
         return {"_seq": max(int(revision.get("seq") or 0), int(review.get("seq") or 0)),
                 "id": f"plan-revision:{revision.get('seq') or 0}", **base, "kind": "plan-revision",
                 **_sentences("plan-revision", "", ""),
                 "options": [
                     _option("approve", "Zatwierdź różnicę planu", "Zmieniony plan zastąpi obecny; tickety ruszą według nowych fal.",
                             APPROVE_PLAN, {}, recommended=True),
+                    _option("discard-revision", "Odrzuć dopisanie",
+                            "Dotychczasowy plan zostaje. Poprawiony ticket możesz ponownie zapisać w formularzu.",
+                            EDIT_PLAN, {"action": "discard-revision"}) if manual else
                     _option("return", "Odeślij z uwagami recenzenta",
                             "Planujący poprawi plan jeszcze raz w tle.",
                             EDIT_PLAN, {"action": "return", "feedback": technical["findings"]}),
                 ],
-                "freeText": True, "reply": {"method": EDIT_PLAN, "params": {"action": "return"}, "field": "feedback"},
+                "freeText": not manual, "reply": {} if manual else
+                    {"method": EDIT_PLAN, "params": {"action": "return"}, "field": "feedback"},
                 "technical": technical}
     if revision and not revision.get("pending") and not revision.get("failed"):
         # Poprawa planu po odesłaniu trwa w tle — stary plan nie wraca jako decyzja (K-40, 03.11: okno pokazywało go

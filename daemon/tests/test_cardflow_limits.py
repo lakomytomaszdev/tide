@@ -572,7 +572,11 @@ class InteractiveTransferTest(FlowInProcess):
         self.flow.stop()
         with open(os.path.join(first["worktree"], "PLANNING-WIP.md"), "w", encoding="utf-8") as fh:
             fh.write("Niedokończony plan\n")
-        with mock.patch.object(self.flow.engine, "_handoff_note", side_effect=RuntimeError("crash after WIP")):
+        def crash_after_wip(_card, _step, stopped, _reason):
+            self.assertTrue(stopped.committed, stopped)
+            raise RuntimeError("crash after WIP")
+
+        with mock.patch.object(self.flow.engine, "_handoff_note", side_effect=crash_after_wip):
             with self.assertRaises(RuntimeError):
                 self.flow.engine._resolve_transfer(card, fold(self.events(card)),
                                                    {"choice": "transfer", "step": first["step"],

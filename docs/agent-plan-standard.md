@@ -156,6 +156,39 @@ worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repoz
 Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
 review i scaleniu ticketu.
 
+**Szkice zakresu następczego (`followups/`).** Pakiet propozycji obejmuje Markdowny obok planu,
+`tickets/*.md` i `followups/**/*.md`. Podkatalogi szkiców zachowują swoją strukturę. Usługa zamraża
+pełną treść przed przekazaniem propozycji; review otrzymuje kopię pakietu w `in/proposal/`, a poprawka
+dodatkowo zaczyna z kopiami w swoim wyjściu. Późniejsza edycja wyjścia autora nie zmienia migawki.
+Dotyczy to planowania w tle, Konsoli oraz propozycji wskazanej z pliku. Każda propozycja przechowuje
+własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
+Kopia do odczytu zachowuje oryginalne nazwy i treści. W wyjściu poprawki plan ma nazwę `plan.md`,
+a linki ze szkiców wskazują tę nazwę; przy poprawce zatwierdzonego planu kartki i linki do nich
+używają już nadanych ID zamiast numerów roboczych. Szkice zachowują podkatalogi, fragmenty i parametry URL.
+Istniejące kartki w wyjściu poprawki zatwierdzonego planu mają aktualną treść z planu bazowego,
+w tym edycje użytkownika w panelu; pierwotna migawka w `in/proposal/` pozostaje bez zmian.
+
+Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
+Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze
+referencyjne i cele z fragmentem) muszą wskazywać istniejący Markdown w pakiecie; wyjście poza
+katalog artefaktów i brak celu przerywają sprawdzanie przed publikacją niekompletnej propozycji.
+Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia daje wynik błędu kroku.
+
+Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
+`../followups/…` są przeliczane względem docelowego katalogu kartek. Linki ze szkiców do planu
+i kartek są przeliczane według datowanej nazwy planu i nadanych ID ticketów, także w podkatalogach,
+z zachowaniem fragmentów i parametrów URL. Lokalny cel szkicu musi należeć do publikowanego kompletu:
+plan, kartki ticketów planu lub `followups/`; pozostałe cele są odrzucane przed publikacją propozycji.
+Kolejne commity stanu planu
+zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy udany commit zatwierdzonej
+poprawki bierze tekst poza tabelą i szkice z nowej zamrożonej propozycji. Podczas oczekiwania
+na decyzję commity stanu nadal korzystają z pakietu poprzednio zatwierdzonej wersji:
+nie nadpisują szkiców treścią poprawki ani nie dodają jej nowych szkiców. Późniejsze aktualizacje stanu
+zachowują tekst z worktree, w tym ręczne dopiski. Próg pierwszego udanego zapisu dotyczy wersji
+faktycznie zatwierdzonej; odrzucenie niezatwierdzonej poprawki nie unieważnia wcześniejszego zapisu.
+Szkic opisuje zakres do osobnego
+zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
+
 ## Przepływ karty prowadzony przez Tide (1.2)
 
 Karta na Tablicy uruchamia planowanie albo pojedynczy ticket. Tide prowadzi dziennik karty, zakłada gałąź karty

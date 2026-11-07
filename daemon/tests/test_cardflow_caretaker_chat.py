@@ -4,6 +4,7 @@ import os
 from types import SimpleNamespace
 from unittest import mock
 
+from tide_daemon.board.model import Project
 from tide_daemon.cardflow import caretaker, execution, history
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.state import fold
@@ -30,7 +31,7 @@ class CaretakerChatTest(EngineOnJournal):
         self.add("K-1", "result", action="card-branch", key="card", ok=True,
                  branch="card/k-1", worktree=self.worktree)
         item = SimpleNamespace(id="K-1", projects=[], title="Eksport")
-        project = SimpleNamespace(repo=self.base, name="Projekt")
+        project = Project(slug="proj", repo=self.base, name="Projekt")
         self.engine._project = mock.Mock(return_value=(item, project))
         self.engine.terminal = mock.Mock()
         self.engine.terminal.open.return_value = "tab"
@@ -103,6 +104,29 @@ class CaretakerChatTest(EngineOnJournal):
             self.engine.talk_to_caretaker("K-1", {})
         self.assertEqual(err.exception.code, "no-step")
         self.assertFalse(self.engine.derived({"id": "K-1", "column": "todo"})["flow"]["canTalkToCaretaker"])
+
+    def test_prepared_caretaker_chat_reads_project_dirs_and_writes_only_out(self):
+        self.add("K-1", "step.console_closed", step=self.name)
+        data = os.path.join(self.base, "dane")
+        os.makedirs(data)
+        project = self.engine._project.return_value[1]
+        project.read_dirs = [data]
+
+        name = self.engine.talk_to_caretaker("K-1", {"problem": PROBLEM})["step"]
+        step = self.st.caretakers[name]
+        with open(step["taskFile"], encoding="utf-8") as fh:
+            task = json.load(fh)
+        with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+            fs = json.load(fh)["sandbox"]["filesystem"]
+        self.assertIn(data, fs["allowRead"])
+        self.assertIn(data, fs["denyWrite"])
+        self.assertIn(["--add-dir", data], [task["argv"][i:i + 2] for i in range(len(task["argv"]) - 1)])
+        out = os.path.join(step["stepDir"], "out")
+        self.assertEqual(fs["allowWrite"], [out])
+        self.assertEqual(task["workdir"], out)
+        self.assertTrue(task["cleanEnv"])
+        self.assertIn(f"Write(/{out}/**)", task["argv"])
+        self.assertIn(f"Edit(/{data}/**)", task["argv"])
 
     def test_codex_interactive_keeps_out_only_and_disables_commands_mcp_and_temp_writes(self):
         directory = self.worktree + ".codex-chat.step"

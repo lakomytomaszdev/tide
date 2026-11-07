@@ -644,7 +644,8 @@ function planReviewerExecutors(status, planner, blockedProvider) {
     if (!author) return []
     const options = launchExecutorList(status).filter(e => e && e.name && e.program && e.model &&
         e.available !== false && e.name !== author.name &&
-        String(e.model).toLowerCase() !== String(author.model).toLowerCase() &&
+        (String(e.model).toLowerCase() !== String(author.model).toLowerCase() ||
+         String(e.effort || "") !== String(author.effort || "")) &&
         (e.provider === "local") === (author.provider === "local"))
         .map(e => ({ value: String(e.name), label: String(e.name) + " · " + String(e.provider) }))
     if (blockedProvider) options.sort((a, b) => {

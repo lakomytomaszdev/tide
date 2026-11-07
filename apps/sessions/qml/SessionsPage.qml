@@ -128,6 +128,11 @@ Rectangle {
         delete tags[tag]
         cardTags = tags
         if (!sent) return
+        if (sent[1].indexOf("step-note:") === 0) {
+            cardFullView.noteReply(sent[1].substring(10),
+                reply && reply.ok ? "" : reply && reply.message || "Nie zapisano uwagi.", reply)
+            return
+        }
         if (reply && reply.ok && reply.preview) baseChangePreview.show(sent[0], reply.preview)
         if (tag.indexOf("base-preview:") === 0) {
             baseChangePreview.busy = false

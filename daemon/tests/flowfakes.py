@@ -181,7 +181,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
+            # Pierwszy rozpoczęty ticket zachowuje kartkę także dla numerów z zewnętrznego trackera.
+            kept = (row is rows[0] and not row["workId"].startswith("#")) or (
+                row["workId"].startswith("PT-") and "Dodaj ticket na migrację formatu" in prompt)
             fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     if broken_structure:
         with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
@@ -339,6 +341,14 @@ if word == "pytanie-bez-pracy" and "Odpowiedź użytkownika:" not in prompt:
     finish("question", question="Który format daty?")
     sys.exit(0)
 
+if word == "poza-uwagi":
+    if "Wznowienie tego samego kroku" not in prompt:
+        until = time.monotonic() + 30
+        while not os.path.isfile(os.path.join(cwd, "release-notes")) and time.monotonic() < until:
+            time.sleep(0.05)
+        os.unlink(os.path.join(cwd, "release-notes"))
+    word = "poza"
+
 write("start")
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)
@@ -478,6 +488,11 @@ elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",
                    "question": "Czy możesz uruchomić testy z Dockerem/Testcontainers poza piaskownicą?"}, fh)
+elif word == "poza-kolejne":
+    # Każde wznowienie ponownie prosi o to samo polecenie: test granic zgody ticketu.
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
+                   "reason": "kolejna prośba ticketu"}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")

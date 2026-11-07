@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from . import DAEMON_DIR, flowfakes
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
@@ -442,7 +443,16 @@ class ManualColumnsTest(FlowCase):
         self.assertTrue(wait_until(busy, timeout=15), "worktree kroku zajęty w oknie Worktrees")
         self.assertTrue(self.call("MoveCard", card_id, "backlog", 0)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=5), self.events(card_id))
-        card = self.wait_column(card_id, "backlog")
+        self.wait_column(card_id, "backlog")
+        # Surowa kolumna jest widoczna przed publikacją wyliczonej notki pauzy.
+        # Zwracamy tę samą migawkę, w której sprawdziliśmy gotowość projekcji.
+        def paused_snapshot():
+            card = self.shown(card_id)
+            return card if card["boardColumn"] == "backlog" and \
+                "wstrzymana" in ((card.get("derived") or {}).get("note") or "") else None
+
+        card = wait_until(paused_snapshot, timeout=10)
+        self.assertTrue(card, self.shown(card_id))
         self.assertIn("wstrzymana", card["derived"]["note"])
         self.assertEqual(len(self.of(card_id, "card.paused")), 1)
         self.assertTrue(flowfakes.alive(pid), "wstrzymanie nie zabija trwającego kroku")
@@ -476,13 +486,24 @@ class JournalTest(FlowCase):
         git(self.board, "rm", "-q", "-r", os.path.join("flow", card_id), env=self.git_env)
         git(self.board, "commit", "-q", "-m", "ręczne cofnięcie", env=self.git_env)
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
+        # Odtworzony plik i opublikowana migawka kończą się osobno. Pierwsza odpowiedź
+        # celowo nie ma ostrzeżenia, aby wymusić ten sam wyścig także bez obciążenia.
+        call, first_snapshot = self.call, []
 
-        def warning():
-            errors = self.call("Snapshot")["errors"]
-            return [e for e in errors if "dziennik" in e["message"] and card_id in e["message"]]
+        def delayed_snapshot(member, *args):
+            result = call(member, *args)
+            if member == "Snapshot" and not first_snapshot:
+                first_snapshot.append(True)
+                return {**result, "errors": []}
+            return result
 
-        # Odtworzenie pliku w wątku przepływu wyprzedza publikację migawki w głównym wątku usługi.
-        self.assertTrue(wait_until(warning, timeout=5), self.call("Snapshot")["errors"])
+        def published_warning():
+            return [e for e in self.call("Snapshot")["errors"]
+                    if "dziennik" in e["message"] and card_id in e["message"]]
+
+        with mock.patch.object(self, "call", side_effect=delayed_snapshot):
+            self.assertTrue(wait_until(published_warning, timeout=15), "ostrzeżenie w migawce po odtworzeniu dziennika")
+        self.assertEqual(first_snapshot, [True])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
 
 

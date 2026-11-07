@@ -7,7 +7,7 @@ liczony podwójnie.
 import os
 
 
-def disk_usage(path: str, exclude: tuple = ()) -> int:
+def disk_usage(path: str, exclude: tuple = (), *, check=lambda: None) -> int:
     """Rozmiar w bajtach albo -1, gdy katalogu nie da się odczytać."""
     try:
         root = os.lstat(path)
@@ -19,6 +19,7 @@ def disk_usage(path: str, exclude: tuple = ()) -> int:
     total = root.st_blocks * 512
     stack = [path]
     while stack:
+        check()
         current = stack.pop()
         try:
             entries = os.scandir(current)
@@ -26,6 +27,7 @@ def disk_usage(path: str, exclude: tuple = ()) -> int:
             continue
         with entries:
             for entry in entries:
+                check()
                 try:
                     st = entry.stat(follow_symlinks=False)
                 except OSError:

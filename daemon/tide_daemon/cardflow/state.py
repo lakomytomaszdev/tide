@@ -29,6 +29,7 @@ from datetime import datetime
 import re
 
 from .baseproposal import pending
+from . import consent
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -62,6 +63,7 @@ class FlowState:
     intents: dict = field(default_factory=dict)     # (action, key) → intent
     results: dict = field(default_factory=dict)     # (action, key) → result
     steps: dict = field(default_factory=dict)       # step → step.started
+    step_notes: dict = field(default_factory=dict)  # noteId → step.note-added
     finished: dict = field(default_factory=dict)    # step → step.finished
     verdicts: dict = field(default_factory=dict)    # (ticket, runda) → review.verdict
     review_questions: dict = field(default_factory=dict)
@@ -69,6 +71,8 @@ class FlowState:
     step_retries: dict = field(default_factory=dict)  # źródłowy krok → automatyczne ponowienie
     step_decisions: dict = field(default_factory=dict)  # źródłowy krok → odpowiedź użytkownika
     outside_started: dict = field(default_factory=dict)  # krok → outside.started (polecenie poza piaskownicą)
+    outside_launched: set = field(default_factory=set)  # także zakończone, przed wznowieniem kroku
+    ticket_consents: dict = field(default_factory=dict)  # ticket → ostatnie nadanie/cofnięcie w zleceniu
     superseded: set = field(default_factory=set)      # kroki sprzed card.started albo odesłane do planu — bez decyzji
     plan_resumes: dict = field(default_factory=dict)  # krok → None przed rozstrzygnięciem poprawki, potem zbiór blokerów
     wip_retries: dict = field(default_factory=dict)    # krok → ponowiony bezpieczny commit po błędzie
@@ -85,6 +89,7 @@ class FlowState:
     plan_proposed: dict | None = None
     approval_requested: dict | None = None
     plan_approved: dict | None = None
+    plan_artifact_source: dict | None = None  # propozycja pakietu z ostatniego zatwierdzenia
     plan_reviewed: dict | None = None
     plan_reviewer: str = ""  # ręczny wybór modelu do niezależnego review planu
     plan_review_wait: dict | None = None  # blokada limitu pozostaje po restarcie i próbie review
@@ -266,6 +271,7 @@ def fold(events: list[dict]) -> FlowState:
             if st.base_request.get("decision") == e.get("decision"):
                 st.base_request = {}
         if kind == "card.started":
+            st.ticket_consents = {}
             st.base = _base(e)
             st.initial_base = dict(st.base)
             version = e.get("baseVersion", 0)
@@ -284,6 +290,7 @@ def fold(events: list[dict]) -> FlowState:
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+            st.plan_artifact_source = None
             st.imported = None
             st.imported_done.clear()
             st.plan_reviewed = st.plan_revision = None
@@ -313,6 +320,7 @@ def fold(events: list[dict]) -> FlowState:
                     and previous == st.base_version and version == previous + 1
                     and candidate["status"] == "known" and _valid_generation(st, e, candidate)):
                 st.base, st.base_version, st.base_change = candidate, version, e
+                st.ticket_consents = {}
                 st.base_validation_required = e.get("validationRequired") is True
                 st.base_generation_wait = {}
                 if "generation" in e:
@@ -341,6 +349,7 @@ def fold(events: list[dict]) -> FlowState:
                     # Propozycja i review planu także dotyczą dawnego kodu, nawet jeśli
                     # powstały wyłącznie poza repo i nie ma jeszcze commitu planu.
                     st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
+                    st.plan_artifact_source = None
                     st.plan_reviewed = st.plan_revision = None
                     st.plan_reviewer = ""
                     st.plan_review_wait = None
@@ -439,6 +448,8 @@ def fold(events: list[dict]) -> FlowState:
             if e.get("kind") == "plan-review" and "limit" in str(e.get("reason") or "") and \
                     not is_queue_wait(e.get("reason")):
                 st.plan_review_wait = e
+        elif kind == "step.note-added":
+            st.step_notes[e["noteId"]] = e
         elif kind == "step.started":
             st.plan_resumes.pop(e.get("parentStep"), None)
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
@@ -465,15 +476,25 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.entered" and e.get("step") in {**st.steps, **st.caretakers}:
             steps = st.caretakers if e["step"] in st.caretakers else st.steps
             steps[e["step"]] = {**steps[e["step"]], "mode": "interactive",
+                                   "deliveredNoteIds": list(dict.fromkeys([
+                                       *steps[e["step"]].get("deliveredNoteIds", []),
+                                       *e.get("deliveredNoteIds", [])])),
+                                   "consoleNoteIds": e.get("deliveredNoteIds", []),
                                    "session": e.get("session") or "", "closeFile": e.get("closeFile") or "",
                                    "processFile": e.get("processFile") or "", "enteredAt": e.get("enteredAt") or 0,
                                    "consoleUnit": e.get("consoleUnit") or "",
                                    "source": e.get("source") or "", "taskFile": e.get("taskFile") or "",
+                                   "readDirsProfile": bool(e.get("readDirsProfile") or
+                                                           steps[e["step"]].get("readDirsProfile")),
                                    "consoleClosed": False, "consoleOpened": False}
         elif kind in ("step.console_opened", "step.console_closed") and e.get("step") in {**st.steps, **st.caretakers}:
             steps = st.caretakers if e["step"] in st.caretakers else st.steps
             field = "consoleOpened" if kind == "step.console_opened" else "consoleClosed"
             steps[e["step"]] = {**steps[e["step"]], field: True}
+            if kind == "step.console_closed":
+                steps[e["step"]]["deliveredNoteIds"] = [ident for ident in
+                    steps[e["step"]].get("deliveredNoteIds", [])
+                    if ident not in e.get("cancelledNoteIds", [])]
         elif kind == "step.transfer_requested":
             st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":
@@ -495,10 +516,17 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.decision":
             if e.get("step") not in st.superseded or e.get("step") in st.plan_resumes:
                 st.step_decisions[e.get("step")] = e
+        elif kind in (consent.GRANTED, consent.REVOKED):
+            consent.apply(st, e)
+        elif kind == "outside.decision-invalidated":
+            current = st.step_decisions.get(e.get("step")) or {}
+            if current.get("seq") == e.get("decisionSeq"):
+                st.step_decisions.pop(e.get("step"), None)
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
         elif kind == "outside.started":
+            st.outside_launched.add(e.get("step"))
             st.outside_started[e.get("step")] = e
         elif kind == "outside.finished":
             st.outside_started.pop(e.get("step"), None)
@@ -524,6 +552,9 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.approval_requested = None
+            if e.get("appendRevision"):
+                st.plan_revision = {**e["appendRevision"], "seq": e["seq"]}
+                st.plan_reviewer = st.plan_revision["reviewer"]
         elif kind == "plan.reviewer-selected":
             st.plan_reviewer = e.get("executor") or ""
         elif kind == 'plan.approval_requested':
@@ -541,6 +572,11 @@ def fold(events: list[dict]) -> FlowState:
             if "caretaker" not in e:
                 st.plan_user_seq = int(e.get("seq") or 0)
         elif kind == "plan.revision-discarded":
+            if (st.plan_revision or {}).get("kind") == "append":
+                st.plan_proposed = st.plan_revision["previousProposal"]
+                st.plan_reviewed = st.plan_revision["previousReview"]
+                st.plan_reviewer = ""
+                st.plan_review_wait = None
             st.plan_revision = None
             st.plan_checked = None
             st.plan_user_seq = int(e.get("seq") or 0)
@@ -555,10 +591,16 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_revision = e
         elif kind == "plan.revision-approved":
             before = {r["id"] for r in (st.plan_approved or {}).get("rows", [])}
-            st.plan_approved = {**st.plan_approved, **e["plan"]} if st.plan_approved else None
+            if st.plan_approved:
+                st.plan_artifact_source = st.plan_proposed or {}
+            st.plan_approved = {**st.plan_approved, **e["plan"],
+                                "textApprovedSeq": e.get("seq", 0)} if st.plan_approved else None
             rows = (st.plan_approved or {}).get("rows", [])
             present = {r["id"] for r in rows}
             added = present - before
+            if (st.plan_revision or {}).get("kind") == "append":
+                # Ręcznie dopisany ticket nie rozszerza blokerów rozpoczętej pracy (PT-248).
+                added = set()
             # Rozpoczęte kartki są nietykalne. Oczekiwania wznowień i jawne blokery tworzą wspólny graf;
             # samo sprawdzenie kartek nie wykrywa cyklu między dwiema kolejnymi poprawkami (PT-155).
             graph = {r["id"]: set(r.get("blockers") or []) for r in rows}
@@ -598,6 +640,7 @@ def fold(events: list[dict]) -> FlowState:
                     setattr(st, name, plan)
         elif kind == "plan.approved":
             st.plan_approved = e
+            st.plan_artifact_source = st.plan_proposed or {}
             for row in e.get("rows") or []:
                 if row.get("sourceState") == "gotowe":
                     st.imported_done.add(row.get("id"))
@@ -1437,8 +1480,10 @@ def _plan_view(st: FlowState, out: dict) -> tuple[list, set]:
                                else phase, "why": "" if state in ("gotowe", "odrzucone") else why})
     out["tickets"].sort(key=lambda ticket: ticket["wave"])
     out["flow"]["waveLabel"] = f"fala {wave_no} z {len(waves)}"
+    from . import planappend
     out["flow"]["plan"] = {"review": plan_review_view(st.plan_reviewed), "revision": st.plan_revision or {},
-                           "planner": proposal.get("planner") or "",
+                           "fingerprint": planappend.fingerprint(st), "canAppend": planappend.available(st),
+                           "planner": (proposal.get("reviewAuthor") if revision_pending else "") or proposal.get("planner") or "",
                            "reviewStep": next((s.get("step") for s in reversed(list(st.steps.values()))
                                                if s.get("kind") == "plan-review" and s.get("step") not in st.finished), ""),
                            "reviewProvider": next((s.get("provider") for s in reversed(list(st.steps.values()))

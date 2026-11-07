@@ -21,9 +21,9 @@ from .labels import result_label, step_name
 
 LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
-          "ticket.rejected", "result", "caretaker.escalated", "caretaker.action", "caretaker.reported")
+          "ticket.rejected", "outside.ticket-consent", "outside.ticket-consent-revoked", "result", "caretaker.escalated", "caretaker.action", "caretaker.reported")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "card.merged", "step.decision", "plan.approved",
-               "ticket.rejected", "review.decision")
+               "ticket.rejected", "review.decision", "outside.ticket-consent", "outside.ticket-consent-revoked")
 RESUMABLE = ("question", "denied", "stopped")
 KIND_LABELS = {"step": "krok", "review": "review", "decision": "decyzja", "plan": "plan", "card": "karta",
                "merge": "scalanie", "caretaker": "opiekun"}
@@ -150,6 +150,10 @@ def _event_entry(e: dict, st=None) -> dict | None:
                 (f" na {e['executor']}" if e.get("executor") else "") + " (limit)"
         else:
             text = "Decyzja: " + CHOICES.get(e.get("choice"), "odpowiedź") + (f" ({label})" if label else "")
+    elif kind in ("outside.ticket-consent", "outside.ticket-consent-revoked"):
+        group = "decision"
+        text = ticket + (": zgoda na polecenia poza piaskownicą" if kind == "outside.ticket-consent"
+                         else ": cofnięto zgodę na polecenia poza piaskownicą")
     elif kind == "review.decision":
         if e.get("choice") == "reject":
             return None                                 # skutek („Ticket odrzucony”) jest osobnym wpisem

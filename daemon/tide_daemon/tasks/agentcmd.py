@@ -238,7 +238,8 @@ class Step:
     git_email: str = "krok@tide.invalid"
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
-    read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
+    read_dirs: tuple = ()          # dodatkowe repozytoria i dane projektów, wyłącznie do odczytu
+    read_profile: bool = False     # utrzymaj ograniczony profil także po usunięciu ostatniego katalogu
     context_dirs: tuple = ()       # katalogi wyniku poprzednich kroków ticketu (wznowienie): odczyt i narzędzie Read
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
@@ -520,6 +521,12 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
                                    "deny": read_only_rules(skill_dirs)}
         settings["sandbox"]["filesystem"]["denyWrite"] = skill_dirs
+    # --add-dir rozszerza również domyślny zapis Bash. Edit nie jest granicą dla powłoki:
+    # jawny denyWrite ma pierwszeństwo także wobec zapisu domyślnego i ścieżek przez dowiązania.
+    readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))
+    if readonly:
+        fs = settings["sandbox"]["filesystem"]
+        fs["denyWrite"] = list(dict.fromkeys([*fs.get("denyWrite", []), *readonly]))
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
@@ -542,7 +549,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         allowed, bans = read_only_tools(step.worktree, step.step_dir)
         disallowed = (*bans, f"Edit(/{os.path.normpath(step.worktree)}/**)",
                       f"Edit(/{os.path.normpath(step.repo)}/**)")
-    disallowed = [*disallowed, *read_only_rules(step.read_dirs)]
+    disallowed = [*disallowed, *read_only_rules(readonly)]
     if allowed:
         argv += ["--allowedTools", *allowed]
     if disallowed:
@@ -574,7 +581,7 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
         if step.write_out_only else []
     # PT-143/S2: `writable_roots` tylko dopisuje katalogi; `/tmp` i `$TMPDIR` są zapisywalne domyślnie (i według
     # ustawień użytkownika), więc dla zapisu wyłącznie do `out` wykluczamy je jawnie — także łatką `apply_patch`.
-    if step.write_out_only:
+    if step.write_out_only or step.read_dirs or step.read_profile:
         no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
                         "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
     # `out` leży obok worktree, poza repozytorium; wyjątek dotyczy tylko kroku z zapisem do `out`.
@@ -584,6 +591,37 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
             "-c", 'approval_policy="never"', *no_commands, *mcp, *git_check,
             *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
+
+
+def restricted_interactive(step: Step, images=()) -> "local_mod.Command":
+    """Interaktywne wejście z tym samym profilem plików, środowiskiem i granicą co krok w tle.
+
+    Zmieniamy wyłącznie tryb komunikacji z programem. Ustawienia są osobnym snapshotem tego startu.
+    """
+    step = replace(step, read_dirs=tuple(dict.fromkeys([*step.read_dirs,
+                    *[os.path.dirname(p) for p in images]])))
+    bg = background(step)
+    bg.prepare()
+    argv = list(bg.argv)
+    if step.tool == "claude":
+        argv.remove("-p")
+        for flag in ("--output-format", "--permission-prompts"):
+            at = argv.index(flag)
+            del argv[at:at + 2]
+        argv.remove("--verbose")
+        prompt = bg.stdin
+        if images:
+            prompt += "\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n" + "\n".join(images)
+        argv += ["--", prompt]
+    else:
+        del argv[1]  # exec
+        argv.remove("--json")
+        at = argv.index("--cd")
+        del argv[at:at + 2]
+        argv[-1:] = [*[arg for path in images for arg in ("--image", path)], "--", bg.stdin]
+    # Konsola startuje ze środowiskiem hosta: usuń te same sekrety, które odrzuca _env.
+    unset = sorted(set(os.environ) - set(bg.env))
+    return local_mod.Command(argv, bg.env, bg.secret_env, unset, bg.token_files)
 
 
 def background(step: Step) -> Background:

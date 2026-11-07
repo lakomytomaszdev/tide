@@ -44,14 +44,18 @@ class CardFlowMonitor(QObject):
         self._timer.start()
 
     def stop(self) -> None:
+        if self._stopped:
+            return
         self._timer.stop()
         self._stopped = True
         if self._hosting_pool is not None:
             self._hosting_pool.shutdown(wait=False, cancel_futures=True)
             self._hosting_pool = None
         if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
+            # Bieżąca operacja zostawia trwały zamiar/wynik; niezależne jednostki nie są zatrzymywane.
+            self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+        self.commit()  # callback Qt może już nie dotrzeć po app.exec()
 
     # --- odczyt dla BoardMonitor -----------------------------------------------------------------
 
@@ -175,6 +179,9 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def add_step_note(self, card_id: str, request: str, reply) -> None:
+        self._json_action("AddCardStepNote", request, lambda data: self.engine.add_step_note(card_id, data), reply)
+
     def resolve_caretaker(self, card_id: str, request: str, reply) -> None:
         """Decyzja o problemie karty bez własnego kroku."""
         self._json_action("ResolveCardCaretaker", request,
@@ -184,6 +191,10 @@ class CardFlowMonitor(QObject):
         """PreviewStepFault: podgląd karty z błędem kroku bez zapisu (PT-125)."""
         self._json_action("PreviewStepFault", request, lambda data: self.engine.preview_step_fault(card_id, data),
                           reply)
+
+    def revoke_ticket_consent(self, card_id: str, request: str, reply) -> None:
+        self._json_action("RevokeTicketConsent", request,
+                          lambda data: self.engine.revoke_ticket_consent(card_id, data), reply)
 
     def report_step_fault(self, card_id: str, request: str, reply) -> None:
         """ReportStepFault: karta z błędem w Backlogu plasma-tide (albo nowe wystąpienie) i ponowienie kroku."""
@@ -330,6 +341,8 @@ class CardFlowMonitor(QObject):
         return True
 
     def _deliver(self, then, future) -> None:
+        if self._stopped:
+            return
         # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
         if self.commit() and self.board is not None:
             self.board.publish()

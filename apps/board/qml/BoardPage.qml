@@ -106,6 +106,8 @@ Rectangle {
     signal abandonStepRequested(string tag, string cardId, string stepId) // /Board AbandonStep
     signal reviewResolveRequested(string tag, string cardId, string choice) // /Board ResolveCardReview
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
+    signal ticketConsentRevokeRequested(string tag, string cardId, string request)
+    signal stepNoteRequested(string tag, string cardId, string request)
     signal caretakerResolveRequested(string tag, string cardId, string request)
     signal caretakerTalkRequested(string tag, string cardId, string request)
     signal faultPreviewRequested(string tag, string cardId, string request) // /Board PreviewStepFault (PT-125)
@@ -370,6 +372,8 @@ Rectangle {
         tags[tag] = [cardId, decisionId]
         decisionTags = tags
         if (method === "ResolveCardStep") stepResolveRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "RevokeTicketConsent") ticketConsentRevokeRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "AddCardStepNote") stepNoteRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardCaretaker") caretakerResolveRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
         else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
@@ -406,6 +410,10 @@ Rectangle {
         const tags = Object.assign({}, decisionTags)
         delete tags[tag]
         decisionTags = tags
+        if (sent && sent[1].indexOf("step-note:") === 0) {
+            cardFullView.noteReply(sent[1].substring(10), error, reply)
+            return
+        }
         if (sent && !error && reply && reply.preview) baseChangePreview.show(sent[0], reply.preview)
         if (sent && !error && reply && reply.reported)
             showToast((reply.action === "append" ? "Wystąpienie dopisane do " : "Karta z błędem ") + reply.reported

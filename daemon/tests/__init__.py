@@ -2,6 +2,11 @@
 import os
 import sys
 
+# Musi poprzedzać każdy import produktu, także przy unittest i pytest bez runnera.
+from tools.test_isolation import initialize
+
+TEST_STATE_HOME = initialize()
+
 DAEMON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
@@ -12,17 +17,6 @@ if DAEMON_DIR not in sys.path:
 # $TIDE_CLAUDE_BIN znaczy „brak programu”, więc raport bierze reguły. Testy podsumowania podają
 # własną atrapę (test_report_standup.py), usługi uruchamiane w testach dziedziczą tę zmienną.
 os.environ["TIDE_CLAUDE_BIN"] = ""
-
-# 06.11: bezpośrednie `python3 -m unittest` (bez tools/test_runner.py) zapisało atrapę K-1 do
-# ~/.local/state/tide/board-derived.json działającej usługi — karta-widmo na Tablicy użytkownika. Uruchamiacz daje
-# każdemu modułowi własny katalog stanu (tide-test-state-*); przebieg poza nim dostaje tu własny katalog tymczasowy.
-if "tide-test-state-" not in os.environ.get("XDG_STATE_HOME", ""):
-    import atexit
-    import shutil
-    import tempfile
-    _STATE = tempfile.mkdtemp(prefix="tide-test-state-")
-    os.environ["XDG_STATE_HOME"] = _STATE
-    atexit.register(shutil.rmtree, _STATE, True)
 
 # Testy nigdy nie pytają prawdziwego Dockera (inne projekty na tym komputerze zależą od jego
 # kontenerów): domyślnie nieistniejący socket, usługi w testach dziedziczą tę zmienną. Testy

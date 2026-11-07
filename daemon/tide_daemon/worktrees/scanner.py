@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from ..agents.timeutil import iso
 from ..board.marker import is_board_repo
 from .disk import disk_usage
+from .cancellation import Cancellation
 from .git import (HEAD_RESTARTS, MAIN_CANDIDATES, Git, common_dir, parse_status, parse_worktree_list,
                   pick_main_branch, reflog_has_own_commit, worktree_gitdir)
 from .naming import guess_tool, humanize_branch
@@ -162,12 +163,13 @@ def own_commits(repo_path: str, wt: Worktree) -> bool | None:
     return reflog_has_own_commit(os.path.join(gitdir, "logs", "HEAD"), HEAD_RESTARTS) if gitdir else None
 
 
-def find_repositories(root: str, max_depth: int = MAX_DEPTH) -> list[str]:
+def find_repositories(root: str, max_depth: int = MAX_DEPTH, *, check=lambda: None) -> list[str]:
     """Katalogi repozytoriów (z katalogiem .git albo repozytoria bare) pod root — bez repozytorium
     tablicy Tide (rozpoznanego po znaczniku), więc nie ma go w worktrees, KRunnerze ani nowym zadaniu."""
     found: list[str] = []
 
     def walk(path: str, depth: int) -> None:
+        check()
         dotgit = os.path.join(path, ".git")
         if os.path.isdir(dotgit) or _is_bare(path):
             if not is_board_repo(path):  # tablica Tide to dane, nie projekt (board/marker.py)
@@ -223,17 +225,24 @@ class WorktreeScanner:
         self.max_depth = max_depth
         self.size_ttl = size_ttl
         self.git = git or Git()
+        self._cancel = Cancellation()
+        if isinstance(self.git, Git):
+            self.git.cancel = self._cancel
         self.clock = clock
         self.items: list[Worktree] = []
         self._sizes: dict[str, tuple[int, float]] = {}  # ścieżka → (bajty, kiedy policzone)
         self._lock = threading.Lock()
+
+    def stop(self) -> None:
+        self._cancel.close()
 
     # --- odczyt (praca w tle) -------------------------------------------------------------
 
     def refresh(self) -> list[Worktree]:
         """Przegląda repozytoria i odświeża listę. Ciężkie — wołać poza wątkiem D-Bus."""
         items: list[Worktree] = []
-        for repo in find_repositories(self.root, self.max_depth):
+        for repo in find_repositories(self.root, self.max_depth, check=self._cancel.check):
+            self._cancel.check()
             items += self.scan_repo(repo)
         items = _dedupe(items)
         _mark_nested(items)
@@ -268,6 +277,7 @@ class WorktreeScanner:
 
         out = []
         for entry in entries:
+            self._cancel.check()
             if entry.bare:
                 continue
             wt = Worktree(repo=name, repo_path=repo_path, path=entry.path, head=entry.head[:7],
@@ -337,11 +347,12 @@ class WorktreeScanner:
         """Przelicza rozmiary bez wyniku albo starsze niż size_ttl. Zwraca liczbę przeliczonych."""
         stale = self.stale_sizes()
         for wt in stale:
+            self._cancel.check()
             self.measure(wt)
         return len(stale)
 
     def measure(self, wt: Worktree) -> int:
-        size = disk_usage(wt.path, wt.nested)
+        size = disk_usage(wt.path, wt.nested, check=self._cancel.check)
         with self._lock:
             self._sizes[wt.path] = (size, self.clock())
         return size

@@ -354,12 +354,16 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")
-        self.assertTrue(wait_until(lambda: bool(notices), timeout=5), "brak powiadomienia o pytaniu")
+        # Kolumna pochodzi z dziennika; wysłanie powiadomienia czeka na callback Qt tego ticka.
+        self.assertTrue(wait_until(lambda: notices, timeout=5), "powiadomienie pytania nie dotarło")
         self.assertEqual(len(notices), 1)
         self.flow.tick()
         self.restart()
         self.flow.notifier = notices.append
         self.flow.tick()
+        completed = []
+        self.assertTrue(self.flow._submit(lambda: None, lambda _future: completed.append(True)))
+        self.assertTrue(wait_until(lambda: completed, timeout=5), "callback ticka po restarcie nie dotarł")
         self.assertTrue(wait_until(lambda: len(self.of(card_id, "step.notice")) == 1, timeout=5))
         self.assertEqual(len(notices), 1)
 
