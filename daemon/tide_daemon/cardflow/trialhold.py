@@ -19,6 +19,19 @@ def preserves_project(st):
                    if action == "step-start"))
 
 
+def _outside_evidence(event):
+    return (event["type"] == "outside.started"
+            or (event["type"] == "step.finished" and event.get("outside"))
+            or (event["type"] == "step.decision" and event.get("choice") == "run"))
+
+
+def read_process_history(journal, card):
+    """Wspólna kontrola historii przed inwentaryzacją i ochroną zasobów."""
+    events = journal.read_complete(card)
+    _validate_outside_identity(events)
+    return events
+
+
 def _validate_outside_identity(events):
     """Outside musi wskazywać wcześniejszy krok lub zamiar, zanim go pominiemy.
 
@@ -31,7 +44,7 @@ def _validate_outside_identity(events):
             known[event["step"]] = event
         elif event["type"] == "intent" and event.get("action") == "step-start":
             known.setdefault(event["key"], event)
-        elif event["type"] == "outside.started":
+        elif _outside_evidence(event):
             name = event.get("step")
             if not isinstance(name, str) or not name.strip() or name not in known:
                 raise ValueError("niepełna lub osierocona tożsamość outside")
@@ -42,8 +55,7 @@ def _validate_outside_identity(events):
 
 def inventory(engine, card, st):
     try:
-        events = engine.journal.read_complete(card)
-        _validate_outside_identity(events)
+        events = read_process_history(engine.journal, card)
         # Stan z tolerancyjnego odczytu UI lub wcześniejszego ticka nie jest dowodem.
         st = fold(events)
     except (OSError, ValueError, TypeError, KeyError):
@@ -90,10 +102,8 @@ def inventory(engine, card, st):
     for event in events:
         # Stare outside nie miało intent przed Popen. Oczekująca prośba lub zgoda
         # bez outside.started może oznaczać awarię tuż po utworzeniu klienta.
-        pending = event.get("type") == "step.finished" and event.get("outside")
-        approved = event.get("type") == "step.decision" and event.get("choice") == "run"
         name = event.get("step")
-        if (pending or approved) and name not in recorded:
+        if _outside_evidence(event) and name not in recorded:
             outside.append({"step": name, "ticket": event.get("ticket")})
             recorded.add(name)
     for event in outside:
@@ -129,7 +139,7 @@ def public_inventory(engine):
         # Publiczne CLI mogło nigdy nie mieć karty. Nie tworzymy jej przy skanie.
         if "K-38" in engine.journal.cards_complete():
             with engine.journal.lock:
-                events = engine.journal.read_complete("K-38")
+                events = read_process_history(engine.journal, "K-38")
                 previous = next((e for e in reversed(events) if e.get("type") == "k38.public-inventory"), {})
                 if items != previous.get("items", []):
                     engine.journal.append_complete("K-38", "k38.public-inventory", version=1, items=items)

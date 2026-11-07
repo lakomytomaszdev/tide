@@ -36,7 +36,7 @@ def active_steps(builder, slug, name, engine=None):
 
     journal = engine.journal if engine is not None else Journal(bp.board_dir())
     try:
-        states = [fold(journal.read_complete(card)) for card in journal.cards_complete()]
+        states = [fold(trialhold.read_process_history(journal, card)) for card in journal.cards_complete()]
     except (OSError, ValueError, TypeError, KeyError):
         return ["niepełna historia kart"]
     # Dawny runner --demo nie miał box.use ani karty. Skan trwałych śladów
@@ -181,7 +181,7 @@ def tick(engine):
         return
     from ..cardflow import trialhold
     try:
-        states = {card: fold(engine.journal.read_complete(card))
+        states = {card: fold(trialhold.read_process_history(engine.journal, card))
                   for card in engine.journal.cards_complete()}
     except (OSError, ValueError, TypeError, KeyError):
         # Nie ufamy nawet projektowi z tolerancyjnie odczytanego fragmentu.

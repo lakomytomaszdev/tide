@@ -150,12 +150,16 @@ class InventoryTest(unittest.TestCase):
         procedure.start.assert_called_once()
 
     def test_orphan_outside_denies_both_modes_across_restart_without_rewriting(self):
+        self.project()
+        self.journal.append("K-38", "card.started", project="proj")
+        self.journal.append("K-38", "card.closed")
+        bs.record("proj", "box.ready", "proj", clock=lambda: 0, duration=0)
         mirror = Path(self.journal.mirror_path("K-38"))
         board = Path(self.journal.path("K-38"))
         original = mirror.read_bytes()
         for identity in ({"step": "K-38-PT-176-1"}, {}):
             for fallback in (False, True):
-                event = {"v": 1, "seq": 2, "ts": "now", "card": "K-38",
+                event = {"v": 1, "seq": 4, "ts": "now", "card": "K-38",
                          "type": "outside.started", "unit": "old.scope", **identity}
                 before = original + (json.dumps(event) + "\n").encode()
                 board.write_bytes(before if fallback else original)
@@ -174,6 +178,7 @@ class InventoryTest(unittest.TestCase):
                                 trial_gate.start_registered("new", consent=True, inventory=self.inventory,
                                                             bootstrap=bootstrap)
                             procedure.start.assert_not_called()
+                            self.assert_lifecycle_preserved()
                             self.assertEqual(board.read_bytes(), before if fallback else original)
                             self.assertEqual(mirror.exists(), not fallback)
                             if not fallback:
@@ -185,6 +190,8 @@ class InventoryTest(unittest.TestCase):
             self.journal.append("K-38", kind, **{name_field: name, "ticket": "PT-244",
                                                 "action": "step-start", "kind": "ticket"})
             # Dawne outside nie powtarzało ticketu; tożsamość bierze z kroku.
+            self.journal.append("K-38", "step.finished", step=name, outside=True, result="denied")
+            self.journal.append("K-38", "step.decision", step=name, choice="run")
             self.journal.append("K-38", "outside.started", step=name, unit="ordinary.scope")
         paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
         before = [path.read_bytes() for path in paths]
@@ -198,6 +205,62 @@ class InventoryTest(unittest.TestCase):
                                                 bootstrap=bootstrap)
                     procedure.start.assert_called_once()
                     self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_invalid_outside_evidence_preserves_processes_across_restart(self):
+        self.project()
+        # Nie ufamy nawet przypisaniu do innego projektu z niepełnej historii.
+        self.journal.append("K-38", "step.started", step="ordinary", ticket="PT-244")
+        self.journal.append("K-38", "card.closed")
+        bs.record("proj", "box.ready", "proj", clock=lambda: 0, duration=0)
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        identities = [{}]
+        identities.extend({"step": name} for name in (None, "", " ", [], 1,
+                                                       "orphan", "K-38-PT-176-1"))
+        identities.extend({"step": "ordinary", "ticket": ticket}
+                          for ticket in (None, "", [], 1, "PT-245"))
+        for evidence in ({"type": "outside.started", "unit": "old.scope"},
+                         {"type": "step.finished", "outside": True, "result": "denied"},
+                         {"type": "step.decision", "choice": "run"}):
+            for identity in identities:
+                event = {"v": 1, "seq": 4, "ts": "now", "card": "K-38", **evidence, **identity}
+                before = original + (json.dumps(event) + "\n").encode()
+                for fallback in (False, True):
+                    board.write_bytes(before if fallback else original)
+                    if fallback:
+                        mirror.unlink(missing_ok=True)
+                    else:
+                        mirror.write_bytes(before)
+                    for restarted in (False, True):
+                        if restarted:
+                            self.restart()
+                        with self.subTest(event=event, fallback=fallback, restarted=restarted):
+                            inventory = lambda: trialhold.inventory(self.engine, "K-38", fold([]))
+                            for bootstrap in (False, True):
+                                trial_gate, procedure = self.procedure()
+                                with self.assertRaises(gate.TrialDenied):
+                                    trial_gate.start_registered("new", consent=True, inventory=inventory,
+                                                                bootstrap=bootstrap)
+                                procedure.start.assert_not_called()
+                            self.assertFalse(trialhold.public_inventory(self.engine))
+                            self.assert_lifecycle_preserved()
+                            incus = mock.Mock()
+                            incus.instance.return_value = {"status": "Running", "config": {
+                                bs.COPY_OF_KEY: "proj", bs.CARD_KEY: "K-38"}}
+                            incus.list.return_value = [{"name": "proj"}]
+                            builder = Builder(SimpleNamespace(), incus=incus, policy=object())
+                            for operation in (lambda: builder.reset("proj"), lambda: builder.destroy("proj")):
+                                with self.assertRaises(BoxBusy):
+                                    operation()
+                            lifecycle.Lifecycle(builder).close_card("proj", "K-38")
+                            incus.snapshot_restore.assert_not_called()
+                            incus.delete.assert_not_called()
+                            incus.stop.assert_not_called()
+                            self.assertEqual(board.read_bytes(), before if fallback else original)
+                            self.assertEqual(mirror.exists(), not fallback)
+                            if not fallback:
+                                self.assertEqual(mirror.read_bytes(), before)
 
     def test_outside_identity_must_match_an_earlier_step_before_filtering(self):
         self.journal.append("K-38", "step.started", step="ordinary", ticket="PT-244")
