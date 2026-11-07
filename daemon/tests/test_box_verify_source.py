@@ -113,13 +113,11 @@ class VerifySourceTest(unittest.TestCase):
                 self.assertEqual(argv[argv.index("--user") + 1], "1001")
                 self.assertEqual(argv[argv.index("--group") + 1], expected)
 
-    def test_cli_build_forwards_worktree_without_changing_default(self):
-        args = cli._parser().parse_args(["build", "project", "--worktree", str(self.worktree)])
-        builder = mock.Mock()
-        builder.build.return_value = bb.BuildResult("box", "recipe", False)
-        with mock.patch.object(bb, "state_dir", return_value="/tmp/state"):
-            cli.run_build(builder, args.slug, io.StringIO(), args.worktree)
-        builder.build.assert_called_once_with("project", verify_worktree=str(self.worktree))
+    def test_cli_build_is_disabled_before_service_implementation(self):
+        with mock.patch.object(bb, "Builder") as builder:
+            self.assertEqual(cli.main(["build", "project", "--worktree", str(self.worktree)],
+                                      out=io.StringIO(), err=io.StringIO()), 3)
+        builder.assert_not_called()
 
 
 if __name__ == "__main__":

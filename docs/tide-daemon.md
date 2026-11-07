@@ -2620,6 +2620,10 @@ filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i brak
 
 **CLI** `python3 daemon/tide.py box …` (kody: 0 sukces, 1 błąd, 2 zły argument, 3 odmowa/niezgodne/nieaktualne):
 
+**K-38 v1, PT-267:** obecnie działają tylko `status` i `stop`, przez usługę D-Bus.
+Pozostałe polecenia z poniższej historycznej listy oraz modułowy runner `--demo` są wyłączone do etapów II/III;
+nie wykonują operacji lokalnie. Zachowany klient i kontrakt usługi: [CLI v1](box-cli-v1.md).
+
 | Polecenie | Działanie |
 | --- | --- |
 | `build <slug>` | budowa jak wyżej |

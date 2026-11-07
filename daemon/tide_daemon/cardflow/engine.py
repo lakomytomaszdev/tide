@@ -519,9 +519,13 @@ class FlowEngine(PlanEditing):
         from . import envconsent
         return envconsent.approve(self, card_id, text, bool(only_plan))
 
-    def box_status(self, slug: str) -> dict:
+    def box_status(self, slug: str, card: str = "") -> dict:
         from . import envconsent
-        return envconsent.status(self, slug)
+        return envconsent.status(self, slug, card)
+
+    def stop_box(self, slug: str, card: str = "") -> dict:
+        from . import boxcontrol
+        return boxcontrol.stop(self, slug, card)
 
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))

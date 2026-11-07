@@ -960,8 +960,6 @@ def _read(path: str) -> str:
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] != ["--demo"]:
-        print("użycie: python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W] [--card K-N] -- <polecenie>",
-              file=sys.stderr)
-        sys.exit(2)
-    sys.exit(_demo(sys.argv[2:]))
+    print("tide box runner --demo: wejście wyłączone; użyj daemon/tide.py box status|stop. "
+          "Uruchamianie poleceń przez usługę czeka na etap III (PT-276).", file=sys.stderr)
+    sys.exit(3)

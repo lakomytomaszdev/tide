@@ -6,7 +6,6 @@ import tarfile
 import tempfile
 import unittest
 from unittest import mock
-from contextlib import nullcontext
 import io
 
 from tide_daemon.box.builder import Builder, BuildError
@@ -16,21 +15,11 @@ from tide_daemon.box import cli
 
 
 class VerifyContextTest(unittest.TestCase):
-    def test_cli_passes_archive_and_commit_to_builder_within_snapshot_context(self):
-        service = mock.Mock()
-        with mock.patch.object(cli, "_settings", return_value=BoxSettings()), \
-                mock.patch.object(cli.bbase, "ensure_proxy", return_value=(service, True)), \
-                mock.patch("tide_daemon.box.command.project_repo", return_value="/project"), \
-                mock.patch.object(verify_source, "snapshot", return_value=nullcontext(("/tmp/src.tar", "sha"))) as snap, \
-                mock.patch.object(cli.bb, "Builder") as builder, \
-                mock.patch.object(cli, "run_build", return_value=0) as run_build:
+    def test_cli_build_cannot_export_sources_before_service_implementation(self):
+        with mock.patch.object(verify_source, "snapshot") as snap:
             self.assertEqual(cli.main(["build", "toolssuite", "--verify-worktree", "/project"],
-                                      out=io.StringIO(), err=io.StringIO()), 0)
-            snap.assert_called_once_with("/project", "/project")
-            self.assertEqual(builder.call_args.kwargs["verify_archive"], "/tmp/src.tar")
-            self.assertEqual(builder.call_args.kwargs["verify_commit"], "sha")
-            self.assertEqual(run_build.call_args.args[1], "toolssuite")
-        service.stop.assert_called_once()
+                                      out=io.StringIO(), err=io.StringIO()), 3)
+            snap.assert_not_called()
 
     def builder(self, **kwargs):
         self.incus = mock.Mock()

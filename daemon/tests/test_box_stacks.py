@@ -653,26 +653,25 @@ class StackBuildTest(unittest.TestCase):
         self.assertFalse([a for a in self.incus_calls() if a[0] == "snapshot"])
         self.assertEqual(self.proxy._policies, {})
 
-    def test_cli_build_starts_its_own_proxy_and_stops_it(self):
+    def test_disabled_cli_build_never_starts_a_proxy(self):
         bp.save_project("plasma-tide", {"tide-box": 1, "stacks": ["python-qt"]})
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(bbase, "ensure_proxy", return_value=(self.proxy, True)) as ensure, \
                 mock.patch.object(bb, "SCRIPTS_DIR", self.scripts):
             code = cli.main(["build", "plasma-tide"], out=out, err=err)
-        self.assertEqual(code, 0, err.getvalue())
-        ensure.assert_called_once()
-        self.assertTrue(self.proxy.stopped)
-        self.assertEqual(len(self.proxy.seen), 1)
-        self.assertIn("migawka clean", out.getvalue())
-        self.assertIn("build-denied.log", out.getvalue())
+        self.assertEqual(code, 3, err.getvalue())
+        ensure.assert_not_called()
+        self.assertFalse(self.proxy.seen)
+        self.assertIn("wyłączone", err.getvalue())
+        self.assertEqual(self.incus_calls(), [])
 
-    def test_cli_build_without_proxy_is_exit_1_before_incus(self):
+    def test_disabled_cli_build_does_not_need_a_proxy(self):
         bp.save_project("plasma-tide", {"tide-box": 1, "stacks": ["python-qt"]})
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(bbase, "ensure_proxy", side_effect=bb.BuildError("proxy Tide nie wstało")):
             code = cli.main(["build", "plasma-tide"], out=out, err=err)
-        self.assertEqual(code, 1)
-        self.assertIn("tide box build: proxy Tide nie wstało", err.getvalue())
+        self.assertEqual(code, 3)
+        self.assertIn("wyłączone", err.getvalue())
         self.assertEqual(self.incus_calls(), [])
 
 

@@ -624,4 +624,4 @@ class PublicGateTest(unittest.TestCase):
             load.assert_not_called()
             prepare.assert_not_called()
             spawn.assert_not_called()
-            self.assertIn("K-38 v1", err.getvalue())
+            self.assertIn("wyłączone", err.getvalue())

@@ -222,8 +222,11 @@ class CardFlowMonitor(QObject):
         """ApproveCardEnvironment (PT-172): walidacja i zapis w tym samym szeregowym wątku co kroki; budowa w tle."""
         self._action("ApproveCardEnvironment", lambda: self.engine.approve_environment(card_id, yaml_text, only_plan), reply)
 
-    def box_status(self, slug: str, reply) -> None:
-        self._action("BoxStatus", lambda: self.engine.box_status(slug), reply)
+    def box_status(self, slug: str, reply, card: str = "") -> None:
+        self._action("BoxStatus", lambda: self.engine.box_status(slug, card), reply)
+
+    def stop_box(self, slug: str, card: str, reply) -> None:
+        self._action("StopBox", lambda: self.engine.stop_box(slug, card), reply)
 
     def card_diff(self, card_id: str, reply) -> None:
         self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id), reply)
