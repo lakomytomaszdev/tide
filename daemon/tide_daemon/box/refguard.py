@@ -714,8 +714,10 @@ def finish(repo, card, step, *, branch="", active_only=False):
                                     # nigdy nie czytamy ani nie usuwamy go rekurencyjnie.
                                     os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
                                 finally:
-                                    if temporary in os.listdir(parent):
+                                    try:
                                         os.unlink(temporary, dir_fd=parent)
+                                    except FileNotFoundError:
+                                        pass
                     except FileNotFoundError:
                         pass  # Krok mógł nie użyć Git; nie czytamy innych prywatnych administracji.
                 finally:

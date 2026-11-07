@@ -75,6 +75,11 @@ def atomic_text(path, value):
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(temporary, path)
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
