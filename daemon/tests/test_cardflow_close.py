@@ -9,6 +9,9 @@ from .test_cardflow_plan_integration import PlanFlowTest
 from .test_cardflow_waves import WaveFlowTest
 from .test_cardflow_dbus import git
 
+# Scalenie ponownie kwalifikuje checkouty w osobnych granicach procesu Git.
+MERGE_RESULT_TIMEOUT = 60
+
 
 class CardClosingTest(FlowInProcess):
     proposal = PlanFlowTest.proposal
@@ -29,7 +32,7 @@ class CardClosingTest(FlowInProcess):
         self.assertIn("ATRAPA.md", difference["diff"])
         box = []
         self.flow.merge_card_to_main(card, box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: box, timeout=MERGE_RESULT_TIMEOUT))
         merged = json.loads(box[0])
         self.assertTrue(merged["ok"], merged)
         self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
@@ -90,7 +93,7 @@ class CardClosingTest(FlowInProcess):
         git(self.repo, "checkout", "-q", "-b", "feature/other")
         box = []
         self.flow.merge_card_to_main(card, box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: box, timeout=MERGE_RESULT_TIMEOUT))
         self.assertTrue(json.loads(box[0])["ok"], box[0])
         self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         self.assertEqual(git(self.repo, "branch", "--show-current").strip(), "feature/other")
@@ -115,7 +118,7 @@ class CardClosingTest(FlowInProcess):
             git(self.repo, "add", "-N", touched[0])
         box = []
         self.flow.merge_card_to_main(card, box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: box, timeout=MERGE_RESULT_TIMEOUT))
         self.assertFalse(json.loads(box[0])["ok"])
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         with open(source, encoding="utf-8") as fh:
@@ -131,7 +134,7 @@ class CardClosingTest(FlowInProcess):
             fh.write("\nMoja niezapisana zmiana.\n")
         box = []
         self.flow.merge_card_to_main(card, box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: box, timeout=MERGE_RESULT_TIMEOUT))
         self.assertTrue(json.loads(box[0])["ok"], box[0])
         self.assertNotEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         with open(source, encoding="utf-8") as fh:

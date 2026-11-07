@@ -123,6 +123,31 @@ niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udaneg
 
 ## Wyjątki od testów
 
+### Budżety oczekiwania w testach funkcjonalnych chronionego Git
+
+PT-264 uruchamia hostowy Git w osobnej granicy procesu. Po pogrupowaniu świeżych odczytów
+pomiar na jednorazowych repozytoriach nadal wykazał callback korekty trzech worktrees po
+36,33 s, scalenia po 14,25 s i zakończenie planu pięciu ticketów po 68,89 s
+(obciążenie 1-minutowe odpowiednio 13,42, 18,27 i 18,03). Dawne oczekiwania 30/10/40 s
+przerywały testy przed otrzymaniem odpowiedzi lub zdarzenia końcowego. Pomiar
+gotowości nie wykonał dalszych asercji tych przerwanych scenariuszy. Szczegóły i SHA pomiarów:
+`docs/agents/pt-264/decisions.md` oraz notki kroku PT-264.
+
+Te trzy rodzaje testów funkcjonalnych mają jawne, nadal ograniczone budżety: 120 s dla
+callbacku korekty bazy, 60 s dla callbacku scalenia i 120 s dla zakończenia planu fal.
+To czas na otrzymanie wyniku, nie obietnica czasu odpowiedzi produktu. Asercje wyniku,
+zachowania plików, zdarzeń i kolejności nadal muszą przejść. Krótkie okna sprawdzania
+współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
+pierwszą atrapę dopiero po potwierdzeniu obecności raportu w kolejce, zamiast polegać
+na dwusekundowym opóźnieniu atrapy.
+
+Zmiana budżetu wymaga zmierzonego uzasadnienia i review tak jak kod testu. Nie zastępuje
+naprawy błędnego wyniku, nie wyłącza granic ani kontroli puli/izolacji i nie jest
+odstępstwem od wcześniejszych nieudanych przebiegów. Po zmianie obowiązuje nowy
+`make test-changed`; wcześniejsze porażki pozostają w notkach.
+
+### Rozliczenie nieudanych przebiegów
+
 Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
 pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
 Odstępstwo w notce ticketu, a przy domknięciu również w podsumowaniu karty, zawiera:

@@ -1,10 +1,14 @@
 """PT-62: fale, współbieżność i wstrzymanie przez publiczny interfejs przepływu."""
 import json
 import os
+from pathlib import Path
 
 from .privatebus import wait_until
 from . import test_cardflow_plan_integration as plan_tests
 from .test_cardflow import FlowInProcess
+
+# Cały plan obejmuje kilka ticketów, review i kwalifikacje Git przed scaleniem.
+PLAN_RESULT_TIMEOUT = 120
 
 
 class WaveFlowTest(FlowInProcess):
@@ -45,7 +49,7 @@ class WaveFlowTest(FlowInProcess):
         first_finish = self.ticket_finishes(card)
         self.assertEqual([s["ticket"] for s in starts[:2]], [mapping["#1"], mapping["#2"]])
         self.assertFalse(first_finish, "niezależne tickety muszą wystartować przed końcem pierwszego")
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT), self.events(card))
         blocked = next(e for e in self.of(card, "step.started") if e["ticket"] == mapping["#3"])
         merges = [e for e in self.results(card, "merge") if e["key"] in (mapping["#1"], mapping["#2"])]
         self.assertEqual(len(merges), 2)
@@ -66,7 +70,7 @@ class WaveFlowTest(FlowInProcess):
         self.assertIn("limit", self.of(card, "step.waiting")[-1]["reason"])
         self.assertTrue(wait_until(lambda: any("limit" in t.get("waitReason", "")
                         for t in self.shown(card)["derived"]["tickets"]), timeout=5))
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT))
         events = self.events(card)
         active = set()
         for event in events:
@@ -93,7 +97,7 @@ class WaveFlowTest(FlowInProcess):
         self.flow.set_paused(card, False, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=25))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT))
 
     def local_config(self):
         from tide_daemon.models import config
@@ -114,26 +118,37 @@ class WaveFlowTest(FlowInProcess):
         isolated = queue.Queue()
         with mock.patch.object(queue, "shared", return_value=isolated):
             self.local_config()
-            first = self.card(description="ATRAPA: powoli 2")
+            first = self.card(description="ATRAPA: na-sygnal")
             second = self.card(description="ATRAPA: powoli 2")
             self.assertTrue(self.start(first, executor="Lokalny", preferredProvider="local")["ok"])
-            self.assertTrue(self.start(second, executor="Lokalny", preferredProvider="local")["ok"])
-            self.assertEqual(len(self.of(second, "step.started")), 0)
+            signal = Path(self.of(first, "step.started")[0]["stepDir"], "out", "release-agent")
             begun, release = threading.Event(), threading.Event()
             def report():
                 begun.set()
-                release.wait(15)
-            worker = threading.Thread(target=lambda: isolated.run(report, endpoint="local", role="summary",
-                                      lane=queue.lane_of("http://127.0.0.1:11434/v1")), daemon=True)
-            worker.start()
+                release.wait(120)
+            lane = queue.lane_of("http://127.0.0.1:11434/v1")
+            worker = None
             try:
-                self.assertTrue(wait_until(begun.is_set, timeout=8))
+                self.assertTrue(self.start(second, executor="Lokalny", preferredProvider="local")["ok"])
+                self.assertEqual(len(self.of(second, "step.started")), 0)
+                worker = threading.Thread(target=lambda: isolated.run(report, endpoint="local", role="summary",
+                                          lane=lane), daemon=True)
+                worker.start()
+                # Raport musi naprawdę czekać, zanim pierwszy krok zwolni slot.
+                self.assertTrue(wait_until(lambda: any(item["role"] == "summary" for item in
+                    isolated.snapshot().get(lane, {}).get("waiting", [])), timeout=5))
+                self.assertFalse(begun.is_set())
+                self.assertFalse(self.of(first, "step.finished"))
+                signal.touch()
+                self.assertTrue(wait_until(begun.is_set, timeout=60))
                 self.assertEqual(len(self.of(first, "step.started")), 1)
                 self.assertEqual(self.of(second, "step.started"), [])
                 self.assertTrue(self.of(first, "step.waiting") or self.of(second, "step.waiting"))
             finally:
+                signal.touch()
                 release.set()
-                worker.join(5)
+                if worker is not None:
+                    worker.join(5)
             self.wait_column(first, "review", timeout=20)
             self.wait_column(second, "review", timeout=20)
             # Review jest widoczne jeszcze przed końcem lokalnego kroku domknięcia.
@@ -177,7 +192,7 @@ class WaveFlowTest(FlowInProcess):
         self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "ISO"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT))
 
     def test_queued_direct_card_keeps_one_ticket_until_provider_slot_is_free(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
@@ -203,7 +218,7 @@ class WaveFlowTest(FlowInProcess):
                                    timeout=5), self.events(card))
         self.assertEqual([s["ticket"] for s in self.ticket_starts(card)],
                          [mapping["#1"], mapping["#2"], mapping["#3"]])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT))
         active = set()
         for event in self.events(card):
             if event["type"] == "step.started":
@@ -247,7 +262,7 @@ class WaveFlowTest(FlowInProcess):
                         if s["ticket"] == mapping["#1"]]) >= 2, timeout=10))
         attempts = [s for s in self.of(card, "step.started") if s["ticket"] == mapping["#1"]]
         self.assertEqual(attempts[0]["worktree"], attempts[1]["worktree"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=PLAN_RESULT_TIMEOUT))
 
     def test_manual_finish_rejects_all_running_and_not_started_tickets(self):
         card = self.card()

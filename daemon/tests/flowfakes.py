@@ -362,6 +362,13 @@ if word == "poza-uwagi":
     word = "poza"
 
 write("start")
+if word == "na-sygnal":
+    until = time.monotonic() + 120
+    while not os.path.isfile(os.path.join(out, "release-agent")):
+        if time.monotonic() >= until:
+            finish("error", reason="Test nie zwolnił atrapy sygnałem release-agent")
+            sys.exit(1)
+        time.sleep(0.05)
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)
 elif word == "limit" and "Wznowienie tego samego kroku" not in prompt:
