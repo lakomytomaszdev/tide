@@ -163,6 +163,34 @@ class InventoryTest(unittest.TestCase):
         procedure.start.assert_not_called()
         self.assertEqual(path.read_bytes(), before)
 
+    def test_failed_reservation_cannot_dispatch_ticket_without_identity(self):
+        self.journal.append("K-38", "card.started", entry="now", executor="Sonnet")
+        self.journal.append("K-38", "intent", action="reserve", key="launch-2", youtrack=True)
+        self.journal.append("K-38", "result", action="reserve", key="launch-2", ok=False,
+                            permanent=True, error="odmowa trackera")
+        path = Path(self.journal.mirror_path("K-38"))
+        before = path.read_bytes()
+        with mock.patch.object(self.engine, "_project", return_value=(mock.Mock(), mock.Mock())), \
+                mock.patch("tide_daemon.cardflow.engine.execution.resolve", return_value=mock.Mock()), \
+                mock.patch.object(self.engine, "_launch") as launch:
+            for _ in range(3):
+                self.engine._advance("K-38", fold(self.journal.read_complete("K-38")))
+            launch.assert_not_called()
+            self.assertEqual(path.read_bytes(), before)
+            # Dopiero udana rezerwacja i przygotowanie worktree pozwalają na dispatch.
+            self.journal.append("K-38", "result", action="reserve", key="launch-2", ok=True, ticket="LOG-1")
+            self.engine._advance("K-38", fold(self.journal.read_complete("K-38")))
+            launch.assert_not_called()
+            self.journal.append("K-38", "result", action="card-branch", key="card/k-38", ok=True,
+                                branch="card/k-38", worktree=str(self.root / "card"))
+            self.engine._advance("K-38", fold(self.journal.read_complete("K-38")))
+            launch.assert_not_called()
+            self.journal.append("K-38", "result", action="ticket-branch", key="LOG-1", ok=True,
+                                ticket="LOG-1", branch="ticket/log-1", worktree=str(self.root / "ticket"))
+            self.engine._advance("K-38", fold(self.journal.read_complete("K-38")))
+            launch.assert_called_once()
+            self.assertEqual(launch.call_args.args[3], "LOG-1")
+
     def test_final_stop_preserves_incomplete_box_history_without_engine_after_restart(self):
         path = self.project()
         for missing in (False, True):

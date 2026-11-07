@@ -2154,8 +2154,12 @@ class FlowEngine(PlanEditing):
             if st.plan_approved is not None:
                 self._plan_next(card, st)
             if st.started and st.started.get("entry") == "now" and st.started.get("executor") and not st.paused:
-                item, project = self._project(card)
                 info = ticket_of(st)
+                # Nieudana rezerwacja lub przygotowanie gałęzi nie uprawnia do
+                # startu kroku bez tożsamości. Czekamy przed zapisem zamiaru.
+                if not all(info[key] for key in ("id", "cardBranch", "cardWorktree", "branch", "worktree")):
+                    return
+                item, project = self._project(card)
                 cfg = self.models_config() if self.models_config else None
                 catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
                 selected = execution.resolve(st.started["executor"], catalog, config=cfg,
