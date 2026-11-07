@@ -290,8 +290,18 @@ def _ready(engine, card_id: str, builder, runner, settings, name: str, slug: str
         try:
             lifecycle.Lifecycle(builder).start(slug, card_id if per_card else None)
             runner.wait_user_manager(name)
-        except (bb.BuildError, IncusError, OSError, agentcmd.StepError) as exc:
+        except (bb.BuildError, IncusError, OSError, ValueError, agentcmd.StepError) as exc:
             raise BoxWaiting(f"{WAIT_START}: {exc}") from None
+    else:
+        # Także działające pudełko musi być jedynym zasobem; start po restarcie
+        # nie może ominąć rekonstrukcji globalnej własności.
+        from ..box import admission
+        try:
+            req = admission.request(incus, 'start', name, slug=slug, card=card_id if per_card else None)
+            with admission.operation(incus, req):
+                incus.config_set(name, lifecycle.limits(builder.load_profile(slug)))
+        except (bb.BuildError, IncusError, OSError, ValueError) as exc:
+            raise BoxWaiting(f'{WAIT_START}: {exc}') from None
     while True:
         try:
             ip = bb.instance_ip(incus.instance(name), settings.nic)

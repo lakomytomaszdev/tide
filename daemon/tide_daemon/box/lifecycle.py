@@ -1,9 +1,11 @@
 """Cykl życia pudełek: start, stop, bezczynność i sprzątanie kopii zamkniętych kart (D14)."""
 from datetime import datetime
 import os
+import time
 
 from . import profile as bp
 from . import state as bs
+from . import admission
 
 
 def limits(profile):
@@ -11,7 +13,7 @@ def limits(profile):
     if resources["swap"]:
         from .builder import BuildError
         raise BuildError("resources.swap=true jest niedostępne w ograniczonym projekcie Incusa")
-    return {"limits.cpu": resources["cpu"], "limits.memory": resources["memory"]}
+    return admission.limits()
 
 
 NO_SWAP_CHECK = ["sh", "-eu", "-c", 'test "$(cat "$1")" = 0', "tide-no-swap", "/sys/fs/cgroup/memory.swap.max"]
@@ -83,6 +85,7 @@ class Lifecycle:
         self.incus = builder.incus
 
     @bs.serialized
+    @admission.queued('start')
     def start(self, slug, card=None):
         from .builder import BuildError
         b = self.builder
@@ -91,9 +94,9 @@ class Lifecycle:
         if not st.usable:
             raise BuildError(f"pudełko {name} nie jest gotowe do startu: {st.error or st.state}")
         started = b.clock()
+        self.incus.config_set(name, limits(b.load_profile(slug)))
         if not st.running:
-            self.incus.config_set(name, limits(b.load_profile(slug)))
-            self.incus.start(name)
+            admission.start(self.incus, name)
         deadline = b.clock() + max(1.0, b.settings.ip_wait_seconds)
         while self.incus.exec(name, ["true"]) != 0:
             if b.clock() >= deadline:
@@ -117,8 +120,13 @@ class Lifecycle:
         started = b.clock()
         if str(inst.get("status", "")).lower() == "running":
             self.incus.stop(name)
+        actual = self.incus.instance(name)
+        if actual is not None and str(actual.get('status', '')).lower() != 'stopped':
+            raise BuildError(f'{name}: brak potwierdzenia zatrzymania Incusa')
         duration = round(b.clock() - started, 3)
         bs.record(slug, "box.stop", name, b.wall, duration=duration, reason=reason)
+        admission.snapshot(self.incus)
+        admission.changed.set()
         return duration
 
     @bs.serialized
@@ -147,6 +155,10 @@ class Lifecycle:
         started = b.clock()
         b.ensure_home(slug, card)
         self.incus.delete(name, force=True)
+        if self.incus.instance(name) is not None:
+            raise BuildError(f'{name}: brak potwierdzenia usunięcia Incusa')
+        admission.snapshot(self.incus)
+        admission.changed.set()
         # Dom, eksport i dawny wolumen pozostają do jawnego sprzątania (PT-189).
         bs.record(slug, "box.reset", name, b.wall, duration=round(b.clock() - started, 3),
                   result="ok", reason="karta domknięta", removed=True)
@@ -204,6 +216,17 @@ def tick(engine):
             frozen.add(project)
         if st.closed and st.started:
             closed.setdefault(st.started.get("project"), set()).add(card)
+    now = time.monotonic()
+    if not frozen and (now >= getattr(engine, '_box_admission_next', 0) or admission.changed.is_set()):
+        admission.changed.clear()
+        engine._box_admission_next = now + admission.RECHECK_SECONDS
+        b = boxstep.builder_of(engine, settings)
+        # Zakończona karta nie może wystartować później przez pozostawione oczekiwanie.
+        for req in admission.snapshot(b.incus)['queue']:
+            card = req['args'].get('card')
+            if req['kind'] == 'start' and card and card in states and states[card].card_finished:
+                admission.cancel(req['id'])
+        admission.tick(b)
     for slug in slugs:
         if slug in frozen:
             continue  # dawne próby zachowują pudełka, paczki, rezerwacje i WIP

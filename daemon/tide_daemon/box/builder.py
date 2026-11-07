@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import agents
+from . import admission
 from . import home as boxhome
 from . import netenv
 from . import profile as bp
@@ -62,6 +63,10 @@ STACKS_VERSION = "20fee305ca168db14c2971e742425a8be1e11a28fdd3ae1d3bdcdce8f60bb6
 
 class BuildError(RuntimeError):
     pass
+
+
+class SlotWaiting(BuildError):
+    """Żądanie zachowane w globalnej kolejce; usługa ponowi je po zwolnieniu slotu."""
 
 
 class BoxBusy(RuntimeError):
@@ -165,7 +170,6 @@ class Builder:
 
     # --- budowa ----------------------------------------------------------------------------------
 
-    @bs.serialized
     def build(self, slug: str, profile: dict | None = None, verify_worktree: str = "") -> BuildResult:
         profile = self.load_profile(slug) if profile is None else bp.validate(profile, "project")
         full = bp.with_defaults(profile)
@@ -177,6 +181,15 @@ class Builder:
                    if not os.path.isfile(os.path.join(self.scripts_dir, s))]
         if missing:
             raise BuildError("brak skryptów szablonów stosów (#29): " + ", ".join(missing))
+        name = bs.box_name(slug)
+        self.require_idle(slug, name)
+        return self._execute_build(slug, profile, verify_worktree)
+
+    @admission.queued('build')
+    @bs.serialized
+    def _execute_build(self, slug, profile, verify_worktree=''):
+        full = bp.with_defaults(profile)
+        proxy = proxy_url(self.policy)
         domains = list(templates.build_domains(full))
         name = bs.box_name(slug)
         self.require_idle(slug, name)
@@ -226,7 +239,7 @@ class Builder:
         steps.append("nic")
         self.apply_nic_filter(name)
         # 3. start, adres i polityka proxy przed pierwszym exec
-        self.incus.start(name)
+        admission.start(self.incus, name)
         ip = self._wait_ip(name)
         denied = os.path.join(state_dir(slug), "build-denied.log")
         # Dziennik odmów czyszczony na starcie budowy (jak base-denied.log): pusty po budowie = żadnej brakującej domeny.
@@ -466,8 +479,26 @@ class Builder:
     def reset(self, slug: str, card: str | None = None) -> float:
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
         self.require_idle(slug, name)
-        if self.incus.instance(name) is None:
+        instance = self.incus.instance(name)
+        if instance is None:
             raise BuildError(f"pudełko {name} nie istnieje")
+        if str(instance.get('status', '')).lower() == 'running':
+            req = admission.request(self.incus, 'reset', name)
+            with admission.operation(self.incus, req, enqueue=False):
+                self.incus.stop(name)
+                actual = self.incus.instance(name)
+                if actual is None or str(actual.get('status', '')).lower() != 'stopped':
+                    raise BuildError(f'{name}: brak potwierdzenia zatrzymania przed resetem')
+                duration = self._reset_stopped(slug, card, name)
+                admission.start(self.incus, name)
+                from .lifecycle import require_no_swap
+                require_no_swap(self.incus, name)
+                return duration
+        if str(instance.get('status', '')).lower() != 'stopped':
+            raise BuildError(f'{name}: nieznany stan przed resetem')
+        return self._reset_stopped(slug, card, name)
+
+    def _reset_stopped(self, slug, card, name):
         started = self.clock()
         self.ensure_home(slug, card or "")
         self.incus.snapshot_restore(name, bs.SNAPSHOT)
@@ -489,8 +520,12 @@ class Builder:
         victims.sort(key=lambda v: v == source)      # najpierw kopie, potem pudełko projektu
         for victim in victims:
             self.incus.delete(victim, force=True)
+            if self.incus.instance(victim) is not None:
+                raise BuildError(f'{victim}: brak potwierdzenia usunięcia Incusa')
             # Dom hosta, kopia eksportu i dawny wolumen zostają do osobnego, jawnego sprzątania.
             bs.record(slug, "box.destroy", victim, self.wall)
+        admission.snapshot(self.incus)
+        admission.changed.set()
         return victims
 
 

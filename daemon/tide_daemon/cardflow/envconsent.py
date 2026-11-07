@@ -391,6 +391,8 @@ def status(engine, slug: str, card: str = "") -> dict:
     builder = (engine.box_builder or (lambda: box_builder.Builder(box_settings.load())))()
     st = builder.status(slug, card) if card else builder.status(slug)
     out = st.to_dict()
+    from ..box import admission
+    out['admission'] = admission.snapshot(builder.incus)
     out["nicLabel"] = "filtrowanie NIC: " + ("tak" if st.nic_filtering else "nie")
     cards = []
     for num, item in sorted(board.cards.items()):
