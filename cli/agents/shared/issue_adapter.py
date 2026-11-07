@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Trwałe operacje adapterów; syntezę wykonuje program prowadzący rozmowę."""
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -67,8 +68,13 @@ def dispatch_decision(payload):
             '--expected-version', str(payload['expectedVersion']), '--request-id', payload['requestId']]
     if payload['verb'] == 'go' and payload.get('launch') is not None:
         folder = Path(payload['_session'])
-        launch_file = folder / 'decision-launch.json'
-        launch_file.write_text(json.dumps(payload['launch'], ensure_ascii=False), encoding='utf-8')
+        launch_file = folder / ('decision-launch-' + str(uuid.UUID(payload['requestId'])) + '.json')
+        # Plik należy do jednej operacji i nigdy nie zmienia treści podczas replay.
+        if launch_file.exists():
+            if json.loads(launch_file.read_text(encoding='utf-8')) != payload['launch']:
+                raise AdapterError('Zapis launch nie zgadza się z zachowaną operacją.')
+        else:
+            save(launch_file, payload['launch'])
         args += ['--launch', str(launch_file)]
     return decision_cli(*args)
 
@@ -106,6 +112,8 @@ def parser():
     for action in ('inspect', 'backlog', 'go', 'replay', 'retry-inspect', 'retry-start', 'retry-replay'):
         command = commands.add_parser(action)
         command.add_argument('--session', required=True, type=Path)
+        if action in ('replay', 'retry-replay'):
+            command.add_argument('--request-id')
         if action not in ('replay', 'retry-replay'):
             command.add_argument('--id', required=True)
         if action == 'inspect':
@@ -126,6 +134,15 @@ def parser():
 
 def run(args):
     check_api(args)
+    folder = args.session.resolve()
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Blokada obejmuje odczyt, zapis tożsamości oraz odczyt launch przez CLI.
+    with (folder / 'session.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return run_locked(args)
+
+
+def run_locked(args):
     folder = args.session.resolve()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(folder, 0o700)
@@ -153,6 +170,15 @@ def run(args):
             if prior.get('expected') == expected:
                 return False
         raise AdapterError('Brak jednoznacznej decyzji dla dokładnej wersji i ustawień: ' + expected)
+
+    def replay_payload(kind):
+        operations = [*state.get(kind + 'History', []), state.get(kind + 'Operation')]
+        operations = [operation for operation in operations if operation]
+        if args.request_id:
+            operations = [operation for operation in operations if operation['requestId'] == args.request_id]
+        if len(operations) != 1:
+            raise AdapterError('Brak jednoznacznej tożsamości operacji; wskaż zapisany --request-id.')
+        return operations[0]
 
     if args.action in ('inspect', 'backlog', 'go', 'replay', 'retry-inspect', 'retry-start', 'retry-replay'):
         state = session_state()
@@ -214,10 +240,7 @@ def run(args):
                 save(state_path, state)
             return dispatch_decision(payload)
         if args.action == 'replay':
-            payload = state.get('decisionOperation')
-            if not payload:
-                raise AdapterError('Brak zapisanej tożsamości operacji do odtworzenia.')
-            return dispatch_decision(payload)
+            return dispatch_decision(replay_payload('decision'))
         if args.action == 'retry-start':
             presented = state.get('retryPresented')
             if not presented or presented.get('id') != args.id or presented.get('intentId') != args.intent:
@@ -246,10 +269,7 @@ def run(args):
                 save(state_path, state)
             return dispatch_retry(payload)
         if args.action == 'retry-replay':
-            payload = state.get('retryOperation')
-            if not payload:
-                raise AdapterError('Brak zapisanej tożsamości retry do odtworzenia.')
-            return dispatch_retry(payload)
+            return dispatch_retry(replay_payload('retry'))
 
     def persist(issue):
         state.update(id=issue['id'], version=issue['version'], state=issue['state'])

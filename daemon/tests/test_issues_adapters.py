@@ -39,6 +39,44 @@ class DecisionAdapterTest(unittest.TestCase):
     def invoke(self, argv):
         return ADAPTER.run(ADAPTER.parser().parse_args(argv))
 
+    def test_interleaved_launch_reads_and_replay_select_each_saved_operation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'rozmowa', 'S-8')
+            launch = Path(tmp, 'launch.json')
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.go']}
+            saved = []
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'dispatch_decision', side_effect=lambda payload: saved.append(payload)):
+                for executor in ('wykonawca A', 'wykonawca B'):
+                    launch.write_text(json.dumps({'executor': executor}))
+                    self.invoke(['go', '--session', str(session), '--id', 'S-8', '--expected-version', '4',
+                                 '--decision', 'go S-8 v4', '--launch', str(launch)])
+            self.assertNotEqual(saved[0]['requestId'], saved[1]['requestId'])
+            observed = []
+
+            def read_after_other_dispatch(*argv):
+                key = argv[argv.index('--request-id') + 1]
+                if key == saved[0]['requestId'] and not observed:
+                    # B zapisuje plik pomiędzy przygotowaniem argv A a odczytem przez CLI A.
+                    ADAPTER.dispatch_decision(saved[1])
+                actual = json.loads(Path(argv[argv.index('--launch') + 1]).read_text())
+                expected = next(operation for operation in saved if operation['requestId'] == key)
+                self.assertEqual(actual, expected['launch'])
+                observed.append((key, actual))
+                return {'ok': True}
+
+            with mock.patch.object(ADAPTER, 'decision_cli', side_effect=read_after_other_dispatch):
+                ADAPTER.dispatch_decision(saved[0])
+            self.assertEqual([key for key, _ in observed], [saved[1]['requestId'], saved[0]['requestId']])
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=read_after_other_dispatch):
+                with self.assertRaisesRegex(ADAPTER.AdapterError, 'jednoznacznej tożsamości'):
+                    self.invoke(['replay', '--session', str(session)])
+                for operation in saved:
+                    self.invoke(['replay', '--session', str(session), '--request-id', operation['requestId']])
+            self.assertEqual([key for key, _ in observed[-2:]], [operation['requestId'] for operation in saved])
+
     def test_backlog_inspection_is_read_only_and_conflict_keeps_exact_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp, 'S-4')
@@ -562,12 +600,14 @@ class AdapterTest(unittest.TestCase):
 
     def test_both_adapters_go_replays_identical_launch_and_request_after_lost_reply(self):
         self.prepare(with_repo=True)
+        from .privatebus import wait_until
+        Path(self.report).write_text('ATRAPA: gotowe', encoding='utf-8')
         for n, script in enumerate(self.adapters):
             with self.subTest(adapter=script):
                 ready = self.ready_issue('Go: zażółć / argument ; dane')
                 folder = Path(self.tmp, 'go-decision-' + str(n))
                 launch = Path(self.tmp, 'launch-' + str(n) + '.json')
-                launch.write_text('{"entry":"planning","mode":"light","executor":"Sonnet"}', encoding='utf-8')
+                launch.write_text('{"entry":"now","executor":"Sonnet"}', encoding='utf-8')
                 shown = self.adapter(script, 'inspect', '--session', folder, '--id', ready['id'],
                                      '--destination', 'go', '--launch', launch)
                 self.assertEqual(shown['launch'], json.loads(launch.read_text(encoding='utf-8')))
@@ -597,9 +637,42 @@ class AdapterTest(unittest.TestCase):
                 journal = Path(self.board, 'flow', replay['card'], 'journal.jsonl')
                 events = [json.loads(line) for line in journal.read_text().splitlines()]
                 self.assertFalse(any(event['type'] == 'card.started' for event in events))
-                self.assertFalse(any(call[:2] == ['issue', 'retry-start'] for call in self.calls()))
+                self.assertFalse(any(call[:3] == ['issue', 'retry-start', ready['id']] for call in self.calls()))
+                current = self.adapter(script, 'retry-inspect', '--session', folder, '--id', ready['id'])['currentStart']
+                self.assertTrue(current['retryable'])
+                self.assertFalse(any(call[:3] == ['issue', 'retry-start', ready['id']] for call in self.calls()))
+                flag.touch()
+                self.env['ISSUE_LOSE_REPLY_COMMAND'] = 'issue retry-start'
+                lost_retry = self.adapter(script, 'retry-start', '--session', folder, '--id', ready['id'],
+                    '--intent', current['intentId'], '--expected-start-version', current['startVersion'],
+                    '--decision', f"ponów start {ready['id']} intent {current['intentId']} v{current['startVersion']}", code=1)
+                self.assertIn('utracona odpowiedź', lost_retry['error'])
+                self.assertFalse(flag.exists())
+                retry_saved = json.loads((folder / 'session.json').read_text())['retryOperation']
+                self.assertNotEqual(retry_saved['requestId'], request_id)
+                retried = self.adapter(script, 'retry-replay', '--session', folder)
+                self.assertEqual(retried['card'], replay['card'])
+                self.assertEqual(retried['start']['state'], 'started')
+
+                def events():
+                    return [json.loads(line) for line in journal.read_text().splitlines()]
+
+                self.assertTrue(wait_until(lambda: any(event['type'] == 'card.closed' for event in events()),
+                                           timeout=60), events())
+                completed_retry = self.adapter(script, 'retry-replay', '--session', folder)
+                self.assertEqual(completed_retry['currentStart']['state'], 'completed')
+                history = self.adapter(script, 'replay', '--session', folder)
+                self.assertEqual(history['card'], replay['card'])
+                self.assertEqual(history['start'], replay['start'])
+                self.assertEqual(history['startError'], replay['startError'])
+                self.assertEqual(history['currentStart']['state'], 'completed')
+                self.assertEqual(sum(event['type'] == 'card.started' for event in events()), 1)
+                retry_calls = [call for call in self.calls() if call[:3] == ['issue', 'retry-start', ready['id']]]
+                self.assertEqual(len(retry_calls), 3)
+                self.assertTrue(all(call == retry_calls[0] for call in retry_calls))
+                self.assertEqual(retry_calls[0][retry_calls[0].index('--request-id') + 1], retry_saved['requestId'])
                 calls = [call for call in self.calls() if call[:2] == ['go', ready['id']]]
-                self.assertEqual(len(calls), 3)
+                self.assertEqual(len(calls), 4)
                 for call in calls:
                     self.assertEqual(call[call.index('--request-id') + 1], request_id)
                     self.assertEqual(json.loads(Path(call[call.index('--launch') + 1]).read_text(encoding='utf-8')),

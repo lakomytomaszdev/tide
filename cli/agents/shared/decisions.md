@@ -3,8 +3,8 @@
 Te polecenia przekazują wyłącznie gotową sprawę do gotowego Tide CLI. Nie syntezuj
 raportu ponownie, nie planuj pracy, nie twórz karty samodzielnie i nie wybieraj
 wykonawców. Nie odwołuj się do prywatnego API, Tablicy ani qdbus. Helper zapisuje
-stan operacji w katalogu sesji pod `${XDG_STATE_HOME:-$HOME/.local/state}/tide/issue-decisions/S-N`;
-zachowaj ten sam katalog przy wznowieniu.
+stan operacji w katalogu sesji pod `${XDG_STATE_HOME:-$HOME/.local/state}/tide/issue-decisions/<id-rozmowy>/S-N`.
+Każda rozmowa ma własny trwały identyfikator; zachowaj go i ten sam katalog przy wznowieniu.
 
 ## Backlog i go
 
@@ -39,7 +39,10 @@ ustawień istniejącego CLI; jego dokładna treść zostaje skopiowana do lokaln
 
 Helper zapisuje przed mutacją S-N, accepted expectedVersion, destination, dokładny launch
 i request-id. Jeżeli odpowiedź zaginie, uruchom `replay` dla backlog/go albo
-`retry-replay` dla retry, w tym samym katalogu. Nie generuj nowego klucza. Replay przekazuje
+`retry-replay` dla retry, w tym samym katalogu, z `--request-id <zapisany requestId>`.
+Zachowaj requestId operacji w rozmowie przed wywołaniem i wybieraj nim również starszą operację.
+Jeśli katalog ma kilka operacji, helper odmawia replay bez wskazania klucza; nie wybieraj
+samodzielnie ostatniej operacji innej rozmowy. Nie generuj nowego klucza. Replay przekazuje
 ponownie identyczny ładunek do CLI. Gdy brak lokalnej tożsamości operacji, nie zgaduj:
 odczytaj i pokaż raport, po czym uzyskaj nową, odrębną decyzję.
 
