@@ -131,7 +131,7 @@ class EmptyGenerationTest(StartBaseSetup):
                     lambda: {**engine.git.branch_worktree(self.repo, branch, path, self.master), "ticket": second},
                     repo=self.repo, branch=branch, worktree=path, base=self.master, ticket=second)
         self.ask()
-        excludes = Path(self.base, "excludes")
+        excludes = Path(self.repo, ".git", "info", "exclude")
         excludes.write_text("cache/\nignored.bin\n")
         git(self.repo, "config", "core.excludesFile", str(excludes))
         for path in (self.started["worktree"], self.started["cardWorktree"]):
@@ -171,7 +171,7 @@ class EmptyGenerationTest(StartBaseSetup):
 
     def test_remote_ref_and_ignored_collision_preserve_old_content(self):
         git(self.repo, "update-ref", "refs/remotes/team/topic", self.feature_sha)
-        excludes = Path(self.base, "excludes")
+        excludes = Path(self.repo, ".git", "info", "exclude")
         excludes.write_text("feature.txt\n")
         git(self.repo, "config", "core.excludesFile", str(excludes))
         old = Path(self.started["worktree"], "feature.txt")

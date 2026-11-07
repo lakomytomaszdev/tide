@@ -69,6 +69,21 @@ class HostGitInvocationTest(unittest.TestCase):
         self.assertTrue(result.ok, result.err)
         self.assertIn("filter.Filtr.clean", result.out)
 
+    def test_excludes_outside_project_cannot_supply_repository_configuration(self):
+        excludes = Path(self.tmp.name) / "host-excludes"
+        excludes.write_text("private.bin\n")
+        (self.repo / "private.bin").write_bytes(b"dane")
+        gitrepos.git(str(self.repo), "config", "core.excludesFile", str(excludes))
+        result = self.git().run(str(self.repo), "status", "--porcelain", "--untracked-files=all")
+        self.assertFalse(result.ok)
+        self.assertIn(str(excludes), result.err)
+        # Ten sam wzorzec z jawnego projektu musi działać bez udostępniania hosta.
+        (self.repo / ".git/info/exclude").write_text(excludes.read_text())
+        gitrepos.git(str(self.repo), "config", "core.excludesFile", str(self.repo / ".git/info/exclude"))
+        result = self.git().run(str(self.repo), "status", "--porcelain", "--untracked-files=all")
+        self.assertTrue(result.ok, result.err)
+        self.assertNotIn("private.bin", result.out)
+
     def test_task_worktree_inside_project_can_be_created_and_removed(self):
         folder = self.repo / ".claude/worktrees"
         folder.mkdir(parents=True)
