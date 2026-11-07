@@ -6078,6 +6078,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             resumed = {e.get("parentStep") for e in events if e.get("type") == "step.started" and e.get("parentStep")}
             outside = {e.get("step") for e in events if e.get("type") == "step.finished" and e.get("outside")}
             current = fold(events)
+            if current.paused:
+                continue        # wstrzymana karta nie zajmuje miejsca w kolejce (wraca do niej po wznowieniu)
             for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now

@@ -51,6 +51,23 @@ class OutsideQueueTest(unittest.TestCase):
         self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
         self.assertFalse(eng._outside_behind("K-38", "K-38-PT-1-4", {"ts": ts(70)}))
 
+    def test_paused_card_does_not_hold_the_queue_after_restart(self):
+        # 07.11 (K-38/PT-264): zgoda wstrzymanej karty nie blokuje po restarcie zgód innych kart.
+        from datetime import datetime, timedelta
+        ts = lambda minutes: (datetime.now().astimezone() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        journals = {
+            "K-38": [{"type": "step.finished", "step": "K-38-PT-1-4", "outside": True, "ts": ts(70)},
+                     {"type": "step.decision", "step": "K-38-PT-1-4", "choice": "run", "ts": ts(70)},
+                     {"type": "card.paused", "ts": ts(60)}],
+            "K-37": [{"type": "step.finished", "step": "K-37-PT-2-1", "outside": True, "ts": ts(5)},
+                     {"type": "step.decision", "step": "K-37-PT-2-1", "choice": "run", "ts": ts(5)}],
+        }
+        eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
+        eng._outside_seeded = False
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card])
+        self.assertFalse(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
+        self.assertNotIn("K-38-PT-1-4", eng._outside_waiting)
+
     def test_consent_waiting_for_a_busy_slot_keeps_its_place(self):
         # 05.11: przy zajętym miejscu zgody nie trafiały do kolejki, więc po zwolnieniu wskakiwała nowsza.
         eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"}, busy={"K-37", "K-38"})
