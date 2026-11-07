@@ -32,6 +32,7 @@ ColumnLayout {
     property var decision: null
     property string selected: ""
     property bool techOpen: false
+    property bool triedOpen: false
     property string error: ""
     // Uwagi recenzenta zaznaczone do odesłania (id z `decision.findings`); domyślne zaznaczenie daje usługa.
     property var checkedIds: []
@@ -46,6 +47,8 @@ ColumnLayout {
     readonly property bool freeText: !!decision && decision.freeText === true && !!decision.reply
     readonly property bool onlyText: freeText && options.length === 0
     readonly property string choice: onlyText ? otherId : selected
+    readonly property var caretaker: Decision.hasCaretaker(decision) ? decision.caretaker : null
+    readonly property var triedRows: Decision.triedRows(caretaker)
     readonly property var commands: decision && decision.commands ? decision.commands : []
     readonly property bool showCommands: Decision.showsCommands(decision)
     readonly property var chosenOption: options.find(o => o.id === choice) || null
@@ -60,7 +63,7 @@ ColumnLayout {
     readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== ""
                                                                          : choice !== "" && (!picksCommands || checks.length > 0))
     // Napis przycisku wyboru w oknie i w pełnej karcie.
-    readonly property string chooseLabel: needsPreview ? (preview ? "Zapisz i ponów" : "Pokaż podgląd") : "Wybierz"
+    readonly property string chooseLabel: needsPreview ? (preview ? (decision.reply.confirmLabel || "Zapisz i ponów") : "Pokaż podgląd") : "Wybierz"
     readonly property alias answerField: answer
 
     signal answered(string decisionId, string method, var params)
@@ -71,6 +74,7 @@ ColumnLayout {
     function reset() {
         selected = ""
         techOpen = false
+        triedOpen = false
         error = ""
         preview = null
         previewing = false
@@ -153,7 +157,10 @@ ColumnLayout {
 
     spacing: 12
 
-    Text {
+    TextEdit {
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
         objectName: "decisionHappened"
         Layout.fillWidth: true
         text: form.decision ? form.decision.happened : ""
@@ -164,7 +171,10 @@ ColumnLayout {
         font.weight: Font.DemiBold
         wrapMode: Text.Wrap
     }
-    Text {
+    TextEdit {
+        readOnly: true
+        selectByMouse: true
+        selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
         objectName: "decisionWhy"
         Layout.fillWidth: true
         text: form.decision ? form.decision.why : ""
@@ -183,10 +193,13 @@ ColumnLayout {
         color: Tide.Tokens.backgroundView
         border.width: 1
         border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-        Text {
+        TextEdit {
             id: commandText
+            readOnly: true
+            selectByMouse: true
+            selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
             anchors.left: parent.left
-            anchors.right: parent.right
+            anchors.right: commandCopy.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.margins: 12
             text: form.decision && form.decision.technical ? Decision.text(form.decision.technical.command) : ""
@@ -195,6 +208,99 @@ ColumnLayout {
             font.family: Tide.Theme.monoFamily
             font.pointSize: Tide.Tokens.fontSizePt * 0.95
             wrapMode: Text.WrapAnywhere
+        }
+        Text {
+            id: commandCopy
+            property bool copied: false
+            objectName: "decisionCommandCopy"
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.rightMargin: 12
+            anchors.topMargin: 9
+            text: copied ? "Skopiowano" : "Kopiuj"
+            textFormat: Text.PlainText
+            color: Tide.Tokens.sky
+            font.family: Tide.Theme.uiFamily
+            font.pointSize: Tide.Tokens.fontSizePt
+            Accessible.role: Accessible.Button
+            Accessible.name: "Kopiuj polecenie"
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    clipboardHelper.text = commandText.text
+                    clipboardHelper.selectAll()
+                    clipboardHelper.copy()
+                    commandCopy.copied = true
+                }
+            }
+        }
+        Connections {
+            target: form
+            function onDecisionIdChanged() { commandCopy.copied = false }
+        }
+    }
+
+    // Polecenia z treści pytania (04.11): gdy agent prosi o wpisanie czegoś w terminalu, polecenie stoi w osobnym
+    // polu z przyciskiem „Kopiuj” zamiast w środku akapitu.
+    TextEdit {
+        id: clipboardHelper
+        visible: false
+    }
+    Repeater {
+        model: form.decision && form.decision.copyCommands ? form.decision.copyCommands : []
+        delegate: Rectangle {
+            id: copyRow
+            required property string modelData
+            property bool copied: false
+            objectName: "decisionCopyCommand"
+            Layout.fillWidth: true
+            implicitHeight: Math.max(copyText.implicitHeight, copyButton.implicitHeight) + 14
+            radius: Tide.Tokens.radiusFrame
+            color: Tide.Tokens.backgroundView
+            border.width: 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
+            TextEdit {
+                id: copyText
+                readOnly: true
+                selectByMouse: true
+                selectionColor: Tide.Theme.alpha(Tide.Tokens.sky, 0.35)
+                anchors.left: parent.left
+                anchors.right: copyButton.left
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: 12
+                anchors.rightMargin: 8
+                text: copyRow.modelData
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textPrimary
+                font.family: Tide.Theme.monoFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                wrapMode: Text.WrapAnywhere
+            }
+            Text {
+                id: copyButton
+                objectName: "decisionCopyButton"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.rightMargin: 12
+                text: copyRow.copied ? "Skopiowano" : "Kopiuj"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.sky
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                Accessible.role: Accessible.Button
+                Accessible.name: "Kopiuj polecenie " + copyRow.modelData
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        clipboardHelper.text = copyRow.modelData
+                        clipboardHelper.selectAll()
+                        clipboardHelper.copy()
+                        copyRow.copied = true
+                    }
+                }
+            }
         }
     }
 
@@ -354,6 +460,102 @@ ColumnLayout {
                 tickets: modelData.tickets
                 checked: form.checkedIds.indexOf(modelData.id) >= 0
                 onToggled: form.toggleFinding(modelData.id)
+            }
+        }
+    }
+
+    // Opiekun karty (K-37, PT-157): rekomendacja i streszczenie z usługi, zwijane „Co próbowano”. Możliwości zostają
+    // w kolejności z usługi, bez zaznaczenia (D10); bez pola `caretaker` bloku nie ma.
+    ColumnLayout {
+        objectName: "decisionCaretaker"
+        Layout.fillWidth: true
+        visible: form.caretaker !== null
+        spacing: 6
+        Accessible.role: Accessible.Grouping
+        Accessible.name: "Opiekun"
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: careColumn.implicitHeight + 24
+            radius: Tide.Tokens.radiusFrame
+            color: Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
+            border.width: 1
+            border.color: Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+            ColumnLayout {
+                id: careColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 4
+                Text {
+                    objectName: "decisionCaretakerTitle"
+                    Layout.fillWidth: true
+                    text: Decision.caretakerTitle(form.caretaker)
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                    font.weight: Font.DemiBold
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    objectName: "decisionCaretakerSummary"
+                    Layout.fillWidth: true
+                    visible: text !== ""
+                    text: form.caretaker && form.caretaker.summary ? String(form.caretaker.summary) : ""
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                    wrapMode: Text.Wrap
+                }
+            }
+        }
+        Tide.TextButton {
+            objectName: "decisionTriedToggle"
+            visible: form.triedRows.length > 0
+            text: Decision.triedToggleLabel(form.caretaker, form.triedOpen)
+            accent: Tide.Tokens.textMuted
+            onClicked: form.triedOpen = !form.triedOpen
+        }
+        ColumnLayout {
+            objectName: "decisionTried"
+            Layout.fillWidth: true
+            visible: form.triedOpen && form.triedRows.length > 0
+            spacing: 4
+            Repeater {
+                model: form.triedRows
+                delegate: ColumnLayout {
+                    id: triedRow
+                    objectName: "decisionTriedRow"
+                    required property var modelData
+                    readonly property string action: modelData.action
+                    readonly property string reason: modelData.reason
+                    readonly property string effect: modelData.effect
+                    Layout.fillWidth: true
+                    spacing: 0
+                    Text {
+                        objectName: "decisionTriedAction"
+                        Layout.fillWidth: true
+                        text: triedRow.action + " — " + triedRow.effect
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "decisionTriedReason"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: triedRow.reason
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                        wrapMode: Text.Wrap
+                    }
+                }
             }
         }
     }

@@ -1,7 +1,10 @@
 """PT-123: odpowiedź z `flow.decisions[]` idzie istniejącym StepResolve (ResolveCardStep) i trafia do wznowionego
 kroku — w procesie, na prawdziwych atrapach kroku (ten sam przebieg co test_cardflow_decisions_dbus.py)."""
+import io
 import json
 import os
+import unittest
+from unittest.mock import patch
 
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
@@ -19,9 +22,18 @@ class DecisionAnswerTest(FlowInProcess):
                            timeout=20)
         self.assertTrue(found, self.events(card_id))
         call = os.path.join(found[0]["stepDir"], "out", "fake-call.json")
-        self.assertTrue(wait_until(lambda: os.path.isfile(call), timeout=20), "wznowiony krok nie ruszył")
-        with open(call, encoding="utf-8") as fh:
-            return json.load(fh)["prompt"]
+
+        def read_call():
+            # Istnienie pliku nie oznacza końca json.dump w procesie atrapy.
+            try:
+                with open(call, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return None
+
+        data = wait_until(read_call, timeout=20)
+        self.assertTrue(data, "wznowiony krok nie zapisał pełnego wywołania")
+        return data["prompt"]
 
     def test_free_text_answer_from_decision_reaches_the_resumed_step(self):
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
@@ -56,6 +68,20 @@ class DecisionAnswerTest(FlowInProcess):
         self.assertIn("Polecenie nie zostało uruchomione: git fetch origin", prompt)
         self.assertIn("Sprawdź gałęzie przez git branch -a.", prompt)
         self.assertNotIn("git fetch origin", self.store.load().projects["proj"].allowed_commands)
+
+
+class ResumedPromptReadinessTest(unittest.TestCase):
+    def test_waits_for_complete_json_in_the_resumed_call(self):
+        case = DecisionAnswerTest("test_free_text_answer_from_decision_reaches_the_resumed_step")
+        started = [{"parentStep": "original", "stepDir": "/synthetic/step"}]
+        reads = [io.StringIO(""), io.StringIO('{"prompt":'),
+                 io.StringIO('{"prompt": "Odpowiedź użytkownika: ISO 8601"}')]
+        with patch.object(case, "of", return_value=started), \
+                patch.object(case, "events", return_value=[]), \
+                patch("os.path.isfile", return_value=True), \
+                patch(f"{__name__}.open", side_effect=reads, create=True) as opened:
+            self.assertEqual(case.resumed_prompt("K-1", "original"), "Odpowiedź użytkownika: ISO 8601")
+        self.assertEqual(opened.call_count, 3)
 
 
 class DecisionStepTargetTest(FlowInProcess):

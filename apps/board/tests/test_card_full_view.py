@@ -92,6 +92,67 @@ class FixtureTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FullViewTest(ProbeCase):
+    def test_ticket_consent_button_calls_public_operation_with_current_context(self):
+        events = journal_d()
+        events.append({"type": "outside.ticket-consent", "seq": 200, "ticket": "#2"})
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["visible"] = js("page.cardFullView.flow.ticketConsents[0].active")
+replies.append({"ok": False, "error": "stale-context", "message": "Zlecenie zmieniło się"})
+click(at("(" + ALL + ")(page.cardFullView, 'revokeTicketConsent')[0]"))
+out["consentError"] = js("page.cardFullView.consentError")
+click(at("(" + ALL + ")(page.cardFullView, 'revokeTicketConsent')[0]"))
+out["calls"] = calls()
+entry = next(c for c in data["cards"] if c["id"] == "K-8")["derived"]["flow"]["ticketConsents"][0]
+entry.update(active=False, revoked=True, canRevoke=False)
+set_snapshot(data)
+wait(100)
+out["activeAfter"] = js("page.cardFullView.flow.ticketConsents[0].active")
+""", full_card(self.data, events))
+        self.assertTrue(out["visible"])
+        sent = [c for c in out["calls"] if c[0] == "RevokeTicketConsent"]
+        self.assertEqual(len(sent), 2, out)
+        self.assertEqual(sent[0][1], "K-8")
+        self.assertEqual(json.loads(sent[0][2]), {"ticket": "#2", "orderSeq": events[0]["seq"], "baseVersion": 0})
+        self.assertEqual(out["consentError"], "Zlecenie zmieniło się")
+        self.assertFalse(out["activeAfter"], "nowa migawka odświeża panel")
+
+    def test_talk_button_and_escalated_decision_call_the_service(self):
+        from unittest import mock
+        from tide_daemon.cardflow.engine import FlowEngine
+        from tide_daemon.cardflow import caretaker
+        events = self.caretaker_events(escalated=True)
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = mock.Mock()
+        engine.journal.read.return_value = events
+        engine._caretaker_setup = lambda st: caretaker.setup(st)
+        engine._limit_view = lambda *args: None
+        computed = engine.derived({"id": "K-8", "column": "todo"})
+        self.assertIn("talk-to-caretaker", [o["id"] for d in computed["flow"]["decisions"] for o in d["options"]])
+        data = full_card(self.data, events)
+        data["cardOpen"] = "full"
+        next(c for c in data["cards"] if c["id"] == "K-8")["derived"] = computed
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(named("talkToCaretaker"))
+out["button"] = calls()
+js("page.cardFullView.form.pick('talk-to-caretaker')")
+# Wspólny widok pokazuje też bazę karty; długa decyzja wymaga przewinięcia do przycisku.
+named("fullChoose")
+js('''(function () {
+    let flick = probeTarget.parent;
+    while (flick && flick.contentY === undefined) flick = flick.parent;
+    flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height,
+        probeTarget.mapToItem(flick.contentItem, 0, 0).y - flick.height / 2));
+})()''')
+wait(80)
+click(named("fullChoose"))
+out["option"] = calls()
+""", data)
+        self.assertEqual(out["button"][-1], ["TalkToCaretaker", "K-8", "{}"])
+        self.assertEqual(out["option"][-1][0:2], ["TalkToCaretaker", "K-8"])
+        self.assertEqual(json.loads(out["option"][-1][2]), {"problem": "error:K-8-PT-2-1"})
+
     def test_scenario_e_lists_stopped_steps_and_moves_them_to_codex_after_showing_the_cost(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
@@ -282,6 +343,12 @@ out["oldButton"] = js("page.cardFullView.oldHistory.length")
 js("page.cardFullView.oldOpen = true")
 out["expanded"] = json.loads(js(HIST))
 out["enterBefore"] = len(calls())
+# Po integracji K-60 z master pełna karta ma też uwagi i zgody, więc przycisk bywa na dole okna — przewijamy do niego.
+js("(function () { const b = (" + ALL + ")(page.cardFullView, 'historyResume')[0]; let flick = b.parent;"
+   " while (flick && flick.contentY === undefined) flick = flick.parent;"
+   " flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height,"
+   " b.mapToItem(flick.contentItem, 0, 0).y - flick.height / 2)); })()")
+wait(80)
 click(at("(" + ALL + ")(page.cardFullView, 'historyResume')[0]"))
 out["enter"] = calls()
 """, data)
@@ -306,6 +373,91 @@ out["enter"] = calls()
         self.assertEqual(old_step[3], 0, "wcześniejsze zlecenia są bez „Wznów rozmowę”")
         self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "NEW-2"])
 
+    def caretaker_events(self, escalated=False):
+        """Karta K-8: PT-2 padł dwa razy, opiekun (Opus) sprawdza go; z `escalated` oddaje decyzję."""
+        now = datetime.now().astimezone()
+        events = []
+
+        def add(etype, ago, /, **data):
+            events.append({"v": 1, "seq": len(events) + 1, "ts": (now - timedelta(minutes=ago)).isoformat(),
+                           "card": "K-8", "type": etype, **data})
+
+        def step(name, kind, ago, attempt=0, parent="", **extra):
+            add("step.started", ago, step=name, ticket="PT-2", kind=kind, executor=extra.pop("executor", "Sonnet"),
+                provider="anthropic", model="x", attempt=attempt, parentStep=parent,
+                stepDir=f"/wt/{name}.step", worktree="/wt/pt-2", branch="ticket/pt-2", **extra)
+
+        add("card.started", 60, entry="now", executor="Sonnet", program="claude", provider="anthropic")
+        step("K-8-PT-2-1", "ticket", 50)
+        add("step.finished", 49, step="K-8-PT-2-1", ticket="PT-2", result="error", reason="exit")
+        add("step.retry", 48, step="K-8-PT-2-1", ticket="PT-2")
+        step("K-8-PT-2-2", "ticket", 47, attempt=1, parent="K-8-PT-2-1")
+        add("step.finished", 46, step="K-8-PT-2-2", ticket="PT-2", result="error", reason="exit")
+        add("caretaker.started", 45, problem="error:K-8-PT-2-1", key="caretaker:error:K-8-PT-2-1:1", n=1,
+            step="K-8-care-1", target="K-8-PT-2-2", root="K-8-PT-2-1", ticket="PT-2", trigger="error",
+            triggers=["error"], watermark=len(events))
+        step("K-8-care-1", "caretaker", 44, executor="Opus")
+        if escalated:
+            add("step.finished", 20, step="K-8-care-1", ticket="PT-2", result="done", reason="")
+            add("caretaker.escalated", 19, problem="error:K-8-PT-2-1", step="K-8-care-1", target="K-8-PT-2-2",
+                ticket="PT-2", action="escalate", summary="Test pada za każdym razem.",
+                recommendation="Zmień wykonawcę.", optionId="change-executor", failed=False, error="", code="")
+        return events
+
+    def test_caretaker_work_shows_in_now_in_background_your_move_and_history(self):
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        # Dane prosto z usługi: dla kroku opiekuna usługa daje canEnter=False (wejście — PT-149/PT-158).
+        self.assertIs(derived_flow["running"][0]["canEnter"], False)
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+""", data)
+        full_state = out["full"]
+        self.assertEqual(full_state["headline"], "Opiekun zajmuje się PT-2, nic nie czeka na Ciebie.")
+        self.assertEqual(full_state["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 0]],
+                         "„Wejdź” jest ukryte dla kroku opiekuna")
+
+    def test_view_shows_enter_for_a_running_step_exactly_when_can_enter_is_true(self):
+        # Test samego widoku: przycisk „Wejdź” wynika wyłącznie z pola canEnter (nie z rodzaju kroku).
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        derived_flow["running"][0]["canEnter"] = True
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+click(at("(" + ALL + ")(page.cardFullView, 'fullNowEnter')[0]"))
+out["enter"] = calls()
+""", data)
+        self.assertEqual(out["full"]["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 1]])
+        self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "K-8-care-1"])
+
+    def test_caretaker_escalation_is_signed_opiekun_in_history(self):
+        data = full_card(self.data, self.caretaker_events(escalated=True))
+        data["cardOpen"] = "full"
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["lines"] = json.loads(js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
+    "return JSON.stringify(all(v, 'fullHistoryLine').map(l => [l.text, "
+    "all(l, 'historyCaretaker').filter(t => t.visible).map(t => t.text), "
+    "all(l, 'historyKind').map(t => t.text)])) })()"))
+""", data)
+        lines = {row[0]: row for row in out["lines"]}
+        signed = lines["Opiekun: oddaje decyzję — Test pada za każdym razem."]
+        self.assertEqual((signed[1], signed[2]), (["Opiekun"], ["opiekun"]))
+        self.assertTrue(all(row[1] == [] for row in out["lines"] if row is not signed),
+                        "tylko wpisy opiekuna mają podpis")
+
+    def test_card_without_caretaker_has_no_caretaker_signature(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+out["signed"] = js("(" + ALL + ")(page.cardFullView, 'historyCaretaker').filter(t => t.visible).length")
+""", full_d(self.data))
+        self.assertEqual(out["signed"], 0)
+
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
@@ -324,6 +476,8 @@ out["noJournal"] = [js("page.fullOpen"), js("page.panelOpen"), js("page.panelCar
         data = full_d(self.data)
         for item in data["cards"]:
             if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
                 for phase in item["derived"]["phases"]:
                     if phase["id"] == "main-merge":
                         phase["state"] = "you"
@@ -335,7 +489,208 @@ click(named("fullMergeMain"))
 out["call"] = calls()[-1][:2]
 """, data)
         self.assertTrue(out["visible"])
-        self.assertEqual(out["call"], ["MergeCardToMain", "K-8"])
+        self.assertEqual(out["call"], ["PreviewCardMerge", "K-8"])
+
+    def test_named_main_requires_confirmation_and_cancel_is_only_a_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        names = ["master", "develop", "integration/custom-tide-main", "release/<b>" + "long-name-" * 18]
+        out = self.probe(STATE_PY + "\nnames = " + repr(names) + r'''
+click(card("K-8"))
+out["labels"], out["texts"], out["rendered"] = [], [], []
+for index, target in enumerate(names):
+    snap = json.loads(backend.snapshotJson)
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["mainBranch"] = target
+    next(c for c in snap["cards"] if c["id"] == "K-8")["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/" + target}
+    set_snapshot(snap)
+    result = {"ok": True, "canMerge": True, "previewToken": "token-" + str(index),
+              "targetRef": "refs/heads/" + target, "targetBranch": target, "targetCommit": "b" * 40,
+              "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+              "targetWorktree": "/repo", "targetWorktreeExists": True,
+              "localCollisions": {"staged": [], "unstaged": [], "untracked": []}, "localCollisionCount": 0,
+              "commits": [], "commitCount": 0, "files": [], "fileCount": 0, "conflicts": [], "conflictCount": 0}
+    out["labels"].append(obj("fullMergeMain").property("text"))
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    # Anulowanie ani Escape nie są zgodą, nawet przy canMerge=true i check:auto.
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+    assert calls()[-1][0] == "PreviewCardMerge"
+    replies.append(result)
+    click(named("fullMergeMain"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    button = obj("mergePreviewConfirm")
+    out["labels"].append(button.property("text"))
+    engine.rootContext().setContextProperty("probeTarget", button)
+    out["rendered"].append(json.loads(js("JSON.stringify([probeTarget.contentItem.text, "
+                                       "probeTarget.contentItem.textFormat, probeTarget.contentItem.truncated])")))
+    replies.append({"ok": True, "targetBranch": target, "operationId": "op-" + str(index)})
+    click(named("mergePreviewConfirm"))
+    until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["labels"], ["Scal do " + name for name in names for _ in range(2)])
+        for index, name in enumerate(names):
+            self.assertIn("refs/heads/" + name, out["texts"][index])
+            self.assertIn("b" * 40, out["texts"][index])
+            self.assertEqual(out["rendered"][index], ["Scal do " + name, 0, False])
+            calls = out["calls"][3 * index:3 * index + 3]
+            self.assertEqual([json.loads(c[2]) for c in calls[:2]], [{"targetRef": "refs/heads/" + name}] * 2)
+            self.assertEqual(calls[2][:2], ["MergeCard", "K-8"])
+            self.assertEqual(json.loads(calls[2][2]), {"targetRef": "refs/heads/" + name,
+                                                     "previewToken": "token-" + str(index)})
+
+    def test_stale_preview_requires_refresh_and_another_explicit_confirmation(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "develop"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/develop"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        out = self.probe(STATE_PY + r'''
+click(card("K-8"))
+result = {"ok": True, "canMerge": True, "targetBranch": "develop", "targetRef": "refs/heads/develop",
+          "targetCommit": "b" * 40, "previewToken": "old"}
+replies.append(result)
+click(named("fullMergeMain"))
+until(lambda: not obj("mergePreview").property("busy"))
+replies.append({"ok": False, "error": "stale-preview", "message": "Potwierdź nowy podgląd"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["message"] = obj("mergePreviewText").property("text")
+out["enabled"] = obj("mergePreviewConfirm").property("enabled")
+replies.append({**result, "previewToken": "new", "targetCommit": "c" * 40})
+click(named("mergePreviewRefresh"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["beforeConfirm"] = calls()
+out["text"] = obj("mergePreviewText").property("text")
+replies.append({"ok": True, "targetBranch": "develop"})
+click(named("mergePreviewConfirm"))
+until(lambda: not obj("mergePreview").property("visible"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["message"], "Potwierdź nowy podgląd")
+        self.assertFalse(out["enabled"])
+        self.assertEqual([c[0] for c in out["beforeConfirm"]], ["PreviewCardMerge", "MergeCard", "PreviewCardMerge"])
+        self.assertIn("c" * 40, out["text"])
+        self.assertEqual(json.loads(out["calls"][-1][2]), {"targetRef": "refs/heads/develop", "previewToken": "new"})
+
+    def test_merge_preview_button_full_lists_refusals_and_close_only_read(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "release/complete-target-name"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/release/complete-target-name"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/release/complete-target-name", "targetCommit": "b" * 40,
+                  "targetBranch": "release/complete-target-name", "targetWorktree": "/repo",
+                  "targetWorktreeExists": True, "reason": "", "canMerge": True, "readyToMerge": False,
+                  "warnings": ["Lokalne kolizje nie zostały ocenione."],
+                  "commits": [{"sha": str(i).zfill(40), "subject": f"commit {i}"} for i in range(46)],
+                  "commitCount": 46, "files": [{"status": "A", "oldPath": "", "newPath": f"file-{i}.txt"}
+                                               for i in range(465)],
+                  "fileCount": 465, "conflictCount": 0, "conflicts": []}
+        variants = [result, {**result, "canMerge": False, "reason": "conflict", "message": "Konflikty",
+                            "conflictCount": 2, "conflicts": ["conflict-a.txt", "conflict-b.txt"]},
+                    {**result, "canMerge": False, "reason": "unrelated-history", "message": "Brak wspólnej historii",
+                     "commits": [], "commitCount": 0, "files": [], "fileCount": 0},
+                    {**result, "commits": [], "commitCount": 0, "files": [], "fileCount": 0}]
+        out = self.probe(STATE_PY + "\nvariants = " + repr(variants) + r'''
+click(card("K-8"))
+out["label"] = obj("fullPreviewMerge").property("text")
+before = js("JSON.stringify(page.snapshot.cards)")
+out["texts"] = []
+for index, result in enumerate(variants):
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    if index % 2:
+        key(Qt.Key.Key_Escape)
+    else:
+        click(named("mergePreviewClose"))
+out["opened"] = obj("mergePreview").property("visible")
+out["same"] = before == js("JSON.stringify(page.snapshot.cards)")
+out["calls"] = calls()
+''', data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/complete-target-name")
+        self.assertFalse(out["opened"])
+        self.assertTrue(out["same"])
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": result["targetRef"]}] * 4)
+        for text in out["texts"]:
+            self.assertIn(result["sourceRef"], text)
+            self.assertIn(result["targetRef"], text)
+            self.assertIn("Lokalne kolizje: nieocenione", text)
+        self.assertIn("commit 45", out["texts"][0])
+        self.assertIn("file-464.txt", out["texts"][0])
+        self.assertIn("conflict-b.txt", out["texts"][1])
+        self.assertIn("Brak wspólnej historii [unrelated-history]", out["texts"][2])
+        self.assertIn("Wnoszone commity (0)", out["texts"][3])
+
+    def test_merge_preview_shows_local_collisions_and_allows_unrelated_staged(self):
+        data = full_d(self.data)
+        for item in data["cards"]:
+            if item["id"] == "K-8":
+                item["derived"]["flow"]["mainBranch"] = "master"
+                item["derived"]["flow"]["base"] = {"status": "known", "baseRef": "refs/heads/master"}
+                for phase in item["derived"]["phases"]:
+                    if phase["id"] == "main-merge":
+                        phase["state"] = "you"
+        result = {"ok": True, "sourceRef": "refs/heads/card/k-8", "sourceCommit": "a" * 40,
+                  "targetRef": "refs/heads/master", "targetCommit": "b" * 40, "targetBranch": "master",
+                  "targetWorktree": "/repo", "targetWorktreeExists": True, "canMerge": False,
+                  "readyToMerge": False, "previewToken": "odcisk-stanu", "reason": "local-collision",
+                  "message": "Lokalna praca koliduje", "localCollisionCount": 3,
+                  "localCollisions": {kind: [{"status": code, "paths": [path], "mergePaths": [path]}]
+                                      for kind, code, path in (("staged", "M ", "index.txt"),
+                                                               ("unstaged", " M", "work.txt"),
+                                                               ("untracked", "??", "new.txt"))}}
+        staged = {**result, "reason": "", "message": "", "canMerge": True,
+                  "localChanges": {"staged": [{"status": "MM", "paths": ["local.txt"]}],
+                                   "unstaged": [{"status": "MM", "paths": ["local.txt"]}], "untracked": []},
+                  "localCollisionCount": 0, "localCollisions": {k: [] for k in result["localCollisions"]}}
+        out = self.probe(STATE_PY + "\nvariants = " + repr([result, staged]) + r'''
+click(card("K-8"))
+out["texts"] = []
+out["enabled"] = []
+for result in variants:
+    replies.append(result)
+    click(named("fullPreviewMerge"))
+    until(lambda: not obj("mergePreview").property("busy"))
+    out["texts"].append(obj("mergePreviewText").property("text"))
+    out["enabled"].append(obj("mergePreviewConfirm").property("enabled"))
+    click(named("mergePreviewClose"))
+out["calls"] = calls()
+''', data)
+        self.assertEqual([c[:2] for c in out["calls"]], [["PreviewCardMerge", "K-8"]] * 2)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/master"}] * 2)
+        self.assertEqual(out["enabled"], [False, True])
+        for text in out["texts"]:
+            self.assertIn("Nie stanowi zgody", text)
+            self.assertNotIn("odcisk-stanu", text)
+        self.assertIn("Kolizje staged (indeks) (1)", out["texts"][0])
+        self.assertIn("Kolizje unstaged (poza indeksem) (1)", out["texts"][0])
+        self.assertIn("Kolizje untracked (nieśledzone) (1)", out["texts"][0])
+        for path in ("index.txt", "work.txt", "new.txt"):
+            self.assertIn(path, out["texts"][0])
+        self.assertIn("Lokalne kolizje: 0", out["texts"][1])
+        self.assertIn("Odczyt nie wykazał blokad", out["texts"][1])
 
 
 if __name__ == "__main__":

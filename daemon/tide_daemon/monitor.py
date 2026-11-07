@@ -21,6 +21,7 @@ RESCAN_MS = 30000
 class AgentMonitor(QObject):
     changed = pyqtSignal()
     raw_changed = pyqtSignal()
+    classified = pyqtSignal()   # model ocenił końcówkę tury (wątek oceny) — stan przeliczamy w wątku Qt (PT-42)
 
     def __init__(self, scanner: AgentScanner, use_processes: bool = True, clock=time.time, parent=None):
         super().__init__(parent)
@@ -39,6 +40,7 @@ class AgentMonitor(QObject):
         # nie ma jej w Sessions(), w kafelku Praca ani w powiadomieniach; KRunner ma własny indeks i ją znajduje.
         self.hidden = None
         self._discover = False
+        self.classified.connect(self.recompute)   # sygnał z innego wątku trafia do kolejki wątku monitora
 
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._file_changed)

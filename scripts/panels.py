@@ -43,10 +43,12 @@ MAIN_PANEL_HINT = 73  # tylko podpowiedź, gdy na głównym monitorze jest kilka
 CHANGED_KEYS = {
     "org.kde.plasma.kickoff": ["/General|icon"],
     "org.kde.plasma.digitalclock": ["/Appearance|showDate"],
+    "org.kde.plasma.systemtray": ["/General|scaleIconsToFit"],
 }
 DEFAULTS = {
     "org.kde.plasma.kickoff": {"/General|icon": "start-here-kde-symbolic"},
     "org.kde.plasma.digitalclock": {"/Appearance|showDate": "true"},
+    "org.kde.plasma.systemtray": {"/General|scaleIconsToFit": "false"},
 }
 
 KDED = ("qdbus6", "org.kde.kded6", "/kded")

@@ -1,6 +1,6 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1.2, 29.10.2026 (zgodna wstecz z wersjami 1 i 1.1: dodatkowe kolumny są opcjonalne,
+Wersja 1.3, 3.11.2026 (zgodna wstecz z wersjami 1, 1.1 i 1.2: dodatkowe kolumny są opcjonalne,
 a plany z sześcioma kolumnami działają jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
 projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
 agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
@@ -132,8 +132,19 @@ plany sześciokolumnowe zachowują dotychczasowe znaczenie.
 | Kolumna 1.2 | Opis |
 | --- | --- |
 | `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
-| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy |
+| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy; sam dobór nie potwierdza spełnienia zasad recenzji według ryzyka (niżej) |
 | `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
+
+**Wersja 1.3:** po `Blokery` może dojść opcjonalna kolumna `Projekt` (10 kolumn). Parser czyta plany o 6, 7, 8, 9
+i 10 kolumnach; znaczenie kolumn 1.2 się nie zmienia, a o obecności kolumny decyduje nagłówek, nie pusta ostatnia
+komórka (plan z 9 kolumnami nie staje się planem z kolumną `Projekt`).
+
+| Kolumna 1.3 | Opis |
+| --- | --- |
+| `Projekt` | slug projektu Tablicy, do którego należy ticket; pusta komórka albo brak kolumny = projekt karty. Nieznany slug nie psuje odczytu Sesji i raportu, zgłasza go dopiero sprawdzanie propozycji |
+
+Blokery `#n` w propozycji planu mogą wskazywać dowolny ticket z całego wspólnego planu karty, także z innego
+projektu. W zatwierdzonym planie bloker może być ID z innej karty grupy.
 
 Propozycja planu karty ma numery robocze `#1`, `#2` itd. oraz plik Markdown `tickets/1.md`,
 `tickets/2.md` itd. obok pliku planu. Każda kartka zawiera co najmniej jeden punkt kryteriów
@@ -144,6 +155,39 @@ karty zapisuje mapę `#n → ID`, a zatwierdzony plan i kartki z ID trafiają na
 worktree czytają Sesje, raport i kontrola numerów razem z innymi planami repozytorium.
 Usługa aktualizuje `Stan` oraz `updated` w zatwierdzonym planie po delegowaniu, wyniku kroku,
 review i scaleniu ticketu.
+
+**Szkice zakresu następczego (`followups/`).** Pakiet propozycji obejmuje Markdowny obok planu,
+`tickets/*.md` i `followups/**/*.md`. Podkatalogi szkiców zachowują swoją strukturę. Usługa zamraża
+pełną treść przed przekazaniem propozycji; review otrzymuje kopię pakietu w `in/proposal/`, a poprawka
+dodatkowo zaczyna z kopiami w swoim wyjściu. Późniejsza edycja wyjścia autora nie zmienia migawki.
+Dotyczy to planowania w tle, Konsoli oraz propozycji wskazanej z pliku. Każda propozycja przechowuje
+własny pakiet, więc poprawa nie nadpisuje materiału poprzedniej propozycji.
+Kopia do odczytu zachowuje oryginalne nazwy i treści. W wyjściu poprawki plan ma nazwę `plan.md`,
+a linki ze szkiców wskazują tę nazwę; przy poprawce zatwierdzonego planu kartki i linki do nich
+używają już nadanych ID zamiast numerów roboczych. Szkice zachowują podkatalogi, fragmenty i parametry URL.
+Istniejące kartki w wyjściu poprawki zatwierdzonego planu mają aktualną treść z planu bazowego,
+w tym edycje użytkownika w panelu; pierwotna migawka w `in/proposal/` pozostaje bez zmian.
+
+Dozwolone są zwykłe pliki UTF-8, najwyżej 512 KiB na plik i 16 MiB na cały pakiet.
+Dowiązania plików i katalogów są odrzucane. Lokalne linki Markdown do szkiców (także odsyłacze
+referencyjne i cele z fragmentem) muszą wskazywać istniejący Markdown w pakiecie; wyjście poza
+katalog artefaktów i brak celu przerywają sprawdzanie przed publikacją niekompletnej propozycji.
+Usługa nie dołącza dowolnych plików wskazanych linkami. Błąd zamrożenia daje wynik błędu kroku.
+
+Po zatwierdzeniu szkice trafiają do commita gałęzi karty w `followups/` obok planu. Linki kartek
+`../followups/…` są przeliczane względem docelowego katalogu kartek. Linki ze szkiców do planu
+i kartek są przeliczane według datowanej nazwy planu i nadanych ID ticketów, także w podkatalogach,
+z zachowaniem fragmentów i parametrów URL. Lokalny cel szkicu musi należeć do publikowanego kompletu:
+plan, kartki ticketów planu lub `followups/`; pozostałe cele są odrzucane przed publikacją propozycji.
+Kolejne commity stanu planu
+zachowują szkice, tekst poza tabelą i dopisane końcówki kartek. Pierwszy udany commit zatwierdzonej
+poprawki bierze tekst poza tabelą i szkice z nowej zamrożonej propozycji. Podczas oczekiwania
+na decyzję commity stanu nadal korzystają z pakietu poprzednio zatwierdzonej wersji:
+nie nadpisują szkiców treścią poprawki ani nie dodają jej nowych szkiców. Późniejsze aktualizacje stanu
+zachowują tekst z worktree, w tym ręczne dopiski. Próg pierwszego udanego zapisu dotyczy wersji
+faktycznie zatwierdzonej; odrzucenie niezatwierdzonej poprawki nie unieważnia wcześniejszego zapisu.
+Szkic opisuje zakres do osobnego
+zaplanowania; jego zapis nie publikuje karty i nie potwierdza dostępności opisanej funkcji.
 
 ## Przepływ karty prowadzony przez Tide (1.2)
 
@@ -160,7 +204,7 @@ pytań do użytkownika w trakcie kroku; po niezależnym review pokazuje plan do 
 
 **Role.** Planujący przygotowuje tabelę i kartki. Inny wykonawca sprawdza plan przed pokazaniem go użytkownikowi;
 gdy znajdzie braki, planujący dostaje jedną poprawkę. Autor ticketu wykonuje pionowy wycinek w osobnym worktree,
-a recenzent używa innego modelu i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
+a recenzent spełnia zasady recenzji według ryzyka (niżej) i zapisuje werdykt. Użytkownik zatwierdza plan albo różnicę po odesłaniu z uwagami;
 może też zmienić wykonawcę lub kartkę ticketu, który jeszcze nie wystartował. Tickety bez blokerów mogą biec
 równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników do gałęzi karty.
 
@@ -174,6 +218,20 @@ lub `majors`. Brak poprawnego wyniku jest błędem
 kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty;
 wznowienie zachowuje worktree i zmiany.
 
+**Testy ticketu i review.** Przed oddaniem ticketu i poprawek autor uruchamia
+`make test-changed BASE=<punkt startu ticketu na gałęzi karty>` i zapisuje polecenie oraz wynik
+w notce. Kartka przekazuje przypięty SHA z wyniku utworzenia gałęzi ticketu; późniejszy ruch
+gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawanych zmian i nie żąda
+osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani review. Zasada zastępuje
+wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
+planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
+
+Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent uruchamiają pełny `make test`
+zamiast niedostępnego celu i zapisują wynik. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+
+Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
+[dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
+
 **Pytanie z gotowymi opcjami.** `{"result":"question","question":"…"}` może mieć dodatkowo
 `"options":[{"title":"…","effect":"…","recommended":true}]`: od 1 do 4 pozycji, `title` niepusty (do 120 znaków),
 `effect` — jedno zdanie o skutku wyboru (do 400 znaków, opcjonalny), `recommended` — najwyżej jedna pozycja.
@@ -183,6 +241,67 @@ dokłada na końcu „Inną odpowiedź…” — agent jej nie podaje. Wybór wz
 tytuł, zły typ) nie są błędem kroku: okno ma wtedy samo pole odpowiedzi. Pytanie bez `options` działa jak dotąd.
 Autor i recenzent nie wykonują push ani scalenia.
 
+**Pytanie o bazę (PT-208).** Każde przekazanie kroku zawiera bieżący pełny ref i przypięty SHA bazy
+albo jawne `unknown`. Sam brak pliku nie dowodzi błędnej bazy ani nie pozwala tworzyć zamiennika,
+wykonywać checkout, rebase czy reset. Po sprawdzeniu dowodów krok może zapisać:
+
+```json
+{"result":"question","question":"Czy zachować bazę?","baseProposal":{"ref":"refs/heads/feature/example","evidence":"Sprawdzona historia wskazanego pliku…"}}
+```
+
+`baseProposal` jest opcjonalne. `ref` musi być pełnym lokalnie znanym refem `refs/heads/…` lub
+`refs/remotes/…` (do 1024 znaków), `evidence` niepustym zwykłym tekstem (do 4000 znaków).
+Usługa sprawdza kandydata w repozytorium projektu karty, bez fetch ani zmiany gita. Nieprawidłowa
+propozycja pozostaje informacją przy zwykłym pytaniu; stare pytania i `options` zachowują działanie.
+
+Poprawna propozycja wstrzymuje nowe kroki i integrację wyników tej karty. Procesy mogą dokończyć,
+a ich wyniki pozostają zapisane i niescalone. Pytanie i blokada wracają po restarcie; oczekiwanie nie
+trzyma blokady repozytorium i nie blokuje innych kart. `ResolveCardStep` przyjmuje `choice: answer`,
+`step` oraz strukturalne `baseDecision: keep` albo `change`, niezależnie od tekstu odpowiedzi.
+Zachowaj zapisuje zwykłą odpowiedź i odblokowuje kontynuację. Zmień zapisuje oczekiwanie (`waiting: true`,
+`changed: false`), pozostawiając pytanie i możliwość Zachowaj. Nie wykonuje operacji git ani nie
+potwierdza zmiany; podgląd dostarcza PT-201, aktywację PT-202, skutki i potwierdzenie PT-213.
+
+**Podgląd korekty (PT-201).** `/Board PreviewCardBaseChange(id, request)` przyjmuje pełny `baseRef`
+i opcjonalny `baseCommit` (dla zdalnego refu wymagany SHA), albo `step` nierozstrzygniętej propozycji;
+puste `{}` wybiera pierwszą oczekującą decyzję o bazie. Walidacja jest taka sama jak przy starcie,
+bez fetch i domyślnego HEAD. Odpowiedź zawiera `oldBase`, `newBase`, `baseVersion`, `branches[]`
+z zapisanymi punktami startu i commitami, `processes[]`, lokalne zmiany oraz ignorowane ścieżki,
+`blockedReasons[]`, `invalidations[]`, `followup` i instrukcję. Dowody są zwykłym tekstem.
+
+Jawny wybór użytkownika w pełnej karcie wywołuje `RequestCardBaseChange(id, {baseRef, baseCommit})`.
+Zapisuje wyłącznie decyzję `card.base-requested`, blokuje nowe kroki i integrację, zachowuje istniejące
+pytania oraz zwraca ten sam podgląd co propozycja agenta. `decisionStep` identyfikuje decyzję;
+`ResolveCardStep` z tym identyfikatorem i `baseDecision: keep` odblokowuje kartę, a `change` jedynie
+otwiera podgląd. Zamknięcie/Esc nie zapisuje odpowiedzi ani nie zatrzymuje procesów.
+
+`previewId` jest odciskiem dokładnych SHA, wersji bazy, całego dziennika/mapy, logicznej zawartości indeksów,
+statusu, metadanych lokalnych danych i procesów. Oba odczyty są lekkie: bez hashowania treści plików.
+Ignorowane katalogi zwijamy przez `ls-files --others --ignored --exclude-standard --directory`;
+odcisk obejmuje ich stat, bez wyliczania wnętrza. Zmiana treści pliku wewnątrz takiego katalogu nie musi
+zmienić identyfikatora. To odcisk kwalifikacji pustej generacji, bez prawa do kopiowania lub kasowania
+lokalnych danych; PT-202 musi zachować stare worktrees wraz z ich zawartością. Limit 4096 odczytów
+metadanych na worktree (także dla nieśledzonych zagnieżdżonych repozytoriów) daje odmowę
+`unknown-local-state` po przekroczeniu. Odpowiedź zawiera najwyżej 20 ignorowanych ścieżek na gałąź,
+`ignoredCount` liczy zwinięte ścieżki/katalogi, a `ignoredTruncated` oznacza skrócenie listy.
+Panel pokazuje najwyżej 10 i liczbę pozostałych. Nie jest to liczba plików w ignorowanych katalogach.
+Dowody, powody odmowy i procesy poprzednich zleceń mają `previousOrder: true`; kontrola pozostaje zachowawcza.
+PT-202 musi ponownie wyliczyć podgląd pod blokadą przed operacją,
+wymagać `canChange: true` i równości identyfikatora; każda wykryta różnica wymaga świeżej decyzji. Identyfikator
+sam w sobie nie jest zgodą. `canExecute: true` udostępnia osobne końcowe potwierdzenie pustej korekty;
+panel wysyła `choice: change-base` z dokładnym ref/SHA i `previewId`. Aktywacja unieważnia stare
+zgody, sesje i domknięcie; nowy krok rusza w nowym katalogu i świeżej sesji. Nowa praca podlega
+zwykłym testom i review, a karta wymaga nowego podsumowania. Historyczne dane pozostają do odczytu.
+Nieznana granica lub stan procesu oznacza odmowę. Zakończony krok i domknięcie na bazowym SHA bez nowego
+commita są metadanymi, natomiast każdy commit dokumentów/kodu/WIP/merge wyklucza pustą korektę.
+
+Korekta v1 jest ograniczona do karty bez commitów wkładu i czynnych procesów, zwykle Od razu przed
+pierwszą pracą. Commit planu po Lekkie/Mam plan/Pełne, WIP i praca po review (K-49) wymagają odmowy
+korekty i zachowania danych. Cel pkt 4 oraz historie 35–37 pozostają częściowe. Wymagania wskazują
+szkic [K-50-replay-code](agents/plans/followups/replay-code.md), zweryfikowany w PT-201 i dołączony
+do zatwierdzonego planu. Sam ten klucz nie oznacza opublikowanej karty ani dostępnego replay. Zachowaj
+pozwala kontynuować; alternatywą jest oczekiwanie i osobne zaplanowanie przeniesienia.
+
 **Review planu.** Krok `plan-review` zapisuje w katalogu wyjściowym `plan-review.json`:
 `{"verdict":"APPROVE"|"REQUEST_CHANGES","findings":[{"severity":"blocker"|"major"|"nit","text":"…","tickets":["#5"]}]}`.
 `severity`: `blocker` — plan nie może ruszyć bez poprawy, `major` — ważna zmiana przed startem, `nit` — drobiazg;
@@ -191,7 +310,14 @@ Autor i recenzent nie wykonują push ani scalenia.
 Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to błąd formatu. To zmienia tylko wynik
 review; format pliku planu i reguły zatwierdzania zostają bez zmian.
 
-**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. `check: manual` dodaje listę „Co przetestować
+**Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. Krok `close` przed napisaniem podsumowania
+uruchamia raz pełny `make test` na tej gałęzi i zapisuje wynik w podsumowaniu. Nieudane testy obsługuje
+jak inne problemy domknięcia: wynik `error` z opisem niepowodzeń zamiast `done`, bez scalenia do głównej.
+Domknięcie mimo nieudanego pełnego przebiegu wymaga jawnego rozliczenia odstępstwa i decyzji użytkownika
+według [zasad wyjątków od testów](testing.md#wyjątki-od-testów).
+Polecenie wymagające zgody lub wykonania poza piaskownicą korzysta ze zwykłego kontraktu `denied`/`outside`;
+wznowienie wykorzystuje wynik i nie powtarza udanego przebiegu bez nowych zmian.
+`check: manual` dodaje listę „Co przetestować
 ręcznie i jak”; `check: auto` oznacza brak tej listy. W obu przypadkach **scalenie gałęzi karty do głównej wymaga
 osobnego polecenia użytkownika**. Statusy i numeracja pochodzą z dziennika oraz zatwierdzonego planu; istniejące
 plany sześciokolumnowe i stare sesje koordynatora zachowują dotychczasowy odczyt. Plik planu w repozytorium projektu
@@ -223,6 +349,54 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
    — wtedy ticket trafia do kolumny „Czeka” z treścią pytania.
 4. Recenzent ma w opisie albo typie słowo „review” (`code-reviewer`, `Review TOM-140 …`), a jego raport
    podaje liczby `BLOCKER` / `MAJOR` / `NIT` i werdykt (`APPROVE` albo `REQUEST CHANGES`).
+
+## Recenzja według ryzyka
+
+Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md).
+Niezależność oznacza nową sesję recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
+Dla zwykłych ticketów dopuszczalny jest ten sam model z inną siłą myślenia, np. Codex mocny ↔ standard.
+Sama zmiana siły myślenia nie oznacza zmiany rodziny modeli.
+
+Recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Codex) jest obowiązkowy dla:
+
+- granic uprawnień i bezpieczeństwa;
+- operacji destrukcyjnych;
+- migracji trwałego stanu;
+- historycznych wznowień i ważności zgód;
+- współbieżnych operacji git, blokad i odtwarzania po awarii;
+- zmian doboru testów i bramek akceptacji;
+- integracji zmieniających wspólny kontrakt kart.
+
+Przed scaleniem trzeba sprawdzić klasę ryzyka i dobór recenzenta; automatyczny wybór wykonawcy nie
+zwalnia z tego obowiązku. Przy braku dostępnego limitu wymaganego recenzenta ryzykowny ticket czeka.
+Wymaganie nie spada automatycznie do tego samego modelu z inną siłą myślenia ani do braku review.
+Review pozostaje obowiązkowe i kończy się `APPROVE` bez BLOCKER i MAJOR.
+
+## Poprawki koordynatora poza kartą
+
+To wyjątkowa ścieżka dla pilnego odblokowania pracy albo usunięcia regresji. Jedna poprawka usuwa
+jedną przyczynę i obejmuje najwyżej **150 zmienionych linii kodu produkcyjnego w 3 plikach**,
+liczonych łącznie dla całej poprawki (dodania i usunięcia), bez dzielenia na commity w celu obejścia limitu.
+Testy i dokumentacja nie zwiększają limitu kodu produkcyjnego, ale wchodzą do zakresu review.
+Funkcje, zmiany kontraktów oraz wszystkie klasy ryzyka z poprzedniej sekcji idą wyłącznie przez kartę
+z review **przed scaleniem**, także gdy poprawka jest pilna lub mała.
+
+Przed dostarczeniem poprawki wymagane są test odtwarzający problem (nieudany na przypiętej bazie,
+udany po poprawce) oraz testy regresji dobrane do zmiany. Wyniki podlegają zasadom wyjątków od testów.
+Koordynator zapisuje wpis w [rejestrze poprawek](agents/coordinator-fixes.md):
+
+- przyczynę, pilność i zakres oraz czas dostarczenia;
+- SHA bazy i poprawki;
+- dokładne polecenia, wyniki na bazie i po poprawce oraz regresję;
+- dotknięte karty i sposób dostarczenia do każdej ich gałęzi (SHA scalenia lub przeniesienia);
+- sposób wycofania i stan faktycznego wycofania;
+- termin, recenzenta, raport i wynik niezależnego review po fakcie.
+
+Niezależne review musi zakończyć się **w ciągu 24 godzin od dostarczenia poprawki**, a wcześniej,
+jeśli ma być scalana karta polegająca na tej poprawce. Zaległe review wstrzymuje kolejne scalenia
+tą ścieżką. BLOCKER lub MAJOR wykryty po fakcie oznacza zatrzymanie zależnego działania i naprawę
+albo wycofanie poprawki; sposób rozliczenia trafia do rejestru. Samo zlecenie review nie jest jego wynikiem.
+Ta ścieżka nie daje zgody na push ani scalenie do głównej bez wyraźnego polecenia użytkownika.
 
 ## Zakończenie pracy (1.1)
 

@@ -20,6 +20,7 @@ PT-22). Dlatego nowy numer lokalny daje `reserve()` (tools/next_id.py, `make nex
 import fcntl
 import json
 import os
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -55,7 +56,7 @@ def load(repo: str, path: str | None = None, git=None) -> list[dict]:
 
 def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_run: bool = False,
             path: str | None = None, repo_plans=None, clock=time.time, request_key: str = "",
-            at_least: int = 0) -> dict:
+            at_least: int = 0, local_fallback: bool = False) -> dict:
     """{"repo", "prefix", "ids", "numbers", "seed"} — kolejne `count` numerów; dry_run nic nie zapisuje.
 
     `seed`: skąd największy dotychczasowy numer („rejestr”, „plany” albo „brak” — pierwszy numer to 1).
@@ -77,7 +78,14 @@ def reserve(repo: str, prefix: str = "", count: int = 1, title: str = "", dry_ru
     path = path or registry_path()
     # Odmowę (YouTrack, brak prefiksu) sprawdzamy też przed blokadą — wtedy rejestr nie powstaje.
     plans, declared = reader.read([repo])
-    _refuse_youtrack(_prefix(prefix, plans, declared), plans, declared)
+    resolved = _prefix(prefix, plans, declared, key)
+    if local_fallback and not (prefix or "").strip():
+        # Przepływ karty bez integracji YouTracka w Tide (04.11, K-49 mobileapp): repozytorium deklaruje YouTrack,
+        # ale Tide go dla projektu nie używa — karta dostaje lokalny numer z osobnym prefiksem zamiast odmowy
+        # „załóż ticket tam”. Prefiks lokalny nie może być kluczem YouTracka, żeby numery się nie myliły.
+        resolved = _local_prefix(resolved, plans, declared, key)
+        prefix = resolved
+    _refuse_youtrack(resolved, plans, declared)
     if dry_run:
         # Podgląd: bez tworzenia rejestru, pod blokadą współdzieloną, gdy plik już jest.
         try:
@@ -149,7 +157,7 @@ def _existing_request(data, repo, prefix, request_key, count, title):
 def _next(reader, repo, key, prefix, count, data, at_least=0) -> tuple[list, int, int, str]:
     """(kolejne numery, największy z rejestru, największy z planów, prefiks)."""
     plans, declared = reader.read([repo])
-    prefix = _prefix(prefix, plans, declared)
+    prefix = _prefix(prefix, plans, declared, key)
     _refuse_youtrack(prefix, plans, declared)
     mine = [r for r in data["reservations"] if r.get("repo") == key and r.get("prefix") == prefix]
     from_registry = max((_int(r.get("number")) for r in mine), default=0)
@@ -178,18 +186,51 @@ def _parse(text: str) -> dict:
     return data
 
 
-def _prefix(prefix: str, plans, declared) -> str:
+def repo_prefix(repo: str) -> str:
+    """Prefiks z nazwy repozytorium, gdy projekt go nie deklaruje: inicjały słów (`legal-agents` → LA,
+    `LegalApp` → LA) albo pierwsze cztery litery jednego słowa (`streamer` → KAMP). Deterministyczny, więc
+    kolejne rezerwacje tego repozytorium dostają ten sam prefiks (K-41, 04.11: pierwszy start nowego projektu
+    kończył się „nie znam prefiksu” i kazał użytkownikowi edytować CLAUDE.md)."""
+    name = os.path.basename(os.path.normpath(repo or ""))
+    words = [w for w in re.split(r"[^A-Za-z]+|(?<=[a-z])(?=[A-Z])", name) if w]
+    prefix = "".join(w[0] for w in words).upper() if len(words) > 1 else (words[0][:4].upper() if words else "")
+    return prefix if numbering.PREFIX_RE.fullmatch(prefix) and len(prefix) >= 2 else "PT"
+
+
+def _prefix(prefix: str, plans, declared, repo: str = "") -> str:
     prefix = (prefix or "").strip().upper()
     if not prefix:
         prefix = (declared or {}).get("prefix") or ""
     if not prefix:
         counts = Counter(p.prefix for p in plans if p.tracker == "local" and p.prefix)
         prefix = counts.most_common(1)[0][0] if counts else ""
+    if not prefix and repo:
+        prefix = repo_prefix(repo)
     if not prefix:
         raise ReservationError("nie znam prefiksu — podaj --prefix albo zapisz ticket-prefix w CLAUDE.md")
     if not numbering.PREFIX_RE.fullmatch(prefix):
         raise ReservationError(f"niepoprawny prefiks „{prefix}”")
     return prefix
+
+
+def _youtrack_prefix(prefix: str, plans, declared) -> bool:
+    try:
+        _refuse_youtrack(prefix, plans, declared)
+    except ReservationError:
+        return True
+    return False
+
+
+def _local_prefix(prefix: str, plans, declared, repo: str) -> str:
+    """Prefiks dla lokalnej numeracji karty: ten sam, gdy nie należy do YouTracka; inaczej z nazwy repozytorium,
+    a gdy i ten jest kluczem YouTracka — z dopiskiem L."""
+    if not _youtrack_prefix(prefix, plans, declared):
+        return prefix
+    for candidate in (repo_prefix(repo) if repo else "", (repo_prefix(repo) if repo else prefix) + "L"):
+        if candidate and numbering.PREFIX_RE.fullmatch(candidate) and \
+                not _youtrack_prefix(candidate, plans, declared):
+            return candidate
+    raise ReservationError(f"{prefix}: {REFUSE_YOUTRACK}")
 
 
 def _refuse_youtrack(prefix: str, plans, declared) -> None:

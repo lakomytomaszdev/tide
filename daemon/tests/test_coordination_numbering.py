@@ -481,6 +481,24 @@ class ReservationTest(unittest.TestCase):
         refused = self.next_id("--prefix", "APP5")
         self.assertIn("numer nadaje YouTrack", refused.stderr)
 
+    def test_card_flow_without_youtrack_in_tide_gets_a_local_prefix(self):
+        # 04.11, K-49 mobileapp: repozytorium deklaruje YouTrack, ale projekt Tide nie ma integracji — karta nie może
+        # utknąć na „załóż ticket tam”; dostaje lokalny numer z prefiksem, który nie jest kluczem YouTracka.
+        from tide_daemon.coordination import reservations
+        with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
+            fh.write("## Plan pracy agentów (Tide)\n\n2. `tracker: youtrack`, `tracker-project: LOG`, "
+                     "`ticket-prefix: LOG`.\n")
+        with self.assertRaises(reservations.ReservationError):
+            reservations.reserve(self.repo, dry_run=True, path=self.registry)
+        preview = reservations.reserve(self.repo, dry_run=True, path=self.registry, local_fallback=True)
+        self.assertNotEqual(preview["prefix"], "LOG")
+        self.assertEqual(preview["prefix"], reservations.repo_prefix(self.repo))
+        got = reservations.reserve(self.repo, prefix=preview["prefix"], title="a", path=self.registry,
+                                   local_fallback=True)
+        self.assertEqual(got["ids"], [f"{preview['prefix']}-1"])
+        with self.assertRaises(reservations.ReservationError):   # jawny prefiks YouTracka dalej odmawia
+            reservations.reserve(self.repo, prefix="LOG", dry_run=True, path=self.registry, local_fallback=True)
+
     def test_plan_number_reserved_for_another_title(self):
         reservations = [{"prefix": "PT", "number": 22, "title": "Docker w tablicy"},
                         {"prefix": "PT", "number": 23, "title": ""}]
@@ -536,6 +554,57 @@ class CheckPlansToolTest(unittest.TestCase):
         missing = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "check_plans.py"),
                                   os.path.join(self.tmp, "nie-ma")], capture_output=True, text=True, timeout=30)
         self.assertEqual(missing.returncode, 2)
+
+
+class ProjectColumnPlanFileTest(unittest.TestCase):
+    """Standard 1.3: plik planu z kolumną Projekt (pusta komórka, nieznany slug) w Sesjach, raporcie i check-plans."""
+
+    HEADER13 = ("| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery | Projekt |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-project-column-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.repo = os.path.join(self.tmp, "proj")
+        self.folder = os.path.join(self.repo, plan_mod.PLANS_DIR)
+        os.makedirs(self.folder)
+        git(self.repo, "init", "-q", "-b", "master")
+        text = plan_text("Wiele projektów", []).replace(HEADER, "") + self.HEADER13 + (
+            "| PT-1 | Pierwszy | todo | | | | | | | Plasma-Tide |\n"
+            "| PT-2 | Drugi | todo | | | | | | PT-1 | |\n"
+            "| PT-3 | Trzeci | todo | | | | | | | nieznany-slug |\n")
+        with open(os.path.join(self.folder, "2026-10-27-multi.md"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "plan")
+
+    def test_repoplans_numbering_report_and_check_plans(self):
+        from tide_daemon.coordination import repoplans
+        plans, declared = RepoPlans(ttl=0).read([self.repo])
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0].errors, [])
+        self.assertEqual([(r.ticket, r.project) for r in plans[0].rows],
+                         [("PT-1", "plasma-tide"), ("PT-2", ""), ("PT-3", "nieznany-slug")])
+        self.assertEqual(numbering.conflicts(plans, declared=declared), [])
+        self.assertEqual(repoplans.check([self.repo], RepoPlans(ttl=0)), [])
+
+        found = plan_mod.find_plans([self.repo])
+        self.assertEqual([(p.errors, len(p.rows)) for p in found], [([], 3)])
+
+        project = types.SimpleNamespace(name="proj", path=self.repo, is_repo=True, plans=[])
+        report_plans.attach([project], 0, F.NOW + 10 ** 9, None, None)
+        self.assertEqual(len(project.plans), 1)
+        entry = project.plans[0]
+        self.assertEqual(entry["errors"], [], "raport nie zgłasza ostrzeżeń formatu")
+        self.assertEqual([t["id"] for t in entry["all"]], ["PT-1", "PT-2", "PT-3"])
+        self.assertEqual(project.conflicts, [])
+
+        run = subprocess.run(["/usr/bin/python3", os.path.join(REPO, "tools", "check_plans.py"), self.tmp,
+                              "--no-youtrack", "--json"],
+                             env=dict(os.environ, XDG_STATE_HOME=os.path.join(self.tmp, "state")),
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout)[0]["warnings"], [])
 
 
 if __name__ == "__main__":

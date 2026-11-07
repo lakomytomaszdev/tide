@@ -63,6 +63,32 @@ WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 
 
+def derived_cache_path(env=None) -> str:
+    env = os.environ if env is None else env
+    base = env.get("XDG_STATE_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "tide", "board-derived.json")
+
+
+def _load_cache(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cache(path: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as exc:   # pamięć stanu to dodatek — tablica działa bez niej
+        print(f"tide-daemon: tablica: zapis stanu kart: {exc!r}", flush=True)
+
+
 class BoardMonitor(QObject):
     changed = pyqtSignal()
     work_changed = pyqtSignal()           # lista „Praca” (Work()) się zmieniła — sygnał WorkChanged
@@ -104,6 +130,12 @@ class BoardMonitor(QObject):
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
+        # Ostatni wyliczony stan kart spoza przepływu (plany i sesje koordynatorów) — po restarcie usługi okno
+        # dostaje go od razu, zanim przeliczenie z pracy agentów będzie gotowe (04.11: K-17 skakała na kilka
+        # sekund do „Do zrobienia”, bo zapisana kolumna wygrywała z brakującym stanem).
+        self._derived_cache_path = derived_cache_path()
+        self._derived_cache: dict = _load_cache(self._derived_cache_path)
+        self._derive_ready = False
         self._links: list[tuple[str, str, str, str]] = []  # (karta, sesja, sposób, gałąź) do utrwalenia
         self._link_tried: dict[tuple[str, str], float] = {}
         # Przepływ karty (PT-58, cardflow_monitor.CardFlowMonitor) albo None: karta z dziennikiem dostaje stan
@@ -124,6 +156,8 @@ class BoardMonitor(QObject):
             self.youtrack.start()
 
     def stop(self) -> None:
+        if self.flow is not None:
+            self.flow.stop()
         if self.youtrack is not None:
             self.youtrack.stop()
         self._poll.stop()
@@ -231,11 +265,29 @@ class BoardMonitor(QObject):
             return
         self.flow.start_card(card_id, request, reply)
 
+    def list_card_branches(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.list_card_branches(card_id, request, reply)
+
+    def suggest_card_base(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.suggest_card_base(card_id, request, reply)
+
     def enter_step(self, card_id: str, step_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
             return
         self.flow.enter_step(card_id, step_id, reply)
+
+    def talk_to_caretaker(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.talk_to_caretaker(card_id, request, reply)
 
     def abandon_step(self, card_id: str, step_id: str, reply) -> None:
         if self.flow is None:
@@ -255,11 +307,29 @@ class BoardMonitor(QObject):
             return
         self.flow.resolve_step(card_id, request, reply)
 
+    def revoke_ticket_consent(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.revoke_ticket_consent(card_id, request, reply)
+
+    def resolve_card_caretaker(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.resolve_caretaker(card_id, request, reply)
+
     def preview_step_fault(self, card_id: str, request: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
             return
         self.flow.preview_step_fault(card_id, request, reply)
+
+    def add_card_step_note(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony w usłudze"), ensure_ascii=False))
+            return
+        self.flow.add_step_note(card_id, request, reply)
 
     def report_step_fault(self, card_id: str, request: str, reply) -> None:
         if self.flow is None:
@@ -309,17 +379,41 @@ class BoardMonitor(QObject):
             return
         self.flow.box_status(slug, reply)
 
-    def card_branch_diff(self, card_id: str, reply) -> None:
+    def card_branch_diff(self, card_id: str, reply, target_ref: str = "") -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
             return
-        self.flow.card_diff(card_id, reply)
+        self.flow.card_diff(card_id, reply, target_ref)
 
     def merge_card_to_main(self, card_id: str, reply) -> None:
         if self.flow is None:
             reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
             return
         self.flow.merge_card_to_main(card_id, reply)
+
+    def preview_card_merge(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.preview_card_merge(card_id, request, reply)
+
+    def merge_card(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.merge_card(card_id, request, reply)
+
+    def preview_card_base_change(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.preview_card_base_change(card_id, request, reply)
+
+    def request_card_base_change(self, card_id: str, request: str, reply) -> None:
+        if self.flow is None:
+            reply(json.dumps(_failure("unavailable", "przepływ karty jest wyłączony"), ensure_ascii=False))
+            return
+        self.flow.request_card_base_change(card_id, request, reply)
 
     def _shown_column(self, card_id: str) -> str:
         """Kolumna, w której karta jest teraz wyświetlana (boardColumn z ostatniej migawki) — do `moved-from`."""
@@ -566,6 +660,7 @@ class BoardMonitor(QObject):
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
+        fresh: dict = {}
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
@@ -573,6 +668,9 @@ class BoardMonitor(QObject):
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
                     derived = self.flow.derived(card)
+                    if derived is None and hasattr(self.flow, "card_base"):
+                        # Ręczna kolumna ma derived: null; jej baza nadal pochodzi z dziennika.
+                        card.update(self.flow.card_base(card.get("id") or ""))
                     if hasattr(self.flow, 'tracker_tickets'):
                         card['flowTickets'] = self.flow.tracker_tickets(card)
                 elif derive is not None:
@@ -585,9 +683,25 @@ class BoardMonitor(QObject):
             except Exception as exc:
                 snapshot["errors"].append({"path": card.get("path", ""),
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
+            ident = card.get("id") or ""
+            from_flow = self.flow is not None and self.flow.has_journal(ident)
+            if derived is not None and not from_flow:
+                fresh[ident] = derived
+            elif derived is None and not from_flow and not self._derive_ready and ident in self._derived_cache:
+                derived = {**self._derived_cache[ident], "cached": True}
             card["derived"] = derived
+            flow = (derived or {}).get("flow") or {}
+            if "base" in flow:
+                card.update({key: flow["base"][key] for key in ("baseRef", "baseBranch", "baseCommit")})
+                card["baseVersion"] = flow["baseVersion"]
             card["boardColumn"] = (derived or {}).get("column") or card.get("column") or "backlog"
             cards.append(card)
+        if fresh:
+            # Pierwsze świeże przeliczenie kończy okres zapamiętanego stanu; zapis tylko przy zmianie.
+            self._derive_ready = True
+            if fresh != self._derived_cache:
+                self._derived_cache = fresh
+                _save_cache(self._derived_cache_path, fresh)
         snapshot["cards"] = cards
         self._queue_links(links)
         return snapshot, (derive if hasattr(derive, "sessions") else None)

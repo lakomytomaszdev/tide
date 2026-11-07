@@ -98,6 +98,15 @@ def unit_state(unit: str) -> str:
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
 
+def freeze_unit(unit: str, frozen: bool) -> bool:
+    """Zamrożenie (`frozen`) albo odmrożenie całej cgroup kroku (`systemctl --user freeze|thaw`, systemd ≥ 246):
+    procesy kroku z potomkami stoją, dopóki Tide nie skończy własnego działania (strażnik opiekuna, PT-158).
+    `systemctl freeze` wraca po zamrożeniu. True — udało się."""
+    if not unit:
+        return False
+    return _systemctl("freeze" if frozen else "thaw", unit + ".scope").returncode == 0
+
+
 CPU_BUCKET_NS = 10_000_000_000
 
 
@@ -221,7 +230,8 @@ class StepGit:
     w swoim kroku. Katalog domowy i /tmp są puste, zapis tylko w worktree i katalogach zapisu gita kroku."""
 
     def __init__(self, repo: str, git_dir: str, worktree: str, step_dir: str, home: str | None = None,
-                 name: str = "Krok", email: str = "krok@tide.invalid"):
+                 name: str = "Krok", email: str = "krok@tide.invalid", *, objects_only: bool = False):
+        self.objects_only = objects_only
         self.worktree, self.git_dir = os.path.realpath(worktree), git_dir
         self.common = os.path.join(os.path.realpath(repo), ".git")
         self.home = os.path.realpath(home or os.path.expanduser("~"))
@@ -236,26 +246,34 @@ class StepGit:
         if os.path.isfile(ignore):
             self.opts += ["-c", f"core.excludesFile={ignore}"]
 
-    def sandbox(self) -> list:
+    def sandbox(self, index_dir: str | None = None) -> list:
         argv = [BWRAP, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-ipc", "--unshare-pid",
                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--tmpfs", self.home,
-                "--ro-bind", self.common, self.common, "--bind", self.worktree, self.worktree,
-                "--bind", self.git_dir, self.git_dir]
-        for name in GIT_DIRS_WRITABLE:
+                "--ro-bind", self.common, self.common,
+                "--ro-bind" if self.objects_only else "--bind", self.worktree, self.worktree,
+                "--ro-bind" if self.objects_only else "--bind", self.git_dir, self.git_dir]
+        for name in (("objects",) if self.objects_only else GIT_DIRS_WRITABLE):
             argv += ["--bind", os.path.join(self.common, name), os.path.join(self.common, name)]
+        if index_dir is not None:
+            # Prywatna kopia indeksu przeżywa kolejne wywołania, ale nie odsłania innych plików /tmp.
+            argv += ["--bind", index_dir, "/tmp/tide-index"]
         argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
                "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
                "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+               # Kontrola statusu nie może odświeżać ani konwertować indeksu (np. do split-index).
+               "GIT_OPTIONAL_LOCKS": "0",
                "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent/tide-step/bus"}
+        if index_dir is not None:
+            env["GIT_INDEX_FILE"] = "/tmp/tide-index/index"
         for key, value in env.items():
             argv += ["--setenv", key, value]
         return argv + ["--chdir", self.worktree, "--"]
 
-    def run(self, *args, timeout=120) -> Result:
+    def run(self, *args, timeout=120, index_dir: str | None = None) -> Result:
         try:
-            proc = subprocess.run([*self.sandbox(), *git_argv(*self.opts, *args)], capture_output=True, text=True,
+            proc = subprocess.run([*self.sandbox(index_dir), *git_argv(*self.opts, *args)], capture_output=True, text=True,
                                   errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -497,19 +515,21 @@ def last_messages(path: str, tool: str, limit: int = MESSAGE_LIMIT) -> list:
 def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: str, git_dir: str, branch: str,
               tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None,
               grace: float = 10.0, limit: int = MESSAGE_LIMIT,
-              recovered_snapshot: Snapshot | None = None, kill=None) -> StopResult:
+              recovered_snapshot: Snapshot | None = None, commit_wip: bool = True, kill=None) -> StopResult:
     """Zatrzymuje krok, commituje WIP i czyta ostatnie wiadomości. `unit` (Background.unit) i/lub `proc` (Popen z
     Background.start() albo pid; None, gdy usługa się zrestartowała i zna tylko jednostkę). `git_dir` i `repo`
     z Background (ustalone przed krokiem), `branch` — gałąź kroku, na której ma wylądować commit.
-    Commit robimy także wtedy, gdy program już nie żył — zmiany w worktree nie mogą zostać bez śladu."""
-    # `kill` — funkcja() → bool od Runnera (PT-180); bez niej dotychczasowe zatrzymanie jednostki / procesu.
+    Commit robimy także wtedy, gdy program już nie żył — zmiany w worktree nie mogą zostać bez śladu.
+    `commit_wip=False` (krok opiekuna, PT-158: pisze tylko do `out`) — bez commita: worktree i gałąź kroku zostają,
+    jakie są, a ewentualny zapis kroku wykrywa strażnik."""
+    # `kill` pochodzi z runnera; bez niego zatrzymujemy jednostkę lub proces hosta.
     stopped = kill() if kill is not None else terminate(proc, unit, grace)
     result = StopResult(stopped=stopped, exit_code=getattr(proc, "returncode", None))
     if not stopped:
         result.error = "not-stopped"        # nie dotykamy worktree, w którym program jeszcze pisze
         return result
     snap = recovered_snapshot if recovered_snapshot is not None else \
-        git_snapshot(repo, git_dir, worktree, step_dir, branch, stale_locks=True)
+        git_snapshot(repo, git_dir, worktree, step_dir, branch, stale_locks=True) if commit_wip else Snapshot()
     result.committed, result.commit, result.files = snap.committed, snap.commit, snap.files
     result.error, result.notes = snap.error, snap.notes
     result.session_log = (find_claude_log(claude_projects, session_id) if tool == "claude"

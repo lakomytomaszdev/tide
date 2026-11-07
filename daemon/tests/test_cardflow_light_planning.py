@@ -39,10 +39,15 @@ class LightPlanningTest(FlowInProcess):
         shown = self.wait_column(card, "waiting")
         self.assertIn("dwóch poprawach", shown["derived"]["question"])
         self.assertEqual(self.of(card, "plan.proposed"), [])
-        self.assertEqual(len(self.of(card, "step.started")), 3)
+
+        def planning_steps():
+            # PT-146: po drugiej nieudanej poprawce formatu sprawdza kartę opiekun (tu oddaje decyzję `escalate`).
+            return [s for s in self.of(card, "step.started") if s["kind"] != "caretaker"]
+
+        self.assertEqual(len(planning_steps()), 3)
         self.restart()
         wait_until(lambda: False, timeout=0.4)
-        self.assertEqual(len(self.of(card, "step.started")), 3)
+        self.assertEqual(len(planning_steps()), 3)
 
     def test_assignment_rules_are_common_and_overridden_per_project(self):
         self.store.upsert_project({"globalAssignmentRules": "mocny: reguła wspólna"})
@@ -102,12 +107,17 @@ class LightPlanningTest(FlowInProcess):
         self.assertTrue(json.loads(box[0])["ok"], box)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20), self.events(card))
 
-    def test_planner_crash_is_retried_once_then_waits_for_user(self):
+    def test_planner_crash_is_retried_once_then_caretaker_hands_it_to_user(self):
         card = self.card(description="ATRAPA: plan-error")
         self.assertTrue(self.start(card, entry="planning", mode="light")["ok"])
+        # PT-148: po drugim takim samym błędzie planowania opiekun oddaje decyzję użytkownikowi.
+        self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=20), self.events(card))
         shown = self.wait_column(card, "waiting")
         self.assertEqual(shown["derived"]["flow"]["decisions"][0]["kind"], "error")
-        self.assertEqual(len(self.of(card, "step.started")), 2)
+        steps = self.of(card, "step.started")
+        self.assertEqual([s["kind"] for s in steps], ["planning", "planning", "caretaker"])
+        self.assertEqual([s["attempt"] for s in steps if s["kind"] == "planning"], [0, 1])
+        self.assertEqual([s["trigger"] for s in self.of(card, "caretaker.started")], ["repeat"])
         self.assertEqual(len(self.of(card, "step.retry")), 1)
         self.assertEqual(self.of(card, "plan.proposed"), [])
 
@@ -144,6 +154,10 @@ class LightPlanningTest(FlowInProcess):
         self.assertIn(extra, filesystem["allowRead"])
         self.assertNotIn(extra, filesystem["allowWrite"])
         self.assertEqual(filesystem["denyRead"], ["~"])
+        with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            argv = json.load(fh)["argv"]
+        self.assertIn(extra, [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"])  # obok katalogu wyjściowego kroku
+        self.assertIn(f"Edit(/{os.path.realpath(extra)}/**)", argv[argv.index("--disallowedTools"):])
 
     def test_initial_board_persists_class_based_rules_and_clearing_override_restores_them(self):
         from tide_daemon.board.assignment import KEY, DEFAULT_RULES
@@ -175,3 +189,22 @@ class LightPlanningDBusTest(FlowCase):
         self.assertIn("mocny: projektowa", prompt)
         self.assertIn("Preferowany dostawca: openai", prompt)
         self.assertFalse(os.path.isfile(self.calls))
+
+
+class ExtraProjectInTicketTest(LightPlanningTest):
+    def test_ticket_step_reads_the_cards_extra_project(self):
+        # 04.11, K-43/BO-9: ticket w BO potrzebował plików z repo streamer (dodatkowy projekt karty) i prosił o
+        # `git archive` poza piaskownicą, bo odczyt dodatkowych projektów był tylko w planowaniu.
+        from .test_cardflow_dbus import git
+        extra = os.path.join(self.base, "ws", "extra2")
+        os.makedirs(extra)
+        git(extra, "init", "-q")
+        self.store.upsert_project({"slug": "extra2", "name": "Dodatkowy 2", "repo": extra})
+        card = self.card(description="Dodaj eksport.")
+        self.store.update_card(card, {"projects": ["extra2"]})
+        self.assertTrue(self.start(card)["ok"])
+        step = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
+        with open(os.path.join(step["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+            filesystem = json.load(fh)["sandbox"]["filesystem"]
+        self.assertIn(extra, filesystem["allowRead"])
+        self.assertNotIn(extra, filesystem["allowWrite"])

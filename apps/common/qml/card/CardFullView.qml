@@ -50,6 +50,38 @@ Rectangle {
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
     readonly property string headline: flow && flow.headline ? flow.headline : ""
     readonly property var history: flow && Array.isArray(flow.history) ? flow.history : []
+    readonly property var stepNotes: flow && Array.isArray(flow.stepNotes) ? flow.stepNotes : []
+    readonly property var noteSteps: flow && Array.isArray(flow.steps) ? flow.steps.filter(
+        s => s.canAddNote || stepNotes.some(n => n.step === s.id)) : []
+    property var noteDrafts: ({})
+
+    function noteKey(step) { return (card ? card.id : "") + ":" + (flow ? flow.orderSeq : 0) + ":" + step }
+    function noteDraft(step) { return noteDrafts[noteKey(step)] || {text: "", requestId: "", busy: false, error: "", saved: ""} }
+    function editNote(step, text) {
+        const drafts = Object.assign({}, noteDrafts)
+        const old = noteDraft(step)
+        if (old.busy) return
+        drafts[noteKey(step)] = {text: text, requestId: old.text === text ? old.requestId : "", busy: false, error: "", saved: ""}
+        noteDrafts = drafts
+    }
+    function sendNote(step) {
+        const old = noteDraft(step)
+        if (old.busy || !old.text.trim()) return
+        const requestId = old.requestId || "step-note-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+        const drafts = Object.assign({}, noteDrafts)
+        drafts[noteKey(step)] = Object.assign({}, old, {requestId: requestId, busy: true, error: ""})
+        noteDrafts = drafts
+        answered("step-note:" + requestId, "AddCardStepNote",
+                 {step: step, orderSeq: flow.orderSeq, requestId: requestId, text: old.text})
+    }
+    function noteReply(requestId, error, reply) {
+        const drafts = Object.assign({}, noteDrafts)
+        const key = Object.keys(drafts).find(k => drafts[k].requestId === requestId)
+        if (!key) return
+        drafts[key] = error ? Object.assign({}, drafts[key], {busy: false, error: error})
+                            : {text: "", requestId: "", busy: false, error: "", saved: reply && reply.noteId || ""}
+        noteDrafts = drafts
+    }
     // Bieżące zlecenie od najnowszego wpisu; wcześniejsze (`old`) osobno, zwinięte.
     readonly property var currentHistory: history.filter(h => !h.old).reverse()
     readonly property var oldHistory: history.filter(h => h.old === true).reverse()
@@ -58,6 +90,7 @@ Rectangle {
     readonly property var otherProviders: flow && Array.isArray(flow.otherProviders) ? flow.otherProviders : []
     readonly property var limitTransfer: flow && flow.limitTransfer ? flow.limitTransfer : null
     property bool transferSent: false
+    property string consentError: ""
     readonly property alias form: form
 
     signal backRequested()
@@ -71,9 +104,18 @@ Rectangle {
     signal enterStepRequested(string stepId)
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
+    signal previewMergeRequested(string target)
+    signal chooseMergeRequested()
+    readonly property string defaultMergeTarget: flow && flow.base && flow.base.status === "known"
+                                                 && (flow.base.baseRef || "").indexOf("refs/heads/") === 0
+                                                 ? flow.base.baseRef.substring(11) : ""
+    signal baseChangeRequested()
+    property bool baseChangeAvailable: false
+    property bool mergePreviewAvailable: false
     signal branchDiffRequested()
     property bool mergeBusy: false
     readonly property var mainPhase: phases.find(p => p.id === "main-merge") || null
+    signal caretakerTalkRequested()
 
     // --- rzadkie ustawienia (PT-134) -----------------------------------------------------------------
     readonly property string storedBranch: card && card.branch ? card.branch : ""
@@ -83,7 +125,7 @@ Rectangle {
     readonly property string shownColumn: derived && derived.column ? derived.column : (card ? card.column : "")
     readonly property bool paused: !!(flow && flow.paused)
     readonly property bool canPause: !!(derived && (!flow || !flow.plan || flow.plan.status !== "done")
-                                        && derived.column !== "review")
+                                        && derived.column !== "review" && !(flow && flow.merged))
     property bool menuOpen: false
     property string settingError: ""
     // Pytanie o potwierdzenie: null albo {kind, params, title, effect, yes}.
@@ -233,6 +275,7 @@ Rectangle {
 
     function start() {
         transferSent = false
+        consentError = ""
         answeredIds = []
         confirming = null
         menuOpen = false
@@ -246,6 +289,10 @@ Rectangle {
 
     // Usługa odrzuciła odpowiedź: decyzja wraca na wierzch z powodem.
     function failed(decisionId, message) {
+        if (decisionId.indexOf("ticket-consent:") === 0) {
+            consentError = message
+            return
+        }
         if (decisionId.indexOf("limit-transfer:") === 0) transferSent = false
         answeredIds = answeredIds.filter(id => id !== decisionId)
         form.fail(message)
@@ -319,6 +366,7 @@ Rectangle {
         objectName: "fullHistoryLine"
         readonly property string text: modelData.text
         readonly property bool byUser: modelData.actor === "user"
+        readonly property bool byCaretaker: modelData.actor === "caretaker"
         readonly property string when: view.historyWhen(modelData.ts)
         Layout.fillWidth: true
         implicitHeight: lineRow.implicitHeight + 14
@@ -326,7 +374,8 @@ Rectangle {
         color: Tide.Tokens.backgroundCard
         opacity: dimmed ? 0.7 : 1
         Accessible.role: Accessible.ListItem
-        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : ""].filter(x => !!x).join(", ")
+        Accessible.name: [when, modelData.kindLabel, text, byUser ? "zdarzenie użytkownika" : "",
+                      byCaretaker ? modelData.actorLabel : ""].filter(x => !!x).join(", ")
         RowLayout {
             id: lineRow
             anchors.left: parent.left
@@ -368,6 +417,16 @@ Rectangle {
                 text: "Ty"
                 textFormat: Text.PlainText
                 color: Tide.Tokens.peach
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                font.weight: Font.DemiBold
+            }
+            Text {
+                objectName: "historyCaretaker"
+                visible: line.byCaretaker
+                text: line.modelData.actorLabel || ""   // podpis z usługi („Opiekun”) zamiast nazwy wykonawcy
+                textFormat: Text.PlainText
+                color: Tide.Tokens.teal
                 font.family: Tide.Theme.uiFamily
                 font.pointSize: Tide.Tokens.fontSizePt * 0.85
                 font.weight: Font.DemiBold
@@ -465,6 +524,14 @@ Rectangle {
                 }
             }
 
+            Tide.TextButton {
+                objectName: "talkToCaretaker"
+                visible: !!(view.flow && view.flow.canTalkToCaretaker)
+                text: "Porozmawiaj z opiekunem"
+                variant: "outline"
+                onClicked: view.caretakerTalkRequested()
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 10
@@ -546,13 +613,32 @@ Rectangle {
             }
 
             RowLayout {
+                Layout.fillWidth: true
+                visible: view.baseChangeAvailable && !!view.flow
+                Text {
+                    Layout.fillWidth: true
+                    text: "Baza: " + (view.flow && view.flow.base && view.flow.base.baseRef || "unknown")
+                          + " · " + (view.flow && view.flow.base && view.flow.base.baseCommit || "unknown")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
+                }
+                Tide.TextButton {
+                    objectName: "fullBaseChange"
+                    text: "Podejrzyj korektę bazy"
+                    onClicked: view.baseChangeRequested()
+                }
+            }
+            ColumnLayout {
                 objectName: "fullMainMerge"
                 Layout.fillWidth: true
                 visible: Boolean(view.mainPhase && view.mainPhase.state === "you")
                 spacing: 8
                 Text {
                     Layout.fillWidth: true
-                    text: "Karta jest domknięta na swojej gałęzi. Scalenie do gałęzi głównej robisz Ty."
+                    text: "Karta jest domknięta na swojej gałęzi. Wybierz cel, sprawdź podgląd i potwierdź scalenie."
                     textFormat: Text.PlainText
                     color: Tide.Tokens.textMuted
                     font.family: Tide.Theme.uiFamily
@@ -563,18 +649,36 @@ Rectangle {
                     objectName: "fullBranchDiff"
                     text: "Diff gałęzi"
                     variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem gałęzi głównej"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
                     onClicked: view.branchDiffRequested()
                 }
                 Tide.TextButton {
+                    objectName: "fullPreviewMerge"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    visible: view.mergePreviewAvailable
+                    text: "Podgląd scalenia do " + (view.defaultMergeTarget || "…")
+                    enabled: view.defaultMergeTarget !== ""
+                    variant: "outline"
+                    onClicked: view.previewMergeRequested(view.defaultMergeTarget)
+                }
+                Tide.TextButton {
                     objectName: "fullMergeMain"
-                    text: view.mergeBusy ? "Scalam…" : "Scal do gałęzi głównej"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    text: view.defaultMergeTarget ? "Scal do " + view.defaultMergeTarget : "Scal…"
                     enabled: !view.mergeBusy
-                    Accessible.name: "Scal kartę do gałęzi głównej"
+                    Accessible.name: text
                     onClicked: {
-                        view.mergeBusy = true
-                        view.mergeMainRequested()
+                        if (view.defaultMergeTarget) view.previewMergeRequested(view.defaultMergeTarget)
+                        else view.chooseMergeRequested()
                     }
+                }
+                Tide.TextButton {
+                    objectName: "fullMergeChoose"
+                    text: "Scal…"
+                    visible: view.defaultMergeTarget !== ""
+                    onClicked: view.chooseMergeRequested()
                 }
             }
 
@@ -659,7 +763,9 @@ Rectangle {
                         onEscapePressed: view.backRequested()
                         onPreviewRequested: (decisionId, method, params) => view.previewRequested(decisionId, method, params)
                         onAnswered: (decisionId, method, params) => {
-                            view.answeredIds = view.answeredIds.concat([decisionId])
+                            if (!Decision.keepsPending(params))
+                                view.answeredIds = view.answeredIds.concat([decisionId])
+                            else form.reset()
                             view.answered(decisionId, method, params)
                             view.forceActiveFocus()
                         }
@@ -679,6 +785,52 @@ Rectangle {
                             onClicked: form.choose()
                         }
                     }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: consentRows.count > 0
+                spacing: 8
+                Repeater {
+                    id: consentRows
+                    model: view.flow && view.flow.ticketConsents ? view.flow.ticketConsents : []
+                    RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: modelData.ticket + (modelData.active
+                                  ? ": automatyczna zgoda na polecenia poza piaskownicą"
+                                  : ": zgoda cofnięta — następne polecenie wymaga decyzji")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt
+                        }
+                        Tide.TextButton {
+                            objectName: "revokeTicketConsent"
+                            visible: modelData.canRevoke
+                            text: "Cofnij zgodę dla " + modelData.ticket
+                            onClicked: {
+                                view.consentError = ""
+                                view.answered("ticket-consent:" + modelData.ticket, "RevokeTicketConsent",
+                                    { ticket: modelData.ticket, orderSeq: modelData.orderSeq,
+                                      baseVersion: modelData.baseVersion })
+                            }
+                        }
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: view.consentError !== ""
+                    text: view.consentError
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    color: Tide.Tokens.peach
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt
                 }
             }
 
@@ -985,6 +1137,32 @@ Rectangle {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: view.noteSteps.length > 0
+                Text {
+                    text: "Uwagi do kroków"
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.1
+                }
+                Repeater {
+                    model: view.noteSteps
+                    delegate: StepNoteForm {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        stepId: modelData.id
+                        caption: [modelData.ticket, modelData.executor, modelData.id].filter(x => !!x).join(" · ")
+                        canAdd: modelData.canAddNote === true
+                        draft: view.noteDraft(stepId)
+                        notes: view.stepNotes.filter(n => n.step === stepId)
+                        onEdited: text => view.editNote(stepId, text)
+                        onSubmitted: view.sendNote(stepId)
                     }
                 }
             }

@@ -5,10 +5,12 @@
 .pragma library
 .import "tide/modelnames.js" as ModelNames
 
-const ROLE_ORDER = ["summary", "describe", "agent", "embed"]
+const ROLE_ORDER = ["summary", "describe", "classify", "agent", "embed"]
 const ROLE_INFO = {
     summary: { title: "Raport", hint: "„Na daily” w raporcie porannym" },
     describe: { title: "Opisy kart", hint: "Krótkie opisy kart na tablicy i w Sesjach" },
+    classify: { title: "Rozpoznawanie pytań", hint: "Ocena, czy agent na końcu tury czeka na Twoją odpowiedź, gdy nie rozstrzygną "
+                                                    + "tego reguły. Do modelu idzie końcówka ostatniej wiadomości agenta" },
     agent: { title: "Agent", hint: "Sesje z opcją „Lokalny” w oknie Nowe zadanie: tu ich model i program" },
     embed: { title: "Wyszukiwanie", hint: "KRunner (Alt+Spacja) znajduje sesje także po znaczeniu, nie tylko po słowach. "
                                          + "Do modelu idą tytuły sesji, projekty, gałęzie, tickety planu i początek pierwszej "
@@ -253,9 +255,36 @@ function roleRows(status) {
             error: role && role.error ? role.error : "",
             ctx: role ? role.ctx : null,
             searchOff: id === "embed" && !!status && !!status.search && status.search.enabled === false,
-            models: modelOptions(status, endpointName, role ? role.model : "")
+            // Rozpoznawanie pytań (PT-112): ocena jest wyłączona (liczą reguły), gdy punkt nie ma modelu: brak
+            // roli, pusty model, błąd roli (nieznany/pominięty punkt), modelu nie ma na serwerze albo serwer
+            // nie odpowiada. Model w chmurze (wybrany jawnie) wysyła końcówkę wiadomości agenta poza komputer.
+            off: id === "classify" && classifyOff(role, state),
+            cloud: id === "classify" && !!role && isCloudModel(role.model),
+            models: modelOptions(status, endpointName, role ? role.model : "", id === "classify")
         }
     })
+}
+
+function classifyOff(role, state) {
+    if (!role || String(role.model || "").trim() === "" || role.error) return true
+    if (state && state.kind === "offline") return true
+    return role.installed === false && !isCloudModel(role.model)
+}
+
+const CLASSIFY_OFF = "ocena wyłączona — liczą reguły"
+const CLASSIFY_CLOUD = "☁ w chmurze: końcówka ostatniej wiadomości agenta wychodzi poza ten komputer"
+
+// Jedna linia stanu pod wyborem modelu (albo ""): tylko rola rozpoznawania pytań.
+function roleState(row) {
+    if (row.off) return CLASSIFY_OFF
+    if (row.cloud) return CLASSIFY_CLOUD
+    return ""
+}
+
+// Serwer w żądaniu SetRole. Model w chmurze Ollamy usługa przyjmuje tylko z jawnym serwerem (decyzja 70:
+// brak cichego przejścia do chmury), więc rola rozpoznawania pytań z takim modelem zawsze jedzie z serwerem.
+function rolePin(row, model, pin) {
+    return row.id === "classify" && isCloudModel(model) ? row.endpoint : pin
 }
 
 // Model chmurowy Ollamy (`…:cloud`, `…:120b-cloud`): lokalny serwer tylko przekazuje go na ollama.com, więc
@@ -273,14 +302,15 @@ function pullWarning(name) {
 }
 
 // Modele do wyboru: zainstalowane na serwerze roli, z rozmiarem i znacznikiem „w pamięci”; bez chmurowych.
-function modelOptions(status, endpointName, current) {
+// Rozpoznawanie pytań (allowCloud) pokazuje też chmurowe, z jawnym znacznikiem — to jedyna rola, która je przyjmie.
+function modelOptions(status, endpointName, current, allowCloud) {
     const e = status && status.endpoints ? status.endpoints[endpointName] : null
     if (!e || !e.online) return []
     const loaded = (list(e.loaded) || []).map(m => m.name)
-    return (e.models || []).filter(m => !isCloudModel(m)).map(m => ({
+    return (e.models || []).filter(m => allowCloud || !isCloudModel(m)).map(m => ({
         name: m.name,
-        detail: [m.parameterSize || "", bytes(m.size), loaded.indexOf(m.name) >= 0 ? "w pamięci" : ""]
-                .filter(x => x).join(" · "),
+        detail: [m.parameterSize || "", isCloudModel(m) ? "☁ w chmurze" : bytes(m.size),
+                 loaded.indexOf(m.name) >= 0 ? "w pamięci" : ""].filter(x => x).join(" · "),
         current: m.name === current
     }))
 }
@@ -538,7 +568,7 @@ function pullStage(status) {
 
 // --- kolejka modeli (PT-16) ----------------------------------------------------------------------
 
-const QUEUE_WORDS = { summary: "raport", describe: "opisy kart", agent: "agent", embed: "wyszukiwanie" }
+const QUEUE_WORDS = { summary: "raport", describe: "opisy kart", classify: "rozpoznawanie pytań", agent: "agent", embed: "wyszukiwanie" }
 
 function queueWord(role) {
     return QUEUE_WORDS[role] || String(role || "zadanie")

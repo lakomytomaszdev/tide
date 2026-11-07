@@ -81,6 +81,19 @@ class PackageTest(unittest.TestCase):
 
 
 class LogicTest(unittest.TestCase):
+    def test_exact_base_for_all_flow_entries(self):
+        state = {"entry": "now", "executor": "Sonnet", "baseRef": "refs/heads/feature/a/b",
+                 "baseCommit": "b" * 40, "cardBranch": "card/custom"}
+        reply = self.js(f"startCardRequest({json.dumps(state)}, [])")
+        for key in ("baseRef", "baseCommit", "cardBranch"):
+            self.assertEqual(reply[key], state[key])
+        for entry, mode in (("planning", "light"), ("planning", "full"), ("plan", "")):
+            request = self.js(f"startCardRequest({json.dumps(dict(state, entry=entry, mode=mode))}, [])")
+            for key in ("baseRef", "baseCommit", "cardBranch"):
+                self.assertEqual(request[key], state[key])
+        request = self.js(f"startCardRequest({json.dumps(dict(state, entry='spec'))}, [])")
+        self.assertFalse(set(request) & {"baseRef", "baseCommit", "cardBranch"})
+
     @classmethod
     def setUpClass(cls):
         from PyQt6.QtCore import QCoreApplication
@@ -316,12 +329,20 @@ class LogicTest(unittest.TestCase):
                           {"kind": "project", "key": "nie-ma", "name": "nie-ma"}])
         state = {"cardId": "K-16", "mode": "light", "tool": "claude", "branch": "claude/k-16-okno", "newWorktree": True,
                  "check": "auto", "aiDocs": "tide", "slug": "dp", "repoName": "dp", "extras": picked}
-        self.assertIn("Dodatkowe projekty do odczytu: mobileapp, legal.",
+        self.assertIn("Projekty zlecenia (jeden plan z kolumną Projekt, do odczytu): mobileapp, legal.",
                       self.js(f"launchFooter({json.dumps(state)})"))
         flow = {"text": "x", "repo": "/r/dp", "tool": "claude", "branch": "claude/k-16-okno", "docsDir": "/b/docs/dp",
                 "aiDocs": "tide", "addDirs": ["/b/docs/dp", "/r/mobileapp"]}
         self.assertEqual(self.js(f"launchStartRequest({json.dumps(flow)}, {json.dumps(state)})")["addDirs"],
                          ["/b/docs/dp", "/r/mobileapp"], "katalogi --add-dir z RenderLaunch")
+        # K-33 #4: żądanie StartCard niesie projekty zlecenia tylko przy Planowaniu.
+        order = {"entry": "planning", "mode": "light", "executor": "Sonnet", "projects": ["mobileapp"]}
+        self.assertEqual(self.js(f"startCardRequest({json.dumps(order)}, [])")["projects"], ["mobileapp"])
+        for entry in ("now", "plan"):
+            self.assertNotIn("projects", self.js(f"startCardRequest({json.dumps(dict(order, entry=entry))}, [])"))
+        self.assertEqual(self.js("singleProjectNote('planning', {name: 'dp'})"), "")
+        self.assertEqual(self.js("singleProjectNote('now', {name: 'dp'})"),
+                         "Od razu pracuje w jednym projekcie karty („dp”). Kilka projektów zlecenia — wybierz Planowanie.")
 
     def test_rail_note_errors_and_replies(self):
         now = 1793099040  # 12:04 w Warszawie
@@ -1056,6 +1077,32 @@ out["repo"] = calls()[-1]
         self.assertEqual(out["tagOpen"], "pomysł", "po błędzie formularz zostaje")
         self.assertEqual(json.loads(out["repo"][1]), {"repo": "/home/user/DevWorkspace/legal-agents"})
 
+    def test_project_read_directories_form_loads_edits_and_removes_entries(self):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0]["readDirs"] = ["/data/hud", "/data/frames"]
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["loaded"] = js(find("projectReadDirs") + ".text")
+js(find("projectReadDirs") + ".text = '/data/frames'")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["removeOne"] = calls()[-1]
+js("page.managePage.openProject = 'plasma-tide'")
+wait(80)
+js(find("projectReadDirs") + ".text = ''")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["removeAll"] = calls()[-1]
+""", data)
+        self.assertEqual(out["loaded"], "/data/hud\n/data/frames")
+        self.assertEqual(out["removeOne"][0], "UpsertProject")
+        self.assertEqual(json.loads(out["removeOne"][-1]), {"slug": "plasma-tide", "readDirs": ["/data/frames"]})
+        self.assertEqual(json.loads(out["removeAll"][-1]), {"slug": "plasma-tide", "readDirs": []})
+
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class LaunchMarkStoreTest(unittest.TestCase):
@@ -1159,9 +1206,13 @@ out["toast"] = js("[page.toast, page.toastTone]")
                          "zmienione zadanie zapisane w karcie przed poleceniem")
         self.assertEqual(json.loads(out["calls1"][2][2]),
                          {"entry": "planning", "mode": "full", "executor": "Sonnet", "check": "auto",
-                          "preferredProvider": "anthropic", "images": []})
+                          "preferredProvider": "anthropic", "images": [], "projects": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/k-15-tryb-skupienia-wyciszone"})
         self.assertEqual([c[0] for c in out["calls2"]], ["StartCard"],
                          "ponowienie bez drugiego zapisu opisu")
+        self.assertEqual(json.loads(out["calls2"][0][2]), json.loads(out["calls1"][2][2]),
+                         "ponowienie zachowuje pełny ref, SHA i nazwę gałęzi karty")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
         self.assertIn("ruszyło w Konsoli", out["toast"][0])
@@ -1199,7 +1250,8 @@ out["calls"] = calls()
         self.assertFalse(out["worktreeEnabled"], "spec — bez worktree")
         self.assertIn("Codex w katalogu projektu, bez worktree", out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["RenderLaunch", "Start", "UpdateCard", "MoveCard"])
-        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual"})
+        self.assertEqual(json.loads(out["calls"][0][2]), {"entry": "spec", "tool": "codex", "check": "manual",
+                                                       "baseRef": "refs/heads/master", "baseCommit": "a" * 40})
         start = json.loads(out["calls"][1][1])
         self.assertEqual((start["newWorktree"], start["branch"], start["addDirs"], start["tool"]),
                          (False, "", ["/home/user/DevWorkspace/tide-board/docs/mobileapp"], "codex"))
@@ -1340,13 +1392,16 @@ out["closed"] = not js("page.launchOpen")
         self.assertTrue(out["visible"])
         self.assertEqual(out["picked"], ["project:mobileapp", "repo:legal-agents", "project:LogViewer"])
         self.assertEqual(out["afterRemove"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"])
-        self.assertIn("Dodatkowe projekty jako kontekst: mobileapp, legal-agents", out["footer"])
+        self.assertIn("Projekty zlecenia (jeden plan z kolumną Projekt, do odczytu): mobileapp, legal-agents",
+                      out["footer"])
         self.assertEqual([c[0] for c in out["calls"]], ["MoveCard", "UpdateCard", "StartCard"])
         self.assertEqual(json.loads(out["calls"][1][2]),
                          {"projects": ["mobileapp", "/home/user/DevWorkspace/legal-agents"]},
                          "projekty (repozytorium zakłada projekt) zapisane przed poleceniem, opis bez zmian")
         start = json.loads(out["calls"][2][2])
         self.assertEqual((start["entry"], start["mode"]), ("planning", "full"))
+        self.assertEqual(start["projects"], ["mobileapp", "/home/user/DevWorkspace/legal-agents"],
+                         "żądanie zlecenia niesie projekty zlecenia (K-33 #4)")
         self.assertTrue(out["closed"])
 
     def test_card_shows_extra_projects_as_chips(self):
@@ -1758,7 +1813,9 @@ out["toast"] = js("[page.toast, page.toastTone]")
         self.assertEqual(out["second"][0][1], "K-15")
         self.assertEqual(json.loads(out["second"][0][2]),
                          {"entry": "now", "executor": "Opus", "reviewer": "Sonnet",
-                          "preferredProvider": "anthropic", "check": "manual", "images": []})
+                          "preferredProvider": "anthropic", "check": "manual", "images": [],
+                          "baseRef": "refs/heads/master", "baseCommit": "a" * 40,
+                          "cardBranch": "card/" + next(c["branchSlug"] for c in self.data["cards"] if c["id"] == "K-15")})
         self.assertEqual(out["second"][1], ["MoveCard", "K-15", "todo", -1], "karta z Backlogu idzie do kolejki")
         self.assertTrue(out["closed"])
         self.assertEqual(out["toast"][1], "mint")
@@ -1897,6 +1954,42 @@ out["call"] = calls()[-1]
         self.assertEqual(out["call"][0], "SetCardFlowSettings")
         self.assertEqual(json.loads(out["call"][1]),
                          {"limitTransfer": {"mode": "auto", "executor": "Codex standard"}})
+
+    def test_caretaker_settings_are_shown_and_saved_from_manage_page(self):
+        """PT-151: przełącznik „Opiekun karty”, wykonawca (z „Domyślny”), limit działań i minuty czekania — jeden
+        zapis SetCardFlowSettings z czterema kluczami; wartości z GetCardFlowSettings po otwarciu strony."""
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        data["flowSettings"] = {"ok": True, "limitTransfer": {"mode": "ask", "executor": ""},
+                                "limitThresholdPercent": 10, "caretakerEnabled": True, "caretakerExecutor": "Opus",
+                                "caretakerActionLimit": 4, "caretakerDecisionMinutes": 25}
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(50)
+out["initial"] = [obj("caretakerEnabled").property("checked"), obj("caretakerExecutor").property("currentText"),
+                  obj("caretakerActionLimit").property("value"), obj("caretakerDecisionMinutes").property("value"),
+                  obj("caretakerSave").property("enabled")]
+out["options"] = js(FIND + "(page.managePage, 'caretakerExecutor').model.map(o => o.value)")
+click(at(FIND + "(page.managePage, 'caretakerEnabled')"))
+js("page.managePage.caretakerExecutor = ''; page.managePage.caretakerActionLimit = 1; "
+   "page.managePage.caretakerDecisionMinutes = 1440")
+out["shown"] = [obj("caretakerExecutor").property("currentIndex"), obj("caretakerActionLimit").property("value")]
+click(at(FIND + "(page.managePage, 'caretakerSave')"))
+out["call"] = calls()[-1]
+out["busy"] = obj("caretakerSave").property("enabled")
+js("page.managePage.handleReply('caretaker-settings:9', {ok: false, error: 'bad-executor', message: 'nieznany wykonawca opiekuna'})")
+out["saveError"] = [obj("caretakerError").property("visible"), obj("caretakerError").property("text")]
+""", data=data)
+        self.assertEqual(out["initial"], [True, "Opus · anthropic", 4, 25, False])
+        self.assertEqual(out["options"], ["", "Haiku", "Sonnet", "Opus", "Codex standard", "Lokalny"])
+        self.assertEqual(out["shown"], [0, 1])
+        self.assertEqual(out["call"][0], "SetCardFlowSettings")
+        self.assertEqual(json.loads(out["call"][1]),
+                         {"caretakerEnabled": False, "caretakerExecutor": "", "caretakerActionLimit": 1,
+                          "caretakerDecisionMinutes": 1440})
+        self.assertFalse(out["busy"])
+        self.assertTrue(out["saveError"][0])
+        self.assertIn("nieznany wykonawca opiekuna", out["saveError"][1])
 
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))
@@ -2154,12 +2247,41 @@ out["call"] = calls()[-1]
 
 
 class ClosingPanelTest(ProbeCase):
+    def test_panel_merge_preview_uses_named_target_and_closes_without_writing(self):
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "review", "flow": {
+                    "closed": True, "summary": "Gotowe", "mainBranch": "release/full-target",
+                    "base": {"status": "known", "baseRef": "refs/heads/release/full-target"},
+                    "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
+                card["boardColumn"] = "review"
+        out = self.probe(FIND_PY + '''
+click(card("K-6"))
+out["label"] = obj("cardPreviewMerge").property("text")
+replies.append({"ok": False, "error": "git-error", "message": "Nie można odczytać drzewa"})
+click(at(FIND + "(page.cardPanel, 'cardPreviewMerge')"))
+until(lambda: not obj("mergePreview").property("busy"))
+out["text"] = obj("mergePreviewText").property("text")
+click(named("mergePreviewClose"))
+out["calls"] = calls()
+out["busy"] = js("page.cardPanel.busy")
+out["column"] = js("page.cardPanel.card.boardColumn")
+''', data=data)
+        self.assertEqual(out["label"], "Podgląd scalenia do release/full-target")
+        self.assertEqual(out["text"], "Nie można odczytać drzewa")
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]], [{"targetRef": "refs/heads/release/full-target"}])
+        self.assertFalse(out["busy"])
+        self.assertEqual(out["column"], "review")
+
     def test_closed_card_exposes_diff_main_merge_and_return(self):
         data = json.loads(json.dumps(self.data))
         for card in data["cards"]:
             if card["id"] == "K-6":
                 card["derived"] = {"column": "review", "flow": {
                     "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
+                    "mainBranch": "develop",
+                    "base": {"status": "known", "baseRef": "refs/heads/develop"},
                     "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
                 card["boardColumn"] = "review"
         out = self.probe(FIND_PY + """
@@ -2177,7 +2299,8 @@ out["mergeCall"] = calls()[-1]
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
         self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
-        self.assertEqual(out["mergeCall"], ["MergeCardToMain", "K-6"])
+        self.assertEqual(out["mergeCall"][:2], ["PreviewCardMerge", "K-6"])
+        self.assertEqual(json.loads(out["mergeCall"][2]), {"targetRef": "refs/heads/develop"})
         self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])
         self.assertEqual(json.loads(out["returnCall"][2])["feedback"], "Dopisz błąd eksportu")
 
@@ -2225,6 +2348,27 @@ out["call"] = calls()[-1]
 """, data=data)
         self.assertEqual(resumed["text"], "Wznów")
         self.assertEqual(resumed["call"], ["SetCardPaused", "K-6", False])
+
+    def test_ticket_strip_shows_who_has_the_move(self):
+        # 05.11: pomarańczowy znaczył „czeka na Ciebie”, „w kolejce” i „limit” naraz; teraz faza od usługi.
+        data = json.loads(json.dumps(self.data))
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["boardColumn"] = "progress"
+                card["derived"] = {"column": "progress", "note": "fala 1 z 1", "done": 0, "total": 4,
+                    "tickets": [{"id": "PT-1", "state": "czeka", "phase": "pracuje", "why": "poza piaskownicą: make test", "wave": 1},
+                                {"id": "PT-2", "state": "czeka", "phase": "kolejka", "why": "w kolejce poza piaskownicą: make test", "wave": 1},
+                                {"id": "PT-3", "state": "czeka", "phase": "ty", "why": "pytanie", "wave": 1},
+                                {"id": "PT-4", "state": "w-toku", "wave": 1}],
+                    "flow": {"entry": "plan", "waveLabel": "fala 1 z 1", "paused": False, "timeline": [], "steps": []}}
+        out = self.probe(FIND_PY + """
+strip = FIND + "(page.findCard('K-6'), 'cardTicketStrip')"
+out["phases"] = [js(strip + ".itemAt(%d).phase" % i) for i in range(4)]
+out["tips"] = [js(strip + ".itemAt(%d).hint" % i) for i in range(3)]
+""", data=data)
+        self.assertEqual(out["phases"], ["pracuje", "kolejka", "ty", "pracuje"], "PT-4 bez fazy: dawny stan w-toku")
+        self.assertEqual(out["tips"], ["PT-1 · poza piaskownicą: make test",
+                                       "PT-2 · w kolejce poza piaskownicą: make test", "PT-3 · czeka na Ciebie: pytanie"])
 
 
 
@@ -2688,3 +2832,94 @@ out["project"] = calls()[-1]
 """, data)
         self.assertEqual(json.loads(out["global"][-1]), {"globalAssignmentRules": "mocny: wspólne"})
         self.assertEqual(json.loads(out["project"][-1]), {"slug": "plasma-tide", "assignmentRules": "lekki: projekt"})
+
+
+class MultiProjectViewTest(ProbeCase):
+    """K-33 #4: projekty zlecenia w oknie zlecenia i plan z kolumną Projekt w szerokim widoku planu (dane z pliku)."""
+
+    def test_launch_dialog_order_projects_and_single_project_sentence(self):
+        status = dict(models_status(), executors=EXECUTORS)
+        out = self.probe(FIND_PY + f"""
+backend._models = {json.dumps(status, ensure_ascii=False)!r}
+backend.modelsChanged.emit()
+wait(50)
+shown = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').visible")
+text = lambda name: js(FIND + f"(page.launchDialog, '{{name}}').text")
+js("page.openLaunch('K-15', false)")
+wait(100)
+js("page.launchDialog.entry = 'planning'")
+wait(50)
+out["planning"] = [shown("launchExtras"), shown("launchMainProject"), shown("launchSingleProject")]
+for entry in ("now", "plan"):
+    js(f"page.launchDialog.entry = '{{entry}}'")
+    wait(50)
+    out[entry] = [shown("launchExtras"), shown("launchSingleProject"), text("launchSingleProject")]
+""")
+        self.assertEqual(out["planning"], [True, True, False])
+        for entry, word in (("now", "Od razu"), ("plan", "Mam plan")):
+            extras, note, sentence = out[entry]
+            self.assertFalse(extras, f"{entry}: bez wyboru projektów")
+            self.assertTrue(note)
+            self.assertIn(word + " pracuje w jednym projekcie karty", sentence)
+            self.assertIn("wybierz Planowanie", sentence)
+
+    def test_plan_manager_shows_project_column_and_number_sources(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1", "#2"], ["#3"]],
+                    "projects": [{"slug": "plasma-tide", "name": "plasma-tide", "prefix": "PT", "tracker": "local",
+                                  "source": "lokalny PT", "main": True},
+                                 {"slug": "mobileapp", "name": "mobileapp", "prefix": "APP5", "tracker": "youtrack",
+                                  "trackerProject": "APP5", "source": "YouTrack APP5", "main": False}],
+                    "rows": [{"workId": "#1", "title": "API", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "project": "mobileapp", "editable": True,
+                              "body": "- [ ] API."},
+                             {"workId": "#2", "title": "Widok", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "project": "plasma-tide", "editable": True,
+                              "body": "- [ ] Widok."},
+                             {"workId": "#3", "title": "Klient", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": ["#1"], "project": "plasma-tide", "editable": True,
+                              "body": "- [ ] Klient."}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["sources"] = obj("planManagerProjects").property("text")
+out["group"] = obj("planManagerGroupNotice").property("visible")
+out["row1"] = js(FIND + "(page, 'planManagerRow-#1').text")
+out["row3"] = js(FIND + "(page, 'planManagerRow-#3').text")
+out["project"] = obj("planManagerTicketProject").property("text")
+click(at(FIND + "(page, 'planManagerApprove')"))
+out["call"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["sources"], "Źródło numerów: plasma-tide — lokalny PT · mobileapp — YouTrack APP5")
+        self.assertTrue(out["group"])
+        self.assertIn("#1 · ◆ mobileapp · API", out["row1"])
+        self.assertIn("#3 · ◆ plasma-tide · Klient", out["row3"])
+        self.assertEqual(out["project"], "Projekt: mobileapp")
+        self.assertEqual(out["call"], ["ApproveCardPlan", "K-6"], "odmowę zwraca usługa")
+
+    def test_single_project_plan_has_no_project_column(self):
+        data = json.loads(json.dumps(self.data))
+        data["models"] = dict(models_status(), executors=EXECUTORS)
+        for card in data["cards"]:
+            if card["id"] == "K-6":
+                card["derived"] = {"column": "waiting", "flow": {"entry": "planning", "plan": {
+                    "status": "pending", "planner": "Sonnet", "waves": [["#1"]], "projects": [],
+                    "rows": [{"workId": "#1", "title": "Eksport", "class": "standard", "executor": "Sonnet",
+                              "reviewer": "Opus", "blockers": [], "editable": True, "body": "- [ ] Działa."}]}}}
+                card["boardColumn"] = "waiting"
+        out = self.probe(FIND_PY + """
+click(card("K-6"))
+click(at(FIND + "(page.cardPanel, 'cardOpenPlanManager')"))
+wait(80)
+out["sources"] = obj("planManagerProjects").property("visible")
+out["group"] = obj("planManagerGroupNotice").property("visible")
+out["row"] = js(FIND + "(page, 'planManagerRow-#1').text")
+""", data=data)
+        self.assertEqual((out["sources"], out["group"]), (False, False))
+        self.assertEqual(out["row"], "Fala 1 · #1 · Eksport")

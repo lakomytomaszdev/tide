@@ -12,6 +12,7 @@ from tide_daemon.cardflow.state import derived, fold
 DECISION_KEYS = {"id", "step", "stepKind", "ticket", "executor", "kind", "happened", "why", "options",
                  "freeText", "reply", "fault", "technical", "findings"}
 PERMISSION_KEYS = {"commands", "otherTitle", "otherHint"}       # PT-124: tylko przy zgodzie na polecenie
+QUESTION_KEYS = {"copyCommands"}                                # 04.11: polecenia z pytania do skopiowania
 OPTION_KEYS = {"id", "title", "effect", "recommended", "choice", "params", "method"}
 CARD = {"column": "todo"}
 # Pola `derived.flow` z czasów przed oknem decyzji; usunął je PT-135.
@@ -58,7 +59,9 @@ def plan_events(**reviewed):
 
 class ContractTest(unittest.TestCase):
     def assert_contract(self, decision):
-        self.assertEqual(set(decision), DECISION_KEYS | (PERMISSION_KEYS if decision["kind"] == "permission" else set()))
+        extra = PERMISSION_KEYS if decision["kind"] == "permission" else QUESTION_KEYS if decision["kind"] == "question" \
+            else set()
+        self.assertEqual(set(decision), DECISION_KEYS | extra)
         self.assertIn(decision["kind"], KINDS)
         self.assertTrue(decision["happened"].strip())
         self.assertTrue(decision["why"].strip())
@@ -341,7 +344,8 @@ class ContractTest(unittest.TestCase):
         self.assert_contract(decision)
         self.assertEqual((decision["kind"], decision["ticket"]), ("review", "PT-1"))
         self.assertEqual([(o["method"], o["params"]) for o in decision["options"]],
-                         [("ResolveCardReview", {"choice": "retry"}), ("ResolveCardReview", {"choice": "reject"})])
+                         [("ResolveCardReview", {"choice": "retry"}), ("ResolveCardReview", {"choice": "accept"}),
+                          ("ResolveCardReview", {"choice": "reject"})])
         self.assertEqual(decision["technical"]["majors"], 2)
 
 
@@ -373,7 +377,10 @@ class GenericSentenceTest(unittest.TestCase):
 
     def empty_inputs(self):
         tracker = Events().add("result", action="youtrack-create", key="k", ok=False, permanent=True, error="")
+        care = Events().add("card.stalled").add("caretaker.started", problem="stalled:card", step="care", n=1)
+        care.add("caretaker.escalated", problem="stalled:card", step="care")
         return {
+            "caretaker": care,
             "question": Events().step("s", ticket="", result="question", question=""),
             "permission": Events().step("s", ticket="", kind="", result="denied", command=""),
             "error": Events().step("s0", ticket="", kind="", result="error", reason="")
@@ -401,12 +408,15 @@ class GenericSentenceTest(unittest.TestCase):
 
     def test_every_kind_with_empty_input_gets_its_generic_sentences(self):
         inputs = self.empty_inputs()
-        self.assertEqual(set(inputs), set(KINDS), "tabela obejmuje każdy rodzaj decyzji")
+        # `plan-fix-failed` (PT-146) wymaga dziennika opiekuna; jego zdania ogólne sprawdza test_cardflow_caretaker_plan.
+        self.assertEqual(set(inputs), set(KINDS) - {"plan-fix-failed"}, "tabela obejmuje każdy rodzaj decyzji")
         for kind, events in inputs.items():
             with self.subTest(kind=kind):
                 [decision] = events.decisions()
                 self.assertEqual(decision["kind"], kind)
-                self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                if kind != "caretaker":
+                    self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
+                self.assertTrue(decision["happened"] and decision["why"])
                 self.assertTrue(all(GENERIC[kind]))
 
 
@@ -557,3 +567,126 @@ class OutsideRunGuardTest(unittest.TestCase):
         self.assertIsNone(guard_reason(fold(events.items)))
         events.add("outside.finished", step="s", ticket="PT-1", exit=0, tail="")
         self.assertEqual(fold(events.items).outside_started, {})
+
+
+class PlanRevisionInProgressTest(unittest.TestCase):
+    def test_returned_plan_is_not_a_decision_while_the_planner_revises_it(self):
+        # 03.11, K-40: po „Odeślij z uwagami” okno dalej pokazywało plan do zatwierdzenia.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        events = (Events(entry="plan").add("plan.proposed", planner="Opus", rows=[])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", findings="x"))
+        self.assertEqual([d["kind"] for d in build_decisions(fold(events.items))], ["plan-approval"])
+        events.add("plan.returned", feedback="popraw", baseline=[])
+        self.assertEqual(build_decisions(fold(events.items)), [])
+
+
+class CorrectedPlanReviewTest(unittest.TestCase):
+    def test_plan_revised_after_review_is_offered_for_approval_not_sent_back(self):
+        # 03.11, K-38: po automatycznej poprawce okno pisało „recenzent prosi o zmiany” i polecało odesłanie.
+        from tide_daemon.cardflow.decisions import build_decisions
+        from tide_daemon.cardflow.state import fold
+        findings = [{"severity": "blocker", "text": "graf blokerów"}]
+        events = (Events(entry="plan").add("plan.proposed", planner="Fable", rows=[{"workId": "#1"}])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", reviewer="Sonnet", findings=findings, corrected=True))
+        decision = build_decisions(fold(events.items))[0]
+        self.assertIn("poprawił go po uwagach", decision["happened"])
+        recommended = [o["id"] for o in decision["options"] if o.get("recommended")]
+        self.assertEqual(recommended, ["approve"])
+        returned = next(o for o in decision["options"] if o["id"] == "return")
+        self.assertEqual(returned["params"]["findings"], [])
+
+
+class PlanWorkInProgressTest(unittest.TestCase):
+    def test_review_of_a_revised_plan_is_progress_not_a_decision(self):
+        # 03.11, K-38: po odesłaniu kafelek i okno dalej pokazywały „plan do zatwierdzenia”.
+        from tide_daemon.cardflow.decisions import build_decisions
+        events = (Events(entry="plan").add("plan.proposed", planner="Fable", rows=[{"workId": "#1"}])
+                  .add("plan.reviewed", verdict="REQUEST_CHANGES", reviewer="Sonnet", findings="x")
+                  .add("plan.returned", feedback="popraw", baseline=[])
+                  .add("plan.revision-ready", pending=True, baseline=[], difference=[])
+                  .add("step.started", step="K-1-plan-review-9", kind="plan-review"))
+        st = fold(events.items)
+        self.assertEqual(build_decisions(st), [])
+        shown = derived(st, CARD)
+        self.assertEqual((shown["column"], shown["note"]), ("progress", "review planu w tle"))
+
+
+class FlowErrorRecoveryTest(unittest.TestCase):
+    def test_flow_error_clears_when_the_failed_operation_succeeds(self):
+        # 04.11, K-38: zapis planu przeszedł po naprawie gita, a kafelek dalej pokazywał błąd przepływu.
+        events = (Events(entry="plan").add("result", action="plan-commit", key="1", ok=False,
+                                           error="worktree karty nie należy do gałęzi planu")
+                  .add("flow.error", error="FlowError: worktree karty nie należy do gałęzi planu"))
+        self.assertTrue(fold(events.items).flow_error)
+        events.add("result", action="merge", key="2", ok=True)
+        self.assertTrue(fold(events.items).flow_error)
+        events.add("result", action="plan-commit", key="1", ok=True)
+        self.assertEqual(fold(events.items).flow_error, "")
+
+
+class ReviewRoundsOptionsTest(unittest.TestCase):
+    def test_review_rounds_offer_merge_despite_remarks(self):
+        # 04.11: po K-35 okno decyzji po rundach review miało tylko „Ponów poprawki” i „Odrzuć ticket”.
+        from tide_daemon.cardflow.decisions import _review
+        decision = _review(fold(Events().items), "PT-1", 6, {"question": "Co dalej?"})
+        options = {o["id"]: o for o in decision["options"]}
+        self.assertEqual(list(options), ["retry", "accept", "reject"])
+        self.assertEqual(options["accept"]["params"], {"choice": "accept"})
+        self.assertTrue(options["retry"]["recommended"])
+
+
+class QuestionLayoutTest(unittest.TestCase):
+    def test_inline_options_get_their_own_lines_and_commands_are_copyable(self):
+        # 04.11: pytania z opcjami a, b, c w jednym akapicie i poleceniami do wpisania w terminalu w środku tekstu.
+        from tide_daemon.cardflow.decisions import layout, copy_commands
+        text = layout("Jak dalej? **(a)** uruchom `bash scripts/p5.sh`, (b) poczekaj na `make box-install`, (c) zamknij.")
+        self.assertEqual(text.split("\n"), ["Jak dalej?", "(a) uruchom `bash scripts/p5.sh`,",
+                                            "(b) poczekaj na `make box-install`,", "(c) zamknij."])
+        self.assertEqual(layout("Pytanie bez listy (a) tylko raz."), "Pytanie bez listy (a) tylko raz.")
+        self.assertEqual(copy_commands("Uruchom `bash scripts/p5.sh`, plik `docs/x.md`, `make box-install`."),
+                         ["bash scripts/p5.sh", "make box-install"])
+
+    def test_question_decision_keeps_lines_and_lists_commands(self):
+        events = Events().step("K-1-PT-1-1", result="question",
+                               question="Co robimy? (a) uruchom `bash x.sh --all`, (b) zostaw.")
+        decision = build_decisions(events.state())[0]
+        self.assertIn("\n(b) zostaw.", decision["happened"])
+        self.assertEqual(decision["copyCommands"], ["bash x.sh --all"])
+
+
+class OutsideHeadlineTest(unittest.TestCase):
+    def test_long_command_stays_out_of_the_headline_and_why_keeps_lines(self):
+        # 04.11, KAMP-1: nagłówek był kilkulinijkowym zlepkiem z całym `bash -c '…'`.
+        long_command = "bash -c 'for f in \"$HOME\"/*.mp4; do ffmpeg -i \"$f\" out/%05d.jpg; done; du -sh out'"
+        events = Events().step("K-1-PT-1-1", result="denied", outside=True, command=long_command,
+                               reason="Nagrania leżą w katalogu domowym.", canAllow=False)
+        decision = build_decisions(events.state())[0]
+        self.assertNotIn("ffmpeg", decision["happened"])
+        self.assertTrue(decision["happened"].endswith("prosi o uruchomienie polecenia poza piaskownicą"))
+        self.assertEqual(decision["technical"]["command"], long_command)
+        self.assertIn("\nPowód kroku: Nagrania leżą w katalogu domowym.", decision["why"])
+
+
+class OutsideQueueTest(unittest.TestCase):
+    def test_consented_outside_command_waiting_for_a_slot_is_not_a_stall(self):
+        # 04.11, K-37: zgoda na `make test` dana, polecenie czeka na wolne miejsce w projekcie → „stoi” po 3 min.
+        from tide_daemon.cardflow.state import guard_reason, outside_queued
+        events = Events().step("K-1-PT-1-1", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="run")
+        st = events.state()
+        self.assertEqual(outside_queued(st), ["K-1-PT-1-1"])
+        self.assertEqual(guard_reason(st), "polecenie poza piaskownicą w kolejce")
+        events.add("outside.started", step="K-1-PT-1-1")
+        self.assertEqual(outside_queued(events.state()), [])
+
+
+class BlockedScopeErrorTest(unittest.TestCase):
+    def test_error_saying_retry_will_not_help_does_not_recommend_retry(self):
+        # 04.11, K-41/KAMP-13: agent napisał „wymagane działanie koordynatora”, a okno polecało „Ponów krok”.
+        events = Events().step("K-1-PT-1-1", result="error", attempt=1,
+                               reason="B1 nadal otwarty: brak dostawy #13a z BO; wymagane działanie koordynatora "
+                                      "opisano w note.md.")
+        decision = next(d for d in build_decisions(events.state()) if d["kind"] == "error")
+        self.assertFalse(any(o["recommended"] for o in decision["options"] if o["id"] == "retry"))
+        self.assertIn("ponowienie nic nie da", decision["why"])

@@ -25,6 +25,9 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
+import logging
 import os
 import signal
 import shutil
@@ -47,23 +50,35 @@ from ..tasks import agentcmd, launch, stepstop
 from ..tasks.runner import HostRunner, Runner
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
+from . import testrerun
+from . import caretaker
+from . import decisions
+from . import caretakerctx
 from . import handoff
 from . import boxstep
 from . import trialhold
 from ..box import trialgate
+from . import consent
 from .decisions import clean_options
 from . import environment as flow_environment
 from . import execution
 from . import faults
 from . import fullcard
+from . import guard
 from . import limits as flow_limits
 from . import planning
-from .planediting import PlanEditing
+from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
+from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
-from .gitops import FlowGit, FlowGitError, worktree_for
+from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
+from . import baseproposal, planartifacts
+from .mergepreview import source_dirty
+from .mergeop import MergeWorktree
 from .journal import Journal
-from .state import (REASON_LABELS, FlowState, derived, fold, ticket_of, graph_waves, attention_step, decision_step,
-                    guard_reason, _epoch)
+from .stepnotes import close_console
+from .labels import step_name
+from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
+                    guard_reason, ticket_waits, _epoch, _bookkeeping)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -91,14 +106,34 @@ ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji 
 # w Konsoli) czyta repozytorium i Tablicę, więc zostaje na hoście w bwrap; `conflict` też (scalenie gałęzi).
 # Wznowienie dziedziczy runner wznawianego kroku. Wybór: `cardflow/boxstep.py`.
 BOX_STEP_KINDS = ("ticket", "fix", "review", "close")
-OUTSIDE_PER_PROJECT = 1         # polecenia poza piaskownicą naraz w jednym projekcie (porty, serwer e2e)
-OUTSIDE_TOTAL = 2               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
+OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
+OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
+
+
+def test_pool_available(worktree: str) -> bool:
+    """Czy uruchamiacz testów w worktree korzysta ze wspólnej puli maszyny. Brak uruchamiacza (inny projekt) — tak:
+    nie zmieniamy środowiska projektów, które nie używają tools/test_runner.py."""
+    path = os.path.join(worktree, "tools", "test_runner.py") if worktree else ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "class MachineSlots" in fh.read()
+    except OSError:
+        return True
+
+
+CLOSE_AUTHOR = "close"           # `reassign-author` z ticket=close przepina wykonawcę domknięcia karty
+OUTSIDE_QUEUE_STALE = 300       # s bez sprawdzenia, po których zgoda wypada z kolejki poleceń poza piaskownicą
 STEP_CPU_WEIGHT = 40            # kroki i polecenia poza piaskownicą ustępują pulpitowi (domyślna waga 100)
 OUTPUT_MAX = 256 * 1024
+FLOW_ERROR_PERSIST = 10.0       # s: ten sam błąd Tide w kolejnym przebiegu po tylu sekundach — wyzwalacz opiekuna
 HANDOFF_DIFF_MAX = 64 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 DESCRIPTION_LIMIT_BYTES = DESCRIPTION_MAX - 1024   # zapas na kolejne wystąpienie bez wycinka (PT-125)
-REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode")
+REQUEST_FIELDS = ("entry", "executor", "reviewer", "preferredProvider", "images", "check", "planPath", "mode",
+                  "projects", "baseRef", "baseCommit", "cardBranch")
+# Zatwierdzenie planu z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); do tego czasu odmowa.
+GROUP_APPROVAL = "zatwierdzanie grupy kart — w następnej wersji"
 
 
 
@@ -110,6 +145,17 @@ AUTO_DENY_LONG = ("Tide nie może zezwolić na polecenie dłuższe niż {limit} 
                   "(np. jeden katalog albo kilka plików naraz, `git rm -r <katalog>`), każde jako osobny wynik denied.")
 STEP_READ_NOTE = ("Odczyt własnego katalogu kroku (<krok>/in i <krok>/out) jest zawsze dozwolony i nie wymaga zgody. "
                   "Uruchom te polecenia pojedynczo, bez łączenia, albo czytaj pliki narzędziem Read.")
+
+
+def reviewer_override(st, step: dict, decision: dict, current: str) -> str:
+    """Recenzent przepięty przez użytkownika po decyzji o kroku review (06.11, K-60/PT-254: Codex odmówił review,
+    Tide sam przełączył na Sonnet przy limicie Claude 96%, a późniejsze „Przepnij recenzenta” na Codex Astra nie
+    działało, bo wznowienie brało wykonawcę z automatycznej decyzji). Nowszy wybór użytkownika wygrywa."""
+    if step.get("kind") != "review":
+        return ""
+    chosen = st.reviewer_overrides.get(step.get("ticket") or "") or {}
+    newer = chosen.get("seq", 0) > max(step.get("seq", 0), decision.get("seq", 0) or 0)
+    return chosen.get("reviewer") or "" if newer and chosen.get("reviewer") not in ("", None, current) else ""
 
 class FlowDeferred(Exception):
     """Krok czeka na wolne miejsce; nie jest to błąd karty."""
@@ -134,12 +180,71 @@ def _login_expired(log: str) -> bool:
 
 
 
+PLACEHOLDER_AGE = 60   # s; świeży plik może być w trakcie zapisu przez gita
+
+
+def _placeholder(path: str, now: float | None = None) -> bool:
+    """Pusty zwykły plik bez prawa zapisu, starszy niż minuta — punkt montowania zostawiony przez piaskownicę kroku
+    (bwrap tworzy brakujące ścieżki, które ma zasłonić). Git takich plików nie tworzy: jego pliki mają prawo zapisu."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    import stat
+    return (stat.S_ISREG(info.st_mode) and info.st_size == 0 and not info.st_mode & 0o222
+            and (now or time.time()) - info.st_mtime > PLACEHOLDER_AGE)
+
+
+def _ghost_entry(folder: str) -> bool:
+    """Wpis `.git/worktrees/<nazwa>` złożony wyłącznie z punktów montowania (bez HEAD i gitdir)."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    return bool(names) and "HEAD" not in names and "gitdir" not in names and all(
+        _placeholder(os.path.join(folder, name)) for name in names)
+
+
+def _remove_placeholder(path: str, found: list, label: str) -> None:
+    if _placeholder(path):
+        try:
+            os.chmod(path, 0o644)
+            os.remove(path)
+            found.append(label)
+        except OSError:
+            pass
+
+
+UNTRACKED_BEFORE = "untracked-before.json"    # nieśledzone pliki worktree ticketu w chwili startu review
+
+
+# Odmowy z filtra treści dostawcy w dzienniku kroku — ponowienie u tego samego dostawcy nic nie da.
+CONTENT_REFUSAL = re.compile(r"flagged for possible cybersecurity risk|content was flagged|violates (?:our|the) "
+                             r"(?:usage )?polic|Usage Policy|refused to (?:help|continue) for safety", re.I)
+
+
+def content_refusal(step: dict) -> bool:
+    """Krok zakończony odmową filtra treści (ostatnie 20 KB `out/step.log`)."""
+    path = os.path.join(step.get("stepDir") or "", "out", "step.log")
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 20_000))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    return bool(CONTENT_REFUSAL.search(tail))
+
+
 def worktree_guard(repo: str, memory: dict) -> list[str]:
     """Strażnik worktree (03.11): w trakcie kroków agentów z `.git/worktrees/*/` repozytorium plasma-tide zniknęły pliki
     `HEAD` i `gitdir` (19 worktree naraz, dwa razy), więc git przestał znać worktree kart i ticketów. Zapamiętuje oba
-    pliki z każdego zdrowego wpisu i odtwarza je, gdy znikną, a katalog worktree wciąż istnieje. Zwraca odtworzone wpisy."""
+    pliki z każdego zdrowego wpisu i odtwarza je, gdy znikną, a katalog worktree wciąż istnieje. 04.11: piaskownica
+    przy każdym poleceniu kroku tworzy puste pliki tylko do odczytu (punkty montowania) dla ścieżek usuniętych już
+    worktree — pusty `commondir` takiego „ducha” psuje `git worktree list` całego repozytorium, a pusty `config.lock`
+    blokuje zapis konfiguracji. Strażnik usuwa duchy i takie pliki. Zwraca naprawione wpisy."""
     admin = os.path.join(repo, ".git", "worktrees")
     restored = []
+    _remove_placeholder(os.path.join(repo, ".git", "config.lock"), restored, "config.lock")
     try:
         names = os.listdir(admin)
     except OSError:
@@ -148,6 +253,17 @@ def worktree_guard(repo: str, memory: dict) -> list[str]:
         folder = os.path.join(admin, name)
         head, gitdir = os.path.join(folder, "HEAD"), os.path.join(folder, "gitdir")
         try:
+            if _ghost_entry(folder):
+                # Duch: piaskownica kroku odtworzyła wpis usuniętego worktree jako punkty montowania (04.11).
+                shutil.rmtree(folder)
+                restored.append(f"{name} (duch usunięty)")
+                continue
+            commondir = os.path.join(folder, "commondir")
+            if _placeholder(commondir) and os.path.isfile(head) and os.path.isfile(gitdir):
+                os.chmod(commondir, 0o644)
+                with open(commondir, "w", encoding="utf-8") as fh:
+                    fh.write("../..\n")
+                restored.append(f"{name} (commondir)")
             if os.path.isfile(head) and os.path.isfile(gitdir):
                 with open(head, encoding="utf-8") as fh_head, open(gitdir, encoding="utf-8") as fh_dir:
                     memory[folder] = (fh_head.read(), fh_dir.read())
@@ -163,7 +279,7 @@ def worktree_guard(repo: str, memory: dict) -> list[str]:
         except OSError:
             continue
     if restored:
-        print(f"tide-daemon: strażnik worktree odtworzył HEAD/gitdir w {repo}: {', '.join(restored)}", flush=True)
+        print(f"tide-daemon: strażnik worktree naprawił {repo}: {', '.join(restored)}", flush=True)
     return restored
 
 def reviewer_changed(reviewer, expected: dict, source: dict, assigned: dict, transferred: bool) -> bool:
@@ -210,6 +326,131 @@ class FlowError(Exception):
         self.code = code
 
 
+class _CaretakerPort:
+    """Port silnika dla `caretaker.ACTIONS[…].apply` (PT-143): jedyne miejsca, w których akcja opiekuna zmienia
+    kartę. Kolejne akcje dopisują tu własne metody."""
+
+    def __init__(self, engine, card: str, run: dict):
+        self.engine, self.card, self.run = engine, card, run
+
+    def escalate(self, problem: dict, params: dict) -> None:
+        run = self.run
+        self.engine.journal.append(self.card, caretaker.ESCALATED, problem=run.get("problem") or problem.get("id"),
+                                   step=run.get("step") or "", target=run.get("target") or "",
+                                   ticket=run.get("ticket") or "", action="escalate",
+                                   summary=params.get("summary") or "",
+                                   recommendation=params.get("recommendation") or "",
+                                   optionId=params.get("optionId") or "", failed=False, error="", code="",
+                                   mode=run.get("mode") or "background")
+
+    def retry(self, problem: dict, params: dict) -> dict:
+        """Akcja `retry` (PT-150), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`, więc powtórzona po
+        restarcie musi być bezpieczna: zapis już zrobiony przez ten krok opiekuna nie powstaje drugi raz.
+
+        Problem z decyzją — istniejące `resolve_step` `retry` z instrukcją jako `answer` (`step.decision` z `auto`
+        i `caretaker`); bez decyzji — wewnętrzna ścieżka automatycznego ponowienia: `step.retry` z `caretaker`
+        i instrukcją, a wznowienie z `parentStep` robi `_advance`. Krok spoza problemu → `not-problem-step`."""
+        engine, run = self.engine, self.run
+        st = fold(engine.journal.read(self.card))
+        name, ident = params.get("step") or "", run.get("problem") or problem.get("id") or ""
+        # Zapis sprzed restartu (`step.retry` albo `step.decision` z `caretakerStep` tego kroku opiekuna) — przed
+        # walidacją problemu i `resolve_step`: decyzja już jest, więc krok „nie czeka” (np. inna decyzja karty
+        # w `focus`), a skutek mimo to powstał dokładnie raz.
+        own = run.get("step") or ""
+        if own and any((found.get(name) or {}).get("caretakerStep") == own
+                       for found in (st.step_retries, st.step_decisions)):
+            return {"target": name, "label": self._label(st, name)}
+        if name not in caretaker.problem_steps(problem, st):
+            where = "nie należy do problemu" if name not in st.steps or not self._in_chain(st, problem, name) \
+                else "nie czeka na ponowienie"
+            return {"failed": caretaker.NOT_PROBLEM_STEP, "target": name,
+                    "error": f"{caretaker.NOT_PROBLEM_STEP}: krok {name[:80]} {where} {ident}"}
+        instruction = params.get("instruction") or ""
+        if problem.get("decision"):
+            reply = engine.resolve_step(self.card, {"choice": "retry", "answer": instruction, "step": name},
+                                        caretaker_problem=ident, caretaker_step=own)
+            if not reply.get("ok") or reply.get("step") != name or reply.get("choice") != "retry" or \
+                    reply.get("tracker"):
+                return {"failed": "retry-not-applied",
+                        "error": f"retry-not-applied: nie zapisano ponowienia kroku {name[:80]}"}
+        else:
+            step, done = st.steps[name], st.finished.get(name) or {}
+            engine.journal.append(self.card, "step.retry", step=name, ticket=step.get("ticket") or "",
+                                  reason=done.get("reason") or "", caretaker=ident,
+                                  caretakerStep=run.get("step") or "", instruction=instruction)
+        return {"target": name, "label": self._label(st, name)}
+
+    def retry_stage(self, problem: dict, params: dict) -> dict:
+        """Akcja `retry-stage` (PT-147), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`: przebieg etapu
+        karty od razu, raz (`FlowEngine._retry_stage`)."""
+        return self.engine._retry_stage(self.card, self.run, problem)
+
+    def resolve_step(self, problem: dict, request: dict, *, step_kinds=()) -> dict:
+        """Wspólna decyzja kroku z rejestru: zakres problemu, ograniczenie rodzajów i idempotencja skutku."""
+        st = fold(self.engine.journal.read(self.card))
+        name, own = request["step"], self.run.get("step") or ""
+        previous = st.step_decisions.get(name) or {}
+        if own and previous.get("caretakerStep") == own and previous.get("choice") == request["choice"]:
+            return {"target": name, "label": self._label(st, name)}
+        if name not in caretaker.problem_steps(problem, st):
+            return {"failed": caretaker.NOT_PROBLEM_STEP,
+                    "error": f"krok {name[:80]} nie należy do problemu albo już nie czeka"}
+        if step_kinds and (st.steps.get(name) or {}).get("kind") not in step_kinds:
+            return {"failed": "substantive-question", "error": "pytania planowania i zakresu wymagają użytkownika"}
+        try:
+            self.engine.resolve_step(self.card, request,
+                                     caretaker_problem=self.run.get("problem") or problem["id"], caretaker_step=own)
+        except FlowError as exc:
+            return {"failed": exc.code, "error": str(exc)}
+        return {"target": name, "label": self._label(st, name)}
+
+    def return_plan(self, problem: dict, params: dict) -> dict:
+        """Akcja `return-plan` (PT-146), wołana wewnątrz pary „zamiar → wynik” `caretaker-action`: odesłanie planu
+        istniejącym `edit_plan` (`action: return`) — bez kopii walidacji. Powtórzona po restarcie nie zapisuje
+        drugiego `plan.returned` (rozpoznaje własny zapis po `caretakerStep`). Numery `findings` (od 1) to uwagi
+        ostatniego review (`caretaker.review_items`); numer spoza listy to nieudane działanie z powodem."""
+        engine, run = self.engine, self.run
+        st = fold(engine.journal.read(self.card))
+        own, ident = run.get("step") or "", run.get("problem") or problem.get("id") or ""
+        target = problem.get("step") or run.get("target") or ""
+        if own and any(e.get("caretakerStep") == own for e in st.plan_returns):
+            return {"target": target, "label": "plan"}
+        items, chosen = caretaker.review_items(st), []
+        for part in (params.get("findings") or "").replace(";", ",").replace(" ", ",").split(","):
+            if not part:
+                continue
+            try:
+                index = int(part) if part.isdigit() else 0
+            except ValueError:
+                # `isdigit()` dopuszcza też np. „²”, którego `int()` nie umie odczytać.
+                index = 0
+            if not 1 <= index <= len(items):
+                return {"failed": "bad-findings", "target": target,
+                        "error": f"bad-findings: uwaga {part[:20]} spoza listy uwag review ({len(items)})"}
+            if items[index - 1] not in chosen:
+                chosen.append(items[index - 1])
+        request = {"action": "return", "feedback": params.get("feedback") or ""}
+        if chosen:
+            request["findings"] = chosen
+        try:
+            engine.edit_plan(self.card, request, caretaker_problem=ident, caretaker_step=own, caretaker_from=target)
+        except FlowError as exc:
+            return {"failed": exc.code, "target": target, "error": f"{exc.code}: {exc}"[:caretaker.REASON_MAX]}
+        return {"target": target, "label": "plan"}
+
+    @staticmethod
+    def _label(st: FlowState, name: str) -> str:
+        step = st.steps.get(name) or {}
+        return step_name(step.get("kind"), step.get("ticket")) if step else name
+
+    @staticmethod
+    def _in_chain(st: FlowState, problem: dict, name: str) -> bool:
+        root, ticket = problem.get("root") or "", problem.get("ticket") or ""
+        if root:
+            return caretaker.chain_root(st, name) == root
+        return not ticket or (st.steps.get(name) or {}).get("ticket") == ticket
+
+
 def settings_path(env=None) -> str:
     env = os.environ if env is None else env
     base = env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
@@ -240,7 +481,7 @@ def timeout_seconds(path: str) -> float:
     return float(value) * 60.0
 
 
-class FlowEngine(PlanEditing):
+class FlowEngine(CaretakerChat, PlanEditing):
     def __init__(self, store, journal: Journal | None = None, *, claude_projects: str = "",
                  systemd_run: str = "", catalog=None, models_config=None, model_probe=None, codex_roots=None,
                  tmp_root: str | None = None, settings: str | None = None,
@@ -251,7 +492,10 @@ class FlowEngine(PlanEditing):
         self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
+        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
+        self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
+        self._preview_secret = os.urandom(32)  # token sprzed restartu nie uprawnia do nowej operacji
         self.claude_projects = claude_projects
         self.systemd_run = systemd_run
         self.catalog = catalog            # funkcja() → models.executors.Catalog
@@ -270,6 +514,8 @@ class FlowEngine(PlanEditing):
         self.guard_every = guard_every
         # Czas procesora jednostki kroku jako znak postępu strażnika (None w testach bez systemd).
         self.unit_cpu = stepstop.unit_cpu_bucket
+        # Strażnik opiekuna (PT-158): zamrożenie jednostki kroku na czas działania Tide (atrapa w testach).
+        self.freeze_unit = stepstop.freeze_unit
         self.terminal = terminal
         self.task_files = task_files or TaskFiles()
         self.procs: dict[str, object] = {}         # krok → Popen (tylko kroki uruchomione przez tę usługę)
@@ -369,6 +615,14 @@ class FlowEngine(PlanEditing):
     def has_journal(self, card_id: str) -> bool:
         return self.journal.has(card_id)
 
+    def add_step_note(self, card_id: str, request: dict) -> dict:
+        from . import stepnotes
+        try:
+            card = f"K-{card_num(card_id)}"
+            return stepnotes.add(self.journal, card, request, fold)
+        except (BoardError, stepnotes.NoteError) as exc:
+            raise FlowError(exc.code, str(exc)) from None
+
     def _settings_data(self) -> dict:
         try:
             with open(self.settings, encoding="utf-8") as fh:
@@ -399,11 +653,21 @@ class FlowEngine(PlanEditing):
                  and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, **caretaker.settings_of(data)}
 
     def set_flow_settings(self, request: dict) -> dict:
-        if not isinstance(request, dict) or set(request) - {"limitTransfer", "limitThresholdPercent", "providerSlots"}:
+        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", *caretaker.SETTINGS_DEFAULTS}
+        if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
+        # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
+        care = {key: request[key] for key in caretaker.SETTINGS_DEFAULTS if key in request}
+        catalog = self._catalog_now() if "caretakerExecutor" in care else None
+        for key, value in care.items():
+            problem = caretaker.setting_problem(key, value, catalog)
+            if problem:
+                raise FlowError(*problem)
+        if "caretakerExecutor" in care:
+            care["caretakerExecutor"] = care["caretakerExecutor"].strip()
         current = self.get_flow_settings()
         transfer = request.get("limitTransfer", current["limitTransfer"])
         if not isinstance(transfer, dict) or set(transfer) - {"mode", "executor"}:
@@ -423,9 +687,14 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
-                    limitThresholdPercent=threshold, providerSlots=dict(slots))
+                    limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
         self._write_settings(data)
         return self.get_flow_settings()
+
+    def _catalog_now(self):
+        """Katalog wykonawców z models.json (albo domyślny); None — silnik bez katalogu."""
+        cfg = self.models_config() if self.models_config else None
+        return cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
 
     def _write_settings(self, data: dict) -> None:
         folder = os.path.dirname(self.settings) or "."
@@ -522,14 +791,26 @@ class FlowEngine(PlanEditing):
     def box_status(self, slug: str) -> dict:
         from . import envconsent
         return envconsent.status(self, slug)
+    def card_base(self, card_id: str) -> dict:
+        """Baza migawki niezależna od tego, czy karta ma wyliczany stan przepływu."""
+        st = fold(self.journal.read(card_id))
+        if not st.started:
+            return {}
+        base = base_of(st)
+        return {**{key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")},
+                "baseVersion": st.base_version}
 
     def derived(self, card: dict) -> dict | None:
         st = fold(self.journal.read(card.get("id") or ""))
+        if st.started is not None:
+            st.caretaker_setup = self._caretaker_setup(st)
         out = derived(st, card)
         if out:
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out)
             trialhold.view(self, card.get("id") or "", out)
+            if st.closed and not st.merged:
+                out["flow"]["mainBranch"] = self._main_branches.get((st.started or {}).get("repo") or "", "")
         step = st.steps.get(st.last_step) or {}
         if not out or out.get("column") != "progress" or step.get("mode") != "interactive" or \
                 st.last_step in st.finished or step.get("consoleClosed") or not step.get("session") or \
@@ -584,6 +865,9 @@ class FlowEngine(PlanEditing):
         busy = set()
         for card in self.journal.cards():
             st = fold(self.journal.read(card))
+            for intent in st.intents.values():
+                if intent.get("action") == "change-base":
+                    busy.update(r[p] for r in intent["generation"] for p in ("worktree", "oldWorktree"))
             busy.update(step["worktree"] for step in st.running() if step.get("worktree"))
             busy.update(step["worktree"] for step in st.steps.values() if step.get("worktree") and
                         step.get("mode") == "interactive" and not step.get("consoleClosed"))
@@ -603,14 +887,80 @@ class FlowEngine(PlanEditing):
 
     # --- zlecenie --------------------------------------------------------------------------------
 
+    def _start_base(self, card, project, request, st, *, resume=False):
+        """Jedno rozstrzygnięcie bazy dla wejść karty, przed trwałym zapisem zlecenia."""
+        previous = ticket_of(st)["cardBranch"]
+        chosen = request.get("cardBranch")
+        if chosen is not None and (not isinstance(chosen, str) or not chosen
+                or chosen.startswith("-") or chosen == "HEAD"
+                or not self.git.run(project.repo, "check-ref-format", f"refs/heads/{chosen}").ok):
+            raise FlowError("bad-request", "niepoprawna nazwa nowej gałęzi karty")
+        if previous and chosen and chosen != previous:
+            raise FlowError("branch-mismatch", "karta ma już inną gałąź — nie można zmienić jej nazwy przy starcie")
+        branch = previous or chosen or f"card/{card.id.lower()}-{slug_from_prompt(card.title, words=4, length=32)}"
+        if chosen and not previous and not resume and self.git.sha(project.repo, f"refs/heads/{chosen}"):
+            raise FlowError("branch-exists", "gałąź o tej nazwie już istnieje — podaj nazwę nowej gałęzi karty")
+        # Utrwalony wybór może już nie istnieć albo wskazywać inny commit.
+        if resume or (previous and request.get("baseRef") in (None, base_of(st)["baseRef"])):
+            base = base_of(st)
+            if base["status"] != "known" and (not previous or not self.git.sha(project.repo, f"refs/heads/{previous}")):
+                raise FlowError("no-base", "historyczna baza jest nieznana i nie ma gałęzi karty — "
+                                "przywróć gałąź karty albo rozpocznij nową kartę z wybraną bazą")
+            if not resume and request.get("baseCommit") is not None and (
+                    base["status"] != "known" or request["baseCommit"] != base["baseCommit"]):
+                raise FlowError("base-mismatch", "oczekiwany commit różni się od zapisanej bazy karty")
+        else:
+            try:
+                base = self.git.resolve_base(project.repo, request.get("baseRef"), request.get("baseCommit"))
+            except FlowGitError as exc:
+                raise FlowError("no-base", str(exc)) from None
+            if previous or self.git.sha(project.repo, f"refs/heads/{branch}"):
+                recorded = base_of(st)
+                if recorded["status"] != "known" or any(
+                        recorded[key] != base[key] for key in ("baseRef", "baseBranch", "baseCommit")):
+                    raise FlowError("base-mismatch", "gałąź karty ma inną lub nieznaną bazę — "
+                                    "zmiana bazy wymaga osobnej korekty karty")
+        return {key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")} | {
+            "baseVersion": 1, "cardBranch": branch, "request": request}
+
+    def _planning_branch(self, card, st, project):
+        """Kontynuacje korzystają z aktualnej karty; tylko stare dzienniki wymagają polityki głównej."""
+        item, _ = self._project(card)
+        branch = (ticket_of(st)["cardBranch"] or st.started.get("cardBranch")
+                  or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}")
+        for row in st.base_change.get("generation", []):
+            if row["action"] == "card-branch" and row["branch"] == branch:
+                # Aktywacja już przygotowała ten zasób; nie zakładamy nowej operacji pod nowym refem.
+                return st.results[(row["action"], row["key"])]
+        base = base_of(st)
+        start = (f"refs/heads/{branch}" if self.git.sha(project.repo, f"refs/heads/{branch}") else
+                 base["baseCommit"] if base["status"] == "known" else self.git.main_branch(project.repo))
+        if not start:
+            raise FlowError("no-base", "brak przypiętej bazy albo gałęzi karty")
+        worktree = worktree_for(project.repo, branch)
+        return self._act(card, "card-branch", branch,
+                         lambda: self.git.branch_worktree(project.repo, branch, worktree, start),
+                         repo=project.repo, branch=branch, worktree=worktree, base=start,
+                         baseRef=base["baseRef"], baseBranch=base["baseBranch"])
+
     def start(self, card_id: str, request: dict, *, _resume=False) -> dict:
+        try:
+            card_id = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if baseproposal.blocked(fold(self.journal.read(card_id))):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
             raise FlowError("bad-request", f"nieznane pole „{unknown[0]}”; dozwolone: {', '.join(REQUEST_FIELDS)}")
+        if request.get("projects") and request.get("entry") != "planning":
+            # P7: Od razu i Mam plan pracują w jednym projekcie karty.
+            raise FlowError("single-project", "Od razu i Mam plan pracują w jednym projekcie karty; "
+                                              "kilka projektów zlecenia — wybierz Planowanie")
         if request.get("entry") == "import":
             return self.start_import(card_id, request)
         if request.get("entry") == "plan":
-            return self.propose_plan(card_id, str(request.get("planPath") or ""))
+            return self.propose_plan(card_id, str(request.get("planPath") or ""), request=request)
         if request.get("entry") == "planning" and request.get("mode") in ("full", "light"):
             return self.start_planning(card_id, request)
         if (request.get("entry") or "") != "now":
@@ -653,8 +1003,8 @@ class FlowEngine(PlanEditing):
                 found = execution.resolve(candidate, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError("unknown-reviewer" if exc.code == "unknown-executor" else exc.code, str(exc)) from None
-            if found.name == selected.name or found.model.lower() == selected.model.lower():
-                raise FlowError("bad-reviewer", "recenzent musi mieć inny model niż autor")
+            if found.name == selected.name or not flow_plans.independent_reviewer(selected, found):
+                raise FlowError("bad-reviewer", "recenzent musi mieć inny model albo inną siłę myślenia niż autor")
             if selected.local != found.local:
                 raise FlowError("bad-reviewer-provider", "praca lokalna wymaga lokalnego recenzenta")
             if preferred == "mixed" and found.provider == selected.provider:
@@ -684,16 +1034,16 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card.id))
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
-        try:
-            if not project.youtrack:
-                reservations.reserve(project.repo, count=1, title=card.title, dry_run=True)
-        except reservations.ReservationError as exc:
-            raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej (master, main, develop)")
-
-        started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
+        slug = slug_from_prompt(card.title, words=4, length=32)
+        with lock_for(project.repo):
+            base = self._start_base(card, project, request, st, resume=_resume)
+            card_branch = base["cardBranch"]
+            try:
+                if not project.youtrack:
+                    reservations.reserve(project.repo, count=1, title=card.title, dry_run=True, local_fallback=True)
+            except reservations.ReservationError as exc:
+                raise FlowError("no-ticket-number", f"numer ticketu: {exc}") from None
+            started = st.started if _resume else self.journal.append(card.id, "card.started", entry="now", executor=selected.name,
                                       program=selected.tool, model=selected.model, provider=selected.provider,
                                       executorRouteUrl=selected.route.url if selected.route else "",
                                       executorRouteKind=selected.route.kind if selected.route else "",
@@ -708,7 +1058,10 @@ class FlowEngine(PlanEditing):
                                       preferredProvider=preferred or selected.provider, check=check,
                                       repo=project.repo, project=project.slug, column=card.column,
                                       moveId=card.move_id, request=request, trackerProject=project.youtrack,
-                                      trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images)
+                                      trackerUrl=yt.load_config()["url"] if project.youtrack else "", images=images,
+                                      baseRef=base["baseRef"], baseBranch=base["baseBranch"],
+                                      baseCommit=base["baseCommit"], baseVersion=1)
+        self._project_base(card.id)
         launch = f"launch-{started['seq']}"
         request_key = f"{card.id}:{launch}"
         if project.youtrack:
@@ -723,12 +1076,11 @@ class FlowEngine(PlanEditing):
                                  lambda: self._reserve(project.repo, card.title, request_key),
                                  repo=project.repo, title=card.title)
         ticket = reserved["ticket"]
-        slug = slug_from_prompt(card.title, words=4, length=32)
-        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.id.lower()}-{slug}"
         card_worktree = worktree_for(project.repo, card_branch)
         made = self._act(card.id, "card-branch", card_branch,
-                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
-                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
+                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, base["baseCommit"]),
+                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=base["baseCommit"],
+                         baseRef=base["baseRef"], baseBranch=base["baseBranch"])
         ticket_branch = f"ticket/{ticket.lower()}-{slug}"
         ticket_worktree = worktree_for(project.repo, ticket_branch)
         made_ticket = self._act(card.id, "ticket-branch", ticket, lambda: {
@@ -786,7 +1138,7 @@ class FlowEngine(PlanEditing):
                                  source.tracker_url.rstrip("/") != yt.load_config()["url"].rstrip("/")):
             raise FlowError("bad-plan", "projekt albo adres YouTracka w planie różni się od projektu karty")
         try:
-            prefix = project.youtrack or reservations.reserve(project.repo, dry_run=True)["prefix"]
+            prefix = project.youtrack or reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
         except reservations.ReservationError as exc:
             raise FlowError("no-ticket-number", str(exc)) from None
         if source.prefix != prefix:
@@ -814,13 +1166,16 @@ class FlowEngine(PlanEditing):
         loose_text = any(line.strip() and not line.lstrip().startswith("|") for line in body.splitlines())
         complete = (not proposal.errors and b"| Blokery |" in source_bytes and
                     not loose_text and all(row.agent and row.work_class and row.reviewer and row.note for row in source.rows))
+        with lock_for(project.repo):
+            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         self.store.update_card(card_id, {"planPath": path})
         self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                             column=item.column, moveId=item.move_id, check=check, images=images,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, preferredProvider=request.get("preferredProvider") or selected.provider,
                             prefix=prefix, trackerProject=project.youtrack,
-                            trackerUrl=yt.load_config()["url"] if project.youtrack else "")
+                            trackerUrl=yt.load_config()["url"] if project.youtrack else "", **base)
+        self._project_base(card_id)
         self.journal.write_file(card_id, os.path.join("plan", "source.md"), source_bytes)
         self.journal.append(card_id, "plan.imported", path=path, rows=import_rows,
                             needsCompletion=not complete)
@@ -844,6 +1199,9 @@ class FlowEngine(PlanEditing):
         busy = fold(self.journal.read(card_id)).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
+        if "projects" in request:
+            item = self._save_order_projects(card_id, item, request["projects"])
+        order = self._order_projects(item, project)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -867,14 +1225,13 @@ class FlowEngine(PlanEditing):
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", "repozytorium nie ma gałęzi głównej")
+        with lock_for(project.repo):
+            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
         if project.youtrack:
             prefix = project.youtrack
         else:
             try:
-                prefix = reservations.reserve(project.repo, dry_run=True)["prefix"]
+                prefix = reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
             except reservations.ReservationError as exc:
                 raise FlowError("no-ticket-number", str(exc)) from None
         self.journal.append(card_id, "card.started", entry="planning", mode=mode, repo=project.repo,
@@ -888,8 +1245,15 @@ class FlowEngine(PlanEditing):
                             routeKind=selected.route.kind if selected.route else "",
                             routeTokenFile=selected.route.token_file if selected.route else "",
                             trackerProject=project.youtrack,
-                            trackerUrl=yt.load_config()['url'] if project.youtrack else '')
-        self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+                            trackerUrl=yt.load_config()['url'] if project.youtrack else '',
+                            projects=order, **base)
+        self._project_base(card_id)
+        try:
+            self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+        except FlowDeferred:
+            # Brak wolnego miejsca u dostawcy: karta już ruszyła, planowanie wystartuje z kolejnym tickiem
+            # (_advance_planning). Wcześniej StartCard zgłaszał wtedy „błąd usługi” mimo zapisanego startu (05.11).
+            pass
         st = fold(self.journal.read(card_id))
         low = self._low_limit(selected.provider)
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
@@ -897,16 +1261,75 @@ class FlowEngine(PlanEditing):
                 "limitWarning": flow_limits.planning_warning(low) if low else "",
                 "cardBranch": ticket_of(st)["cardBranch"], "cardWorktree": ticket_of(st)["cardWorktree"]}
 
+    def _save_order_projects(self, card_id: str, item, value):
+        """Pole `projects` żądania (dodatkowe projekty zlecenia: slugi albo ścieżki repozytoriów) trafia do
+        `projects` karty, gdy różni się od zapisanego; zapis i sprawdzenie (PROJECTS_MAX) robi Tablica."""
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",")]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise FlowError("bad-request", "projects to lista slugów projektów albo ścieżek repozytoriów")
+        board = self.store.load()
+        wanted = []
+        for entry in (v.strip() for v in value):
+            known = board.project_by_repo(entry) if entry.startswith("/") else board.projects.get(entry)
+            slug = known.slug if known is not None else entry
+            if slug and slug != item.project and slug not in wanted:
+                wanted.append(slug)
+        if wanted == list(item.projects):
+            return item
+        try:
+            self.store.update_card(card_id, {"projects": value})
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        return self.store.load().cards[card_num(card_id)]
+
+    def _order_projects(self, item, project) -> list[dict]:
+        """Projekty zlecenia (K-33 #4): projekt karty i jej dodatkowe projekty, każdy z dostępnym repozytorium.
+        Źródło numerów: klucz YouTracka projektu Tablicy albo lokalny prefiks repozytorium. Repozytorium, które
+        numeruje w YouTracku, a projekt Tablicy nie ma klucza YouTracka, dostaje `configured: false` —
+        sprawdzanie propozycji odrzuci jego tickety. Projekt bez repozytorium kończy zlecenie błędem `no-repo`."""
+        board = self.store.load()
+        out = []
+        for slug in [project.slug, *item.projects]:
+            found = board.projects.get(slug)
+            name = found.name if found is not None else slug
+            if found is None or not found.repo:
+                raise FlowError("no-repo", f"projekt „{name}” nie ma repozytorium — zlecenie nie wystartowało")
+            if found.repo_missing or not os.path.isdir(found.repo):
+                raise FlowError("no-repo", f"repozytorium projektu „{name}” jest niedostępne ({found.repo}) — "
+                                           "zlecenie nie wystartowało")
+            info = {"slug": found.slug, "name": found.name, "repo": found.repo, "main": not out,
+                    "tracker": "youtrack" if found.youtrack else "local", "trackerProject": found.youtrack,
+                    "prefix": found.youtrack, "configured": True}
+            if not found.youtrack:
+                try:
+                    info["prefix"] = reservations.reserve(found.repo, dry_run=True, local_fallback=True)["prefix"]
+                except reservations.ReservationError as exc:
+                    text = str(exc)
+                    if reservations.REFUSE_YOUTRACK in text:
+                        key = text.split(":", 1)[0].strip()
+                        info.update(tracker="youtrack", trackerProject=key, prefix=key, configured=False)
+                    elif not out:
+                        raise FlowError("no-ticket-number", text) from None
+                    # Dodatkowy projekt bez ustalonego prefiksu: numery nada dopiero zatwierdzenie grupy (#5).
+            info["source"] = flow_plans.source_label(info) if info["prefix"] else "lokalny (prefiks nieustalony)"
+            out.append(info)
+        return out
+
+    @staticmethod
+    def _proposal_projects(order: list[dict]) -> dict:
+        return {p["slug"]: {k: p.get(k) for k in ("name", "prefix", "tracker", "trackerProject", "configured")}
+                for p in order}
+
     def _planning_launch(self, card, st, selected, catalog, *, errors=(), previous="", images=(), round_no=0):
         item, project = self._project(card)
-        branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
-        worktree = worktree_for(project.repo, branch)
-        made = self._act(card, "card-branch", branch,
-                         lambda: self.git.branch_worktree(project.repo, branch, worktree, self.git.main_branch(project.repo)),
-                         repo=project.repo, branch=branch, worktree=worktree, base=self.git.main_branch(project.repo))
+        made = self._planning_branch(card, st, project)
+        branch, worktree = made["branch"], made["worktree"]
         importing = st.started.get("entry") == "plan"
         kind = "plan-import" if importing else "plan-fix" if round_no else "planning"
-        step_id = f"{card}-plan-{st.started['seq']}-{round_no}"
+        # Granica generacji jest trwała: restart zachowuje klucz, korekta dostaje nowy.
+        boundary = max(st.started["seq"], st.base_change.get("seq", 0))
+        step_id = f"{card}-plan-{boundary}-{round_no}"
         out = worktree + f".{kind}-{step_id}.step/out"
         shots = [os.path.join(os.path.dirname(out), "in", "images", f"{i + 1}-{os.path.basename(p)}")
                  for i, p in enumerate(images)]
@@ -926,7 +1349,8 @@ class FlowEngine(PlanEditing):
                         prefix=st.started["prefix"], out_dir=out, tool=selected.tool, images=shots,
                         tracker="youtrack" if project.youtrack else "local",
                         tracker_url=st.started.get("trackerUrl") or "",
-                        tracker_project=project.youtrack or "")
+                        tracker_project=project.youtrack or "",
+                        projects=st.started.get("projects") or [])
             args["environment"] = flow_environment.section(worktree, project.slug, out)   # PT-190
             if prompt_fn is planning.prompt:
                 args.update(errors=errors, previous=previous)
@@ -938,15 +1362,26 @@ class FlowEngine(PlanEditing):
         if st.started.get("mode") == "full" and kind == "planning":
             self._launch_full_planning(item, project, selected, made, step_id, list(images), shots, text)
             return
+        if round_no:
+            frozen = next((s.get("snapshotDir") for s in reversed(list(st.finished.values())) if s.get("snapshotDir")), "")
+            if frozen:
+                text += planartifacts.prepare(frozen, os.path.dirname(out), seed=True)
         self._launch(item, project, selected, "", made, made, step_id, list(images), kind=kind,
                      round_no=round_no, prompt_text=text)
 
     def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
-                              ticket="", round_no=0, review_tip=""):
+                              ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         self._trial_check({"ticket": ticket, "step": step_id})
+        context_state = fold(self.journal.read(item.id))
+        if baseproposal.blocked(context_state):
+            raise FlowDeferred("decyzja o bazie karty")
+        context_prompt, base_context = self._step_base_context(context_state)
+        prompt += context_prompt
         worktree = made["worktree"]
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(context_state, parent_step, prompt)
         git_dir = agentcmd.resolve_git_dir(project.repo, worktree)
         suffix = "planning" if kind == "planning" else "interactive"
         step_dir = worktree + f".{suffix}-{step_id}.step"
@@ -969,20 +1404,42 @@ class FlowEngine(PlanEditing):
                 remaining = max(0, 96 * 1024 - len((prompt + header).encode("utf-8")))
                 context = self._project_context(extra.repo, min(32 * 1024, remaining))
                 prompt += header + context + "\n"
+        order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
+        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order,
+                                                route=selected.route)
+        # Przygotowany profil opiekuna musi dostać te same katalogi odczytu, zachowując własne granice zapisu.
+        prepared = prepare(step_dir, project_reads) if prepare else None
+        if prepared:
+            prompt = prepared.stdin
         with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
             fh.write(prompt)
-        session = str(uuid.uuid4()) if selected.tool == "claude" else ""
-        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out], selected.route)
-        if selected.tool == "codex":
+        session = prepared.session_id if prepared else str(uuid.uuid4()) if selected.tool == "claude" else ""
+        # Repozytoria pozostałych projektów zlecenia: Claude dostaje je przez --add-dir z zakazem zapisu (reguły
+        # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
+        read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
+        command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
+                                       selected.route)
+        if read_dirs:
+            command.argv[1:1] = ["--disallowedTools", *agentcmd.read_only_rules(read_dirs)]
+        if prepared:
+            command.argv = prepared.argv
+        if not prepared and selected.tool == "codex":
             command.argv[1:1] = ["--sandbox", "workspace-write"]
-        if selected.route is None:
+        if not prepared and selected.route is None:
             options = ["--model", selected.model]
             if selected.tool == "codex" and selected.effort:
                 options += ["-c", f'model_reasoning_effort="{selected.effort}"']
             command.argv[1:1] = options
-        if session:
+        if not prepared and session:
             command.argv.insert(1, "--session-id")
             command.argv.insert(2, session)
+        read_profile = bool(project_reads) or self._used_read_profile(item.id, worktree)
+        if read_profile and not prepared:
+            readonly_repos = [p["repo"] for p in order if not p.get("main")]
+            command = self._restricted_console(selected.tool, selected.binary, prompt, worktree,
+                project.repo, step_dir, step_id, project_reads + readonly_repos, session=session,
+                route=selected.route, model=selected.model, effort=selected.effort, images=shots,
+                project=project, kind=kind)
         closed = os.path.join(inp, "console-closed.json")
         process_file = os.path.join(inp, "console-process.json")
         claim_dir = os.path.join(inp, "console-claim")
@@ -992,21 +1449,33 @@ class FlowEngine(PlanEditing):
         console_unit = "tide-console-" + uuid.uuid4().hex
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "flowCard": item.id, "flowTicket": ticket, "flowStep": step_id, "flowKind": kind,
-                   "title": f"{item.id} · {ticket or 'planowanie Pełne'}", "closedFile": closed,
+                   "title": f"{item.id} · " + ("rozmowa z opiekunem" if kind == "caretaker-chat" else ticket or "planowanie Pełne"), "closedFile": closed,
                    "processFile": process_file, "resultFile": os.path.join(out, handoff.RESULT_FILE),
                    "consoleUnit": console_unit,
                    "systemdRun": self.systemd_run or agentcmd.SYSTEMD_RUN,
                    "systemctl": self.which("systemctl") or "/usr/bin/systemctl"}
         payload.update(command.task_fields())
+        if prepared:
+            payload.update(workdir=prepared.workdir, env=prepared.env, cleanEnv=True,
+                           secretEnv=prepared.secret_env, tokenFiles=prepared.token_files)
         task_file = self.task_files.write(payload)
+        interactive = ({"mode": "interactive", "closeFile": closed, "processFile": process_file,
+                        "consoleUnit": console_unit, "taskFile": task_file, "enteredAt": self.clock(),
+                        "routeUrl": selected.route.url if selected.route else "",
+                        "routeKind": selected.route.kind if selected.route else "",
+                        "routeTokenFile": selected.route.token_file if selected.route else "",
+                        "consoleClosed": False, "consoleOpened": False} if kind == "caretaker-chat" else {})
         self.journal.append(item.id, "step.started", step=step_id, kind=kind, ticket=ticket, round=round_no,
                             executor=selected.name, program=selected.tool, model=selected.model,
                             provider=selected.provider, local=selected.local, effort=selected.effort,
                             unit="", session=session, worktree=worktree, branch=made["branch"],
                             stepDir=step_dir, repo=project.repo,
                             gitDir=git_dir,
-                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip)
+                            readDirsProfile=read_profile,
+                            parentStep=parent_step, attempt=attempt, reviewTip=review_tip,
+                            deliveredNoteIds=note_ids, **base_context, **interactive)
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
+                            deliveredNoteIds=note_ids,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file, enteredAt=self.clock())
         plan = Plan(repo_path=project.repo, repo_name=project.name, tool=selected.tool, prompt=prompt,
@@ -1019,8 +1488,12 @@ class FlowEngine(PlanEditing):
             opened = ""
         if not opened:
             if self.task_files.cancel(task_file):
-                self.journal.append(item.id, "step.console_closed", step=step_id)
-                self._finish(item.id, fold(self.journal.read(item.id)).steps[step_id],
+                if kind == "caretaker-chat":
+                    self.journal.append(item.id, "step.console_closed", step=step_id)
+                else:
+                    close_console(self.journal, item.id, step_id, cancelled=True)
+                current = fold(self.journal.read(item.id))
+                self._finish(item.id, (current.steps.get(step_id) or current.caretakers[step_id]),
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
@@ -1092,7 +1565,7 @@ class FlowEngine(PlanEditing):
         if st.paused or st.plan_proposed is not None:
             return True
         steps = [step for step in st.steps.values() if step.get("kind") in ("planning", "plan-fix", "plan-import")
-                 and step.get("seq", 0) > st.started["seq"]]
+                 and step.get("seq", 0) > st.started["seq"] and step["step"] not in st.superseded]
         if not steps:
             selected = self._resume_executor(card, st, st.started, st.started["executor"])
             cfg = self.models_config() if self.models_config else None
@@ -1106,9 +1579,12 @@ class FlowEngine(PlanEditing):
         if result in ("question", "denied", "error"):
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif self._caretaker_resume(card, st, step):
+                pass
             elif result == "denied":
                 self._consent_recheck(card, step, done)
-            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+            elif result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" \
+                    and not self._caretaker_takes_over(card, st, step["step"]):    # PT-148: opiekun zamiast ślepej próby
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
                                         reason=done.get("reason") or "")
@@ -1120,6 +1596,8 @@ class FlowEngine(PlanEditing):
     def _planning_result(self, card, st, step):
         if st.plan_proposed is not None:
             return
+        if self._caretaker_resume(card, st, step):
+            return          # `retry` opiekuna po drugiej nieudanej poprawce formatu (PT-146), z jego instrukcją
         frozen = (st.finished.get(step["step"]) or {}).get("snapshotDir") or ""
         path = os.path.join(frozen or os.path.join(step["stepDir"], "out"), "plan.md")
         if (st.plan_checked or {}).get("step") != step["step"] or (st.plan_checked or {}).get("valid"):
@@ -1176,7 +1654,7 @@ class FlowEngine(PlanEditing):
                 pass
 
     def _reserve(self, repo: str, title: str, request_key: str, prefix: str = "", minimum_number: int = 0) -> dict:
-        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key,
+        got = reservations.reserve(repo, prefix=prefix, count=1, title=title, request_key=request_key, local_fallback=True,
                                    at_least=minimum_number)
         return {"ticket": got["ids"][0], "title": title}
 
@@ -1188,8 +1666,12 @@ class FlowEngine(PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
         st = fold(self.journal.read(card_id))
+        if baseproposal.blocked(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
         self._trial_check(source_step or {"step": step_id})
+        if step_id in st.superseded:
+            raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy.")
         if source_step is None or st.card_finished:
             raise FlowError("no-step", f"{card_id}: nie ma kroku {step_id} do wznowienia")
         if self.terminal is None or not self.terminal.available():
@@ -1232,6 +1714,12 @@ class FlowEngine(PlanEditing):
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
             route = selected.route
+        item, project = self._project(card_id)
+        order = ((st.started or {}).get("projects") or []
+                 if source_step.get("kind") in ("planning", "plan-fix") else [])
+        # Błędne uprawnienie nie może najpierw zatrzymać zdrowego procesu ani skasować jego wyniku.
+        self._configured_reads(item, project, worktree, source_step.get("stepDir") or worktree + ".step",
+                               order=order, route=route)
         if step_id not in st.finished:
             if not self._stop_for_enter(card_id, source_step):
                 raise FlowError("not-stopped", "trwający krok nie zatrzymał się; Konsola nie została otwarta")
@@ -1271,7 +1759,27 @@ class FlowEngine(PlanEditing):
         kind = "interactive" if old_result == "done" else current.get("kind") or "ticket"
         console_unit = "tide-console-" + uuid.uuid4().hex
         prompt = handoff.resume_step(card_id, current.get("ticket") or "", out, kind=kind)
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(st, step_id, prompt)
         command = agentcmd.resume_interactive(tool, binary, session, prompt, route)
+        item, project = self._project(card_id)
+        order = ((st.started or {}).get("projects") or []
+                 if current.get("kind") in ("planning", "plan-fix") else [])
+        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order, route=route)
+        read_profile = bool(project_reads) or self._used_read_profile(card_id, worktree)
+        # Kolejne wejście po wyniku done ma rodzaj interactive, ale zachowuje profil pierwotnej pracy.
+        tooling_kind = current.get("toolingKind") or current.get("kind") or "ticket"
+        if read_profile:
+            board = self.store.load()
+            readonly_repos = ([p["repo"] for p in order if not p.get("main")] if order else
+                              [board.projects[s].repo for s in item.projects if s in board.projects
+                               and board.projects[s].repo and not board.projects[s].repo_missing])
+            command = self._restricted_console(tool, binary, prompt, worktree,
+                current.get("repo") or project.repo, step_dir, new_id, project_reads + readonly_repos,
+                session=session, resume=True, route=route, model=current.get("model") or "",
+                effort=current.get("effort") or "",
+                context_dirs=[d for d in self._ancestor_outs(card_id, step_id) if d != out],
+                project=project, kind=tooling_kind)
         payload = {"cwd": claim_dir, "workdir": worktree, "argv": command.argv,
                    "flowCard": card_id, "flowTicket": current.get("ticket") or "", "flowStep": new_id,
                    "flowKind": kind,
@@ -1286,12 +1794,18 @@ class FlowEngine(PlanEditing):
                                 ticket=current.get("ticket") or "", executor=current.get("executor") or "",
                                 program=tool, provider=current.get("provider") or "", local=bool(current.get("local")),
                                 model=current.get("model") or "", unit="", session=session,
+                                readDirsProfile=read_profile, toolingKind=tooling_kind,
                                 worktree=worktree, branch=current.get("branch") or "", stepDir=step_dir,
                                 gitDir=(agentcmd.resolve_git_dir(current.get("repo") or self._repo(card_id), worktree)
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
+                                parentStep=step_id, deliveredNoteIds=note_ids,
+                                baseVersion=current.get("baseVersion", 0),
+                                baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
         self.journal.append(card_id, "step.entered", step=new_id, session=session, source=source,
+                            deliveredNoteIds=note_ids,
+                            readDirsProfile=read_profile,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
                             taskFile=task_file,
                             enteredAt=self.clock())
@@ -1305,7 +1819,7 @@ class FlowEngine(PlanEditing):
             mode = ""
         if not mode:
             if self.task_files.cancel(task_file):
-                self.journal.append(card_id, "step.console_closed", step=new_id)
+                close_console(self.journal, card_id, new_id, cancelled=True)
                 self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
@@ -1394,12 +1908,13 @@ class FlowEngine(PlanEditing):
                     other_state.add(row.ticket)
         return {ident: info for ident, info in todo.items() if ident not in other_state}
 
-    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False) -> dict:
+    def propose_plan(self, card_id: str, path: str, *, continuation=False, step="", import_source=False, request=None) -> dict:
         """Przyjmuje propozycję z pliku; walidacja i migawka nie nadają numerów."""
         try:
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
+        self._require_base_context(card_id)
         board = self.store.load()
         item = board.cards.get(card_num(card_id))
         project = board.projects.get(item.project) if item else None
@@ -1421,12 +1936,19 @@ class FlowEngine(PlanEditing):
                  (finished.get("snapshotDir") or os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
         imported = fold(self.journal.read(card_id)).imported
         source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
+        # Projekty zlecenia z card.started (Planowanie); inne wejścia i dawne dzienniki — tylko projekt karty.
+        order = ((fold(self.journal.read(card_id)).started or {}).get("projects") or []
+                 if continuation else [])
+        order = order or [{"slug": project.slug, "name": project.name, "prefix": "", "configured": True,
+                           "tracker": "youtrack" if project.youtrack else "local",
+                           "trackerProject": project.youtrack}]
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
                                    tracker='youtrack' if project.youtrack else 'local',
                                    existing_ids=[*source_states,
                                                  *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported),
-                                   other_plans=self._other_plan_todos(project.repo, card_id))
+                                   other_plans=self._other_plan_todos(project.repo, card_id),
+                                   projects=self._proposal_projects(order))
         if imported:
             original = {row["id"]: row["title"] for row in imported.get("rows") or []}
             proposed = {row["workId"]: row["title"] for row in proposal.rows}
@@ -1443,23 +1965,28 @@ class FlowEngine(PlanEditing):
                 proposal.errors.append('tracker-url planu różni się od serwera projektu karty')
         if proposal.plan is not None and not project.youtrack:
             try:
-                established = reservations.reserve(project.repo, dry_run=True)["prefix"]
+                established = reservations.reserve(project.repo, dry_run=True, local_fallback=True)["prefix"]
                 if proposal.plan.prefix != established:
                     proposal.errors.append(f"prefiks planu {proposal.plan.prefix} różni się od prefiksu repozytorium {established}")
             except reservations.ReservationError as exc:
                 proposal.errors.append(str(exc))
         if not continuation and not import_source:
+            with lock_for(project.repo):
+                base = self._start_base(item, project, request or {}, fold(self.journal.read(card_id)))
             self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                                 check=item.check or "auto", column=item.column, moveId=item.move_id,
                                 trackerProject=project.youtrack,
-                                trackerUrl=yt.load_config()['url'] if project.youtrack else '')
+                                trackerUrl=yt.load_config()['url'] if project.youtrack else '', **base)
+            self._project_base(card_id)
         checked = fold(self.journal.read(card_id)).plan_checked or {}
         if not continuation or checked.get("step") != step or checked.get("errors") != proposal.errors:
             self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
         if proposal.errors:
             return {"ok": False, "id": card_id, "error": "invalid-plan", "errors": proposal.errors}
-        with open(os.path.realpath(path), "rb") as fh:
-            source = fh.read(flow_plans.plan_mod.MAX_BYTES + 1)
+        artifact_rel = os.path.join("plan", "sources", str(uuid.uuid4()))
+        planartifacts.save(self.journal, card_id, artifact_rel, proposal.artifacts)
+        artifact_path = os.path.join(self.store.root, self.journal.rel_dir(card_id), artifact_rel)
+        source = proposal.artifacts[os.path.basename(path)]
         self.journal.write_file(card_id, os.path.join("plan", "plan.md"), source)
         for ident, body in proposal.cards.items():
             self.journal.write_file(card_id, os.path.join("plan", "tickets", ident.lstrip("#") + ".md"),
@@ -1474,8 +2001,11 @@ class FlowEngine(PlanEditing):
                             planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or
                                     (fold(self.journal.read(card_id)).started or {}).get("executor") or proposal.rows[0]["executor"],
                             box=proposal.box,   # PT-172: propozycja rozszerzenia profilu (out/box.yaml) do pakietu zgód
+                            **({"projects": [{k: p.get(k) for k in ("slug", "name", "prefix", "tracker",
+                                                                     "trackerProject", "source", "main")}
+                                             for p in order]} if len(order) > 1 else {}),
                             sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
-                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.realpath(path))
+                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.join(artifact_path, os.path.basename(path)), artifactPath=artifact_path)
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
     def approve_plan(self, card_id: str) -> dict:
@@ -1485,6 +2015,7 @@ class FlowEngine(PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card_id))
+        self._require_base_context(card_id)
         if st.plan_revision and st.plan_revision.get("pending"):
             return self._approve_revision(card_id, st)
         if st.plan_proposed and not st.plan_reviewed and not st.plan_approved:
@@ -1494,6 +2025,11 @@ class FlowEngine(PlanEditing):
         proposal = st.plan_proposed or {}
         if not proposal or st.card_finished:
             raise FlowError("no-plan", f"{card_id}: nie ma planu do zatwierdzenia")
+        main = next((p.get("slug") for p in proposal.get("projects") or [] if p.get("main")), "")
+        others = sorted({row.get("project") for row in proposal.get("rows") or []} - {None, "", main})
+        if others:
+            # Plan z ticketami w kilku projektach zakłada karty rodzeństwa (K-33 #5); dziennik zostaje bez zmian.
+            raise FlowError("group-approval", f"{GROUP_APPROVAL} (tickety w projektach: {', '.join(others)})")
         if not any(e['type'] == 'plan.approval_requested' and e.get('proposal') == proposal['seq']
                    for e in self.journal.read(card_id)):
             self.journal.append(card_id, 'plan.approval_requested', proposal=proposal['seq'])
@@ -1576,7 +2112,11 @@ class FlowEngine(PlanEditing):
             return "local", ""
         return "slots", ""
 
-    def _wait_reason(self, selected) -> str:
+    def _wait_reason(self, selected, reserved: int = 0, queued: int = 0) -> str:
+        """Powód czekania kroku (pusty — może startować). `reserved` — miejsca u tego dostawcy zarezerwowane dla
+        gotowych kroków opiekuna tej samej karty (PT-150, `_caretaker_reserved`), liczone jak trwające kroki;
+        `queued` — wcześniej czekające kroki innych kart, którym ustępuje krok opiekuna (`_earlier_waiters`):
+        zajmują miejsca, ale licznik w powodzie nie przekracza limitu (miejsca są zajęte, nie przepełnione)."""
         quota = self._low_limit(selected.provider)
         if quota:
             return flow_limits.wait_reason(quota)
@@ -1593,16 +2133,73 @@ class FlowEngine(PlanEditing):
             except (OSError, ValueError, AttributeError):
                 pass
         count = sum(bool(step.get("local") or step.get("provider") == "local") if selected.local
-                    else step.get("provider") == provider for step in running)
+                    else step.get("provider") == provider for step in running) + reserved
         if count >= limit:
             return f"limit kroków dostawcy {provider}: {count}/{limit}"
+        if count + queued >= limit:
+            return f"limit kroków dostawcy {provider}: {limit}/{limit}"
         if selected.local and model_queue.shared().busy():
             return "czeka na modele lokalne — raport i opisy kart mają pierwszeństwo"
         return ""
 
+    def _caretaker_reserved(self, card: str, st: FlowState, selected, kind: str) -> int:
+        """Pierwszeństwo slotu (PT-150, US 37): gotowy krok opiekuna tej karty (`caretaker.started` bez startu,
+        bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej karty. Nie dotyczy
+        innych kart ani samego kroku opiekuna, nie omija limitu slotów (rezerwacja liczy się jak trwający krok);
+        wcześniej czekające kroki innych kart mają pierwszeństwo przed opiekunem (`_earlier_waiters`)."""
+        if kind == caretaker.KIND or selected.local or not st.caretaker_runs:
+            return 0
+        pending = [name for name in st.caretaker_runs if name not in st.caretakers and
+                   name not in st.caretaker_outcomes and name not in st.finished and
+                   ("step-start", name) not in st.results]
+        if not pending:
+            return 0
+        catalog = self._catalog_now()
+        conf = self._caretaker_setup(st, catalog)
+        if caretaker.unavailable(st, self._card_column(card), conf):
+            return 0
+        found = catalog.get(conf["executor"]) if catalog is not None and conf["executor"] else None
+        return len(pending) if found is not None and found.provider == selected.provider else 0
+
+    def _earlier_waiters(self, card: str, st: FlowState, selected, ticket: str, kind: str) -> int:
+        """Krok opiekuna nie wyprzedza kroków innych kart (PT-150, US 37): liczba kroków innych kart, które czekają
+        na miejsce u tego samego dostawcy (`cause: slots`) od chwili nie późniejszej niż ten krok opiekuna (`since`
+        z `step.waiting`; krok jeszcze nieczekający przychodzi po wszystkich czekających). Liczą się jak trwające
+        kroki, więc zwolnione miejsce bierze najpierw wcześniej czekająca karta. Pomijane są karty zakończone,
+        wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu i odrzucone tickety — ich wpis czekania nie zajmie
+        już miejsca. Remis w obrębie sekundy (`ts`) rozstrzyga jeden porządek wspólny dla wszystkich kart:
+        (`since`, identyfikator karty, ticket, rodzaj kroku) — dwaj opiekunowie z równym `since` nie czekają na
+        siebie nawzajem (PT-150, runda 2). Krok zablokowany rezerwacją własnego opiekuna nie zajmuje miejsca
+        w tej kolejce: inaczej ticket A → opiekun B → opiekun A tworzy cykl czekania (runda 3)."""
+        if kind != caretaker.KIND or selected.local:
+            return 0
+        since = (st.waiting.get((ticket, kind)) or {}).get("since") or ""
+        mine = (since, card, ticket or "", kind)
+        count = 0
+        for other in self.journal.cards():
+            if other == card:
+                continue
+            ost = fold(self.journal.read(other))
+            if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
+                continue
+            running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
+            reserved = self._caretaker_reserved(other, ost, selected, "ticket")
+            blocked_by_caretaker = reserved and bool(self._wait_reason(selected, reserved))
+            count += sum(1 for key, wait in ost.waiting.items()
+                         if wait.get("cause") == "slots" and wait.get("provider") == selected.provider and
+                         key[0] not in ost.rejected and key not in running and
+                         (key[1] == caretaker.KIND or not blocked_by_caretaker) and
+                         (not since or ((wait.get("since") or ""), other, key[0] or "", key[1] or "") < mine))
+        return count
+
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
         st = fold(self.journal.read(card))
-        reason = "karta wstrzymana" if st.paused else self._wait_reason(selected)
+        if baseproposal.blocked(st):
+            raise FlowDeferred("decyzja o bazie karty")
+        reserved = self._caretaker_reserved(card, st, selected, kind)
+        queued = self._earlier_waiters(card, st, selected, ticket, kind)
+        reason = "karta wstrzymana" if st.paused else (
+            self._wait_reason(selected, reserved, queued) if reserved or queued else self._wait_reason(selected))
         if not reason and selected.local:
             claim = model_queue.shared().claim_step(self.store.root + ":" + step_id, endpoint=selected.route.url,
                                                    model=selected.model)
@@ -1618,9 +2215,93 @@ class FlowEngine(PlanEditing):
                                     provider=selected.provider, reason=reason, cause=cause, until=until)
             raise FlowDeferred(reason)
 
+    def _ancestor_outs(self, card_id: str, parent_step: str, limit: int = 6) -> list[str]:
+        """Katalogi `out` kroku-rodzica i jego przodków (najbliższe pierwsze), tylko istniejące."""
+        steps = fold(self.journal.read(card_id)).steps
+        found, name = [], parent_step
+        while name and name in steps and len(found) < limit:
+            step = steps[name]
+            out = os.path.join(step.get("stepDir") or "", "out")
+            if step.get("stepDir") and os.path.isdir(out):
+                found.append(out)
+            name = step.get("parentStep") or ""
+        return found
+
+    @staticmethod
+    def _step_base_context(st) -> tuple[str, dict]:
+        """Ten sam kontekst generacji w poleceniu i metadanych kroku w tle oraz Konsoli."""
+        prompt = baseproposal.context(base_of(st))
+        prompt += f"\nWersja bazy karty: {st.base_version}\n"
+        if st.base_change:
+            prompt += ("\nNotka korekty bazy: uruchomiono nową sesję na nowej pustej generacji. "
+                       "Poprzednie review, zgody i domknięcie są historyczne. Sprawdź bieżący kod "
+                       "i wykonaj wymagane testy; wynik pracy przejdzie zwykłe review.\n")
+        return prompt, {"baseVersion": st.base_version, "baseRef": st.base.get("baseRef", ""),
+                        "baseCommit": st.base.get("baseCommit", "")}
+
+    def _configured_reads(self, card, project, worktree, step_dir, *, order=(), route=None):
+        """Wyłącznie projekty, których repozytoria ten krok już może czytać; świeży odczyt ustawień."""
+        from ..tasks import readaccess
+        board = self.store.load()
+        primary = board.projects.get(project.slug, project)
+        projects = [primary]
+        if order:
+            for entry in order:
+                extra = board.projects.get(entry.get("slug"))
+                if extra and not entry.get("main") and extra.repo and not extra.repo_missing and \
+                        os.path.realpath(extra.repo) == os.path.realpath(entry.get("repo") or ""):
+                    projects.append(extra)
+        else:
+            projects += [board.projects[s] for s in card.projects if s in board.projects
+                         and board.projects[s].repo and not board.projects[s].repo_missing]
+        git = os.path.join(project.repo, ".git")
+        writable = [worktree, os.path.join(step_dir, "out"), git]
+        try:
+            return readaccess.project_dirs(projects, writable=writable,
+                                           secrets=[route.token_file] if route else [])
+        except ValueError as exc:
+            raise FlowError("read-dirs", str(exc)) from None
+
+    def _used_read_profile(self, card, worktree):
+        return any(s.get("readDirsProfile") and s.get("worktree") == worktree
+                   for s in fold(self.journal.read(card)).steps.values())
+
+    def _project_tooling(self, project, worktree, tool, kind):
+        """Składniki profilu i środowiska wspólne dla tła i Konsoli, bez instalowania zależności."""
+        from ..tasks import dotnet, node
+        code = kind in ("ticket", "fix", "review", "conflict", "close")
+        is_dotnet = code and dotnet.is_dotnet(worktree)
+        node_home = node.node_home(os.path.expanduser("~")) if code and node.is_node(worktree) else ""
+        domains = ()
+        if tool == "claude" and kind in ("ticket", "fix", "conflict"):
+            extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
+            domains = tuple(dict.fromkeys([*node.registry_domains(worktree, dotnet=is_dotnet),
+                                           *[d for d in extra if isinstance(d, str)]]))
+        return {"dotnet": is_dotnet, "node_home": node_home, "network_domains": domains,
+                "chrome_bin": node.chrome_bin(os.path.expanduser("~")) if node_home else ""}
+
+    def _restricted_console(self, tool, binary, prompt, worktree, repo, step_dir, step_id, read_dirs,
+                            *, project, kind, session="", resume=False, route=None, model="", effort="",
+                            images=(), context_dirs=()):
+        try:
+            return agentcmd.restricted_interactive(agentcmd.Step(
+                tool, binary, prompt, worktree, repo, step_dir, step_id,
+                session_id=session, resume=resume, local=route, model=model, effort=effort,
+                tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys(read_dirs)),
+                read_profile=True,
+                context_dirs=tuple(context_dirs),
+                permission_mode="acceptEdits" if tool == "claude" else "",
+                codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()),
+                **self._project_tooling(project, worktree, tool, kind),
+                **self._git_identity(repo)), images=images)
+        except (agentcmd.StepError, OSError) as exc:
+            raise FlowError("read-dirs", f"Nie można zastosować profilu tylko do odczytu: {exc}") from None
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
-                attempt=0, resume_session="") -> dict:
+                attempt=0, resume_session="", make_prompt=None) -> dict:
+        """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
+        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._admit(card.id, selected, ticket, kind, step_id)
         try:
@@ -1632,61 +2313,101 @@ class FlowEngine(PlanEditing):
         step_dir = worktree + (f".resume-{step_id}.step" if parent_step else
                                ".step" if kind == "ticket" else
                                f".review-{round_no}.step" if kind == "review" else
-                               f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "conflict", "close") else f".fix-{round_no}.step")
+                               f".{kind}-{step_id}.step" if kind in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "conflict", "close", caretaker.KIND) else f".fix-{round_no}.step")
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
-        prompt = prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
+        prompt = "" if make_prompt else prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
-                                                     images=shots)
-        read_dirs = []
-        if kind in ("planning", "plan-fix"):
+                                                     images=shots, test_base=made_ticket.get("base") or "")
+        context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
+        prompt += context_prompt
+        read_dirs, context_dirs = [], []
+        order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
+                 if kind in ("planning", "plan-fix") else [])
+        if order:
+            # Projekty zlecenia (K-33 #4): lista z repozytoriami jest w poleceniu planowania; tu tylko odczyt.
+            read_dirs = [p["repo"] for p in order if not p.get("main")]
+        else:
+            # Dodatkowe projekty karty są do odczytu w każdym kroku, nie tylko w planowaniu (04.11, K-43/BO-9: ticket
+            # w BO potrzebował zestawu klatek z repo streamer i musiał prosić o `git archive` poza piaskownicą).
             board = self.store.load()
             extras = [board.projects[slug] for slug in card.projects if slug in board.projects]
             read_dirs = [p.repo for p in extras if p.repo and not p.repo_missing]
             if extras:
                 prompt += "\nDodatkowe projekty karty (wyłącznie do odczytu):\n" + "\n".join(
                     f"- {p.name}: {p.repo}" for p in extras)
-        prompt += handoff.command_policy(project.allowed_commands, project.denied_commands,
-                                         step_dir=step_dir, box=placement is not None)
+        if parent_step:
+            # Wznowienie widzi katalogi wyniku poprzednich kroków tego ticketu: polecenie poza piaskownicą zapisuje
+            # raport (np. TRX testów) tam, gdzie wskazał je poprzedni krok (K-40/LEGAL-78, 04.11: trzy wznowienia
+            # z rzędu nie mogły przeczytać raportu z poprzedniego `out`).
+            context_dirs = self._ancestor_outs(card.id, parent_step)
+            if context_dirs:
+                prompt += ("\nKatalogi wyniku poprzednich kroków tego ticketu (możesz je czytać; tam trafiły m.in. raporty "
+                           "poleceń uruchomionych poza piaskownicą):\n" + "\n".join(f"- {d}" for d in context_dirs))
+        # Zrzuty ekranu z karty leżą w `in/images` kroku (a w wznowieniu — kroku, od którego zaczął się ticket):
+        # narzędzie Read poza katalogami sesji jest odrzucane, więc są katalogami do odczytu (04.11, K-49:
+        # agent nie mógł przeczytać zrzutu z komentarzami review).
+        image_dirs = [os.path.join(step_dir, "in", "images")] if shots else []
+        image_dirs += [os.path.join(os.path.dirname(d), "in", "images") for d in context_dirs]
+        image_dirs += [os.path.join(worktree + ".step", "in", "images")]
+        # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
+        image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
+        read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
+                                       if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
+        if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
+            prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir, box=placement is not None)
         if placement is not None:
             prompt += handoff.box_tests(placement.profile)
+        from .stepnotes import prepare as prepare_notes
+        prompt, note_ids = prepare_notes(fold(self.journal.read(card.id)), parent_step, prompt)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
 
         def launch() -> dict:
             nonlocal prompt
+            if make_prompt:
+                prompt = make_prompt(step_dir)
+            configured = self._configured_reads(card, project, worktree, step_dir, order=order,
+                                                route=selected.route)
+            read_profile = bool(configured) or self._used_read_profile(card.id, worktree)
+            if configured:
+                prompt += "\nKatalogi danych projektu (wyłącznie do odczytu):\n" + "\n".join(configured) + "\n"
             from ..board.commands import claude_tools
             from ..tasks import dotnet
+            # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
+            # `agentcmd` (`write_out_only`).
             allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
-                                                           step_dir=step_dir)
-            is_dotnet = kind in ("ticket", "fix", "review", "conflict", "close") and dotnet.is_dotnet(worktree)
-            # W pudełku paczki instaluje agent przez proxy pudełka — bez `dotnet restore`/`npm ci` na hoście.
-            if is_dotnet and placement is None:
+                                                           step_dir=step_dir) if kind != caretaker.KIND else ((), ())
+            tooling = self._project_tooling(project, worktree, selected.tool, kind)
+            if placement is not None:
+                tooling.update(node_home="", network_domains=(), chrome_bin="")
+            # W pudełku zależności instaluje agent przez proxy, bez instalacji na hoście.
+            if tooling["dotnet"] and placement is None:
                 ok, tail = dotnet.restore(worktree)
                 prompt += dotnet.prompt_note(ok, tail)
             from ..tasks import node as node_mod
-            # P1: sieć z piaskownicy kroku tylko do rejestrów paczek stosu (Claude Code `allowedDomains`); Codex
-            # ma własną piaskownicę bez listy domen, więc tam bez zmian. `networkDomains[projekt]` dopisuje domeny.
-            domains = ()
-            if selected.tool == "claude" and kind in ("ticket", "fix", "conflict") and placement is None:
-                extra = (self._settings_data().get("networkDomains") or {}).get(project.slug) or []
-                domains = tuple(dict.fromkeys([*node_mod.registry_domains(worktree, dotnet=is_dotnet),
-                                               *[d for d in extra if isinstance(d, str)]]))
-            node_home = ""
-            if kind in ("ticket", "fix", "review", "conflict", "close") and node_mod.is_node(worktree) \
-                    and placement is None:
-                node_home = node_mod.node_home(os.path.expanduser("~"))
-                if kind in ("ticket", "fix", "conflict") and node_home:
-                    ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
-                    prompt += node_mod.prompt_note(ok, tail, network=bool(domains))
+            if kind in ("ticket", "fix", "conflict") and tooling["node_home"]:
+                ok, tail = node_mod.install(worktree, os.path.expanduser("~"))
+                prompt += node_mod.prompt_note(ok, tail, network=bool(tooling["network_domains"]))
             def copy_images(_bg):
                 if placement is not None:
                     boxstep.configure_background(self, placement, card.id, step_id, parent_step, _bg)
                 for source, target in zip(images, shots):
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     shutil.copyfile(source, target)
+
+                if kind == caretaker.KIND:
+                    # Strażnik (PT-158): stan bazowy tuż przed startem programu, po wszystkich przygotowaniach Tide.
+                    # Przy problemie ticketu pod strażą jest też drzewo i HEAD worktree karty (review M2); katalog gita
+                    # ustala usługa z repozytorium, jak dla worktree kroku.
+                    watched = [(worktree, _bg.git_dir)]
+                    card_tree = made.get("worktree") or ""
+                    if card_tree and os.path.normpath(card_tree) != os.path.normpath(worktree):
+                        watched.append((card_tree, agentcmd.resolve_git_dir(project.repo, card_tree)))
+                    self._guard_baseline(card.id, step_id, project.repo, watched,
+                                         (made_ticket["branch"], made["branch"]))
 
             runner = self.runner if placement is None else placement.runner
             try:
@@ -1702,10 +2423,11 @@ class FlowEngine(PlanEditing):
                     permission_mode="acceptEdits" if selected.tool == "claude" else "",
                     allowed_tools=allowed_tools if selected.tool == "claude" else (),
                     disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
-                    enforce_command_policy=selected.tool == "claude",
-                    tmp_root=self.tmp_root, read_dirs=tuple(read_dirs), dotnet=is_dotnet, node_home=node_home,
-                    codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), network_domains=domains,
-                    chrome_bin=node_mod.chrome_bin(os.path.expanduser("~")) if node_home else "")
+                    enforce_command_policy=selected.tool == "claude" or kind == caretaker.KIND,
+                    tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])),
+                    context_dirs=tuple(context_dirs), read_profile=read_profile,
+                    codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), **tooling,
+                    write_out_only=kind == caretaker.KIND, **self._git_identity(project.repo))
                 if placement is not None:
                     boxstep.prepare_runner(self, placement, runner_step)
                 self._trial_check(ticket)
@@ -1716,11 +2438,20 @@ class FlowEngine(PlanEditing):
                 raise
             self.procs[step_id] = proc
             if placement is None:
-                return {"unit": bg.unit, "gitDir": bg.git_dir}
+                return {"unit": bg.unit, "gitDir": bg.git_dir, "readDirsProfile": read_profile}
             self._box_runners[placement.box] = placement.runner
-            return {"unit": bg.unit, "gitDir": bg.git_dir, **placement.entry()}
+            return {"unit": bg.unit, "gitDir": bg.git_dir, "readDirsProfile": read_profile, **placement.entry()}
 
         box_fields = placement.entry() if placement is not None else {}
+        if kind == "review":
+            # Nieśledzone pliki sprzed review: nowe po review to pliki recenzenta (wynik pomiaru, notatki) — Tide
+            # przenosi je do katalogu kroku zamiast unieważniać review (04.11, K-43/BO-9).
+            try:
+                os.makedirs(os.path.join(step_dir, "in"), exist_ok=True)
+                with open(os.path.join(step_dir, "in", UNTRACKED_BEFORE), "w", encoding="utf-8") as fh:
+                    json.dump(self.git.untracked(project.repo, worktree), fh)
+            except OSError:
+                pass
         try:
             begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}", **box_fields,
                               session=session, stepDir=step_dir, worktree=worktree, kind=kind,
@@ -1731,7 +2462,8 @@ class FlowEngine(PlanEditing):
                               routeKind=selected.route.kind if selected.route else "",
                               routeTokenFile=selected.route.token_file if selected.route else "",
                               local=selected.local, branch=made_ticket["branch"],
-                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt)
+                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
+                              deliveredNoteIds=note_ids, **base_context)
         except (agentcmd.StepError, OSError) as exc:
             # Błąd zapisu wyniku nie cofa uruchomienia jednostki. Otwarty zamiar pozwala
             # odzyskać krok; porty i miejsce lokalne należą do niego aż do potwierdzonego końca.
@@ -1752,9 +2484,11 @@ class FlowEngine(PlanEditing):
                                    routeKind=selected.route.kind if selected.route else "",
                                    routeTokenFile=selected.route.token_file if selected.route else "",
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
+                                   deliveredNoteIds=note_ids,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
-                                   repo=project.repo, **box_fields)
+                                   readDirsProfile=begun.get("readDirsProfile", False),
+                                   repo=project.repo, **box_fields, **base_context)
 
     def _box_place(self, card: str, project, selected, ticket: str, kind: str, parent_step: str, step_id: str = ""):
         """PT-181: `None` (host), `Placement` (pudełko) albo FlowDeferred/FlowError — nigdy cichy powrót na hosta."""
@@ -1775,6 +2509,8 @@ class FlowEngine(PlanEditing):
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
         st = fold(self.journal.read(card))
+        if baseproposal.blocked(st):
+            raise FlowDeferred("decyzja o bazie karty")
         done = st.results.get((action, key))
         if done is not None:
             if not done.get("ok") and not retry_failed:
@@ -1783,15 +2519,112 @@ class FlowEngine(PlanEditing):
                 return done
         if (action, key) not in st.intents:
             self.journal.append(card, "intent", action=action, key=key, **intent)
+        # Strażnik (PT-158, review M1 rundy 2): najpierw zamrożenie, potem kontrola — zapis kroku opiekuna tuż
+        # przed skutecznym zamrożeniem trafia do `wrote`, zanim nowy stan bazowy po działaniu Tide go przykryje.
+        frozen = self._guard_freeze(st, self._guard_watched(st))
+        try:
+            guarded = self._guard_check(card, st)
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
         try:
             data = work()
         except (FlowGitError, reservations.ReservationError, agentcmd.StepError, OSError, FlowError) as exc:
+            self._guard_rebase(card, guarded, action, frozen)
             if done is None or done.get("error") != str(exc):
                 self.journal.append(card, "result", action=action, key=key, ok=False, error=str(exc))
             if isinstance(exc, (agentcmd.StepError, OSError)):
                 raise
             raise FlowError(action, str(exc)) from None
+        except BaseException:
+            self._guard_thaw(st, frozen)
+            raise
+        self._guard_rebase(card, guarded, action, frozen)
         return self.journal.append(card, "result", action=action, key=key, ok=True, **(data or {}))
+
+    # --- strażnik kroku opiekuna (PT-158) -------------------------------------------------------
+
+    def _guard_baseline(self, card: str, step: str, repo: str, worktrees, branches) -> None:
+        """Stan bazowy kroku opiekuna (`caretaker.guard`, `cause: start`): drzewo i HEAD worktree kroku i worktree
+        karty (pary worktree, gitDir), gałąź kroku i gałąź karty."""
+        base = guard.snapshot(self.git, repo=repo, worktrees=worktrees, branches=branches)
+        self.journal.append(card, guard.EVENT, step=step, cause="start", wrote=[], **base)
+
+    def _guard_freeze(self, st: FlowState, names: list[str]) -> dict:
+        """Na czas działania Tide zamraża jednostki trwających kroków opiekuna (M1 review PT-158): zmiana w oknie
+        działania jest wtedy zmianą Tide. Wynik: krok → "frozen" (zamrożony), "gone" (procesu już nie ma — nic nie
+        pisze) albo "" (żyje albo nie wiadomo, a zamrożenie się nie udało — zmiany z okna należą do kroku)."""
+        frozen = {}
+        for name in names:
+            watched = st.caretakers.get(name) or {}
+            unit = watched.get("consoleUnit") or watched.get("unit") or ""
+            if unit and self.freeze_unit(unit, True):
+                frozen[name] = "frozen"
+                continue
+            proc = self.procs.get(name)
+            if proc is not None and proc.poll() is not None or \
+                    proc is None and unit and stepstop.unit_state(unit) == "inactive":
+                frozen[name] = "gone"
+            else:
+                frozen[name] = ""
+        return frozen
+
+    def _guard_thaw(self, st: FlowState, frozen: dict) -> None:
+        for name, how in frozen.items():
+            watched = st.caretakers.get(name) or {}
+            unit = watched.get("consoleUnit") or watched.get("unit") or ""
+            if how == "frozen" and not self.freeze_unit(unit, False):
+                logging.getLogger(__name__).warning("nie udało się odmrozić kroku opiekuna %s (%s)", name, unit)
+
+    def _guard_watched(self, st: FlowState) -> list[str]:
+        """Trwające kroki opiekuna pod strażą."""
+        return [name for name in st.caretaker_guards if name not in st.finished]
+
+    def _guard_check(self, card: str, st: FlowState) -> list[str]:
+        """Przed działaniem Tide, które może zmienić worktree albo gałąź pod strażą (scalenie, commit planu, gałęzie,
+        sprzątanie), już po zamrożeniu kroków (`_guard_freeze`): zmiany od stanu bazowego trwającego kroku opiekuna
+        należą do kroku — zapisane w `wrote` przed działaniem, żeby zapis Tide ich nie przykrył. Zwraca kroki do
+        wzięcia stanu na nowo po działaniu."""
+        names = self._guard_watched(st)
+        for name in names:
+            base = st.caretaker_guards[name]
+            found = guard.changes(base, guard.again(self.git, base))
+            if found:
+                self.journal.append(card, guard.EVENT, step=name, cause="check", wrote=found,
+                                    **{k: base.get(k) for k in guard.FIELDS})
+        return names
+
+    def _guard_rebase(self, card: str, names: list[str], action: str, frozen: dict) -> None:
+        """Po działaniu Tide, jeszcze przed odmrożeniem kroku, stan pod strażą bierze się na nowo. Zmiana w oknie
+        działania jest zmianą Tide tylko wtedy, gdy krok był zamrożony albo już nie działał (`_guard_freeze`);
+        inaczej zostaje zapisana jako zapis kroku (`wrote`) — strażnik woli odrzucić, niż przepuścić."""
+        if not names:
+            return
+        try:
+            st = fold(self.journal.read(card))
+            for name in names:
+                base = st.caretaker_guards.get(name)
+                if base is None or name in st.finished:
+                    continue
+                fresh = guard.again(self.git, base)
+                if guard.same(base, fresh):
+                    continue
+                wrote = [] if frozen.get(name) else [
+                    f"zmiana w czasie działania Tide `{action}`, gdy kroku opiekuna nie dało się zamrozić — "
+                    + "; ".join(guard.changes(base, fresh))]
+                self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
+        finally:
+            self._guard_thaw(fold(self.journal.read(card)), frozen)
+
+    def _guard_verdict(self, card: str, name: str) -> str:
+        """Powód odrzucenia wyniku kroku opiekuna (pusty — strażnik przepuszcza). Bez stanu bazowego wynik też jest
+        odrzucony: nie da się wykazać, że krok nie pisał."""
+        st = fold(self.journal.read(card))
+        base = st.caretaker_guards.get(name)
+        if base is None:
+            return "brak stanu worktree sprzed kroku opiekuna — nie da się sprawdzić, czy krok nie pisał"
+        found = [*st.caretaker_wrote.get(name, []), *guard.changes(base, guard.again(self.git, base))]
+        return guard.reason(found)[:caretaker.REASON_MAX] if found else ""
 
     # --- ręczne kolumny --------------------------------------------------------------------------
 
@@ -1805,6 +2638,13 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-flow", "karta nie ma trwającego przepływu")
         if st.paused != paused:
             self.journal.append(card_id, "card.paused" if paused else "card.resumed")
+        if not paused and st.store_column == "backlog":
+            # Wznowiona karta wraca z Backlogu do pracy (06.11, K-55: wznowiona po ustawianiu kolejności w Backlogu
+            # pracowała dalej, a Tablica pokazywała ją w Backlogu, bo zapisana kolumna została „backlog”).
+            with self.journal.lock:
+                self.store.move_card(card_id, "todo", -1, from_column="backlog")
+            moved = self.store.load().cards.get(card_num(card_id))
+            self.moved(card_id, "todo", "backlog", getattr(moved, "move_id", "") or "")
         return {"ok": True, "id": card_id, "paused": paused}
 
     def moved(self, card_id: str, column: str, shown: str = "", move_id: str = "") -> None:
@@ -1827,6 +2667,8 @@ class FlowEngine(PlanEditing):
     def _complete_manual_finish(self, card: str, column: str) -> bool:
         """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
         st = fold(self.journal.read(card))
+        if baseproposal.generation_blocked(st):
+            return False
         if st.card_finished:
             return True
         # Dawny ruch do Gotowe/Archiwum nie uprawnia do zatrzymania chronionej próby.
@@ -1850,7 +2692,9 @@ class FlowEngine(PlanEditing):
             merged = st.results.get(("merge", ticket)) or {}
             if ticket and not merged.get("ok") and ticket not in st.imported_done and ticket not in st.rejected:
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
-        self.journal.append(card, "card.finished", column=column)
+        operation_id = (st.merged or {}).get("operationId")
+        self.journal.append(card, "card.finished", column=column,
+                            **({"operationId": operation_id} if operation_id else {}))
         return True
 
     # --- co chwilę -------------------------------------------------------------------------------
@@ -1859,6 +2703,16 @@ class FlowEngine(PlanEditing):
         claim = self._local_claims.pop(step_id, None)
         if claim is not None:
             model_queue.shared().release_step(claim)
+
+    def _project_base(self, card: str) -> None:
+        """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól."""
+        st = fold(self.journal.read(card))
+        if st.started:
+            try:
+                with self.journal.lock:
+                    self.store.project_card_base(card, base_of(st))
+            except Exception as exc:
+                print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
 
     def tick(self) -> None:
         try:
@@ -1870,8 +2724,16 @@ class FlowEngine(PlanEditing):
             self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
             return
         self._warnings.pop("journal", None)
+        from .basegeneration import BaseGeneration
         for card in self.journal.cards():
-            self._recover_started_steps(card, fold(self.journal.read(card)))
+            try:
+                BaseGeneration(self).recover(card)
+            except Exception as exc:
+                print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
+            self._project_base(card)
+            current = fold(self.journal.read(card))
+            if not baseproposal.blocked(current):
+                self._recover_started_steps(card, current)
         boxstep.recover_network(self)
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
@@ -1891,7 +2753,7 @@ class FlowEngine(PlanEditing):
                 self._warnings[card] = warning
                 print(f"tide-daemon: przepływ karty: {warning}", flush=True)
             st = fold(self.journal.read(card))
-            for step in st.steps.values():
+            for step in [*st.steps.values(), *st.caretakers.values()]:
                 hidden_ids.add(str(step.get("session") or ""))
                 if step.get("worktree"):
                     hidden_places.add(os.path.realpath(step["worktree"]))
@@ -1899,6 +2761,7 @@ class FlowEngine(PlanEditing):
                 repo = (st.started or {}).get("repo") or ""
                 if repo and repo not in guarded:
                     guarded.add(repo)
+                    self._main_branches[repo] = self.git.main_branch(repo)
                     worktree_guard(repo, self._worktree_heads)
             except Exception as exc:
                 print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
@@ -1924,6 +2787,11 @@ class FlowEngine(PlanEditing):
     def _tick_card(self, card: str, st: FlowState) -> None:
         self._outside_history(card)
         trialhold.inventory(self, card, st)
+        if baseproposal.blocked(st):
+            for step in st.running():
+                self._poll(card, step)
+            self._queue_notices(card)
+            return
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
         self._recover_console_openings(card, st)
@@ -1939,6 +2807,10 @@ class FlowEngine(PlanEditing):
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
                 st = fold(self.journal.read(card))
+        # Ruch użytkownika wygrywa z recovery. Oczekiwanie scalenia nie zatrzymuje reszty karty.
+        # Tylko zapisany zamiar jest zgodą na recovery; tick nigdy nie zaczyna nowego scalenia.
+        self._recover_main_merge(card)
+        st = fold(self.journal.read(card))
         blocking_tracker_error = any(e.get('action') != 'youtrack-note' for e in st.tracker_failures())
         try:
             if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
@@ -1955,13 +2827,15 @@ class FlowEngine(PlanEditing):
             pass
         st = fold(self.journal.read(card))
         for intent in st.open_intents(include_background=True):
+            if baseproposal.blocked(st):
+                break
             self._reconcile(card, intent)
         st = fold(self.journal.read(card))
         for item in st.steps.values():
             if item.get("step") in st.transfer_requests and item.get("step") not in st.step_decisions:
                 continue
             if item.get("mode") == "interactive" and not item.get("consoleClosed") and self._console_ended(item):
-                self.journal.append(card, "step.console_closed", step=item.get("step"))
+                close_console(self.journal, card, item.get("step"))
         st = fold(self.journal.read(card))
         if st.moved_to in ("done", "archived") and not st.card_finished:
             self._complete_manual_finish(card, st.moved_to)
@@ -1970,24 +2844,50 @@ class FlowEngine(PlanEditing):
             if step.get("step") in st.transfer_requests and step.get("step") not in st.step_decisions:
                 continue
             self._poll(card, step)
+        # Zbieramy wyniki procesów, ale nie oceniamy ani nie integrujemy ich w czasie decyzji.
+        if baseproposal.blocked(fold(self.journal.read(card))):
+            return
         self._advance_user_revision(card, fold(self.journal.read(card)))
         current = fold(self.journal.read(card))
-        if current.running() and (current.plan_revision or {}).get("pending"):
+        if (current.plan_revision or {}).get("pending"):
             self._advance_plan_review(card, current)
         self._queue_notices(card)
-        st = fold(self.journal.read(card))
+        for found in self._advance_card(card):
+            self._flow_error(card, found)
+        # Opiekun karty (PT-143) po istniejących automatach (ponowienie, mocniejszy wykonawca, odpowiedź
+        # o środowisko, auto-odmowa) i przed powiadomieniami (`_queue_notices` w `tick`).
+        self._caretake(card, fold(self.journal.read(card)))
+
+    def _advance_card(self, card: str, *, own: tuple | None = None) -> list[dict]:
+        """Przebieg etapów karty: ostatnie kroki ticketów, commit planu i kolejne tickety, domknięcie karty.
+        Zwraca błędy Tide z tego przebiegu (`{error, stage, step, ticket}`), nie zapisuje ich — zapisuje
+        `_flow_error` w zwykłym przebiegu, a ponowienie etapu opiekuna (`retry-stage`, PT-147) ocenia nimi swój
+        wynik. `own` — para „zamiar → wynik” akcji opiekuna, w której ten przebieg się wykonuje: nie blokuje go
+        jako zaczęta akcja karty. Wyjątki spoza błędów Tide (poza izolowanymi przy krokach) przechodzą dalej."""
+        found: list[dict] = []
+
+        def fresh() -> FlowState:
+            current = fold(self.journal.read(card))
+            if own is not None:
+                current.intents.pop(own, None)
+            return current
+
+        st = fresh()
         if not st.card_finished:
             try:
                 latest = {}
                 for name, step in st.steps.items():
+                    if name in st.superseded and name not in st.plan_resumes:
+                        continue
                     latest[step.get("ticket")] = name
                 for name in latest.values():
-                    current = fold(self.journal.read(card))
+                    current = fresh()
                     step = current.steps[name]
                     open_same = [s for s in current.open_consoles()
                                  if s.get("ticket") == step.get("ticket")]
                     planning_result_ready = ((current.started or {}).get("mode") == "full" and
-                                             step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise") and
+                                             step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise",
+                                                                  "plan-amend") and
                                              all(s.get("kind") == "planning" and s["step"] in current.finished
                                                  for s in open_same))
                     if name not in current.finished or (open_same and not planning_result_ready):
@@ -2000,54 +2900,75 @@ class FlowEngine(PlanEditing):
                     except Exception as exc:
                         # Izolacja (03.11, „błędy koordynacji to rak”): błąd przy jednym tickecie zatrzymuje tylko
                         # ten ticket — pozostałe tickety, start nowych i domknięcie karty idą dalej.
-                        self._isolated_fault(card, name, exc)
-                current = fold(self.journal.read(card))
+                        found.append(self._isolated_fault(card, current, name, exc))
+                    else:
+                        self._clear_flow_error(card, f"advance:{step['ticket']}" if step.get("ticket") else "advance",
+                                               own=own)
+                current = fresh()
                 try:
                     if current.plan_approved is not None:
                         self._plan_next(card, current)
+                        self._clear_flow_error(card, "plan-next", own=own)
                     elif not latest:
                         self._advance(card, current)
+                        self._clear_flow_error(card, "advance", own=own)
                 except FlowDeferred:
                     pass
                 except Exception as exc:
-                    self._isolated_fault(card, "", exc)
-                self._advance_close(card, fold(self.journal.read(card)))
+                    found.append(self._isolated_fault(card, current, "", exc))
+                if self._advance_close(card, fresh()):
+                    self._clear_flow_error(card, "close", own=own)
             except FlowDeferred:
                 pass
             except (FlowError, FlowGitError) as exc:
-                problem = f"{exc.__class__.__name__}: {exc}"
-                if st.flow_error != problem:
-                    self.journal.append(card, "flow.error", error=problem)
-        st = fold(self.journal.read(card))
-        if st.plan_approved is not None and not st.card_finished and not st.open_intents() and not any(
-                s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend")
-                and s["step"] not in st.finished for s in st.steps.values()) and not any(
-                s.get("kind") == "conflict" and not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")
-                or s.get("kind") == "close" and not st.closed for s in st.steps.values()):
-            info = ticket_of(st)
-            if info["cardBranch"] and info["cardWorktree"]:
-                approved = st.plan_approved
-                key = f"{approved.get('seq')}:{st.plan_change_seq}"
-                previous = st.results.get(("plan-commit", key))
-                if previous is None or not previous.get("ok"):
-                    try:
-                        self._plan_commit(card, st, self._repo(card), info["cardBranch"], info["cardWorktree"])
-                    except (FlowError, FlowGitError) as exc:
-                        problem = f"{exc.__class__.__name__}: {exc}"
-                        if st.flow_error != problem:
-                            self.journal.append(card, "flow.error", error=problem)
+                found.append({"error": f"{exc.__class__.__name__}: {exc}", "stage": "close", "step": "",
+                              "ticket": ""})
+        return found
 
-    def _isolated_fault(self, card: str, step_name: str, exc: Exception) -> None:
-        """Błąd koordynacji jednego kroku: zapis w dzienniku (raz dla tego samego tekstu) i ślad w dzienniku usługi."""
+    def _isolated_fault(self, card: str, st: FlowState, step_name: str, exc: Exception) -> dict:
+        """Błąd koordynacji jednego kroku (albo kolejnego ticketu planu): opis do `_flow_error` i ślad w dzienniku
+        usługi. Etap (`stage`, część id problemu opiekuna `flow-error:<etap>`, PT-147): `advance:<ticket>` — dalszy
+        etap ticketu po jego ostatnim kroku, `plan-next` — start kolejnego ticketu planu, `advance` — pierwszy krok."""
         import traceback
-        problem = f"{exc.__class__.__name__}: {exc}"
-        st = fold(self.journal.read(card))
         step = st.steps.get(step_name) or {}
-        if st.flow_error != problem:
-            self.journal.append(card, "flow.error", error=problem, step=step_name, ticket=step.get("ticket") or "")
+        ticket = step.get("ticket") or ""
+        stage = (f"advance:{ticket}" if ticket else "advance") if step_name else \
+            "plan-next" if st.plan_approved is not None else "advance"
+        if isinstance(exc, FlowError) and exc.code == "plan-commit":
+            stage, step_name, ticket = "plan-commit", "", ""
         if not isinstance(exc, (FlowError, FlowGitError)):
             print(f"tide-daemon: przepływ karty {card}, krok {step_name or '-'}: "
                   + "".join(traceback.format_exception_only(type(exc), exc)).strip(), flush=True)
+        return {"error": f"{exc.__class__.__name__}: {exc}", "stage": stage, "step": step_name, "ticket": ticket}
+
+    def _flow_error(self, card: str, found: dict) -> None:
+        """Zapis błędu Tide: `flow.error` raz dla tego samego etapu i tekstu (z chwilą `at` z zegara silnika); ten sam
+        tekst w kolejnym przebiegu co najmniej `FLOW_ERROR_PERSIST` s po pierwszym — jeden `flow.error-persisted`
+        (wyzwalacz opiekuna, PT-147). Błąd, który w następnym przebiegu już nie wystąpił, zostaje jednorazowy."""
+        st = fold(self.journal.read(card))
+        error = found["error"]
+        stage = found.get("stage") or "advance"
+        item = st.flow_errors.get(stage) or {}
+        first = item.get("event") or {}
+        if first.get("error") != error:
+            self.journal.append(card, "flow.error", error=error, stage=stage,
+                                step=found.get("step") or "", ticket=found.get("ticket") or "", at=self.clock())
+            return
+        if item.get("persisted"):
+            return
+        at = float(first.get("at") or _epoch(first.get("ts")) or 0.0)
+        if self.clock() - at >= FLOW_ERROR_PERSIST:
+            self.journal.append(card, "flow.error-persisted", error=error, stage=first.get("stage") or "",
+                                step=first.get("step") or "", ticket=first.get("ticket") or "",
+                                since=first.get("seq") or 0)
+
+    def _clear_flow_error(self, card: str, stage: str, *, own: tuple | None = None) -> None:
+        """Etap wykonał się bez błędu, także bez startu kroku. Rozwiązanie dotyczy tylko tego etapu."""
+        item = fold(self.journal.read(card)).flow_errors.get(stage)
+        if item:
+            fields = {"caretakerStep": own[1], "caretaker": "retry-stage"} if own else {}
+            self.journal.append(card, "flow.error-cleared", stage=stage, error=item["event"].get("error") or "",
+                                **fields)
 
     @staticmethod
     def _wip_for(st: FlowState, step_id: str) -> dict:
@@ -2140,8 +3061,9 @@ class FlowEngine(PlanEditing):
         return True
 
     def _advance(self, card: str, st: FlowState) -> None:
-        """Jedna zmiana etapu na tick: ticket → review → poprawki/review → scalenie i sprzątanie."""
-        if trialhold.held(st.steps.get(st.last_step) or {}):
+        """Jedna zmiana etapu ticketu: ticket → review → poprawki/review → scalenie i sprzątanie.
+        Start kolejnych ticketów i domknięcie wykonuje wyłącznie `_advance_card`, raz po obsłudze ticketów."""
+        if trialhold.held(st.steps.get(st.last_step) or {}) or baseproposal.blocked(st):
             return
         if st.open_intents():
             return
@@ -2152,8 +3074,6 @@ class FlowEngine(PlanEditing):
         if self._advance_planning(card, st):
             return
         if not st.last_step:
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
             if st.started and st.started.get("entry") == "now" and st.started.get("executor") and not st.paused:
                 info = ticket_of(st)
                 # Nieudana rezerwacja lub przygotowanie gałęzi nie uprawnia do
@@ -2161,6 +3081,8 @@ class FlowEngine(PlanEditing):
                 if not all(info[key] for key in ("id", "cardBranch", "cardWorktree", "branch", "worktree")):
                     return
                 item, project = self._project(card)
+                if info["id"] in st.rejected:
+                    return
                 cfg = self.models_config() if self.models_config else None
                 catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
                 selected = execution.resolve(st.started["executor"], catalog, config=cfg,
@@ -2168,7 +3090,11 @@ class FlowEngine(PlanEditing):
                 self._launch(item, project, selected, info["id"],
                              {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                              {"branch": info["branch"], "worktree": info["worktree"]},
-                             self._next_step_id(card, info["id"], st), st.inputs.get("images", st.started.get("images") or []))
+                             self._next_step_id(card, info["id"], st), st.inputs.get("images", st.started.get("images") or []),
+                             parent_step=next((name for name, old in reversed(list(st.steps.items()))
+                                               if name in st.superseded and st.base_change and
+                                               old.get("ticket") == info["id"] and
+                                               old.get("kind") in ("ticket", "fix")), ""))
             return
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
@@ -2180,8 +3106,39 @@ class FlowEngine(PlanEditing):
         result = done.get("result")
         if (step.get("ticket") or "") in st.rejected and result != "done":
             # Odrzucony ticket (także z decyzji o błędzie kroku) nie jest wznawiany ani ponawiany (K-16/LEGAL-75).
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
+            return
+        # Odtworzenie przerwy między step.finished a decyzją czekania. Ta sama walidacja co przy wyniku.
+        if done.get("waitFor") and st.last_step not in st.step_decisions and \
+                self._declared_wait(card, st.last_step, step, done):
+            return
+        if self._caretaker_resume(card, st, step):
+            return
+        if st.last_step in st.superseded and st.last_step not in st.step_decisions:
+            blockers = st.plan_resumes.get(st.last_step)
+            if blockers is not None and not st.plan_revision:
+                ready = st.imported_done | st.rejected | {
+                    ticket for (action, ticket), made in st.results.items() if action == "merge" and made.get("ok")}
+                if blockers <= ready:
+                    info = ticket_of(st, step.get("ticket") or "")
+                    answer = ("Użytkownik rozstrzygnął poprawę planu po odesłaniu przez opiekuna. "
+                              f"Dodatkowa praca jest zakończona: {', '.join(sorted(blockers)) or '(bez nowych blokerów)'}. "
+                              f"Uwzględnij zmiany z gałęzi karty {info['cardBranch']} w bieżącym worktree, "
+                              "zachowując dotychczasową pracę, i kontynuuj pierwotny zakres ticketu.")
+                    self._resume_step(card, st, step, {"choice": "retry", "answer": answer, "caretaker": True})
+            return              # Stary błąd nie wraca do decyzji; jawne ponowienie nadal działa.
+        waiting_ticket = (st.step_decisions.get(st.last_step) or {}).get("waitTicket")
+        if result in ("question", "error") and waiting_ticket:
+            merged = (st.results.get(("merge", waiting_ticket)) or {}).get("ok")
+            if merged or waiting_ticket in st.rejected or waiting_ticket in st.imported_done:
+                self._resume_step(card, st, step, {"choice": "answer" if result == "question" else "retry",
+                                                   "answer": self._wait_ticket_resume_text(st, step, waiting_ticket)})
+            return
+        waiting_card = (st.step_decisions.get(st.last_step) or {}).get("waitCard")
+        if result in ("question", "error") and waiting_card:
+            if self._card_done(waiting_card):
+                text = (st.step_decisions[st.last_step].get("answer") or
+                        f"Karta {waiting_card}, na którą czekał ten krok, jest domknięta — jej wynik jest na jej gałęzi; kontynuuj.")
+                self._resume_step(card, st, step, {"choice": "answer" if result == "question" else "retry", "answer": text})
             return
         if result in ("question", "denied"):
             decision = st.step_decisions.get(st.last_step)
@@ -2202,11 +3159,19 @@ class FlowEngine(PlanEditing):
             decision = st.step_decisions.get(st.last_step)
             if decision:
                 self._resume_step(card, st, step, decision)
+            elif content_refusal(step) and self._other_provider_executor(st, step):
+                # Filtr treści dostawcy (04.11, K-37/PT-158: Codex odrzucał review granic piaskownicy jako „ryzyko
+                # cyberbezpieczeństwa”) — ten sam dostawca odmówi znowu, więc krok od razu idzie do innego.
+                self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
+                                    kind=step.get("kind") or "", choice="change-executor", answer="", command="",
+                                    executor=self._other_provider_executor(st, step), auto=True, refusal=True)
             elif self._codex_broken_mcp(step, dict(done)):
                 self.journal.append(card, "step.decision", step=st.last_step, ticket=step.get("ticket") or "",
                                     kind=step.get("kind") or "", choice="retry", answer="", command="",
                                     executor="", auto=True)
             elif int(step.get("attempt") or 0) == 0 and done.get("reason") != "login":
+                if self._caretaker_takes_over(card, st, st.last_step):
+                    return      # PT-148: opiekun zamiast kolejnej ślepej próby, także bez mocniejszego wykonawcy
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
                                         reason=done.get("reason") or "")
@@ -2223,11 +3188,7 @@ class FlowEngine(PlanEditing):
             return
         if result != "done":
             return
-        if step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend"):
-            self._plan_next(card, st)
-            return
-        if step.get("kind") == "close":
-            self._advance_close(card, st)
+        if step.get("kind") in ("planning", "plan-fix", "plan-review", "plan-revise", "plan-amend", "close"):
             return
         ticket = step.get("ticket") or ""
         if not ticket:
@@ -2235,14 +3196,10 @@ class FlowEngine(PlanEditing):
         if (st.results.get(("cleanup", ticket)) or {}).get("ok"):
             return
         if ticket in st.rejected:
-            if st.plan_approved is not None:
-                self._plan_next(card, st)
             return
         if step.get("kind") == "conflict":
             if (st.results.get(("merge", ticket)) or {}).get("ok"):
                 self._cleanup(card, st, ticket, int(step.get("round") or 1))
-                if st.plan_approved is not None:
-                    self._plan_next(card, fold(self.journal.read(card)))
             return
         if step.get("kind") in ("ticket", "fix"):
             round_no = 1 if step.get("kind") == "ticket" else int(step.get("round") or 0) + 1
@@ -2280,7 +3237,8 @@ class FlowEngine(PlanEditing):
             "konflikt" not in (previous_merge.get("error") or "").lower() and \
             self.clock() - _epoch(previous_merge.get("ts")) >= 60
         if previous_merge is None or retry_merge:
-            source = next((s for s in st.steps.values() if s.get("ticket") == ticket and
+            source = next((s for name, s in st.steps.items() if name not in st.superseded and
+                           s.get("ticket") == ticket and
                            s.get("kind") == "ticket"), None)
             if source is not None:
                 self._merge(card, st, source, retry=retry_merge)
@@ -2292,34 +3250,28 @@ class FlowEngine(PlanEditing):
             return
         if merged and merged.get("ok"):
             self._cleanup(card, fold(self.journal.read(card)), ticket, int(step.get("round") or 1))
-            if st.plan_approved is not None:
-                self._plan_next(card, fold(self.journal.read(card)))
 
     def _plan_next(self, card: str, st: FlowState) -> None:
-        """Uruchamia gotowe tickety w granicach slotów, po scaleniu wszystkich ich blokerów."""
+        """Zapisuje aktualny plan i uruchamia gotowe tickety w granicach slotów, po scaleniu ich blokerów.
+        Jedyne miejsce commita planu w przebiegu; zapisuje także końcowy stan po domknięciu."""
+        if baseproposal.blocked(st):
+            return
         approved = st.plan_approved or {}
-        if not approved or st.plan_finished or st.paused or st.open_intents():
+        if not approved or st.card_finished or st.paused or st.open_intents():
             return
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         item, project = self._project(card)
-        card_branch = ticket_of(st)["cardBranch"] or f"card/{card.lower()}-{slug_from_prompt(item.title, words=4, length=32)}"
-        main = self.git.main_branch(project.repo)
-        if not main:
-            raise FlowError("no-base", f"{project.repo}: nie ma gałęzi głównej")
-        card_worktree = worktree_for(project.repo, card_branch)
-        made = self._act(card, "card-branch", card_branch,
-                         lambda: self.git.branch_worktree(project.repo, card_branch, card_worktree, main),
-                         repo=project.repo, branch=card_branch, worktree=card_worktree, base=main)
-        card_work = any(s.get("kind") in ("conflict", "close") and
+        made = self._planning_branch(card, st, project)
+        card_branch, card_worktree = made["branch"], made["worktree"]
+        card_work = any(s.get("kind") in ("conflict", "close", "plan-review", "plan-revise", "plan-amend") and
                         (s["step"] not in st.finished or
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
         if not card_work:
             self._plan_commit(card, fold(self.journal.read(card)), project.repo, card_branch, card_worktree)
-        if len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
-            self._advance_close(card, st)
+        if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
             return
         for row in rows:
             ticket = row["id"]
@@ -2343,7 +3295,7 @@ class FlowEngine(PlanEditing):
                                              probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            if selected.model.lower() == reviewer.model.lower() or selected.local != reviewer.local:
+            if not flow_plans.independent_reviewer(selected, reviewer) or selected.local != reviewer.local:
                 raise FlowError("bad-reviewer", f"{ticket}: recenzent nie spełnia warunku innego modelu")
             slug = slug_from_prompt(row["title"], words=4, length=32)
             branch = f"ticket/{ticket.lower()}-{slug}"
@@ -2370,7 +3322,8 @@ class FlowEngine(PlanEditing):
             out = worktree + ".step/out"
             prompt = handoff.ticket_card(card_id=card, title=row["title"], description=body,
                                          project=project.name, ticket=ticket, branch=branch,
-                                         card_branch=card_branch, worktree=worktree, out_dir=out)
+                                         card_branch=card_branch, worktree=worktree, out_dir=out,
+                                         test_base=made_ticket.get("base") or "")
             step_id = self._next_step_id(card, ticket, st)
             try:
                 self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
@@ -2384,13 +3337,33 @@ class FlowEngine(PlanEditing):
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         key = f"{approved.get('seq')}:{st.plan_change_seq}"
-        files = self._plan_files(card, st, merged)
+        files = self._plan_files(card, st, merged, worktree=worktree)
         self._act(card, "plan-commit", key,
                   lambda: self.git.commit_plan(repo, branch, worktree, files),
                   retry_failed=True,
                   repo=repo, branch=branch, worktree=worktree)
 
-    def _plan_files(self, card: str, st: FlowState, merged: set[str]) -> dict[str, bytes]:
+    @staticmethod
+    def _plan_extra(text: str) -> tuple[str, str]:
+        """Tekst planu poza nagłówkiem i tabelą ticketów: (przed tabelą, po tabeli). Aktualizacja tabeli go zachowuje
+        (05.11, K-50: odnośnik „Zakres poza v1” do szkicu followups znikał przy pierwszej zmianie stanu ticketu)."""
+        lines = text.splitlines()
+        if len(lines) < 2 or lines[0].strip() != "---":
+            return "", ""
+        try:
+            end = lines.index("---", 1)
+        except ValueError:
+            return "", ""
+        body = lines[end + 1:]
+        start = next((i for i, line in enumerate(body) if line.startswith("| Ticket |")), None)
+        if start is None:
+            return "", ""
+        stop = start
+        while stop < len(body) and body[stop].startswith("|"):
+            stop += 1
+        return "\n".join(body[:start]).strip(), "\n".join(body[stop:]).strip()
+
+    def _plan_files(self, card: str, st: FlowState, merged: set[str], *, worktree: str = "") -> dict[str, bytes]:
         approved, proposed = st.plan_approved or {}, st.plan_proposed or {}
         def cell(value):
             return " ".join(str(value or "").replace("|", "\\|").split())
@@ -2402,10 +3375,23 @@ class FlowEngine(PlanEditing):
                  f"session: {cell(proposed.get('session'))}",
                  f"ticket-prefix: {proposed.get('prefix') or ''}", f"card: {card}",
                  "status: done" if len(merged | st.rejected) == len(approved.get("rows") or []) else "status: active",
-                 f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", "",
-                 "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
+                 f"updated: {st.plan_change_ts or approved.get('ts') or ''}", "---", ""]
+        before, after = "", ""
+        source = planartifacts.source_for_commit(st)
+        artifacts = planartifacts.read(source["artifactPath"]) if source.get("artifactPath") else {}
+        if source.get("planPath") and os.path.basename(source["planPath"]) in artifacts:
+            before, after = self._plan_extra(artifacts[os.path.basename(source["planPath"])].decode("utf-8"))
+        if worktree and approved.get("planFile") and (not artifacts or planartifacts.keep_committed_plan_text(st)):
+            try:
+                with open(os.path.join(worktree, approved["planFile"]), encoding="utf-8") as fh:
+                    before, after = self._plan_extra(fh.read())
+            except OSError:
+                pass
+        if before:
+            lines += [before, ""]
+        lines += ["| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |",
                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-        files = {}
+        files, ticket_paths = {}, {}
         for row in approved.get("rows") or []:
             ticket = row["id"]
             state = self._plan_row_state(st, ticket, merged)
@@ -2415,7 +3401,25 @@ class FlowEngine(PlanEditing):
                           row.get("class") or "", row["reviewer"], ", ".join(row["blockers"]))) + " |")
             ticket_dir = os.path.dirname(approved["planFile"]).replace("/plans", "/tickets")
             ticket_path = f"{ticket_dir}/{card.lower()}-flow/{ticket.lower()}.md"
-            files[ticket_path] = self._plan_card(card, row).encode("utf-8")
+            ticket_paths[f"tickets/{(row.get('workId') or ticket).lstrip('#')}.md"] = ticket_path
+            # Kartka w propozycji leżała w tickets/ obok followups/ („../followups/x.md”); w repozytorium szkice są
+            # obok planu, więc odnośnik wskazuje je względem katalogu kartki (05.11, K-50: martwe linki w PT-201/208).
+            followups = os.path.relpath(os.path.join(os.path.dirname(approved["planFile"]), "followups"),
+                                        os.path.dirname(ticket_path))
+            text = planartifacts.relocate_ticket_links(self._plan_card(card, row), followups)
+            if worktree:
+                # Dopisek pod kartką z pracy ticketu (np. odnośnik do szkicu) zostaje, gdy reszta kartki się zgadza.
+                try:
+                    with open(os.path.join(worktree, ticket_path), encoding="utf-8") as fh:
+                        existing = fh.read()
+                    if existing.rstrip() != text.rstrip() and existing.startswith(text.rstrip()):
+                        text = existing
+                except OSError:
+                    pass
+            files[ticket_path] = text.encode("utf-8")
+        files.update(planartifacts.followup_files(artifacts, source, approved["planFile"], ticket_paths))
+        if after:
+            lines += ["", after]
         files[approved["planFile"]] = ("\n".join(lines) + "\n").encode("utf-8")
         return files
 
@@ -2559,7 +3563,7 @@ class FlowEngine(PlanEditing):
         if not (cancelled or self._console_ended(step)):
             return False
         if not step.get("consoleClosed"):
-            self.journal.append(card, "step.console_closed", step=step.get("step") or "")
+            close_console(self.journal, card, step.get("step") or "", cancelled=cancelled)
         return self._stop(card, step, "stopped", "transfer", handoff=True)
 
     def _recover_transfer_requests(self, card: str, st: FlowState) -> None:
@@ -2579,7 +3583,7 @@ class FlowEngine(PlanEditing):
         """Otwiera oczekujące zadanie Konsoli po przerwaniu usługi między zapisem a terminal.open."""
         if self.terminal is None or not self.terminal.available():
             return
-        for step in st.steps.values():
+        for step in [*st.steps.values(), *st.caretakers.values()]:
             if trialhold.held(step):
                 continue
             name = step.get("step") or ""
@@ -2607,13 +3611,53 @@ class FlowEngine(PlanEditing):
             if opened:
                 self.journal.append(card, "step.console_opened", step=name, recovered=True)
 
-    def resolve_step(self, card_id: str, request: dict) -> dict:
-        """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi."""
+    def revoke_ticket_consent(self, card_id: str, request: dict) -> dict:
+        return consent.revoke(self, card_id, request)
+
+    def resolve_caretaker(self, card_id: str, request: dict) -> dict:
+        """Decyzja użytkownika o problemie bez kroku: zamknięcie i ewentualnie jeden przebieg etapu."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto"}:
+        if not isinstance(request, dict) or set(request) - {"choice", "problem", "description"}:
+            raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie id problemu")
+        choice = request.get("choice")
+        if choice not in ("retry-stage", "dismiss", "report"):
+            raise FlowError("bad-choice", "wybierz retry-stage, dismiss albo report")
+        if choice == "report":
+            self._caretaker_description(request)
+        st = fold(self.journal.read(card))
+        waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
+        wanted = request.get("problem")
+        decision = next((d for d in waiting if not wanted or d["technical"]["problem"] == wanted), None)
+        if decision is None:
+            raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
+        ident = decision["technical"]["problem"]
+        problem = next(p for p in caretaker.problems(st) if p["id"] == ident)
+        reported = {}
+        if choice == "report":
+            reported = self._save_fault_report(card, st, problem.get("step") or "",
+                                               request["description"].strip(), problem=problem)
+        event = self.journal.append(card, "caretaker.decision", problem=ident, choice=choice)
+        if choice == "retry-stage":
+            self._retry_stage(card, {"problem": ident, "step": f"user:{event['seq']}",
+                                     "trigger": problem["trigger"], "ticket": problem.get("ticket") or ""}, problem)
+        return {"ok": True, "id": card, "choice": choice, "problem": ident, **reported}
+
+    def resolve_step(self, card_id: str, request: dict, *, caretaker_problem: str = "",
+                     caretaker_step: str = "") -> dict:
+        """Odpowiedź na wynik kroku; zdarzenie pozwala wznowić go także po restarcie usługi.
+        `caretaker_problem` — decyzję zapisuje akcja opiekuna (PT-150, tylko z silnika, nie z D-Bus): `step.decision`
+        dostaje `auto: true` i `caretaker: <problem>`, więc nie zamyka problemu ani nie zeruje licznika działań;
+        `caretaker_step` (`caretakerStep`) — krok opiekuna, po którym akcja po restarcie rozpoznaje własny zapis."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
+                                                            "card", "ticket", "baseDecision", "baseRef", "baseCommit",
+                                                            "previewId", "waitTicket"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
         if str(request.get("step") or "").startswith("k38-diagnostic-"):
             return self._resolve_trial_diagnostic(card, request)
@@ -2622,13 +3666,46 @@ class FlowEngine(PlanEditing):
             raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
         choice = str(request.get("choice") or "")
         st = fold(self.journal.read(card))
+        if choice == "change-base":
+            from .basegeneration import BaseGeneration
+            return BaseGeneration(self).resolve(card, request)
+        self._require_base_context(card)
+        if set(request) & {"baseRef", "baseCommit", "previewId"}:
+            raise FlowError("bad-request", "parametry wykonania bazy wymagają choice=change-base")
+        if st.base_request and request.get("step") == st.base_request["decision"]:
+            if choice != "answer" or request.get("baseDecision") not in ("keep", "change"):
+                raise FlowError("base-decision", "wybierz strukturalnie Zachowaj albo Zmień bazę")
+            if request["baseDecision"] == "change":
+                return {"ok": True, "id": card, "waiting": True, "changed": False,
+                        "preview": self.preview_card_base_change(card, {})}
+            self.journal.append(card, "card.base-kept", decision=st.base_request["decision"])
+            return {"ok": True, "id": card, "changed": False, "baseDecision": "keep"}
         if choice in ("transfer", "wait-limit"):
+            if baseproposal.pending(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
             return self._resolve_transfer(card, st, request)
-        if choice == 'retry' and not st.card_finished and not st.running() and st.tracker_failures():
+        if choice == "reassign-reviewer":
+            return self._reassign_waiting_reviewer(card, st, request)
+        if choice == "reassign-author":
+            return self._reassign_fix_author(card, st, request)
+        wanted = str(request.get("step") or "")
+        # Ponowienie wskazanego kroku (także przez opiekuna) nie jest globalnym ponowieniem trackera.
+        if choice == 'retry' and not wanted and not caretaker_problem and not st.card_finished and \
+                not st.running() and st.tracker_failures():
             self.tracker.reset_failures(card)
             return {'ok': True, 'id': card, 'choice': choice, 'tracker': True}
+        if choice == "retry" and wanted and not caretaker_problem and wanted in caretaker.plan_fix_waiting(st) \
+                and not st.card_finished and not st.running():
+            # Druga nieudana poprawa formatu planu (PT-146): ponowienie z instrukcją użytkownika, bez opiekuna.
+            instruction = str(request.get("answer") or "").strip()
+            if len(instruction) > 4000:
+                raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
+            event = self.journal.append(card, "step.retry", step=wanted, ticket="", reason="", user=True,
+                                        instruction=instruction)
+            return {"ok": True, "id": card, "step": wanted, "choice": choice, "seq": event["seq"]}
         focus = decision_step(st)
-        wanted = str(request.get("step") or "")
+        if wanted in st.superseded and wanted not in st.plan_resumes:
+            raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy; zgody utraciły ważność.")
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
             # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
@@ -2642,24 +3719,48 @@ class FlowEngine(PlanEditing):
         done = st.finished.get(focus) or {}
         self._trial_check(step)
         result = done.get("result")
-        valid = {"question": ("answer",), "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
-                 else ("box-allow", "deny") if done.get("network") else ("allow", "deny"), "error": ("retry", "change-executor", "reject"),
+        proposal = done.get("baseProposal") or {}
+        base_decision = request.get("baseDecision")
+        if proposal.get("valid") is True and result == "question":
+            if st.card_finished:
+                raise FlowError("no-step-question", "karta została zakończona")
+            if choice != "answer" or base_decision not in ("keep", "change"):
+                raise FlowError("base-decision", "wybierz strukturalnie Zachowaj albo Zmień bazę")
+            if focus in st.step_decisions:
+                raise FlowError("already-decided", "odpowiedź na ten krok jest już zapisana")
+            if base_decision == "change":
+                # Sam wybór otwiera odczyt; pytanie pozostaje nierozstrzygnięte.
+                if focus not in st.base_waits:
+                    self.journal.append(card, "step.base-wait", step=focus)
+                return {"ok": True, "id": card, "step": focus, "waiting": True, "changed": False,
+                        "preview": self.preview_card_base_change(card, {"step": focus})}
+        elif base_decision is not None:
+            raise FlowError("bad-request", "ten krok nie ma poprawnej propozycji bazy")
+        valid = {"question": ("answer", "wait-card", "wait-ticket"),
+                 "denied": ("run", "run-always", "run-ticket", "deny") if done.get("outside")
+                 else ("box-allow", "deny") if done.get("network") else ("allow", "deny"), "error": ("retry", "change-executor", "reject", "wait-card", "wait-ticket"),
                  "stopped": ("background",) if done.get("reason") == "interactive-closed" else ()}.get(result, ())
+        # Pracujący krok opiekuna nie blokuje decyzji użytkownika (PT-150): decyzja wygrywa, a spóźniona akcja
+        # opiekuna jest nieaktualna (`caretaker.stale`) i niczego nie wykonuje.
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
-                   for s in st.running())
+                   for s in st.running() if s.get("kind") not in (caretaker.KIND, "caretaker-chat"))
         if st.card_finished or busy or not step or choice not in valid or \
-                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login"):
+                (result == "error" and int(step.get("attempt") or 0) == 0 and done.get("reason") != "login" and
+                 not caretaker_problem and not caretaker.handed_repeat(st, focus)):
             raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
         previous = st.step_decisions.get(focus)
         if previous:
             if previous.get("choice") == choice and previous.get("answer", "") == str(request.get("answer") or "") and \
                     previous.get("executor", "") == str(request.get("executor") or "") and \
                     previous.get("allow") == request.get("allow") and \
-                    previous.get("instead", "") == str(request.get("instead") or "").strip():
+                    previous.get("instead", "") == str(request.get("instead") or "").strip() and \
+                    previous.get("caretaker", "") == caretaker_problem:
                 return {"ok": True, "id": card, "step": focus, "choice": choice, "already": True}
             raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
         answer = str(request.get("answer") or "").strip()
+        if base_decision == "keep" and not answer:
+            answer = "Zachowaj " + (base_of(st).get("baseRef") or "unknown")
         executor = str(request.get("executor") or "").strip()
         instead = str(request.get("instead") or "").strip()
         if choice == "answer" and (not answer or len(answer) > 4000):
@@ -2669,7 +3770,9 @@ class FlowEngine(PlanEditing):
         if choice == "change-executor":
             if not executor:
                 raise FlowError("bad-executor", "wybierz wykonawcę")
-            self._resume_executor(card, st, step, executor, changed=True)
+            if len(answer) > 4000:
+                raise FlowError("bad-answer", "instrukcja musi mieć do 4000 znaków")
+            self._resume_executor(card, st, step, executor, changed=True, automated=bool(caretaker_problem))
         granted, skipped = [], []
         if choice == "reject":
             # „Odrzuć ticket” przy błędzie kroku (03.11): ticket wypada z karty, zależne tickety ruszają dalej.
@@ -2700,27 +3803,39 @@ class FlowEngine(PlanEditing):
             from ..board.commands import outside_allowed, outside_pattern
             command = str(done.get("command") or "").strip()
             _, project = self._project(card)
-            if not command or not outside_allowed(command, project.denied_commands):
+            roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+            if not command or not outside_allowed(command, project.denied_commands, roots):
                 raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
             if choice == "run-ticket":
                 # Zgoda na polecenia poza piaskownicą do końca ticketu (03.11, K-33/PT-110: trzy kopie, trzy pytania).
-                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus)
+                self.journal.append(card, "outside.ticket-consent", ticket=step.get("ticket") or "", step=focus,
+                                    orderSeq=(st.started or {}).get("seq"), baseVersion=st.base_version)
             if choice == "run-always":
                 from ..board.commands import outside_risky
-                if outside_risky(command):
+                if outside_risky(command, roots, self._extra_repos(card)):
                     raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
                 self._remember_outside(project.slug, outside_pattern(command))
         extra = {}
+        if base_decision == "keep":
+            extra["baseDecision"] = "keep"
         if choice == "allow" and "allow" in request:
             extra = {"allow": request.get("allow"), "commands": granted, "skipped": skipped}
         if choice == "deny" and instead:
             extra = {"instead": instead}
-        if request.get("auto"):
+        if request.get("auto") or caretaker_problem:
             extra["auto"] = True
+        if caretaker_problem:
+            extra["caretaker"] = caretaker_problem
+        if caretaker_step:
+            extra["caretakerStep"] = caretaker_step
+        if choice in ("wait-card", "wait-ticket"):
+            event = self._save_wait_decision(card, focus, step, choice,
+                                             request.get("card" if choice == "wait-card" else "waitTicket"),
+                                             answer=answer, **extra)
+            return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
         event = self.journal.append(card, "step.decision", step=focus, ticket=step.get("ticket") or "",
-                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry") else "",
-                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket",
-                                                                                    "box-allow")
+                                    choice=choice, answer=answer if choice in ("answer", "deny", "retry", "wait-card", "wait-ticket", "change-executor") else "",
+                                    command=done.get("command") or "" if choice in ("allow", "deny", "run", "run-always", "run-ticket", "box-allow")
                                     else "", executor=executor if choice == "change-executor" else "", **extra)
         return {"ok": True, "id": card, "step": focus, "choice": choice, "seq": event["seq"]}
 
@@ -2728,6 +3843,21 @@ class FlowEngine(PlanEditing):
 
     def preview_step_fault(self, card_id: str, request: dict) -> dict:
         """PreviewStepFault: treść karty z błędem, która powstanie albo zostanie dopisana — bez zapisu."""
+        if isinstance(request, dict) and "problem" in request:
+            self._caretaker_description(request)
+            if set(request) - {"problem", "choice", "description"}:
+                raise FlowError("bad-request", "oczekiwano problemu i opisu")
+            try:
+                card = f"K-{card_num(card_id)}"
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            st = fold(self.journal.read(card))
+            waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
+            if not any(d["technical"]["problem"] == request["problem"] for d in waiting):
+                raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
+            problem = next(p for p in caretaker.problems(st) if p["id"] == request["problem"])
+            return {"ok": True, "id": card, "preview": True,
+                    **self._fault_plan(card, st, "", request["description"].strip(), problem=problem)}
         card, st, name = self._fault_request(card_id, request)
         plan = self._fault_plan(card, st, name, str(request.get("description") or "").strip())
         return {"ok": True, "id": card, "step": name, "preview": True, **plan}
@@ -2744,22 +3874,10 @@ class FlowEngine(PlanEditing):
         reported = next((e for e in reversed(self.journal.read(card))
                          if e.get("type") == "step.reported" and e.get("step") == name), None)
         if reported is None:
-            plan = self._fault_plan(card, st, name, description)
-            try:
-                with self.journal.lock:   # repozytorium tablicy commituje też wątek główny
-                    if plan["action"] == "append":
-                        board = self.store.load()
-                        target = board.cards[card_num(plan["card"])]
-                        saved = self.store.update_card(target.id, {
-                            "description": target.description.rstrip("\n") + "\n\n" + plan["occurrence"]})
-                    else:
-                        saved = self.store.create_card({"title": plan["title"], "description": plan["description"],
-                                                        "project": faults.REPORT_PROJECT, "column": "backlog"})
-            except BoardError as exc:
-                raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
+            plan = self._save_fault_report(card, st, name, description)
             reported = self.journal.append(card, "step.reported", step=name,
                                            ticket=(st.steps.get(name) or {}).get("ticket") or "",
-                                           reported=saved.get("id") or plan["card"], action=plan["action"],
+                                           reported=plan["reported"], action=plan["action"],
                                            project=faults.REPORT_PROJECT, signature=plan["signature"],
                                            fault=plan["fault"])
         resumed = self.resolve_step(card, {"choice": "retry", "step": name})
@@ -2784,17 +3902,48 @@ class FlowEngine(PlanEditing):
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
                     ("plan-amend", "plan-review", "plan-revise") else s.get("ticket") == step.get("ticket"))
                    for s in st.running())
-        if not step or st.card_finished or busy or done.get("result") != "error" or \
+        if not step or st.card_finished or st.merged or busy or done.get("result") != "error" or \
                 int(step.get("attempt") or 0) == 0 or name in st.step_decisions or \
                 name in st.superseded or any(s.get("parentStep") == name for s in st.steps.values()):
             raise FlowError("not-waiting", f"krok {name or '?'} nie czeka na decyzję po błędzie")
         return card, st, name
 
-    def _fault_plan(self, card: str, st: FlowState, name: str, description: str) -> dict:
+    @staticmethod
+    def _caretaker_description(request: dict) -> None:
+        value = request.get("description")
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= faults.DESCRIPTION_LIMIT:
+            raise FlowError("bad-request", "opis problemu musi mieć od 1 do 4000 znaków")
+
+    def _save_fault_report(self, card, st, name, description, *, problem=None, occurrence_id=""):
+        """Wspólny zapis zgłoszenia; wybór karty i zapis pod jedną blokadą, bez ponawiania pracy."""
+        try:
+            with self.journal.lock:
+                plan = self._fault_plan(card, st, name, description, problem=problem, occurrence_id=occurrence_id)
+                if plan["action"] == "existing":
+                    return {**plan, "reported": plan["card"]}
+                if plan["action"] == "append":
+                    target = self.store.load().cards[card_num(plan["card"])]
+                    saved = self.store.update_card(target.id, {
+                        "description": target.description.rstrip("\n") + "\n\n" + plan["occurrence"]})
+                else:
+                    saved = self.store.create_card({"title": plan["title"], "description": plan["description"],
+                                                    "project": faults.REPORT_PROJECT, "column": "backlog"})
+        except BoardError as exc:
+            raise FlowError(exc.code, f"nie zapisano karty z błędem: {exc}") from None
+        return {**plan, "reported": saved.get("id") or plan["card"]}
+
+    def _fault_plan(self, card: str, st: FlowState, name: str, description: str, *, problem=None,
+                    occurrence_id: str = "") -> dict:
         """Co zapisze zgłoszenie: nowa karta albo wystąpienie dopisane do otwartej karty o tym samym podpisie."""
         from .decisions import build_decisions
         step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
         found = faults.of_finished(done)
+        if not name and problem:
+            stage = "stalled" if problem.get("trigger") == "stalled" else problem.get("stage") or "stalled"
+            source = (st.flow_errors.get(stage) or {}).get("event") or {}
+            step = {"kind": "flow", "ticket": problem.get("ticket") or ""}
+            done = {**source, "result": "error", "reason": source.get("error") or "karta stoi"}
+            found = {"fault": "tide", "cause": stage}
         sig = faults.signature(step.get("kind") or "", found["fault"], found["cause"])
         # Wycinek wyłącznie z dziennika tego kroku (bez dowiązań), po zamaskowaniu sekretów.
         step_dir = step.get("stepDir") or ""
@@ -2811,15 +3960,23 @@ class FlowEngine(PlanEditing):
             executor=step.get("executor") or "", attempt=int(step.get("attempt") or 0),
             result=done.get("result") or "", reason=done.get("reason") or "", fault=found["fault"],
             cause=found["cause"], description=description, log_excerpt=faults.excerpt(lines),
-            reason_labels=REASON_LABELS)
+            reason_labels=REASON_LABELS, occurrence_id=occurrence_id)
+        plan = {"signature": sig, "fault": found["fault"], "project": faults.REPORT_PROJECT,
+                "occurrence": occurrence}
+        # Znacznik jest zapisany razem z wystąpieniem, więc przetrwa przerwanie przed caretaker.reported.
+        # Odzyskanie własnego zapisu obejmuje również karty zarchiwizowane i scalone.
+        marker = faults.occurrence_marker(occurrence_id)
+        if marker:
+            for item in board.cards.values():
+                if item.project == faults.REPORT_PROJECT and marker in item.description.splitlines():
+                    return {**plan, "action": "existing", "card": item.id, "title": item.title,
+                            "description": item.description}
         target = None
         for item in sorted(board.cards.values(), key=lambda c: c.num, reverse=True):
             if item.project == faults.REPORT_PROJECT and item.column != "archived" and \
                     faults.has_signature(item.description, sig) and not self._card_merged(item.id):
                 target = item
                 break
-        plan = {"signature": sig, "fault": found["fault"], "project": faults.REPORT_PROJECT,
-                "occurrence": occurrence}
         if target is not None:
             body = target.description.rstrip("\n") + "\n\n" + occurrence
             if len(body.encode("utf-8")) > DESCRIPTION_LIMIT_BYTES:
@@ -2828,19 +3985,22 @@ class FlowEngine(PlanEditing):
                     ticket=step.get("ticket") or "", executor=step.get("executor") or "",
                     attempt=int(step.get("attempt") or 0), result=done.get("result") or "",
                     reason=done.get("reason") or "", fault=found["fault"], cause=found["cause"],
-                    description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False)
+                    description=description, log_excerpt="", reason_labels=REASON_LABELS, with_excerpt=False,
+                    occurrence_id=occurrence_id)
                 plan["occurrence"] = occurrence
             return {**plan, "action": "append", "card": target.id, "title": target.title, "description": occurrence}
-        decision = next((d for d in build_decisions(st) if d.get("step") == name), None) or {}
+        decision = next((d for d in build_decisions(st) if (
+            (d.get("technical") or {}).get("problem") == problem.get("id") if problem and not name
+            else d.get("step") == name)), None) or {}
         happened = decision.get("happened") or "Krok zakończył się błędem."
         title = faults.card_title(step.get("kind") or "", found["fault"], found["cause"], REASON_LABELS)
-        body = faults.card_body(card=card, sig=sig, happened=happened, first=occurrence)
+        body = faults.card_body(card=card, sig=sig, happened=happened, first=occurrence, caretaker=problem is not None)
         return {**plan, "action": "create", "card": "", "title": title, "description": body}
 
     def _card_merged(self, card_id: str) -> bool:
-        """Karta scalona: jej przepływ doszedł do scalenia z gałęzią główną (`card.main-merged`)."""
+        """Karta scalona do zapisanego celu, także w historycznym formacie."""
         try:
-            return self.journal.has(card_id) and bool(fold(self.journal.read(card_id)).main_merged)
+            return self.journal.has(card_id) and bool(fold(self.journal.read(card_id)).merged)
         except Exception:
             return False
 
@@ -2896,8 +4056,27 @@ class FlowEngine(PlanEditing):
                 raise FlowError(exc.code, str(exc)) from None
         return granted, skipped
 
+    @staticmethod
+    def _reviewer_context(st: FlowState, ticket: str) -> tuple[dict, dict]:
+        """Przydział i ostatnie review; nowszy przydział recenzenta unieważnia poprzedni krok review."""
+        assigned = st.assignments.get(ticket) or st.started or {}
+        override = st.reviewer_overrides.get(ticket) or {}
+        previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
+                         s.get("kind") == "review"), {})
+        if override and override.get("seq", 0) > previous.get("seq", 0):
+            previous = {}
+        return {**assigned, **override}, previous
+
+    def _resolve_reviewer(self, assigned: dict, previous: dict, catalog, cfg):
+        """Bieżący wykonawca review: historia wybiera nazwę, katalog rozwiązuje model i dostawcę."""
+        name = previous.get("executor") or assigned.get("reviewer") or ""
+        try:
+            return execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+
     def _resume_executor(self, card: str, st: FlowState, step: dict, name: str, *, changed=False,
-                         transfer=False):
+                         transfer=False, automated=False):
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
@@ -2910,6 +4089,9 @@ class FlowEngine(PlanEditing):
             raise FlowError("same-provider", "przekazanie wymaga innego dostawcy")
         if transfer and selected.local != bool(step.get("local")):
             raise FlowError("bad-executor-provider", "praca lokalna pozostaje lokalna")
+        if changed and automated and (step.get("local") or step.get("provider") == "local" or
+                                      caretaker.local_only(st)) and not selected.local:
+            raise FlowError("bad-executor-provider", "krok lokalny i karta „Tylko lokalnie” pozostają lokalne")
         if not changed and (selected.name != step.get("executor") or selected.model != step.get("model") or
                             selected.provider != step.get("provider") or selected.tool != step.get("program") or
                             selected.effort != step.get("effort", "") or
@@ -2917,27 +4099,39 @@ class FlowEngine(PlanEditing):
                             (selected.route.kind if selected.route else "") != step.get("routeKind", "") or
                             (selected.route.token_file if selected.route else "") != step.get("routeTokenFile", "")):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
-        if changed and step.get("kind") == "plan-review":
-            planner = catalog.get((st.plan_proposed or {}).get("planner"))
-            if planner and (selected.name == planner.name or selected.model.lower() == planner.model.lower()):
-                raise FlowError("bad-executor", "review planu wymaga modelu innego niż planujący")
+        if step.get("kind") == "plan-review":
+            planner = catalog.get((st.plan_proposed or {}).get("reviewAuthor") or proposal_author_of(st, st.plan_proposed))
+            if not planner or not flow_plans.independent_reviewer(planner, selected):
+                raise FlowError("bad-executor", "review planu wymaga niezależnego recenzenta autora tej wersji")
         if changed and step.get("kind") not in ("ticket", "fix", "review"):
             if step.get("kind") not in ("conflict", "close") and selected.local != bool(step.get("local")):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
             return selected
         if changed:
-            opposite_kind = ("ticket", "fix") if step.get("kind") == "review" else ("review",)
-            opposite = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == step.get("ticket")
-                             and s.get("kind") in opposite_kind), None) or {}
+            assigned = st.assignments.get(step.get("ticket") or "") or st.started or {}
             if step.get("kind") == "review":
-                other_model = opposite.get("model") or (st.started or {}).get("model") or ""
-                other_provider = opposite.get("provider") or (st.started or {}).get("provider") or ""
+                opposite = next((s for s in reversed(list(st.steps.values()))
+                                 if s.get("ticket") == step.get("ticket") and
+                                 s.get("kind") in ("ticket", "fix")), {})
+                other_model = opposite.get("model") or assigned.get("model") or ""
+                other_provider = opposite.get("provider") or assigned.get("provider") or ""
             else:
-                other_model = opposite.get("model") or (st.started or {}).get("reviewerModel") or ""
-                other_provider = opposite.get("provider") or (st.started or {}).get("reviewerProvider") or ""
+                reviewer, opposite = self._reviewer_context(st, step.get("ticket") or "")
+                if automated:
+                    resolved = self._resolve_reviewer(reviewer, opposite, catalog, cfg)
+                    other_model, other_provider = resolved.model, resolved.provider
+                else:
+                    other_model = opposite.get("model") or reviewer.get("reviewerModel") or ""
+                    other_provider = opposite.get("provider") or reviewer.get("reviewerProvider") or ""
             # 03.11 (decyzja użytkownika): niezależność autora i recenzenta to rekomendacja planu, nie blokada —
             # wybór użytkownika albo eskalacja Tide wygrywa (K-31/DPT-5: „Ponów innym wykonawcą” kończył się błędem
             # przepływu, bo recenzentem był ten sam model). Zostaje tylko rozdział pracy lokalnej i chmurowej.
+            # PT-145: opiekun nie ma prawa korzystać z wyjątku dla świadomego wyboru użytkownika.
+            if automated and other_model and selected.model.lower() == other_model.lower():
+                raise FlowError("bad-executor", "autor i recenzent wymagają różnych modeli")
+            if automated and assigned.get("preferredProvider") == "mixed" and other_provider and \
+                    selected.provider == other_provider:
+                raise FlowError("bad-executor-provider", "tryb mieszany wymaga innego dostawcy autora i recenzenta")
             if selected.local != (other_provider == "local") and other_provider:
                 raise FlowError("bad-executor-provider", "praca lokalna wymaga lokalnego autora i recenzenta")
         return selected
@@ -2976,6 +4170,66 @@ class FlowEngine(PlanEditing):
                 return candidate
         raise FlowError("no-reviewer", "nie ma dostępnego recenzenta u innego dostawcy")
 
+    def _reassign_waiting_reviewer(self, card: str, st: FlowState, request: dict) -> dict:
+        """Recenzent review, które czeka przed startem (limit dostawcy, kolejka), przepięty na innego wykonawcę
+        (05.11: okno tygodniowe Claude na 10% — recenzje Opusa stały do soboty, użytkownik chciał Codexa).
+        Wybór użytkownika: reguła „inny model niż autor” daje tylko notkę w historii, jak przy przekazaniu."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if ("review" not in {kind for (t, kind) in st.waiting if t == ticket} or
+                any(s.get("ticket") == ticket for s in st.running())):
+            raise FlowError("not-waiting", f"{card}: review ticketu {ticket or '?'} nie czeka na start")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz recenzenta z katalogu wykonawców")
+        try:
+            candidate = execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        source = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket), None)
+        if source is None:
+            raise FlowError("not-waiting", f"{card}: ticket {ticket} nie ma jeszcze kroku")
+        self._save_transfer_reviewer(card, source, candidate)
+        return {"ok": True, "id": card, "ticket": ticket, "reviewer": candidate.name}
+
+    def _reassign_fix_author(self, card: str, st: FlowState, request: dict) -> dict:
+        """Autor kolejnych poprawek ticketu przepięty na innego wykonawcę (05.11: poprawki po review czekały na limit
+        Claude do soboty). Poprawka zawsze startuje świeżą sesją, więc zmiana autora nie gubi rozmowy."""
+        ticket = str(request.get("ticket") or "").strip()
+        executor = str(request.get("executor") or "").strip()
+        if ticket == PLAN_AUTHOR:
+            # Planista kolejnych poprawek planu (06.11, K-38: poprawka czekała na limit Claude do soboty).
+            if not st.plan_proposed or st.card_finished or any(
+                    s.get("kind") in ("plan-amend", "plan-revise", "planning", "plan-review") for s in st.running()):
+                raise FlowError("not-waiting", f"{card}: planista karty właśnie pracuje albo karta nie ma planu")
+        elif ticket == CLOSE_AUTHOR:
+            # Domknięcie karty (06.11, K-37: domknięcie planisty Opus czekało na limit Claude do soboty).
+            if st.card_finished or any(s.get("kind") == "close" for s in st.running()):
+                raise FlowError("not-waiting", f"{card}: domknięcie karty właśnie trwa albo karta jest skończona")
+        elif not any(s.get("ticket") == ticket for s in st.steps.values()) or \
+                any(s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix") for s in st.running()):
+            raise FlowError("not-waiting", f"{card}: autor ticketu {ticket or '?'} właśnie pracuje")
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None or not executor or catalog.get(executor) is None:
+            raise FlowError("bad-executor", "wybierz autora z katalogu wykonawców")
+        source = next((s for name, s in reversed(list(st.steps.items()))
+                       if ticket == PLAN_AUTHOR and s.get("kind") in ("plan-amend", "plan-revise")
+                       and name not in st.superseded), {})
+        resumable = ((st.finished.get(source.get("step")) or {}).get("result") in ("question", "denied", "error")
+                     and not any(s.get("parentStep") == source.get("step") for s in st.steps.values()))
+        try:
+            if resumable:
+                # Sukces API musi oznaczać, że istniejący krok da się wznowić tym wykonawcą.
+                self._resume_executor(card, st, source, executor, changed=True)
+            else:
+                execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        event = self.journal.append(card, "author.reassigned", ticket=ticket, executor=executor)
+        return {"ok": True, "id": card, "ticket": ticket, "executor": executor, "seq": event["seq"]}
+
     def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
         if candidate is None:
             return
@@ -2992,9 +4246,29 @@ class FlowEngine(PlanEditing):
                             reviewerRouteTokenFile=route.token_file if route else "",
                             reviewerEffort=candidate.effort)
 
+    def _caretaker_takes_over(self, card: str, st: FlowState, name: str) -> bool:
+        """Ten sam powód drugi raz (PT-148): opiekun zamiast automatycznego ponowienia albo automatycznej odmowy
+        łańcucha. Ocenia `caretaker.takes_over` — bez opiekuna zostaje dzisiejszy automat."""
+        st.caretaker_setup = self._caretaker_setup(st)
+        return caretaker.takes_over(st, name, self._card_column(card))
+
+    def _caretaker_resume(self, card: str, st: FlowState, step: dict) -> bool:
+        """`retry` opiekuna przy problemie bez decyzji (PT-150): wewnętrzna ścieżka automatycznego ponowienia
+        (`step.retry` → wznowienie z `attempt: 1`), z instrukcją opiekuna w kartce wznowienia. Wspólne dla kroków
+        ticketów (`_advance`), planowania (`_advance_planning`) i review/poprawek planu (`_plan_step_decision`)."""
+        name = step.get("step") or ""
+        retried = st.step_retries.get(name) or {}
+        if not (retried.get("caretaker") or retried.get("user")) or name in st.step_decisions:
+            return False
+        self._resume_step(card, st, step, {"choice": "retry", "answer": retried.get("instruction") or "",
+                                           "caretaker": retried.get("caretaker") or ""}, attempt=1)
+        return True
+
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
         self._trial_check(step)
+        if step.get("step") in st.superseded and step.get("step") not in st.plan_resumes:
+            raise FlowError("stale-context", "Nie można wznowić sesji poprzedniego kontekstu.")
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
             return
         done = st.finished.get(step.get("step")) or {}
@@ -3011,11 +4285,26 @@ class FlowEngine(PlanEditing):
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
+        # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
+        kind = step.get("kind")
+        author_key = (CLOSE_AUTHOR if kind == "close" else PLAN_AUTHOR if kind in ("plan-amend", "plan-revise")
+                      else step.get("ticket") or "")
+        author_override = st.author_overrides.get(author_key) or {}
+        reassigned = (choice not in ("change-executor", "transfer") and
+                      kind in ("ticket", "fix", "close", "plan-amend", "plan-revise") and
+                      author_override.get("seq", 0) > step.get("seq", 0) and
+                      author_override.get("executor") not in ("", None, step.get("executor")))
+        if reassigned:
+            name = author_override["executor"]
+        override = reviewer_override(st, step, decision, name)
+        if override:
+            name, reassigned = override, True
+        fresh = choice in ("change-executor", "transfer") or reassigned
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
-                                             changed=choice in ("change-executor", "transfer"),
-                                             transfer=choice == "transfer")
+                                             changed=fresh,
+                                             transfer=choice == "transfer", automated=bool(decision.get("caretaker")))
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
@@ -3028,6 +4317,8 @@ class FlowEngine(PlanEditing):
                                 routeTokenFile=step.get("routeTokenFile") or "",
                                 parentStep=step.get("step") or "", attempt=attempt, session=step.get("session") or "",
                                 worktree=step.get("worktree") or "", branch=step.get("branch") or "",
+                                baseRef=step.get("baseRef") or "", baseCommit=step.get("baseCommit") or "",
+                                baseVersion=step.get("baseVersion", 0),
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "",
                                 **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step})
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
@@ -3051,7 +4342,8 @@ class FlowEngine(PlanEditing):
         prompt += handoff.resume_context(choice=choice, prior=st.finished.get(step.get("step")) or {},
                                          answer=decision.get("answer") or "", command=decision.get("command") or "",
                                          out_dir=new_out, allowed=decision.get("commands"),
-                                         skipped=decision.get("skipped") or (), instead=decision.get("instead") or "")
+                                         skipped=decision.get("skipped") or (), instead=decision.get("instead") or "",
+                                         caretaker=bool(decision.get("caretaker")))
         if choice == "transfer":
             wip = (st.wip_retries.get(step.get("step")) or {}).get("wip") or \
                   (st.finished.get(step.get("step")) or {}).get("wip") or {}
@@ -3063,8 +4355,12 @@ class FlowEngine(PlanEditing):
                 except OSError:
                     raise FlowError("missing-handoff", "brakuje notki przekazania kroku") from None
                 prompt += "\n\nNotka techniczna przekazania (dane z poprzedniego kroku):\n" + note
-        session = "" if choice in ("change-executor", "transfer") else step.get("session") or ""
-        if not session and choice not in ("change-executor", "transfer") and step.get("program") == "codex":
+        if reassigned:
+            prompt += (f"\n\nPoprzedni krok prowadził inny wykonawca ({step.get('executor') or '?'}); "
+                       f"zaczynasz nową sesję. Sprawdź `git log` i `git status` w worktree oraz notkę i wynik "
+                       f"poprzedniego kroku w {old_out}.")
+        session = "" if fresh else step.get("session") or ""
+        if not session and not fresh and step.get("program") == "codex":
             finder = getattr(execution, "codex_session_id", None)
             if finder:
                 session = finder(os.path.join(old_out, "step.log"))
@@ -3095,6 +4391,7 @@ class FlowEngine(PlanEditing):
         if choice not in ("retry", "reject", "accept"):
             raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
         st = fold(self.journal.read(card))
+        self._require_base_context(card)
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
         if step.get("kind") != "review" and choice == "reject":
@@ -3116,7 +4413,9 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
             return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice,
                     "already": True}
-        if st.card_finished or any(s.get("ticket") == ticket for s in st.running()) or step.get("kind") != "review" or round_no < 3 or \
+        # Opiekun analizuje widoczną decyzję, ale nie blokuje jej rozstrzygnięcia przez użytkownika.
+        ticket_running = any(s.get("ticket") == ticket and s.get("kind") != "caretaker" for s in st.running())
+        if st.card_finished or ticket_running or step.get("kind") != "review" or round_no < 3 or \
                 verdict.get("verdict") != "REQUEST_CHANGES" or \
                 (ticket, round_no) not in st.review_questions or \
                 previous:
@@ -3169,24 +4468,13 @@ class FlowEngine(PlanEditing):
     def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
         item, project = self._project(card)
         ticket = source["ticket"]
-        assigned = st.assignments.get(ticket) or st.started or {}
-        override = st.reviewer_overrides.get(ticket) or {}
-        assigned = {**assigned, **override}
+        assigned, previous = self._reviewer_context(st, ticket)
         info = ticket_of(st, ticket)
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-reviewer", f"{card}: katalog recenzentów jest niedostępny")
-        previous = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
-                         s.get("kind") == "review"), {})
-        if override and override.get("seq", 0) > previous.get("seq", 0):
-            previous = {}
-        try:
-            reviewer_name = previous.get("executor") or assigned.get("reviewer") or ""
-            reviewer = execution.resolve(reviewer_name, catalog, config=cfg,
-                                         probe=self.model_probe, which=self.which)
-        except execution.ExecutionError as exc:
-            raise FlowError(exc.code, str(exc)) from None
+        reviewer = self._resolve_reviewer(assigned, previous, catalog, cfg)
         expected = {
             "program": previous.get("program") or assigned.get("reviewerProgram"),
             "model": previous.get("model") or assigned.get("reviewerModel"),
@@ -3206,7 +4494,7 @@ class FlowEngine(PlanEditing):
             # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
             # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
             self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
-                                reviewer=reviewer_name, author=source.get("executor") or source.get("model") or "")
+                                reviewer=reviewer.name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
         try:
             tip = self.git.clean_tip(project.repo, info["branch"], path)
@@ -3214,12 +4502,18 @@ class FlowEngine(PlanEditing):
             # K-35/PT-132: autor skończył, ale zostawił nieśledzony plik diagnostyczny — zamiast stać, krok autora
             # wraca raz z prośbą o porządek (commit potrzebnych zmian, usunięcie tymczasowych plików).
             asked = sum(1 for e in self.journal.read(card) if e.get("type") == "step.cleanup" and e.get("ticket") == ticket)
-            if "lokalne zmiany" not in str(exc) or asked >= 1 or not source.get("step") or \
-                    any(s.get("parentStep") == source["step"] for s in st.steps.values()):
+            if "lokalne zmiany" not in str(exc):
                 raise
-            self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
-            self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
-            return
+            if asked >= 1 or not source.get("step") or \
+                    any(s.get("parentStep") == source["step"] for s in st.steps.values()):
+                # Po jednej prośbie o porządek zostały już tylko nieśledzone pliki (dane wejściowe, wyniki pomiarów):
+                # nie zmieniają gałęzi ani scalenia, więc review rusza; zmiany śledzonych plików dalej blokują
+                # (04.11, K-43/BO-9: ponowione review kończyło się flow.error „worktree ticketu ma lokalne zmiany”).
+                tip = self.git.clean_tip(project.repo, info["branch"], path, untracked=False)
+            else:
+                self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
+                self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
+                return
         diff = self.git.review_diff(project.repo, info["cardBranch"], info["branch"])
         step_id = self._next_step_id(card, ticket, st)
         out = path + f".review-{round_no}.step/out"
@@ -3227,7 +4521,8 @@ class FlowEngine(PlanEditing):
         prompt = handoff.review_card(card_id=card, title=title, description=description, ticket=ticket,
                                      round_no=round_no, card_branch=info["cardBranch"],
                                      ticket_branch=info["branch"], worktree=path, out_dir=out,
-                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo))
+                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo),
+                                     test_base=info["base"])
         prompt += handoff.test_evidence(source)
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
@@ -3249,13 +4544,16 @@ class FlowEngine(PlanEditing):
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
         round_no = int(review_step.get("round") or 1)
         escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
+        override = st.author_overrides.get(ticket) or {}
+        reassigned = bool(override) and override.get("seq", 0) > author.get("seq", 0)
         try:
-            executor = execution.resolve((review_step.get("executor") if escalate else None) or
+            executor = execution.resolve(override["executor"] if reassigned else
+                                         (review_step.get("executor") if escalate else None) or
                                          author.get("executor") or assigned.get("executor") or "", catalog,
                                          config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if escalate:
+        if escalate or reassigned:
             pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
         elif executor.tool != (author.get("program") or assigned.get("program")) or \
                 executor.model != (author.get("model") or assigned.get("model")) or \
@@ -3270,7 +4568,7 @@ class FlowEngine(PlanEditing):
         title, description = self._ticket_text(card, st, ticket, item)
         prompt = handoff.fix_card(card_id=card, title=title, description=description, ticket=ticket,
                                   round_no=round_no, branch=info["branch"], worktree=info["worktree"],
-                                  out_dir=out, review=self._note(card, review_step))
+                                  out_dir=out, review=self._note(card, review_step), test_base=info["base"])
         self._launch(item, project, executor, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": info["worktree"]},
@@ -3280,6 +4578,11 @@ class FlowEngine(PlanEditing):
         self._trial_check(ticket)
         info = ticket_of(st, ticket)
         repo = self._repo(card)
+        if any(row["worktree"] == info["worktree"] for row in st.base_change.get("generation", [])):
+            # Zasoby korekty pozostają pod ochroną PT-202, także po zakończeniu nowej pracy.
+            self._act(card, "cleanup", ticket, lambda: {"removed": False, "preserved": True,
+                                                        "reason": "base-generation"})
+            return
         # Sprzątanie jest powtarzalne: nieudane (np. pliki w worktree, K-15/LEGAL-60) ponawia się przy każdym
         # przebiegu, zamiast na zawsze zatrzymać kartę.
         self._act(card, "cleanup", ticket,
@@ -3290,19 +4593,21 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         for name, finished in st.finished.items():
             step = st.steps.get(name) or {}
-            if step.get("kind") != "review" or finished.get("result") != "done" or \
+            if name in st.superseded or step.get("kind") != "review" or finished.get("result") != "done" or \
                     (step.get("ticket"), step.get("round")) in st.verdicts:
                 continue
             path = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
             verdict = self._review_result(path)
+            self._move_reviewer_files(step, step.get("repo") or self._repo(card))
             try:
                 tip = self.git.clean_tip(step.get("repo") or self._repo(card),
-                                         step.get("branch") or "", step.get("worktree") or "")
+                                         step.get("branch") or "", step.get("worktree") or "", untracked=False)
             except FlowGitError:
                 tip = ""
             if verdict and tip and tip == step.get("reviewTip"):
                 self.journal.append(card, "review.verdict", step=name, ticket=step["ticket"],
-                                    round=step["round"], reviewer=step.get("executor") or "", **verdict)
+                                    round=step["round"], reviewer=step.get("executor") or "",
+                                    baseVersion=step.get("baseVersion", 0), reviewTip=tip, **verdict)
 
     def _recover_review_rejections(self, card: str) -> None:
         """Decyzja reject i zdarzenie odrzucenia mogą zostać rozdzielone restartem usługi."""
@@ -3317,6 +4622,9 @@ class FlowEngine(PlanEditing):
         if trialhold.held(intent) or trialgate.blocked(intent.get("key") or ""):
             return
         action, key = intent.get("action"), intent.get("key")
+        if action == "main-merge":
+            # Właścicielem jest _recover_main_merge; oczekiwanie nie jest końcowym wynikiem.
+            return
         if intent.get('youtrack'):
             try:
                 self.tracker.run(card, action, key, intent['payload'])
@@ -3350,6 +4658,18 @@ class FlowEngine(PlanEditing):
             if step is not None:
                 self._merge(card, st, step)
             return
+        if action == "caretaker-action":
+            # Akcja opiekuna przerwana restartem między zamiarem a wynikiem (PT-150): dokończenie tą samą ścieżką;
+            # `apply` sprawdza, co już zapisał ten krok opiekuna, więc skutek powstaje dokładnie raz.
+            st = fold(self.journal.read(card))
+            run = st.caretaker_runs.get(key) or st.caretaker_chat_actions.get(key)
+            done = st.finished.get(key) or {}
+            if run and run.get("mode") == "chat":
+                done = {"outcome": run.get("outcome") or {}}
+            outcome = done.get("outcome") or {}
+            if run is not None and outcome.get("ok") and outcome.get("action") in caretaker.ACTIONS:
+                self._caretaker_act(card, run, outcome["action"], outcome.get("params") or {})
+                return
         if action == "step-start":
             unit = intent.get("unit") or f"tide-step-{key}"
             result = os.path.join(intent.get("stepDir") or "", "out", handoff.RESULT_FILE)
@@ -3389,9 +4709,11 @@ class FlowEngine(PlanEditing):
             return  # także bezpośrednie recovery zachowuje bajty nieznanej historii
         ticket = ticket_of(st)
         for (action, key), result in st.results.items():
-            if action != "step-start" or not result.get("ok") or key in st.steps:
+            if action != "step-start" or not result.get("ok") or key in st.steps or key in st.caretakers:
                 continue
             intent = st.intents.get((action, key)) or {}
+            if intent.get("seq", 0) < st.base_change.get("seq", 0):
+                continue
             self.journal.append_complete(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
                                 ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
                                 executor=intent.get("executor") or (st.started or {}).get("executor") or "",
@@ -3407,7 +4729,11 @@ class FlowEngine(PlanEditing):
                                 branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
+                                deliveredNoteIds=intent.get("deliveredNoteIds") or [],
+                                readDirsProfile=bool(result.get("readDirsProfile")),
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
+                                baseVersion=intent.get("baseVersion", 0),
+                                baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""),
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
                                 **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
                                                          "boxPortOwner") if intent.get(k)})
@@ -3427,7 +4753,8 @@ class FlowEngine(PlanEditing):
             self._stop(card, step, "error", self._box_network_errors[name])
             return
         log = os.path.join(step.get("stepDir") or "", "out", "step.log")
-        if flow_limits.exhausted_log(log, step.get("program") or ""):
+        base_wait = bool(baseproposal.pending(fold(self.journal.read(card))))
+        if not base_wait and flow_limits.exhausted_log(log, step.get("program") or ""):
             if name not in fold(self.journal.read(card)).limits:
                 low = self._low_limit(step.get("provider") or "") or {}
                 base_tip = self.git.sha(step.get("repo") or self._repo(card),
@@ -3467,6 +4794,8 @@ class FlowEngine(PlanEditing):
         if not alive:
             self._finish(card, step, exit_code=exit_code)
             return
+        if base_wait:
+            return
         try:
             started_at = datetime.fromisoformat(step.get("ts") or "").timestamp()
         except ValueError:
@@ -3478,6 +4807,9 @@ class FlowEngine(PlanEditing):
 
     def _poll_interactive(self, card: str, step: dict) -> None:
         """Plik wyniku kończy próbę; po zamknięciu bez pliku użytkownik wybiera dalszy ruch."""
+        if step.get("kind") == "caretaker-chat":
+            self._poll_caretaker_chat(card, step)
+            return
         out = os.path.join(step.get("stepDir") or "", "out", handoff.RESULT_FILE)
         if os.path.isfile(out):
             data = self._result(out)
@@ -3486,7 +4818,7 @@ class FlowEngine(PlanEditing):
                 return
         if step.get("consoleClosed") or self._console_ended(step):
             if not step.get("consoleClosed"):
-                self.journal.append(card, "step.console_closed", step=step.get("step"))
+                close_console(self.journal, card, step.get("step"))
             self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                              "question": "Karta Konsoli została zamknięta bez wyniku. Wznowić czy porzucić?"})
             return
@@ -3497,7 +4829,7 @@ class FlowEngine(PlanEditing):
             timed_out = False  # plik przejęty przez kartę; czekamy na wynik albo znacznik zamknięcia
         if timed_out:
             if self.task_files.cancel(task_file):
-                self.journal.append(card, "step.console_closed", step=step.get("step"))
+                close_console(self.journal, card, step.get("step"), cancelled=True)
                 self._finish(card, step, forced={"result": "stopped", "reason": "interactive-closed",
                                                  "question": "Konsola nie przejęła kroku. Wznowić czy porzucić?"})
                 return
@@ -3554,8 +4886,9 @@ class FlowEngine(PlanEditing):
         if item is None or item.column in ("done", "archived") or self.clock() - st.last_activity_ts < 180:
             return
         event = self.journal.append(card, "card.stalled", reason=st.flow_error or "brak kroku i powodu czekania")
-        self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
-                              "detail": event["reason"]})
+        if caretaker.unavailable(fold(self.journal.read(card)), item.column):
+            self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
+                                  "detail": event["reason"]})
 
     def _progress_mark(self, step: dict) -> tuple:
         """Odcisk postępu: pliki worktree (bez .git) i dziennik sesji kroku."""
@@ -3637,6 +4970,11 @@ class FlowEngine(PlanEditing):
 
     def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
               *, handoff: bool = False) -> bool:
+        if step.get("kind") == "caretaker-chat":
+            if not self._stop_caretaker_chat(step):
+                return False
+            self._finish_caretaker_chat(card, step, reason)
+            return True
         if handoff and not self._kill(step):
             return False  # sprawdzenie czystości WIP dopiero po potwierdzonym końcu programu
         recovered = self._recovered_wip_snapshot(card, step) if handoff else None
@@ -3647,6 +4985,7 @@ class FlowEngine(PlanEditing):
                                      session_id=step.get("session") or "", claude_projects=self.claude_projects,
                                      codex_roots=self.codex_roots,
                                      grace=self.grace, recovered_snapshot=recovered,
+                                     commit_wip=step.get("kind") != caretaker.KIND,
                                      kill=lambda: self._kill(step))
         wip = {"stopped": stopped.stopped, "committed": stopped.committed, "commit": stopped.commit,
                "files": stopped.files, "error": stopped.error, "notes": stopped.notes}
@@ -3671,6 +5010,12 @@ class FlowEngine(PlanEditing):
         name = step.get("step") or ""
         if name in fold(self.journal.read(card)).finished:
             self._release_box(card, step)
+            return
+        if step.get("kind") == "caretaker-chat":
+            self._finish_caretaker_chat(card, step, (forced or {}).get("reason") or "")
+            return
+        if step.get("kind") == caretaker.KIND:
+            self._finish_caretaker(card, step, forced, exit_code)
             return
         out = os.path.join(step.get("stepDir") or "", "out")
         data = forced or self._result(os.path.join(out, handoff.RESULT_FILE))
@@ -3701,9 +5046,10 @@ class FlowEngine(PlanEditing):
             if verdict is None:
                 data = {"result": "error", "reason": "bad-review"}
             else:
+                self._move_reviewer_files(step, step.get("repo") or self._repo(card))
                 try:
                     tip = self.git.clean_tip(step.get("repo") or self._repo(card),
-                                             step.get("branch") or "", step.get("worktree") or "")
+                                             step.get("branch") or "", step.get("worktree") or "", untracked=False)
                 except FlowGitError:
                     tip = ""
                 if not tip or tip != step.get("reviewTip"):
@@ -3749,9 +5095,16 @@ class FlowEngine(PlanEditing):
             data = {**data, "notes": [*(n for n in data.get("notes") or [] if n != boxstep.NOTE_FILE),
                                       boxstep.NOTE_FILE]}
         snapshot_dir = ""
-        if data.get("result") == "done" and step.get("kind") == "planning" and step.get("mode") == "interactive":
-            snapshot_dir = self._freeze_planning_output(card, name, out)
+        if data.get("result") == "done" and step.get("kind") in ("planning", "plan-fix", "plan-import", "plan-revise", "plan-amend"):
+            try:
+                snapshot_dir = self._freeze_planning_output(card, name, out)
+            except (OSError, UnicodeError, ValueError) as exc:
+                data = {"result": "error", "reason": f"niepoprawne artefakty planowania: {exc}"}
         extra = {k: v for k, v in (("wip", wip), ("messages", messages)) if v}
+        if data.get("result") == "question" and data.get("baseProposal") is not None:
+            extra["baseProposal"] = baseproposal.validate(data["baseProposal"], self.git, self._repo(card))
+        if data.get("waitFor"):
+            extra["waitFor"] = data["waitFor"]
         remembered = False
         auto_allow = False
         broken_mcp = self._codex_broken_mcp(step, data)
@@ -3770,13 +5123,12 @@ class FlowEngine(PlanEditing):
                 extra["network"] = network
                 data["canAllow"] = False
             elif data.get("outside"):
-                from ..board.commands import outside_allowed, outside_matches, outside_pattern
+                from ..board.commands import outside_allowed, outside_pattern
                 extra["outside"] = True
                 extra["pattern"] = outside_pattern(command)
-                data["canAllow"] = step.get("runner") != boxstep.RUNNER and outside_allowed(command, project.denied_commands)
-                remembered = data["canAllow"] and (outside_matches(command, self._outside_remembered(project.slug))
-                                                   or self._ticket_consent(card, step.get("ticket") or "")
-                                                   or self._auto_outside(card) and not outside_risky(command))
+                roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+                data["canAllow"] = step.get("runner") != boxstep.RUNNER and outside_allowed(command, project.denied_commands, roots)
+                remembered = data["canAllow"] and consent.automatic(self, card, step, command)
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -3796,7 +5148,8 @@ class FlowEngine(PlanEditing):
                             canAllow=data.get("canAllow", True), stalledSince=data.get("stalledSince") or "",
                             notes=[n for n in data.get("notes") or [] if n in kept], kept=kept,
                             exit=exit_code, snapshotDir=snapshot_dir, **extra)
-        if data.get("result") == "question":
+        waiting = bool(data.get("waitFor")) and self._declared_wait(card, name, step, data)
+        if data.get("result") == "question" and not waiting:
             self._env_question(card, step, data)
         if broken_mcp:
             # Błąd konfiguracji Codexa po stronie Tide: zapamiętany serwer jest odtąd pomijany, krok rusza sam.
@@ -3811,7 +5164,7 @@ class FlowEngine(PlanEditing):
             elif str(data.get("command") or "").strip() and not listed:
                 # Same odczyty własnego <krok>/in i <krok>/out — zawsze dozwolone, nie ma o co pytać użytkownika.
                 self._auto_deny(card, name, step, data.get("command") or "", note=STEP_READ_NOTE)
-            elif auto_allow:
+            elif auto_allow and not self._denied_before(card, step.get("ticket") or "", data.get("command") or ""):
                 # Automatyczna zgoda na pojedyncze, bezpieczne polecenie w piaskownicy (03.11: „nie mam ochoty co
                 # 2 minuty klikać zgody”). Piaskownica dalej chroni system; zgoda trafia do listy projektu.
                 try:
@@ -3823,12 +5176,15 @@ class FlowEngine(PlanEditing):
             self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="",
                                 command=data.get("command") or "", executor="", auto=True)
+        # Agent konfliktu już scalił w worktree karty. Utrwalamy potwierdzony stan także podczas
+        # decyzji o bazie; blokada nadal odracza sprzątanie i kolejne scalenia w _tick_card/_act.
         if merged_tip:
             self.journal.append(card, "result", action="merge", key=step.get("ticket") or "",
                                 ok=True, commit=merged_tip, resolved=True)
         if verdict is not None:
             self.journal.append(card, "review.verdict", step=name, ticket=step.get("ticket") or "",
-                                round=step.get("round") or 1, reviewer=step.get("executor") or "", **verdict)
+                                round=step.get("round") or 1, reviewer=step.get("executor") or "",
+                                baseVersion=step.get("baseVersion", 0), reviewTip=step.get("reviewTip", ""), **verdict)
         self._queue_notices(card)
         self._release_local(name)
         self._release_box(card, step)
@@ -3839,19 +5195,7 @@ class FlowEngine(PlanEditing):
     def _freeze_planning_output(self, card: str, step: str, out: str) -> str:
         """Migawka artefaktów z chwili wyniku, poza zapisywalnym katalogiem Konsoli."""
         relative = os.path.join("steps", step, "proposal")
-        total = 0
-        for folder, prefix in ((out, ""), (os.path.join(out, "tickets"), "tickets")):
-            if not os.path.isdir(folder) or os.path.islink(folder):
-                continue
-            for entry in sorted(os.scandir(folder), key=lambda item: item.name):
-                if not entry.name.endswith(".md") or not entry.is_file(follow_symlinks=False):
-                    continue
-                size = entry.stat(follow_symlinks=False).st_size
-                total += size
-                if size > source_plans.MAX_BYTES or total > 16 * 1024 * 1024:
-                    raise FlowError("planning-output", "artefakty planowania przekraczają dopuszczalny rozmiar")
-                with open(entry.path, "rb") as fh:
-                    self.journal.write_file(card, os.path.join(relative, prefix, entry.name), fh.read())
+        planartifacts.save(self.journal, card, relative, planartifacts.read(out))
         return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
 
     def _queue_notices(self, card: str) -> None:
@@ -3859,12 +5203,16 @@ class FlowEngine(PlanEditing):
         st = fold(self.journal.read(card))
         if st.card_finished:
             return
+        withheld = self._caretaker_withheld(card, st)
         for name, done in st.finished.items():
             step = st.steps.get(name) or {}
             result = done.get("result")
+            if name in st.caretakers or name in withheld:
+                continue        # krok opiekuna i problem, który sprawdza (albo zaraz sprawdzi) opiekun — bez powiadomienia
             if name in st.step_notices or name in st.step_decisions or st.card_finished or not (
                     result in ("question", "denied") or
-                    result == "error" and (int(step.get("attempt") or 0) >= 1 or done.get("reason") == "limit")):
+                    result == "error" and (int(step.get("attempt") or 0) >= 1 or done.get("reason") == "limit" or
+                                           caretaker.handed_repeat(st, name))):
                 continue
             detail = done.get("question") if result == "question" else done.get("command") if result == "denied" \
                 else done.get("reason") or ""
@@ -3883,6 +5231,11 @@ class FlowEngine(PlanEditing):
             self._notices.append({"card": card, "step": key, "ticket": "", "result": result,
                                   "detail": detail})
 
+        for decision in decisions.build_decisions(st):
+            if decision["kind"] == "caretaker" or (
+                    decision["kind"] in ("plan-revision-failed", "plan-fix-failed") and decision.get("caretaker")):
+                once(decision["id"], "caretaker", decision["happened"])
+
         if st.plan_revision and st.plan_revision.get("pending") and st.plan_reviewed:
             once(f"revision:{st.plan_revision.get('seq')}", "plan", "Różnica planu czeka na zatwierdzenie")
         elif st.plan_proposed and st.plan_reviewed and not st.plan_approved:
@@ -3897,8 +5250,377 @@ class FlowEngine(PlanEditing):
                           e.get("to") == "review"), {})
             once(f"review:{moved.get('seq') or st.last_seq}", "review", "Karta czeka na sprawdzenie")
         for wait in st.waiting.values():
+            if wait.get("kind") == caretaker.KIND:
+                continue      # opiekun w kolejce do dostawcy: problem nadal jego, powiadamia dopiero eskalacja
             if "limit" in (wait.get("reason") or "").lower():
                 once(f"limit:{wait.get('seq')}", "limit", wait.get("reason") or "Limit dostawcy")
+
+    # --- opiekun karty (PT-143) --------------------------------------------------------------------
+
+    def _card_column(self, card: str) -> str:
+        try:
+            item = self.store.load().cards.get(card_num(card))
+        except (BoardError, OSError, ValueError):
+            return ""
+        return item.column if item is not None else ""
+
+    def _caretaker_withheld(self, card: str, st: FlowState) -> set:
+        """Kroki bez powiadomienia o decyzji: sprawdza je opiekun albo zaraz zacznie (problem jeszcze nieoddany)."""
+        st = self._caretaker_state(st)
+        held = {name for name in st.caretaking if caretaker.hidden(st, name)}
+        if st.started is None or caretaker.unavailable(st, self._card_column(card), self._caretaker_setup(st)):
+            return held
+        for problem in caretaker.problems(st):
+            policy = caretaker.PROBLEM_POLICIES.get(problem["trigger"]) or {}
+            if not policy.get("visible") and not caretaker.owned(st, problem["id"])["handed"]:
+                held.add(problem["step"])
+        return held
+
+    def _caretake(self, card: str, st: FlowState) -> None:
+        """Jedyne wejście opiekuna w silniku: dokończenie zapisanych kroków opiekuna (wynik → akcja z rejestru,
+        `caretaker.started` bez startu po restarcie → start bez drugiej kopii) i start opiekuna przy nowych
+        problemach. Krok opiekuna kończy się istniejącym `_poll`/`_finish` (rodzaj `caretaker`)."""
+        if st.started is None or st.card_finished:
+            return
+        for name, run in list(st.caretaker_runs.items()):
+            current = fold(self.journal.read(card))
+            if name in current.caretaker_outcomes:
+                continue
+            if name in current.finished:
+                self._caretaker_apply(card, current, run, current.finished[name])
+            elif name not in current.caretakers:
+                self._caretaker_launch(card, current, run)
+        st = self._caretaker_state(fold(self.journal.read(card)))
+        conf = self._caretaker_setup(st)
+        if caretaker.unavailable(st, self._card_column(card), conf):
+            return
+        limit = conf["limit"]
+        for problem in caretaker.problems(st):
+            own = caretaker.owned(st, problem["id"])
+            if own["open"] or own["handed"] or any(s.get("ticket") == problem["ticket"] for s in st.running()):
+                continue
+            if own["count"] >= limit:
+                # Limit działań (PT-150): kolejny krok opiekuna nie startuje, problem wraca do użytkownika ze
+                # streszczeniem prób (`tried[]` w decyzji z `annotate`).
+                last = own["runs"][-1]
+                self.journal.append(card, caretaker.ESCALATED, problem=problem["id"], step=last.get("step") or "",
+                                    target=problem["step"], ticket=problem["ticket"], action="",
+                                    summary=caretaker.limit_summary(st, problem["id"], limit),
+                                    recommendation="Sprawdź podsumowanie prób i wybierz dalsze działanie w decyzji.",
+                                    optionId="", failed=True, limit=True, count=own["count"],
+                                    error=f"wyczerpany limit działań opiekuna ({limit})", code=caretaker.LIMIT)
+                st = self._caretaker_state(fold(self.journal.read(card)))
+                continue
+            step_id = f"{card}-care-{len(st.caretaker_runs) + 1}"
+            run = self.journal.append(card, caretaker.STARTED, problem=problem["id"],
+                                      key=f"caretaker:{problem['id']}:{own['next']}", n=own["next"], step=step_id,
+                                      target=problem["step"], root=problem["root"], ticket=problem["ticket"],
+                                      trigger=problem["trigger"], triggers=problem["triggers"],
+                                      decision=problem.get("decision") or "", watermark=st.last_seq)
+            self._caretaker_launch(card, fold(self.journal.read(card)), run)
+            st = self._caretaker_state(fold(self.journal.read(card)))
+
+    def _caretaker_state(self, st: FlowState) -> FlowState:
+        """Migawka ustawień i zegara także dla wyzwalaczy i sprawdzania aktualności, nie tylko widoków."""
+        st.caretaker_setup = self._caretaker_setup(st)
+        return st
+
+    def _caretaker_setup(self, st: FlowState, catalog=None) -> dict:
+        """Opiekun przy tej karcie według `cardflow.json` i katalogu wykonawców (`caretaker.setup`, PT-151): jedno
+        miejsce wyboru wykonawcy z regułą „Tylko lokalnie”, wyłącznik i limit działań."""
+        return {**caretaker.setup(st, self._settings_data(), catalog if catalog is not None else self._catalog_now()),
+                "now": self.clock()}
+
+    def _caretaker_problem(self, st: FlowState, run: dict) -> dict:
+        st = self._caretaker_state(st)
+        found = next((p for p in caretaker.problems(st) if p["id"] == run.get("problem")), None)
+        return found or {"id": run.get("problem") or "", "trigger": run.get("trigger") or "",
+                         "triggers": [run.get("trigger") or ""], "step": run.get("target") or "",
+                         "root": run.get("root") or "", "ticket": run.get("ticket") or "", "options": [],
+                         "decision": run.get("decision") or ""}
+
+    def _caretaker_record(self, card: str, run: dict, action: str, params: dict, *, ok: bool, error: str = "",
+                          code: str = "", label: str = "", retried: str = "", stale: bool = False,
+                          detail: str = "") -> None:
+        """Wynik akcji opiekuna innej niż oddanie decyzji (`caretaker.action`); nieudana akcja nie oddaje problemu —
+        kolejny krok opiekuna rusza aż do limitu działań (PT-150). `target` to zawsze krok problemu (po nim stan
+        zdejmuje „opiekun sprawdza”), krok wskazany w akcji jest w `retried`."""
+        self.journal.append(card, caretaker.ACTION, problem=run.get("problem") or "", step=run.get("step") or "",
+                            target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
+                            params=params, ok=ok, error=error[:caretaker.REASON_MAX], code=code, label=label,
+                            retried=retried, stale=stale, mode=run.get("mode") or "background",
+                            **({"detail": detail[:caretaker.REASON_MAX]} if detail else {}))
+
+    def _caretaker_fail(self, card: str, run: dict, code: str, error: str, *, action: str = "",
+                        summary: str = "", recommendation: str = "") -> None:
+        """Nieudany wynik kroku opiekuna (zły plik wyniku, pytanie, akcja spoza rejestru, zapis poza `out`, krok
+        zatrzymany albo niewystartowany): problem od razu wraca do użytkownika (PT-143)."""
+        self.journal.append(card, caretaker.ESCALATED, problem=run.get("problem") or "", step=run.get("step") or "",
+                            target=run.get("target") or "", ticket=run.get("ticket") or "", action=action,
+                            summary=summary, recommendation=recommendation or
+                            "Sprawdź błąd wyniku opiekuna i wybierz dalsze działanie w decyzji.", optionId="", failed=True,
+                            error=error[:caretaker.REASON_MAX], code=code, mode=run.get("mode") or "background")
+
+    def _caretaker_launch(self, card: str, st: FlowState, run: dict) -> None:
+        st = self._caretaker_state(st)
+        name = run.get("step") or ""
+        target = st.steps.get(run.get("target") or "") or {}
+        started = st.results.get(("step-start", name))
+        if started is None and ("step-start", name) in st.intents:
+            return              # start zaczęty przed restartem — rozstrzyga `_reconcile`, nigdy druga kopia
+        if started is not None and started.get("ok"):
+            return              # wynik startu jest, `step.started` dopisze `_recover_started_steps`
+        if started is not None and not started.get("ok"):
+            self._caretaker_fail(card, run, caretaker.NOT_STARTED,
+                                 f"krok opiekuna nie wystartował: {started.get('error') or 'błąd startu'}")
+            return
+        # Problem bez kroku źródłowego (`flow-error:<etap>`, `stalled:card`) jest pełnoprawny: wystarcza wpis
+        # w `TRIGGERS`; aktualność zawsze rozstrzyga `problems()`, a brakujący krok — tylko gdy problem go ma.
+        if run.get("target") and not target:
+            self._caretaker_fail(card, run, caretaker.NOT_STARTED, "brak kroku problemu w dzienniku karty")
+            return
+        # Nieaktualny przed startem (PT-150; np. decyzja użytkownika, gdy opiekun czekał na slot): bez kroku opiekuna
+        # i bez eskalacji — problem rozstrzygnięto inaczej, a działanie nie liczy się do limitu.
+        reason = caretaker.stale(st, run, self.journal.read(card))
+        if reason:
+            self._caretaker_record(card, run, "", {}, ok=False, error=caretaker.STALE, code=caretaker.STALE,
+                                   stale=True, detail=reason)
+            return
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        conf = self._caretaker_setup(st, catalog)
+        if conf["reason"]:
+            # PT-151: opiekun wyłączony albo karta „Tylko lokalnie” bez wykonawcy lokalnego, zanim krok ruszył
+            # (np. czekał na slot) — bez kroku i bez eskalacji, działanie się nie liczy; decyzja wraca jak dziś
+            # (z dopiskiem przy braku wykonawcy lokalnego).
+            self._caretaker_record(card, run, "", {}, ok=False, error=caretaker.STALE, code=caretaker.STALE,
+                                   stale=True, detail=conf["reason"])
+            return
+        executor = conf["executor"]
+        try:
+            if not executor:
+                raise FlowError("unknown-executor", "brak wykonawcy opiekuna u preferowanego dostawcy karty")
+            try:
+                selected = execution.resolve(executor, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            except execution.ExecutionError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            if caretaker.local_only(st) and not selected.local:
+                # PT-151: kontekst karty „Tylko lokalnie” nigdy nie trafia do chmury (druga linia obrony za
+                # `caretaker.executor_name`).
+                raise FlowError("local-only", "wykonawca opiekuna karty „Tylko lokalnie” musi być lokalny")
+            item, project = self._project(card)
+            info = ticket_of(st, run.get("ticket") or "")
+            # Bez kroku i bez ticketu — katalog roboczy i gałąź karty.
+            card_level = not target and not run.get("ticket")
+            worktree = target.get("worktree") or (info["cardWorktree"] if card_level else info["worktree"])
+            branch = target.get("branch") or (info["cardBranch"] if card_level else info["branch"])
+            if not worktree:
+                raise FlowError("no-worktree", "brak katalogu roboczego karty dla opiekuna")
+            problem = self._caretaker_problem(st, run)
+
+            def make_prompt(step_dir: str) -> str:
+                # Kontekst (PT-153) powstaje przy samym starcie, ze stanu dziennika z tej chwili.
+                events = self.journal.read(card)
+                now = fold(events)
+                context_dir = os.path.join(step_dir, "in", caretakerctx.CONTEXT_DIR)
+                files = caretakerctx.build(problem, now, events, card=card, worktree=worktree,
+                                           context_dir=context_dir,
+                                           card_dir=os.path.join(self.journal.root, self.journal.rel_dir(card)),
+                                           step=name, include_text=selected.tool != "claude")
+                return caretaker.brief(problem, now, card=card, out_dir=os.path.join(step_dir, "out"),
+                                       worktree=worktree, commands=selected.tool == "claude", context=files,
+                                       context_dir=context_dir, limit=conf["limit"])
+
+            self._launch(item, project, selected, run.get("ticket") or "", {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
+                         {"branch": branch, "worktree": worktree}, name, [],
+                         kind=caretaker.KIND, make_prompt=make_prompt)
+        except FlowDeferred:
+            return              # czeka na miejsce u dostawcy; `caretaker.started` zostaje, start w kolejnym przebiegu
+        except FlowError as exc:
+            self._caretaker_fail(card, run, caretaker.NOT_STARTED, f"nie udało się uruchomić opiekuna: {exc}")
+
+    def _caretaker_apply(self, card: str, st: FlowState, run: dict, done: dict) -> None:
+        outcome = done.get("outcome") or {"ok": False, "code": caretaker.BAD_RESULT, "error": "brak wyniku opiekuna"}
+        action = caretaker.ACTIONS.get(outcome.get("action") or "") if outcome.get("ok") else None
+        step = run.get("step") or ""
+        if ("caretaker-action", step) not in st.intents:
+            # Nieaktualność przed każdym skutkiem (PT-150), także przed oddaniem nieudanego wyniku: problem
+            # rozstrzygnięty w czasie pracy opiekuna (np. decyzją użytkownika) nie wraca do użytkownika drugi raz.
+            # Wznowiony w tym czasie krok mógł zmienić worktree — powód strażnika zostaje w `detail`.
+            events = self.journal.read(card)
+            reason = caretaker.stale(self._caretaker_state(fold(events)), run, events)
+            if reason:
+                if outcome.get("code") == guard.WROTE:
+                    reason += f"; strażnik: {outcome.get('error') or ''}"
+                self._caretaker_record(card, run, outcome.get("action") or "", outcome.get("params") or {},
+                                       ok=False, error=caretaker.STALE, code=caretaker.STALE, stale=True,
+                                       detail=reason)
+                return
+        if action is None:
+            self._caretaker_fail(card, run, outcome.get("code") or caretaker.BAD_ACTION,
+                                 outcome.get("error") or "nieudane działanie opiekuna",
+                                 action=outcome.get("action") or "", summary=outcome.get("summary") or "")
+            return
+        if outcome.get("report") and not any(e.get("type") == "caretaker.reported" and e.get("step") == step
+                                              for e in self.journal.read(card)):
+            problem = self._caretaker_problem(st, run)
+            reason = faults.mask((outcome.get("params") or {}).get("reason") or
+                                 (outcome.get("params") or {}).get("summary") or outcome["report"]["description"])
+            try:
+                made = self._save_fault_report(card, st, run.get("target") or "",
+                                               outcome["report"]["description"], problem=problem,
+                                               occurrence_id=json.dumps(["caretaker", card, step]))
+                self.journal.append(card, "caretaker.reported", step=step, target=run.get("target") or "",
+                                    problem=run.get("problem") or "", ok=True, reported=made["reported"],
+                                    signature=made["signature"], reason=reason)
+            except FlowError as exc:
+                self.journal.append(card, "caretaker.reported", step=step, target=run.get("target") or "",
+                                    problem=run.get("problem") or "", ok=False, code=exc.code,
+                                    error=faults.mask(str(exc)), reason=reason)
+        self._caretaker_act(card, run, outcome["action"], outcome.get("params") or {})
+
+    def _caretaker_act(self, card: str, run: dict, name: str, params: dict) -> None:
+        """Wspólna ścieżka akcji opiekuna (PT-150), także po restarcie (`_reconcile`):
+        1. akcja nieaktualna (`caretaker.stale`) → `caretaker.action` z `ok: false, error: "stale"`, nic nie jest
+           wykonane, działanie nie liczy się do limitu; po zaczętym zamiarze nie sprawdzamy — dokończenie,
+        2. `escalate` — jedno zdarzenie `caretaker.escalated` (samo jest wynikiem, bez pary),
+        3. inne akcje — para „zamiar → wynik” `caretaker-action` z kluczem kroku opiekuna (`_act`): zapisany wynik
+           nie wykonuje akcji drugi raz, a `apply` jest bezpieczne do powtórzenia między zamiarem a wynikiem; potem
+           `caretaker.action` z wynikiem (`{failed, error}` z `apply` — nieudane działanie, liczy się do limitu)."""
+        events = self.journal.read(card)
+        st = self._caretaker_state(fold(events))
+        step = run.get("step") or ""
+        if step in st.caretaker_outcomes:
+            return
+        spec = caretaker.ACTIONS[name]
+        begun = ("caretaker-action", step) in st.intents
+        if not begun:
+            reason = caretaker.stale(st, run, events)
+            if reason:
+                self._caretaker_record(card, run, name, params, ok=False, error=caretaker.STALE,
+                                       code=caretaker.STALE, stale=True, detail=reason)
+                return
+        port, problem = _CaretakerPort(self, card, run), self._caretaker_problem(st, run)
+        if not begun and name not in caretaker.allowed_actions(problem):
+            self._caretaker_fail(card, run, caretaker.BAD_ACTION,
+                                 f"akcja {name} niedozwolona przy tej decyzji", action=name,
+                                 recommendation="Rozstrzygnij decyzję samodzielnie; opiekun może tylko dopisać rekomendację.")
+            return
+        if name == "escalate":
+            spec.apply(port, problem, params)
+            return
+        try:
+            def apply():
+                if run.get("mode") == "chat":
+                    wrote = self._guard_verdict(card, run.get("chat") or "")
+                    if wrote:
+                        return {"failed": guard.WROTE, "error": wrote}
+                return spec.apply(port, problem, params) or {}
+            made = self._act(card, "caretaker-action", step, apply,
+                             problem=run.get("problem") or "", caretakerAction=name, params=params)
+        except FlowError as exc:
+            self._caretaker_record(card, run, name, params, ok=False, error=str(exc), code="caretaker-action")
+            return
+        failed = made.get("failed") or ""
+        if failed and spec.failure_recommendation:
+            self._caretaker_fail(card, run, failed, made.get("error") or "nieudane działanie", action=name,
+                                 recommendation=spec.failure_recommendation)
+            return
+        self._caretaker_record(card, run, name, params, ok=not failed, error=made.get("error") or "",
+                               code=failed, label=made.get("label") or "", retried=made.get("target") or "")
+
+    def _retry_stage(self, card: str, run: dict, problem: dict) -> dict:
+        """Ponowienie etapu karty od razu, raz (akcja opiekuna `retry-stage`, PT-147): `stage.retry` (zapis opiekuna,
+        pole `caretaker`) i jeden przebieg `_advance_card` — ta sama ścieżka co zwykły przebieg, z parą akcji
+        opiekuna wyłączoną z „zaczętych akcji karty”. Wynik:
+        - błąd Tide tego etapu (przy `stalled`: dowolnego etapu) → `stage-failed` (zapisuje zwykły `_flow_error`,
+          ten sam etap i tekst nie daje nowego zdarzenia), etap bez zmian (poza pracą opiekuna) →
+          `stage-no-change`; oba to nieudane działania liczone do limitu,
+        - etapy przebyte bez błędu zdejmują własny błąd, jak w zwykłym przebiegu, żeby rozwiązany problem
+          nie uruchamiał kolejnych kroków opiekuna,
+        - `stage.retry` tego kroku opiekuna już jest (restart między zamiarem a wynikiem) → `stage-interrupted`
+          bez drugiego przebiegu: etap ponawia się dokładnie raz, a dalej i tak ponawia go zwykły przebieg."""
+        ident = run.get("problem") or problem.get("id") or ""
+        own = run.get("step") or ""
+        stage = problem.get("stage") or (ident.split(":", 1)[1] if ":" in ident else "")
+        label = f"„{stage}”" if stage else "karty"
+        events = self.journal.read(card)
+        if any(e.get("type") == caretaker.STAGE_RETRY and e.get("caretakerStep") == own for e in events):
+            return {"failed": caretaker.STAGE_INTERRUPTED, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_INTERRUPTED}: ponowienie etapu {label} przerwał restart usługi"}
+        mark = self.journal.append(card, caretaker.STAGE_RETRY, problem=ident, stage=stage,
+                                   ticket=run.get("ticket") or "", caretaker=ident, caretakerStep=own)
+        try:
+            found = self._advance_card(card, own=("caretaker-action", own))
+        except Exception as exc:        # jak w `tick`: błąd przebiegu nie zatrzymuje opiekuna ani karty
+            found = [{"error": f"{exc.__class__.__name__}: {exc}", "stage": stage, "step": "", "ticket": ""}]
+        for item in found:
+            self._flow_error(card, item)
+        relevant = [f for f in found if f.get("stage") == stage] if run.get("trigger") == "flow-error" else found
+        if relevant:
+            error = relevant[0]["error"]
+            return {"failed": caretaker.STAGE_FAILED, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_FAILED}: {error}"}
+        after = self.journal.read(card)
+        now = fold(after)
+        changed = [e for e in after if int(e.get("seq") or 0) > mark["seq"] and not _bookkeeping(now, e)]
+        if not changed:
+            return {"failed": caretaker.STAGE_NO_CHANGE, "target": stage, "label": label,
+                    "error": f"{caretaker.STAGE_NO_CHANGE}: ponowienie etapu {label} niczego nie zmieniło"}
+        return {"target": stage, "label": label}
+
+    def _finish_caretaker(self, card: str, step: dict, forced: dict | None, exit_code) -> None:
+        """Koniec kroku opiekuna: wynik sprawdza `caretaker.parse_result` (granica uprawnień w Tide), w dzienniku
+        zostaje `step.finished` z `outcome`; akcję wykonuje `_caretake`."""
+        name = step.get("step") or ""
+        out = os.path.join(step.get("stepDir") or "", "out")
+        st = fold(self.journal.read(card))
+        problem = self._caretaker_problem(st, st.caretaker_runs.get(name) or {})
+        # Strażnik (PT-158) przed wszystkim innym, także przed `parse_result`: z kroku, który pisał poza `out`,
+        # żadna akcja nie przechodzi, nawet z poprawnym plikiem wyniku.
+        wrote = self._guard_verdict(card, name)
+        if wrote:
+            outcome = {"ok": False, "code": guard.WROTE, "action": "", "summary": "", "error": wrote}
+        elif forced:
+            reason = forced.get("reason") or forced.get("result") or ""
+            outcome = {"ok": False, "code": caretaker.STOPPED, "action": "", "summary": "",
+                       "error": f"krok opiekuna zatrzymany: {REASON_LABELS.get(reason, reason)}"}
+        elif exit_code != 0:
+            outcome = {"ok": False, "code": caretaker.OTHER_RESULT, "action": "", "summary": "",
+                       "error": "program opiekuna zakończył się " +
+                                (f"kodem {exit_code}" if exit_code is not None else "bez kodu wyjścia")}
+        else:
+            outcome = caretaker.parse_result(self._raw_result(os.path.join(out, handoff.RESULT_FILE)), problem, st)
+        kept = []
+        for entry in sorted(os.listdir(out)) if os.path.isdir(out) else []:
+            path = os.path.join(out, entry)
+            if (entry == handoff.RESULT_FILE or entry.endswith(".md")) and os.path.isfile(path) \
+                    and not os.path.islink(path) and os.path.getsize(path) <= OUTPUT_MAX:
+                with open(path, "rb") as fh:
+                    self.journal.write_file(card, os.path.join("steps", name, entry), fh.read())
+                kept.append(entry)
+        self.journal.append(card, "step.finished", step=name, ticket=step.get("ticket") or "",
+                            result="done" if outcome.get("ok") else "error",
+                            reason="" if outcome.get("ok") else outcome.get("code") or "", question="", command="",
+                            options=[], canAllow=True, stalledSince="", notes=[], kept=kept, exit=exit_code,
+                            outcome=outcome)
+        self._release_local(name)
+        self.procs.pop(name, None)
+        self.watch.pop(name, None)
+        shutil.rmtree(os.path.join(self.tmp_root, f"tide-step-{name}"), ignore_errors=True)
+
+    @staticmethod
+    def _raw_result(path: str):
+        """Plik wyniku opiekuna: obiekt JSON, None (brak pliku) albo "" (za duży albo nie JSON)."""
+        try:
+            if os.path.getsize(path) > OUTPUT_MAX or os.path.islink(path):
+                return ""
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, UnicodeError):
+            return ""
 
     @staticmethod
     def _result(path: str) -> dict:
@@ -3929,6 +5651,9 @@ class FlowEngine(PlanEditing):
         return {"result": data["result"], "reason": str(data.get("reason") or "")[:300],
                 "question": str(data.get("question") or "")[:2000], "command": str(data.get("command") or ""),
                 "options": clean_options(data.get("options")) if data["result"] == "question" else [],
+                "baseProposal": baseproposal.clean(data.get("baseProposal")) if data["result"] == "question" else None,
+                "waitFor": str(data.get("waitFor") or "").strip()[:32]
+                if data["result"] in ("question", "error") and isinstance(data.get("waitFor"), str) else "",
                 "notes": [str(n) for n in notes if isinstance(n, str)][:20]}
 
     @staticmethod
@@ -3975,7 +5700,11 @@ class FlowEngine(PlanEditing):
         return dict(verdict=verdict, blockers=counts[0], majors=counts[1], nits=counts[2])
 
     def _merge(self, card: str, st: FlowState, step: dict, retry: bool = False) -> None:
+        if baseproposal.blocked(st):
+            return
         ticket = step.get("ticket") or ""
+        if step.get("step") in st.superseded:
+            raise FlowError("stale-context", "Scalenie wymaga kroku z bieżącego kontekstu bazy.")
         info = ticket_of(st)
         repo = step.get("repo") or self._repo(card)
         # Zatwierdzony commit: APPROVE recenzenta albo świadoma decyzja użytkownika „scal mimo uwag” po 3. rundzie
@@ -4007,8 +5736,11 @@ class FlowEngine(PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
+        # Przepięty autor ticketu rozwiązuje też jego konflikt (05.11: konflikty PT-147/PT-151 czekały na limit
+        # Claude do soboty, choć ticket był już przepięty na Codexa).
+        override = (st.author_overrides.get(ticket) or {}).get("executor")
         try:
-            selected = execution.resolve(assigned.get("executor") or "", catalog, config=cfg,
+            selected = execution.resolve(override or assigned.get("executor") or "", catalog, config=cfg,
                                          probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
@@ -4024,8 +5756,8 @@ class FlowEngine(PlanEditing):
                      step_id, [], kind="conflict", prompt_text=prompt,
                      review_tip=review_step.get("reviewTip") or "", attempt=1)
 
-    def card_diff(self, card_id: str) -> dict:
-        """Różnica gałęzi karty względem głównej, wyłącznie do pokazania użytkownikowi."""
+    def card_diff(self, card_id: str, target_ref: str = "") -> dict:
+        """Różnica względem bieżącego refu bazy lub jawnego celu; bez zapisu i zgody na scalenie."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
@@ -4035,14 +5767,18 @@ class FlowEngine(PlanEditing):
             raise FlowError("not-closed", "karta nie jest jeszcze do sprawdzenia")
         info = ticket_of(st)
         repo = self._repo(card)
-        main = self.git.main_branch(repo)
-        if not main or not info["cardBranch"]:
-            raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
+        if not isinstance(target_ref, str):
+            raise FlowError("bad-request", "cel diff musi być pełnym refem")
+        ref = target_ref or base_of(st)["baseRef"]
+        if not ref or not info["cardBranch"]:
+            raise FlowError("no-base", "baza jest nieznana — wybierz jawny pełny ref porównania")
         try:
-            diff = self.git.diff(repo, main, info["cardBranch"])
+            target = self.git.resolve_base(repo, ref, self.git.sha(repo, ref))
+            diff = self.git.diff(repo, target["baseRef"], info["cardBranch"])
         except FlowGitError as exc:
             raise FlowError("diff", str(exc)) from None
-        return {"ok": True, "id": card, "main": main, "branch": info["cardBranch"], "diff": diff}
+        return {"ok": True, "id": card, "main": target["baseBranch"], "targetRef": target["baseRef"],
+                "targetBranch": target["baseBranch"], "branch": info["cardBranch"], "diff": diff}
 
     # --- polecenia poza piaskownicą (03.11) --------------------------------------------------------
 
@@ -4099,8 +5835,18 @@ class FlowEngine(PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
+            if not consent.before_start(self, card, step, done, decision):
+                return None
             if self._outside_busy(card):
+                # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
+                # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
+                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
+            if self._outside_behind(card, name, decision):
+                return None
+            self._outside_waiting.pop(name, None)
+            self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
@@ -4124,7 +5870,10 @@ class FlowEngine(PlanEditing):
         stepstop._systemctl("stop", started["unit"] + ".scope")
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
-        return {**decision, "answer": f"Kod wyjścia: {code}\nKoniec wyniku:\n{tail}"}
+        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                      f"Koniec wyniku:\n{tail}"}
 
     def _review_rounds(self) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
@@ -4172,6 +5921,8 @@ class FlowEngine(PlanEditing):
         """Pytanie kroku o środowisko (piaskownica, Docker, porty, instalacje, testy) dostaje odpowiedź Tide zamiast
         trafić do użytkownika (03.11: „to serio tak ma działać, że muszę odpalać sesję ratunkową?”). Raz na ticket
         z rzędu: gdy agent zapyta ponownie zaraz po odpowiedzi Tide, pytanie idzie do użytkownika."""
+        if done.get("baseProposal") is not None or baseproposal.pending(fold(self.journal.read(card))):
+            return
         question = str(done.get("question") or "")
         name = step.get("step") or ""
         if not ENV_QUESTION.search(question) or self.journal is None:
@@ -4218,24 +5969,190 @@ class FlowEngine(PlanEditing):
                 self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                     ticket=step.get("ticket") or "", canAllow=False)
             return
-        from ..board.commands import outside_allowed, outside_matches
+        from ..board.commands import outside_allowed
         command = done.get("command") or ""
         _, project = self._project(card)
-        from ..board.commands import outside_risky
-        allowed = outside_allowed(command, project.denied_commands)
+        roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
+        allowed = outside_allowed(command, project.denied_commands, roots)
         if allowed != bool(done.get("canAllow", True)):
             # Reguły zmieniły się od wyniku kroku (K-33/PT-110: `find -exec … \;` uznane za łańcuch) — decyzja
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
-        if allowed and (outside_matches(command, self._outside_remembered(project.slug)) or
-                        self._ticket_consent(card, step.get("ticket") or "") or
-                        self._auto_outside(card) and not outside_risky(command)):
+        if allowed and consent.automatic(self, card, step, command):
             self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
                                 kind=step.get("kind") or "", choice="run", answer="", command=command,
                                 executor="", auto=True)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
+
+    def _move_reviewer_files(self, step: dict, repo: str) -> list[str]:
+        """Nieśledzone pliki, które pojawiły się w worktree ticketu podczas review, idą do `out/pliki-recenzenta/`
+        kroku review — ticket zostaje czysty (autor ich nie zacommituje), a review nie przepada."""
+        worktree = step.get("worktree") or ""
+        step_dir = step.get("stepDir") or ""
+        before_file = os.path.join(step_dir, "in", UNTRACKED_BEFORE)
+        if not worktree or not os.path.isfile(before_file):
+            return []
+        try:
+            with open(before_file, encoding="utf-8") as fh:
+                before = set(json.load(fh))
+        except (OSError, ValueError):
+            return []
+        moved = []
+        target_root = os.path.realpath(os.path.join(step_dir, "out", "pliki-recenzenta"))
+        root = os.path.realpath(worktree)
+        for rel in self.git.untracked(repo, worktree):
+            if rel in before:
+                continue
+            source = os.path.realpath(os.path.join(root, rel))
+            target = os.path.realpath(os.path.join(target_root, rel))
+            if not source.startswith(root + os.sep) or not target.startswith(target_root + os.sep):
+                continue
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.move(source, target)
+                moved.append(rel)
+            except OSError:
+                continue
+        return moved
+
+    def _denied_before(self, card: str, ticket: str, command: str) -> bool:
+        """Użytkownik odmówił już tego polecenia w tym tickecie — Tide nie zgadza się na nie sam (04.11, K-43/BO-13)."""
+        wanted = " ".join(str(command).split())
+        return bool(wanted) and any(
+            d.get("choice") == "deny" and d.get("ticket") == ticket and " ".join(str(d.get("command") or "").split()) == wanted
+            for d in fold(self.journal.read(card)).step_decisions.values())
+
+    def _git_identity(self, repo: str) -> dict:
+        """Autor commitów kroku = tożsamość gita użytkownika dla tego repozytorium (lokalna, inaczej globalna).
+        Commity agenta mają wyglądać jak commity użytkownika (04.11, K-49: „Krok <krok@tide.invalid>” na firmowym
+        GitLabie). Bez tożsamości w gicie zostaje domyślna kroku."""
+        found = {}
+        for key, field in (("user.name", "git_name"), ("user.email", "git_email")):
+            result = self.git.run(repo, "config", key)
+            value = (result.out or "").strip() if result.ok else ""
+            if value:
+                found[field] = value
+        return found
+
+    @staticmethod
+    def _wait_ticket_target(st: FlowState, step: dict, target) -> str:
+        """Ticket planu tej karty, na którego scalenie krok ma czekać: identyfikator (PT-171) albo numer z planu (#3).
+        Odmowa: spoza planu, własny ticket, odrzucony albo czekanie w kółko (cel czeka na ten ticket)."""
+        raw = str(target or "").strip()
+        own = step.get("ticket") or ""
+        rows = (st.plan_approved or {}).get("rows") or []
+        found = next((str(r.get("id") or "") for r in rows if raw and (
+            str(r.get("id") or "").upper() == raw.upper() or r.get("workId") == raw)), "")
+        if not found or found == own:
+            raise FlowError("bad-ticket", "podaj inny ticket z planu tej karty, na który krok ma czekać (np. PT-171)")
+        if found in st.rejected:
+            raise FlowError("bad-ticket", f"{found} jest odrzucony — nie ma na co czekać")
+        if found in st.imported_done:
+            raise FlowError("bad-ticket", f"{found} jest gotowy z przejętego planu — nie ma na co czekać")
+        from . import waiting
+        if waiting.would_cycle({"": st}, "", step, ticket=found):
+            raise FlowError("bad-ticket", f"{found} pośrednio lub bezpośrednio czeka na {own} — czekanie w kółko")
+        return found
+
+    @staticmethod
+    def _wait_ticket_resume_text(st: FlowState, step: dict, target: str) -> str:
+        decision = next((d for name, d in st.step_decisions.items() if d.get("waitTicket") == target and
+                         (st.steps.get(name) or {}).get("ticket") == step.get("ticket")), {})
+        note = str(decision.get("answer") or "").strip()
+        if target in st.rejected:
+            text = (f"Ticket {target}, na który czekał ten krok, został odrzucony i nie trafi do gałęzi karty. "
+                    "Dokończ ticket bez niego albo zakończ krok pytaniem o zakres.")
+        elif target in st.imported_done:
+            text = (f"Ticket {target}, na który czekał ten krok, jest gotowy z przejętego planu. "
+                    "Sprawdź dostępność jego wyniku w worktree i kontynuuj ticket.")
+        else:
+            card_branch = ticket_of(st, step.get("ticket") or "").get("cardBranch") or "gałąź karty"
+            text = (f"Ticket {target}, na który czekał ten krok, jest scalony do gałęzi karty {card_branch}. "
+                    f"Najpierw scal ją do gałęzi ticketu w tym worktree (`git merge --no-edit {card_branch}`; "
+                    "konflikty rozwiąż i zatwierdź), potem kontynuuj ticket.")
+        return text + (f"\nUwaga użytkownika: {note}" if note else "")
+
+    def _declared_wait(self, card: str, name: str, step: dict, data: dict) -> bool:
+        """Krok sam zgłosił w wyniku `waitFor` (ticket planu albo karta): Tide zapisuje decyzję czekania bez pytania
+        użytkownika i wznowi krok, gdy cel się domknie. Zły cel — zwykłe pytanie albo błąd kroku."""
+        target = str(data.get("waitFor") or "").strip()
+        if data.get("result") not in ("question", "error"):
+            return False
+        choice = "wait-card" if re.fullmatch(r"[Kk]-\d+", target) else "wait-ticket"
+        try:
+            self._save_wait_decision(card, name, step, choice, target, auto=True)
+        except FlowError:
+            return False
+        return True
+
+    def _save_wait_decision(self, card, name, step, choice, target, **fields):
+        """Odczyt grafu, kontrola i zapis są jedną sekcją dla wyników kroków i decyzji ręcznych."""
+        from . import waiting
+        with self.journal.lock:
+            st = fold(self.journal.read(card))
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if name in st.step_decisions or name in st.superseded or st.card_finished:
+                raise FlowError("already-decided", "krok nie czeka już na decyzję")
+            states = {ident: fold(self.journal.read(ident)) for ident in self.journal.cards()}
+            states[card] = st
+            if choice == "wait-card":
+                other = str(target or "").strip().upper()
+                if not re.fullmatch(r"K-\d+", other) or other == card or other not in states:
+                    raise FlowError("bad-card", "podaj inną kartę z przepływem, na którą krok ma czekać (np. K-43)")
+                extra = {"waitCard": other}
+                cyclic = waiting.would_cycle(states, card, step, other=other)
+            else:
+                ticket = self._wait_ticket_target(st, step, target)
+                extra = {"waitTicket": ticket}
+                cyclic = waiting.would_cycle(states, card, step, ticket=ticket)
+            if cyclic:
+                raise FlowError("wait-cycle", "cel pośrednio lub bezpośrednio czeka na ten krok — czekanie w kółko")
+            return self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                       kind=step.get("kind") or "", choice=choice, command="", executor="",
+                                       answer=fields.pop("answer", ""), **fields, **extra)
+
+    def _card_done(self, card: str) -> bool:
+        """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""
+        try:
+            other = fold(self.journal.read(card))
+        except Exception:
+            return False
+        return bool(other.card_finished or other.closed)
+
+    def _extra_repos(self, card: str) -> tuple:
+        """Repozytoria dodatkowych projektów karty — do odczytu gitem w poleceniach poza piaskownicą."""
+        try:
+            board = self.store.load()
+            item = board.cards.get(card_num(card))
+        except Exception:
+            return ()
+        if item is None:
+            return ()
+        return tuple(board.projects[slug].repo for slug in item.projects
+                     if slug in board.projects and board.projects[slug].repo)
+
+    def _other_provider_executor(self, st: FlowState, step: dict) -> str:
+        """Wykonawca innego dostawcy w tej samej klasie (albo mocny), inny model niż autor ticketu; pusty — brak."""
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            return ""
+        current = next((e for e in catalog.executors if e.name == step.get("executor")), None)
+        if current is None or current.provider == "local":
+            return ""
+        # Recenzent nie może mieć modelu ostatniego autora kodu ticketu (krok ticket/fix przed tym review).
+        authors = [s for s in st.steps.values() if s.get("ticket") == step.get("ticket") and s.get("ticket")
+                   and s.get("kind") not in ("review",) and s.get("step") != step.get("step")]
+        avoid = ((authors[-1].get("model") if authors and step.get("kind") == "review" else "") or "").lower()
+        options = [e for e in catalog.executors if e.classes and e.provider not in (current.provider, "local")
+                   and e.model.lower() != avoid]
+        same = [e for e in options if set(e.classes) & set(current.classes)]
+        strong = [e for e in options if "mocny" in e.classes]
+        pick = (same or strong or options)
+        return pick[0].name if pick else ""
 
     def _stronger_executor(self, step: dict, done: dict) -> str:
         """Następny mocniejszy wykonawca tego samego dostawcy (lekki → standard → mocny) po błędzie kroku, który nie
@@ -4260,8 +6177,7 @@ class FlowEngine(PlanEditing):
         return better[0].name if better else ""
 
     def _ticket_consent(self, card: str, ticket: str) -> bool:
-        return bool(ticket) and any(e.get("type") == "outside.ticket-consent" and e.get("ticket") == ticket
-                                    for e in self.journal.read(card))
+        return (fold(self.journal.read(card)).ticket_consents.get(ticket) or {}).get("type") == consent.GRANTED
 
     def _outside_busy(self, card: str) -> bool:
         """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
@@ -4285,6 +6201,57 @@ class FlowEngine(PlanEditing):
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
 
+    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False) -> bool:
+        """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
+        projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
+        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
+        now = time.time()
+        if not getattr(self, "_outside_seeded", False):
+            self._outside_seeded = True
+            self._seed_outside_waiting(now)
+        slug = self._project(card)[1].slug
+        previous = self._outside_waiting.get(name)
+        queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
+        self._outside_waiting[name] = (card, slug, queued, now)
+        self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
+        for other, (other_card, other_slug, other_queued, _) in self._outside_waiting.items():
+            if other == name or (other_queued, other) >= (queued, name):
+                continue
+            if other_slug == slug or not self._outside_busy(other_card):
+                if not quiet:
+                    self._outside_log(name, f"czeka za starszą zgodą {other}")
+                return True     # starsza zgoda w tym projekcie albo starsza, która może ruszyć gdzie indziej
+        return False
+
+    def _outside_log(self, name: str, text: str) -> None:
+        """Jedna linia w dzienniku usługi przy zmianie powodu czekania polecenia poza piaskownicą."""
+        seen = self.__dict__.setdefault("_outside_logged", {})
+        if seen.get(name) != text:
+            seen[name] = text
+            print(f"tide-daemon: kolejka poza piaskownicą: {name}: {text}", flush=True)
+
+    def _seed_outside_waiting(self, now: float) -> None:
+        """Po restarcie usługi: zgody na polecenia poza piaskownicą, które jeszcze nie ruszyły, z czasem zgody
+        z dziennika — inaczej pierwsza sprawdzona karta wyprzedza starsze zgody (05.11, K-37 przed K-38)."""
+        for other in self.journal.cards():
+            try:
+                events = self.journal.read(other)
+                slug = self._project(other)[1].slug
+            except Exception:
+                continue
+            started = {e.get("step") for e in events if e.get("type") == "outside.started"}
+            resumed = {e.get("parentStep") for e in events if e.get("type") == "step.started" and e.get("parentStep")}
+            outside = {e.get("step") for e in events if e.get("type") == "step.finished" and e.get("outside")}
+            current = fold(events)
+            for e in current.step_decisions.values():
+                name = e.get("step")
+                queued = _epoch(e.get("ts")) if e.get("ts") else now
+                # Stara zgoda (karta porzucona) nie blokuje kolejki nawet przez OUTSIDE_QUEUE_STALE.
+                if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
+                        name in outside and name not in started and name not in resumed and \
+                        name not in current.superseded and now - queued < 86400:
+                    self._outside_waiting.setdefault(name, (other, slug, queued, now))
+
     def _outside_exit(self, card: str, name: str) -> str:
         found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
         return found.get("exitFile") or "/nonexistent/in/exit-code"
@@ -4297,6 +6264,10 @@ class FlowEngine(PlanEditing):
             raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
         self._outside_history(card, step, command=command)
         name = step.get("step") or ""
+        worktree = step.get("worktree") or ""
+        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
+        requested_command = command
+        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
         folder = os.path.join(step.get("stepDir") or "", "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
         exit_file = os.path.join(folder, "in", "exit-code")
@@ -4310,6 +6281,10 @@ class FlowEngine(PlanEditing):
         chrome = node_mod.chrome_bin(os.path.expanduser("~"))
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
+        if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
+            # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
+            # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
+            env["JOBS"] = str(OLD_RUNNER_JOBS)
         argv = [self.systemd_run or "systemd-run", "--user", "--scope", "--collect", "--quiet", f"--unit={unit}",
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
@@ -4317,11 +6292,11 @@ class FlowEngine(PlanEditing):
         # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
         # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
         with open(log, "ab") as out, self.journal.lock:
-            self._outside_history(card, step, command=command)
+            self._outside_history(card, step, command=requested_command)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
             self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                                unit=unit, log=log, exitFile=exit_file)
+                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head, rerunOf=rerun_of)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)
@@ -4335,6 +6310,8 @@ class FlowEngine(PlanEditing):
         (albo kroku planu) decyzja wraca do użytkownika, żeby nie kręcić się w kółko."""
         ticket = step.get("ticket") or ""
         kind = step.get("kind") or ""
+        if self._caretaker_takes_over(card, fold(self.journal.read(card)), name):
+            return      # ta sama odmowa drugi raz (PT-148): opiekun przed kolejną ślepą próbą i przed AUTO_DENY_LIMIT
         used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
                    and e.get("choice") == "deny"
                    and (e.get("ticket") or "") == ticket and (ticket or e.get("kind") == kind))
@@ -4346,86 +6323,752 @@ class FlowEngine(PlanEditing):
         self.journal.append(card, "step.decision", step=name, ticket=ticket, kind=kind, choice="deny",
                             answer=note, command=command, executor="", auto=True)
 
-    def merge_card_to_main(self, card_id: str) -> dict:
-        """Jawna akcja użytkownika po domknięciu; nigdy nie wywoływana przez tick."""
+    def suggest_card_base(self, card_id: str, request: dict) -> dict:
+        result = self.prepare_card_base_suggestion(card_id, request)
+        return result() if callable(result) else result
+
+    def prepare_card_base_suggestion(self, card_id: str, request: dict):
+        """Lokalny wynik albo odczyt hostingu pracujący wyłącznie na przygotowanej migawce."""
+        from .basesuggestions import suggest_text
+        if not isinstance(request, dict) or set(request) - {"text", "revision", "scope"}:
+            raise FlowError("bad-request", "analiza przyjmuje text, revision i scope")
+        text, revision, scope = request.get("text"), request.get("revision"), request.get("scope")
+        if (not isinstance(text, str) or len(text) > 200000 or type(revision) is not int or revision < 0
+                or scope not in ("text", "files", "links")):
+            raise FlowError("bad-request", "wymagane: text (do 200000 znaków), nieujemna revision i scope text|files|links")
+        card, project = self._project(card_id)
+        identity = {"revision": revision, "card": card_id, "project": project.slug, "repo": project.repo}
+        if not project.repo or project.repo_missing or not os.path.isdir(project.repo):
+            raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
+        if scope == "files":
+            from .filesuggestions import suggest_files
+            return {"ok": True, **identity, **suggest_files(self.git, project.repo, card.description, text)}
+        try:
+            branches = self.git.list_branches(project.repo, "", 2**31, "base")["branches"]
+        except FlowGitError as exc:
+            raise FlowError("suggestions", str(exc)) from None
+        if scope == "links":
+            from .linksuggestions import remote_config, suggest_links
+            try:
+                remotes = remote_config(self.git, project.repo)
+            except Exception as exc:
+                # Wyłącznie typ błędu: repr wyjątku może zawierać URL albo poświadczenia.
+                print(f"tide-daemon: SuggestCardBase: {type(exc).__name__}", flush=True)
+                return {"ok": True, **identity, "candidates": [],
+                        "warnings": ["Nie można sprawdzić linków. Wybierz bazę ręcznie."]}
+            repo, description = project.repo, card.description
+
+            def read_links():
+                try:
+                    suggestions = suggest_links(None, repo, branches, description, text, remotes=remotes)
+                except Exception as exc:
+                    print(f"tide-daemon: SuggestCardBase: {type(exc).__name__}", flush=True)
+                    suggestions = {"candidates": [], "warnings": ["Nie można sprawdzić linków. Wybierz bazę ręcznie."]}
+                return {"ok": True, **identity, **suggestions}
+
+            return read_links
+        suggestions = suggest_text(branches, card.description, text)
+        return {"ok": True, **identity, **suggestions}
+
+    def list_card_branches(self, card_id: str, request: dict) -> dict:
+        if set(request) - {"purpose", "text", "limit"}:
+            raise FlowError("bad-request", "lista przyjmuje tylko purpose, text i limit")
+        if request.get("purpose") not in ("base", "merge"):
+            raise FlowError("bad-request", "purpose musi być base albo merge")
+        text, limit = request.get("text", ""), request.get("limit", 50)
+        if not isinstance(text, str) or type(limit) is not int or not 1 <= limit <= 100:
+            raise FlowError("bad-request", "tekst musi być napisem, limit liczbą od 1 do 100")
+        st = fold(self.journal.read(card_id)) if request["purpose"] == "merge" else None
+        if st is not None and st.started:
+            # Zmiana projektu karty nie zmienia repozytorium rozpoczętego zlecenia.
+            # Lista i kwalifikacja celu muszą używać tego samego repo co podgląd i zgoda.
+            repo = self._repo(card_id)
+            if not repo or not os.path.isdir(repo):
+                raise FlowError("no-repo", "zlecenie karty nie ma dostępnego repozytorium")
+        else:
+            try:
+                _, project = self._project(card_id)
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            repo = project.repo
+            if not repo or project.repo_missing or not os.path.isdir(repo):
+                raise FlowError("no-repo", "projekt karty nie ma dostępnego repozytorium")
+        try:
+            result = self.git.list_branches(repo, text if request["purpose"] == "base" else "",
+                                            limit if request["purpose"] == "base" else 2**31,
+                                            request["purpose"])
+            if request["purpose"] == "merge":
+                from . import targetprep
+                protected = self._protected_merge_targets(card_id, repo)
+                checkouts = self.git.branch_checkouts(repo)
+                source_ref = "refs/heads/" + ticket_of(st)["cardBranch"]
+                for item in result["branches"]:
+                    path = checkouts.get(item["ref"], "")
+                    blocks = self._merge_target_blocks(source_ref, item["ref"], path,
+                                                       bool(path) and os.path.isdir(path), protected)
+                    item.update(selectable=not blocks, reason=blocks[0][1] if blocks else "")
+                try:
+                    result["recentTargets"] = self._recent_targets(repo, result["branches"])
+                except Exception:
+                    result["warnings"].append("Nie można odczytać ostatnich celów. Wybierz cel z listy.")
+                result["branches"] = [b for b in result["branches"] if text.casefold() in b["ref"].casefold()]
+                base = base_of(st)
+                choices = targetprep.remote_choices(self.git, repo, base)
+                result.update(choices)
+                proposal = choices["createTarget"]
+                if proposal and text.casefold() in (proposal["ref"] + proposal["label"]).casefold():
+                    # Kolizja nazwy pozostawia istniejący cel na liście, z osobnym wyjaśnieniem propozycji.
+                    if not any(b["ref"] == proposal["ref"] for b in result["branches"]):
+                        result["branches"].append(proposal)
+                base_ref = base["baseRef"] if base["status"] == "known" else ""
+                result["branches"].sort(key=lambda b: (b["ref"] != choices["defaultTargetRef"],
+                    b["ref"] != base_ref, b["ref"] not in choices["trackingTargets"],
+                    b["ref"] != (proposal or {}).get("ref"), b["ref"] != result["mainRef"]))
+                result["hasMore"] = len(result["branches"]) > limit
+                result["branches"] = result["branches"][:limit]
+        except FlowGitError as exc:
+            raise FlowError("branches", str(exc)) from None
+        if request["purpose"] == "base":
+            try:
+                result["recentBases"] = self._recent_bases(project.repo)
+            except Exception:
+                result["warnings"].append("Nie można odczytać ostatnich baz. Wybierz bazę z listy.")
+        return {"ok": True, **result}
+
+    def _protected_merge_targets(self, card: str, repo: str) -> list[dict]:
+        """Ten sam zbiór dla listy, podglądu i ponownego sprawdzenia zgody."""
+        key = self.git.repository_key(repo)
+        protected = []
+        for other_id in self.journal.cards():
+            if other_id == card:
+                continue
+            other = fold(self.journal.read(other_id))
+            other_repo = (other.started or {}).get("repo")
+            if not other_repo:
+                try:
+                    other_repo = self._repo(other_id)
+                except FlowError:
+                    continue
+
+            def same_repository(path):
+                try:
+                    return self.git.repository_key(path) == key
+                except FlowGitError:
+                    return False
+
+            info = ticket_of(other)
+            if same_repository(other_repo) and info["cardBranch"]:
+                protected.append({"card": other_id, "branch": info["cardBranch"], "worktree": info["cardWorktree"]})
+            outside_steps = [other.steps.get(name, {}) for name in other.outside_started]
+            for step in other.running() + other.open_consoles() + outside_steps:
+                if same_repository(step.get("repo") or other_repo):
+                    protected.append({"card": other_id, "branch": step.get("branch") or "",
+                                      "worktree": step.get("worktree") or ""})
+        return protected
+
+    @staticmethod
+    def _merge_target_blocks(source_ref, target_ref, path, exists, protected):
+        """Kwalifikacja celu; kolizje treści i gotowość karty ocenia dopiero podgląd."""
+        reasons = []
+        if source_ref == target_ref:
+            reasons.append(("card-target", "Celem nie może być gałąź karty."))
+        for item in protected:
+            if (target_ref == "refs/heads/" + item["branch"] or
+                    (exists and item["worktree"] and os.path.realpath(item["worktree"]) == os.path.realpath(path))):
+                reasons.append(("protected-target", "Cel należy do karty " + item["card"] + " lub jej czynnego kroku."))
+                break
+        if path and not exists:
+            reasons.append(("no-target-worktree", "Zarejestrowany checkout celu jest niedostępny."))
+        return reasons
+
+    def _recent_targets(self, repo: str, branches: list[dict]) -> list[dict]:
+        """Historia ukończonych scaleń; kwalifikacja i dzisiejszy SHA pochodzą ze wspólnej listy."""
+        key = self.git.repository_key(repo)
+        identities = {os.path.realpath(repo): key}
+        choices = []
+        for card in self.journal.cards():
+            events = self.journal.read(card)
+            for index, event in enumerate(events):
+                if event.get("type") not in ("card.merged", "card.main-merged"):
+                    continue
+                state = fold(events[:index + 1])
+                merged = state.merged or {}
+                # Mieszane dzienniki mogą powtarzać wynik jednej operacji.
+                if merged.get("seq") != event.get("seq"):
+                    continue
+                ref = merged.get("targetRef") or ""
+                source = (state.started or {}).get("repo")
+                if not source or not ref.startswith("refs/heads/"):
+                    continue
+                source = os.path.realpath(source)
+                if source not in identities:
+                    try:
+                        identities[source] = self.git.repository_key(source)
+                    except FlowGitError:
+                        identities[source] = ""
+                if identities[source] == key:
+                    choices.append((datetime.fromisoformat(merged["ts"]).timestamp(), card,
+                                    merged.get("seq", 0), ref))
+        available = {b["ref"]: b for b in branches}
+        seen, recent = set(), []
+        for _, _, _, ref in sorted(choices, reverse=True):
+            if ref in seen or ref not in available:
+                continue
+            seen.add(ref)
+            recent.append(dict(available[ref]))
+            if len(recent) == 10:
+                break
+        return recent
+
+    def _recent_bases(self, repo: str) -> list[dict]:
+        """Skróty są projekcją udanych zdarzeń, wspólną dla worktrees rzeczywistego repozytorium."""
+        key = self.git.repository_key(repo)
+        identities = {os.path.realpath(repo): key}
+        choices = []
+        for card in self.journal.cards():
+            events = self.journal.read(card)
+            for index, event in enumerate(events):
+                if event.get("type") not in ("card.started", "card.base-changed"):
+                    continue
+                state = fold(events[:index + 1])
+                if event["type"] == "card.base-changed" and state.base_change != event:
+                    continue
+                source = (state.started or {}).get("repo")
+                base = base_of(state)
+                if not source or base["status"] != "known":
+                    continue
+                source = os.path.realpath(source)
+                if source not in identities:
+                    try:
+                        identities[source] = self.git.repository_key(source)
+                    except FlowGitError:
+                        identities[source] = ""
+                if identities[source] == key:
+                    stamp = datetime.fromisoformat(event["ts"]).timestamp()
+                    choices.append((stamp, card, event.get("seq", 0), base["baseRef"]))
+        seen, recent = set(), []
+        for _, _, _, ref in sorted(choices, reverse=True):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            try:
+                # Skrót wybiera dzisiejszy SHA refu; historyczny SHA zostaje w dzienniku.
+                commit = self.git.sha(repo, ref)
+                base = self.git.resolve_base(repo, ref, commit)
+            except FlowGitError:
+                continue
+            remote = ref.startswith("refs/remotes/")
+            name = base["baseBranch"]
+            recent.append({"ref": ref, "name": name, "commit": base["baseCommit"],
+                           "kind": "remote" if remote else "local",
+                           "remote": name.partition("/")[0] if remote else "", "selectable": True, "reason": ""})
+            if len(recent) == 10:
+                break
+        return recent
+
+    @staticmethod
+    def _card_merge_blocks(st: FlowState, *, operation_id: str = "") -> list[tuple[str, str]]:
+        """Jedna polityka domknięcia dla podglądu i wykonania rozpoczętej operacji."""
+        reasons = []
+        if baseproposal.blocked(st):
+            reasons.append(("base-decision", "Najpierw rozstrzygnij pytanie o bazę karty; wyniki pozostają niescalone."))
+        if not st.closed:
+            reasons.append(("not-closed", "Karta nie ma aktualnego domknięcia."))
+        if st.running() or st.open_consoles() or st.outside_started:
+            reasons.append(("active-step", "Krok karty jest jeszcze czynny."))
+        closed_seq = (st.closed or {}).get("seq", 0)
+        if st.plan_revision or any((e or {}).get("seq", 0) > closed_seq
+                                   for e in (st.plan_proposed, st.plan_approved)):
+            reasons.append(("plan-change", "Zmiana planu czeka na zakończenie lub decyzję."))
+        if st.base_change.get("seq", 0) > closed_seq:
+            reasons.append(("base-change", "Po korekcie bazy karta wymaga aktualnego domknięcia."))
+        pending = [i for i in st.open_intents() if not (
+            operation_id and i.get("action") == "main-merge" and i.get("key") == operation_id)]
+        if pending or st.merge_pending():
+            reasons.append(("pending-action", "Akcja karty, korekta bazy lub scalanie ticketu nie zostały zakończone."))
+        return reasons
+
+    def request_card_base_change(self, card_id: str, request: dict) -> dict:
+        """Jawny wybór użytkownika tworzy decyzję, bez zatrzymywania kroków i bez zmiany bazy."""
+        from . import basechange
+        if not isinstance(request, dict) or set(request) - {"baseRef", "baseCommit"}:
+            raise FlowError("bad-request", "wybór użytkownika przyjmuje baseRef i baseCommit")
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         st = fold(self.journal.read(card))
-        if not st.closed or st.plan_revision:
-            raise FlowError("not-closed", "karta nie jest jeszcze gotowa do scalenia")
-        info = ticket_of(st)
-        repo = self._repo(card)
-        main = self.git.main_branch(repo)
-        if not main or not info["cardBranch"]:
-            raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
-        if not st.main_merged:
-            listed = self.git.run(repo, "worktree", "list", "--porcelain")
-            main_tree = next((part.get("worktree") for part in
-                              (dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
-                               for block in listed.out.split("\n\n"))
-                              if part.get("branch") == f"refs/heads/{main}"), "") if listed.ok else ""
-            if not main_tree:
-                # Gałąź główna nie jest nigdzie otwarta (K-15: główny katalog stał na innej gałęzi z lokalnymi
-                # zmianami) — Tide zakłada na nią własny worktree zamiast odsyłać użytkownika do terminala.
-                from .gitops import worktrees_dir
-                path = os.path.join(worktrees_dir(repo), f"{main}-main")
-                if os.path.exists(path):
-                    raise FlowError("no-main-worktree", f"katalog {path} już istnieje — otwórz w nim gałąź {main}")
-                added = self.git.run(repo, "worktree", "add", path, main, timeout=600)
-                if not added.ok:
-                    raise FlowError("no-main-worktree", "nie udało się otworzyć gałęzi głównej w worktree: "
-                                    + ((added.err or "").splitlines() or ["błąd gita"])[0])
-                main_tree = path
-            try:
-                tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
-                merged = self.git.merge(repo, main, info["cardBranch"], main_tree,
-                                        f"Merge card {card} into {main}", expected_tip=tip)
-            except FlowGitError as exc:
-                raise FlowError("main-merge", str(exc)) from None
-            self.journal.append(card, "card.main-merged", main=main, branch=info["cardBranch"],
-                                commit=merged["commit"])
+        self._require_base_context(card)
+        if not st.started or st.card_finished:
+            raise FlowError("no-order", "karta nie ma otwartego zlecenia")
+        if baseproposal.pending(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij istniejącą decyzję o bazie")
         try:
-            item = self.store.load().cards.get(card_num(card))
-            if item is None:
-                raise FlowError("no-card", "nie ma karty do scalenia")
-            if item.column != "done":
-                self.store.move_card(card, "done", -1, from_column="review")
+            new = basechange.candidate(self.git, self._repo(card), request)
+        except (ValueError, FlowGitError) as exc:
+            raise FlowError("bad-base", str(exc)) from None
+        decision = "base-request:" + str(st.last_seq + 1)
+        self.journal.append(card, "card.base-requested", decision=decision,
+                            baseProposal={"valid": True, "ref": new["baseRef"], "baseCommit": new["baseCommit"],
+                                          "evidence": "Jawny wybór użytkownika w pełnej karcie."})
+        return {"ok": True, "id": card, "waiting": True, "changed": False,
+                "preview": self.preview_card_base_change(card, {})}
+
+    def _base_change_processes(self, st):
+        """Odczyt procesów obejmuje także wynik zapisany przed końcem procesu."""
+        from ..tasks import launch
+        processes = []
+        for name, step in st.steps.items():
+            unit = step.get("unit") or ""
+            unit_state = stepstop.unit_state(unit) if unit else ""
+            process = launch.process_alive(step["processFile"]) if step.get("processFile") else False
+            active = (name not in st.finished or unit_state not in ("", "inactive") or
+                      process is not False or name in st.outside_started or
+                      step.get("mode") == "interactive" and not step.get("consoleClosed"))
+            processes.append({"step": name, "unit": unit, "state": unit_state, "active": active,
+                              "previousOrder": name in st.superseded,
+                              "processAlive": process, "finished": name in st.finished,
+                              "worktree": step.get("worktree") or ""})
+        return processes
+
+    def _require_base_context(self, card):
+        st = fold(self.journal.read(card))
+        if baseproposal.generation_blocked(st):
+            raise FlowError("base-validation", "Generacja czeka na odzyskanie lub walidację kontekstu.")
+
+    def preview_card_base_change(self, card_id: str, request: dict) -> dict:
+        """Odcisk całej mapy i dowody kwalifikacji; brak zdarzeń i brak mutacji gita."""
+        from . import basechange
+        try:
+            card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if not st.card_finished:
-            self.journal.append(card, "card.finished", column="done")
-        return {"ok": True, "id": card, "main": main, "already": bool(st.main_merged)}
+        if not isinstance(request, dict) or set(request) - {"baseRef", "baseCommit", "step"}:
+            raise FlowError("bad-request", "oczekiwano baseRef/baseCommit albo kroku propozycji")
+        if "step" in request and not isinstance(request["step"], str):
+            raise FlowError("bad-request", "krok propozycji musi być tekstem")
+        events = self.journal.read(card)
+        st = fold(events)
+        asked = request.get("step") or next(iter(baseproposal.pending(st)), "")
+        proposal = (st.base_request.get("baseProposal") if asked == st.base_request.get("decision") else
+                    (st.finished.get(asked) or {}).get("baseProposal")) or {}
+        wanted = dict(request)
+        if "baseRef" not in wanted and proposal.get("valid"):
+            wanted.update(baseRef=proposal["ref"], baseCommit=proposal["baseCommit"])
+        repo = self._repo(card)
+        try:
+            with lock_for(repo):
+                new = basechange.candidate(self.git, repo, wanted)
+                processes = self._base_change_processes(st)
+                result = basechange.preview(self.git, repo, card, events, st, new, processes)
+                # Kontrolny odczyt używa tylko indeksu/statusu/metadanych, bez hashowania lokalnej treści.
+                after = basechange.preview(self.git, repo, card, events, st,
+                                           basechange.candidate(self.git, repo, wanted),
+                                           self._base_change_processes(st))
+                if result["previewId"] != after["previewId"] or events != self.journal.read(card):
+                    result.update(canChange=False, previewId="")
+                    result["blockedReasons"].append({"reason": "state-changed", "message":
+                        "Stan zmienił się podczas odczytu. Ponów podgląd; stary identyfikator jest nieważny."})
+        except (ValueError, FlowGitError) as exc:
+            raise FlowError("bad-base", str(exc)) from None
+        result["decisionStep"] = asked if asked in baseproposal.pending(st) else ""
+        result["evidence"] = proposal.get("evidence") or "Jawny podgląd wybranej bazy."
+        return result
 
-    def _advance_close(self, card: str, st: FlowState) -> None:
-        """Po ostatnim tickecie tworzy podsumowanie; nigdy nie scala do gałęzi głównej."""
+    def preview_card_merge(self, card_id: str, request: dict) -> dict:
+        """Odczyt bez zdarzeń w dzienniku, provisioningu ani potwierdzenia wykonania."""
+        if not isinstance(request, dict) or set(request) - {"targetRef"}:
+            raise FlowError("bad-request", "podgląd przyjmuje opcjonalny lokalny targetRef")
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        st = fold(self.journal.read(card))
+        branch = ticket_of(st)["cardBranch"]
+        if not branch:
+            raise FlowError("no-base", "brak gałęzi karty")
+        from . import targetprep
+        try:
+            repo = self._repo(card)
+            target_ref = request.get("targetRef")
+            if "targetRef" in request and (not isinstance(target_ref, str) or
+                    not target_ref.startswith("refs/heads/") or
+                    not self.git.run(repo, "check-ref-format", target_ref).ok or
+                    self.git.run(repo, "symbolic-ref", "--quiet", target_ref).ok):
+                raise FlowError("bad-request", "cel musi być pełnym lokalnym refem refs/heads/…")
+            base = base_of(st)
+            remote_ref = base["baseRef"] if base["status"] == "known" and base["baseRef"].startswith("refs/remotes/") else ""
+            if not target_ref:
+                choices = targetprep.remote_choices(self.git, repo, base)
+                target_ref = choices["defaultTargetRef"]
+                if not target_ref and remote_ref:
+                    raise FlowError("target-required", "Wybierz lokalny cel lub utworzenie gałęzi od zdalnej bazy.")
+                target_ref = target_ref or "refs/heads/" + self.git.main_branch(repo)
+            if not targetprep.ref_exists(self.git, repo, target_ref) and not remote_ref:
+                raise FlowError("bad-request", "brak lokalnego celu i zdalnej bazy do jego utworzenia")
+            preparation = targetprep.plan(self.git, repo, target_ref, remote_ref)
+            preview = self.git.preview_merge(repo, branch, target_ref, preparation=preparation)
+            preview["targetPreparation"] = preparation
+            # Ponowny odczyt obejmuje nieistnienie refu/katalogu i zdalny SHA.
+            if targetprep.plan(self.git, repo, target_ref, remote_ref) != preparation:
+                preview.update(reason="state-changed", message="Stan celu zmienił się podczas odczytu.")
+            if not request:
+                self._main_branches[repo] = preview["targetBranch"]
+        except FlowGitError as exc:
+            raise FlowError("merge-preview", str(exc)) from None
+        snapshots = preview.pop("_snapshot", None)
+        reasons = []
+
+        def block(reason, message):
+            if not any(r["reason"] == reason for r in reasons):
+                reasons.append({"reason": reason, "message": message})
+
+        if preview["reason"]:
+            block(preview["reason"], preview["message"])
+        for reason, message in self._card_merge_blocks(st):
+            block(reason, message)
+        protected = self._protected_merge_targets(card, repo)
+        for reason, message in self._merge_target_blocks(
+                preview["sourceRef"], preview["targetRef"],
+                "" if preparation["createWorktree"] else preview["targetWorktree"],
+                bool(snapshots and snapshots["target"]["exists"]), protected):
+            block(reason, message)
+        if preparation["pathOccupied"] or preparation["parentSymlink"]:
+            block("target-path-occupied", "Planowany katalog celu jest zajęty lub jego rodzic jest dowiązaniem.")
+        if preparation["nameConflict"]:
+            block("target-name-occupied", "Lokalna nazwa koliduje z istniejącą gałęzią. Wybierz inną nazwę lub lokalny cel.")
+        if snapshots:
+            source, target = snapshots["source"], snapshots["target"]
+            if not source["exists"] or source_dirty(source):
+                block("source-dirty", "Gałąź karty nie ma czystego checkoutu.")
+            if any(any(s.get("operations", {}).values()) for s in (source, target)):
+                block("git-operation", "W checkoucie trwa operacja gita lub indeks jest zablokowany.")
+            if preview.get("localCollisionCount"):
+                block("local-collision", "Lokalna praca koliduje ze ścieżkami scalenia.")
+        else:
+            block("local-unassessed", "Nie udało się potwierdzić aktualnego stanu checkoutów.")
+        preview.update(blockedReasons=reasons, canMerge=not reasons, baseVersion=st.base_version)
+        if reasons:
+            preview.update(reason=reasons[0]["reason"], message=reasons[0]["message"])
+        if snapshots and preview["reason"] != "state-changed":
+            # To odcisk, nie zapis zgody. PT-204 ponownie odczyta stan przed rozpoczęciem operacji.
+            context = {"card": card, "order": st.started, "baseVersion": st.base_version,
+                       "journalSeq": st.last_seq, "preview": preview, "checkout": snapshots,
+                       "protected": protected}
+            payload = json.dumps(context, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
+            preview["previewToken"] = hmac.new(self._preview_secret, payload, hashlib.sha256).hexdigest()
+        return {"ok": True, "id": card, **preview}
+
+    def merge_card(self, card_id: str, request: dict) -> dict:
+        """Zgoda dotyczy dokładnego podglądu; rozpoczętą operację ponawiamy po jej ID."""
+        if (not isinstance(request, dict) or set(request) - {"targetRef", "previewToken", "operationId"} or
+                not all(isinstance(request.get(k), str) and request[k] for k in ("targetRef", "previewToken")) or
+                ("operationId" in request and not isinstance(request["operationId"], str))):
+            raise FlowError("bad-request", "scalenie wymaga targetRef i previewToken; operationId wskazuje rozpoczętą operację")
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        repo = self._repo(card)
+        with lock_for(repo), self.journal.lock:
+            st = fold(self.journal.read(card))
+            self._require_base_context(card)
+            intent = self._main_merge_intent(st)
+            if (intent and intent.get("previewToken") == request["previewToken"] and
+                    intent["targetRef"] == request["targetRef"] and
+                    request.get("operationId", intent["key"]) == intent["key"]):
+                if baseproposal.pending(st):
+                    raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+                if self._abandon_main_merge(card, intent):
+                    raise FlowError("stale-preview", "Operacja została porzucona. Przygotuj nowy podgląd i potwierdź go.")
+                self._resume_main_merge(card, intent)
+                return {"ok": True, "id": card, **MergeWorktree.result(intent)}
+            if request.get("operationId"):
+                raise FlowError("stale-preview", "Nie ma takiej rozpoczętej operacji tego podglądu.")
+            try:
+                preview = self.preview_card_merge(card, {"targetRef": request["targetRef"]})
+            except FlowError:
+                raise FlowError("stale-preview", "Cel lub kontekst zmienił się. Przygotuj nowy podgląd i potwierdź go.") from None
+            if not hmac.compare_digest(preview.get("previewToken", "").encode(), request["previewToken"].encode()):
+                raise FlowError("stale-preview", "Podgląd jest nieaktualny. Przygotuj nowy podgląd i potwierdź go.")
+            if not preview["canMerge"]:
+                raise FlowError(preview["reason"], preview["message"])
+            if intent or st.merged:
+                raise FlowError("stale-preview", "Zlecenie ma już operację scalenia. Użyj jej ID albo nowego zlecenia.")
+            self._merge_card_to_main_locked(card, repo, preview=preview)
+            intent = self._main_merge_intent(fold(self.journal.read(card)))
+            return {"ok": True, "id": card, **MergeWorktree.result(intent)}
+
+    def merge_card_to_main(self, card_id: str) -> dict:
+        """Jawna zgoda po domknięciu; ponowienie odnajduje operację tego samego zlecenia."""
+        try:
+            card = f"K-{card_num(card_id)}"
+        except BoardError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        intent = self._main_merge_intent(fold(self.journal.read(card)))
+        repo = intent["repo"] if intent else self._repo(card)
+        with lock_for(repo):
+            return self._merge_card_to_main_locked(card, repo)
+
+    def _main_merge_intent(self, st: FlowState) -> dict | None:
+        return next((i for i in reversed(list(st.intents.values())) if i.get("action") == "main-merge" and
+                     i.get("key") not in st.abandoned_main_merges and
+                     i.get("requestSeq") == (st.started or {}).get("seq")), None)
+
+    def _pending_main_merge(self, card: str) -> dict | None:
+        events = self.journal.read(card)
+        intent = self._main_merge_intent(fold(events))
+        if not intent or any(e.get("type") == "main-merge.checkpoint" and e.get("key") == intent["key"] and
+                             e.get("stage") == "projected" for e in events):
+            return None
+        return intent
+
+    def _recover_main_merge(self, card: str) -> bool:
+        intent = self._pending_main_merge(card)
+        if not intent:
+            return False
+        try:
+            with lock_for(intent["repo"]):
+                # Równoległe MergeCardToMain mogło porzucić ten zamiar i zapisać nowy — czytamy pod blokadą.
+                intent = self._pending_main_merge(card)
+                if not intent or self._abandon_main_merge(card, intent):
+                    return False
+                self._resume_main_merge(card, intent)
+        except FlowError:
+            pass  # Jawne oczekiwanie jest już w dzienniku; brak pętli nowych zamiarów.
+        return True
+
+    def _result_in_target(self, intent: dict, current: str) -> bool:
+        """Ref celu wskazuje wynik albo jego potomka: git tej operacji jest zakończony."""
+        return bool(current) and (current == intent["resultCommit"] or
+                                  self.git.run(intent["repo"], "merge-base", "--is-ancestor",
+                                               intent["resultCommit"], current).ok)
+
+    def _abandon_main_merge(self, card: str, intent: dict) -> bool:
+        """Jawna decyzja użytkownika zamyka zamiar, którego wynik nie trafił do refu celu.
+
+        Obcy ref (np. commit użytkownika na głównej) nie jest zgodą na wykonanie, ale decyzja „Do poprawy”, zwrot
+        planu, nowe domknięcie albo ręczne Gotowe/Archiwum kończy oczekiwanie. Zapisujemy tylko porzucenie —
+        bez dotykania plików, indeksu i refu. Ewentualna materializacja zostaje w checkoutcie; nowy zamiar
+        odziedziczy ją wyłącznie przy niezmienionym refie (MergeWorktree.prepare)."""
+        st = fold(self.journal.read(card))
+        returned = any(e["seq"] > intent["seq"] and (e["type"] in ("plan.returned", "card.closed") or
+                       (e["type"] == "card.moved" and e.get("to") in ("todo", "done", "archived")))
+                       for e in self.journal.read(card))
+        if not returned or ("main-merge", intent["key"]) in st.results:
+            return False
+        current = self.git.sha(intent["repo"], intent["targetRef"])
+        if self._result_in_target(intent, current):
+            return False  # Ref już przesunięty: recovery dokańcza wynik i projekcję, nie porzuca.
+        reason = ("decyzja użytkownika przed przesunięciem refu celu" if current == intent["targetCommitBefore"]
+                  else "decyzja użytkownika przy obcym refie celu — bez wykonania i bez nadpisania")
+        self.journal.append(card, "main-merge.abandoned", key=intent["key"], reason=reason)
+        return True
+
+    def _merge_card_to_main_locked(self, card: str, repo: str, *, preview: dict | None = None) -> dict:
+        legacy = preview is None
+        st = fold(self.journal.read(card))
+        if baseproposal.blocked(st):
+            raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+        intent = self._main_merge_intent(st)
+        if intent and self._abandon_main_merge(card, intent):
+            st = fold(self.journal.read(card))
+            intent = None
+        if intent:
+            already = bool(st.merged)
+            self._resume_main_merge(card, intent)
+            return {"ok": True, "id": card, "main": intent["targetBranch"], "already": already}
+        if self._card_merge_blocks(st):
+            raise FlowError("not-closed", "karta nie jest jeszcze gotowa do scalenia")
+        info = ticket_of(st)
+        if st.merged:
+            # Historyczny sukces bez zamiaru: cel pochodzi ze zdarzenia, nigdy z dzisiejszej konfiguracji.
+            self._project_main_merge(card, st, operation_id=st.merged.get("operationId") or "")
+            return {"ok": True, "id": card, "main": st.merged["targetBranch"], "already": True}
+        main = preview["targetBranch"] if preview is not None else self.git.main_branch(repo)
+        if not main or not info["cardBranch"]:
+            raise FlowError("no-base", "brak gałęzi głównej albo gałęzi karty")
+        if preview is not None:
+            # Podgląd czyta rekordy NUL i zachowuje również ścieżki z tabulatorem lub nową linią.
+            main_tree = preview["targetWorktree"] if preview["targetWorktreeExists"] else ""
+        else:
+            main_tree = self.git.branch_checkouts(repo).get(f"refs/heads/{main}", "")
+        if not main_tree:
+            # Stare API ma własną jawną zgodę, ale używa tego samego planu zasobów i recovery.
+            if preview is None:
+                preview = self.preview_card_merge(card, {"targetRef": "refs/heads/" + main})
+                if not preview["canMerge"]:
+                    raise FlowError(preview["reason"], preview["message"])
+            main_tree = preview["targetWorktree"]
+        try:
+            tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
+            if preview is not None and preview.get("targetPreparation", {}).get("createWorktree"):
+                prepared = MergeWorktree.prepare_fresh(self.git, repo, preview, f"Merge card {card} into {main}")
+            else:
+                prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
+                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}",
+                    abandoned=next((i for i in reversed(list(st.intents.values()))
+                                    if i.get("action") == "main-merge" and i["key"] in st.abandoned_main_merges and
+                                    i.get("requestSeq") == (st.started or {}).get("seq") and
+                                    i.get("targetRef") == f"refs/heads/{main}"), None))
+        except FlowGitError as exc:
+            if preview is not None:
+                raise FlowError("stale-preview", "Stan przygotowania zmienił się. Potwierdź nowy podgląd: " + str(exc)) from None
+            raise FlowError("main-merge", str(exc)) from None
+        if preview is not None and any(prepared[k] != preview[v] for k, v in (
+                ("sourceCommit", "sourceCommit"), ("targetCommitBefore", "targetCommit"),
+                ("targetRef", "targetRef"), ("targetWorktree", "targetWorktree"), ("resultTree", "resultTree"))):
+            raise FlowError("stale-preview", "Stan zmienił się podczas przygotowania. Potwierdź nowy podgląd.")
+        if preview is not None:
+            # Przygotowanie na kopii indeksu nie zmienia odcisku zgody. Wykrywamy także edycje użytkownika
+            # między ponownym podglądem a zakończeniem przygotowania, zanim zapiszemy zamiar i pliki.
+            try:
+                latest = self.preview_card_merge(card, {"targetRef": preview["targetRef"]})
+            except FlowError:
+                raise FlowError("stale-preview", "Cel lub kontekst zmienił się podczas przygotowania. Potwierdź nowy podgląd.") from None
+            if latest.get("previewToken") != preview["previewToken"]:
+                raise FlowError("stale-preview", "Stan lokalny zmienił się podczas przygotowania. Potwierdź nowy podgląd.")
+        ident = uuid.uuid4().hex
+        intent = self.journal.append(card, "intent", action="main-merge", key=ident, operationId=ident,
+                                     requestSeq=(st.started or {}).get("seq"), baseVersion=st.base_version,
+                                     repo=repo, sourceWorktree=info["cardWorktree"],
+                                     **({"previewToken": preview["previewToken"]} if not legacy else {}), **prepared)
+        self._resume_main_merge(card, intent)
+        return {"ok": True, "id": card, "main": main, "already": False}
+
+    def _resume_main_merge(self, card: str, intent: dict) -> None:
+        """Wspólna trwała operacja dla starej zgody i przyszłych adapterów, pod lock_for(repo)."""
+        key = intent["key"]
+        stages = {e.get("stage") for e in self.journal.read(card)
+                  if e["type"] == "main-merge.checkpoint" and e.get("key") == key}
+
+        def checkpoint(stage, **data):
+            if stage not in stages:
+                self.journal.append(card, "main-merge.checkpoint", key=key, stage=stage, **data)
+                stages.add(stage)
+
+        try:
+            st = fold(self.journal.read(card))
+            if st.card_finished and st.merged and st.merged.get("operationId") == key:
+                checkpoint("projected")
+                return
+            checkpoint("prepared")
+            branch = intent["sourceRef"][len("refs/heads/"):]
+            if self.git.run(intent["repo"], "symbolic-ref", "--quiet", intent["targetRef"]).ok:
+                raise FlowGitError("cel stał się refem symbolicznym — scalenie czeka")
+            current = self.git.sha(intent["repo"], intent["targetRef"])
+            if intent.get("targetPreparation", {}).get("createRef") and current:
+                owner = "refs/tide/merge-targets/" + key
+                if (self.git.run(intent["repo"], "symbolic-ref", "--quiet", owner).ok or
+                        self.git.sha(intent["repo"], owner) != intent["targetCommitBefore"]):
+                    raise FlowGitError("obcy ref celu — brak dowodu własności operacji")
+            # Przy already ani wynik, ani jego potomek nie dowodzi wykonania obiecanego etapu zasobów.
+            # Trwałe ref-moved dowodzi zakończenia tego etapu także bez zmiany SHA, przed zwolnieniem blokady.
+            needs_worktree = (intent.get("already") and
+                              intent.get("targetPreparation", {}).get("createWorktree") and "ref-moved" not in stages)
+            if self._result_in_target(intent, current) and not needs_worktree:
+                tree = self.git.run(intent["repo"], "rev-parse", "--verify", f"{intent['resultCommit']}^{{tree}}")
+                if not tree.ok or tree.out.strip() != intent["resultTree"]:
+                    raise FlowGitError("obiekt wyniku nie odpowiada zapisanemu zamiarowi")
+                # Ref (wynik albo jego potomek po dalszych commitach użytkownika) dowodzi zakończenia gita także
+                # po awarii przed checkpointem. Polityka gałęzi głównej dotyczy tylko wykonania przed przesunięciem
+                # refu. Źródło, worktree i indeks mogą już zawierać dalszą pracę — projekcja ich nie dotyka.
+                checkpoint("materialized")
+                checkpoint("ref-moved")
+                result = MergeWorktree.result(intent)
+            else:
+                if not intent.get("previewToken") and intent["targetRef"] != f"refs/heads/{self.git.main_branch(intent['repo'])}":
+                    raise FlowGitError("gałąź główna zmieniła się po przygotowaniu operacji — scalenie czeka")
+                if (not st.closed or st.plan_revision or st.base_version != intent["baseVersion"] or
+                        (st.started or {}).get("seq") != intent["requestSeq"]):
+                    raise FlowGitError("kontekst karty zmienił się po przygotowaniu operacji — scalenie czeka")
+                blocks = self._card_merge_blocks(st, operation_id=key)
+                if blocks:
+                    raise FlowGitError(blocks[0][1])
+                if intent.get("previewToken"):
+                    blocks = self._merge_target_blocks(
+                        intent["sourceRef"], intent["targetRef"],
+                        ("" if intent.get("targetPreparation", {}).get("createWorktree") and
+                         not os.path.isdir(intent["targetWorktree"]) else intent["targetWorktree"]),
+                        os.path.isdir(intent["targetWorktree"]), self._protected_merge_targets(card, intent["repo"]))
+                    if blocks:
+                        raise FlowGitError(blocks[0][1])
+                if self.git.clean_tip(intent["repo"], branch, intent["sourceWorktree"]) != intent["sourceCommit"]:
+                    raise FlowGitError("gałąź karty zmieniła się po przygotowaniu operacji")
+                from .targetprep import provision
+                provision(self.git, intent, self.journal.read(card), checkpoint)
+                worktree = MergeWorktree(self.git, intent["repo"], intent["targetBranch"], intent["targetWorktree"])
+                result = worktree.execute(intent, checkpoint)
+            from .targetprep import release
+            release(self.git, intent)
+            if st.merge_waiting:
+                self.journal.append(card, "main-merge.resumed", key=key)
+            if ("main-merge", key) not in st.results:
+                self.journal.append(card, "result", action="main-merge", key=key, ok=True,
+                                    commit=result["resultCommit"], **result)
+            checkpoint("result-saved")
+            st = fold(self.journal.read(card))
+            if not st.merged:
+                self.journal.append(card, "card.merged", branch=branch,
+                                    commit=result["resultCommit"], **result)
+            self._project_main_merge(card, fold(self.journal.read(card)), operation_id=key)
+            checkpoint("projected")
+        except (FlowGitError, BoardError, OSError, FlowError) as exc:
+            waiting = fold(self.journal.read(card)).merge_waiting or {}
+            if waiting.get("key") != key or waiting.get("reason") != str(exc):
+                self.journal.append(card, "main-merge.waiting", key=key, reason=str(exc))
+            raise FlowError("main-merge", str(exc)) from None
+
+    def _project_main_merge(self, card: str, st: FlowState, *, operation_id: str = "") -> None:
+        # Recovery zapisuje wynik gita, ale nie odwraca późniejszego ręcznego zakończenia w Archiwum.
+        if st.card_finished and st.moved_to == "archived":
+            return
+        # BoardMonitor.sync() opróżnia tę samą kolejkę commitów Tablicy pod blokadą dziennika.
+        with self.journal.lock:
+            try:
+                item = self.store.load().cards.get(card_num(card))
+                if item is None:
+                    raise FlowError("no-card", "nie ma karty do scalenia")
+                if item.column != "done":
+                    self.store.move_card(card, "done", -1, from_column="review")
+            except BoardError as exc:
+                raise FlowError(exc.code, str(exc)) from None
+            if not st.card_finished:
+                self.journal.append(card, "card.finished", column="done", **({"operationId": operation_id} if operation_id else {}))
+
+    def _advance_close(self, card: str, st: FlowState) -> bool:
+        """Po ostatnim tickecie tworzy podsumowanie; True tylko po wykonaniu etapu, False przy pominięciu.
+        Sam brak wyjątku przy pominięciu (np. trwa opiekun) nie oznacza rozwiązania błędu domknięcia."""
+        if baseproposal.blocked(st):
+            return False
         if (st.started is None or st.card_finished or st.closed or st.paused or st.plan_revision or
                 st.moved_to == "todo" or st.open_intents()):
-            return
+            return False
         if st.plan_approved:
             rows = st.plan_approved.get("rows") or []
             if not rows or not all((st.results.get(("merge", row["id"])) or {}).get("ok") or
                                    row["id"] in st.rejected or row["id"] in st.imported_done for row in rows):
-                return
+                return False
             if any(row["id"] not in st.rejected and row["id"] not in st.imported_done and
                    not (st.results.get(("cleanup", row["id"])) or {}).get("ok") for row in rows):
-                return
+                return False
             tickets = [{"id": row["id"], "state": "odrzucone" if row["id"] in st.rejected else "gotowe"}
                        for row in rows]
             executor = (st.plan_proposed or {}).get("planner") or rows[0]["executor"]
         elif st.started.get("entry") == "now":
             ticket = next((s.get("ticket") for s in st.steps.values() if s.get("kind") == "ticket"), "")
             if not ticket or not ((st.results.get(("merge", ticket)) or {}).get("ok") or ticket in st.rejected):
-                return
+                return False
             if ticket not in st.rejected and not (st.results.get(("cleanup", ticket)) or {}).get("ok"):
-                return
+                return False
             tickets = [{"id": ticket, "state": "odrzucone" if ticket in st.rejected else "gotowe"}]
             executor = st.started.get("executor") or ""
         else:
-            return
+            return False
+        executor = (st.author_overrides.get(CLOSE_AUTHOR) or {}).get("executor") or executor
         last_return = max((int(e.get("seq") or 0) for e in self.journal.read(card)
                            if e.get("type") == "plan.returned"), default=0)
+        last_return = max(last_return, st.base_change.get("seq", 0))
         closings = [s for s in st.steps.values() if s.get("kind") == "close" and
                     int(s.get("seq") or 0) > last_return]
         if closings:
@@ -4438,13 +7081,15 @@ class FlowEngine(PlanEditing):
                 if (st.started or {}).get("check") == "manual":
                     summary += handoff.desk_section(self._desk_items(card, st))
                 self.journal.append(card, "card.closed", step=latest["step"], summary=summary,
-                                    check=(st.started or {}).get("check") or "auto")
+                                    check=(st.started or {}).get("check") or "auto",
+                                    baseVersion=st.base_version, baseCommit=st.base.get("baseCommit", ""))
                 if st.plan_approved and not st.plan_finished:
                     self.journal.append(card, "plan.finished", merged=sum(1 for t in tickets if t["state"] == "gotowe"),
                                         rejected=sum(1 for t in tickets if t["state"] == "odrzucone"))
-            return
+                return True
+            return False
         if st.running():
-            return
+            return False
         item, project = self._project(card)
         info = ticket_of(st)
         if not info["cardWorktree"]:
@@ -4465,3 +7110,4 @@ class FlowEngine(PlanEditing):
         self._launch(item, project, selected, "", {"branch": info["cardBranch"]},
                      {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
                      step_id, [], kind="close", prompt_text=prompt)
+        return True

@@ -27,10 +27,12 @@ class _FlowMonitor(CardFlowMonitor):
     def stop(self):
         # Produkcja kończy cały proces. Test zachowuje proces i zaraz dotyka silnika
         # albo dziennika, więc musi najpierw dokończyć biegnący tick starego monitora.
-        pool = self._pool
+        pools = (self._pool, self._hosting_pool)
         super().stop()
-        if pool is not None:
-            pool.shutdown(wait=True, cancel_futures=True)
+        for pool in pools:
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
+        app().processEvents()
         # Anulowany tick nie dostaje callbacka `after`; ten sam monitor testu może ruszyć ponownie.
         self._ticking = False
 
@@ -142,6 +144,7 @@ class FlowInProcess(unittest.TestCase):
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
         from tide_daemon.models import executors
+
         engine = FlowEngine(self.store, claude_projects=os.path.join(self.base, "home", ".claude", "projects"),
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
@@ -234,6 +237,11 @@ class FlowInProcess(unittest.TestCase):
     def of(self, card_id, kind) -> list:
         return [e for e in self.events(card_id) if e["type"] == kind]
 
+    def ticket_finished(self, card_id) -> list:
+        """`step.finished` kroków ticketu, bez kroku opiekuna karty (PT-143), który rusza po drugim błędzie."""
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s.get("kind") != "caretaker"}
+        return [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]
+
     def results(self, card_id, action) -> list:
         return [e for e in self.of(card_id, "result") if e.get("action") == action]
 
@@ -255,6 +263,46 @@ class FlowInProcess(unittest.TestCase):
 
 
 class NowInProcessTest(FlowInProcess):
+    def wait_now_closed(self, card_id, ticket="PT-1", timeout=30.0):
+        """Koniec całego scenariusza Od razu, a nie przejściowe review po scaleniu ticketu."""
+        journal = self.flow.engine.journal
+        last = {}
+
+        def completed():
+            # Nie czytaj połowy zapisu ani nie czekaj na blokadzie dłużej niż timeout.
+            if not journal.lock.acquire(blocking=False):
+                return False
+            try:
+                events = self.events(card_id)
+                mirror = journal.read(card_id)
+                card = self.shown(card_id)
+                last.update(journal=events, mirror=mirror, snapshot=card)
+                starts = [e for e in events if e["type"] == "step.started"]
+                finishes = [e for e in events if e["type"] == "step.finished"]
+                verdicts = [e for e in events if e["type"] == "review.verdict"]
+                closed = [e for e in events if e["type"] == "card.closed"]
+                if ([s["kind"] for s in starts] != ["ticket", "review", "close"] or
+                        [s.get("ticket") for s in starts[:2]] != [ticket, ticket] or
+                        [f["step"] for f in finishes] != [s["step"] for s in starts] or
+                        any(f["result"] != "done" for f in finishes)):
+                    return False
+                if (len(verdicts) != 1 or verdicts[0].get("ticket") != ticket or
+                        verdicts[0].get("step") != starts[1]["step"] or
+                        verdicts[0].get("verdict") != "APPROVE" or len(closed) != 1 or
+                        closed[0].get("step") != starts[2]["step"] or
+                        closed[0]["seq"] <= finishes[2]["seq"]):
+                    return False
+                flow = (card.get("derived") or {}).get("flow") or {}
+                return (events == mirror and card["boardColumn"] == "review" and flow.get("closed") and
+                        card["derived"] == self.flow.engine.derived(card) and card)
+            finally:
+                journal.lock.release()
+
+        found = wait_until(completed, timeout=timeout)
+        self.assertTrue(found, f"{card_id}: brak spójnego zakończenia ticket → review → close\n"
+                        + json.dumps(last, ensure_ascii=False, indent=1))
+        return found
+
     def test_codex_executor_completes_from_start_to_review(self):
         card_id = self.card()
         reply = self.start(card_id, executor="Codex mocny", preferredProvider="openai")
@@ -392,7 +440,7 @@ class NowInProcessTest(FlowInProcess):
         self.assertTrue(reply["cardBranch"].startswith("card/k-2-"), reply)
         self.assertTrue(reply["branch"].startswith("ticket/pt-1-"), reply)
 
-        card = self.wait_column(card_id, "review")
+        card = self.wait_now_closed(card_id)
         self.assertIn("PT-1", card["derived"]["note"])
         types = [e["type"] for e in self.events(card_id)]
         self.assertEqual(types[0], "card.started")
@@ -401,6 +449,16 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual([s["kind"] for s in self.of(card_id, "step.started")],
                          ["ticket", "review", "close"])
         self.assertEqual(types.count("review.verdict"), 1, types)
+        starts = self.of(card_id, "step.started")
+        self.assertEqual([f["step"] for f in self.of(card_id, "step.finished")],
+                         [s["step"] for s in starts])
+        self.assertEqual([f["result"] for f in self.of(card_id, "step.finished")], ["done"] * 3)
+        verdict = self.of(card_id, "review.verdict")[0]
+        self.assertEqual((verdict["ticket"], verdict["step"], verdict["verdict"], verdict["reviewer"]),
+                         ("PT-1", starts[1]["step"], "APPROVE", starts[1]["executor"]))
+        self.assertNotEqual(starts[0]["model"], starts[1]["model"], "niezależne review")
+        self.assertEqual(self.of(card_id, "card.closed")[0]["step"], starts[2]["step"])
+        self.assertTrue(card["derived"]["flow"]["closed"])
         self.assertTrue(all(e["v"] == 1 and e["card"] == card_id for e in self.events(card_id)))
         self.assertEqual([e["seq"] for e in self.events(card_id)], list(range(1, len(types) + 1)))
         launched = self.of(card_id, "card.started")[0]
@@ -462,6 +520,59 @@ class NowInProcessTest(FlowInProcess):
         work = json.loads(self.board.work_json())
         self.assertEqual([i["kind"] for i in work["items"] if step["session"] in json.dumps(i)], [])
 
+    def test_now_waits_for_close_and_its_published_snapshot(self):
+        engine = self.flow.engine
+        release = threading.Event()
+        advance = engine._advance_close
+
+        def delayed_close(card, state):
+            if release.is_set():
+                return advance(card, state)
+
+        with mock.patch.object(engine, "_advance_close", side_effect=delayed_close):
+            card_id = self.card()
+            self.assertTrue(self.start(card_id)["ok"])
+            # Poprzedni warunek kończy oczekiwanie, choć close jeszcze nie wystartował.
+            card = self.wait_column(card_id, "review")
+            self.assertFalse(card["derived"]["flow"]["closed"])
+            self.assertEqual(len(self.of(card_id, "step.finished")), 2)
+            with self.assertRaises(AssertionError) as missing:
+                self.wait_now_closed(card_id, timeout=0.15)
+            for key in ("journal", "mirror", "snapshot"):
+                self.assertIn(key, str(missing.exception))
+            # Teraz dziennik może się domknąć, lecz migawka nadal pokazuje dawny stan.
+            with mock.patch.object(self.board, "_apply", return_value=None):
+                release.set()
+                self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30),
+                                self.events(card_id))
+                with self.assertRaises(AssertionError) as unpublished:
+                    self.wait_now_closed(card_id, timeout=0.15)
+                self.assertIn('"card.closed"', str(unpublished.exception))
+                self.assertIn('"closed": false', str(unpublished.exception))
+            self.board.publish()
+            self.wait_now_closed(card_id)
+
+    def test_now_wait_rejects_failed_close_with_diagnostics(self):
+        engine = self.flow.engine
+        finish = engine._finish
+
+        def failed_close(card, step, **kwargs):
+            if step.get("kind") == "close":
+                kwargs["forced"] = {"result": "error", "reason": "kontrolowana awaria domknięcia"}
+            return finish(card, step, **kwargs)
+
+        with mock.patch.object(engine, "_finish", side_effect=failed_close):
+            card_id = self.card()
+            self.assertTrue(self.start(card_id)["ok"])
+            self.assertTrue(wait_until(lambda: any(
+                e.get("reason") == "kontrolowana awaria domknięcia"
+                for e in self.of(card_id, "step.finished")), timeout=30), self.events(card_id))
+            with self.assertRaises(AssertionError) as failed:
+                self.wait_now_closed(card_id, timeout=0.15)
+            for text in ("journal", "snapshot", "kontrolowana awaria domknięcia"):
+                self.assertIn(text, str(failed.exception))
+            self.assertEqual(self.of(card_id, "card.closed"), [])
+
     def test_second_start_is_refused_while_the_card_works(self):
         card_id = self.card(description="ATRAPA: czekaj")
         self.assertTrue(self.start(card_id)["ok"])
@@ -487,20 +598,22 @@ class NowInProcessTest(FlowInProcess):
         self.assertEqual(git(self.repo, "branch", "--format=%(refname:short)").split(), ["master"])
         self.assertFalse(os.path.exists(self.repo + "-worktrees"))
 
-    def test_project_without_ticket_prefix_is_refused_before_anything(self):
+    def test_project_without_ticket_prefix_gets_one_from_the_repository_name(self):
+        # 04.11, K-41: nowy projekt bez ticket-prefix w CLAUDE.md nie może zaczynać się od walki ze środowiskiem.
+        from tide_daemon.coordination.reservations import repo_prefix
         with open(os.path.join(self.repo, "CLAUDE.md"), "w", encoding="utf-8") as fh:
             fh.write("# Projekt bez planu\n")
         card_id = self.card()
         reply = self.start(card_id)
-        self.assertEqual((reply["ok"], reply["error"]), (False, "no-ticket-number"), reply)
-        self.assertEqual(self.events(card_id), [])
-        self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
+        self.assertTrue(reply["ok"], reply)
+        reserved = [e for e in self.events(card_id) if e["type"] == "result" and e.get("action") == "reserve"]
+        self.assertTrue(reserved[0]["ticket"].startswith(repo_prefix(self.repo) + "-"), reserved)
 
     def test_missing_result_file_is_a_step_error(self):
         card_id = self.card(description="ATRAPA: bez-wyniku")
         reply = self.start(card_id)
         card = self.wait_column(card_id, "waiting")
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-result"), ("error", "no-result")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -562,7 +675,7 @@ class GuardInProcessTest(FlowInProcess):
         pid = self.unit_pid(step)
         self.assertTrue(flowfakes.alive(pid))
         card = self.wait_column(card_id, "waiting", timeout=30)
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual([(f["result"], f["reason"]) for f in finished],
                          [("error", "no-progress"), ("error", "no-progress")])
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -586,12 +699,13 @@ class RestartInProcessTest(FlowInProcess):
         with open(fake, "w", encoding="utf-8") as fh:
             fh.write(script + "\nsys.exit(7)\n")
         card_id = self.card()
-        self.flow.stop()  # uruchomienie bez zegara: nowa usługa odczyta dopiero wynik z dysku
+        self.flow._timer.stop()  # wyłączamy tylko zegar; monitor nadal przyjmuje StartCard
         reply = self.start(card_id)
         self.assertTrue(reply["ok"], reply)
         step = self.started(card_id)
         from tide_daemon.tasks import stepstop
         self.assertEqual(wait_until(lambda: stepstop.read_exit_code(step["stepDir"]), timeout=10), 7)
+        self.flow.stop()  # dopiero teraz zamykamy monitor; nowy odczyta wynik z dysku
         self.flow = self.make_flow()
         self.wait_column(card_id, "waiting")
         finished = self.of(card_id, "step.finished")[0]
@@ -770,6 +884,25 @@ class ManualColumnsInProcessTest(FlowInProcess):
         count = len(self.events(card_id))
         wait_until(lambda: False, timeout=1.0)
         self.assertEqual(len(self.events(card_id)), count, "kolejne przeliczenia nic nie dopisują")
+
+    def test_resume_after_backlog_pause_brings_the_card_back_to_work(self):
+        # 06.11, K-55: karta wstrzymana przeniesieniem do Backlogu i wznowiona SetCardPaused pracowała dalej,
+        # a Tablica pokazywała ją w Backlogu (zapisana kolumna została „backlog”).
+        card_id = self.card(description="ATRAPA: czekaj")
+        self.start(card_id)
+        self.started(card_id)
+        self.wait_column(card_id, "progress")
+        self.assertTrue(json.loads(self.board.move_card(card_id, "backlog", 0))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=10))
+        self.wait_column(card_id, "backlog")
+        box = []
+        self.flow.set_paused(card_id, False, box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(json.loads(box[0])["ok"], box)
+        card = self.wait_column(card_id, "progress")
+        self.assertNotIn("wstrzymana", card["derived"]["note"])
+        self.assertEqual(self.store.load().cards[int(card_id.split("-")[1])].column, "todo")
+        self.assertEqual(len(self.of(card_id, "card.paused")), 1, "wznowienie nie wstrzymuje karty ponownie")
 
     def test_started_from_backlog_reaches_review_and_back_to_todo_is_rework(self):
         card_id = self.card(column="backlog")

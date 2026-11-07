@@ -109,6 +109,48 @@ _Avoid_: zależność w tekstach dla użytkownika
 Gałąź, do której trafiają tickety karty po review; do gałęzi głównej przenosi ją tylko użytkownik.
 _Avoid_: gałąź koordynatora, gałąź integracyjna
 
+**Baza karty**:
+Zapisany w dzienniku punkt wyjścia zlecenia: pełny lokalny lub zdalny ref (`baseRef`, `refs/heads/…`
+albo `refs/remotes/…`), nazwa gałęzi (dla zdalnej razem z nazwą remote)
+(`baseBranch`) i przypięty commit (`baseCommit`, SHA). Ruch lub usunięcie refu nie zmienia zapisanej bazy.
+_Avoid_: bieżący HEAD, dzisiejsza główna jako domysł historycznej bazy
+
+**Ostatnie bazy repozytorium**:
+Do 10 różnych pełnych refów od najnowszego udanego `card.started` lub `card.base-changed`, odtworzonych
+z dzienników Tablicy. Worktrees jednego repozytorium współdzielą skróty. Skrót jawnie wybiera obecny SHA
+istniejącego refu; nie zmienia domyślnej głównej ani utrwalonej bazy wznowienia.
+
+**Pierwotna baza**:
+Opis bazy w chwili startu zlecenia (`initialBase`); późniejsza korekta go nie zmienia.
+_Avoid_: aktualna baza
+
+**Ostatnie cele scalenia repozytorium**:
+Do 10 różnych istniejących lokalnych pełnych refów od najnowszego `card.merged` lub starego
+`card.main-merged` ze znanym celem. Projekcja dzienników Tablicy jest wspólna dla worktrees jednego
+repozytorium. Skrót otwiera podgląd z bieżącym SHA i tymi samymi ograniczeniami co lista celów;
+nie zastępuje bazy jako domyślnego celu ani nie daje zgody na scalenie.
+
+**Wersja bazy**:
+Nieujemna liczba całkowita `baseVersion` z dziennika, osobna dla każdego zlecenia. Nowy start ma 1;
+historyczny bez zapisanej wersji ma 0. Wyłącznie skuteczne `card.base-changed` zwiększa ją o jeden.
+Wartość 0 nie dowodzi znajomości bazy ani nie uprawnia do korekty.
+_Avoid_: SHA jako wersja, osobne liczniki operacji
+
+**Nieznana baza**:
+Brak wiarygodnego refu lub SHA w dzienniku (`status: unknown`). Nie odgadujemy jej z obecnego gita;
+historyczny zamiar i wynik utworzenia gałęzi muszą dowodzić obu wartości.
+_Avoid_: domyślna baza historyczna
+
+**Cel scalenia karty**:
+Jawnie wybrana lokalna gałąź (`targetRef`, pełne `refs/heads/…`) i jej bieżący commit (`targetCommit`)
+odczytany w podglądzie. Domyślnym celem jest lokalna baza karty. Dla bazy zdalnej domyślna jest wyłącznie
+jedna lokalna gałąź śledząca dokładnie ten pełny remote/ref; kilku kandydatów wymaga wyboru.
+Bez kandydata można wybrać utworzenie lokalnego celu od bieżącego SHA zdalnej bazy. Dla bazy nieznanej
+użytkownik wybiera lokalny cel; nazwana główna jest wówczas propozycją, a nie historyczną bazą.
+Wybór celu nie zmienia bazy i nie jest zgodą na scalenie. Zgoda dotyczy refu i SHA z aktualnego podglądu.
+Lista celów, podgląd i scalenie używają repozytorium zapisanego przy starcie zlecenia, także po zmianie projektu karty.
+_Avoid_: główna jako nazwa każdego celu, krótka nazwa zdalnej bazy jako domyślny lokalny cel
+
 **Domknięcie**:
 Ostatni krok karty: podsumowanie pracy i lista rzeczy do sprawdzenia przez użytkownika.
 _Avoid_: finalizacja, merge
@@ -121,11 +163,38 @@ _Avoid_: log, historia, plan (plan to widok dziennika)
 Jedna zapisana zmiana w dzienniku karty, np. start kroku, zatwierdzenie planu, werdykt review.
 _Avoid_: wpis, event w tekstach dla użytkownika
 
+**Opiekun karty**:
+Krok w tle rodzaju `caretaker`, który Tide uruchamia sam przy problemie karty, zanim zapyta użytkownika; sprawdza problem i odpowiada jedną akcją z listy Tide. Opiekun nigdy nie zajmuje się własnym krokiem.
+_Avoid_: agent naprawczy, supervisor, auto-fix
+
+**Problem**:
+Sytuacja karty, którą sprawdza opiekun (np. błąd kroku po automatycznym ponowieniu), o stałym id bez numeru zdarzenia (`error:<pierwszy krok łańcucha prób>`); jeden łańcuch prób kroku ma naraz najwyżej jeden problem.
+_Avoid_: incydent, alarm, błąd (błąd to jeden z rodzajów problemu)
+
+**Działanie opiekuna**:
+Jeden krok opiekuna przy problemie i jego akcja (np. oddanie decyzji użytkownikowi); działania liczy się od ostatniej decyzji użytkownika albo rozwiązania problemu. Akcja spoza listy Tide albo brak poprawnego wyniku to nieudane działanie.
+_Avoid_: próba (próba to ponowienie kroku), interwencja
+
 ### Tickety
 
 **Ticket**:
 Jednostka pracy w planie karty z własnym ID (np. `PT-58`, `LOG-240`); przed zatwierdzeniem ma numer roboczy (`#1`).
 _Avoid_: zadanie, issue, karta
+
+**Projekt ticketu**:
+Slug projektu Tablicy, do którego należy ticket; plan zapisuje go w kolumnie `Projekt` (standard 1.3), a pusta komórka albo brak kolumny oznacza projekt karty.
+_Avoid_: repozytorium, workspace
+
+**Projekty zlecenia**:
+Projekty Tablicy, w których ma powstać praca jednego zlecenia: projekt karty i dodatkowe projekty wybrane w oknie
+zlecenia (`projects` karty, razem najwyżej 6). Planowanie widzi ich repozytoria (projekt karty z zapisem, pozostałe
+tylko do odczytu) i daje jeden plan z kolumną `Projekt`; Od razu i Mam plan pracują w jednym projekcie.
+_Avoid_: dodatkowe repozytoria, workspace, multi-repo
+
+**Grupa kart**:
+Karty powstałe z jednego planu wielu projektów: karta zlecenia i po jednej karcie na każdy inny projekt zlecenia
+z ticketami; każda ma własny dziennik, gałąź karty i numery, a blokery mogą wskazywać tickety innej karty grupy.
+_Avoid_: epik, karta zbiorcza, projekt nadrzędny
 
 **Zgłoszenie**:
 Ticket albo karta w zewnętrznym trackerze (YouTrack), np. `LOG-240`.
@@ -165,12 +234,22 @@ Program z modelem i punktem pod jedną nazwą z katalogu, np. „Sonnet”, „C
 Ten sam wykonawca może pełnić różne role.
 _Avoid_: agent, implementer, model (model to część wykonawcy)
 
+**Rozpoznawanie pytania**:
+Ustalanie, czy agent na końcu tury prosi użytkownika o cokolwiek (także bez „?”: „uruchom i wklej mi wynik”, „Daj
+znać.”). Dwa stopnie: reguły na tekście, a w wątpliwych końcówkach model lokalny z roli `classify`; do wyniku modelu
+liczą reguły, a bez modelu same reguły. Treść idzie tylko do punktu tej roli.
+_Avoid_: wykrywanie pytań, klasyfikator pytań w tekstach dla użytkownika
+
 **Autor ticketu**:
 Rola wykonawcy, który robi ticket (krok ticketu i poprawki).
 _Avoid_: wykonawca ticketu, implementer
 
 **Recenzent**:
-Rola wykonawcy, który robi review ticketu albo planu; zawsze inny model niż autor.
+Rola wykonawcy, który robi niezależne review ticketu albo planu w nowej sesji. Dla zwykłych ticketów
+dopuszczalny jest ten sam model z inną siłą myślenia (Codex mocny ↔ standard). Dla klas ryzyka
+wymienionych w [standardzie planu](docs/agent-plan-standard.md#recenzja-według-ryzyka) wymagany jest
+recenzent innej rodziny modeli (np. Astra / Claude względem autora Codex); brak dostępnego limitu
+takiego recenzenta oznacza oczekiwanie, bez automatycznego obniżenia wymagania.
 _Avoid_: reviewer w tekstach dla użytkownika
 
 **Klasa**:

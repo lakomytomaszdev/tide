@@ -71,6 +71,8 @@ Pomijamy sesje, w których dziennik nie ma wpisu od ponad **24 h**.
 
 **Pytanie na końcu tury to „czeka”** (PT-29, odwraca część decyzji 36). Agent, który kończy turę pytaniem w tekście — grilling („Pytanie 10: skąd biorą się czat i alerty? …”), „Pushować?” — stoi, dopóki użytkownik nie odpisze: stan `waiting`, powód `reply`, `waitingText` z tym pytaniem, `sinceTs` — chwila pytania. Heurystyka (`agents/question.py`): ostatnia wiadomość tekstowa agenta w turze (Claude Code — ostatni wpis `assistant` z tekstem, bez wywołania narzędzia po nim; Codex — `last_agent_message` z `task_complete` albo ostatnia wiadomość `assistant`), bez bloków kodu i tabel; ostatni akapit, który nie jest listą, i jego ostatnie zdania: zdanie z „?” (po nim najwyżej jedno krótkie zdanie — inaczej to pytanie retoryczne w podsumowaniu), linia „Pytanie N: …”, „Czekam na twoją odpowiedź”, „Daj znać, czy…” albo lista pytań pod zdaniem z dwukropkiem; dopisek pod pytaniem, który prosi o słowo od użytkownika („…jeśli napiszesz „przywróć”.”, „jeśli potwierdzisz”, „napisz „…””), nie zasłania pytania z akapitu wyżej (bez niego liczy się sam dopisek), a zwykła propozycja („Jeśli chcesz, mogę też…”) pytaniem nie jest. Czekanie kasuje wiadomość użytkownika po pytaniu (bez wyników narzędzi i wstawek `<task-notification>`), przerwanie tury i wywołanie narzędzia po tekście. Kompaktowanie Claude Code (także samo, „Compacted while idle”: `system/compact_boundary`, wpis `user` ze streszczeniem — `isCompactSummary`, `isVisibleInTranscriptOnly` — załączniki, `system/informational`), wstawki `isMeta` i echo polecenia lokalnego (`<local-command-caveat>`, potem `<command-name>/model…`, `<local-command-stdout>`) to nie odpowiedź — pytanie i oczekujące `AskUserQuestion` dalej czekają; skill wywołany poleceniem (`<command-message>…`) jest zwykłą wiadomością. Gdy streszczenie i załączniki nie mieszczą się w ogonie (1 MB), pierwszy odczyt dziennika cofa się (×4, najwyżej 16 MB), aż sięgnie ostatniego wpisu agenta albo wiadomości użytkownika (`agents/jsonl.py`, `enough`). Codex przy kompaktowaniu dopisuje rekord `compacted` (z `replacement_history`), którego czytnik nie traktuje jak wiadomości — nie kasuje pytania; liczy się tylko bieżąca tura, a sesja pracująca (status `busy`) nigdy nie „czeka na odpowiedź”. Tura zaczęta przez zaplanowane zadanie Codex Desktop nie czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość) — zostaje `done` z `scheduled`. Podagent (wątek Codexa z rodzicem) nigdy nie czeka na odpowiedź — jego raport czyta koordynator — a zwinięty podagent nie przenosi `reply` na przodka. Wszystko idzie za stanem: widżet („czeka”), Meta+A, powiadomienie „Agent czeka: <projekt>” z „Zadał pytanie: <pytanie>” (raz na wejście w „czeka” — kolejne odświeżenia tego samego pytania nic nie wysyłają), ekran blokady, „Czeka na mnie” w raporcie (z `waitingText`), pytanie na tablicy koordynacji i kolumna „Czeka na mnie” na tablicy z „Przejdź do agenta”.
 
+**Drugi stopień: model ocenia wątpliwe końcówki** (PT-42, decyzja 93). Reguły przegapiają prośby bez „?” („**Krok 1:** uruchom ten select i wklej mi wynik”, „Daj znać.”), więc `question.doubtful(text)` wskazuje końcówki, w których reguły nie widzą pytania (`ending_question` puste), a w ostatnich trzech zdaniach (i punktach listy pod nimi) jest zdanie z „?”, zdanie zaczynające się czasownikiem w trybie rozkazującym z listy (`uruchom`, `wklej`, `sprawdź`, `podaj`, `potwierdź`… także po „Krok N:”, „Teraz”, „Proszę”) albo „daj znać”/`wklej`/`prześlij`/`odpisz`. „Dam znać”, „Jeśli chcesz, mogę też…”, „Gotowe.” i każda wiadomość z regułą „tak” nie są wątpliwe i modelu nie kosztują. Wątpliwą końcówkę ocenia `agents/classify.py`: `reply_question` pyta `Classifier.judge(klucz, tekst)`, który **nie czeka na model** — zwraca zapamiętany werdykt albo `None` (wtedy liczą same reguły) i planuje ocenę w osobnym wątku `tide-classify`; po wyniku `AgentMonitor.classified` przelicza stan w wątku Qt. Stan z werdyktu „tak” ma ten sam kształt co z reguł: `waiting`, `reason: reply`, `sinceTs` — chwila wiadomości, `waitingText` — dwa ostatnie zdania końcówki (najwyżej 240 znaków). Wywołanie: `models.chat(role="classify")` przez kolejkę modeli (priorytet jak opisy kart, przed raportem; jedno wywołanie naraz na serwer, ocena ustępuje czekającemu raportowi najwyżej 30 s), ostatnie 1200 znaków wiadomości, schemat `{"waits": bool}`, `think: false`, `temperature: 0`, limit 20 s od startu wywołania, 120 s czekania w kolejce. Werdykt pamiętany na uuid wpisu (Claude Code; Codex — sesja i skrót tekstu): w pamięci i w `$XDG_STATE_HOME/tide/classify.json` (`{"version": 1, "results": {klucz: {"waits": bool, "at": ts}}}`, 500 najnowszych, zapis atomowy), więc ta sama wiadomość jest oceniana najwyżej raz także po restarcie usługi. Błąd (brak serwera, zły JSON, zły kształt, limit czasu) → werdykt się nie zapisuje, liczą same reguły, przyczyna jest w dzienniku usługi, a ta sama wiadomość wraca do oceny najwcześniej po 5 min. Rola `classify` bez modelu, z punktem nieznanym albo pominiętym lub niedostępna (np. model chmurowy bez jawnego punktu) wyłącza ocenę: ostrzeżenie w dzienniku (raz na powód), ponowne sprawdzenie ustawień po minucie. Model chmurowy działa w tej roli tylko przy jawnym punkcie w `models.json` (`"classify": "punkt:gpt-oss:120b-cloud"`): wtedy ocena idzie tam i tylko tam, a przy jego błędzie liczą same reguły — bez zastępstwa innym punktem. Przy roli lokalnej punkt w chmurze nie jest wołany nigdy (decyzja 70). Z `--no-models` ocena nie działa (`--print-once` i `scan()` też liczą same reguły).
+
 Zwykły koniec tury bez pytania to nadal `done`: agent, który odpowiedział, niczego nie blokuje, a powiadomienie, brzoskwinia i Meta+A przy każdej skończonej turze uczyły ignorować „czeka”.
 
 **Meta+A tylko do czekających.** Rozważany zapasowy cel (najświeższa sesja `done`, gdy nikt nie czeka) odrzucony: skrót, który czasem prowadzi do skończonej rozmowy, przestaje znaczyć „ktoś cię potrzebuje”, a do skończonych sesji prowadzą lista w widżecie (przycisk „Przejdź”) i KRunner.
@@ -307,6 +309,36 @@ Model idzie jednym argumentem (`--model=<model>`), więc nazwa z „-” na pocz
 
 - polecenie idzie przez stdin (plik `<krok>/in/prompt.txt` otwarty jako stdin programu), nigdy w argv; Claude Code: `-p --setting-sources= --settings <krok>/in/settings.json --permission-prompts none --strict-mcp-config --output-format stream-json --verbose --session-id <uuid>` (albo `--resume`), ustawienia piaskownicy (`failIfUnavailable`, `allowUnsandboxedCommands: false`, `denyRead: ["~"]` z `allowRead` dla worktree, wspólnego `.git`, `in` i `out`, `allowWrite` tylko `out`, `allowedDomains: []`); Codex: `exec --json --cd <worktree> --sandbox workspace-write -c sandbox_workspace_write.writable_roots=[<.git/worktrees/wt>, objects, refs, logs, <krok>/out] -c approval_policy="never" -`,
 - środowisko budowane od zera (nic się nie dziedziczy): `HOME`, `USER`, `PATH`, `LANG`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` i `SSH_ASKPASS` na `/bin/false`, `GIT_SSH_COMMAND` bez agenta i kluczy, pusty `credential.helper` i `core.askPass`, `GH_CONFIG_DIR` na pusty katalog, martwy `DBUS_SESSION_BUS_ADDRESS`, `GIT_CONFIG_GLOBAL=<krok>/in/gitconfig` (autor „Krok”, `core.excludesFile` z atrapami piaskownicy), Claude: `CLAUDE_CODE_TMPDIR` poza `~`, Codex: `GIT_CONFIG_NOSYSTEM=1`. Katalog kroku nie leży w `/tmp` ani w `~/.local/share` (Codex ze snapa ich nie widzi), Codex: ani w ukrytym katalogu domowym; worktree nie pod `/tmp/claude-<uid>`. To druga warstwa — twardą granicą jest piaskownica,
+- **skille użytkownika (PT-216):** `tasks/skills.py` szuka `SKILL.md` w `~/.claude/skills` dla Claude
+  oraz `~/.agents/skills` i `~/.codex/skills` dla Codexa (pierwsze źródło wygrywa przy powtórzonej nazwie).
+  Obsługuje symlinki, także gdy cały katalog skilli wskazuje poza `~/.claude`, i katalogi zagnieżdżone.
+  `in/skills.json` zapisuje listę nazw i rzeczywistych ścieżek. Ta sama lista trafia na koniec polecenia
+  kroku, także przy wznowieniu. Brak skilla wymaganego przez polecenie kończy się jawnym `result=error`
+  z jego nazwą, zamiast udawania wykonania procedury,
+- Claude zachowuje `--setting-sources=` i `--strict-mcp-config`. Samo `--add-dir` nie przywraca skilli:
+  ich ładowanie z dodatkowych katalogów zależy od źródła ustawień `project`.
+  Tide generuje pod `in/skills-plugin-<odcisk>` lokalny plugin i podaje go przez `--plugin-dir`.
+  Zawiera wyłącznie nazwę, opis oraz instrukcję odczytania oryginalnego `SKILL.md`; nie kopiuje
+  hooków, `allowed-tools`, `context: fork`, plików ustawień, MCP ani pluginów użytkownika.
+  W `init`/liście poleceń skille mają nazwy `tide-user-skills:to-spec`, `tide-user-skills:tdd` itd.;
+  polecenie kroku wskazuje to mapowanie. Cele symlinków dostają `sandbox.filesystem.allowRead`,
+  `denyWrite` i reguły narzędzi `Read`/zakaz `Edit`; nie są dodawane do zapisywalnych katalogów sesji.
+  Zasoby względne skilla należy czytać przy oryginalnym `SKILL.md`, a zasady kroku mają pierwszeństwo,
+- Codex wykrywa natywnie skille z `~/.agents/skills`; zgodność ze starszym `~/.codex/skills` zapewnia
+  jawna lista ścieżek w poleceniu. Wersja bez natywnego wykrywania ma przeczytać wskazany `SKILL.md`
+  i jego zasoby bezpośrednio. Nie dodajemy katalogów skilli do `writable_roots`, nie włączamy MCP
+  ani dodatkowych źródeł konfiguracji. Nie zakładamy zdarzenia `init` z listą skilli w `codex exec --json`:
+  dowodem przekazanej listy są `in/skills.json` i `in/prompt.txt`.
+  Natywne ładowanie Claude sprawdza opcjonalny test
+  `TIDE_SKILLS_CLAUDE_BIN=/ścieżka/do/claude python3 -m unittest daemon.tests.test_background_skills_cli.NativeSkillsTest -v`:
+  używa atrap HOME, hooka i MCP, nie łączy się z modelem, kończy proces po `init`,
+  zapisuje surowy `step.log` w `build/test-results/skills-init/` i sprawdza pięć wymaganych skilli.
+  Domyślne testy `test_background_skills.py` nie wymagają programu ani modelu.
+  Źródła mechanizmów: [źródła skilli Claude](https://code.claude.com/docs/en/skills#load-skills-from-a-directory-outside-the-project),
+  [lokalny plugin w CLI Claude](https://code.claude.com/docs/en/cli-reference),
+  [katalogi skilli Codexa](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills).
+  Na tej bazie nie ma jeszcze pudełka testowego K-38: zmiana obejmuje aktualną piaskownicę kroków;
+  ewentualne późniejsze pudełko musi zachować odczyt wskazanych instrukcji i zasobów,
 - token punktu (decyzja 70) jak w oknie zadań: Claude Code przez `apiKeyHelper` dopisany do pliku ustawień kroku, Codex przez `secret_env` (zmienna → plik), który `Background.start()` czyta dopiero przy starcie i wstawia wyłącznie do środowiska programu; w złożonym poleceniu (`argv`, `env`, pliki) tokena nie ma,
 - `Background.prepare()` zakłada katalogi i pliki kroku, `start()` uruchamia program w jednostce `systemd-run --user --scope --unit=tide-step-<id>` (`/usr/bin/env -u XDG_RUNTIME_DIR -u INVOCATION_ID <program>`; `XDG_RUNTIME_DIR` tylko dla `systemd-run`, D-Bus niepotrzebny): krok przeżywa restart usługi, token zostaje w środowisku procesu (nie we właściwościach jednostki), wyjście idzie do `<krok>/out/step.log`, nie do rury usługi. `tasks/stepstop.py`: `stop_step()` zatrzymuje jednostkę (`systemctl --user kill` SIGTERM, po `grace` SIGKILL całej cgroup — także wnuki po `setsid`), robi commit WIP na gałęzi kroku i zwraca ostatnie wiadomości z dziennika sesji (Claude Code `projects/*/<id>.jsonl`, Codex najnowszy `rollout-*.jsonl` z `cwd` kroku). Git usługi działa na treści napisanej przez agenta, więc **w piaskownicy `bwrap`** (decyzja 8): `--ro-bind / /`, pusty `tmpfs` na `$HOME` i `/tmp`, zapis tylko w worktree i w `.git/worktrees/<wt>`, `objects`, `refs`, `logs` (katalog gita worktree ustala usługa przed krokiem z repozytorium, nie z pliku `.git` w worktree), reszta `<repo>/.git` do odczytu, bez sieci, IPC i cudzych procesów, czyste środowisko; bez `bwrap` `git_snapshot` odmawia (`no-sandbox`) i zmiany zostają w worktree. Dodatkowo `--git-dir`/`--work-tree`/`GIT_COMMON_DIR`, `core.hooksPath=/dev/null`, bez atrybutów systemu i użytkownika, przywrócony plik `commondir` worktree (git bierze z niego ścieżkę refów mimo `GIT_COMMON_DIR`); odmawia też, gdy HEAD nie jest gałęzią kroku (`wrong-branch`), jest odłączony albo to gałąź główna. Zagnieżdżone repozytoria w worktree są pomijane z notatką, bity `assume-unchanged`/`skip-worktree` na istniejących plikach zdejmowane, po zabitym kroku usuwane są jego blokady (`index.lock`, `HEAD.lock`, `refs/heads/<gałąź>.lock`), pliki z `.gitignore` trafiają do `notes`. Zatrzymanie bez pewności (`systemctl` nie odpowiada) to `not-stopped`, bez ruszania worktree. `step_id`: `[A-Za-z0-9_-]{1,64}`. Krok Codexa: wszystkie serwery MCP z `codex mcp list --json` wyłączone (`-c mcp_servers.<nazwa>.enabled=false`; błąd odczytu listy odmawia startu), opcje przed `resume <id>`. Bez D-Bus i bez Tablicy — to podłączy PT-58.
 
@@ -323,6 +355,79 @@ Program to bezwzględna ścieżka z PATH usługi (bez rozwiązywania dowiązań:
 Udany start zapamiętuje wybór (`$XDG_STATE_HOME/tide/new-task.json`: repozytorium, narzędzie przełącznika chmury — start lokalny zostawia poprzednie, „Nowy worktree”, model), odświeża listę worktrees, a nowa sesja przez 10 min ma w `/Agents` pole `newTask`. Zrzuty ekranu zapisuje okno w `$XDG_DATA_HOME/tide/tasks/<czas>-<los>/` (`imagesDir`); `Start` przyjmuje tylko pliki obrazów z tego katalogu (najwyżej 10). Okno zamknięte bez startu usuwa swój katalog; po starcie zostaje dla agenta.
 
 Wątek główny (D-Bus) nie czeka na gita: `Repos`, `SuggestBranch` i `Start` pracują w jednym wątku roboczym i odpowiadają z opóźnieniem. `--no-tasks` wyłącza obiekt.
+
+## Zatrzymanie i odtworzenie po restarcie (PT-253)
+
+SIGTERM prosi Qt o zakończenie pętli; budzik Pythona daje obsłudze sygnału sterowanie co 500 ms.
+Powrót z `app.exec()` i nawet z `app.main()` nie oznacza końca procesu: Python przy wyjściu
+dołącza wątki `ThreadPoolExecutor`, także po `shutdown(wait=False)`. Kontrolowany wolny
+`git worktree list --porcelain` odtworzył przekroczenie 5 s: wątek `tide-worktrees` czekał w
+`subprocess.run/communicate/select`, a główny w `_python_exit/threading.join`, już po powrocie
+z `app.main()`. Limit każdego polecenia wynosił 60 s, a skaner mógł przejść do kolejnego
+repozytorium. To odtworzenie mechanizmu dojścia do limitu zatrzymania systemd; nie identyfikuje
+konkretnego wolnego repozytorium z wcześniejszego zatrzymania na pulpicie.
+
+Monitor worktrees po rozpoczęciu zamykania odrzuca nową pracę, anuluje kolejkę i sygnalizuje
+anulowanie skanerowi. Bieżący git ma własną grupę procesów; anulowanie jest sprawdzane co 50 ms,
+następnie grupa dostaje SIGTERM, a najpóźniej po 200 ms SIGKILL. Dotyczy to wyłącznie gita
+uruchomionego przez skaner, wraz z jego pomocnikami. Wątek zostaje dołączony przed końcem usługi.
+Przegląd katalogów i pomiar zajętości sprawdzają ten sam znacznik anulowania. Pozostałe użycia
+klasy `Git` zachowują dotychczasowe limity; nie ma zmiany `TimeoutStopSec` ani wymuszonego wyjścia
+interpretera. Blokujący w jądrze odczyt z niedostępnego systemu plików pozostaje ograniczeniem
+anulowania kooperatywnego.
+
+Zamknięcie Tablicy zatrzymuje też jej monitor przepływu: nie przyjmuje nowych akcji, usuwa
+oczekujące akcje z kolejki, pozwala bieżącej operacji zostawić trwały zamiar/wynik i commituje
+zmiany dziennika bez oczekiwania na callback Qt. Operacje przepływu zachowują dotychczasowe
+limity. Dziennik ma kopię usługi zapisaną z `fsync`; po starcie karty i oczekujące decyzje są
+projekcją tego dziennika. Zwykły restart nie zapisuje zdarzenia ręcznego przeniesienia do Backlogu.
+Procesy kroków i poleceń poza piaskownicą pracują w osobnych jednostkach systemd; zatrzymanie
+usługi ich nie zatrzymuje. Nowy proces usługi podejmuje te same jednostki i pliki wyników.
+
+Filtr powiadomień Stream odbiera każdą odpowiedź `Inhibit` tylko raz: `waitForFinished()` podczas
+zatrzymania może także dostarczyć callback `finished`. Przy zamykaniu oba odbiory nie mogą osobno
+zwolnić tego samego ciasteczka. `stop()` zachowuje jedno synchroniczne `UnInhibit` i odrzuca późne
+sygnały aktywności oraz próby ponownego wstrzymania powiadomień. Zwykłe wyjście ze Stream nadal
+zwalnia inhibicję asynchronicznie, także gdy odpowiedź przyszła dopiero po wyjściu.
+
+`python3 -m unittest -v daemon.tests.test_daemon_lifecycle` mierzy monotonicznie koniec własnego
+procesu po SIGTERM (limit 5 s), restart do działającego D-Bus i aktualnej migawki (limit 10 s),
+zachowanie decyzji, wyników i gałęzi oraz brak powtórzenia kroków/scalenia. Scenariusze systemd
+używają wyłącznie jednostek `tide-pt253-test-<los>.service` i zakresów z osobnym losowym prefiksem,
+prywatnej magistrali oraz tymczasowych HOME/XDG/repozytoriów. Sprawdzają jednocześnie żywy krok
+i polecenie poza piaskownicą: grupy cgroup, PID-y, postęp obu procesów po restarcie oraz pojedyncze
+podjęcie obu wyników. Brak prywatnego D-Bus lub menedżera użytkownika oznacza pominięcie scenariusza,
+a nie dowód poprawnego restartu.
+
+Ręczne sprawdzenie po wdrożeniu na pulpit:
+
+1. Rozpocznij kontrolowany, dłuższy krok w tle oraz na drugiej karcie kontrolowane polecenie
+   poza piaskownicą. Zapisz ich PID-y z dzienników procesów, kolumny i dane gałęzi obu kart.
+2. Gdy oba procesy pracują, wykonaj poniższy pomiar. Wywołuje dokładnie
+   `systemctl --user restart tide-daemon` i sprawdza tożsamość obu żywych procesów po restarcie:
+
+   ```python
+   import subprocess, time
+   from pathlib import Path
+   pids = [int(input("PID kroku: ")), int(input("PID polecenia poza piaskownicą: "))]
+   def identity(pid):
+       fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+       assert fields[0] != "Z", f"proces {pid} zakończony"
+       return fields[19]  # starttime, bez pomylenia z ponownie użytym PID-em
+   before = [identity(pid) for pid in pids]
+   started = time.monotonic()
+   subprocess.run(["systemctl", "--user", "restart", "tide-daemon"], check=True)
+   elapsed = time.monotonic() - started
+   assert elapsed < 10, elapsed
+   assert [identity(pid) for pid in pids] == before
+   print(f"restart: {elapsed:.3f} s; oba procesy żyją")
+   ```
+
+3. Potwierdź przyrost dziennika/postęp obu procesów. Odczytaj aktualną migawkę przez
+   `qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot`; sprawdź kolumny i dane gałęzi,
+   także dla karty czekającej na decyzję i karty Do sprawdzenia. Poczekaj na naturalny koniec obu
+   kontrolowanych prac: wynik każdego ma zostać podjęty raz, bez dodatkowego kroku, scalenia ani decyzji.
+   Testy automatyczne nie uruchamiają tego polecenia na docelowej usłudze.
 
 ## KRunner
 
@@ -866,17 +971,128 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `YouTrackIssues(b refresh)` | `→ s` | zgłoszenia użytkownika do importu (PT-7): `{ok, issues: [{id, summary, project, state, updated, url, card, boardProject, boardProjectName, new}], error}`; odpowiedź po pobraniu w wątku roboczym (`refresh: false` — ostatnia lista z pamięci); pokazane zgłoszenia liczą się jako przejrzane |
 | `ImportYouTrack(s request)` | `→ s` | karty w Backlogu z listy `{issues: ["LOG-1", …]}` (najwyżej 200, tylko z ostatniej listy `YouTrackIssues`) → `{ok, created: [{issue, card, project}], skipped: [{issue, card, reason}], commitError}`; zgłoszenie z kartą — pominięte |
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?}` albo Planowanie Lekkie `{entry: "planning", mode: "light", executor, preferredProvider?, images?, check?}`, albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
+| `ListCardBranches(s id, s request)` | `→ s` | bazy lokalne i znane lokalnie zdalne albo wyłącznie lokalne cele scalenia: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
+| `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tekst i historia plików lokalnie, linki PR/MR przez CLI; files/links wyłącznie na żądanie |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
-| `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
+| `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `ApproveCardEnvironment(s id, s yaml, b onlyPlan)` | `→ s` | pakiet zgód środowiska karty (PT-172, niżej): usługa waliduje `yaml` (profil karty) i zgodę na pozycje czerwone przed jakimkolwiek zapisem; `onlyPlan` zatwierdza sam plan i ustawia `boxWait: environment` |
 | `BoxStatus(s slug)` | `→ s` | stan pudełka projektu, hash przepisu, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu (PT-172, niżej) |
-| `CardBranchDiff(s id)` | `→ s` | po domknięciu karty zwraca diff gałęzi karty względem głównej, wyłącznie do odczytu |
-| `MergeCardToMain(s id)` | `→ s` | wyłącznie na kliknięcie użytkownika scala domkniętą kartę do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych zmianach w głównym checkoutcie |
+| `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
+| `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
+| `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel, w razie potrzeby ref/worktree tworzone po zgodzie; używa trwałej operacji PT-212 |
+| `MergeCardToMain(s id)` | `→ s` | na kliknięcie użytkownika rozpoczyna trwałe scalenie domkniętej karty do gałęzi głównej i przenosi ją do Gotowych; odmawia przy lokalnych kolizjach, ponowienie wznawia ten sam zamiar |
 | `Changed` | sygnał bez argumentów | migawka tablicy się zmieniła (zapis przez D-Bus, zmiana z zewnątrz, stan kart z pracy agentów) — pobierz `Snapshot()` ponownie |
 | `WorkChanged` | sygnał bez argumentów | lista „Praca” się zmieniła — pobierz `Work()` ponownie. Od razu przy zmianie grup, pytań i liczb; gdy zmienia się tylko ostatnia czynność agenta (`note`), najwyżej co 10 s (`WORK_VOLATILE_MS`) |
+
+`PreviewCardMerge` (PT-199) odpowiada asynchronicznie. Wynik zawiera `sourceRef`, `sourceCommit`,
+`targetRef`, `targetCommit` (pełne refy i przypięte SHA), `sourceBranch`, `targetBranch`, `targetWorktree`
+oraz `targetWorktreeExists`. Pełne listy `commits: [{sha, subject}]`,
+`files: [{status, oldPath, newPath}]`, `conflicts: [ścieżka]` mają liczniki `commitCount`, `fileCount`,
+`conflictCount`. Commity to dokładnie `targetCommit..sourceCommit`; pliki to różnica drzewa celu
+i `resultTree` z `merge-tree`, z rozpoznawaniem rename i obiema ścieżkami. Zamknięcie widoku nie zapisuje
+żadnej decyzji ani zmiany kolumny.
+
+Konflikt jest poprawnym odczytem (`ok: true`, `canMerge: false`, `reason: conflict`), podobnie odmowy
+`unrelated-history`, `git-capability`, `git-error`, `no-sandbox` mają własny `reason` i `message`.
+Niepoprawne żądanie albo brak gałęzi daje standardowy błąd `ok: false`. PT-210 rozszerza `canMerge`
+o domknięcie, czystość checkoutu karty, brak czynnych kroków (również Konsoli i poleceń poza piaskownicą),
+niedokończonych akcji, zmian planu i korekty bazy po domknięciu. Cel jest wyłącznie lokalnym refem;
+gałęzie kart i gałęzie/worktree czynnych kroków innych kart są wykluczone. Domyślny cel i jawny `targetRef`
+korzystają z tej samej kwalifikacji. Ref zdalny, SHA ani skrót nazwy nie są celami tej metody.
+
+`localChanges` i `localCollisions` zawierają osobne listy `staged`, `unstaged`, `untracked`.
+Wpis zmiany to `{status, paths}` z surowym kodem porcelain i obiema ścieżkami rename; wpis kolizji
+dodaje `mergePaths`. `localCollisionCount` liczy wpisy we wszystkich trzech listach kolizji.
+Kolizja obejmuje usunięcia i relację plik–katalog w obu kierunkach, z granicą komponentu ścieżki.
+`blockedReasons: [{reason, message}]` pokazuje wszystkie ograniczenia, a `reason`/`message` pierwsze z nich.
+Konflikt drzew (`conflict`) i kolizja pracy lokalnej (`local-collision`) pozostają odrębne, również gdy
+wystąpią równocześnie. Niezwiązane staged, unstaged i untracked nie blokują podglądu (K-43, PT-207).
+Plik z jednoczesnymi staged i unstaged zachowuje oba poziomy pracy po scaleniu.
+Cel bez checkoutu ma plan własnego worktree; metoda niczego nie zakłada. Zarejestrowany, niedostępny
+checkout ma `no-target-worktree`. Błąd odczytu checkoutu blokuje
+kwalifikację zamiast udawać czysty stan. Przy nieprzygotowanym drzewie `localCollisions` może pozostać `unassessed`.
+
+`previewToken` jest HMAC od karty, zlecenia, `baseVersion` (także stabilnego 0 dla legacy/unknown),
+przypiętych SHA i refów, odczytu worktrees, HEAD, surowego i logicznego indeksu, treści lokalnie zmienionych
+plików oraz blokad przepływu. Brak checkoutu ma osobną reprezentację. Sekret żyje wyłącznie w silniku:
+po restarcie nowy podgląd ma inny token. Token nie jest trwałą zgodą ani rozpoczętą operacją.
+`MergeCard` ponownie przygotowuje podgląd i sprawdza aktualność tokenu pod blokadą repozytorium;
+blokada obejmuje również przygotowanie i zapis zamiaru PT-212. Blokada dziennika chroni w tym czasie
+stan zlecenia, domknięcia i wersję bazy przed innymi zapisami usługi.
+Odczyt checkoutów i refów jest ponawiany po przygotowaniu drzewa; zmiana podczas odczytu daje
+`state-changed`, `canMerge: false` i brak tokenu. Nieudany odczyt checkoutu również nie wystawia tokenu.
+Historyczne pole `readyToMerge: false` pozostaje dla zgodności; samo otrzymanie podglądu nigdy nie jest zgodą.
+Okno korzysta z `canMerge` i `previewToken`, aby włączyć osobny przycisk „Scal do <pełna nazwa>”.
+Podgląd nie tworzy worktree i nie pisze indeksu, HEAD, refów ani plików;
+dopuszcza obiekty próbnego drzewa. Sterowniki merge również działają w piaskownicy StepGit z zapisem
+wyłącznie `objects`. Dotychczasowe jawne `MergeCardToMain` zachowuje sygnaturę i zachowanie.
+Własny sterownik merge wymagający plików `.merge_file_*` w katalogu roboczym jest w podglądzie
+odrzucany jako `git-error`: odczytowy mount blokuje już przygotowanie tych plików, przed uruchomieniem
+sterownika. Nie zamieniamy tej odmowy narzędzia na konflikt ani nie otwieramy zapisu w worktree.
+
+PT-204: `MergeCard` wymaga obiektu `{targetRef, previewToken}`. Błędny lub nieaktualny token (zmiana refów,
+checkoutów, indeksu, lokalnej treści, zlecenia albo `baseVersion`) daje `stale-preview` bez rozpoczęcia operacji.
+Po restarcie token nie pozwala rozpocząć nowej operacji. Aktualny podgląd z blokadą daje jej `reason`.
+PT-200 dopuszcza jawnie wybrany lokalny cel przez tę samą operację. PT-206 dodaje przygotowanie
+brakującego lokalnego refu i checkoutu po zgodzie, opisane poniżej.
+
+Sukces zwraca `{ok, id, targetRef, targetBranch, sourceCommit, targetCommitBefore, resultCommit,
+baseVersion, operationId, already}` z istniejącej operacji. `already` oznacza źródło już zawarte w celu.
+Opcjonalne `operationId` wskazuje wyłącznie rozpoczętą operację tego samego zlecenia, refu i tokenu;
+nie jest zgodą na rozpoczęcie nowej. Ponowienie pierwotnego żądania również odnajduje zapisane ID
+po przypisanym tokenie, więc utrata odpowiedzi i restart nie powodują drugiego scalenia. Wznowienie
+korzysta z kontroli recovery PT-212. Oba API kończą kartę zdarzeniem `card.merged` z rzeczywistym celem (PT-205);
+stare `MergeCardToMain(id)` nadal wybiera główną i zwraca `main`, także gdy musi otworzyć własny checkout.
+
+W Tablicy zarówno panel, jak i pełna karta otwierają podgląd po „Scal do <pełna nazwa>”. Potwierdzenie
+pokazuje pełny ref i SHA źródła oraz celu. Zamknięcie, Escape, odświeżenie i `check: auto` nie wywołują
+`MergeCard`. Po błędzie stary przycisk zostaje zablokowany; odświeżenie wymaga kolejnego potwierdzenia.
+
+PT-200: przy znanej lokalnej bazie przycisk pokazuje „Scal do <pełna nazwa bazy>”. Menu „Scal…”
+korzysta z `ListCardBranches(purpose=merge)`: wyłącznie pełne lokalne refy, bez duplikatów, z bazą
+i nazwaną główną na początku pasujących wyników. Wyszukiwanie obejmuje cały zbiór przed limitem
+50 (maks. 100); `hasMore` oznacza konieczność zawężenia. Lista współdzieli z podglądem kontrolę
+gałęzi karty i chronionych refów/worktrees innych kart (`selectable: false`, `reason`).
+Ocena kolizji treści pozostaje w podglądzie.
+PT-214: `recentTargets` zwraca do 10 różnych istniejących lokalnych pełnych refów, od najnowszego
+udanego `card.merged` lub starego `card.main-merged` ze znanym `main`. Nieznany cel nie jest zgadywany.
+Lista jest odtwarzana z dzienników Tablicy po restarcie, wspólna dla worktrees rzeczywistego repozytorium
+i odseparowana od innych repozytoriów; bez nowego magazynu. Usunięty ref znika ze skrótów, a historia
+pozostaje. Skróty mają aktualny SHA oraz te same `selectable` i `reason` co wyniki wyszukiwania;
+nie zależą od filtra i limitu wyników. Błąd historii daje ostrzeżenie i pozostawia ręczne wyszukiwanie.
+Menu pokazuje bazę, nazwaną główną, ostatnie cele i wyszukiwarkę, bez powtarzania refów. Kliknięcie
+skrótu otwiera jedynie podgląd, nie zmienia bazy ani domyślnego celu i nie daje zgody na scalenie.
+Dla bazy nieznanej główna jest propozycją wymagającą wyboru. Wybór zmienia jedynie kontekst podglądu,
+bez zapisu bazy ani zgody. Zmiana projektu lub
+repozytorium karty zamyka wybór i podgląd oraz odrzuca ich spóźnione odpowiedzi.
+
+PT-206: lista celów ma dodatkowo `defaultTargetRef`, `trackingTargets` i `createTarget` (obiekt albo null).
+Dla zdalnej bazy tylko jedna lokalna gałąź z dokładnym pełnym upstreamem tej bazy jest domyślna;
+zgodność SHA lub krótkiej nazwy nie wystarcza. Kilku kandydatów wymaga jawnego wyboru (`target-required`
+przy podglądzie bez celu). Przy braku śledzącego celu menu proponuje „Utwórz lokalną <pełna nazwa>
+od <remote/nazwa>”. Zajęta nazwa nigdy nie jest nadpisywana: menu pozwala wpisać inną albo jawnie wybrać
+istniejący lokalny cel. Nowa nazwa trafia jako pełne `targetRef`; punkt startu pochodzi wyłącznie ze znanej
+zdalnej bazy tego zlecenia, nigdy z dowolnego refu podanego przez klienta.
+
+`targetPreparation` podglądu opisuje `createRef`, `createWorktree`, `path`, `startCommit`,
+`remoteRef`, `remoteCommit`, dostępność nazwy i katalogu. Token obejmuje cały plan, nieistnienie refu
+i checkoutu oraz SHA remote. Ruch remote, zajęcie nazwy/katalogu albo nowy checkout po podglądzie daje
+`stale-preview` przed zapisaniem zamiaru i tworzeniem. Istniejący checkout ma pierwszeństwo; cudzy katalog
+nie jest przełączany. Brakujący worktree ma nazwę `merge-target-<skrót>` niezależną od znaków refu.
+Podgląd, lista i anulowanie nie tworzą zasobów; nie ma fetch, push, zmiany refs/remotes ani konfiguracji remote.
+
+Pełny zamiar PT-212 powstaje przed zasobami. Dodatkowe checkpointy to `target-ref-created`,
+`target-directory` (urządzenie/inode) i `target-worktree-created`. Atomowa transakcja refów tworzy cel
+i dowód własności `refs/tide/merge-targets/<operationId>`; ten dowód pozostaje z zapisaną operacją.
+Worktree ma podczas przygotowania blokadę opisaną ID operacji. Checkout początkowego drzewa działa
+w StepGit; po zakończeniu gita własna blokada jest zwalniana. Recovery rozpoznaje zasoby także po awarii
+przed checkpointem refu/worktree i kontynuuje ten sam wynik bez drugiego merge. Obcy ref (także zgodny SHA),
+zmieniony inode, checkout albo commit dają oczekiwanie bez nadpisania. Awaria między `mkdir` a utrwaleniem
+inode również bezpiecznie czeka. Zasoby nie są automatycznie usuwane przy porzuceniu zamiaru.
+`card.merged` wskazuje rzeczywisty lokalny ref; projekcje i ostatnie cele używają tego wyniku.
 
 Każda metoda zapisu odpowiada od razu (kilka małych plików i jeden commit). Odpowiedzi mają kształt
 jak w `/Tasks`: sukces to `{"ok": true, …}`, błąd — `{"ok": false, "error": "<kod>", "message": "…"}`
@@ -980,6 +1196,49 @@ mode: full
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
+
+### Katalogi danych projektu tylko do odczytu (PT-246)
+
+W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,
+np. `~/.cache/hud-timeline`. `UpsertProject` przyjmuje `readDirs: ["/pełna/ścieżka", "~/katalog"]`;
+migawka projektu zwraca `readDirs` jako listę ścieżek kanonicznych. Brak pola w starym projekcie
+oznacza pustą listę. Pusta lista w żądaniu usuwa udostępnienie, pominięcie pola zachowuje ustawienie.
+Zapis w pliku projektu: `read-dirs` (JSON); wewnętrzne `read-dir-bindings` zachowuje powiązania dowiązań.
+
+Limit wynosi 32 wpisy. Tide usuwa duplikaty, rozwija `~/` względem użytkownika usługi i rozwiązuje
+dowiązania. Nie tworzy brakujących katalogów. Odmawia korzeni systemu, punktów montowania,
+katalogu domowego i jego przodków, katalogów sekretów (m.in. `.ssh`, `.gnupg`, `.aws`, `.azure`,
+`.kube`, `.codex`, `.claude`, `.config`, portfel kluczy i stan Tide) oraz nakładania z obszarem zapisu
+kroku. Ścieżki ze znakami wzorców uprawnień są odrzucane. Token aktualnego punktu modelu również
+nie może leżeć w udostępnionym katalogu. Błąd ustawienia nie zamienia się po cichu w inne uprawnienie.
+
+Każdy start i wznowienie ponownie sprawdza istnienie katalogów i zapamiętane cele dowiązań.
+Podmiana celu daje czytelną odmowę; trzeba usunąć stary wpis i świadomie udostępnić nowy cel.
+Katalogi dostają wyłącznie kroki projektu oraz kroki już uprawnione do odczytu tego projektu jako
+dodatkowego projektu karty/zlecenia. Nie są dopisywane globalnie do innych kart ani do poleceń hosta.
+Zmiana ustawienia działa od następnego uruchomienia, również przy wejściu do tej pracy w Konsoli.
+Już działający proces zachowuje poprzedni profil; usunięcie wpisu go nie zatrzymuje.
+
+Claude otrzymuje `allowRead` i **`denyWrite` profilu systemu plików**, obok zakazu narzędzi Edit.
+Codex zachowuje `workspace-write`: dane nie trafiają do `--add-dir` ani `writable_roots`, a domyślne
+obszary zapisu `/tmp` i `TMPDIR` są wyłączane dla tego profilu. Zachowuje to istniejący ogólny zakres
+odczytu Codexa; `readDirs` nie jest nowym mechanizmem ukrywania reszty dysku. Wejście do Konsoli dla
+tej pracy używa wspólnego profilu i zachowuje go także po usunięciu ostatniego wpisu. Nie powstaje
+nowe pudełko K-38 ani nowa ścieżka wykonywania poleceń poza piaskownicą.
+
+Dowód działania granicy: `daemon/tests/test_project_read_dirs_native.py`, włączany przez
+`TIDE_READ_DIRS_NATIVE=1`. Test używa natywnego Codex `sandbox linux` i natywnego Bash Claude
+z lokalną atrapą API (bez modelu, prawdziwych kluczy, hooków ani MCP). Raporty w
+`build/test-results/read-dirs-native/{claude,codex}-proof.json` osobno pokazują udany odczyt oraz
+niezerowe kody prób zapisu, utworzenia, usunięcia i zmiany nazwy, bezpośrednio i przez dowiązanie
+z worktree. Niedostępność piaskownicy po włączeniu testu jest błędem, nie udanym testem ani pominięciem.
+Próby wymagające zagnieżdżenia piaskownicy należy zgłosić w kroku jako `outside`.
+Jeśli Codex jest zainstalowany jako Snap, próba używa natywnego programu z tego samego
+zainstalowanego pakietu (`/snap/codex/<wersja>/bin/codex`). Wrapper `snap run` może odmówić startu
+w jednostce `tide-outside`, zanim zostanie utworzony profil. Test sprawdza granicę `workspace-write`
+samego programu; nie jest testem dodatkowych ograniczeń Snap ani zgodności jego wrappera z systemd.
+Nie zmienia to produkcyjnego wyboru programu. Artefakty `{claude,codex}-command.json` zapisują
+dokładne argv wykonanego testu obok dowodu operacji.
 
 Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
 (`teal`, `lavender`, `peach`, `butter`, `rose`, `mint`, `sky`; lista z `pastel` w `theme/palette/`),
@@ -1338,6 +1597,18 @@ przez `UpdateCard`, tylko jeśli dane różnią się od zapisanych. Następnie P
 wywołują `/Board StartCard`: krok biegnie w tle w przepływie karty, bez otwierania Konsoli. „Mam plan”
 przekazuje `entry: import` i `planPath`; usługa zapisuje migawkę źródła bez edycji pliku projektu, zachowuje
 istniejące ID i stany ticketów, uzupełnia niepełny plan w tle i kieruje propozycję do review oraz zatwierdzenia.
+Tylko specyfikacja (PT-203) przekazuje do `RenderLaunch` parę `baseRef` (pełne
+`refs/heads/…` albo `refs/remotes/…`) i `baseCommit` (oczekiwany SHA) projektu karty.
+Wspólna polityka baz odmawia po ruchu/usunięciu refu oraz dla refów symbolicznych;
+okno wymaga odświeżenia wyboru. Polecenie zawiera ref/SHA oraz instrukcje `git show`
+i `git ls-tree` do czytania także plików nieobecnych w checkoutcie. Dodatkowe projekty
+zachowują swoje bazy i odczyt. Karta przechowuje osobne `spec-revision-repo`,
+`spec-revision-ref`, `spec-revision-commit`, widoczne w migawce i odpowiedzi jako
+`specRevision: {repo, ref, commit}`. To kontekst wejścia, bez initialBase,
+`card.started`, numeracji ticketów, gałęzi/worktree i przełączania checkoutu.
+Powtórne RenderLaunch bez jawnego wyboru waliduje zapisany kontekst; starsze wywołania
+bez kontekstu zachowują dotychczasowe działanie. Sposób zapisu specyfikacji pozostaje ten sam.
+
 Pełne planowanie i Tylko specyfikacja używają dotychczasowej ścieżki Konsoli: `RenderLaunch` → `/Tasks Start`
 → zapis gałęzi, worktree i sesji na karcie przez `UpdateCard`. Pełny proces planowania w przepływie karty
 należy do drugiego etapu. Karta uruchomiona z Backlogu przez popup idzie do Do zrobienia; błąd odpowiedzi
@@ -1482,6 +1753,21 @@ Issues, trackera i lokalnego `.scratch`. Propozycję czyta ten sam walidator co 
 źródła do katalogu wyniku konkretnego kroku. Poprawny wynik daje plan do zatwierdzenia; zatwierdzenie prowadzi dalej
 przez istniejące rezerwacje, review ticketów i scalanie. Review samego planu przed pokazaniem dodaje PT-80.
 
+**Projekty zlecenia (K-33 #4, PT-115, decyzja 94).** Żądanie Planowania (Lekkiego i Pełnego) może mieć
+`projects` — dodatkowe projekty zlecenia (slugi albo ścieżki repozytoriów, jak `projects` w UpdateCard); różniące się
+od karty trafiają do `projects` karty. Usługa sprawdza każdy projekt zlecenia przed pierwszym zdarzeniem: projekt bez
+repozytorium albo z niedostępnym kończy zlecenie błędem `no-repo` z nazwą projektu. `card.started` ma `projects`:
+`[{slug, name, repo, prefix, tracker, trackerProject, configured, source, main}]` (pierwszy to projekt karty;
+`configured: false` — repozytorium numeruje w YouTracku, a projekt Tablicy nie ma klucza YouTracka). Krok planowania
+pracuje w worktree karty, a repozytoria pozostałych projektów dostaje tylko do odczytu: Claude przez `--add-dir`
+z regułami `Edit(//repo/**)` w `--disallowedTools` (w tle także `allowRead` piaskownicy, `allowWrite` tylko `out`),
+Codex bez `--add-dir`. Polecenie wymienia projekty z repozytorium, prefiksem, trackerem i źródłem numerów i żąda
+planu standardu 1.3 z kolumną `Projekt`. Sprawdzanie propozycji odrzuca projekt spoza zlecenia, gotowe ID z prefiksem
+innego projektu, cykl blokerów, więcej niż 6 projektów i projekt YouTracka bez trackera na Tablicy; komunikat zaczyna
+się od ID wiersza. `plan.proposed` i `derived.flow.plan` mają wtedy `projects` (ze źródłem numerów), a wiersze pole
+`project`. `ApproveCardPlan` planu z ticketami w kilku projektach odpowiada `group-approval` („zatwierdzanie grupy kart
+— w następnej wersji”) bez zapisu w dzienniku. Wejścia `now` i `import` odrzucają niepuste `projects` (`single-project`).
+
 Błędny format zapisuje `plan.checked` i uruchamia `plan-fix` z błędami i poprzednią propozycją, najwyżej dwie poprawy.
 Po dwóch nieudanych poprawach karta czeka na użytkownika z błędami w panelu; można zlecić nowe planowanie. Awaria
 programu, pytanie i brak zgody korzystają z istniejącego kontraktu kroków (jedno ponowienie awarii, potem decyzja
@@ -1597,6 +1883,212 @@ wraz z wykonawcą.
 ### Review i gałąź karty (PT-59)
 
 `StartCard` przyjmuje nazwę recenzenta z katalogu (`reviewer`); okno „Od razu” pokazuje wykonawców o innym modelu.
+
+**Lista lokalnych baz (PT-209).** `ListCardBranches` zwraca wyłącznie `refs/heads/` z rekordami
+`{ref, name, kind: "local", remote: "", commit, selectable, reason}`. `name` zachowuje pełną nazwę,
+`commit` jest pełnym SHA, `reason` zawiera powód ewentualnej odmowy. Filtr `text` dopasowuje dowolny
+fragment bez rozróżniania wielkości liter. `mainRef` jest pełnym refem według wspólnej polityki
+głównej lub pustym napisem z ostrzeżeniem. Główna jest pierwsza, jeśli pasuje do filtra.
+`recentBases` zawiera skróty udanych startów i korekt, a `recentTargets` dla celu merge — udanych scaleń
+(opis PT-214 powyżej). `hasMore` wymaga zawężenia zapytania, bez kolejnych stron.
+Okno startu pozwala wybrać bazę w „Od razu”, „Mam plan” i Planowaniu, wysyła pełny ref i SHA z wyniku listy oraz osobną
+nazwę nowej gałęzi karty `cardBranch`. Niepoprawna lub zajęta nazwa jest odrzucana. Brak pola zachowuje
+automatyczną nazwę starszych klientów. Wybór dotyczy tylko projektu karty; dodatkowe projekty zachowują
+dotychczasowe bazy i odczyt. „Tylko specyfikacja” ma nieaktywny wybór do czasu obsługi wybranej rewizji.
+Review, poprawki i zatwierdzanie planu używają tej samej gałęzi karty; kolejna fala wychodzi z jej aktualnego
+stanu po integracji blokerów. Przejęcie planu kopiuje artefakty do dziennika, bez zmiany źródła i jego numerów.
+
+**Podpowiedzi tekstowe bazy (PT-196).** `SuggestCardBase` czyta opis zapisanej karty i osobno tekst
+formularza (do 200000 znaków). `revision` to nieujemny numer wersji formularza. Analiza rozpoznaje pełne,
+istniejące nazwy i refy ze spisu lokalnego gita, z rozróżnieniem wielkości liter i granic nazw, również
+w backtickach oraz przykładach `git switch`/`checkout`. Nie rozwiązuje tekstu jako rewizji gita.
+Wskazana nieistniejąca nazwa jest ostrzeżeniem. Lokalny i zdalny ref o tej samej nazwie pozostają
+odrębnymi kandydatami; wiele wskazań daje ostrzeżenie, bez rozstrzygnięcia za użytkownika.
+
+Kandydat zawiera `{ref, name, commit, source, evidence, strength, selectable, reason}` (oraz metadane
+gałęzi `kind`, `remote`). Dla tekstu `source: text`, `strength: explicit`, a `evidence` to lista
+`{field: description|text, line, text, match, start, end}`: numer wiersza od 1, wycinek wokół trafienia
+(do 512 znaków) i zakres widocznego trafienia w tym wycinku od 0, z końcem wyłącznym. Bardzo długa
+nazwa może być przycięta w dowodzie; kandydat zachowuje pełną nazwę i ref. Odpowiedź zawiera najwyżej
+32 kandydatów, po 5 dowodów na ref łącznie z obu pól, i 20 ostrzeżeń o nieznanych nazwach (nazwa do
+256 znaków), poza komunikatem o konflikcie i ograniczeniu listy. Kontekst polecenia obejmuje najwyżej
+80 znaków przed tokenem. Dowody są zwykłym tekstem. Historia plików i linki PR/MR
+mają osobne przyciski i wymagają jawnego żądania użytkownika.
+
+Okno zlecenia analizuje tekst po krótkiej pauzie. Odpowiedź przyjmuje tylko dla bieżącego tagu,
+revision, karty, projektu i repozytorium. Zmiana tekstu, kontekstu lub wyboru unieważnia oczekującą
+odpowiedź. Podpowiedź nigdy nie zmienia wyboru samoczynnie. „Użyj <pełny ref>” wypełnia istniejące pole
+bazy z SHA; dopiero `StartCard` utrwala decyzję. Błąd analizy nie blokuje ręcznego startu. Dla utrwalonej
+bazy podpowiedzi są wyłączone. Sam odczyt nie zapisuje karty ani dziennika i nie mutuje gita.
+
+**Lokalna historia plików (PT-197).** Przycisk „Sprawdź lokalną historię plików” wywołuje ten sam
+kontrakt z `scope: files`. Analiza działa w istniejącym wątku roboczym i nie blokuje ręcznego startu.
+Ścieżki pochodzą z opisu karty i polecenia: nazwy z ukośnikiem lub kropką, a w cytatach/backtickach
+także nazwy bez rozszerzenia i ze spacjami. Ścieżki są względne wobec katalogu repozytorium;
+bezwzględne przyjmujemy tylko wewnątrz tego katalogu. Traversal i globy są pomijane z ostrzeżeniem.
+Nie odczytujemy wskazanych plików z dysku, nie podążamy za dowiązaniami; plik może istnieć wyłącznie
+w drzewie gałęzi feature. Sam basename jest używany dopiero po jednoznacznym dopasowaniu w całym
+analizowanym zbiorze drzew. Wieloznaczny skrót wymaga podania ścieżki od katalogu repozytorium.
+Plik w katalogu głównym można wskazać dokładnie jako `./config.py`, także gdy gdzie indziej jest jego imiennik.
+
+Zakres wynosi najwyżej 20 różnych ścieżek, 100 lokalnie dostępnych refów gałęzi (lokalnych i remote,
+bez symbolicznych), uporządkowanych po dacie commita końcowego, 200 najnowszych osiągalnych commitów
+na gałąź oraz 5 sekund łącznie. Każde wywołanie gita dostaje pozostały czas. Najpierw ograniczamy
+zbiór commitów bez filtra ścieżek, następnie czytamy zmiany plików wyłącznie w tym zbiorze, bez
+dalszego przechodzenia historii. Ścieżki trafiają za `--` z literalnymi pathspecami, bez powłoki.
+Nie ma fetch, checkoutu ani indeksowania całej historii. Przy limicie lub błędzie wynik pozostaje
+częściowy; ostrzeżenie wyjaśnia, że brak wskazania nie wyklucza gałęzi. Odpowiedź zawiera również
+`analysis: {partial, paths, branches, limits: {paths, branches, commitsPerBranch, seconds}}`.
+
+Kandydat zawsze ma `source: files`, `strength: heuristic`, końcowy ref/SHA oraz dowody
+`{path, commit, timestamp, time}` (czas committera UTC). Dowód wymaga obecności ścieżki w drzewie
+końcowego SHA i dotknięcia jej w ograniczonej historii. Ranking: liczba udowodnionych ścieżek
+(`matchedPaths`), następnie najnowszy czas ich dotknięcia (`lastTouch`); data niezwiązanego commita
+końcowego nie podwyższa oceny. Identyczna ocena daje identyczny `rank`, także dla wspólnego przodka
+kilku gałęzi; kolejność alfabetyczna jest wyłącznie porządkiem prezentacji. Wspólna lista pokazuje
+pozycję, ścieżkę, dotykający commit i czas. Dopiero „Użyj <pełny ref>” zmienia ręczną bazę, a start
+przekazuje wybrany SHA do istniejącego mechanizmu utrwalania bazy.
+
+**Podpowiedzi PR/MR (PT-198).** „Sprawdź linki PR/MR” wysyła `scope: links`; automatyczna analiza tekstu
+nie odpytuje hostingu. Adaptery `gh api` i `glab api` korzystają z istniejącego logowania CLI, bez konfiguracji
+integracji w Tide. Rozpoznają wyłącznie HTTPS `/owner/repo/pull/N` i `/grupa/podgrupa/repo/-/merge_requests/N`
+na hoście i w projekcie zgodnym ze skonfigurowanym remote (SSH/scp/HTTPS oznaczają tę samą tożsamość).
+Userinfo, query, obce projekty/hosty i inne rodzaje URL są odrzucane przed uruchomieniem CLI.
+Aliasy remote przez `url.<base>.insteadOf` nie są rozwijane: np. `gh:team/proj` wymaga remote
+z pełnym adresem SSH/HTTPS, inaczej link dostanie ostrzeżenie o niezgodności z remote.
+Najwyżej 4 różne linki na analizę, wspólny termin 10 sekund dla wszystkich odczytów (także projektów
+źródłowych/docelowych GitLaba) i 1 MiB łącznego stdout/stderr na wywołanie CLI. Po upływie terminu
+wraca dotychczasowy wynik z ostrzeżeniem. Migawka karty, gałęzi i remote powstaje w szeregowym wątku
+przepływu; hosting jest odczytywany w osobnej puli, bez blokad gita i dziennika. Jednocześnie mogą trwać
+dwie analizy hostingu; kolejne dostają błąd zajętości bez kolejki sieciowej. StartCard i tick nie czekają na CLI.
+
+Kandydat `source: links` dodaje `{host, project, sourceProject, sourceBranch, sourceCommit, targetBranch,
+link, localCommit, stale}`. Target nigdy nie jest proponowaną bazą. Źródłowe repozytorium musi mieć
+odpowiedni remote; lokalny ref musi wynikać z jego refspec fetch albo jawnej konfiguracji upstream lokalnej
+gałęzi. Nakładające się mapowania refu z obcych repozytoriów są niejednoznaczne. Sama zgodność nazwy
+lokalnej gałęzi z forkiem nie wystarcza. Brak źródła daje niewybieralną pozycję z `reason`.
+Nie wykonuje się fetch. Rozbieżne SHA API i lokalnego refu są widoczne razem; „Użyj stanu lokalnego
+<pełny ref>” przekazuje lokalny SHA do istniejącego wyboru bazy i `StartCard`.
+
+Bramka `gh` wykonuje jeden ustalony GET HTTPS na wywołanie i odrzuca wszystkie przekierowania.
+CLI używa klucza `http_unix_socket` z tymczasowego `GH_CONFIG_DIR/config.yml`; `hosts.yml` jest wyłącznie
+dowiązaniem do istniejącego pliku konfiguracji użytkownika (bez kopiowania i odczytu sekretów przez Tide).
+Tymczasowy `config.yml` zawiera też `version: "1"`: bez niego gh uruchamia migrację konfiguracji
+i zapisuje `hosts.yml` przez dowiązanie. Gdy `hosts.yml` istnieje, a `config.yml` użytkownika nie ma
+`version: "1"` (magazyn niezmigrowany), Tide nie uruchamia gh i zwraca ostrzeżenie; Tide czyta z
+`config.yml` tylko klucz `version`.
+Nieobsługiwany transport kończy się błędem przez zastępcze proxy bez dostępu do hostingu.
+`glab` dostaje jawne `GLAB_PROXY` wskazujące lokalne proxy TCP oraz `GLAB_API_PROTOCOL=https`
+i `API_PROTOCOL=https`. Proxy przyjmuje tylko `CONNECT` do ustalonego hosta na porcie 443; odrzuca obcy
+host, inny port i zwykły HTTP bez połączenia wychodzącego. Nie odszyfrowuje TLS ani nie widzi tokena.
+Przekierowanie HTTPS na tym samym hoście może być obsłużone przez `glab` wewnątrz tunelu; przekierowanie
+na obcy host lub HTTP zatrzymuje proxy. TLS weryfikuje CLI (wymuszone `skip_tls_verify=false`).
+Transport ma limit 2 MiB na tunel z narzutem TLS, niezależnie od limitu 1 MiB stdout/stderr i terminu analizy.
+Poświadczenia nie są odczytywane przez `auth token`, zapisywane ani zwracane. Wynik zawiera tylko
+dozwolone pola metadanych; stderr i surowy
+JSON CLI nie trafiają do odpowiedzi ani dziennika. Opis i polecenie służą wyłącznie wyodrębnieniu linków,
+nie są wysyłane do hostingu. Brak CLI, logowania, sieci, PR/MR, błędny JSON, limit lub timeout daje ostrzeżenie;
+ręczny lokalny start pozostaje dostępny. Dla hostów z wymaganym zewnętrznym proxy należy wybrać bazę lokalnie;
+adapter nie przejmuje konfiguracji pośrednika ani logowania.
+
+**Baza startu karty (PT-194, PT-211).** Od razu, Mam plan (`entry: import`), propozycja z Konsoli
+(`entry: plan`) i oba istniejące tryby Planowania korzystają z jednego rozstrzygnięcia bazy.
+Żądanie każdego z tych wejść może zawierać `baseRef` (wyłącznie pełny lokalny
+`refs/heads/…`) i `baseCommit` (oczekiwany pełny SHA). Przy pierwszym starcie bez `baseRef` działa dotychczasowy
+`FlowGit.main_branch`: istniejące `tide.mainBranch`, następnie polityka master/main/develop.
+Nie zmienia to konfiguracji projektu. Pod blokadą repozytorium ref jest rozwiązywany do SHA przed
+rezerwacją numeru i `card.started`. Brak gałęzi, niepoprawny ref albo niezgodny oczekiwany SHA
+odmawia startu bez zlecenia i numeru; użytkownik odświeża wybór i rozpoczyna nowy start. Tag, SHA,
+wyrażenie rewizji i `HEAD` nie są lokalnym refem gałęzi. Nie ma zastępstwa przez checkout użytkownika.
+Gałąź i worktree karty powstają od przypiętego SHA, bez upstreamu; późniejszy ruch refu go nie zmienia.
+Ponowny start wykorzystuje dotychczasową gałąź karty. Bez `baseRef` dziedziczy bazę zapisaną
+w dzienniku, nawet po ruchu lub usunięciu refu; nie rozwiązuje ponownie głównej. Ticket wychodzi
+z aktualnego stanu gałęzi karty, zachowując dotychczasową pracę. Dla legacy z bazą unknown
+start bez wyboru bazy jest dozwolony, jeśli gałąź karty istnieje; baza i `initialBase` pozostają
+unknown, bez zgadywania historycznego SHA. Brak takiej gałęzi daje `no-base` z instrukcją jej
+przywrócenia lub założenia nowej karty z wybraną bazą. Nowe zlecenie ma własne `baseVersion: 1`
+także dla unknown; historyczne zdarzenia i ich wersja 0 pozostają bez zmian.
+Jawny inny `baseRef` wymaga zgodności rozwiązanego refu i SHA z bazą dziennika. Formularz wznowienia
+pokazuje utrwalony ref i SHA bez odpytywania listy; przekazanie tego samego refu zachowuje zapisany SHA,
+nawet po ruchu albo usunięciu refu. Sam `baseCommit`
+bez refu musi odpowiadać zapisanemu SHA znanej bazy. Inna lub nieznana baza przy jawnym wyborze
+powoduje `base-mismatch` przed rezerwacją numeru i zapisem zlecenia. Zmiana bazy należy do osobnej korekty.
+
+Źródłem bazy jest dziennik: `card.started` zapisuje `baseRef`, `baseBranch`, `baseCommit` oraz
+`baseVersion: 1`. Snapshot udostępnia te trzy pola na karcie, a w `derived.flow` obiekty `base`
+i `initialBase` o kształcie `{status: "known"|"unknown", baseRef, baseBranch, baseCommit}` oraz
+liczbę `baseVersion` (również na karcie). Dla unknown trzy wartości są puste. Model i plik karty
+mają tylko projekcję `base-ref`, `base-branch`, `base-commit`; nie zapisujemy płaskiego pola wersji.
+UpdateCard odrzuca pola bazy i wersji. Snapshot bierze wartości z dziennika także przy nieudanym
+zapisie projekcji; ponawiany zapis projekcji nie uruchamia zlecenia ani gita ponownie.
+Projekcja nie dopisuje brakujących pustych pól ani nie zmienia plików kart w Gotowych i Archiwum.
+Gdy karta nie ma wyliczanego stanu (np. wróciła ręcznie do Do zrobienia albo jest w Gotowych/Archiwum),
+zachowuje `derived: null`. Jej pola `baseRef`, `baseBranch`, `baseCommit` i `baseVersion` na karcie
+w Snapshot nadal pochodzą z dziennika, niezależnie od powodzenia zapisu projekcji.
+
+Historyczne zlecenie bez wersji zawsze ma `baseVersion: 0`. Znana historyczna baza wymaga zamiaru
+utworzenia gałęzi wskazującego ref i skutecznego wyniku z SHA oraz `existing: false`, z tego zlecenia.
+Wynik zastanej gałęzi nie dowodzi SHA pierwotnego startu. Bez dowodu baza jest unknown; nie czytamy
+dzisiejszej głównej i nie dopisujemy pól do starych zdarzeń.
+
+Kontrakt korekty: pojedyncze skuteczne `card.base-changed` zapisuje atomowo `base`
+(ten sam kształt trzech pól), `generation` (pełna mapa zasobów korekty PT-202), `previousBaseVersion` i
+`baseVersion: previousBaseVersion + 1`. Replay przyjmuje przejście tylko z bieżącej wersji i znaną
+nową bazą; powtórzenie tego samego zdarzenia nie zwiększa licznika. `initialBase` zachowuje start.
+Nowe zlecenie ma własne 1. Podgląd, odmowa, błąd, ruch refu i naprawa projekcji nie zmieniają wersji.
+Tokeny i przyszłe operacje scalenia/korekty korzystają wyłącznie z tego `baseVersion`. Wykonanie
+korekty oraz mapowanie zasobów opisano poniżej. Historyczne zdarzenia z pustym `map` zachowują odczyt.
+
+**Pusta generacja (PT-202).** `PreviewCardBaseChange` pozostaje odczytem. Wykonanie wymaga
+`ResolveCardStep(id, {choice: "change-base", baseRef, baseCommit?, previewId, step?})`, gdzie `baseRef`
+jest pełnym refem lokalnym lub znanym lokalnie remote, `previewId` pochodzi z aktualnego podglądu,
+a `step` wskazuje pytanie agenta lub decyzję `RequestCardBaseChange`, jeżeli taka istnieje.
+Sam wybór `baseDecision: "change"` nadal tylko otwiera podgląd. Odpowiedź i etykieta opcji nie są
+poleceniem Git. Panel Tablicy i Sesji udostępnia osobne potwierdzenie tylko dla `canExecute: true`,
+przekazując dokładny ref/SHA i identyfikator wyświetlonego podglądu. Odmowa lub oczekiwanie
+na odzyskanie zasobów pozostawia dowody i odnośnik do szkicu w otwartym panelu.
+
+Pod blokadą repozytorium usługa ponawia kwalifikację PT-201: dokładne SHA obu baz, wersję, pełną
+mapę, dowiedzione punkty startu wszystkich gałęzi, brak wkładu, lokalnych zmian oraz procesów.
+Zmiana daje `stale-preview` bez zamiaru i mutacji. Zamiar `intent(action: change-base)` przechowuje
+stały `operationId`, odcisk, granicę dziennika, `oldBase`/`newBase`, obie wersje i kompletną `generation`.
+Wiersz mapy zawiera `action`, `key`, `ticket`, `branch`, `worktree`, `base`, `oldBranch`, `oldWorktree`,
+`oldCommit`, `ownerRef`, `archiveRef` i pełną listę ignorowanych ścieżek (katalogi zbiorczo).
+
+Gałęzie/worktrees nowej generacji powstają poza starymi katalogami od przypiętego SHA. Transakcja
+CAS tworzy gałąź, ref właściciela i ref zachowujący stary SHA; obca nazwa oznacza oczekiwanie.
+Stare worktrees są blokowane, a nowe powstają z `--lock`. Ignorowane dane pozostają w starych
+katalogach. `base-change.checkpoint` zapisuje pełną mapę po przygotowaniu każdego zasobu i przed
+aktywacją. Ponowna kwalifikacja i kontrola całej nowej mapy poprzedzają jedno `card.base-changed`.
+Fold wybiera pełną mapę i zwiększa wersję raz; częściowa/nieprawidłowa mapa nie zmienia żadnego pola.
+`initialBase`, ID, treści, plan i blokery pozostają. Nie powstają puste merge ani replay commitów.
+
+Restart odnajduje ten sam zamiar. Przed aktywacją dokańcza własne zasoby albo zapisuje
+`base-change.waiting` z przyczyną i wykazem zachowanych zasobów, pozostawiając starą mapę.
+Po aktywacji ponawia wyłącznie wynik i projekcję bazy, bez gita i kolejnej inkrementacji.
+Retry z tym samym refem/odciskiem zwraca ten sam zamiar. Snapshot udostępnia `flow.generation`,
+`flow.preservedGenerations`, `flow.generationWaiting` i `flow.baseValidationRequired`.
+Stare refy, archiwalne SHA i katalogi nie podlegają zwykłemu sprzątaniu; cleanup nie przenosi ich danych.
+
+**Skutki pustej korekty (PT-213).** Aktywacja zachowuje pole `validationRequired: true` jako część
+kontraktu PT-202. Fold dowiedzionej kompletnej mapy odtwarza unieważnienia i uznaje walidację pustego
+wkładu za spełnioną (`flow.baseValidationRequired: false`). Nie wymaga review fikcyjnego commitu.
+Stare review, decyzje i domknięcie pozostają w dzienniku oraz historii, ale nie autoryzują nowego
+SHA. Snapshot wystawia bieżące `flow.approvals` oraz osobne `flow.historicalApprovals` z oryginalnymi
+SHA i wersjami. Historyczne kroki mają `historical: true`, bez EnterStep i transferu.
+
+Nieodrzucony ticket rozpoczyna nowy krok w nowym katalogu z aktualnym ref/SHA/baseVersion, notką
+korekty, dostępem do dawnych wyników i świeżą sesją CLI. Odrzucony ticket pozostaje odrzucony.
+Nowa praca przechodzi istniejące testy i review swojego rzeczywistego SHA przed integracją; zasoby
+generacji pozostają zachowane również podczas cleanup. Stara zgoda na polecenia do końca ticketu
+nie przechodzi do nowej generacji. Stare kroki i zgody nie wracają przez recovery.
+
+Karta wymaga nowego podsumowania na nowej bazie, także gdy zamknięto ją wcześniej po odrzuceniu
+ticketu bez zmian. MergeCard i MergeCardToMain stosują tę samą bramkę domknięcia. Domyślny cel
+w menu i porównaniu korzysta z bieżącej bazy, a token sprzed korekty daje `stale-preview`.
+Remote nadal wymaga jawnego istniejącego lokalnego celu według wspólnej polityki celów.
+Powtórny fold i restart nie uruchamiają przygotowania generacji ani kolejnej inkrementacji.
+
 Bez wyboru usługa wybiera domyślnego recenzenta z katalogu. W trybie `preferredProvider: "mixed"` dostawca recenzenta
 musi być inny niż dostawca autora. Nazwa, program i model recenzenta trafiają do `card.started`.
 
@@ -1660,6 +2152,20 @@ wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. �
 „Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
 poleceń nie da się zezwolić.
 
+Zgodę „uruchamiaj zawsze dla ticketu” można cofnąć w pełnej karcie (Tablica i Sesje).
+`/Board RevokeTicketConsent(id, {ticket, orderSeq, baseVersion})` przyjmuje kontekst z
+`derived.flow.ticketConsents[]` i zwraca `{ok, ticket, active: false, seq}`. Powtórzenie zwraca ten sam wynik.
+Obcy ticket daje `bad-ticket`, a stare zlecenie lub wersja bazy — `stale-context`.
+Projekcja zawiera `active`, `revoked`, `canRevoke`, `seq`, `orderSeq` i `baseVersion`.
+Źródłem jest ostatnie `outside.ticket-consent` lub `outside.ticket-consent-revoked` w bieżącym
+zleceniu i wersji bazy; nowy start i korekta bazy zerują projekcję, zachowując historię.
+Po cofnięciu automatyczne zgody i zapamiętane rodziny projektu nie uruchamiają kolejnych poleceń tego
+ticketu. Reguły projektu i inne tickety pozostają ważne. Jednorazowe ręczne „Uruchom” działa tylko dla
+swojego polecenia; nowe „Uruchamiaj dla ticketu” przywraca automatyzację. Cofnięcie unieważnia
+oczekujące decyzje automatyczne i decyzję `run-ticket`; odrębna ręczna zgoda na polecenie pozostaje.
+Kontrola bezpośrednio przed startem kolejki podlega aktualnym zakazom. Operacja cofnięcia i start
+biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, kończy się normalnie.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
@@ -1668,6 +2174,50 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
+
+### Uwagi do najbliższego wznowienia kroku (PT-245)
+
+`/Board AddCardStepNote(s id, s request) → s` przyjmuje obiekt JSON:
+`{step, orderSeq, requestId, text}`. `step` to konkretny bieżący krok, `orderSeq` pochodzi z
+`derived.flow.orderSeq` (numer zdarzenia `card.started`), a `requestId` to niepusty klucz klienta do
+200 znaków. Treść musi być niepusta po usunięciu białych znaków i mieć najwyżej 16 KiB UTF-8.
+Odpowiedź `{ok: true, id, noteId}` potwierdza trwały zapis `step.note-added` w dzienniku, bez
+zatrzymywania procesu ani uruchamiania sesji. Ta sama treść, krok i klucz w tym zleceniu zwracają
+ten sam `noteId` (również po doręczeniu); inna treść lub krok daje `note-conflict`. Nieaktualne
+zlecenie daje `stale-order`, krok zakończony albo zastąpiony — `stale-step`, błędna treść — `bad-note`.
+Zapis i sprawdzenie idempotencji są pod jedną blokadą dziennika.
+
+Wspólne przygotowanie wznowienia dołącza oczekujące uwagi w kolejności zapisu. Dotyczy odpowiedzi,
+retry, zmiany lub przekazania wykonawcy, przejęcia w Konsoli oraz automatycznego wznowienia po
+poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.started`; intencja
+`step-start` przechowuje tę samą listę do odtworzenia po awarii. Nieudany start bez trwałego
+następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
+Gdy nieprzejęte zadanie Konsoli zostanie atomowo anulowane, `step.console_closed.cancelledNoteIds`
+cofa potwierdzenie wyłącznie uwag dołączonych do tej próby (`consoleNoteIds` w stanie kroku).
+Próba Konsoli ma pusty plik rozstrzygnięcia w trwałym katalogu wejścia kroku, pod nazwą
+złożoną z `processFile` i unikalnego `consoleUnit`. Launcher i anulowanie zmieniają atomowo
+jego nazwę odpowiednio na `.claimed` lub `.cancelled`; wygrywa tylko jedna operacja.
+Plik i zmiana katalogu są synchronizowane na dysk przed potwierdzeniem. Trwałe `.cancelled`
+pozwala odtworzyć cofnięcie po awarii przed zapisem zdarzenia także po utracie runtime lub
+sprzątnięciu go przez `TaskFiles.sweep()`. Plik runtime nadal służy do przekazania polecenia;
+spóźniony launcher nie uruchomi zadania po trwałym anulowaniu. Starsze zadania bez tego
+śladu zachowują obsługę znacznika runtime `.cancelled`. Nieudane anulowanie lub samo
+zamknięcie Konsoli nie cofa doręczenia.
+Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
+nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
+
+Kolejka jest ograniczona do łańcucha `parentStep` tego samego ticketu i zlecenia. Niezależne
+review, inny ticket i nowe zlecenie nie otrzymują uwag. Uwaga nie rozszerza zgód na polecenia,
+nie zatwierdza planu i nie wymusza wznowienia po końcu pracy.
+
+Pełna karta w Tablicy i Sesjach pokazuje formularz przy konkretnym kroku oraz
+`flow.stepNotes[] = {noteId, step, text, orderSeq, requestId, status, statusLabel, successor, …}`.
+Stan to `pending` („oczekuje”), `delivered` („przekazana — <następca>”) albo `undelivered`
+(„nieprzekazana — krok zakończony”). `flow.steps[].canAddNote` określa dostępność formularza.
+Błąd/pytanie/zgoda nadal mogą czekać na wznowienie; zakończenie bez wznowienia zachowuje widoczną
+uwagę jako nieprzekazaną. Formularz zachowuje treść i klucz ponowienia po błędzie zapisu.
+Odpowiedź zapisu rozlicza szkic po `requestId` także po otwarciu innej karty; powrót do pierwszej
+pozwala wysłać następną uwagę po sukcesie albo ponowić zapis z tym samym kluczem po błędzie.
 
 ### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
 
@@ -1706,7 +2256,7 @@ Karta z dziennikiem dostaje w `derived` pola pełnej karty (`cardflow/fullcard.p
 `apps/common/qml/card/CardFullView.qml` tylko je wyświetla:
 
 - `phases[7]` — `{id, label, state, executor, ts, note}` w stałej kolejności: `order` (Zlecenie), `planning`,
-  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie do master). `state`:
+  `plan-review`, `plan-approval`, `tickets`, `closing` (Domknięcie), `main-merge` (Scalenie; po sukcesie pełna nazwa zapisanego celu). `state`:
   `done`, `now`, `you` (czeka na decyzję z `flow.decisions[]`), `hold` (czeka na limit, nie na użytkownika), `todo`,
   `skipped` (planowanie przy wejściu „Od razu”, review planu zatwierdzonego bez review). `executor` to nazwa
   wykonawcy albo `user` dla faz użytkownika, `ts` — chwila zdarzenia fazy (ISO 8601), `note` — dopisek
@@ -1786,6 +2336,817 @@ podzbiór (skalary, listy, listy map). Funkcje:
 - `known_domains()` — słownik domena → klasa ryzyka (przy rozbieżności wygrywa groźniejsza), dla `classify`;
 - `registry_domains(stack)` — domeny z `registry: true`; z nich składa się `tasks/node.REGISTRY_DOMAINS` i
   `tasks/dotnet.REGISTRY_DOMAINS` (wartości jak przed zmianą).
+## Scenariusz 03.11 — ocena na prawdziwym modelu
+
+PT-156 rozdziela dwie rzeczy: test okablowania przez `FlowEngine` na atrapach
+(`daemon/tests/test_cardflow_caretaker_0311.py`) oraz ręczną ocenę diagnozy prawdziwego
+wykonawcy. Atrapa dostaje gotową odpowiedź; jej sukces nie mierzy jakości modelu ani „95%”.
+Test sprawdza dziennik, `engine.derived()`, katalog `in/context/`, strażnik oraz skutki akcji.
+W tym zestawie granica gita przy zapisie planu i przygotowaniu review jest atrapą; testy
+piaskownicy gita pozostają w osobnym zestawie. Nie oznacza to testu izolacji systemowej.
+
+Materiały są w `tests/fixtures/caretaker-0311/`: podkatalogi `1`, `2`, `3`, `4a`, `4b`
+zawierają odtworzony dziennik karty, wycinek kroku i kryterium oceny. Są rekonstrukcją
+przyczyn z kartki K-37, a nie kopiami prywatnych dzienników. Ścieżki są umowne,
+sekrety zamaskowane. Nie wgrywaj ich do działającej Tablicy.
+
+Procedura ręczna, poza `make test`:
+
+1. Dla każdego z pięciu podkatalogów otwórz świeżą sesję wybranego prawdziwego
+   wykonawcy w Konsoli, z repozytorium tylko do odczytu. Zanotuj nazwę wykonawcy,
+   model, ustawienia rozumowania, datę i identyfikator sesji. Nie dawaj mu `expected.md`.
+2. Przekaż `journal.jsonl`, `step.log`, `docs/agent-plan-standard.md` i
+   `docs/sandbox-and-permissions.md`. W przypadku 2 dołącz odrzucony
+   `2/plan.md` i kartki `2/tickets/1.md`, `2/tickets/2.md` z katalogu materiałów;
+   poprzednia propozycja i błędy są w dzienniku. Nagłówek „Krok” w wycinkach
+   przypadków 1, 2 i 4a wskazuje konkretne zdarzenie `step.started`.
+   W przypadku 3 zatwierdzona baza i decyzja A są w dzienniku. Dla 4b oceń oba
+   przebiegi, a nie tylko ostatnią linię błędu.
+3. Użyj zadania: „Jesteś opiekunem karty Tide. Na podstawie dołączonych źródeł
+   zdiagnozuj przyczynę i zaproponuj jedną akcję z kontraktu opiekuna. Nie wykonuj
+   akcji, poleceń ani zapisów w repozytorium lub Tablicy. Zwróć JSON jak wynik
+   kroku: result=done, action oraz wymagane pola. Dozwolone są retry (step,
+   instruction, reason), return-plan (feedback, reason), retry-stage lub escalate
+   (summary, recommendation); opcjonalny report zawiera description. Nie możesz
+   zatwierdzać planu, wydawać zgody, scalać ani odrzucać ticketu. Ścieżki w materiale
+   są umowne. Po JSON wyjaśnij diagnozę, wskazując konkretne zdarzenia i linie.”
+4. Zapisz surową odpowiedź poza repozytorium przed otwarciem `expected.md` danego
+   przypadku. Porównaj osobno: trafność przyczyny, oparcie jej na źródłach,
+   kompletność parametrów akcji i zachowanie granic decyzji użytkownika. Błędne
+   wyjaśnienie przy trafnej nazwie akcji nie zalicza diagnozy.
+5. W notce karty K-37 zapisz dla każdego przypadku: wykonawcę/model, sesję, wynik
+   JSON, ocenę każdego kryterium (tak/nie z uzasadnieniem), cytowany zamaskowany
+   dowód oraz ewentualną lukę Tide. Zachowaj odpowiedź modelu; nie dopisuj jej do
+   testowego expected.md. Kolejne oceny rób w nowych sesjach, bez poprzednich odpowiedzi.
+
+Ocena nie jest bramką testów i nie uruchamia się automatycznie. Testy nie wywołują
+prawdziwych modeli. Doprecyzowanie koordynatora z 06.11 zachowuje kontrakt PT-143:
+zły wynik lub niedozwolona akcja oddają natychmiast dokładnie jedną decyzję
+z rekomendacją i streszczeniem jednej próby (`test_bad_*`). Limit dotyczy błędów
+wykonania poprawnej akcji (`test_failed_action_limit_*`), np. wskazania obcego kroku
+w retry albo utrzymującego się błędu etapu. Każdy z pięciu przypadków ma oba warianty;
+nie ma testów oznaczonych jako oczekiwane porażki. Gdy błędny wynik nie niesie
+rekomendacji modelu, Tide dodaje techniczną wskazówkę sprawdzenia błędu i wyboru
+dalszego działania. Nie jest ona diagnozą przypisywaną modelowi.
+
+## Opiekun karty (K-37)
+
+Opiekun karty to krok w tle rodzaju `caretaker` („opiekun”), który Tide uruchamia sam przy problemie karty, zanim
+zapyta użytkownika (PT-143). Cały opiekun bez Qt i bez dysku jest w `daemon/tide_daemon/cardflow/caretaker.py`:
+publiczne `problems()`, `owned()`, `brief()`, `parse_result()`, `problem_id()` i rejestry `TRIGGERS`, `ACTIONS`,
+`HISTORY_LABELS`, `BRIEF_SECTIONS`. Kolejne tickety tylko dopisują wpisy w rejestrach i własne `####` w podsekcjach
+poniżej. Silnik ma jedno wejście: `FlowEngine._caretake(card, st)` na końcu `_tick_card` — po istniejących
+automatach (ponowienie, mocniejszy wykonawca, odpowiedź o środowisko, auto-odmowa) i przed `_queue_notices`;
+krok opiekuna kończy się istniejącym `_poll`/`_finish` (gałąź `_finish_caretaker`).
+
+Przebieg: wyzwalacz daje problem → `caretaker.started` (`problem`, `key` = `caretaker:<problem>:<n>`, `n`, `step`,
+`target` — krok problemu, `root`, `ticket`, `trigger`, `watermark` — ostatni `seq` dziennika w chwili startu) →
+istniejąca para „zamiar → wynik” `step-start` i `step.started` z `kind: caretaker` → wynik opiekuna w
+`<krok>/out/result.json` → `step.finished` z `outcome` (wynik `parse_result`) → akcja z rejestru albo nieudane
+działanie → `caretaker.escalated`. Akcje inne niż oddanie decyzji kończą się `caretaker.action` (`problem, step,
+target, ticket, action, params, ok, error, code, label, retried, stale, detail?`) po parze „zamiar → wynik”
+`caretaker-action` — „Ponowienie, limit i nieaktualne akcje” niżej (PT-150).
+
+Stan i widok:
+
+- Kroki opiekuna nie są w `FlowState.steps` (osobno `caretakers`, `caretaker_runs`, `caretaker_outcomes`,
+  `caretaker_escalations`, `caretaking`), więc żaden wyzwalacz, „ostatni krok ticketu” ani decyzja ich nie widzą —
+  bez rekursji. `running()` je obejmuje (sloty dostawcy, zatrzymanie przy Gotowe/Archiwum, `busy_reason`).
+- Dopóki opiekun pracuje, decyzja problemu jest ukryta z `flow.decisions[]`, karta stoi w „W toku” ze znacznikiem
+  „opiekun sprawdza <krok>”, a `_queue_notices` nie powiadamia (także w przebiegu, w którym krok skończył się błędem,
+  zanim opiekun wystartował). `ResolveCardStep` dla tego ticketu odmawia (`no-step-question`, trwa krok tego ticketu).
+- `derived.flow.caretaker` — `{enabled, working[], escalated[]}`: `working[]` to `{problem, step, target, ticket,
+  label, startedTs}`, `escalated[]` — problemy oddane użytkownikowi, których decyzja czeka: `{problem, step,
+  target, ticket, summary, recommendation, optionId, failed, error}`. `flow.running[]` ma krok opiekuna z
+  `kind: caretaker`, `kindLabel: "opiekun"` (`labels.KIND_LABELS`), `canEnter: false`.
+- Eskalacje są przechowywane według id problemu, także gdy `target` jest pusty. Widok i adnotacja decyzji
+  korzystają z cyklu życia w `owned()`: pokazują tylko eskalację ostatniego działania przy otwartym problemie.
+- Oddana decyzja błędu ma pole `caretaker{summary, recommendation, tried[], optionId, failed}` (`tried[]` —
+  działania od ostatniego zamknięcia poza samym oddaniem decyzji: `{step, action, ok, reason, text}`, bez
+  nieaktualnych); możliwość z `optionId` jest polecona
+  i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
+  (zwykłe `step.notice` kroku problemu).
+- Historia (`flow.history[]`, rodzaj `caretaker`, `actor: "caretaker"`): „Opiekun: oddaje decyzję — <streszczenie>”
+  i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”; wynik odrzucony przez strażnika (PT-158):
+  „Opiekun: wynik odrzucony, akcja nie wykonana — <powód>”; PT-150: „Opiekun: ponowił <krok> z instrukcją —
+  <powód>” (bez osobnego wpisu „Decyzja: ponowienie kroku” — `step.decision` z polem `caretaker` nie ma wpisu),
+  „Opiekun: nie udało się (ponowienie kroku) — not-problem-step: …”, „Opiekun: działanie „<akcja>” nieaktualne, nic
+  nie wykonano — <powód>” i „Opiekun: oddaje decyzję po N działaniach (limit) — <streszczenie prób>”.
+
+**Id problemu i liczenie działań.** `problem_id` jest jedynym miejscem budowy id (bez `seq`): wyzwalacz z krokiem —
+`<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`), powtórzenie przyczyny `repeat:<ticket>:<przyczyna>`,
+bez kroku `<wyzwalacz>:<etap>` (`flow-error:<etap>`, `stalled:card`), czekająca decyzja `waiting:<id decyzji>`.
+Jeden łańcuch kroków ma naraz najwyżej jeden problem — kolejny wyzwalacz na nim dołącza (`triggers[]`). `owned()`
+jest jedynym liczeniem: kroki opiekuna z danym id od ostatniego zamknięcia (decyzja użytkownika bez pola `caretaker`
+albo krok łańcucha zakończony `done`); zwraca `count`, `runs`, `next` (numer do klucza, nigdy się nie powtarza),
+`open` i `handed`. Kolejne błędy ponowionego kroku to ten sam problem; decyzja użytkownika zeruje licznik bez
+zmiany id. Dla problemu bez kroku decyzja użytkownika albo zwykły krok zakończony `done` zamyka problem
+w obrębie wskazanego ticketu, a bez ticketu — całej karty. Wynik kroku opiekuna i decyzje automatów nie zamykają
+problemu. Ponowne wystąpienie ma to samo id, licznik od zera i kolejny, niepowtarzalny numer `next`.
+
+**Restart.** `caretaker.started` bez `step.started`: wynik `step-start` jest — `step.started` dopisuje
+`_recover_started_steps`; zamiar bez wyniku rozstrzyga `_reconcile`; bez zamiaru — `_caretake` startuje krok z tym
+samym id. Nieudany start (także „przerwane restartem”) jest nieudanym działaniem. Krok nigdy nie rusza drugi raz.
+Akcja opiekuna przerwana między zamiarem a wynikiem `caretaker-action` — „Ponowienie, limit i nieaktualne akcje”.
+
+**Kiedy opiekuna nie ma** (dzisiejsza decyzja bez kroku opiekuna): karta wstrzymana, w Backlogu, Gotowych albo
+Archiwum, błąd `login`, limit dostawcy, wina `user`, opiekun wyłączony w ustawieniach (`caretakerEnabled: false`,
+bez dopisku) i karta „Tylko lokalnie” (`preferredProvider: local`) bez wykonawcy lokalnego w katalogu (decyzja
+z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”); w obu ostatnich `flow.caretaker.enabled: false`
+(„Ustawienia” niżej, PT-151).
+
+### Wyzwalacze
+
+`TRIGGERS` to lista funkcji `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`.
+Do startu opiekuna wystarcza wpis w rejestrze, także dla problemu bez kroku (`flow-error:<etap>`, `stalled:card`):
+`caretaker.started` ma wtedy pusty `target`, a krok opiekuna pracuje w worktree ticketu (gdy kandydat ma `ticket`)
+albo w katalogu roboczym karty (`card-branch`); aktualność problemu przed startem sprawdza zawsze `problems()`.
+
+#### Błąd kroku ticketu (`error`, PT-143)
+
+Ostatni krok ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error` po automatycznym ponowieniu
+(`attempt ≥ 1`) i ewentualnym przejściu na mocniejszego wykonawcę, bez decyzji, bez kroku-następcy, bez
+odrzucenia ticketu; bez `login`, limitu dostawcy i winy `user`. Id: `error:<korzeń łańcucha>`.
+
+#### Ten sam powód i brak postępu (`repeat`, `no-progress`, PT-148)
+
+Dwa wpisy `TRIGGERS` (`_repeat_trigger`, `_noprogress_trigger`) po `error`. Kolejność względem automatów silnika:
+
+1. **Pierwsza porażka** — bez zmian: automatyczne ponowienie (`attempt: 0` → `step.retry` → próba 1), potem
+   (próba 1) przejście na mocniejszego wykonawcę, potem `error` opiekuna. Wyzwalacz zastępuje wyłącznie kolejną
+   *ślepą* próbę z tą samą przyczyną; przejście na mocniejszego wykonawcę, limity dostawcy (D3) i `login` zostają.
+2. **`repeat` (wyzwalacz 2)** — dwa kolejne `step.finished` w tym samym tickecie (albo tym samym rodzaju kroku
+   planu, gdy krok nie ma ticketu) z tym samym `result` i tą samą przyczyną: `faultCause`/`reason` przez
+   `faults.of_finished` (swobodny powód agenta liczy się jako ta sama przyczyna tylko przy identycznym tekście,
+   `other-<skrót>`), a dla `denied` — to samo polecenie po automatycznej odmowie łańcucha (`_auto_deny`) albo po
+   `step.retry` opiekuna tego problemu. Kolejne odmowy po jego instrukcjach pozostają w tym samym limicie. Nie
+   dotyczy `login`, limitu dostawcy i winy `user`. Kandydat nie ma decyzji (`decision` puste), więc `retry` idzie
+   ścieżką bez decyzji (`step.retry` z `caretaker` i `instruction`), a `stale` — regułą `watermark`.
+   Id: `problem_id("repeat", …)` → `repeat:<ticket>:<przyczyna>`, dla kroków planu `repeat:<rodzaj kroku>:<przyczyna>`
+   (bez `seq`); licznik działań to `owned()`. Gdy łańcuch ma już problem (np. `error:`), kandydat dołącza do niego
+   (`triggers[]`, id znanego problemu) — ponowienie opiekuna i kolejne błędy z tą samą przyczyną liczą się do jednego
+   limitu `caretakerActionLimit`.
+3. **Zamiast ślepej próby** — `FlowEngine._caretaker_takes_over` (`caretaker.takes_over`) jest pytane w trzech
+   miejscach automatycznego ponowienia próby zerowej (`_advance`, `_advance_planning`, `_plan_step_decision`)
+   i w `_auto_deny`: dla kroku, który jest drugim z tą samą przyczyną, `step.retry` ani automatyczna odmowa nie
+   powstają — krok czeka na opiekuna (`_caretake` na końcu przebiegu). Druga automatyczna odmowa łańcucha z tym samym
+   poleceniem w tickecie uruchamia więc opiekuna przed `AUTO_DENY_LIMIT`. Bez opiekuna (karta wstrzymana, Backlog,
+   „Tylko lokalnie”) zostaje dzisiejszy automat.
+4. **Po oddaniu** — gdy opiekun oddał problem (`escalate` albo limit), automatyczne ponowienie nie wraca: błąd
+   kroku z próby zerowej staje się zwykłą decyzją użytkownika (`caretaker.handed_repeat` w `decisions`, `state`,
+   `resolve_step` i powiadomieniach), z `caretaker{…}` jak przy `error`. Decyzja użytkownika zamyka problem (licznik
+   od zera, to samo id).
+5. **`no-progress` (wyzwalacz 6)** — krok zatrzymany przez strażnika (`reason: no-progress`, bez zmiany
+   `stepGuardMinutes` i `stepstop`) po automatycznym ponowieniu, także dla `planning` i `plan-review`.
+   Kontekst dostaje też powtórzony zastój próby zerowej przejętej przez `repeat`; pierwsze automatyczne
+   ponowienie zostaje. Dołącza do problemu tego łańcucha i dokłada do kartki sekcję „Krok bez postępu”: czas zastoju (od
+   `stalledSince` do zatrzymania) i końcówkę zdarzeń sesji (ostatnie 5 z `messages` wyniku kroku, po 300 znaków).
+   Wiadomości sesji i odmówione polecenie są maskowane przed normalizacją i skracaniem.
+   Dziennik kroku po ludzku jest w plikach kontekstu.
+
+Kartka (`BRIEF_SECTIONS`, `BRIEF_DETAILS`): problem `repeat` ma opis błędu kroku i sekcję „Ten sam powód drugi raz”
+(oba kroki, przyczyna, powody albo odmówione polecenie, ostrzeżenie przed ślepą powtórką); przy problemie otwartym
+przez `error` sekcje dołączonych wyzwalaczy są dopisane za opisem błędu. Wszystko przechodzi przez `faults.mask`.
+
+#### Błąd Tide i karta stoi (`flow-error`, `stalled`, PT-147)
+
+Dwa wyzwalacze bez kroku-sprawcy i bez decyzji (`caretaker.started` z pustym `target` i `decision`):
+
+- **`flow-error`** (wyzwalacz 4) — błąd Tide (`flow.error`), który się utrzymał. Silnik zapisuje błędy jednego
+  przebiegu przez `FlowEngine._flow_error`: `flow.error` raz dla tego samego etapu i tekstu, z polami `stage`, `step`,
+  `ticket` i `at` (zegar silnika); ten sam tekst w kolejnym przebiegu co najmniej 10 s po pierwszym
+  (`FLOW_ERROR_PERSIST`) dopisuje jeden `flow.error-persisted` (`error`, `stage`, `since` — `seq` pierwszego).
+  Problemem jest też błąd powtórzony z tym samym tekstem po zniknięciu (nowy `flow.error` z tekstem, który już był od
+  `card.started` w tym samym etapie). Obserwacje, utrzymanie i powtórzenia są liczone osobno dla każdego etapu:
+  równoległe błędy A/B są dwoma problemami, także przy identycznym tekście; eskalacja B nie ukrywa A.
+  Jednorazowy błąd, który w następnym przebiegu nie wystąpił, problemem nie jest. Etap (`stage`):
+  `advance:<ticket>` — dalszy etap ticketu po jego ostatnim kroku, `plan-next` — start kolejnego ticketu planu,
+  `advance` — pierwszy krok, `close` — domknięcie karty, `plan-commit` — commit planu. Id:
+  `flow-error:<etap>` (np. `flow-error:advance:PT-7`); opiekun pracuje w worktree ticketu z `flow.error`, a bez
+  ticketu — w katalogu karty. Błąd znika, gdy rusza krok jego etapu (`step.started`) albo etap wykona się bez błędu
+  w zwykłym przebiegu lub po ponowieniu (`flow.error-cleared` z `stage`; udany `result` akcji `plan-commit`
+  zdejmuje błąd commita bez startu kroku). Rozwiązanie jednego etapu nie zdejmuje błędów innych ticketów.
+  Pominięte domknięcie (np. trwa krok opiekuna) nie kasuje błędu `close`. Commit planu odbywa się raz na przebieg,
+  przed startem kolejnych ticketów; jego awaria ma wyłącznie etap `plan-commit`, także po zakończonym planowaniu.
+  Zwykły przebieg zapisuje również końcowy stan zakończonego planu.
+- **`stalled`** (wyzwalacz 5) — karta stoi (`card.stalled`: 3 minuty bez kroku, akcji i nazwanego powodu czekania)
+  i nadal nie ma nazwanego powodu (`guard_reason` liczony bez pracy opiekuna: jego kroku, czekania na slot i par
+  „zamiar → wynik”). Limit, slot dostawcy, wstrzymanie, decyzja, plan do zatwierdzenia, trwający krok albo zaczęta
+  akcja — nie ma problemu. Karta, która stoi na błędzie Tide będącym już problemem `flow-error`, nie dostaje
+  drugiego problemu. Id: `stalled:card`, katalog karty.
+
+Praca opiekuna nie jest pracą karty: `caretaker.*`, kroki, czekanie i pary „zamiar → wynik” opiekuna,
+`flow.error-persisted` i `stage.retry` nie przesuwają `last_activity_ts` i nie zdejmują „stoi”
+(`state._bookkeeping`; wyjątek to `caretaker.decision` użytkownika, który rozpoczyna nowy okres bezczynności).
+Dopóki opiekun pracuje, karta ma znacznik „opiekun sprawdza kartę” (przy błędzie ticketu —
+„opiekun sprawdza PT-…”) zamiast „stoi” albo tekstu błędu; po eskalacji (albo po limicie) wraca dzisiejszy znacznik
+błędu albo zastoju, diagnoza jest w historii („Opiekun: oddaje decyzję — …”) i w `derived.flow.caretaker.escalated[]`,
+a `flow.decisions[]` dostaje decyzję „opiekun” (PT-154). Gdy opiekun działa, powiadomienie o zastoju czeka do
+eskalacji; bez dostępnego opiekuna zostaje przy `card.stalled`.
+
+### Decyzja opiekun
+
+Eskalacja problemu `flow-error:<etap>` lub `stalled:card`, także po limicie działań, daje rodzaj `caretaker`
+w `decisions.KINDS` i `derived.flow.decisions[]` (PT-154). Niepuste `happened` i `why` opisują zatrzymanie
+karty i potrzebę decyzji. Pole `caretaker{summary, recommendation, tried[], optionId, failed}` zasila wspólny
+blok „Opiekun poleca” oraz zwijane „Co próbowano”. Okna Tablicy i Sesji pokazują „Ponów etap”, „Zamknij”
+oraz „Porozmawiaj z opiekunem”; nie wybierają żadnej domyślnie. Powiadomienie o tej decyzji powstaje raz, z zapisem `flow.notice`
+w dzienniku, także po restarcie usługi. Dotychczasowe decyzje kroków nadal korzystają ze swoich metod.
+
+`ResolveCardCaretaker(s id, s request) → s json` na `/Board` (`org.tide.Daemon.Board`) przyjmuje obiekt JSON:
+`{"choice":"retry-stage"}` albo `{"choice":"dismiss"}`. Opcjonalne `problem` wskazuje id problemu (okno przekazuje
+je z możliwości decyzji); bez niego metoda wybiera pierwszą decyzję opiekuna. Nieznany wybór daje `bad-choice`,
+brak oczekującej decyzji lub nieaktualny problem — `not-waiting`, niepoprawne pola lub format — `bad-request`.
+
+Oba wybory zapisują `caretaker.decision` i zamykają problem. `retry-stage` dodatkowo ponawia etap jednym
+przebiegiem `_advance_card` przez istniejącą ścieżkę `stage.retry`; `dismiss` nie wykonuje akcji. Następne
+wystąpienie błędu lub zastoju liczy działania od zera. Zamknięcie zastoju rozpoczyna nowy okres bezczynności;
+zamknięcie błędu usuwa jego bieżący znacznik, więc kolejne wystąpienie jest nową obserwacją etapu.
+
+Pole `caretaker` jest wyłącznie wewnętrznym oznaczeniem akcji opiekuna: `ResolveCardStep` z tym polem
+w żądaniu D-Bus zwraca `bad-request`. Sygnatury istniejących metod pozostają bez zmian.
+
+### Rozmowa z opiekunem
+
+`/Board TalkToCaretaker(s id, s request) → s json` przyjmuje `{}` albo `{"problem":"<id problemu>"}`
+i zwraca `{ok: true, step}`. Pełna karta z dziennikiem, przed zakończeniem, daje przycisk „Porozmawiaj
+z opiekunem” (`derived.flow.canTalkToCaretaker`). Ta sama możliwość w decyzji `caretaker` i w decyzjach
+eskalowanych przekazuje id konkretnego problemu. Bez id rozmowa wybiera pierwszy otwarty problem;
+gdy żadnego nie ma, służy omówieniu stanu karty, a akcje wymagające problemu są nieaktualne.
+
+Tide otwiera nadzorowaną kartę Konsoli w kontekście worktree karty. Krok `caretaker-chat` („rozmowa
+z opiekunem”) pozostaje osobno od kroków ticketów. Ma kartkę w trybie rozmowy, zamaskowane
+`in/context/` (ten sam limit 400 kB), tę samą piaskownicę i oczyszczone środowisko co opiekun w tle.
+Program działa w swoim `out/`, z zapisem wyłącznie tam; worktree i gałęzie są pod strażnikiem PT-158.
+Obowiązuje wybór wykonawcy opiekuna i „Tylko lokalnie”. Brak Konsoli daje `no-terminal`, brak przepływu
+lub zakończona karta — `no-step`, druga otwarta rozmowa tej karty — `console-open`.
+
+Rozmowa zapisuje kolejne `out/action-1.json`, `action-2.json` itd., bez nadpisywania wcześniejszych
+plików. Każdy plik stosuje kontrakt wyniku kroku opiekuna w tle (`result: done`, `action` i parametry).
+Cały JSON należy zapisać jednym wywołaniem narzędzia zapisu. Niepełny JSON jest odrzucany dopiero, gdy
+metadane pliku nie zmienią się między dwoma przebiegami; odczyt w trakcie zapisu nie zużywa nazwy akcji.
+`_poll_interactive` odczytuje pliki w kolejności numerów, utrwala zwalidowany wynik wraz z kontekstem
+w `caretaker.chat-action` i wykonuje przez wspólną ścieżkę PT-150. Klucz pary „zamiar → wynik” zawiera
+id rozmowy i nazwę pliku. Restart między zamiarem, skutkiem i wynikiem nie wykonuje akcji drugi raz;
+podmiana lub usunięcie obsłużonego pliku nie zmienia utrwalonego zlecenia.
+
+Te same rejestry, zakazy i kontrola `stale` chronią każdą akcję. Próba `approve-plan`, zgody albo scalenia
+jest odrzucona z powodem w historii. Zapis w worktree lub przesunięcie gałęzi kończy rozmowę
+z `caretaker-wrote`; do potwierdzenia zatrzymania żadne kolejne pliki akcji nie są wykonywane.
+Historia używa podpisu „Opiekun (rozmowa): …” i `mode: chat`. Rozmowa oraz jej akcje nie zwiększają
+licznika działań problemu. Zamknięcie Konsoli kończy rozmowę; nie tworzy zwykłej decyzji o wznowieniu ticketu.
+
+Kartka (sekcje `flow-error` i `stalled` w `BRIEF_SECTIONS`): tekst błędu, etap, krok i ticket, podpowiedź Tide dla
+użytkownika (`flow_error_hint`) albo od kiedy karta stoi i ostatni krok, ostatnie 15 zdarzeń karty (bez pracy
+opiekuna) i otwarte pary „zamiar → wynik”.
+
+### Zgłoszenie błędu Tide
+
+Wynik opiekuna może przy każdej akcji i każdym wyzwalaczu zawierać opcjonalne
+`"report": {"description": "opis błędu Tide"}` (1–4000 znaków). Zgłoszenie zapisuje kartę w Backlogu
+projektu `plasma-tide` albo dopisuje wystąpienie do otwartej, niescalonej karty o tym samym podpisie.
+Karta zarchiwizowana lub scalona nie przyjmuje kolejnego wystąpienia. Wspólny kod z `ReportStepFault`
+wylicza podpis, wybiera kartę i maskuje opis oraz ograniczony wycinek dziennika przez `faults.mask`.
+Dla problemu bez kroku podpis ma postać `flow/tide/<przyczyna>`: przyczyną jest etap `flow.error`
+(np. `flow/tide/advance`), a dla zastoju `stalled`. Tekst błędu pozostaje zamaskowany w treści.
+
+Samo `report` nie ponawia kroku ani etapu (A7). Osobny wpis `caretaker.reported` daje historię
+„Opiekun: zgłosił błąd Tide (K-<n>) — <powód>”. Brak projektu daje wpis niepowodzenia
+`no-report-project`; akcja główna nadal się wykonuje. Wystąpienie zawiera trwały znacznik wyliczony
+z karty źródłowej i kroku opiekuna, zapisany razem z treścią zgłoszenia. Powtórne zastosowanie zapisanego
+wyniku nie dodaje zgłoszenia drugi raz, także po przerwaniu przed wpisem `caretaker.reported` oraz po
+archiwizacji lub scaleniu karty zgłoszenia. Nowy krok opiekuna ma osobny identyfikator wystąpienia.
+
+Decyzja `caretaker` udostępnia pole „Zgłoś błąd Tide”. `PreviewStepFault` z `problem`, `description`
+i opcjonalnym `choice` pokazuje kartę bez zapisu. `ResolveCardCaretaker` z
+`{"choice":"report","problem":"flow-error:advance","description":"…"}` zapisuje zgłoszenie i zamyka
+problem bez ponawiania etapu. Pusty lub za długi opis daje `bad-request`. Dotychczasowe żądania
+`PreviewStepFault` i `ReportStepFault` z `step` zachowują swoje działanie, w tym retry po ręcznym
+`ReportStepFault`.
+
+### Akcje
+
+`ACTIONS` to `nazwa → Action(kinds, params, apply, description)`; `kinds` — wyzwalacze, przy których akcja jest
+dozwolona (`"*"` — każdy), `params` — pola wyniku (`Param(required, minimum, maximum, hint, choices)`), `apply(port,
+problem, params)` działa przez port silnika (`engine._CaretakerPort`). Walidacja jest w Tide (`parse_result`), nie
+tylko w kartce: nieznana nazwa (`approve-plan`, `allow`, `merge`, `push`, `reject`, …) → `bad-caretaker-action`;
+brak pliku albo zły format → `bad-caretaker-result`; `result` inny niż `done` → nieudane działanie (`question` niesie
+treść pytania jako streszczenie, jak `escalate`; inne — `caretaker-result`); zatrzymany albo niewystartowany krok —
+`caretaker-stopped`, `caretaker-not-started`; krok, który pisał poza `out` — `caretaker-wrote` (strażnik, przed
+walidacją wyniku, „Piaskownica i strażnik”). Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
+streszczenie do 1200. Nieudany wynik kroku opiekuna (wszystkie kody powyżej) od razu oddaje problem użytkownikowi;
+nieudane wykonanie poprawnej akcji (np. `not-problem-step`) jest działaniem liczonym do limitu, po którym rusza
+kolejny krok opiekuna (PT-150, „Ponowienie, limit i nieaktualne akcje”).
+
+#### `escalate` (PT-143)
+
+Oddaje decyzję użytkownikowi: `summary` (wymagane, 1–1200 znaków), `recommendation` (wymagane, 1–600), `optionId`
+(opcjonalne, id możliwości decyzji problemu). W rejestrze nie ma akcji zatwierdzenia planu, zgody, uruchomienia poza
+piaskownicą, scalenia, push ani odrzucenia ticketu.
+
+#### `retry` (PT-150)
+
+Ponawia krok problemu z instrukcją: `step` (wymagane, id kroku z linii „Kroki do ponowienia” kartki), `instruction`
+(wymagane, 1–4000 znaków), `reason` (wymagane, 1–600). Instrukcja trafia do kartki wznowionego kroku jako
+„Instrukcja od opiekuna karty (… ma pierwszeństwo przed wcześniejszym planem kroku)” (`handoff.resume_context(…,
+caretaker=True)`); opiekun wyprowadza ją z `step-log.md`, historii i dziennika z katalogu kontekstu. Dwie ścieżki:
+
+- problem z decyzją (`decision` w `caretaker.started`, np. `error:`) — istniejące `resolve_step` `retry` z instrukcją
+  jako `answer`; `step.decision` dostaje `auto: true` i `caretaker: <problem>` (parametr silnika
+  `caretaker_problem`, niedostępny z D-Bus), a wznowienie robi `_advance` jak przy decyzji użytkownika,
+- problem bez decyzji (np. `repeat:` z #6) — wewnętrzna ścieżka automatycznego ponowienia: `step.retry` z `caretaker:
+  <problem>`, `caretakerStep` i `instruction`, bez `step.decision`; `_advance` wznawia krok z `parentStep` i
+  `attempt: 1`, z instrukcją w kartce. Do wznowienia decyzja kroku jest ukryta, a `problems()` pomija ten krok.
+
+Ponowić można tylko krok z `caretaker.problem_steps(problem, st)`: przy decyzji — krok tej decyzji, bez decyzji —
+krok łańcucha problemu bez następcy, zakończony wynikiem innym niż `done`, bez decyzji i ponowienia. Inny krok
+(także spoza karty) to nieudane działanie `not-problem-step` z powodem w `error`, liczone do limitu.
+
+#### `retry-stage` (PT-147)
+
+Ponawia etap karty od razu, raz; bez pól; dozwolona tylko przy `flow-error` i `stalled` (przy innych problemach
+`bad-caretaker-action`). Idzie wspólną ścieżką akcji (para `caretaker-action`, `caretaker.action`, limit,
+nieaktualność): `apply` → `_CaretakerPort.retry_stage` → `FlowEngine._retry_stage` zapisuje `stage.retry`
+(`problem`, `stage`, `caretaker`, `caretakerStep`) i wykonuje jeden przebieg `_advance_card` — tę samą funkcję, którą
+`_tick_card` przechodzi etapy w każdym przebiegu (ostatnie kroki ticketów, kolejny ticket planu, domknięcie karty,
+commit planu), z własną parą akcji opiekuna wyłączoną z „zaczętych akcji karty”. Wynik:
+
+- błąd Tide ponawianego etapu (przy `stalled`: dowolnego etapu) — nieudane działanie `stage-failed` z tekstem
+  błędu (błąd zapisuje zwykły `_flow_error`; ten sam etap i tekst nie daje nowego zdarzenia),
+- przebieg bez żadnego zdarzenia poza pracą opiekuna — nieudane działanie `stage-no-change`,
+- udany przebieg — `caretaker.action` z `ok: true` i `label` etapu („Opiekun: ponowił etap „advance:PT-7””); przy
+  `flow-error` rozwiązanie etapu zdejmuje jego błąd tak samo jak zwykły przebieg; błędy innych etapów pozostają,
+- `stage.retry` tego kroku opiekuna już jest (restart między zamiarem a wynikiem) — `stage-interrupted` bez drugiego
+  przebiegu: etap ponawia się dokładnie raz, a dalej i tak ponawia go zwykły przebieg.
+
+Nieudane działania liczą się do limitu: problem `flow-error`/`stalled` ma id bez `seq`, więc kolejne wystąpienia tego
+samego etapu to ten sam problem; po trzech działaniach `caretaker.escalated` z `limit: true` i kolejny opiekun nie
+startuje. Nieaktualność — reguła bez decyzji (niżej): problem zniknął (błąd zniknął, karta ruszyła) albo po
+`watermark` jest `step.started`, `step.retry` albo `step.decision` w tickecie problemu (bez ticketu — w karcie)
+albo zdarzenie karty z listy. Rozwiązanie danego etapu po `watermark` (`flow.error-cleared` lub udany wynik
+`plan-commit`) też unieważnia akcję, nawet jeśli błąd potem wrócił; wtedy `caretaker.action` ma
+`ok: false, error: "stale"`, bez `stage.retry` i bez zwiększenia licznika działań.
+
+#### `return-plan` (PT-146)
+
+Odsyła plan planującemu z uwagą opiekuna; dozwolona przy wyzwalaczu `plan-fix` (patrz „Odesłanie planu”) oraz
+problemie ticketu `error`, `repeat` albo `waiting` dla pytania (patrz „Luka w planie w trakcie realizacji”).
+Pola: `feedback` (wymagane, 1–4000 znaków — wiersz planu, bloker i błąd standardu planu 1.2; prośbę „odrocz tę
+uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły rozpoznawania odroczeń), `findings`
+(opcjonalne, numery uwag ostatniego review od 1, po przecinku) i `reason` (wymagane, 1–600, do historii).
+
+### Odesłanie planu (PT-146)
+
+**Wyzwalacz 3** (`caretaker._plan_fix_trigger`, id problemu `plan-fix:<korzeń łańcucha kroków poprawy>`):
+
+- `plan.revision-failed` — krok `plan-amend` zakończył się, ale poprawiony plan nie przeszedł sprawdzenia formatu.
+  Problem ma decyzję `plan-revision-failed:<seq>`, którą `build_decisions` ukrywa na czas pracy opiekuna (jak decyzję
+  kroku); po jego wyniku decyzja wraca z `caretaker{summary, recommendation, tried[]}` (`annotate(st, plan, target)`),
+- druga nieudana poprawa formatu planu (`plan-fix`, runda ≥ 2, `plan.checked` z `valid: false`, brak propozycji):
+  problem bez decyzji; `retry` opiekuna na kroku `plan-fix` (`problem_steps` dopuszcza krok zakończony `done`, raz)
+  daje kolejny krok poprawy z instrukcją — `_planning_result` wznawia go przez `_caretaker_resume`. Gdy opiekun
+  odda problem (`escalate`, nieudany wynik albo limit działań), `build_decisions` pokazuje decyzję `plan-fix-failed`
+  (`decisions._plan_fix_decisions`) z `caretaker{summary, recommendation, tried[]}`, błędami formatu w `technical`
+  i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
+  z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
+  pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
+
+Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3). Opiekun
+nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
+akcji (`approve-plan` to `bad-caretaker-action`), a `return-plan` nie woła `approve_plan`.
+
+**Akcja.** `_CaretakerPort.return_plan` woła istniejące `FlowEngine.edit_plan` z `action: return` (ta sama walidacja,
+idempotencja i ochrona ticketów, które ruszyły; `no-plan` przy braku propozycji). Parametry `caretaker_problem`,
+`caretaker_step` i `caretaker_from` są tylko po stronie silnika (nie ma ich w D-Bus): `plan.returned` dostaje
+`caretaker`, `caretakerStep` i `caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
+(`_advance_user_revision`), z uwagą opiekuna dosłownie w kartce („Uwagi: …”). Numer w `findings` spoza listy uwag
+review (`caretaker.review_items`, numeracja od 1 — ta sama w kartce i w `plan-fix/review-findings.md`) to nieudane
+działanie `bad-findings` z powodem; tak samo traktowane są znaki, których nie można odczytać jako indeks
+(np. `²`), bez pozostawienia otwartego zamiaru akcji. Wynik w `caretaker.action` (`ok: false`) liczy się do limitu.
+Powtórka po restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` nie powstaje).
+
+**Limit.** Każde działanie (udane i nieudane) liczy się do limitu z #8 (`ACTION_LIMIT`). Żeby kolejne odesłania nie
+zaczynały limitu od zera, `plan-amend` po odesłaniu opiekuna dziedziczy łańcuch nieudanej poprawki
+(`caretaker.chain_root` → `caretakerFrom`), a zakończony `done` krok poprawy planu nie zamyka problemu. Problem zamyka
+dopiero decyzja użytkownika: odesłanie planu bez pola `caretaker` lub odrzucenie poprawki (`plan.revision-discarded`)
+przez `FlowState.plan_user_seq`, a także jawne ponowienie kroku z tego łańcucha (`step.retry` z `user: true`, bez
+`caretaker`). Po ponowieniu użytkownika kolejne odrzucenie formatu ponownie uruchamia opiekuna z nowym limitem
+działań; numery jego kroków pozostają ciągłe. Po limicie decyzja wraca do użytkownika ze streszczeniem.
+
+**Nieaktualność.** Odesłanie albo edycja planu przez użytkownika w czasie pracy opiekuna kończy jego akcję jako
+`stale` (`plan.returned` bez `caretaker`, `plan.ticket-edited`, `plan.revision-discarded`): nic nie jest wykonane,
+nie powstaje drugie `plan.returned`, a działanie nie liczy się do limitu.
+
+**Kontekst i kartka.** Sekcja `BRIEF_SECTIONS["plan-fix"]` podaje błędy sprawdzania formatu, odesłane wcześniej uwagi
+i uwagi review z numerami oraz każe wskazać w `feedback` wiersz, bloker i błąd standardu. Źródło `SOURCES["plan-fix"]`
+dokłada do `in/context/` pliki `plan-fix/errors.md`, `previous-proposal.md`, `failed-plan.md` (plan.md odrzuconej
+próby), `returned-feedback.md` i `review-findings.md`; standard planu to `docs/agent-plan-standard.md` z migawek
+dokumentów. Dostawcę opiekuna karty bez dostawcy w `card.started` („Mam plan”) wskazuje planujący z propozycji.
+
+**Historia.** „Opiekun: odesłał plan z uwagą — <powód>” z `caretaker.action`; samo `plan.returned` nie ma wpisu
+w historii, więc nic się nie dubluje.
+
+#### Luka w planie w trakcie realizacji
+
+Przy błędzie ticketu w zatwierdzonym planie opiekun może rozpoznać brak osobnej pracy, której ticket nie powinien
+wykonywać (PT-155, przypadek K-16 z 03.11). Korzysta z dotychczasowych wyzwalaczy: `error`, `repeat` lub `waiting`
+dla pytania; kroki ticketu i review zachowują swoje kartki i kontrakty `result.json`. Nie ma osobnego sygnału luki.
+
+`return-plan` wywołuje to samo `EditCardPlan` / `edit_plan` z `action: return`. Baza `plan.returned` pochodzi
+z zatwierdzonego planu i ma nadane ID ticketów, a zdarzenie zapisuje `caretaker`, `caretakerStep`, `caretakerFrom`
+i dosłowną uwagę opiekuna, np. „dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły,
+przepisz bez zmian”. Następnie istniejąca ścieżka `plan-amend` → niezależne review → różnica czeka na użytkownika.
+Opiekun nigdy nie zapisuje `plan.revision-approved`; dodane tickety dostają numery dopiero po zatwierdzeniu różnicy.
+Rozpoczętych ticketów nie można zmieniać ani usuwać: działa dotychczasowe sprawdzenie poprawki i odmowa
+`ticket-started` przy zatwierdzaniu różnicy. Opiekun nie ma akcji omijającej te bramki.
+
+Odesłanie rozwiązuje problem kroku ticketu: projekcja `plan.returned` oznacza krok jako zastąpiony poprawą planu
+(`superseded`), więc jego błąd lub pytanie nie wraca do decyzji, automatycznego ponowienia ani kolejnego opiekuna.
+Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Po jej zatwierdzeniu przez użytkownika
+czeka jeszcze na scalenie dodanej pracy do gałęzi karty (albo jej odrzucenie przez użytkownika). Nie czeka na nowe
+tickety zależne, także pośrednio, od niego samego. Przy kolejnych poprawkach projekcja sprawdza wspólny graf
+jawnych blokerów i oczekiwań wszystkich wznowień. Najpierw zachowuje wcześniejsze oczekiwania, potem dodaje
+nowe w kolejności kroków z dziennika i ID ticketów; pomija oczekiwanie, które zamknęłoby cykl. Przykładowo,
+gdy A czeka na X zależny od B, dodanie Y zależnego od A nie zatrzyma B przed Y: B kontynuuje, umożliwiając
+kolejno scalenie X, wznowienie A i wykonanie Y. Potem silnik wznawia krok przez istniejące `_resume_step`,
+w tym samym worktree, z instrukcją uwzględnienia zmian z gałęzi karty i kontynuacji pierwotnego zakresu.
+Oczekiwanie odtwarza się z dziennika po restarcie, a start następcy usuwa je z projekcji `plan_resumes`;
+stary błąd nie wraca do decyzji. Jawne ponowienie użytkownika nadal korzysta z dotychczasowej ścieżki.
+Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
+
+Jeśli poprawa planu się nie powiedzie, wybór użytkownika „Odrzuć poprawkę” (`discard-revision`) kończy oczekiwanie
+ticketu na tę poprawkę. Silnik wznawia jego pierwotny zakres według zachowanego planu, bez przywracania starego
+błędu lub pytania. Blokery z wcześniejszych zatwierdzonych różnic nadal muszą być scalone albo odrzucone.
+Ta kontynuacja także odtwarza się po restarcie z istniejącego zdarzenia `plan.revision-discarded`.
+
+Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu, także
+podczas niezależnego review nowej propozycji (przed bramką `review-pending`). Gdy użytkownik
+odeśle plan albo ponowi krok po starcie opiekuna, wynik opiekuna jest `stale`: bez kolejnego `plan.returned`
+i bez zużycia limitu, także dla problemu z decyzją. Historia pokazuje jeden wpis
+„Opiekun: odesłał plan z uwagą — <powód>”.
+
+`in/context/plan/approved.md` zawiera zamaskowaną migawkę zatwierdzonego planu z dziennika (ID i treść kartek),
+a `plan/spec.md` — specyfikację propozycji. Dotychczasowe źródła dołączają kartki `plan/tickets/<ID>.md`,
+kartkę kroku oraz jego notki i końcówkę `step.log` w `steps/<krok>/`. Migawka zatwierdzonego planu odróżnia go
+od pierwotnego `plan.md` z numerami roboczymi. Wszystkie pliki podlegają wspólnemu maskowaniu i limitowi 400 kB.
+
+### Ponowienie, limit i nieaktualne akcje (PT-150)
+
+**Wspólna ścieżka akcji** (`FlowEngine._caretaker_act`, także z `_reconcile`): wynik kroku opiekuna (`outcome`
+w `step.finished`) → sprawdzenie nieaktualności → `escalate` jako jedno zdarzenie `caretaker.escalated` albo, dla
+każdej innej akcji, para „zamiar → wynik” `caretaker-action` z kluczem kroku opiekuna (`_act`) i na końcu
+`caretaker.action`. Zapisany wynik pary nie wykonuje akcji drugi raz; restart między zamiarem a wynikiem dokańcza ją
+tą samą ścieżką, a `apply` jest bezpieczne do powtórzenia (`step.decision` albo `step.retry` z `caretakerStep` tego
+kroku opiekuna nie powstaje drugi raz). Akcja nieudana
+przy wykonaniu zwraca z `apply` `{failed, error}`: wynik pary jest zapisany (`ok: true`), a `caretaker.action` ma
+`ok: false`, `code` i `error`.
+
+**Limit** `caretakerActionLimit` (1–10, domyślnie 3 — `caretaker.ACTION_LIMIT`; wartość z ustawień przez
+`caretaker.setup`, „Ustawienia” niżej, PT-151) — kroki opiekuna na problem, udane i nieudane, liczone wyłącznie
+przez `owned()` (`count`).
+Ponowiony krok, który znowu pada, to ten sam problem (id z korzenia łańcucha), więc kolejny krok opiekuna należy do
+niego. Przy `count ≥ limit` `_caretake` nie uruchamia kolejnego kroku opiekuna, tylko zapisuje `caretaker.escalated`
+z `limit: true`, `failed: true`, `code: caretaker-limit`, `count`, `step` ostatniego działania i streszczeniem prób
+(`caretaker.limit_summary`: akcja, powód, skutek każdego działania). Stan trzyma ją w `caretaker_limits` (nie jest
+wynikiem kroku opiekuna), a `owned()` daje wtedy `handed: true`; decyzja problemu ma `caretaker.tried[]` z pozycjami
+`{step, action, ok, reason, text}` (powód z pola `reason` wyniku, skutek jak w historii). Decyzja użytkownika (bez
+pola `caretaker`) zamyka problem i zeruje licznik — kolejny błąd tego kroku zaczyna od zera.
+
+**Nieaktualność** (`caretaker.stale(st, run, events)`, jedna funkcja dla obu rodzajów problemów) — sprawdzana przed
+startem kroku opiekuna i przed każdym skutkiem jego wyniku (także przed oddaniem nieudanego wyniku), ale nie po
+zaczętym zamiarze `caretaker-action`:
+
+- problem z decyzją (`decision` w `caretaker.started`; zapis sprzed PT-150 — decyzja aktualnego problemu): jest
+  `step.decision` kroku problemu bez pola `caretaker` („użytkownik już zdecydował”) albo `problems()` nie zwraca
+  problemu z tym samym id decyzji („decyzja problemu już nie czeka”),
+- problem bez decyzji: `problems()` nie zwraca już problemu („problem już nie występuje”),
+- w obu przypadkach: po `watermark` z `caretaker.started` jest zdarzenie spoza opiekuna — w łańcuchu problemu
+  (problem bez kroku: w jego tickecie, bez ticketu: w całej karcie) `step.started`, `step.retry` albo
+  `step.decision`, a w całej karcie `card.paused`, `card.moved`, `plan.returned` albo `plan.edited` („po starcie
+  opiekuna: <zdarzenie>”). Zdarzenia samego
+  opiekuna nie liczą się: `caretaker.*`, zdarzenia z `kind: caretaker` (start, czekanie na slot), zdarzenia z polem
+  `caretaker` (zapisy jego akcji) oraz wyniki i aktywność kroku opiekuna (nie ma ich na liście).
+
+Akcja nieaktualna zapisuje `caretaker.action` z `ok: false, error: "stale", stale: true` i powodem w `detail`, nic
+nie wykonuje (bez pary `caretaker-action`), nie oddaje problemu i nie liczy się do limitu (`owned()` pomija takie
+kroki). Gdy wynik odrzucił też strażnik (wznowiony przez użytkownika krok pisał w tym samym worktree), jego powód
+jest dopisany do `detail`. Wyzwalacze #5, #6 i #13 testują regułę na swoich problemach.
+
+**Pierwszeństwo slotu** (US 37): krok opiekuna zajmuje slot dostawcy jak każdy krok (`providerSlots`,
+`_wait_reason`, `_admit`, `step.waiting` z powodem „limit kroków dostawcy …”). Gotowy krok opiekuna karty
+(`caretaker.started` bez startu i bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej
+karty (`_caretaker_reserved`: rezerwacja liczy się w `_wait_reason` jak trwający krok), więc nowy ticket karty czeka,
+a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, nie omija limitu slotów ani okna
+limitu dostawcy (D3 — czeka jak inne kroki). Krok opiekuna nie wyprzedza kroków innych kart (`_earlier_waiters`):
+kroki innych kart czekające na miejsce u tego samego dostawcy (`step.waiting` z `cause: slots`) wcześniej niż on
+(`since` — początek czekania, zachowany przy zmianie powodu) zajmują miejsca w jego `_wait_reason` (licznik
+w powodzie najwyżej `limit/limit`). Kolejność to jeden porządek wspólny dla wszystkich kart: (`since`, identyfikator
+karty, ticket, rodzaj kroku) — remis w obrębie sekundy rozstrzyga identyfikator karty, więc dwaj opiekunowie
+czekający od tej samej chwili nie czekają na siebie nawzajem. Zwolnione miejsce bierze więc wcześniej czekająca karta
+niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty zakończone, wstrzymane, przeniesione do
+Gotowe, Archiwum albo Backlogu i odrzucone tickety. Opiekun zakończony przed startem (np. `stale` po decyzji
+użytkownika, gdy czekał na slot) traci czekanie: wynik (`caretaker.action`/`caretaker.escalated`) zdejmuje jego
+`step.waiting` w `fold`, więc nie blokuje kroków innych kart. Zatwierdzenie różnicy planu
+(`plan.revision-approved`) usuwa czekanie usuniętych ticketów w `fold`, również po restarcie usługi.
+Pomijane są również zwykłe kroki, których start
+blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzięki temu kolejność czekania
+ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
+Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
+zwykłych kroków, ich wcześniejsze czekanie nadal liczy się w kolejce innych kart.
+
+**Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
+i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu
+(`_advance_planning`) i w review/poprawkach planu (`_plan_step_decision`), z instrukcją w kartce wznowienia, także
+przy próbie zerowej (zamiast automatycznego ponowienia bez instrukcji).
+
+**Decyzja użytkownika przy pracującym opiekunie:** trwający krok opiekuna nie czyni ticketu „zajętym” w
+`resolve_step`, więc decyzję przyjmuje zwykłe API (StepResolve); krok wznawia `_advance`, a wynik opiekuna jest potem
+nieaktualny. Decyzja zapisana akcją opiekuna ma też `caretakerStep`: dokończenie po restarcie rozpoznaje własny
+`step.decision` (jak `step.retry`) przed walidacją `focus`, więc inna oczekująca decyzja karty nie zamienia
+wykonanego ponowienia w porażkę.
+
+**Ponowienie kroku przy błędzie trackera:** `resolve_step` z jawnym `step` (także od opiekuna) zapisuje decyzję
+tego kroku, nawet gdy nie ma trwających kroków i czeka trwały błąd komentarza YouTracka. Globalne `retry` bez
+`step` i bez problemu opiekuna nadal resetuje błędy trackera. Port opiekuna sprawdza wynik `resolve_step`:
+reset trackera albo odpowiedź bez potwierdzenia ponowienia wskazanego kroku daje nieudane działanie
+`retry-not-applied`, bez wpisu historii o udanym ponowieniu.
+
+### Kontekst
+
+Kartka (`brief`) zaczyna się od „Jesteś opiekunem karty <K-…> w Tide.” i zawiera: przesłankę z `BRIEF_SECTIONS`
+według wyzwalacza (zamaskowaną `faults.mask`), listę plików kontekstu, listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
+(„Plik wyniku: …/out/result.json”). Krok opiekuna pracuje w worktree kroku problemu (tylko do odczytu) i ma osobny
+katalog `<worktree>.caretaker-<krok>.step`.
+
+#### Opis problemu z decyzji (PT-143)
+
+Sekcja `error`: krok, wykonawca, próba, „co się stało” i „dlaczego” z decyzji błędu, powód zakończenia kroku i czyja
+wina według dziennika kroku. Dziennik kroku i pozostałe pliki są w katalogu kontekstu (niżej).
+
+#### Katalog `in/context/` (PT-153)
+
+Przy starcie kroku opiekuna (w parze „zamiar → wynik” `step-start`, po przyjęciu przez `_admit`, więc nie przy każdym
+obrocie pętli w kolejce do dostawcy) Tide buduje `<krok>/in/context/` modułem
+`daemon/tide_daemon/cardflow/caretakerctx.py` (`build(problem, st, events, …)`; `collect` — to samo w pamięci, dla
+rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględną ścieżką i opisem każdego pliku
+(„(przycięty do limitu)” przy przyciętych). Pliki wspólne dla każdego wyzwalacza:
+
+- `history.md` — historia karty po ludzku (`history.build`, od najstarszego wpisu, z próbami kroków),
+- `journal.jsonl` — ostatnie 200 zdarzeń dziennika karty (JSON Lines, od najstarszego),
+- `plan/plan.md`, `plan/source.md`, `plan/tickets/<id>.md` z katalogu karty w tablicy (bez planu — `plan/README.md`
+  z dopiskiem) i `steps/<krok problemu>/prompt.txt` — kartka kroku problemu,
+- dla każdego kroku problemu (łańcuch `parentStep` problemu i wszystkie kroki jego ticketu): `steps/<krok>/note.md`,
+  `review.md`, `handoff.md`, `result.json` oraz dodatkowe notki `*.md` wskazane w `notes`/`kept` wyniku lub zdarzenia
+  zakończenia (z archiwum kroku w katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
+  ostatnie 300 zdarzeń `out/step.log` po ludzku (`faults.excerpt(…, limit=300)`, jak wycinek PT-125),
+- `attempts.md` — próby kroków problemu (wykonawca, wynik, powód, czyja wina, decyzja) i poprzednie działania
+  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md`, `result.json` i dodatkowe
+  notki z `notes`/`kept` kroku opiekuna) — bez bieżącego kroku. Dodatkowe nazwy muszą wskazywać plik Markdown
+  bez składników ścieżki; odczyt nie podąża za dowiązaniami,
+- `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
+  „Przepływ karty” z `AGENTS.md`) — migawki dokumentów działającej usługi Tide: `tide-docs/` obok pakietu
+  (`daemon/install.sh` kopiuje tam te trzy pliki) albo repozytorium Tide przy uruchomieniu ze źródeł
+  (`caretakerctx.tide_docs_dir()`), więc dostają je też karty innych projektów; dopiero bez nich — z worktree kroku
+  opiekuna, a bez pliku i tam — dopisek „(pominięto: …)”. Katalog dokumentów jest osobnym korzeniem tylko dla tych
+  stałych nazw (inne źródła nie czytają z niego przez `ctx.read_text`).
+
+**Rejestr źródeł.** `caretakerctx.SOURCES` — wyzwalacz → lista `Source(name, build)`; `"*"` — źródła każdego
+problemu. Problem dostaje `"*"` i źródła wszystkich swoich wyzwalaczy (`triggers[]`). `build(ctx)` zwraca
+`File(path, title, text=…)` albo `File(path, title, items=[…], head=…, trim=n)` (zdarzenia od najstarszego,
+przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. Kolejne tickety dopisują własne wpisy
+(np. błędy sprawdzania formatu planu) bez edycji wspólnych źródeł; wyjątek w źródle daje `errors/<źródło>.md`
+zamiast przerwania startu.
+
+**Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
+rozmiaru. Tytuły plików także przechodzą przez maskowanie. Ścieżka zawierająca sekret (sprawdzana również przed
+sanitacją i skracaniem nazwy) dostaje unikalny alias `masked-N.*`, z rezerwacją pozostałych nazw. Alias jest nazwą
+zapisanego pliku, więc odnośnik w kartce nadal działa. W `journal.jsonl` i plikach `*.json` każdy odkodowany klucz
+i każda wartość są maskowane osobno, przed ponowną
+serializacją (dotyczy też wyniku osadzonego w `attempts.md`). Kolizje kluczy po maskowaniu dostają unikalny
+dopisek ` [N]`, z pominięciem nazw innych pól, żeby nie nadpisywać danych. Pole, które `faults.mask`
+uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
+i liczbę w dowolnie zagnieżdżonych obiektach i listach pod tym polem; pozostałe napisy przechodzą przez
+`faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
+sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełny plik JSON jest zastępowany dopiskiem
+„(pominięto: niepoprawny lub niepełny JSON)” — maskowanie surowych sekwencji ucieczki mogłoby ujawnić część sekretu.
+Tak samo uszkodzone zdarzenie w `out/step.log` (linia zaczynająca się od `{`, także przy EOF po awarii) zastępuje
+dopisek bez jego treści. Poprawne zdarzenie bez końcowego znaku nowej linii nadal trafia do wycinka po odkodowaniu;
+odkodowane wartości zdarzenia przechodzą przez maskowanie przed łączeniem i normalizacją białych znaków,
+żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Przed rozdzieleniem stderr i zdarzeń
+`faults.mask(…, multiline_only=True)` maskuje dopasowania przekraczające granice linii: poprawny JSON wewnątrz
+sekretu nie rozcina go na jawne fragmenty. Jednoliniowe serializacje pozostają nienaruszone do odkodowania.
+Surowy stderr jest następnie maskowany całymi blokami przed podziałem na linie, usuwaniem białych znaków
+i skracaniem; odczyt zachowuje oryginalne znaki końca linii (także CRLF). Dokument `AGENTS.md` przechodzi przez
+`faults.mask` z tym samym środowiskiem przed wycięciem sekcji „Przepływ karty” i normalizacją CRLF, zarówno
+z kopii dokumentów Tide, jak i z worktree. Historia i poprzednie diagnozy opiekuna dostają zamaskowane kopie
+zdarzeń przed formatowaniem przez `caretaker.history_text`, bez zmiany źródłowego stanu karty.
+Końcówka `out/step.log` czytana od środka pliku zaczyna się od
+pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
+maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik
+dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana
+reszta tokenu nie trafia do `faults.mask` (review PT-153, runda 2). Po odrzuceniu urwanej linii obie granice
+odrzucają też pozostałe linie przeciętej wielowierszowej wartości środowiska, której sekretność rozstrzyga
+`faults.mask`. Sprawdzenie zachowuje oryginalne białe znaki i bajty (bezstratne `surrogateescape`), przed
+formatowaniem; przesunięta granica jest sprawdzana ponownie na wypadek nakładających się wartości (review
+PT-153, runda 10). `faults.trim_secret_boundary` korzysta z tych samych wzorców co `faults.mask`, aby odrzucać
+także fragmenty cytowanych przypisań bez wartości w środowisku: na początku końcówki pierwszy cudzysłów każdego
+rodzaju może zamykać utraconą wartość, a przy urwanym końcu tymczasowe domknięcie ujawnia początek przypisania.
+Odrzucany fragment rozszerza się na całe linie i kompletne sekrety przecięte nową granicą; może obejmować też
+jawny tekst, którego nie da się odróżnić od kontynuacji sekretu. Bez dodatkowych odczytów ponad limit. Jeśli
+dopisywany dziennik ma obie granice ucięte (brakuje początku i nie osiągnięto EOF), cały odczyt zastępuje dopisek
+o pominięciu — brak obu cudzysłowów nie rozstrzyga wtedy, czy fragment jest środkiem sekretu (runda 11).
+Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
+i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
+dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany
+z tożsamością (`st_dev`, `st_ino`) z chwili sprawdzenia, a każdy składnik ścieżki — względem poprzedniego (`dir_fd`)
+z `O_NOFOLLOW`; plik musi być zwykłym plikiem. Dowiązanie na dowolnym poziomie daje dopisek „(pominięto: dowiązanie
+symboliczne / plik spoza katalogu karty i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000`
+bajtów): przycinane są najpierw najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii,
+z pierwszą linią „(przycięto N najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło,
+końcówki największych plików z dopiskiem „… (koniec pliku przycięty …)”, a plik, z którego zostałby sam dopisek,
+wypada w całości — zamiast nich jeden `przycieto.md` („(pominięto N plików kontekstu w całości …)”), na który
+budżet jest zarezerwowany z góry, więc limit obowiązuje przy dowolnej liczbie plików. Katalog kontekstu jest budowany
+od nowa przy każdym starcie.
+
+### Zmiana wykonawcy
+
+Akcja opiekuna `change-executor` (PT-145) przy błędzie, powtórzonym powodzie albo braku postępu przyjmuje
+`step`, `executor` (nazwę z katalogu), `reason` oraz opcjonalną `instruction` do 4000 znaków. Używa istniejącego
+`resolve_step` i jego `_resume_executor`, bez drugiej implementacji reguł przydziału. Krok lokalny ani karta
+„Tylko lokalnie” nie przechodzą do chmury. Opiekun musi zachować różne modele autora i recenzenta, a w trybie
+mieszanym także różnych dostawców. Istniejący wyjątek dla świadomego wyboru użytkownika pozostaje dostępny
+wyłącznie użytkownikowi. Wykonawca spoza katalogu albo naruszenie reguł daje nieudane działanie z powodem,
+liczone do limitu; krok nie jest zmieniany.
+
+Wznowienie zachowuje worktree i zmiany, ale uruchamia nową sesję. Opcjonalna instrukcja trafia do kartki nowego
+wykonawcy. Historia: „Opiekun: zmienił wykonawcę <krok> na <nazwa> — <powód>”. Akcja korzysta ze wspólnej pary
+`intent`/`result` `caretaker-action`; własny zapis `step.decision.caretakerStep` zabezpiecza restart między
+skutkiem a wynikiem pary przed drugą decyzją.
+
+### Odpowiedź na pytanie
+
+Akcja `answer` przy czekającym pytaniu przyjmuje `step`, `answer`, `reason` i `category`: `technical` albo
+`environment`. Odpowiada na pytanie kroku ticketu, review, poprawek lub konfliktu istniejącym `resolve_step`,
+a wznowiona kartka oznacza odpowiedź jako pochodzącą od opiekuna. Historia: „Opiekun: odpowiedział na pytanie
+<krok> — <powód>”. Odpowiedź ma od 1 do 4000 znaków; działanie podlega wspólnej aktualności, limitowi i parze
+„zamiar → wynik”.
+
+Tide odrzuca odpowiedzi dla `planning` i wszystkich `plan-*`, niezależnie od zadeklarowanej kategorii. Pytanie
+zostaje użytkownikowi z rekomendacją, a nieudane działanie liczy się do limitu. Kartka każe eskalować pytania
+o zakres, wymagania, wybory biznesowe oraz pytania z opcjami wariantów produktu. Kategoria nie dowodzi, że treść
+jest techniczna — rozpoznanie treści pozostaje zadaniem opiekuna; zakaz odpowiedzi przy planowaniu egzekwuje Tide.
+
+### Decyzja czeka
+
+Wyzwalacz `waiting` (PT-145) sprawdza zegar silnika i zapisany początek czekania decyzji. Po czasie **dłuższym**
+niż `caretakerDecisionMinutes` tworzy problem `waiting:<id decyzji>`. Dokładnie N minut jeszcze nie uruchamia
+opiekuna. Przy pytaniu dostępne są `answer`, `escalate` oraz `return-plan` dla luki w planie (PT-155);
+przy zgodzie na polecenie, zatwierdzeniu planu (także różnicy planu) i review po ostatniej rundzie — wyłącznie
+`escalate`. Lista akcji jest egzekwowana przez Tide,
+także przy wykonywaniu akcji. Opiekun nie tworzy zgody, nie zatwierdza planu ani nie rozstrzyga review.
+
+Decyzja pozostaje widoczna przez cały czas pracy opiekuna; `escalate` tylko dopisuje `caretaker.recommendation`
+i streszczenie. Po eskalacji ten sam problem nie uruchamia opiekuna ponownie, również po restarcie. Tożsamość
+decyzji zapobiega przenoszeniu rekomendacji na kolejną decyzję tego samego kroku. Zmiana N nie unieważnia pracy
+już uruchomionego opiekuna. Jeśli użytkownik rozstrzygnie decyzję w trakcie jego pracy, wynik opiekuna jest
+`stale`, niczego nie zmienia i nie liczy się do limitu.
+
+### Ustawienia
+
+#### Wyłącznik, wykonawca, limit działań i minuty czekania (PT-151)
+
+Cztery klucze w `$XDG_CONFIG_HOME/tide/cardflow.json`, czytane i zapisywane istniejącymi `GetCardFlowSettings`
+i `SetCardFlowSettings` (sygnatury bez zmian; zapis zmienia tylko podane klucze, reszta pliku zostaje):
+
+| Klucz | Wartość | Domyślnie |
+| --- | --- | --- |
+| `caretakerEnabled` | `true`/`false` | `true` |
+| `caretakerExecutor` | nazwa wykonawcy z katalogu albo `""` („domyślny”) | `""` |
+| `caretakerActionLimit` | liczba całkowita 1–10 — kroki opiekuna na problem | 3 |
+| `caretakerDecisionMinutes` | liczba całkowita 1–1440 — minuty czekania decyzji, zanim zajmie się nią opiekun (#3) | 10 |
+
+`GetCardFlowSettings` zwraca zawsze wszystkie cztery (wartość złego typu albo spoza zakresu w pliku — domyślna,
+`caretaker.settings_of`). Walidacja jest w usłudze (`caretaker.setting_problem`), przed zapisem całego żądania:
+zły typ albo zakres (np. `caretakerActionLimit` 0, 11 albo `"3"`, `caretakerDecisionMinutes` 0 albo 1441, `true`
+zamiast liczby) → `bad-request`; wykonawca spoza katalogu → `bad-executor`; nieznany klucz → `bad-settings` (jak
+dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają bez zmian.
+
+**Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
+`caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,
+a także rozmowa z opiekunem (#7) i zmiana wykonawcy przez opiekuna (#3)):
+
+- karta „Tylko lokalnie” — wykonawca lokalny z katalogu: `caretakerExecutor`, gdy sam jest lokalny, inaczej
+  pierwszy lokalny w kolejności katalogu; chmurowy `caretakerExecutor` jest pomijany, więc kontekst karty nie
+  wychodzi z komputera. Bez wykonawcy lokalnego opiekun nie startuje, a decyzja ma dopisek „opiekun niedostępny dla
+  pracy tylko lokalnej”,
+- inna karta — `caretakerExecutor`, jeśli jest w katalogu (wykonawca usunięty z katalogu po zapisie — domyślny),
+  inaczej najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym — dostawcy wykonawcy karty; dla
+  Anthropic Opus, dla OpenAI Codex mocny).
+
+`caretaker.setup(st, settings, catalog)` daje `{enabled, executor, reason, note, limit, decisionMinutes}`: `reason`
+— dlaczego opiekun nie ruszy (wyłączony albo brak wykonawcy lokalnego; `caretaker.unavailable` go zwraca), `note` —
+dopisek do decyzji (tylko brak wykonawcy lokalnego). Silnik dokłada wynik do stanu przed widokami
+(`FlowState.caretaker_setup`, nie z dziennika), więc `flow.caretaker.enabled` i dopisek decyzji liczą się z tych
+samych ustawień co start. Opiekun wyłączony albo bez wykonawcy lokalnego, gdy jego krok czekał już na start (np. na
+slot), nie rusza: `caretaker.action` z `stale: true` i powodem w `detail` (bez eskalacji, nie liczy się do limitu),
+decyzja wraca jak dziś. Krok opiekuna, który już pracuje, kończy się normalnie.
+
+**Okno.** Strona „Zarządzaj” (`ManagePage.qml`), sekcja „PRZEPŁYW KARTY · OPIEKUN”: przełącznik „Opiekun karty”,
+wybór wykonawcy („Domyślny — najmocniejszy u dostawcy karty” i cały katalog, także lokalni;
+`board.js caretakerExecutorOptions`), limit działań (1–10) i minuty czekania (1–1440); „Zapisz” wysyła jedno
+`SetCardFlowSettings` z czterema kluczami, a błąd usługi pokazuje się pod sekcją.
+
+Piaskownica — „Piaskownica i strażnik” niżej. Opiekun czekający na slot dostawcy (`step.waiting` rodzaju
+`caretaker`) nie daje powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
+
+### Piaskownica i strażnik (PT-158)
+
+Granica bezpieczeństwa kroku opiekuna, wymagana przed akcjami zmieniającymi stan karty (#8): piaskownica pozwala
+pisać tylko do własnego `<krok>/out`, a strażnik niezależnie od piaskownicy sprawdza, czy krok nic poza nim nie
+zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
+
+**Piaskownica** (`agentcmd.Step.write_out_only`, ustawia ją silnik dla rodzaju `caretaker`):
+
+- Katalogiem roboczym programu jest `<krok>/out` (`Background.workdir`; `Background.cwd` — worktree — zostaje do
+  zatrzymania i dziennika sesji). Piaskownica Claude CLI daje zapis katalogowi roboczemu, więc tylko `out` jest
+  zapisywalny (`allowWrite: [out]`), a jej puste pliki-atrapy (`.bashrc`…) lądują w `out`, nie w worktree.
+- Claude: stała lista tylko do odczytu `agentcmd.read_only_tools` zamiast listy kroku — `rg`, `grep`, `cat`, `ls`,
+  `find` (`READ_ONLY_COMMANDS`, także ze wzorcami nazwanymi worktree), `git -C <worktree> log|show|diff
+  --no-ext-diff --no-textconv --ignore-submodules=all …` (opcje obowiązkowe: wyłączają `diff.external`,
+  `diff.<d>.command`, `textconv` i inspekcję submodułów) i `git -C <worktree> status --ignore-submodules=all`
+  (`READ_ONLY_GIT`),
+  `Read(//<worktree>/**)` dla Read/Grep/Glob i odczyt własnych `in`/`out`
+  (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
+  opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
+  zgodą): `READ_ONLY_BANS` — `find` z `-delete`, `-exec`/`-execdir`, `-ok`/`-okdir`, `-fprint*`, `-fls`; `rg`
+  z `--pre`, `--hostname-bin`, `--search-zip`/`-z` (także połączonym, np. `-az`, `-iz`); `git` z `--output`,
+  `--ext-diff`, `--textconv`, `--show-signature`; każde przekierowanie `>` — oraz zakaz edycji worktree i repozytorium.
+  `autoAllowBashIfSandboxed: false`: polecenie spoza listy nie ruszy.
+  Zakaz `rg *-*z*` jest zachowawczy: wildcard obejmuje spacje, więc odrzuca też bezpieczne wywołania z `z`
+  w dalszym argumencie po `-` (np. `rg -n wzorzec plik.txt`); można wtedy użyć `rg` bez opcji albo `grep`.
+- Programy pomocnicze gita (review M3): środowisko kroku opiekuna (`agentcmd.read_only_git_config`, dopisane do
+  `GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium) ma `core.fsmonitor=false`, `core.pager=cat`,
+  `log.showSignature=false`, `gpg.program`/`gpg.ssh.program`/`gpg.x509.program` = `/bin/false` i puste programy
+  wszystkich filtrów z konfiguracji worktree (`filter.<f>.clean|smudge|process`, `required=false`; listę czyta
+  usługa `git --git-dir <gitDir> config` przed startem, błąd odczytu — krok nie startuje), do tego
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_PAGER=cat`. Test na prawdziwym repozytorium z `diff.external`, `textconv`,
+  `diff.<d>.command`, filtrem, `core.fsmonitor` i `gpg.program` sprawdza, że żadne dozwolone polecenie gita ich
+  nie uruchamia (a zwykłe `git diff` — tak).
+- Submoduły (review runda 4/M1): ich konfiguracje mogą nazywać inne filtry niż konfiguracja worktree.
+  Każde dozwolone podpolecenie gita ma obowiązkowe `--ignore-submodules=all`, które wygrywa także z ustawieniem
+  `submodule.<nazwa>.ignore=none`; środowisko dodatkowo wymusza `status.submoduleSummary=false`.
+  Zakazy `git *--ignore-submodules=all *--i*`, `git *--no-i*`, `git *--sub*`, `git *--no-sub*` wykluczają późniejsze
+  nadpisanie opcji, jej skróty (`--ign`, `--i`), negację i żądania widoku submodułów. Reguły są zachowawcze:
+  odrzucają również np. `--ignore-space-change`. Test z prawdziwym submodułem i filtrem skonfigurowanym wyłącznie
+  w nim potwierdza uruchomienie helpera przez reprodukcję M1, odrzucenie jej przez reguły i brak helpera przy
+  dozwolonych wywołaniach `status`, `diff`, `log`, `show`.
+- Codex nie ma listy dozwolonych poleceń, więc opiekun u Codexa dostaje jej pusty podzbiór: narzędzia poleceń
+  i kodu są wyłączone (`-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl` —
+  `agentcmd.CODEX_NO_COMMANDS`), katalog roboczy i jedyny zapisywalny katalog to `out` (plik wyniku przez
+  `apply_patch`), `/tmp` i `$TMPDIR` są jawnie wykluczone (`sandbox_workspace_write.exclude_slash_tmp=true`,
+  `exclude_tmpdir_env_var=true`, bo `writable_roots` tylko dopisuje katalogi), a `--skip-git-repo-check` (także
+  przy wznowieniu) — bo `out` leży poza repozytorium. Kartka mówi wtedy, że krok nie ma poleceń.
+- Kartka (`caretaker.brief(…, commands=)`) wymienia listę, zakazy i strażnika.
+- Zatrzymanie kroku opiekuna (`_stop`) nie robi commita WIP (`stepstop.stop_step(commit_wip=False)`): worktree
+  i gałąź kroku zostają, jakie są, a ewentualny zapis kroku wykrywa strażnik.
+
+**Strażnik** (`cardflow/guard.py`, w silniku `_guard_baseline`, `_guard_check`, `_guard_freeze`, `_guard_rebase`,
+`_guard_thaw`, `_guard_verdict`):
+
+- Stan pod strażą: drzewo worktree kroku i — przy problemie ticketu, gdy to inny katalog — drzewo worktree karty
+  (wszystkie pliki, katalogi i dowiązania — śledzone, nieśledzone i ignorowane — bez katalogu `.git`; rekord:
+  ścieżka, typ i prawa, rozmiar, `mtime`, `ctime`, i-węzeł, cel dowiązania; skrót sha256 w podziale na wpisy
+  najwyższego poziomu), treść `<gitDir>/HEAD` każdego z tych worktree i sha gałęzi worktree kroku oraz gałęzi
+  karty. `ctime` zmienia każdy zapis i nie da się go cofnąć bez roota, więc wykrywa
+  też zapis tej samej treści i podmianę z przywróconym `mtime` — mocniej niż `git status` czy suma treści, bez
+  czytania plików. Git nie jest uruchamiany w worktree (haki, `core.fsmonitor`): drzewo czyta Python bez
+  podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez usługę, gałęzie — `FlowGit.sha`
+  w repozytorium.
+- Stan bazowy: `caretaker.guard` z `cause: start` tuż przed startem programu (po przygotowaniu katalogów kroku,
+  przed `step.started`) — `{step, repo, worktrees: [{worktree, gitDir, tree, head}], branches, refs, cause,
+  wrote}`.
+- Działania Tide w trakcie kroku opiekuna (każde `_act` tej karty z wykonaną pracą: scalenie, commit planu,
+  gałęzie, start innego kroku z przywracaniem zależności, sprzątanie…) nie są zapisem kroku: przed działaniem
+  strażnik najpierw zamraża jednostkę kroku (`stepstop.freeze_unit`, `systemctl --user freeze
+  <jednostka>.scope` — cgroup freezer zatrzymuje proces z potomkami), dopiero potem porównuje stan i zmiany
+  zapisuje jako `caretaker.guard` z `cause: check` i `wrote: [powód]` (zapis Tide ich nie przykryje; zapis kroku
+  tuż przed skutecznym zamrożeniem też tu trafia — review M1 rundy 2), wykonuje działanie, bierze stan bazowy na
+  nowo (`cause: <działanie>`) i dopiero wtedy odmraża krok (także po błędzie kontroli albo działania). Zmiana
+  w oknie działania jest więc zmianą Tide (review M1). Gdy zamrożenie się nie uda, a proces kroku żyje albo jego stanu nie da się
+  ustalić, zmiany z okna trafiają do `wrote` („zmiana w czasie działania Tide `<działanie>`, gdy kroku opiekuna
+  nie dało się zamrozić — …”) — strażnik odrzuca zamiast przepuszczać; proces już zakończony nic nie pisze.
+  `FlowState.caretaker_guards` — ostatni stan bazowy, `caretaker_wrote` — zebrane powody.
+- Koniec kroku (`_finish_caretaker`): strażnik działa pierwszy, przed `caretaker.parse_result` i niezależnie od
+  zatrzymania czy kodu wyjścia. Zmiana od stanu bazowego, wcześniej zapisane `wrote` albo brak stanu bazowego →
+  wynik odrzucony z kodem `caretaker-wrote` (`step.finished.outcome.code`, bez czytania pliku wyniku), powód np.
+  „krok opiekuna pisał poza swoim katalogiem wyjściowym: zmienione pliki w worktree <ścieżka>: opiekun-byl-tu.txt;
+  przesunięta gałąź ticket/pt-1”. Dalej jak każde nieudane działanie: `caretaker.escalated` z `failed: true`,
+  akcja nie jest wykonana, działanie liczy się w `owned()`, a historia karty ma wpis „Opiekun: wynik odrzucony,
+  akcja nie wykonana — <powód>”.
+- Ograniczenie: gałąź karty przesunięta w trakcie kroku opiekuna przez inny krok (np. rozwiązanie konfliktu
+  innego ticketu w worktree karty) nie jest działaniem Tide, więc odrzuca wynik opiekuna (bezpieczna pomyłka —
+  problem wraca do użytkownika z powodem). Tak samo działanie Tide przy kroku, którego nie dało się zamrozić
+  (np. systemd bez `freeze`).
 
 ## Docker
 
@@ -2163,6 +3524,8 @@ Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych
 - `kind`: `ollama` (domyślnie) albo `openai` (MLX, LM Studio, llama.cpp — dowolny serwer z `/v1/chat/completions`); adres bez `/v1` (podany z `/v1` też działa).
 - Rola to `"punkt:model"` albo `{"model": "punkt:model", "ctx": N}`. Nazwy modeli mają dwukropki, więc napis dzielimy tylko na pierwszym — i tylko wtedy, gdy przed nim stoi nazwa znanego punktu. Inaczej cały napis to model na punkcie `default` (`"qwen3:8b"` = `default:qwen3:8b`). Brakujące role `summary`, `describe` i `embed` dochodzą na punkcie `default`, więc przepięcie na Maca to zmiana `default` albo przedrostka w rolach.
 - `ctx` to kontekst (`num_ctx` w Ollamie). Role `summary` i `describe` bez `ctx` dostają 8192: z 16k model 8B nie mieści się na karcie 8 GB i odpowiedź trwa 165 s zamiast 8 s (pomiary PT-13). Inne role bez `ctx` i `ctx: 0` — kontekst serwera (16k w nakładce usługi Ollamy, dla agentów).
+- Rola `classify` (PT-42, domyślnie `qwen3:8b` na `default`) ocenia wątpliwe końcówki tur agentów (sekcja o stanie `waiting/reply`). Jako jedyna rola może mieć model chmurowy Ollamy (`…:cloud`, `…-cloud`), ale tylko z jawnym punktem (`"classify": "punkt:gpt-oss:120b-cloud"`); bez punktu rola jest niedostępna jak każda inna z modelem chmurowym.
+- **Rola `classify` w widoku „Modele” i w zapisie** (PT-112, user story 11). Widok pokazuje ją obok `summary` i `describe` pod nazwą „Rozpoznawanie pytań”, z tym samym wyborem modelu, „Zaawansowanymi” (przypięcie do serwera) i `SetRole`; zapis i `Status().roles.classify` działają jak dla pozostałych ról (ten sam kod w `models/settings.py`, bez zmian w logice oceny). Stary `models.json` bez klucza `classify` daje wartość domyślną z `DEFAULT_ROLES` (`qwen3:8b` na `default`, lokalnie). Zmiana modelu roli działa bez restartu: ocena czyta `models.json` przy każdym wywołaniu, więc następna ocena idzie nowym modelem. Widok mówi jawnie: gdy rola nie ma modelu — „ocena wyłączona — liczą reguły”; gdy model jest w chmurze — znacznik „☁ w chmurze” (końcówka ostatniej wiadomości agenta wychodzi poza komputer). Lista modeli tej roli pokazuje też modele chmurowe (z „☁”), pozostałe role ich nie widzą. Wybór modelu w chmurze to jawne działanie użytkownika, a widok wysyła `SetRole` z serwerem roli (usługa bez jawnego serwera odmawia); żaden domyślny ani zapasowy wybór nie wskazuje chmury (decyzja 70).
 - `agentProgram`: program, w którym działa agent na modelu lokalnym z okna „Nowe zadanie” — `codex` (domyślnie; Ollama obsługuje go wprost) albo `claude` (Claude Code: bez konektorów claude.ai, gorzej znosi mały kontekst). Program to nie model: model daje rola `agent`, program — ten klucz, jeden dla wszystkich serwerów, więc przełączenie na Maca go nie zmienia (PT-39, decyzja 72). Nieznana wartość (np. `"Claude"`) — ostrzeżenie „agentProgram: nieznany program „Claude” (codex albo claude) — agent lokalny działa w Codexie” i Codex; reszta pliku działa.
 - `semanticSearch`: wyszukiwanie po znaczeniu w KRunnerze (PT-19) — `true` albo `false`; brak klucza — włączone (działa, gdy model roli `embed` jest na serwerze). Zła wartość — ostrzeżenie „semanticSearch: oczekiwano true albo false, jest „nie” — wyszukiwanie po znaczeniu włączone”. Klucz najwyższego poziomu, jak `agentProgram`: przełączenie na Maca go nie zmienia.
 - `tokenFile` (ścieżka bezwzględna albo z `~`; względna — serwer pominięty z ostrzeżeniem, bo zależałaby od katalogu, z którego wystartowała usługa): plik z tokenem, wysyłanym jako `Authorization: Bearer …` — na Maca za pośrednikiem z tokenem (PT-21). Czytany przy każdym zapytaniu, tylko w pamięci; nie trafia do dziennika, komunikatów ani `Status()`.
@@ -3442,6 +4805,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_agents_core.py` — rdzeń na syntetycznych dziennikach z `daemon/tests/fixtures/` (zamrożony zegar, procesy podawane jawnie),
 - `daemon/tests/test_dbus_contract.py` — usługa na prywatnej magistrali (własny `dbus-daemon` z konfiguracją bez katalogów usług, `privatebus.py`): te same dane co z rdzenia, oraz zmiana stanu w ciągu 3 s po dopisaniu wpisu; bez `dbus-daemon` test jest pomijany,
 - `daemon/tests/test_agents_reply.py` — PT-29: heurystyka pytania na końcu tury (grilling „Pytanie 10: …?”, emoji, pogrubienie, lista wariantów, lista pytań, krótkie zdanie po pytaniu, „Czekam na odpowiedź”; pytanie retoryczne w podsumowaniu, kod i tabele — nie), Claude Code (czeka także po 2 h, odpowiedź użytkownika, narzędzie po tekście, przerwanie; kompaktowanie bezczynnej sesji, także większe niż ogon, i status „idle” — dalej czeka, prawdziwa wiadomość po nim kasuje; echo `/model` nie kasuje, skill z polecenia tak; `AskUserQuestion` po kompaktowaniu; ogon rośnie do ostatniej tury, z górną granicą), karta K-20 z koordynacją 1/1 scaloną i czekającą sesją — Czeka na mnie, nie Gotowe, dopisek pod pytaniem, status `shell` z pytaniem (`reply`) i z `AskUserQuestion` — czeka, bez pytania — pracuje w tle do `BACKGROUND_STALE`, potem `idle`, Codex (`task_complete`, tura zaplanowanego zadania, wiadomość użytkownika), jedno powiadomienie na pytanie z jego treścią, Meta+A, karta K-20 założona i połączona ze skończoną sesją (W toku, z pytaniem — Czeka na mnie; skończony koordynator — Do sprawdzenia, „do poprawy” tylko po przeniesieniu z Do sprawdzenia, `moved-from` z `BoardMonitor`),
+- `daemon/tests/test_board_derive_legacy_wait.py` — PT-110: karta dawnego przepływu ze skończonym planem koordynatora i niescaloną gałęzią, której agent kończy turę pytaniem ze znakiem „?” — syntetyczny dziennik w kształcie prawdziwej sesji koordynatora (podagent na bocznym wątku, kolejka, załączniki, `turn_duration`, `away_summary`) przez `AgentScanner` do kolumny: Czeka na mnie z pytaniem (także po `IDLE_AFTER`), po odpowiedzi i raporcie — Do sprawdzenia,
 - `daemon/tests/test_attention.py` — wybór najdłużej czekającej sesji i powiadomienia bez powtórzeń na fixtures; `Notifier` na prywatnej magistrali z atrapą serwera powiadomień (`fake_notifications.py`: Notify, przycisk „Przejdź”, zamknięcie); cała usługa: nowa czekająca sesja → powiadomienie,
 - `daemon/tests/test_tabmarks.py` — stan sesji → znacznik karty (z tabelą procesów), oznaczanie, zmiana stanu, przywracanie, zmiana tytułu przez użytkownika, zamknięta karta, restart z plikiem stanu i bez niego — na atrapie Konsole w pamięci; zaplecze D-Bus na atrapie Konsole na prywatnej magistrali (`fake_konsole.py`),
 - `daemon/tests/test_windows.py` — przejście do okna przy kilku oknach Konsole (PT-33): okno karty z `/Windows/*` zamiast nieaktualnego `KONSOLE_DBUS_WINDOW` (nieistniejące okno, karta przeciągnięta do innego okna, zapas ze środowiska), wybór okna przez skrypt KWin wykonany w `QJSEngine` z atrapą `workspace` (dowolna kolejność okien, tytuł będący prefiksem innego, okno pokazujące inną kartę, tytuł docierający do KWin po starcie skryptu, okna innych procesów i okna nienormalne), chwilowy znacznik przy identycznych tytułach (przywrócenie, zmiana użytkownika, drugie przejście i zegary poprzedniego przejścia odpalane osobno, nieudany skrypt, błąd w zegarze, częściowo nieudane dopisanie, zamknięcie usługi), czekanie na znacznik i skrypt kończący, zegar usuwania skryptu (`KWinScripts` na atrapie magistrali) i współpraca ze znacznikiem stanu karty; metody okien zaplecza D-Bus na atrapie Konsole z oknami (`fake_konsole.py`),
@@ -3537,6 +4901,33 @@ Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią
 przed edycją również po restarcie. Taka zmiana zwraca `ticket-started`.
 Ponowienie identycznej edycji nie dopisuje drugiego zdarzenia.
 
+**Dopisanie przez użytkownika (PT-248).** W zarządzaniu zatwierdzonym planem przycisk „Dopisz ticket” otwiera
+formularz tytułu, kartki z mierzalnymi kryteriami, klasy, wykonawcy, niezależnego recenzenta i blokerów.
+Ta operacja obejmuje wyłącznie **jeden nowy ticket w jednym projekcie karty**. Blokery wskazują istniejące
+tickety planu; dopisanie nie dodaje blokerów do dotychczasowej pracy. Karta zakończona, aktywna poprawa,
+review, domknięcie lub korekta bazy wykluczają nowy zapis. Przy wstrzymanej karcie review czeka na wznowienie.
+
+Publiczne `EditCardPlan` przyjmuje `{action: "append", planFingerprint, requestKey, title, body, class,
+executor, reviewer, blockers: ["PT-42"]}` oraz opcjonalny `project` równy projektowi karty.
+`derived.flow.plan.fingerprint` jest odciskiem zatwierdzonego planu i wersji bazy, a `canAppend` informuje
+o dostępności formularza. Postęp istniejących kroków nie zmienia odcisku; edycja planu go zmienia.
+Nieaktualny odcisk daje `stale-plan`, ponowne użycie klucza z inną treścią — `request-conflict`.
+Błędy wspólnego sprawdzania formatu wracają jako `invalid-plan` z `errors[]`, bez zmiany planu i rezerwacji ID.
+
+Udany zapis tworzy pojedyncze zdarzenie `plan.proposed` z `sourceKind: append`, `appendRequest` i
+`appendRevision`. Zdarzenie atomowo utrwala propozycję z numerem roboczym oraz oczekującą różnicę.
+Nie uruchamia `planning`, `plan-amend` ani `plan-revise`, również gdy pierwotny planujący ma wyczerpany limit.
+Wybrany recenzent ticketu sprawdza propozycję istniejącą ścieżką `plan-review`; obowiązuje niezależność modelu
+albo siły myślenia oraz zachowanie lokalności. Błąd review używa zwykłych decyzji kroku.
+Werdykt `REQUEST_CHANGES` pozostawia uwagi użytkownikowi, bez automatycznej poprawki przez planującego.
+
+Po review użytkownik osobno wybiera `ApproveCardPlan` lub `EditCardPlan {action: "discard-revision"}`.
+Zatwierdzenie nadaje jeden trwały numer i kieruje ticket do zwykłej realizacji według blokerów.
+Istniejące wiersze wracają bez zmian, łącznie z treścią kartek i przydziałami; postęp pochodzi nadal z dziennika.
+Odrzucenie zachowuje dotychczasowy plan. Poprawiony ticket można zapisać z nowym kluczem żądania.
+Ponowienie identycznego zapisu (także po zatwierdzeniu lub odrzuceniu) zwraca `already: true`, bez nowej
+propozycji. Rezerwacje i odtwarzanie zatwierdzenia korzystają z istniejących trwałych zamiarów.
+
 `action: return` zapisuje `plan.returned` z uwagami i bazą porównania. Krok `plan-amend` przygotowuje
 nową propozycję; usługa oblicza dodane, usunięte i zmienione tickety oraz pola zmian.
 `plan.revision-ready` przechowuje różnicę; panel pokazuje ją przed zatwierdzeniem. Nowa propozycja
@@ -3575,6 +4966,72 @@ a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje p
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
-Scalenie do głównej działa w piaskownicy gita, sprawdza czystość checkoutu i zapisuje
-`card.main-merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
+Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
+`card.merged`, a następnie przenosi kartę do Gotowych. Wcześniejsze kroki nie przesuwają
 gałęzi głównej.
+
+PT-212: jawne `MergeCardToMain` zapisuje pod blokadą repozytorium parę `intent`/`result`
+z akcją `main-merge`. Zamiar zawiera stabilne `operationId`, zlecenie (`requestSeq`), `baseVersion`,
+`targetRef`/`targetBranch`, `sourceCommit`, `targetCommitBefore`, planowany `resultCommit`
+i początkowe drzewo materializacji (`materializationBaseTree`). PT-207 dodaje `resultIndexTree`:
+oczekiwany indeks po wniesieniu wyniku, z niezwiązanymi staged użytkownika. `resultTree` pozostaje
+drzewem samego commita scalenia; lokalne staged nie trafiają do tego commita.
+Wspólne przygotowanie drzewa pochodzi z PT-199. Commit jest zapisywany
+dopiero po zamiarze; jego treść i SHA nie zmieniają się przy ponowieniu. Checkpointy
+`main-merge.checkpoint` rozróżniają `prepared`, `materialized`, `ref-moved`, `result-saved`
+i `projected`. PT-205: nowe sukcesy obu metod (`MergeCard` i zgodnego wstecz `MergeCardToMain`)
+zapisują pojedyncze `card.merged` z `operationId`, `targetRef`/`targetBranch`, `sourceCommit`,
+`targetCommitBefore`, `resultCommit` i `baseVersion` ze wspólnego zamiaru, a następnie `card.finished`.
+Stare `card.main-merged` nadal oznacza zakończenie do zapisanego `main`; dzienniki nie są przepisywane.
+Mieszany zapis zakończenia w jednym zleceniu daje jeden wynik, jedną pozycję historii i raportu.
+Przepływ zachowuje `derived.flow` również w Gotowych/Archiwum: `merged` to znacznik zakończenia,
+`merge` zawiera zapisany wynik (stare pola `main`/`commit` odczytywane jako cel i wynik).
+`mainMerged` pozostaje aliasem znacznika dla dawnych klientów. Snapshot, Sesje, historia, faza scalenia
+i raport pokazują rzeczywisty pełny cel. Raport wykazuje zakończenie karty w okresie zdarzenia,
+nie zalicza jej do otwartych kart. Zgłoszenie kolejnego błędu nie dopisuje wystąpienia do scalonej karty.
+`MergeCardToMain` nadal zwraca `{ok, id, main, already}`; historyczny sukces używa zapisanego celu,
+nie dzisiejszej głównej. Przyjmowanie innych celów przez `MergeCard` pozostaje zakresem PT-200.
+
+`CardBranchDiff` bez celu używa bieżącego refu zapisanej bazy (bez zastępowania przypiętego SHA).
+Przeciążenie z `targetRef` przyjmuje `refs/heads/…` albo znany lokalnie `refs/remotes/…`;
+krótkie nazwy, refy symboliczne i nieistniejące są odrzucane. Przy bazie `unknown` wymagany jest jawny ref.
+Odpowiedź zawiera `targetRef`, `targetBranch`, `branch`, `diff` oraz dawny klucz `main` jako nazwę porównania.
+Sam odczyt nie zapisuje zdarzeń, nie zmienia bazy ani nie stanowi zgody na merge.
+
+Restart lub ponowienie starego API odnajduje operację bieżącego zlecenia i kontynuuje ją
+na zapisanych SHA; tick może odtworzyć wyłącznie już zapisany zamiar. Nierozstrzygnięte pytanie o bazę
+blokuje zarówno jawne scalenie (także ponowienie), jak i recovery z ticku do decyzji użytkownika.
+Zmiana nazwanej głównej,
+obcy ref, indeks albo kolizje lokalnej pracy w scalanych ścieżkach powodują `main-merge.waiting`
+i „Czeka na mnie”, bez cofania plików i bez drugiego scalenia. Pliki ignorowane są sprawdzane pod
+kątem kolizji nazw, bez odczytywania i hashowania ich treści. Niezwiązane edycje i artefakty nie blokują
+recovery. Gdy ref wskazuje `resultCommit` (albo jego potomka po dalszych commitach użytkownika), git jest
+zakończony: recovery sprawdza SHA i drzewo wyniku, a następnie dokańcza wynik oraz projekcję niezależnie od dalszej
+pracy w indeksie, checkoutcie i źródle oraz od późniejszej zmiany `tide.mainBranch` — polityka gałęzi głównej
+dotyczy tylko wykonania przed przesunięciem refu. Kolizje z plikami nieśledzonymi i ignorowanymi sprawdzamy
+wyłącznie w scalanych ścieżkach i ich rodzicach (pathspec), bez wyliczania całych ignorowanych katalogów.
+
+Oczekiwanie nie zatrzymuje synchronizacji ruchów użytkownika, poprawki planu ani pozostałych kroków karty.
+Po usunięciu przyczyny wznowienie używa tego samego ID. „Do poprawy”, zwrot planu, nowe domknięcie lub ręczne zakończenie
+po zamiarze zapisuje `main-merge.abandoned`, jeśli wynik nie trafił do refu celu i nie zapisano sukcesu —
+także przy obcym refie (np. commit użytkownika na głównej), z materializacją albo bez niej. Porzucenie nie zmienia plików ani indeksu, zwalnia blokadę nowego zlecenia
+i nie pozwala dalej wznawiać starego zamiaru. Kolejne domknięcie wymaga nowego jawnego scalenia.
+W tym samym zleceniu nowa operacja może przejąć dokładny indeks porzuconej materializacji przy tym samym
+celu i niezmienionym refie; kontrola lokalnych kolizji nadal obejmuje stare i nowe scalane ścieżki.
+Bez takiej decyzji obcy ref pozostaje jawnym oczekiwaniem; nigdy nie jest zgodą na ponowne wykonanie,
+reset ani nadpisanie. Porzucenie przy obcym refie nie dotyka refu, indeksu ani plików, a materializacja,
+która została w checkoutcie, nie jest dziedziczona (wymaga niezmienionego refu) — nowe scalenie odmówi jak przy
+obcych staged.
+Niezwiązane staged i zmiany poza indeksem pozostają obsługiwane (K-43, PT-207). Kopia indeksu jest
+przygotowywana i odświeżana w prywatnym katalogu, z worktree i katalogiem gita tylko do odczytu;
+zapis obejmuje wyłącznie obiekty i kopię indeksu. Dopiero po zapisaniu zamiaru `read-tree -m -u`
+materializuje różnicę między początkowym i wynikowym indeksem. Niezwiązane wpisy (blob i tryb), ich delta
+względem nowego HEAD oraz bajty plików pozostają bez zmian. Nie używamy resetu, stasha ani sprzątania untracked.
+Przed zapisem zamiaru ponownie sprawdzamy token podglądu, także po przygotowaniu kopii indeksu.
+StepGit ustawia `GIT_OPTIONAL_LOCKS=0`: kontrola czystości źródła przez `status` nie odświeża ani nie
+konwertuje jego indeksu do split-index, więc nie unieważnia zgody własnym odczytem.
+Recovery przyjmuje wyłącznie zapisany indeks początkowy lub wynikowy; nowe obce staged powodują oczekiwanie.
+Częściowy zapis plików z niezmienionym indeksem i kolizją pozostaje w jawnym oczekiwaniu, bez nadpisywania.
+Starsze zamiary bez `resultIndexTree` nadal używają `resultTree` jako oczekiwanego indeksu.
+Brak checkoutu celu korzysta z etapu PT-206: plan i pełny zamiar przed tworzeniem,
+własność zasobów w checkpointach i przekazanie do tego samego wykonawcy. Dotyczy także starego API głównej.

@@ -91,13 +91,21 @@ Rectangle {
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
+    signal previewMergeRequested(string cardId, string target)
+    signal chooseMergeRequested(string cardId)
+    readonly property var mergeBase: card && card.derived && card.derived.flow ? card.derived.flow.base : null
+    readonly property string defaultMergeTarget: mergeBase && mergeBase.status === "known"
+                                                 && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
+                                                 ? mergeBase.baseRef.substring(11) : ""
 
     function eventLabel(event) {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
                        "step.finished": "koniec kroku", "step.waiting": "czeka", "review.verdict": "review",
                        "result": "scalenie", "card.paused": "karta wstrzymana", "card.resumed": "karta wznowiona",
-                       "plan.finished": "plan gotowy", "card.stalled": "karta stoi"}
+                       "plan.finished": "plan gotowy", "card.stalled": "karta stoi",
+                       "card.merged": "karta scalona", "card.main-merged": "karta scalona"}
         return [event.ts || "", event.ticket || event.key || "", words[event.type] || event.type,
+                event.targetBranch || event.main || "",
                 event.executor || "", event.verdict || event.reason || ""].filter(x => x).join(" · ")
     }
 
@@ -503,7 +511,7 @@ Rectangle {
                 id: planFeedback
                 objectName: "cardPlanFeedback"
                 Layout.fillWidth: true
-                visible: !!panel.flowPlan && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved" || Boolean(panel.flowPlan.revision && panel.flowPlan.revision.failed))
+                visible: !!panel.flowPlan && !(panel.flowPlan.revision && panel.flowPlan.revision.kind === "append") && (panel.flowPlan.status === "pending" || panel.flowPlan.status === "approved" || Boolean(panel.flowPlan.revision && panel.flowPlan.revision.failed))
                 placeholderText: "Uwagi do poprawy planu"
                 wrapMode: TextEdit.Wrap
             }
@@ -524,8 +532,10 @@ Rectangle {
             }
             PillButton {
                 objectName: "cardPlanDiscardRevision"
-                text: "Odrzuć błędną poprawkę"
-                visible: !!panel.flowPlan && !!panel.flowPlan.revision && !!panel.flowPlan.revision.failed
+                text: panel.flowPlan && panel.flowPlan.revision && panel.flowPlan.revision.kind === "append"
+                      ? "Odrzuć dopisanie" : "Odrzuć błędną poprawkę"
+                visible: !!panel.flowPlan && !!panel.flowPlan.revision && (!!panel.flowPlan.revision.failed ||
+                         (panel.flowPlan.revision.kind === "append" && panel.flowPlan.status === "pending"))
                 enabled: !panel.busy
                 onClicked: panel.planEditRequested(panel.card.id, {action: "discard-revision"})
             }
@@ -578,7 +588,7 @@ Rectangle {
                     wrapMode: Text.Wrap
                 }
             }
-            RowLayout {
+            ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 7
                 PillButton {
@@ -588,14 +598,32 @@ Rectangle {
                     onClicked: panel.branchDiffRequested(panel.card.id)
                 }
                 PillButton {
+                    objectName: "cardPreviewMerge"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    readonly property string target: panel.defaultMergeTarget
+                    text: "Podgląd scalenia do " + (target || "…")
+                    enabled: !panel.busy && target !== ""
+                    onClicked: panel.previewMergeRequested(panel.card.id, target)
+                }
+                PillButton {
                     objectName: "cardMergeMain"
-                    text: "Scal do gałęzi głównej"
+                    Layout.fillWidth: true
+                    wrapText: true
+                    readonly property string target: panel.defaultMergeTarget
+                    text: target ? "Scal do " + target : "Scal…"
                     enabled: !panel.busy && !(panel.card && panel.card.derived && panel.card.derived.flow
-                                                && panel.card.derived.flow.mainMerged)
+                                                && panel.card.derived.flow.merged)
                     onClicked: {
-                        panel.busy = true
-                        panel.mergeMainRequested(panel.card.id)
+                        if (target) panel.previewMergeRequested(panel.card.id, target)
+                        else panel.chooseMergeRequested(panel.card.id)
                     }
+                }
+                PillButton {
+                    objectName: "cardMergeChoose"
+                    text: "Scal…"
+                    visible: panel.defaultMergeTarget !== ""
+                    onClicked: panel.chooseMergeRequested(panel.card.id)
                 }
             }
             QQC2.TextArea {

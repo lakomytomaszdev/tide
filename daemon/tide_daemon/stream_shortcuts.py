@@ -1,5 +1,9 @@
 """Skróty tylko w aktywności Stream (PT-38, decyzja 81): Pause — mikrofon, Meta+Pause — ekran prywatności,
 Meta+B — BRB i powrót. Wołają CLI `kamp` rdzenia Streamer (kamp mic.toggle, privacy.toggle, brb.toggle).
+Zegar planu gry (PT-140): Meta+F9 start/pauza, Meta+F10 −5 s, Meta+F11 +5 s — te trzy akcje usługa tylko
+rejestruje (komenda None), a naciśnięcie odbiera sam widżet pulpitu Stream z sygnału KGlobalAccel
+globalShortcutPressed (widgets/stream/desk/contents/ui/BuildOrderShortcuts.qml). Meta+F9 i Meta+F10 ma
+w KWin „Prezentacja okien” — na czas Streamu są jej zabierane i oddawane jak Meta+B.
 
 KDE nie ma skrótów przypisanych do aktywności, a skrót zarejestrowany na stałe (np. skryptem KWin) łapie
 klawisz także w pracy. Dlatego usługa rejestruje skróty w KGlobalAccel (org.kde.kglobalaccel, ten sam
@@ -43,6 +47,7 @@ COMPONENT_LABEL = "Tide · Stream"
 META = 0x10000000          # Qt::MetaModifier
 KEY_PAUSE = 0x01000008     # Qt::Key_Pause
 KEY_B = 0x42               # Qt::Key_B
+KEY_F9, KEY_F10, KEY_F11 = 0x01000038, 0x01000039, 0x0100003A   # Qt::Key_F9…F11
 SET_PRESENT, NO_AUTOLOADING = 2, 4   # KGlobalAccel::SetShortcutFlag
 
 ACCEL_SERVICE = "org.kde.kglobalaccel"
@@ -56,7 +61,7 @@ class Shortcut:
     name: str        # akcja w komponencie tide_stream
     keys: str        # zapis klawisza jak w ściądze (widgets/lib/stream.js SHORTCUTS)
     key: int         # kod Qt (klawisz | modyfikatory)
-    command: str     # komenda rdzenia dla `kamp`
+    command: str | None   # komenda rdzenia dla `kamp`; None — naciśnięcie obsługuje widżet (plan gry)
     label: str       # opis w Ustawieniach systemowych → Skróty
 
 
@@ -64,6 +69,9 @@ SHORTCUTS = (
     Shortcut("mic", "Pause", KEY_PAUSE, "mic.toggle", "Stream: mikrofon"),
     Shortcut("privacy", "Meta+Pause", META | KEY_PAUSE, "privacy.toggle", "Stream: ekran prywatności"),
     Shortcut("brb", "Meta+B", META | KEY_B, "brb.toggle", "Stream: BRB i powrót"),
+    Shortcut("plan-clock", "Meta+F9", META | KEY_F9, None, "Stream: plan gry — start/pauza zegara"),
+    Shortcut("plan-back", "Meta+F10", META | KEY_F10, None, "Stream: plan gry — zegar −5 s"),
+    Shortcut("plan-forward", "Meta+F11", META | KEY_F11, None, "Stream: plan gry — zegar +5 s"),
 )
 
 
@@ -280,6 +288,7 @@ class StreamShortcuts:
         return []
 
     def command(self, name: str) -> str | None:
+        """Komenda `kamp` akcji; None dla nieznanej i dla akcji planu gry (te odbiera widżet)."""
         return next((s.command for s in SHORTCUTS if s.name == name), None)
 
 

@@ -9,9 +9,10 @@
   głównym (BoardRepo nie jest wielowątkowy); BoardMonitor.sync() najpierw commituje dziennik pod tą samą blokadą,
   więc zdarzenia nie trafiają do „sync external changes”,
 - zatrzymanie usługi nie zatrzymuje kroków (własne jednostki systemd); po starcie tick podpina się pod nie z dziennika.
+- odczyt hostingu PR/MR korzysta z osobnej, ograniczonej puli na lokalnej migawce; nie zatrzymuje StartCard ani tick.
 """
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
@@ -30,6 +31,9 @@ class CardFlowMonitor(QObject):
         self.notifier = notifier           # funkcja({card, ticket, result, detail}) w wątku głównym
         self.lock = engine.journal.lock
         self._pool: ThreadPoolExecutor | None = None
+        self._hosting_pool: ThreadPoolExecutor | None = None
+        self._hosting_pending = 0
+        self._stopped = False
         self._ticking = False
         self._timer = QTimer(self, interval=poll_ms)
         self._timer.timeout.connect(self.tick)
@@ -40,10 +44,18 @@ class CardFlowMonitor(QObject):
         self._timer.start()
 
     def stop(self) -> None:
+        if self._stopped:
+            return
         self._timer.stop()
+        self._stopped = True
+        if self._hosting_pool is not None:
+            self._hosting_pool.shutdown(wait=False, cancel_futures=True)
+            self._hosting_pool = None
         if self._pool is not None:
-            self._pool.shutdown(wait=False, cancel_futures=True)
+            # Bieżąca operacja zostawia trwały zamiar/wynik; niezależne jednostki nie są zatrzymywane.
+            self._pool.shutdown(wait=True, cancel_futures=True)
             self._pool = None
+        self.commit()  # callback Qt może już nie dotrzeć po app.exec()
 
     # --- odczyt dla BoardMonitor -----------------------------------------------------------------
 
@@ -52,6 +64,9 @@ class CardFlowMonitor(QObject):
 
     def derived(self, card: dict):
         return self.engine.derived(card)
+
+    def card_base(self, card_id: str) -> dict:
+        return self.engine.card_base(card_id)
 
     def tracker_tickets(self, card):
         return self.engine.tracker_tickets(card)
@@ -87,10 +102,14 @@ class CardFlowMonitor(QObject):
     def enter_step(self, card_id: str, step_id: str, reply) -> None:
         self._action("EnterStep", lambda: self.engine.enter(card_id, step_id), reply)
 
+    def talk_to_caretaker(self, card_id: str, request: str, reply) -> None:
+        self._json_action("TalkToCaretaker", request,
+                          lambda data: self.engine.talk_to_caretaker(card_id, data), reply)
+
     def abandon_step(self, card_id: str, step_id: str, reply) -> None:
         self._action("AbandonStep", lambda: self.engine.abandon(card_id, step_id), reply)
 
-    def _action(self, name: str, work, reply) -> None:
+    def _action(self, name: str, work, reply, *, submit=None) -> None:
         def answer(future):
             try:
                 result = future.result()
@@ -100,7 +119,7 @@ class CardFlowMonitor(QObject):
                 print(f"tide-daemon: przepływ karty: {name}: {exc!r}", flush=True)
                 result = _failure("internal", "błąd usługi — szczegóły w dzienniku (journalctl --user -u tide-daemon)")
             reply(json.dumps(result, ensure_ascii=False))
-        if not self._submit(work, answer):
+        if not (submit or self._submit)(work, answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
     def set_paused(self, card_id: str, paused: bool, reply) -> None:
@@ -160,17 +179,29 @@ class CardFlowMonitor(QObject):
         if not self._submit(lambda: self.engine.resolve_step(card_id, data), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
 
+    def add_step_note(self, card_id: str, request: str, reply) -> None:
+        self._json_action("AddCardStepNote", request, lambda data: self.engine.add_step_note(card_id, data), reply)
+
+    def resolve_caretaker(self, card_id: str, request: str, reply) -> None:
+        """Decyzja o problemie karty bez własnego kroku."""
+        self._json_action("ResolveCardCaretaker", request,
+                          lambda data: self.engine.resolve_caretaker(card_id, data), reply)
+
     def preview_step_fault(self, card_id: str, request: str, reply) -> None:
         """PreviewStepFault: podgląd karty z błędem kroku bez zapisu (PT-125)."""
         self._json_action("PreviewStepFault", request, lambda data: self.engine.preview_step_fault(card_id, data),
                           reply)
+
+    def revoke_ticket_consent(self, card_id: str, request: str, reply) -> None:
+        self._json_action("RevokeTicketConsent", request,
+                          lambda data: self.engine.revoke_ticket_consent(card_id, data), reply)
 
     def report_step_fault(self, card_id: str, request: str, reply) -> None:
         """ReportStepFault: karta z błędem w Backlogu plasma-tide (albo nowe wystąpienie) i ponowienie kroku."""
         self._json_action("ReportStepFault", request, lambda data: self.engine.report_step_fault(card_id, data),
                           reply)
 
-    def _json_action(self, name: str, request: str, work, reply) -> None:
+    def _json_action(self, name: str, request: str, work, reply, *, submit=None) -> None:
         try:
             data = json.loads(request or "")
         except ValueError:
@@ -178,7 +209,7 @@ class CardFlowMonitor(QObject):
         if not isinstance(data, dict):
             reply(json.dumps(_failure("bad-request", "oczekiwano obiektu JSON"), ensure_ascii=False))
             return
-        self._action(name, lambda: work(data), reply)
+        self._action(name, lambda: work(data), reply, submit=submit)
 
     def edit_plan(self, card_id: str, request: str, reply) -> None:
         def work():
@@ -225,11 +256,33 @@ class CardFlowMonitor(QObject):
     def box_status(self, slug: str, reply) -> None:
         self._action("BoxStatus", lambda: self.engine.box_status(slug), reply)
 
-    def card_diff(self, card_id: str, reply) -> None:
-        self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id), reply)
+    def card_diff(self, card_id: str, reply, target_ref: str = "") -> None:
+        self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id, target_ref), reply)
 
     def merge_card_to_main(self, card_id: str, reply) -> None:
         self._action("MergeCardToMain", lambda: self.engine.merge_card_to_main(card_id), reply)
+
+    def preview_card_merge(self, card_id: str, request: str, reply) -> None:
+        self._json_action("PreviewCardMerge", request, lambda data: self.engine.preview_card_merge(card_id, data), reply)
+
+    def merge_card(self, card_id: str, request: str, reply) -> None:
+        self._json_action("MergeCard", request, lambda data: self.engine.merge_card(card_id, data), reply)
+
+    def preview_card_base_change(self, card_id: str, request: str, reply) -> None:
+        self._json_action("PreviewCardBaseChange", request,
+                          lambda data: self.engine.preview_card_base_change(card_id, data), reply)
+
+    def request_card_base_change(self, card_id: str, request: str, reply) -> None:
+        self._json_action("RequestCardBaseChange", request,
+                          lambda data: self.engine.request_card_base_change(card_id, data), reply)
+
+    def list_card_branches(self, card_id: str, request: str, reply) -> None:
+        self._json_action("ListCardBranches", request, lambda data: self.engine.list_card_branches(card_id, data), reply)
+
+    def suggest_card_base(self, card_id: str, request: str, reply) -> None:
+        self._json_action("SuggestCardBase", request,
+                          lambda data: self.engine.prepare_card_base_suggestion(card_id, data), reply,
+                          submit=self._submit_suggestion)
 
     def tick(self) -> None:
         if self._ticking:
@@ -257,7 +310,34 @@ class CardFlowMonitor(QObject):
 
     # --- wnętrze ---------------------------------------------------------------------------------
 
+    def _submit_suggestion(self, work, then) -> bool:
+        def prepared(future):
+            if future.cancelled() or future.exception() is not None or not callable(future.result()):
+                then(future)
+                return
+            if self._stopped or self._hosting_pending >= 2:
+                rejected = Future()
+                rejected.set_result(_failure("unavailable", "Odczyt hostingu zajęty lub usługa się zamyka. Wybierz bazę ręcznie."))
+                then(rejected)
+                return
+            if self._hosting_pool is None:
+                self._hosting_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tide-hosting")
+            self._hosting_pending += 1
+
+            def completed(result):
+                self._hosting_pending -= 1
+                then(result)
+
+            hosted = self._hosting_pool.submit(future.result())
+            hosted.add_done_callback(lambda f: self._done.emit(completed, f))
+
+        # Migawka karty, refów i remote powstaje po kolei z akcjami przepływu.
+        # Tylko zwrócony odczyt hostingu biegnie osobno, bez blokad gita/dziennika.
+        return self._submit(work, prepared)
+
     def _submit(self, work, then) -> bool:
+        if self._stopped:
+            return False
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-cardflow")
         try:
@@ -268,6 +348,8 @@ class CardFlowMonitor(QObject):
         return True
 
     def _deliver(self, then, future) -> None:
+        if self._stopped:
+            return
         # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
         if self.commit() and self.board is not None:
             self.board.publish()

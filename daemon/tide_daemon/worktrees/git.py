@@ -37,16 +37,21 @@ class Result:
 class Git:
     """Uruchamia gita w podanym katalogu. Podmienialny w testach (np. inny plik wykonywalny)."""
 
-    def __init__(self, executable: str = "git", timeout: float = 60):
+    def __init__(self, executable: str = "git", timeout: float = 60, cancel=None):
         self.executable = executable
         self.timeout = timeout
         self.env = dict(os.environ, **GIT_ENV)
+        self.cancel = cancel
 
-    def run(self, cwd: str, *args: str, timeout: float | None = None) -> Result:
+    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
         try:
-            proc = subprocess.run(git_argv("-C", cwd, *args, executable=self.executable), capture_output=True, text=True,
-                                  errors="replace", env=self.env, timeout=timeout or self.timeout,
-                                  stdin=subprocess.DEVNULL)
+            argv = git_argv("-C", cwd, *args, executable=self.executable)
+            if self.cancel is not None:
+                proc = self.cancel.run(argv, env=self.env, timeout=timeout or self.timeout, input_text=input_text)
+            else:
+                proc = subprocess.run(argv, capture_output=True, text=True,
+                                      errors="replace", env=self.env, timeout=timeout or self.timeout,
+                                      **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Result(-1, "", str(exc))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())

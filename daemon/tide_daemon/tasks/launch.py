@@ -201,6 +201,33 @@ def _load(path: str):
     return data
 
 
+def task_state_file(task: dict) -> str:
+    """Trwały ślad konkretnej próby Konsoli, niezależny od katalogu runtime."""
+    process, unit = task.get("processFile"), task.get("consoleUnit")
+    if isinstance(process, str) and os.path.isabs(process) and isinstance(unit, str) and \
+            re.fullmatch(r"[A-Za-z0-9_-]{1,100}", unit):
+        return process + "." + unit + ".state"
+    return ""
+
+
+def sync_directory(path: str) -> None:
+    fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def resolve_task_state(path: str, outcome: str) -> bool:
+    """Rename wybiera jednego zwycięzcę: przejęcie albo anulowanie. Ślad przeżywa restart."""
+    try:
+        os.rename(path, path + "." + outcome)
+    except FileNotFoundError:
+        return False
+    sync_directory(path)
+    return True
+
+
 def claim(path: str):
     """Przejmuje wskazany plik zadania. Zwraca zadanie albo None (wycofane, cudze, uszkodzone)."""
     if not path.endswith(".task") or not _own_file(path):
@@ -211,6 +238,12 @@ def claim(path: str):
     except OSError:
         return None  # usługa zdążyła je wycofać albo przejął je ktoś inny
     data = _load(claimed)
+    if data is not None and data.get("taskStateFile"):
+        try:
+            if not resolve_task_state(data["taskStateFile"], "claimed"):
+                data = None
+        except OSError:
+            data = None  # bez trwałego rozstrzygnięcia nie wolno uruchomić agenta
     if data is not None and data.get("processFile"):
         try:
             write_process(data["processFile"], os.getpid())
@@ -296,7 +329,8 @@ def agent_env(task: dict, base: dict) -> dict:
     pliki z `tokenFiles` tylko sprawdzone (agent czyta je sam, np. apiKeyHelper Claude Code)."""
     for path in task.get("tokenFiles") or []:
         read_token(path)
-    env = {k: v for k, v in base.items() if k not in set(task.get("unsetEnv") or [])}
+    env = {} if task.get("cleanEnv") is True else {
+        k: v for k, v in base.items() if k not in set(task.get("unsetEnv") or [])}
     env.update(task.get("env") or {})
     for name, path in (task.get("secretEnv") or {}).items():
         env[name] = read_token(path)

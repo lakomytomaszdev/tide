@@ -16,9 +16,10 @@ czeka nawet z pytaniem (zadanie samo wyśle następną wiadomość). Pytanie wyg
 (zadanie agenta w tle): „pracuje w tle” tylko wtedy, gdy tura nie skończyła się pytaniem, i najwyżej
 BACKGROUND_STALE bez wpisu w dzienniku.
 """
+import hashlib
 from dataclasses import dataclass
 
-from .question import ending_question
+from .question import closing, doubtful, ending_question
 
 # Progi (sekundy). Opisane też w docs/tide-daemon.md.
 IDLE_AFTER = 30 * 60        # skończona albo czekająca sesja bez ruchu tyle czasu jest już „bezczynna”
@@ -94,7 +95,11 @@ class SessionLog:
         # z niej pytanie na końcu tury (reply_question). Parsery czyszczą ją przy wywołaniu narzędzia.
         self.last_text = ""
         self.last_text_ts = 0.0
-        self._question = ("", "")  # pamięć: (tekst, pytanie)
+        self.last_text_id = ""     # uuid wpisu z ostatnią wiadomością (Claude Code), pusty, gdy dziennik go nie ma
+        self._question = ("", "", False)  # pamięć: (tekst, pytanie z reguł, czy reguły wątpią)
+        # Drugi stopień rozpoznawania pytań (PT-42): funkcja(klucz, tekst) → True/False albo None (jeszcze
+        # nie wiadomo) — ustawia skaner (agents/classify.py). Bez niej liczą same reguły.
+        self.judge = None
 
     def feed(self, record: dict) -> None:
         raise NotImplementedError
@@ -106,10 +111,19 @@ class SessionLog:
                 self.first_activity = ts
             self.last_activity = max(self.last_activity, ts)
 
-    def said(self, text: str, ts: float) -> None:
+    def said(self, text: str, ts: float, uid: str = "") -> None:
         """Agent napisał wiadomość tekstową (pusta — wywołał narzędzie, wcześniejszy tekst nie kończy tury)."""
         self.last_text = text or ""
         self.last_text_ts = ts if text else 0.0
+        self.last_text_id = (uid or "") if text else ""
+
+    def verdict_key(self) -> str:
+        """Klucz pamięci oceny modelu (agents/classify.py): uuid wpisu, a bez niego sesja i skrót tekstu
+        (Codex zapisuje tę samą wiadomość dwa razy — jako wiadomość i jako koniec tury; skrót ją skleja)."""
+        if self.last_text_id:
+            return f"{self.tool}:{self.last_text_id}"
+        digest = hashlib.sha1(self.last_text.encode("utf-8", "replace")).hexdigest()[:16]
+        return f"{self.tool}:{self.session_id}:{digest}"
 
     def set_phase(self, phase: str, ts: float) -> None:
         if phase != self.phase or not self.phase_since:
@@ -130,11 +144,19 @@ def reply_question(log: SessionLog) -> str:
         return ""  # podagent: raport dla koordynatora, nie pytanie do użytkownika — nikt mu nie odpisze
     if log.last_user_ts and log.last_user_ts >= log.last_text_ts:
         return ""
-    cached = getattr(log, "_question", ("", ""))
+    cached = getattr(log, "_question", ("", "", False))
     if cached[0] != text:
-        cached = (text, ending_question(text))
+        asked = ending_question(text)
+        cached = (text, asked, False if asked else doubtful(text))
         log._question = cached
-    return cached[1]
+    if cached[1] or not cached[2]:
+        return cached[1]
+    # Drugi stopień (PT-42): reguły wątpią, ocenia model. Zanim jego wynik przyjdzie (albo gdy go nie ma),
+    # liczą same reguły; po wyniku usługa przelicza stan (monitor.recompute). `judge` nie czeka na model.
+    judge = getattr(log, "judge", None)
+    if judge is not None and judge(log.verdict_key(), text) is True:
+        return closing(text)
+    return ""
 
 
 def waiting_text(log: SessionLog) -> str:

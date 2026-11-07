@@ -69,6 +69,19 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertIn("Nowe kryterium", rows[1]["body"])
         self.assertEqual(len(self.of(card, "plan.ticket-edited")), 1)
 
+    def test_same_model_with_different_effort_is_an_independent_reviewer(self):
+        # 05.11 (decyzja użytkownika): Codex mocny recenzuje Codexa standard; ten sam model i siła — odmowa.
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
+        ok = self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Codex standard",
+                                               "reviewer": "Codex mocny"})
+        self.assertTrue(ok["ok"], ok)
+        from tide_daemon.cardflow.engine import FlowError
+        with self.assertRaises(FlowError):
+            self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Codex mocny",
+                                              "reviewer": "Codex mocny"})
+
     def test_started_ticket_cannot_be_edited(self):
         from tide_daemon.cardflow.engine import FlowError
         card = self.card()
@@ -208,6 +221,27 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(approved["ok"], approved)
         self.assertEqual(len(approved["map"]), 3)
 
+    def test_ready_revision_can_be_returned_again_from_the_decision_window(self):
+        # 04.11, K-46: okno decyzji proponowało „Odeślij z uwagami” przy gotowej poprawce, a usługa odpowiadała
+        # „poprawa planu już trwa”.
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Dodaj ticket"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=20), self.events(card))
+        first = self.of(card, "plan.revision-ready")[-1]
+        again = self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Doprecyzuj ryzyka."})
+        self.assertTrue(again["ok"], again)
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-ready")) >= 2 and
+                                   len(self.of(card, "plan.reviewed")) == 3, timeout=20), self.events(card))
+        second = self.of(card, "plan.revision-ready")[-1]
+        self.assertEqual(second["baseline"], first["baseline"])   # różnica dalej od planu sprzed pierwszej poprawki
+        self.assertEqual(second["difference"]["added"], ["#3"])   # zmiany z pierwszej poprawki zostają
+        self.assertIn("Dodaj ticket", second["feedback"])
+        self.assertIn("Doprecyzuj ryzyka.", second["feedback"])
+        self.assertTrue(self.approve(card)["ok"])
+
     def test_plan_question_can_be_answered_while_ticket_is_running_after_restart(self):
         from tide_daemon.cardflow.state import fold, derived
         from tide_daemon.cardflow.engine import FlowEngine
@@ -259,11 +293,33 @@ class PlanReviewEditingTest(FlowInProcess):
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: invalid-amend"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=10), self.events(card))
+        # Błędny format wraca do planującego sam, z listą błędów, trzy razy; dopiero potem decyzja użytkownika (K-41).
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-failed")) == 4, timeout=30), self.events(card))
+        automatic = [e for e in self.of(card, "plan.returned") if e.get("automatic")]
+        self.assertEqual(len(automatic), 3)
+        self.assertIn("nie przeszła sprawdzenia formatu", automatic[0]["feedback"])
+        self.assertIn("ATRAPA: invalid-amend", automatic[-1]["feedback"])
         self.flow.stop()
         self.assertTrue(self.flow.engine.edit_plan(card, {"action": "discard-revision"})["ok"])
         self.assertTrue(self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Popraw ponownie"})["ok"])
-        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 2)
+        self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 5)
+
+    def test_plan_amendment_runs_on_the_reassigned_planner(self):
+        # 06.11, K-38: poprawka planu czekała na limit Claude do soboty, bo zawsze szła do pierwotnego planisty.
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        planner = self.of(card, "plan.proposed")[-1].get("planner")
+        done = self.flow.engine.resolve_step(card, {"choice": "reassign-author", "ticket": "plan",
+                                                    "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Popraw tytuł #1"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "plan-amend" for s in self.of(card, "step.started")),
+                                   timeout=20), self.events(card))
+        amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
+        self.assertEqual(amend["executor"], "Codex standard")
+        self.assertNotEqual(planner, "Codex standard")
 
     def test_answer_after_restart_resumes_amendment_without_stopping_ticket(self):
         card = self.card()
@@ -311,12 +367,12 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertEqual(journal.read(card)[-1]["type"], "plan.checked")
         self.assertEqual(self.of(card, "plan.revision-failed"), [])
         self.restart()
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-failed"), timeout=4), self.events(card))
+        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.revision-failed")) == 4, timeout=30), self.events(card))
         shown = self.wait_column(card, "waiting")
         self.assertTrue(shown["derived"]["flow"]["plan"]["revision"]["failed"])
         box = []
         self.flow.edit_plan(card, json.dumps({"action": "discard-revision"}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertEqual(len(self.of(card, "plan.revision-failed")), 1)
-        self.assertEqual(len([e for e in self.of(card, "plan.checked") if not e["valid"]]), 1)
+        self.assertEqual(len(self.of(card, "plan.revision-failed")), 4)
+        self.assertEqual(len([e for e in self.of(card, "plan.checked") if not e["valid"]]), 4)

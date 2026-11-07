@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from . import DAEMON_DIR, flowfakes
 from .privatebus import SERVICE, PrivateBus, requires_dbus, wait_until
@@ -145,12 +146,61 @@ class FlowCase(unittest.TestCase):
     def of(self, card_id, kind) -> list:
         return [e for e in self.events(card_id) if e["type"] == kind]
 
+    def ticket_finished(self, card_id) -> list:
+        """Wyniki kroków ticketu bez osobnych kroków opiekuna (PT-143)."""
+        steps = {s["step"] for s in self.of(card_id, "step.started") if s.get("kind") != "caretaker"}
+        return [e for e in self.of(card_id, "step.finished") if e["step"] in steps]
+
     def results(self, card_id, action) -> list:
         return [e for e in self.of(card_id, "result") if e.get("action") == action]
 
     def fake_call(self, started) -> dict:
         with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             return json.load(fh)
+
+
+class CaretakerChatDbusTest(FlowCase):
+    def spawn(self):
+        service = "org.kde.konsole.tide_caretaker_test"
+        fake = os.path.join(os.path.dirname(__file__), "fake_konsole.py")
+        if not getattr(self, "fake_console", None):
+            self.fake_console = self.service.spawn(["/usr/bin/python3", fake, service, "1"], service)
+        self.env.update(TIDE_FAKE_KONSOLE_SERVICE=service, TIDE_FAKE_KONSOLE=fake)
+        return super().spawn()
+
+    def console_tasks(self):
+        reply = self.service.call("org.kde.konsole.tide_caretaker_test", "/Windows/1",
+                                  "org.kde.konsole.Window", "Tasks")
+        return json.loads(reply.arguments()[0])
+
+    def test_talk_opens_console_with_chat_context_and_only_one_session(self):
+        card = self.card(description="Eksport.\n\nATRAPA: blad-opiekun\nATRAPA-POWOD: test pada ATRAPA-OPIEKUN: escalate")
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "caretaker.escalated"), timeout=30))
+        problem = self.of(card, "caretaker.started")[0]["problem"]
+        reply = self.call("TalkToCaretaker", card, json.dumps({"problem": problem}))
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: self.console_tasks(), timeout=5))
+        [task] = self.console_tasks()
+        self.assertIn("rozmowa z opiekunem", task["title"])
+        started = next(s for s in self.of(card, "step.started") if s["step"] == reply["step"])
+        self.assertEqual(started["kind"], "caretaker-chat")
+        self.assertTrue(os.path.isdir(os.path.join(started["stepDir"], "in", "context")))
+        self.assertEqual(task["workdir"], os.path.join(started["stepDir"], "out"))
+        self.assertIn("Tryb rozmowy", task["argv"][-1])
+        self.assertEqual(self.call("TalkToCaretaker", card, "{}")["error"], "console-open")
+        self.assertEqual(self.call("TalkToCaretaker", card, "[]")["error"], "bad-request")
+        path = os.path.join(started["stepDir"], "out", "action-1.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"result": "done", "action": "retry", "step": self.of(card, "caretaker.started")[0]["target"],
+                       "instruction": "Sprawdź format.", "reason": "Format daty."}, fh)
+        def actions():
+            return [e for e in self.of(card, "caretaker.action") if e.get("mode") == "chat"]
+        self.assertTrue(wait_until(actions, timeout=5))
+        self.assertTrue(actions()[0]["ok"], actions())
+        self.restart()
+        self.call("GetCardFlowSettings")
+        self.assertEqual(len(actions()), 1)
 
 
 class PlanDbusTest(FlowCase):
@@ -318,8 +368,9 @@ class NowTest(FlowCase):
     def test_missing_result_file_is_a_step_error(self):
         card_id = self.card(description="ATRAPA: bez-wyniku")
         reply = self.start(card_id)
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         card = self.wait_column(card_id, "waiting")
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-result"))
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -344,8 +395,9 @@ class GuardTest(FlowCase):
         started = wait_until(lambda: self.of(card_id, "step.started"), timeout=10)[0]
         pid = wait_until(lambda: flowfakes.unit_pid(self.runtime, started["unit"]), timeout=5)
         self.assertTrue(flowfakes.alive(pid))
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         card = self.wait_column(card_id, "waiting", timeout=30)
-        finished = self.of(card_id, "step.finished")
+        finished = self.ticket_finished(card_id)
         self.assertEqual(len(finished), 2)
         self.assertEqual((finished[0]["result"], finished[0]["reason"]), ("error", "no-progress"))
         self.assertEqual(len(self.of(card_id, "step.retry")), 1)
@@ -394,7 +446,16 @@ class ManualColumnsTest(FlowCase):
         self.assertTrue(wait_until(busy, timeout=15), "worktree kroku zajęty w oknie Worktrees")
         self.assertTrue(self.call("MoveCard", card_id, "backlog", 0)["ok"])
         self.assertTrue(wait_until(lambda: self.of(card_id, "card.paused"), timeout=5), self.events(card_id))
-        card = self.wait_column(card_id, "backlog")
+        self.wait_column(card_id, "backlog")
+        # Surowa kolumna jest widoczna przed publikacją wyliczonej notki pauzy.
+        # Zwracamy tę samą migawkę, w której sprawdziliśmy gotowość projekcji.
+        def paused_snapshot():
+            card = self.shown(card_id)
+            return card if card["boardColumn"] == "backlog" and \
+                "wstrzymana" in ((card.get("derived") or {}).get("note") or "") else None
+
+        card = wait_until(paused_snapshot, timeout=10)
+        self.assertTrue(card, self.shown(card_id))
         self.assertIn("wstrzymana", card["derived"]["note"])
         self.assertEqual(len(self.of(card_id, "card.paused")), 1)
         self.assertTrue(flowfakes.alive(pid), "wstrzymanie nie zabija trwającego kroku")
@@ -428,10 +489,24 @@ class JournalTest(FlowCase):
         git(self.board, "rm", "-q", "-r", os.path.join("flow", card_id), env=self.git_env)
         git(self.board, "commit", "-q", "-m", "ręczne cofnięcie", env=self.git_env)
         self.assertTrue(wait_until(lambda: self.events(card_id) == before, timeout=15), "dziennik odtworzony")
-        # Plik odtwarza wątek roboczy; migawka z ostrzeżeniem jest publikowana później w wątku głównym.
-        warnings = lambda: [e for e in self.call("Snapshot")["errors"]
-                            if "dziennik" in e["message"] and card_id in e["message"]]
-        self.assertTrue(wait_until(warnings, timeout=15), self.call("Snapshot")["errors"])
+        # Odtworzony plik i opublikowana migawka kończą się osobno. Pierwsza odpowiedź
+        # celowo nie ma ostrzeżenia, aby wymusić ten sam wyścig także bez obciążenia.
+        call, first_snapshot = self.call, []
+
+        def delayed_snapshot(member, *args):
+            result = call(member, *args)
+            if member == "Snapshot" and not first_snapshot:
+                first_snapshot.append(True)
+                return {**result, "errors": []}
+            return result
+
+        def published_warning():
+            return [e for e in self.call("Snapshot")["errors"]
+                    if "dziennik" in e["message"] and card_id in e["message"]]
+
+        with mock.patch.object(self, "call", side_effect=delayed_snapshot):
+            self.assertTrue(wait_until(published_warning, timeout=15), "ostrzeżenie w migawce po odtworzeniu dziennika")
+        self.assertEqual(first_snapshot, [True])
         self.assertEqual(self.shown(card_id)["boardColumn"], "review")
 
 

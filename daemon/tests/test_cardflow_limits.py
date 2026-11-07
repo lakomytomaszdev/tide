@@ -187,6 +187,29 @@ class FlowQuotaContractTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: self.of(card, "step.started"), timeout=20), self.events(card))
         self.wait_column(card, "review", timeout=40)
 
+    def test_waiting_review_can_be_reassigned_to_another_provider(self):
+        # 05.11: okno tygodniowe Claude na 10% — review Opusa czekało do soboty; użytkownik przepina je na Codexa.
+        now = self.flow.engine.clock()
+        metric = {"remaining": 50, "readTs": now, "resetTs": now + 100000}
+        self.flow.engine.limits_source = lambda: {"available": True,
+                                                  "services": {"claude": {"session": metric}}}
+        card = self.card(description="Test.\n\nATRAPA: powoli 2")
+        self.assertTrue(self.start(card)["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "step.started"), timeout=20))
+        metric["remaining"] = 7
+        self.assertTrue(wait_until(lambda: any(w.get("kind") == "review" for w in self.of(card, "step.waiting")),
+                                   timeout=30), self.events(card))
+        with self.assertRaises(FlowError):
+            self.flow.engine.resolve_step(card, {"choice": "reassign-reviewer", "ticket": "PT-1", "executor": "Nikt"})
+        ticket = self.of(card, "step.started")[0]["ticket"]
+        done = self.flow.engine.resolve_step(card, {"choice": "reassign-reviewer", "ticket": ticket,
+                                                    "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" for s in self.of(card, "step.started")),
+                                   timeout=30), self.events(card))
+        review = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertEqual(review["executor"], "Codex standard")
+
 
 class LimitProjectionTest(unittest.TestCase):
     def test_finished_limit_step_is_actionable_before_automatic_retry(self):
@@ -551,14 +574,22 @@ class InteractiveTransferTest(FlowInProcess):
             self.assertEqual(launch.main(["--task", task]), 0)
             with mock.patch("tide_daemon.tasks.launch.claim_for_cwd", return_value=None):
                 self.assertEqual(launch.main([]), 0)
+        # Atrapa widzi terminal.open przed zapisem zdarzenia przez wątek silnika.
+        self.assertTrue(wait_until(lambda: self.of(card, "step.console_opened"), timeout=5), self.events(card))
         self.assertEqual(len(self.of(card, "step.console_opened")), 1)
 
     def test_restart_after_wip_commit_recovers_sha_diff_without_second_commit(self):
         card, first, terminal = self.full()
-        self.flow._timer.stop()
+        # Wstrzyknięcie awarii wywołuje silnik bez kolejki monitora. Sam timer nie kończy
+        # rozpoczętego ticka, który mógłby równolegle odzyskać właśnie zapisywany WIP.
+        self.flow.stop()
         with open(os.path.join(first["worktree"], "PLANNING-WIP.md"), "w", encoding="utf-8") as fh:
             fh.write("Niedokończony plan\n")
-        with mock.patch.object(self.flow.engine, "_handoff_note", side_effect=RuntimeError("crash after WIP")):
+        def crash_after_wip(_card, _step, stopped, _reason):
+            self.assertTrue(stopped.committed, stopped)
+            raise RuntimeError("crash after WIP")
+
+        with mock.patch.object(self.flow.engine, "_handoff_note", side_effect=crash_after_wip):
             with self.assertRaises(RuntimeError):
                 self.flow.engine._resolve_transfer(card, fold(self.events(card)),
                                                    {"choice": "transfer", "step": first["step"],

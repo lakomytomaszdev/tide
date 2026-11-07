@@ -137,6 +137,13 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual([s["ticket"] for s in steps], [reply["map"]["#1"], reply["map"]["#2"]])
         merge = self.results(card, "merge")
         self.assertEqual([r["key"] for r in merge], [reply["map"]["#1"], reply["map"]["#2"]])
+        bases = {r["ticket"]: r["base"] for r in self.results(card, "ticket-branch")}
+        self.assertNotEqual(bases[reply["map"]["#2"]], self.master)
+        for step in self.of(card, "step.started"):
+            if step.get("kind") not in ("ticket", "review"):
+                continue
+            with open(os.path.join(step["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+                self.assertIn(f"make test-changed BASE={bases[step['ticket']]}", json.load(fh)["prompt"])
         second_start = next(e["seq"] for e in self.events(card) if e["type"] == "step.started" and
                             e.get("ticket") == reply["map"]["#2"])
         first_merge = next(e["seq"] for e in self.events(card) if e["type"] == "result" and

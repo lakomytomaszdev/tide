@@ -2,7 +2,8 @@
 // karty z Backlogu do Do zrobienia albo z „Uruchom agenta…” na karcie. Karta (ID, ◆ projekt, tagi),
 // zadanie z opisu karty (zmiany zapiszą się w karcie), narzędzie, wejście („Jak zacząć?”: Planowanie albo Tylko specyfikacja), tryb Planowania (Pełny, Lekki) z paskiem kroków,
 // miejsce dokumentów AI z linkiem do ustawień projektu, „Dodatkowe projekty” (PT-28: chipy i wybór
-// z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir), „Nowy worktree” z gałęzią (przy wejściu Tylko
+// z projektów tablicy oraz repozytoriów — agent dostaje je przez --add-dir; przy Planowaniu „Projekty zlecenia”,
+// K-33 #4, a przy Od razu i Mam plan zdanie o jednym projekcie), „Nowy worktree” z gałęzią (przy wejściu Tylko
 // specyfikacja wyłączony), „Test ręczny po zakończeniu”, zdanie „co się stanie” i przyciski Anuluj, Tylko przenieś,
 // Uruchom agenta (Ctrl+Enter). Karta bez projektu z repozytorium — wyjaśnienie i wybór projektu.
 // To, co ma okno „Nowe zadanie” (PT-43): zrzuty ekranu pod zadaniem (Tide.ScreenshotStrip z widgets/lib —
@@ -36,6 +37,9 @@ Rectangle {
     property string mode: "full"           // tryb Planowania: full | light (przy innym wejściu zapamiętany)
     property string tool: "claude"
     property string branch: ""
+    property string cardBranch: ""
+    readonly property alias basePicker: basePicker
+    readonly property alias baseSuggestions: baseSuggestions
     property bool branchEdited: false
     property bool editingBranch: false
     property bool newWorktree: true
@@ -85,10 +89,13 @@ Rectangle {
     readonly property string blocker: Logic.launchBlocker(snapshot, card)
     readonly property bool canStart: blocker === "" && modelBlocker === "" && !busy && taskText.trim() !== ""
                                       && (entry !== "plan" || planPath !== "")
+                                      && basePicker.ready && (!flowEntry || cardBranch.trim() !== "")
     readonly property string taskText: taskEdit.text
     readonly property var launchState: ({
         cardId: cardId, entry: entry, mode: mode, planPath: planPath, tool: agentTool, branch: branch, newWorktree: newWorktree,
         executor: executor, reviewer: reviewer, preferredProvider: preferredProvider,
+        cardBranch: cardBranch.trim(), baseRef: basePicker.selected ? basePicker.selected.ref : "",
+        baseCommit: basePicker.selected ? basePicker.selected.commit : "",
         model: model === "local" ? "local" : "cloud", localModel: model === "local" ? localOption.model : "",
         images: images,
         check: manualCheck ? "manual" : "auto", aiDocs: workProject ? workProject.aiDocs : "",
@@ -191,6 +198,8 @@ Rectangle {
     signal removeImageRequested(string path)
     signal filesDropped(var urls)
     signal modelsRequested()   // „ustaw/zmień w Tide → Modele”: widok Modele okna Tide
+    signal branchesRequested(string text)
+    signal suggestionsRequested(var request)
 
     function tone(name) {
         return tagTone ? tagTone(name) : Tide.Tokens.textMuted
@@ -218,6 +227,9 @@ Rectangle {
         model = taskDefaults && taskDefaults.model === "local" ? "local" : "cloud"
         tool = p ? p.tool || "claude" : "claude"
         branch = Logic.launchBranch(c, agentTool)
+        cardBranch = c && c.derived && c.derived.flow && c.derived.flow.cardBranch
+                     ? c.derived.flow.cardBranch : "card/" + (c && c.branchSlug ? c.branchSlug : cardId.toLowerCase())
+        basePicker.reset()
         newWorktree = true
         manualCheck = false
         extras = Logic.cardExtras(snapshot, c)
@@ -631,16 +643,52 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
-                // Dodatkowe projekty (PT-28): zadanie, które zmienia kilka repozytoriów.
+                // Dodatkowe projekty (PT-28): zadanie, które zmienia kilka repozytoriów. Przy Planowaniu to projekty
+                // zlecenia (K-33 #4): projekt karty i wybrane tu, jeden plan z kolumną Projekt. Od razu i Mam plan
+                // są jednoprojektowe (P7) — zamiast wyboru zdanie niżej.
                 RowLayout {
                     objectName: "launchExtras"
                     Layout.fillWidth: true
-                    visible: dialog.workProject !== null && dialog.entry !== "now"   // krok w tle: jeden worktree ticketu
+                    visible: dialog.workProject !== null && dialog.entry !== "now" && dialog.entry !== "plan"
                     spacing: 10
-                    FieldLabel { text: "Dodatkowe projekty"; color: Tide.Tokens.textSecondary }
+                    FieldLabel { text: dialog.entry === "planning" ? "Projekty zlecenia" : "Dodatkowe projekty"
+                                 color: Tide.Tokens.textSecondary }
                     Flow {
                         Layout.fillWidth: true
                         spacing: 6
+                        Rectangle {
+                            objectName: "launchMainProject"
+                            visible: dialog.entry === "planning"
+                            implicitWidth: mainRow.implicitWidth + 16
+                            implicitHeight: 28
+                            radius: 7
+                            color: Tide.Theme.alpha(Tide.Tokens.accent, 0.09)
+                            border.width: 1
+                            border.color: Tide.Theme.alpha(Tide.Tokens.accent, 0.35)
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: "Projekt karty " + (dialog.workProject ? dialog.workProject.name : "")
+                            Row {
+                                id: mainRow
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "◆"
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.accent
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 10
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: (dialog.workProject ? dialog.workProject.name : "") + " · projekt karty"
+                                    textFormat: Text.PlainText
+                                    color: Tide.Tokens.textPrimary
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                }
+                            }
+                        }
                         Repeater {
                             model: dialog.extras
                             Rectangle {
@@ -916,6 +964,17 @@ Rectangle {
                         Item { Layout.fillWidth: true }
                     }
                     Text {
+                        objectName: "launchSingleProject"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: Logic.singleProjectNote(dialog.entry, dialog.workProject)
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
                         objectName: "launchCodexCommandPolicyNotice"
                         Layout.fillWidth: true
                         visible: Boolean(dialog.flowEntry && dialog.selectedExecutor
@@ -991,6 +1050,45 @@ Rectangle {
                     }
                 }
 
+                BranchPicker {
+                    id: basePicker
+                    objectName: "basePicker"
+                    Layout.fillWidth: true
+                    active: dialog.visible && dialog.workProject !== null
+                    readOnlyRevision: dialog.entry === "spec"
+                    initialSelection: readOnlyRevision && dialog.card && dialog.card.specRevision
+                                      && dialog.workProject && dialog.card.specRevision.repo === dialog.workProject.repo
+                                      ? dialog.card.specRevision : null
+                    pinned: dialog.flowEntry && dialog.card && dialog.card.baseRef && dialog.card.baseCommit
+                            ? ({ref: dialog.card.baseRef, commit: dialog.card.baseCommit, name: dialog.card.baseBranch}) : null
+                    contextKey: dialog.cardId + ":" + (dialog.entry === "spec" ? "spec" : "flow") + ":" + (dialog.workProject ? dialog.workProject.slug + ":" + dialog.workProject.repo : "")
+                    onRequested: text => dialog.branchesRequested(text)
+                }
+                BaseSuggestions {
+                    id: baseSuggestions
+                    Layout.fillWidth: true
+                    active: basePicker.active && !basePicker.pinned
+                    cardId: dialog.cardId
+                    project: dialog.workProject ? dialog.workProject.slug : ""
+                    repo: dialog.workProject ? dialog.workProject.repo : ""
+                    text: dialog.taskText
+                    description: dialog.card ? dialog.card.description || "" : ""
+                    selectionKey: basePicker.selected ? basePicker.selected.ref + ":" + basePicker.selected.commit : ""
+                    onRequested: request => dialog.suggestionsRequested(request)
+                    onChosen: candidate => basePicker.selected = candidate
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: dialog.flowEntry
+                    FieldLabel { text: "Nazwa nowej gałęzi karty" }
+                    LineInput {
+                        objectName: "cardBranchInput"
+                        Layout.fillWidth: true
+                        text: dialog.cardBranch
+                        accessibleName: "Nazwa nowej gałęzi karty"
+                        onEdited: dialog.cardBranch = text
+                    }
+                }
                 // Nowy worktree i test ręczny.
                 RowLayout {
                     Layout.fillWidth: true

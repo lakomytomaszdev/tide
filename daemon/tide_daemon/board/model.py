@@ -135,6 +135,9 @@ class Project:
     assignment_rules: str = ""
     allowed_commands: list = field(default_factory=list)
     denied_commands: list = field(default_factory=list)
+    read_dirs: list = field(default_factory=list)
+    read_dir_bindings: list = field(default_factory=list)
+    read_dirs_error: str = ""
     doc: Document | None = None
 
 
@@ -158,6 +161,12 @@ class Card:
     plan: str = ""          # wskazany plan przekazania; zapis po stronie karty
     session: str = ""
     branch: str = ""
+    base_ref: str = ""
+    base_branch: str = ""
+    base_commit: str = ""
+    spec_revision_ref: str = ""
+    spec_revision_commit: str = ""
+    spec_revision_repo: str = ""
     check: str = DEFAULT_CHECK
     mode: str = ""            # tryb Planowania (full, light); przy wejściu spec pusty
     entry: str = ""           # wejście ostatniego uruchomienia; pusty — karta nie była uruchamiana
@@ -267,6 +276,8 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
     card.column_moved = doc.get(COLUMN_MOVED_KEY).strip()
     for key in RESERVED_CARD_KEYS:
         setattr(card, key, doc.get(key).strip())
+    for key in ("base-ref", "base-branch", "base-commit", "spec-revision-ref", "spec-revision-commit", "spec-revision-repo"):
+        setattr(card, key.replace("-", "_"), doc.get(key).strip())
     card.plan = doc.get("plan").strip()
     card.check = _choice(doc.get("check"), CHECKS, DEFAULT_CHECK, f"{name}: nieznane sprawdzenie", path, errors)
     card.entry, card.mode = _entry_mode(doc, "", name, path, errors, mode_label="nieznany tryb uruchomienia")
@@ -319,6 +330,15 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
                                              commands.ALLOWED_KEY, errors, path)
     project.denied_commands = commands.read(doc.get(commands.DENIED_KEY), default_denied,
                                             commands.DENIED_KEY, errors, path)
+    from ..tasks import readaccess
+    try:
+        project.read_dirs = readaccess.paths(json.loads(doc.get(readaccess.KEY) or "[]"))
+        project.read_dir_bindings = json.loads(doc.get(readaccess.BINDINGS_KEY) or "[]")
+        if not isinstance(project.read_dir_bindings, list):
+            raise ValueError("readDirs: uszkodzone powiązania dowiązań")
+    except (ValueError, TypeError) as exc:
+        project.read_dirs_error = f"readDirs: niepoprawne ustawienie ({exc})"
+        errors.append(_err(path, project.read_dirs_error))
     try:
         value = json.loads(doc.get("assignment-rules") or '""')
         project.assignment_rules = value if isinstance(value, str) else ""

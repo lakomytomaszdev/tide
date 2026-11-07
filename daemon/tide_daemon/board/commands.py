@@ -180,7 +180,24 @@ OUTSIDE_ENV_DENIED = ("PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "PS4", 
 OUTSIDE_FAMILY = {"npm": 2, "pnpm": 2, "yarn": 2, "npx": 3, "dotnet": 2, "make": 2, "git": 2, "python3": 3}
 
 
-def outside_argv(command: str) -> list[str] | None:
+def _inside_roots(path: str, roots) -> bool:
+    import os
+    real = os.path.realpath(path)
+    return any(real == os.path.realpath(r) or real.startswith(os.path.realpath(r) + os.sep) for r in roots if r)
+
+
+def script_in_roots(program: list[str], roots) -> bool:
+    """`bash skrypt.sh [argumenty]` / `sh …` — skrypt z worktree ticketu albo repozytorium projektu (04.11, KAMP-1:
+    agent zapisał procedurę jako skrypt w worktree, a Tide odrzucał ją jak `bash -c`). Ścieżka względna liczy się od
+    worktree (pierwszy z `roots`), polecenie i tak startuje w nim. Taki skrypt zawsze wymaga zgody (outside_risky)."""
+    import os
+    if not roots or len(program) < 2 or program[0] not in ("bash", "sh") or program[1].startswith("-"):
+        return False
+    path = program[1] if program[1].startswith("/") else os.path.join(roots[0] or "", program[1])
+    return bool(roots[0] or program[1].startswith("/")) and _inside_roots(path, roots) and "../" not in program[1]
+
+
+def outside_argv(command: str, roots=()) -> list[str] | None:
     """Polecenie poza piaskownicą bez początkowych zmiennych (`E2E_PORT=4311 npm run e2e`, także w cudzysłowie:
     `DATABASE_CONNECTION="Host=…;Port=1" dotnet test`, K-16); None dla łańcucha, podpowłoki albo zmiennej, która
     zmienia sposób uruchamiania (PATH, LD_*, NODE_OPTIONS…)."""
@@ -199,13 +216,24 @@ def outside_argv(command: str) -> list[str] | None:
     except ValueError:
         return None
     at = 0
+    # `env NAZWA=… program` w obrębie projektu (04.11, K-41: testy rdzenia przez venv z PYTHONPATH do worktree
+    # ticketu pytały co ticket) — `env` traktujemy jak zwykłe przypisania przed programem.
+    if roots and parts[:1] == ["env"] and len(parts) > 2 and "=" in parts[1]:
+        at = 1
     while at < len(parts) and "=" in parts[at]:
         name, value = parts[at].split("=", 1)
-        if not OUTSIDE_ENV_NAME.fullmatch(name) or name in OUTSIDE_ENV_DENIED or name.startswith(("LD_", "DYLD_")) \
-                or len(value) > 500:
+        # Ścieżka względna liczy się od worktree (pierwszy z `roots`) — tam startuje polecenie (K-41/KAMP-23: `core/src`).
+        project_path = name == "PYTHONPATH" and roots and roots[0] and value and all(
+            part and "../" not in part and part != ".." and
+            _inside_roots(part if part.startswith("/") else os.path.join(roots[0], part), roots)
+            for part in value.split(":"))
+        if not OUTSIDE_ENV_NAME.fullmatch(name) or (name in OUTSIDE_ENV_DENIED and not project_path) \
+                or name.startswith(("LD_", "DYLD_")) or len(value) > 500:
             return None
         at += 1
     program = parts[at:]
+    if script_in_roots(program, roots):
+        return program
     # Operatory sprawdził lekser wyżej; tu tylko reguły programu jak w `_argv` (bez powłok, sudo, env i przypisań).
     # `_argv` odrzuciłby argument `;` z `find -exec … \;`, choć powłoka dostaje go jako zwykły tekst.
     if not program or program[0] in ("sh", "bash", "zsh", "fish", "eval", "exec", "env", "command", "builtin",
@@ -214,11 +242,11 @@ def outside_argv(command: str) -> list[str] | None:
     return program
 
 
-OUTSIDE_MAX = 2000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów)
+OUTSIDE_MAX = 8000      # polecenia poza piaskownicą bywają długie (zmienne połączeń, filtry testów; K-37/PT-153, 04.11: lista 63 modułów testów miała 2318 znaków)
 
 
-def outside_allowed(command: str, denied: list[str]) -> bool:
-    argv = outside_argv(command)
+def outside_allowed(command: str, denied: list[str], roots=()) -> bool:
+    argv = outside_argv(command, roots)
     if argv is None or len(command) > OUTSIDE_MAX:
         return False
     # Zakazy projektu porównujemy na gotowych argumentach (`is_forbidden` przepuszcza tekst przez `_argv`, który
@@ -271,17 +299,36 @@ OUTSIDE_RISKY = (
     "pip3 install", "python3 -m pip", "find", "xargs", "truncate", "shred", "ln", "tee", "open", "xdg-open")
 
 
-def outside_risky(command: str) -> str:
-    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne."""
-    argv = outside_argv(command)
+GIT_READ_ONLY = ("archive", "show", "log", "diff", "ls-tree", "cat-file", "rev-parse", "branch", "status")
+
+
+def outside_risky(command: str, roots=(), read_roots=()) -> str:
+    """Powód, dla którego polecenie wymaga decyzji użytkownika mimo automatycznych zgód; pusty = bezpieczne.
+    `roots` — worktree ticketu i repozytorium projektu: ścieżki w nich nie są „spoza worktree”.
+    `read_roots` — dodatkowe projekty karty: wolno je tylko czytać gitem (`git -C <repo> archive|show|log…`), a wynik
+    (np. `--output`) musi trafić do `roots` (04.11, K-43: każdy ticket BO prosił o zgodę na `git archive` z streamer)."""
+    argv = outside_argv(command, roots)
+    if argv and read_roots and argv[:2] == ["git", "-C"] and len(argv) > 3 and \
+            _inside_roots(argv[2], read_roots) and argv[3] in GIT_READ_ONLY:
+        if argv[3] == "branch" and any(a.startswith("-") and a not in ("-a", "--all", "-r", "--list", "-v", "-vv")
+                                       for a in argv[4:]):
+            return "„git branch” z opcją zmieniającą gałęzie w innym projekcie"
+        outputs = [a.split("=", 1)[1] for a in argv[4:] if a.startswith("--output=")]
+        outputs += [argv[i + 1] for i, a in enumerate(argv[4:-1], start=4) if a in ("--output", "-o")]
+        if all(o.startswith("/") and _inside_roots(o, roots) or not o.startswith("/") for o in outputs):
+            return ""
     if argv is None:
         return "łańcuch, podpowłoka albo niebezpieczna zmienna"
+    if script_in_roots(argv, roots):
+        return f"skrypt powłoki {argv[1]} może zrobić wszystko na Twoim koncie — przejrzyj go przed uruchomieniem"
     for rule in OUTSIDE_RISKY:
         prefix = rule.split()
         if argv[:len(prefix)] == prefix:
             return f"„{rule}” wychodzi poza worktree albo zmienia system"
     for arg in argv[1:]:
         value = arg.split("=", 1)[-1]
+        if value.startswith("/") and roots and _inside_roots(value, roots) and "../" not in value:
+            continue
         if value.startswith(("/", "~")) and not value.startswith("/tmp/") or "../" in value or value == "..":
             return f"ścieżka spoza worktree: {arg}"
     return ""

@@ -52,7 +52,7 @@ class ShapeTest(unittest.TestCase):
         phases = view(Events().step("K-1-PT-1-1"))["phases"]
         self.assertEqual([p["id"] for p in phases], [ident for ident, _label in PHASES])
         self.assertEqual([p["label"] for p in phases], ["Zlecenie", "Planowanie", "Review planu", "Zatwierdzenie planu",
-                                                        "Tickety", "Domknięcie", "Scalenie do master"])
+                                                        "Tickety", "Domknięcie", "Scalenie"])
         for item in phases:
             self.assertEqual(set(item), PHASE_KEYS)
             self.assertIn(item["state"], STATES)
@@ -204,6 +204,17 @@ class WaitingOnTest(unittest.TestCase):
 
 
 class BackgroundTest(unittest.TestCase):
+    def test_ticket_phase_separates_user_resource_and_work(self):
+        # 05.11: pomarańczowy pasek znaczył naraz „czeka na Ciebie”, „w kolejce” i „limit”.
+        events = approved().step("K-1-PT-1-1", ticket="PT-1", result="question")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "ty")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="answer", answer="tak")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "kolejka")
+        events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "pracuje")
+        events.add("step.waiting", ticket="PT-1", kind="fix", cause="quota", reason="czeka na limit Claude")
+        self.assertEqual(view(events)["tickets"][0]["phase"], "kolejka")
+
     def test_now_in_background_lists_only_running_steps(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")
         events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus")
@@ -211,6 +222,51 @@ class BackgroundTest(unittest.TestCase):
         self.assertEqual([(s["id"], s["kindLabel"], s["executor"]) for s in running],
                          [("K-1-PT-1-r1", "review", "Opus")], "zakończone kroki (planowanie, ticket) nie trafiają")
         self.assertIn("canEnter", running[0])
+
+    def test_outside_command_counts_as_work_not_waiting(self):
+        # 04.11, K-37/PT-153: przy trwającym `make test` poza piaskownicą kafelek pokazywał „czeka”,
+        # a „Teraz w tle” — „Nic nie pracuje teraz w tle”.
+        events = approved().step("K-1-PT-1-1", ticket="PT-1", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-1-1", ticket="PT-1", choice="run", command="make test")
+        tickets = {t["id"]: t for t in view(events)["tickets"]}
+        self.assertEqual(tickets["PT-1"]["statusLabel"], "w kolejce: make test")
+        self.assertEqual((tickets["PT-1"]["phase"], tickets["PT-1"]["why"]),
+                         ("kolejka", "w kolejce poza piaskownicą: make test"))
+        events.add("outside.started", step="K-1-PT-1-1", command="make test")
+        out = view(events)
+        tickets = {t["id"]: t for t in out["tickets"]}
+        self.assertEqual((tickets["PT-1"]["status"], tickets["PT-1"]["statusLabel"]),
+                         ("running", "pracuje: make test"))
+        self.assertEqual(tickets["PT-1"]["phase"], "pracuje")
+        self.assertEqual([(s["id"], s["kindLabel"]) for s in out["flow"]["running"]],
+                         [("K-1-PT-1-1", "polecenie poza piaskownicą")])
+        events.add("outside.finished", step="K-1-PT-1-1", ok=True)
+        events.step("K-1-PT-1-2", ticket="PT-1", parent="K-1-PT-1-1")
+        self.assertEqual([s["id"] for s in view(events)["flow"]["running"]], ["K-1-PT-1-2"])
+
+    def test_card_with_outside_command_of_another_ticket_stays_in_progress(self):
+        # 04.11, K-46: ostatni krok to review APPROVE innego ticketu → kafelek trafiał do „Do sprawdzenia”,
+        # choć inny ticket puszczał testy poza piaskownicą.
+        events = approved().step("K-1-PT-2-1", ticket="PT-2", result="denied", outside=True, command="make test")
+        events.add("step.decision", step="K-1-PT-2-1", ticket="PT-2", choice="run", command="make test")
+        events.add("outside.started", step="K-1-PT-2-1", command="make test")
+        events.step("K-1-PT-1-1", ticket="PT-1", result="done")
+        events.step("K-1-PT-1-r1", ticket="PT-1", kind="review", executor="Opus", result="done")
+        events.add("review.verdict", ticket="PT-1", round=1, verdict="APPROVE", blockers=0, majors=0, nits=0)
+        merge(events, "PT-1")
+        out = view(events)
+        self.assertEqual(out["column"], "progress")
+        self.assertIn("PT-2: polecenie poza piaskownicą", out["note"])
+
+    def test_author_step_start_clears_stale_author_wait_of_the_ticket(self):
+        # 05.11, K-37/PT-147: wpis „czeka na limit” kroku ticket został, gdy poprawki ruszyły na innym wykonawcy.
+        events = approved()
+        events.add("step.waiting", ticket="PT-1", kind="ticket", provider="anthropic",
+                   reason="czeka na limit Claude do sobota 18:00", cause="quota", until="sobota 18:00")
+        events.step("K-1-PT-1-2", ticket="PT-1", kind="fix", executor="Codex mocny")
+        tickets = {t["id"]: t for t in view(events)["tickets"]}
+        self.assertEqual(tickets["PT-1"]["status"], "fix")
+        self.assertNotIn(("PT-1", "ticket"), events.state().waiting)
 
     def test_finish_counts_running_steps_and_unmerged_tickets(self):
         events = approved().step("K-1-PT-1-1", ticket="PT-1", result="done")

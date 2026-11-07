@@ -50,6 +50,9 @@ class AgentScanner:
         # Modele znane z models.json (znacznik „lokalny” dla Claude Code bez etykiety nazwa:tag).
         # Usługa podmienia to na stan /Models (role i modele na serwerach) — app.py.
         self.known_local_models = config_models
+        # Drugi stopień rozpoznawania pytań (PT-42, agents/classify.py): Classifier albo None (same reguły —
+        # --print-once, testy rdzenia). Usługa ustawia go w app.py po starcie modeli.
+        self.classifier = None
 
     # --- pliki -------------------------------------------------------------------------
 
@@ -128,7 +131,9 @@ class AgentScanner:
         self.bound_pids = {}
         self.app_threads = {}
         entries: dict[int, dict] = {}
+        judge = self.classifier.judge if self.classifier is not None else None
         for log in visible:
+            log.judge = judge
             pid = bindings.get(id(log))
             alive = None if procs is None else pid is not None
             status = None

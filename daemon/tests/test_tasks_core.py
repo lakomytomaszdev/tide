@@ -19,11 +19,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from . import DAEMON_DIR, gitrepos
 from tide_daemon.processes import ProcessInfo, ProcessTable
 from tide_daemon.tasks import Planner, TaskError, TaskFiles, agent_argv, list_repos, task_title, worktree_dir
+from tide_daemon.tasks import launch
 from tide_daemon.tasks.terminal import LAUNCHER, PROFILE_NAME, TaskTerminal, pick_window, profile_path
 from tide_daemon.worktrees import Launchers, humanize_branch, guess_tool
 from tide_daemon.worktrees.git import Git
@@ -142,6 +146,62 @@ class ArgvTest(unittest.TestCase):
     def test_title(self):
         self.assertEqual(task_title("plasma-tide", "claude/fix-x"), "plasma-tide · claude/fix-x")
         self.assertEqual(task_title("a;b", "100%\nx"), "ab · 100x")
+
+
+class DurableFlowTaskTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.files = TaskFiles(os.path.join(self.temp.name, "runtime"))
+        self.payload = {"cwd": self.temp.name, "argv": ["/bin/true"],
+                        "processFile": os.path.join(self.temp.name, "process.json"),
+                        "consoleUnit": "tide-console-test"}
+
+    def test_sweep_removes_runtime_but_not_durable_cancellation(self):
+        task = self.files.write(self.payload)
+        self.assertTrue(self.files.cancel(task))
+        self.files.sweep(older_than=-1)
+        self.assertEqual(os.listdir(self.files.folder), [])
+        self.assertTrue(os.path.isfile(launch.task_state_file(self.payload) + ".cancelled"))
+
+    def test_claim_and_cancel_share_one_durable_winner_in_both_race_orders(self):
+        for winner in ("claimed", "cancelled"):
+            with self.subTest(winner=winner):
+                payload = {**self.payload, "consoleUnit": "tide-console-" + winner}
+                task = self.files.write(payload)
+                loaded, resolved = threading.Event(), threading.Event()
+                barrier = threading.Barrier(2)
+                load, resolve = launch._load, launch.resolve_task_state
+
+                def read(path):
+                    data = load(path)
+                    if path == task:
+                        loaded.set()
+                    barrier.wait(timeout=5)
+                    return data
+
+                def decide(path, outcome):
+                    if outcome != winner:
+                        self.assertTrue(resolved.wait(timeout=5))
+                    result = resolve(path, outcome)
+                    if outcome == winner:
+                        resolved.set()
+                    return result
+
+                with mock.patch.object(launch, "_load", side_effect=read), \
+                        mock.patch.object(launch, "resolve_task_state", side_effect=decide), \
+                        ThreadPoolExecutor(max_workers=2) as pool:
+                    cancelling = pool.submit(self.files.cancel, task)
+                    self.assertTrue(loaded.wait(timeout=5))
+                    claiming = pool.submit(launch.claim, task)
+                    cancelled, claimed = cancelling.result(timeout=5), claiming.result(timeout=5)
+                self.assertEqual(cancelled, winner == "cancelled")
+                self.assertEqual(claimed is not None, winner == "claimed")
+                state_file = launch.task_state_file(payload)
+                self.assertTrue(os.path.isfile(state_file + "." + winner))
+                self.assertFalse(os.path.exists(state_file))
+                self.assertFalse(os.path.exists(state_file + "." +
+                                                ("cancelled" if winner == "claimed" else "claimed")))
 
 
 class NamingTest(unittest.TestCase):

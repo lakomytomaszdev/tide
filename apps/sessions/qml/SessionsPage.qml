@@ -52,6 +52,7 @@ Rectangle {
     readonly property string openedCardId: decisionOpen ? decisionCardId : fullOpen ? fullCardId : ""
     readonly property alias decisionDialog: decisionDialog
     readonly property alias cardFullView: cardFullView
+    readonly property alias baseChangePreview: baseChangePreview
     readonly property var ticket: Logic.ticketById(board, selectedKey)
     readonly property bool youtrack: board !== null && board.tracker && board.tracker.kind === "youtrack"
 
@@ -127,6 +128,25 @@ Rectangle {
         delete tags[tag]
         cardTags = tags
         if (!sent) return
+        if (sent[1].indexOf("step-note:") === 0) {
+            cardFullView.noteReply(sent[1].substring(10),
+                reply && reply.ok ? "" : reply && reply.message || "Nie zapisano uwagi.", reply)
+            return
+        }
+        if (reply && reply.ok && reply.preview) baseChangePreview.show(sent[0], reply.preview)
+        if (tag.indexOf("base-preview:") === 0) {
+            baseChangePreview.busy = false
+            if (reply && reply.ok) baseChangePreview.show(sent[0], reply)
+            else baseChangePreview.error = reply && reply.message || "Nie można odczytać podglądu."
+            return
+        }
+        if (tag.indexOf("base-keep:") === 0 || tag.indexOf("base-confirm:") === 0) {
+            baseChangePreview.busy = false
+            if (reply && reply.ok && (tag.indexOf("base-keep:") === 0 || reply.changed)) baseChangePreview.close()
+            else if (reply && reply.ok) baseChangePreview.error = reply.reason || "Korekta czeka; zachowano dane podglądu."
+            else baseChangePreview.error = reply && reply.message || "Nie zapisano decyzji."
+            return
+        }
         const fromFull = fullOpen && !decisionOpen && sent[0] === fullCardId
         if (tag.indexOf("fault-preview:") === 0) {
             if (fromFull) cardFullView.showPreview(sent[1], reply)
@@ -633,6 +653,7 @@ Rectangle {
         // Wybór wykonawcy i ustawienia karty są w panelu karty Tablicy; w Sesjach nie ma go, więc wracamy do listy.
         onPanelRequested: page.closeFull()
         onEnterStepRequested: stepId => page.sendCard("enter-step", page.fullCardId, "", "EnterStep", { step: stepId })
+        onCaretakerTalkRequested: page.sendCard("caretaker-talk", page.fullCardId, "", "TalkToCaretaker", {})
     }
 
     CardUi.DecisionDialog {
@@ -654,5 +675,18 @@ Rectangle {
             page.decisionOpen = false
             page.openFull(id)
         }
+    }
+    CardUi.BaseChangePreview {
+        id: baseChangePreview
+        parent: page
+        z: 45
+        onRefreshed: request => page.sendCard("base-preview", cardId, "", "PreviewCardBaseChange", request)
+        onConfirmed: request => page.sendCard("base-confirm", cardId, "", "ResolveCardStep", request)
+        onKeepRequested: step => {
+            busy = true
+            page.sendCard("base-keep", cardId, "", "ResolveCardStep",
+                          {choice: "answer", step: step, baseDecision: "keep"})
+        }
+        onFileRequested: path => page.urlRequested("file://" + path)
     }
 }

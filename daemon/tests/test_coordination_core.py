@@ -145,6 +145,28 @@ class PlanTest(unittest.TestCase):
                                 "| --- | --- | --- | --- | --- | --- |\n| PT-1 | Stary | todo | | | |\n")
         self.assertEqual((legacy.errors, legacy.tables, legacy.rows[0].blockers), ([], 1, ()))
 
+    def test_standard_13_project_column(self):
+        head = "---\ntide-plan: 1\ntitle: X\ntracker: local\nticket-prefix: PT\n---\n"
+        full = ("| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery | Projekt |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                "| PT-1 | Pierwszy | todo | | | | standard | | | Plasma-Tide |\n"
+                "| PT-2 | Drugi | todo | | | | | | PT-1 | |\n"
+                "| PT-3 | Trzeci | todo | | | | | | | nieznany-slug |\n")
+        parsed = plan_mod.parse(head + full)
+        self.assertEqual((parsed.errors, parsed.tables), ([], 1))
+        self.assertEqual([r.project for r in parsed.rows], ["plasma-tide", "", "nieznany-slug"])
+        self.assertEqual(parsed.rows[1].blockers, ("PT-1",))
+        # 9 kolumn z pustą ostatnią komórką to nie kolumna Projekt
+        nine = plan_mod.parse(head + "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |\n"
+                              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                              "| PT-1 | A | todo | | | | | | |\n")
+        self.assertEqual((nine.errors, nine.rows[0].project), ([], ""))
+        for count in (7, 8):
+            cols = ["Ticket", "Tytuł", "Stan", "Gałąź", "Agent", "Uwagi", "Klasa", "Review"][:count]
+            plan = plan_mod.parse(head + "| " + " | ".join(cols) + " |\n| " + " | ".join(["---"] * count)
+                                  + " |\n| PT-1 | A | todo |" + " |" * (count - 3) + "\n")
+            self.assertEqual((plan.errors, plan.rows[0].project), ([], ""))
+
     def test_valid_plan(self):
         text = F.PLAN.format(url="http://10.20.1.159:8111/", session="abc", updated="2026-10-26T10:00:00Z")
         plan = plan_mod.parse(text, "/r/docs/agents/plans/2026-10-26-release.md")

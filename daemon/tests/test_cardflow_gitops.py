@@ -25,8 +25,11 @@ class LocalStepGit:
         self.git = Git()
         self.worktree = worktree
 
-    def run(self, *args, timeout=120):
-        return self.git.run(self.worktree, *gitops.HARDENED, *args, timeout=timeout)
+    def run(self, *args, timeout=120, index_dir=None):
+        runner = Git() if index_dir is not None else self.git
+        if index_dir is not None:
+            runner.env["GIT_INDEX_FILE"] = os.path.join(index_dir, "index")
+        return runner.run(self.worktree, *gitops.HARDENED, *args, timeout=timeout)
 
 
 class MergeTest(unittest.TestCase):
@@ -62,6 +65,34 @@ class MergeTest(unittest.TestCase):
                                expected_tip=git(self.repo, "rev-parse", "ticket/test"))
 
     @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_review_check_ignores_untracked_files_but_not_tracked_changes(self):
+        # 04.11, K-43/BO-9: wynik pomiaru recenzenta (nieśledzony plik) unieważniał review 9 razy.
+        self.ticket_commit()
+        tip = self.flow.clean_tip(self.repo, "ticket/test", self.ticket)
+        self.write(self.ticket, ".review-result.json", "{}\n")
+        self.assertEqual(self.flow.clean_tip(self.repo, "ticket/test", self.ticket, untracked=False), tip)
+        with self.assertRaises(gitops.FlowGitError):     # przed review nieśledzone pliki autora dalej blokują
+            self.flow.clean_tip(self.repo, "ticket/test", self.ticket)
+        self.write(self.ticket, "ticket.txt", "zmienione\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.clean_tip(self.repo, "ticket/test", self.ticket, untracked=False)
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_untracked_files_are_archived_and_the_worktree_removed(self):
+        # 04.11, K-43/BO-9: kopia zestawu klatek w worktree blokowała sprzątanie po scaleniu.
+        os.makedirs(os.path.join(self.ticket, ".dane"))
+        self.write(os.path.join(self.ticket, ".dane"), "kadr.jpg", "x\n")
+        self.assertTrue(self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)["removed"])
+        self.assertFalse(os.path.exists(self.ticket))
+        self.assertTrue(os.path.isfile(os.path.join(self.ticket + ".step", "pozostawione-po-scaleniu", ".dane", "kadr.jpg")))
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
+    def test_tracked_changes_still_block_removal(self):
+        self.write(self.ticket, "base.txt", "zmienione\n")
+        with self.assertRaises(gitops.FlowGitError):
+            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+
+    @unittest.skipUnless(sandbox_available(), "brak bwrap")
     def test_worktree_with_only_user_agent_tooling_is_removed(self):
         os.makedirs(os.path.join(self.ticket, ".agents", "skills"))
         self.write(os.path.join(self.ticket, ".agents", "skills"), "SKILL.md", "x\n")
@@ -69,11 +100,12 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.ticket))
 
     @unittest.skipUnless(sandbox_available(), "brak bwrap")
-    def test_worktree_with_real_leftovers_is_kept(self):
+    def test_worktree_leftovers_are_not_lost(self):
+        # Nieśledzona praca nie przepada: trafia do katalogu kroku ticketu, zanim worktree zniknie (04.11).
         self.write(self.ticket, "notatka.txt", "praca\n")
-        with self.assertRaises(gitops.FlowGitError):
-            self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
-        self.assertTrue(os.path.exists(os.path.join(self.ticket, "notatka.txt")))
+        self.flow.remove_worktree(self.repo, "ticket/test", self.ticket)
+        with open(os.path.join(self.ticket + ".step", "pozostawione-po-scaleniu", "notatka.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "praca\n")
 
     def test_two_ticket_merges_share_one_repo_lock(self):
         self.ticket_commit()
@@ -207,6 +239,27 @@ class MergeTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
         self.assertEqual(git(self.card, "status", "--porcelain"), "")
 
+    def test_merge_keeps_unrelated_local_changes_and_blocks_on_touched_files(self):
+        # 04.11, K-43: główny katalog BO z niezacommitowaną pracą w innych plikach blokował scalenie karty.
+        self.ticket_commit()
+        self.write(self.card, "base.txt", "praca użytkownika\n")
+        with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
+                mock.patch.object(gitops, "StepGit", LocalStepGit, create=True):
+            merged = self.merge()
+            self.assertFalse(merged["already"])
+            with open(os.path.join(self.card, "base.txt"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "praca użytkownika\n")
+            with open(os.path.join(self.card, "ticket.txt"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "ticket\n")
+            self.assertEqual(git(self.card, "status", "--porcelain"), "M base.txt")
+            self.write(self.ticket, "ticket.txt", "druga wersja\n")
+            git(self.ticket, "commit", "-qam", "second")
+            self.write(self.card, "ticket.txt", "lokalna zmiana\n")
+            before = git(self.repo, "rev-parse", "card/test")
+            with self.assertRaisesRegex(gitops.FlowGitError, "lokalne zmiany w scalanych plikach: ticket.txt"):
+                self.merge()
+        self.assertEqual(git(self.repo, "rev-parse", "card/test"), before)
+
     def test_retry_repairs_stale_worktree_after_ref_advanced(self):
         self.ticket_commit()
         with mock.patch.object(gitops, "sandbox_available", return_value=True, create=True), \
@@ -215,11 +268,11 @@ class MergeTest(unittest.TestCase):
             parent = git(self.repo, "rev-parse", merged["commit"] + "^1")
             git(self.card, "read-tree", "-m", "-u", merged["commit"], parent)
             self.assertFalse(os.path.exists(os.path.join(self.card, "ticket.txt")))
-            self.write(self.card, "base.txt", "local edit\n")
+            self.write(self.card, "ticket.txt", "local edit\n")
             with self.assertRaisesRegex(gitops.FlowGitError, "lokalne zmiany"):
                 self.merge()
             self.assertEqual(git(self.repo, "rev-parse", "card/test"), merged["commit"])
-            self.write(self.card, "base.txt", "base\n")
+            os.remove(os.path.join(self.card, "ticket.txt"))
             retry = self.merge()
         self.assertEqual(retry, {"commit": merged["commit"], "already": True})
         with open(os.path.join(self.card, "ticket.txt"), encoding="utf-8") as fh:
@@ -287,3 +340,22 @@ class ForeignChangesTest(unittest.TestCase):
         self.assertEqual(gitops._foreign_changes(porcelain), [])
         self.assertEqual(gitops._foreign_changes(porcelain + "?? debug.py\n"), ["?? debug.py"])
         self.assertEqual(gitops._foreign_changes(" M .codex/agents/a.toml\n"), [" M .codex/agents/a.toml"])
+
+
+class PinnedMainBranchTest(unittest.TestCase):
+    def test_repo_can_pin_the_card_base_branch(self):
+        # 04.11, BO: praca toczy się na feature/vision-frames, a karta zakładała gałąź od master.
+        import subprocess
+        import tempfile
+        base = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        run = lambda *a: subprocess.run(["git", "-C", base, *a], check=True, capture_output=True)
+        run("init", "-q", "-b", "master")
+        run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "a")
+        run("branch", "feature/x")
+        git = gitops.FlowGit()
+        self.assertEqual(git.main_branch(base), "master")
+        run("config", "tide.mainBranch", "feature/x")
+        self.assertEqual(git.main_branch(base), "feature/x")
+        run("config", "tide.mainBranch", "nie-ma")
+        self.assertEqual(git.main_branch(base), "master")

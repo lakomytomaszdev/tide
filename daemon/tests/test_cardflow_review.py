@@ -96,13 +96,16 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual(git(self.repo, "rev-parse", card_branch).strip(), self.master)
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
 
-    def test_reviewer_changes_to_ticket_are_rejected_before_merge(self):
+    def test_reviewer_files_are_moved_out_of_the_ticket_and_the_review_counts(self):
+        # Nowy nieśledzony plik recenzenta nie trafia do ticketu (autor by go zacommitował), ale review nie przepada:
+        # Tide przenosi go do katalogu kroku review (04.11, K-43/BO-9: 9 odrzuconych review przez wynik pomiaru).
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-modifies")
         self.assertTrue(self.start(card)["ok"])
-        shown = self.wait_column(card, "waiting")
-        self.assertIn("recenzent zmienił", shown["derived"]["note"])
-        self.assertEqual(self.of(card, "review.verdict"), [])
-        self.assertEqual(self.results(card, "merge"), [])
+        self.wait_column(card, "review")
+        self.assertEqual(len(self.of(card, "review.verdict")), 1)
+        review = next(s for s in self.of(card, "step.started") if s["kind"] == "review")
+        self.assertFalse(os.path.exists(os.path.join(review["worktree"], "review-modified.txt")))
+        self.assertTrue(os.path.isfile(os.path.join(review["stepDir"], "out", "pliki-recenzenta", "review-modified.txt")))
 
     def test_approved_review_receives_full_context_and_cleans_worktrees(self):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: gotowe")
@@ -120,6 +123,11 @@ class ReviewFlowTest(FlowInProcess):
                        "Notka wyniku wykonawcy:", "Atrapa zrobiła ticket.", "Zasady projektu:",
                        "CLAUDE.md", "Plik wyniku:"):
             self.assertIn(phrase, prompt)
+        self.assertIn(f"make test-changed BASE={self.master}", prompt)
+        with open(os.path.join(steps[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn(f"make test-changed BASE={self.master}", json.load(fh)["prompt"])
+        with open(os.path.join(steps[2]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            self.assertIn("Przed napisaniem podsumowania uruchom raz pełny `make test`", json.load(fh)["prompt"])
         verdict = self.of(card, "review.verdict")
         self.assertEqual([(v["verdict"], v["blockers"], v["majors"], v["nits"]) for v in verdict],
                          [("APPROVE", 0, 0, 0)])
@@ -143,6 +151,7 @@ class ReviewFlowTest(FlowInProcess):
         with open(os.path.join(fixes[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             prompt = json.load(fh)["prompt"]
         self.assertIn("MAJOR: popraw ATRAPA.md", prompt)
+        self.assertIn(f"make test-changed BASE={self.master}", prompt)
         self.assertEqual(len(self.results(card, "merge")), 1)
 
     def test_three_failed_reviews_wait_for_user_without_merging(self):

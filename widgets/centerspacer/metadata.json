@@ -1,0 +1,14 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Id": "org.tide.centerspacer",
+    "Name": "Tide · Środek",
+    "Description": "Odstęp, który stawia następny widżet (zegar) na środku panelu, niezależnie od globalnego menu",
+    "Icon": "distribute-horizontal-center",
+    "Category": "Windows and Tasks",
+    "License": "MIT",
+    "Version": "0.1.0",
+    "Authors": [{ "Name": "Tomek" }]
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

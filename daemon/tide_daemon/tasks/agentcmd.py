@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 
 from . import launch
 from . import local as local_mod
+from . import skills as skills_mod
 
 
 class UnknownTool(ValueError):
@@ -56,6 +57,13 @@ def agent_argv(tool: str, binary: str, prompt: str, images: list[str] = (), add_
     raise UnknownTool(tool)
 
 
+def read_only_rules(dirs) -> list[str]:
+    """Reguły Claude Code zabraniające zapisu w katalogach dodanych tylko do odczytu (`--add-dir` repozytoriów
+    innych projektów zlecenia). Reguła Edit obejmuje wszystkie narzędzia zmieniające pliki; `//` — ścieżka
+    bezwzględna od korzenia systemu plików."""
+    return [f"Edit(/{os.path.realpath(d).rstrip('/')}/**)" for d in dirs if d and os.path.isabs(d)]
+
+
 def interactive(tool: str, binary: str, prompt: str, images=(), add_dirs=(),
                 agent: "local_mod.LocalAgent | None" = None) -> "local_mod.Command":
     """Polecenie sesji w Konsoli. Bez `agent` (chmura) samo argv, z `agent` (model lokalny, inny punkt) także
@@ -87,6 +95,91 @@ SANDBOX_DUMMIES = ("/.bash_profile", "/.bashrc", "/.claude", "/.gitconfig", "/.g
 # nigdy nie należą do ticketu: krok ich nie commituje, a kontrola czystości worktree je pomija.
 TOOLING_DIRS = ("/.agents/", "/.codex/")
 CODEX_GIT_DIRS = ("objects", "refs", "logs")        # reszta wspólnego .git (haki, config) zostaje tylko do odczytu
+# Krok opiekuna u Codexa: Codex nie ma listy dozwolonych poleceń, więc nie dostaje żadnego narzędzia wykonującego
+# polecenia ani kod (`shell`, `exec_command`, `exec` trybu kodu, `js_repl`); zapis pliku w `out` zostaje przez
+# apply_patch. To podzbiór listy tylko do odczytu niżej (PT-158).
+CODEX_NO_COMMANDS = ("shell_tool", "unified_exec", "code_mode", "js_repl")
+# Krok opiekuna u Claude (PT-158): stała lista poleceń tylko do odczytu, niezależna od ustawień projektu. Git działa
+# wyłącznie jako `git -C <worktree> <podpolecenie>` (katalogiem roboczym kroku jest `out`). Zakazy wycinają opcje,
+# którymi te programy piszą albo uruchamiają inne programy; piaskownica i tak daje zapis tylko do `out`.
+READ_ONLY_COMMANDS = ("rg", "grep", "cat", "ls", "find")
+# Podpolecenia gita z obowiązkowymi opcjami: `--no-ext-diff` wyłącza `diff.external` i `diff.<sterownik>.command`,
+# `--no-textconv` — `diff.<sterownik>.textconv` (review M3; puste wartości w konfiguracji tego nie robią — git
+# próbuje wtedy uruchomić pusty program). `status` nie uruchamia sterowników diffa. Wszystkie polecenia pomijają
+# submoduły: ich własna konfiguracja może nazywać inne filtry niż konfiguracja worktree (review runda 4/M1).
+READ_ONLY_GIT = ("log --no-ext-diff --no-textconv --ignore-submodules=all",
+                 "show --no-ext-diff --no-textconv --ignore-submodules=all",
+                 "diff --no-ext-diff --no-textconv --ignore-submodules=all", "status --ignore-submodules=all")
+READ_ONLY_BANS = (
+    "find *-delete*", "find *-exec*", "find *-ok*", "find *-fprint*", "find *-fls*",   # usuwanie, programy, pliki
+    "rg *--pre*", "rg *--hostname-bin*",                                               # programy pomocnicze rg
+    "git *--output*", "git *--ext-diff*", "git *--textconv*",                          # zapis do pliku, sterowniki
+    "git *--show-signature*",                                                          # gpg
+    # Obowiązkowe `--ignore-submodules=all` jest ostatnią opcją prefiksu zgody. Późniejsza opcja nie może jej
+    # nadpisać (git bierze ostatnią), także skrótem `--ign`/`--i` lub negacją. Zakazy są zachowawcze: obejmują
+    # wszystkie rozwinięcia tych początków, także np. bezpieczne `--ignore-space-change`. `--sub*` blokuje
+    # też żądanie widoku submodułu (`--submodule=diff`/`log`) i jego skróty.
+    "git *--ignore-submodules=all *--i*", "git *--no-i*", "git *--sub*", "git *--no-sub*",
+    # `-z` działa też wewnątrz połączonych krótkich opcji (`-az`, `-iz`). Wildcard `*` obejmuje również spacje,
+    # więc zakaz celowo odrzuca też bezpieczne wywołania z `z` w dalszym argumencie po `-` (review runda 3/M1).
+    "rg *--search-zip*", "rg *-*z*",                                                    # dekompresory rg
+    "*>*",                                                                             # przekierowanie do pliku
+)
+# Sam zakaz napisów w argv nie wyłącza programów pomocniczych gita z konfiguracji repozytorium (review M3: zwykłe
+# `git diff` uruchamia `diff.external`). Sterowniki diffa wyłączają obowiązkowe opcje z `READ_ONLY_GIT`; resztę
+# krok opiekuna dostaje wyłączoną w środowisku (`GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium):
+# fsmonitor (hak przy `status`/`diff`), pager, weryfikację podpisów i sterowniki filtrów (`clean`/`smudge`/`process`
+# przy `status`/`diff`) nazwane w konfiguracji — pusty filtr git pomija (`read_only_git_config`). Konfiguracji
+# systemowej (`GIT_CONFIG_NOSYSTEM`) i globalnej użytkownika (`GIT_CONFIG_GLOBAL` — plik kroku) krok nie czyta.
+READ_ONLY_GIT_CONFIG = (("core.fsmonitor", "false"), ("core.pager", "cat"), ("status.submoduleSummary", "false"),
+                        ("log.showSignature", "false"), ("gpg.program", "/bin/false"),
+                        ("gpg.ssh.program", "/bin/false"), ("gpg.x509.program", "/bin/false"))
+GIT_DRIVER_KEYS = re.compile(r"^(filter)\.(.+)\.(clean|smudge|process)$", re.IGNORECASE)
+
+
+def read_only_git_config(git_dir: str, timeout: float = 20.0) -> list[tuple[str, str]]:
+    """Nadpisania konfiguracji gita kroku tylko do odczytu: `READ_ONLY_GIT_CONFIG` i puste programy sterowników
+    filtrów z konfiguracji worktree (repozytorium, `config.worktree`, dołączone pliki). Konfigurację czyta usługa
+    (`git config` nie uruchamia programów), bez systemowej i globalnej — tych krok nie widzi. Błąd odczytu to
+    StepError: bez listy sterowników krok nie startuje."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
+    try:
+        run = subprocess.run(["git", "--git-dir", git_dir, "config", "--name-only", "--get-regexp",
+                              r"^filter\..*\.(clean|smudge|process)$"],
+                             capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StepError(f"nie da się odczytać sterowników gita kroku ({type(exc).__name__})") from None
+    if run.returncode not in (0, 1):                # 1 — brak pasujących kluczy
+        raise StepError(f"nie da się odczytać sterowników gita kroku: {run.stderr.strip()[:200]}")
+    pairs = list(READ_ONLY_GIT_CONFIG)
+    for key in dict.fromkeys(line.strip() for line in run.stdout.splitlines() if line.strip()):
+        found = GIT_DRIVER_KEYS.match(key)
+        if found:
+            kind, name = found.group(1), found.group(2)
+            pairs.append((key, ""))
+            if kind.lower() == "filter":
+                pairs.append((f"{kind}.{name}.required", "false"))
+    return list(dict.fromkeys(pairs))
+
+
+def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`--allowedTools` i `--disallowedTools` kroku tylko do odczytu (opiekun karty): polecenia z
+    `READ_ONLY_COMMANDS` (też z wzorcami nazwanymi worktree — Claude CLI pyta o polecenia ze ścieżką spoza katalogów
+    sesji mimo `cat *`, por. `board.commands.step_reads`), `git -C <worktree>` z `READ_ONLY_GIT`, odczyt worktree
+    narzędziami Read/Grep/Glob i odczyt własnych katalogów kroku; zakazy `READ_ONLY_BANS` (zakaz wygrywa z zgodą,
+    łańcuch poleceń Claude CLI sprawdza po kawałku). Bez listy poleceń projektu."""
+    from ..board.commands import step_reads
+    worktree = os.path.normpath(worktree)
+    allowed = []
+    for name in READ_ONLY_COMMANDS:
+        allowed += [f"Bash({name})", f"Bash({name} *)", f"Bash({name} {worktree})", f"Bash({name} {worktree}/*)",
+                    f"Bash({name} * {worktree})", f"Bash({name} * {worktree}/*)"]
+    for sub in READ_ONLY_GIT:
+        allowed += [f"Bash(git -C {worktree} {sub})", f"Bash(git -C {worktree} {sub} *)"]
+    # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`; reguła Read obejmuje też Grep i Glob.
+    allowed += [f"Read(/{worktree}/**)", *step_reads(step_dir)]
+    return tuple(dict.fromkeys(allowed)), tuple(f"Bash({rule})" for rule in READ_ONLY_BANS)
 
 
 class StepError(ValueError):
@@ -145,7 +238,9 @@ class Step:
     git_email: str = "krok@tide.invalid"
     base_env: dict | None = None    # skąd HOME, USER, PATH, LANG (domyślnie środowisko usługi)
     tmp_root: str = "/tmp"          # poza ~; tu Claude Code dostaje katalog tymczasowy kroku
-    read_dirs: tuple = ()          # dodatkowe repozytoria karty, wyłącznie do odczytu
+    read_dirs: tuple = ()          # dodatkowe repozytoria i dane projektów, wyłącznie do odczytu
+    read_profile: bool = False     # utrzymaj ograniczony profil także po usunięciu ostatniego katalogu
+    context_dirs: tuple = ()       # katalogi wyniku poprzednich kroków ticketu (wznowienie): odczyt i narzędzie Read
     dotnet: bool = False           # projekt .NET: pamięć pakietów NuGet do odczytu i środowisko bez serwerów buildu
     node_home: str = ""            # projekt Node: instalacja Node (nvm) tylko do odczytu, jej bin na początku PATH
     network_domains: tuple = ()    # P1 (03.11): domeny rejestrów paczek dostępne z piaskownicy kroku Claude
@@ -153,6 +248,10 @@ class Step:
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
     branch: str = ""               # gałąź przypisana przez silnik; BoxRunner nie ufa HEAD worktree
+    # Krok opiekuna karty (PT-143, PT-158): zapis wyłącznie do `<krok>/out`, który jest też katalogiem roboczym
+    # programu. Claude: stała lista poleceń tylko do odczytu (`read_only_tools`, zamiast `allowed_tools`) i zakaz
+    # edycji worktree i repozytorium; Codex: jedyny zapisywalny `out` i żadnych poleceń (`CODEX_NO_COMMANDS`).
+    write_out_only: bool = False
 
 
 @dataclass
@@ -175,6 +274,10 @@ class Background:
     token_files: list = field(default_factory=list)
     files: dict = field(default_factory=dict)      # ścieżka → treść
     dirs: list = field(default_factory=list)
+    # Katalog roboczy procesu, gdy inny niż worktree (`cwd`): krok z zapisem wyłącznie do `out` (PT-158) startuje
+    # w `out` — piaskownica Claude CLI daje zapis katalogowi roboczemu, a jej puste pliki-atrapy (`.bashrc`…)
+    # lądują w nim, nie w worktree pod strażą.
+    workdir: str = ""
 
     @property
     def prompt_file(self) -> str:
@@ -233,7 +336,7 @@ class Background:
             log = stdout = open(self.log_file, "ab")
         try:
             with open(self.prompt_file, "rb") as stdin:
-                return subprocess.Popen(argv, cwd=self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
+                return subprocess.Popen(argv, cwd=self.workdir or self.cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
                                         text=True, start_new_session=True)
         finally:
             if log is not None:
@@ -351,6 +454,16 @@ def _env(step: Step, home_env: dict, inp: str) -> dict:
     return env
 
 
+def _read_only_git_env(env: dict, pairs: list[tuple[str, str]]) -> None:
+    """Dopisuje nadpisania `read_only_git_config` do `GIT_CONFIG_COUNT` kroku; bez konfiguracji systemowej i pagera."""
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for key, value in pairs:
+        env[f"GIT_CONFIG_KEY_{count}"], env[f"GIT_CONFIG_VALUE_{count}"] = key, value
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_PAGER": "cat", "PAGER": "cat"})
+
+
 FONT_DIRS = (".local/share/fonts", ".fonts", ".config/fontconfig")
 
 
@@ -365,14 +478,16 @@ def _font_dirs(home: str) -> list[str]:
     return found
 
 
-def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list, dict, dict]:
+def _claude(step: Step, inp: str, out: str, env: dict, home: str,
+            skills: list[skills_mod.Skill]) -> tuple[list, dict, dict]:
     """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
-        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs,
+        "filesystem": {"denyRead": ["~"], "allowRead": [step.worktree, os.path.join(step.repo, ".git"), inp, out, *step.read_dirs, *step.context_dirs,
                                                         *([env["NUGET_PACKAGES"]] if step.dotnet and env.get("NUGET_PACKAGES") else []),
                                                         *_font_dirs(home),
+                                                        *skills_mod.read_dirs(skills),
                                                         *([step.node_home] if step.node_home else []),
                                                         *([os.path.dirname(step.chrome_bin)] if step.chrome_bin else [])],
                        "allowWrite": [out]},
@@ -400,24 +515,54 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str) -> tuple[list,
         model = [f"--model={step.model}"] if step.model else []
         secret = {"token_files": []}
     settings_path = os.path.join(inp, "settings.json")
+    plugin, files = skills_mod.claude_plugin(skills, inp)
+    if skills:
+        # Read bez --add-dir: ten ostatni rozszerza też domyślny obszar zapisu sesji.
+        skill_dirs = skills_mod.read_dirs(skills)
+        settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
+                                   "deny": read_only_rules(skill_dirs)}
+        settings["sandbox"]["filesystem"]["denyWrite"] = skill_dirs
+    # --add-dir rozszerza również domyślny zapis Bash. Edit nie jest granicą dla powłoki:
+    # jawny denyWrite ma pierwszeństwo także wobec zapisu domyślnego i ścieżek przez dowiązania.
+    readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))
+    if readonly:
+        fs = settings["sandbox"]["filesystem"]
+        fs["denyWrite"] = list(dict.fromkeys([*fs.get("denyWrite", []), *readonly]))
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
             *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
             # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
             # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
             "--add-dir", out]
+    if plugin:
+        argv += ["--plugin-dir", plugin]
+    for folder in step.context_dirs:
+        # Narzędzie Read poza katalogami sesji pyta o zgodę, której krok nie dostanie — stąd --add-dir.
+        argv += ["--add-dir", folder]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
-    if step.allowed_tools:
-        argv += ["--allowedTools", *step.allowed_tools]
-    if step.disallowed_tools:
-        argv += ["--disallowedTools", *step.disallowed_tools]
-    return argv, {settings_path: json.dumps(settings, indent=2, ensure_ascii=False) + "\n"}, secret
+    for folder in step.read_dirs:
+        argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
+    allowed, disallowed = step.allowed_tools, step.disallowed_tools
+    if step.write_out_only:
+        # PT-158: stała lista tylko do odczytu zamiast listy kroku (lista projektu nigdy tu nie trafia). Ścieżka
+        # bezwzględna w regule Claude CLI zaczyna się od `//`.
+        allowed, bans = read_only_tools(step.worktree, step.step_dir)
+        disallowed = (*bans, f"Edit(/{os.path.normpath(step.worktree)}/**)",
+                      f"Edit(/{os.path.normpath(step.repo)}/**)")
+    disallowed = [*disallowed, *read_only_rules(readonly)]
+    if allowed:
+        argv += ["--allowedTools", *allowed]
+    if disallowed:
+        argv += ["--disallowedTools", *disallowed]
+    files[settings_path] = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    return argv, files, secret
 
 
 def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     git = os.path.join(step.repo, ".git")
-    roots = [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    roots = [out] if step.write_out_only else [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+    cwd = out if step.write_out_only else step.worktree
     secret = {"secret_env": {}, "token_files": []}
     if step.local is not None:
         opts = local_mod.options("codex", step.local)
@@ -431,11 +576,53 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
            for arg in ("-c", f"mcp_servers.{_toml_key(name)}.enabled=false")]
     # Opcje przed podpoleceniem: `codex exec resume <id> --cd …` kończy się „unexpected argument” (sprawdzone).
     effort = ["-c", f'model_reasoning_effort="{step.effort}"'] if step.effort else []
-    argv = [step.binary, "exec", *model, *effort, "--json", "--cd", step.worktree, "--sandbox", "workspace-write",
+    # PT-143/S1: zakaz poleceń wymusza konfiguracja kroku, nie tylko kartka — sama granica zapisu do `out` nie
+    # zabrania uruchomienia np. interpretera w `out`.
+    no_commands = [arg for name in CODEX_NO_COMMANDS for arg in ("-c", f"features.{name}=false")] \
+        if step.write_out_only else []
+    # PT-143/S2: `writable_roots` tylko dopisuje katalogi; `/tmp` i `$TMPDIR` są zapisywalne domyślnie (i według
+    # ustawień użytkownika), więc dla zapisu wyłącznie do `out` wykluczamy je jawnie — także łatką `apply_patch`.
+    if step.write_out_only or step.read_dirs or step.read_profile:
+        no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    # `out` leży obok worktree, poza repozytorium; wyjątek dotyczy tylko kroku z zapisem do `out`.
+    git_check = ["--skip-git-repo-check"] if step.write_out_only else []
+    argv =[step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
             "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
-            "-c", 'approval_policy="never"', *mcp,
+            "-c", 'approval_policy="never"', *no_commands, *mcp, *git_check,
             *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
+
+
+def restricted_interactive(step: Step, images=()) -> "local_mod.Command":
+    """Interaktywne wejście z tym samym profilem plików, środowiskiem i granicą co krok w tle.
+
+    Zmieniamy wyłącznie tryb komunikacji z programem. Ustawienia są osobnym snapshotem tego startu.
+    """
+    step = replace(step, read_dirs=tuple(dict.fromkeys([*step.read_dirs,
+                    *[os.path.dirname(p) for p in images]])))
+    bg = background(step)
+    bg.prepare()
+    argv = list(bg.argv)
+    if step.tool == "claude":
+        argv.remove("-p")
+        for flag in ("--output-format", "--permission-prompts"):
+            at = argv.index(flag)
+            del argv[at:at + 2]
+        argv.remove("--verbose")
+        prompt = bg.stdin
+        if images:
+            prompt += "\n\nZałączone zrzuty ekranu (przeczytaj je narzędziem Read):\n" + "\n".join(images)
+        argv += ["--", prompt]
+    else:
+        del argv[1]  # exec
+        argv.remove("--json")
+        at = argv.index("--cd")
+        del argv[at:at + 2]
+        argv[-1:] = [*[arg for path in images for arg in ("--image", path)], "--", bg.stdin]
+    # Konsola startuje ze środowiskiem hosta: usuń te same sekrety, które odrzuca _env.
+    unset = sorted(set(os.environ) - set(bg.env))
+    return local_mod.Command(argv, bg.env, bg.secret_env, unset, bg.token_files)
 
 
 def background(step: Step) -> Background:
@@ -450,9 +637,12 @@ def background(step: Step) -> Background:
     inp, out = os.path.join(step.step_dir, "in"), os.path.join(step.step_dir, "out")
     env = _env(step, base, inp)
     git_dir = resolve_git_dir(step.repo, step.worktree)
+    skills = skills_mod.discover(step.tool, home)
+    if step.write_out_only:
+        _read_only_git_env(env, read_only_git_config(git_dir))
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
-        argv, files, extra = _claude(step, inp, out, env, home)
+        argv, files, extra = _claude(step, inp, out, env, home, skills)
         session = step.session_id
     else:
         argv, extra = _codex(step, out, env, git_dir)
@@ -460,10 +650,37 @@ def background(step: Step) -> Background:
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
     files[os.path.join(inp, "ignore")] = "\n".join(SANDBOX_DUMMIES + TOOLING_DIRS) + "\n"
+    files[os.path.join(inp, "skills.json")] = json.dumps(
+        [{"name": skill.name, "path": skill.path} for skill in skills], ensure_ascii=False, indent=2) + "\n"
     dirs = [inp, out, env["GH_CONFIG_DIR"]] + ([env["CLAUDE_CODE_TMPDIR"]] if step.tool == "claude" else [])
-    return Background(argv, env, step.prompt, step.worktree, step.step_dir, session, step.tool, repo=step.repo,
+    return Background(argv, env, step.prompt + skills_mod.prompt(skills, step.tool),
+                      step.worktree, step.step_dir, session, step.tool, repo=step.repo,
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
-                      files=files, dirs=dirs)
+                      files=files, dirs=dirs, workdir=out if step.write_out_only else "")
+
+
+def caretaker_interactive(step: Step) -> Background:
+    """Ta sama piaskownica i środowisko co w tle; zmienia się wyłącznie interfejs programu na rozmowę."""
+    bg = background(replace(step, write_out_only=True,
+                            permission_mode="dontAsk" if step.tool == "claude" else ""))
+    argv = list(bg.argv)
+    if step.tool == "claude":
+        out = os.path.normpath(os.path.join(step.step_dir, "out"))
+        at = argv.index("--disallowedTools")
+        argv[at:at] = [f"Read(/{step.step_dir}/in/**)", f"Read(/{out}/**)",
+                       f"Write(/{out}/**)", f"Edit(/{out}/**)"]
+        argv.remove("-p")
+        at = argv.index("--output-format")
+        del argv[at:at + 2]
+        argv.remove("--verbose")
+        argv += ["--", step.prompt]
+    else:
+        argv.remove("exec")
+        argv.remove("--json")
+        argv.remove("--skip-git-repo-check")
+        argv[-1:] = ["--", step.prompt]
+    bg.argv = argv
+    return bg
 
