@@ -489,6 +489,10 @@ class AdapterTest(unittest.TestCase):
             git(str(repo), 'add', 'CLAUDE.md', env=self.env)
             git(str(repo), 'commit', '-q', '-m', 'init', env=self.env)
             flowfakes.install(str(Path(self.tmp, 'fakebin')))
+            # Katalog kroku nie może leżeć pod TMPDIR usługi (agentcmd._check).
+            self.env['TMPDIR'] = str(Path(self.tmp, 'tmp'))
+            Path(self.env['TMPDIR']).mkdir()
+            self.env['TIDE_FLOW_POLL_MS'] = '200'
             self.env['XDG_RUNTIME_DIR'] = str(Path(self.tmp, 'run'))
             Path(self.env['XDG_RUNTIME_DIR']).mkdir(mode=0o700)
             self.env['TIDE_SYSTEMD_RUN'] = str(Path(self.tmp, 'fakebin/systemd-run'))
@@ -605,6 +609,8 @@ class AdapterTest(unittest.TestCase):
         for n, script in enumerate(self.adapters):
             with self.subTest(adapter=script):
                 ready = self.ready_issue('Go: zażółć / argument ; dane')
+                self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
+                                                           'persistent': True}), encoding='utf-8')
                 folder = Path(self.tmp, 'go-decision-' + str(n))
                 launch = Path(self.tmp, 'launch-' + str(n) + '.json')
                 launch.write_text('{"entry":"now","executor":"Sonnet"}', encoding='utf-8')
@@ -652,7 +658,7 @@ class AdapterTest(unittest.TestCase):
                 self.assertNotEqual(retry_saved['requestId'], request_id)
                 retried = self.adapter(script, 'retry-replay', '--session', folder)
                 self.assertEqual(retried['card'], replay['card'])
-                self.assertEqual(retried['start']['state'], 'started')
+                self.assertEqual(retried['start']['state'], 'started', retried)
 
                 def events():
                     return [json.loads(line) for line in journal.read_text().splitlines()]
@@ -680,8 +686,6 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'accepted')
                 self.env.pop('ISSUE_LOSE_REPLY', None)
                 self.env.pop('ISSUE_LOSE_REPLY_COMMAND', None)
-                self.start_control.write_text(json.dumps({'stage': 'before-handoff', 'action': 'refuse',
-                                                           'persistent': True}), encoding='utf-8')
 
     def test_both_adapters_missing_then_separate_waiver_and_manual_submit(self):
         self.prepare()
