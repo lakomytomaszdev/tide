@@ -304,6 +304,70 @@ class ServiceTests(ExposureCase):
     def call(self, text, card="K-38"):
         return envconsent.approve(self.engine, card, text, False)
 
+    def test_preview_shows_every_merged_profile_permission_before_consent(self):
+        bp.save_project(ex.PROJECT, {"tide-box": 1, "network": {"domains": ["pypi.org"]},
+                                   "setup": ["python3 -m venv .venv"]})
+        baseline = self.call(self.request())["exposure"]
+        for change in ({"network": {"domains": ["github.com"]}},
+                       {"network": {"full": True, "full-consent": True}},
+                       {"docker": {"enabled": True, "images": ["postgres:16"]}},
+                       {"stacks": ["docker"]},
+                       {"ports": {"pool": [4300, 4302], "env": ["PORT"]}}):
+            with self.subTest(change=change):
+                preview = self.call(self.request(**change))
+                self.assertTrue(preview["ok"], preview)
+                exposure = preview["exposure"]
+                self.assertNotEqual(exposure["expected"], baseline["expected"])
+                self.assertNotEqual(exposure["details"], baseline["details"])
+                self.assertIn(bp.dump(exposure["manifest"]["profile"]).strip(), exposure["details"])
+                self.assertIn(bp.dump(bp.with_defaults(exposure["manifest"]["profile"])).strip(),
+                              exposure["details"])
+                self.assertIn("pypi.org", exposure["details"])
+                self.assertIn("python3 -m venv .venv", exposure["details"])
+        bp.save_card(ex.PROJECT, "K-38", {"tide-box": 1, "docker": {"enabled": True}})
+        model = envconsent.model(self.engine, "K-38", fold(self.journal.read("K-38")))
+        self.assertIn(bp.dump(model["exposure"]["manifest"]["profile"]).strip(),
+                      model["exposure"]["details"])
+        self.assertIn("pypi.org", model["exposure"]["details"])
+
+    def test_repository_stage2_proposal_without_saved_project_refuses_preview_and_approval(self):
+        Path(bp.project_path(ex.PROJECT)).unlink()
+        baseline = self.call(self.request())
+        self.assertTrue(baseline["ok"], baseline)
+        path = self.repo / ".tide" / "box.yaml"
+        path.parent.mkdir()
+        for extra in ({"tests": {"changed": "make test-changed", "full": "make test"}},
+                      {"outside": {"commands": ["make test"], "history": ["stara próba"]}},
+                      {"readDirs": ["/foreign"]}, {"evidence": {"version": 2}}):
+            with self.subTest(extra=extra):
+                text = bp.dump({"tide-box": 1, **extra})
+                path.write_text(text)
+                for action in ("preview", "approve"):
+                    reply = self.call(self.request(action, **{
+                        projectconsent.ACCEPTED: True,
+                        projectconsent.EXPECTED: baseline["exposure"]["expected"]}))
+                    self.assertFalse(reply["ok"], reply)
+                    self.assertIn("PT-275", reply["message"])
+                model = envconsent.model(self.engine, "K-38", fold(self.journal.read("K-38")))
+                self.assertIn("PT-275", " ".join(model["notes"]))
+                self.assertFalse(model["exposure"]["expected"])
+                self.assertEqual(path.read_text(), text)
+                self.assertFalse(Path(bp.project_path(ex.PROJECT)).exists())
+                self.assertIsNone(ex.current(ex.PROJECT))
+
+    def test_repository_profile_without_saved_project_is_merged_and_shown(self):
+        Path(bp.project_path(ex.PROJECT)).unlink()
+        path = self.repo / ".tide" / "box.yaml"
+        path.parent.mkdir()
+        text = bp.dump({"tide-box": 1, "network": {"domains": ["pypi.org"]}})
+        path.write_text(text)
+        preview = self.call(self.request(docker={"enabled": True}))
+        self.assertTrue(preview["ok"], preview)
+        self.assertEqual(preview["exposure"]["manifest"]["profile"]["network"]["domains"], ["pypi.org"])
+        self.assertIn("pypi.org", preview["exposure"]["details"])
+        self.assertIn('enabled: true', preview["exposure"]["details"])
+        self.assertEqual(path.read_text(), text)
+
     def test_direct_service_ignores_claimed_manifest_and_requires_exact_new_consent(self):
         legacy = self.call(bp.dump({**self.profile, "accepted_red": ["pack:logs"]}))
         self.assertFalse(legacy["ok"])

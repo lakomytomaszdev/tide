@@ -35,9 +35,14 @@ def _profiles(engine, card_id, st, raw):
     try:
         project = read(bp.project_path(slug), "project")
     except FileNotFoundError:
-        _source, proposal, _items, _note = envconsent.environment._proposal(repo, slug,
-                                                                          envconsent.stack.detect(repo))
-        project = ex.profile_contract(proposal, "project")
+        # Propozycja zgody nie może zastąpić nieobsługiwanego kontraktu szablonem.
+        project = bp.repo_proposal(repo, validator=ex.profile_contract)
+        if project is None:
+            proposal = envconsent.stack.propose_profile(envconsent.stack.detect(repo), slug)
+            proposal.pop("items", None)
+            proposal.pop("question", None)
+            project = ex.profile_contract(proposal, "project")
+        project.setdefault("project", slug)
     try:
         read(bp.card_path(slug, card_id), "card")
     except FileNotFoundError:
@@ -63,6 +68,11 @@ def view(candidate, current=None):
     manifest = candidate["manifest"]
     lines = [f"Projekt: {manifest['project']}; wersja zakresu zgody: {manifest['consentVersion']}",
              "Repozytoria: " + ", ".join(manifest["repositories"])]
+    # Ten sam tekst trafia do początkowego modelu i podglądu po edycji, przed
+    # checkboxem zgody. Źródłem jest profil objęty odciskiem, nie YAML edytora.
+    lines += ["Scalony profil projektu objęty zgodą:", bp.dump(manifest["profile"]).rstrip(),
+              "Efektywne ustawienia profilu (z wartościami domyślnymi):",
+              bp.dump(bp.with_defaults(manifest["profile"])).rstrip()]
     lines += [f"{m['source']} → {m['target']} ({m['mode']})" for m in manifest["mounts"]]
     for entry in manifest["inputs"]:
         copy = entry["snapshot"]

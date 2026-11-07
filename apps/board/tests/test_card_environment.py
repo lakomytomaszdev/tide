@@ -87,7 +87,12 @@ class EnvironmentSectionTest(ProbeCase):
         case = fixture.ServiceTests("test_consent_model_explains_project_scope_and_k1_and_does_not_scan_packs")
         case.setUp()
         try:
+            from tide_daemon.box import profile as bp
             from tide_daemon.cardflow import envconsent
+            bp.save_project(fixture.ex.PROJECT, {"tide-box": 1, "network": {"domains": ["pypi.org"]}})
+            bp.save_card(fixture.ex.PROJECT, "K-38", {"tide-box": 1,
+                "network": {"domains": ["github.com"], "full": True, "full-consent": True},
+                "docker": {"enabled": True}, "ports": {"pool": [4300, 4302], "env": ["PORT"]}})
             model = envconsent.model(case.engine, "K-38", fixture.fold(case.journal.read("K-38")))
         finally:
             case.doCleanups()
@@ -95,6 +100,9 @@ class EnvironmentSectionTest(ProbeCase):
 open_card()
 out['scope'] = text('envProjectScope')
 out['manifest'] = text('envProjectManifest')
+out['editors'] = js(ALL + "(page.cardPanel, 'envEditor').length")
+out['manifestBeforeConsent'] = js(ALL + "(page.cardPanel, 'envProjectManifest')[0].y + " + ALL +
+    "(page.cardPanel, 'envProjectManifest')[0].height <= " + ALL + "(page.cardPanel, 'envProjectConsent')[0].y")
 out['initiallyAccepted'] = js(ALL + "(page.cardPanel, 'envProjectConsent')[0].checked")
 out['initiallyEnabled'] = js(ALL + "(page.cardPanel, 'envApprove')[0].enabled")
 press('envProjectPreview')
@@ -105,6 +113,11 @@ press('envApprove')
         self.assertIn("root przez wspólny Docker", out["scope"][0])
         self.assertIn("per-card", out["scope"][0])
         self.assertIn(" → ", out["manifest"][0])
+        self.assertIn(bp.dump(model["exposure"]["manifest"]["profile"]).strip(), out["manifest"][0])
+        for value in ("pypi.org", "github.com", "full: true", "enabled: true", "4300"):
+            self.assertIn(value, out["manifest"][0])
+        self.assertEqual(out["editors"], 0)
+        self.assertTrue(out["manifestBeforeConsent"])
         self.assertFalse(out["initiallyAccepted"])
         self.assertFalse(out["initiallyEnabled"])
         first, second = calls_of(out, "ApproveCardEnvironment")

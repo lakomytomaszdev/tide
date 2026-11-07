@@ -628,7 +628,7 @@ def _write_atomic(path: str, text: str) -> None:
         raise
 
 
-def _read(path: str, scope: str):
+def _read(path: str, scope: str, *, validator=None):
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read(_MAX_FILE + 1)
@@ -636,6 +636,8 @@ def _read(path: str, scope: str):
         return None
     if len(text) > _MAX_FILE:
         raise ProfileError(f"{path}: plik większy niż {_MAX_FILE} bajtów")
+    if validator is not None:
+        return validator(yamlmini.loads(text), scope)
     return parse(text, scope)
 
 
@@ -667,11 +669,12 @@ def load_card(slug: str, card: str):
     return _read(card_path(slug, card), "card")
 
 
-def repo_proposal(worktree: str):
+def repo_proposal(worktree: str, *, validator=None):
     """Propozycja profilu z `.tide/box.yaml` repozytorium projektu (tylko odczyt, `None` gdy brak).
 
     Wynik trzeba pokazać użytkownikowi i dopiero po zatwierdzeniu zapisać w Tablicy (`save_project`);
     plik w repozytorium nigdy nie jest zapisywany ani zmieniany. Dowiązanie wychodzące poza worktree jest odrzucane.
+    `validator(raw, scope)` pozwala sprawdzić kontrakt przed walidacją starszym schematem.
     """
     root = os.path.realpath(worktree)
     path = os.path.join(root, ".tide", "box.yaml")
@@ -682,4 +685,4 @@ def repo_proposal(worktree: str):
         raise ProfileError(".tide/box.yaml: dowiązanie wychodzi poza repozytorium")
     if not os.path.isfile(real):
         raise ProfileError(".tide/box.yaml: to nie jest zwykły plik")
-    return _read(real, "project")
+    return _read(real, "project", validator=validator)
