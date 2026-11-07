@@ -73,6 +73,78 @@ class InventoryTest(unittest.TestCase):
         trial_gate.start_registered("new", consent=True, inventory=self.inventory)
         procedure.start.assert_called_once()
 
+    def test_final_stop_preserves_incomplete_box_history_without_engine_after_restart(self):
+        path = self.project()
+        for missing in (False, True):
+            path.write_bytes(b'{"type":"box.use","step":"demo-old",BROKEN}\n')
+            if missing:
+                path.unlink()
+            for restarted in (False, True):
+                if restarted:
+                    self.restart()
+                with self.subTest(missing=missing, restarted=restarted):
+                    incus = mock.Mock()
+                    incus.instance.return_value = {"status": "Running"}
+                    builder = Builder(SimpleNamespace(), incus=incus, policy=object())
+                    before = None if missing else path.read_bytes()
+                    with self.assertRaises(BoxBusy):
+                        lifecycle.Lifecycle(builder).stop("proj")
+                    incus.stop.assert_not_called()
+                    self.assertEqual(None if not path.exists() else path.read_bytes(), before)
+
+    def test_first_build_without_instance_or_history_is_idle(self):
+        path = self.project()
+        path.unlink()
+        incus = mock.Mock()
+        incus.instance.return_value = None
+        builder = Builder(SimpleNamespace(), incus=incus, policy=object())
+        builder.require_idle("proj", "proj")
+
+    def test_recovery_and_later_append_preserve_corrupt_fallback(self):
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        self.journal.append("K-38", "intent", action="step-start", key="K-38-PT-261-1", ticket="PT-261")
+        self.journal.append("K-38", "result", action="step-start", key="K-38-PT-261-1", ok=True)
+        mirror = Path(self.journal.mirror_path("K-38"))
+        mirror.unlink()
+        path = Path(self.journal.path("K-38"))
+        corrupt = path.read_bytes() + b'{"type":"step.started","ticket":"PT-176",BROKEN}\n'
+        path.write_bytes(corrupt)
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted):
+                self.engine._recover_started_steps("K-38", fold(self.journal.read("K-38")))
+                self.engine.tick()
+                with self.assertRaises(ValueError):
+                    self.journal.append("K-38", "card.paused")
+                self.assertFalse(self.inventory())
+                with self.assertRaises(FlowError):
+                    self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+                procedure.start.assert_not_called()
+                self.assertEqual(path.read_bytes(), corrupt)
+                self.assertFalse(mirror.exists())
+
+    def test_recovery_of_complete_fallback_still_restores_started_step(self):
+        name = "K-38-PT-261-1"
+        self.journal.append("K-38", "intent", action="step-start", key=name, ticket="PT-261")
+        self.journal.append("K-38", "result", action="step-start", key=name, ok=True)
+        Path(self.journal.mirror_path("K-38")).unlink()
+        self.engine._recover_started_steps("K-38", fold([]))
+        self.assertEqual(fold(self.journal.read_complete("K-38")).steps[name]["ticket"], "PT-261")
+
+    def test_ordinary_append_preserves_corrupt_authoritative_mirror(self):
+        path = Path(self.journal.mirror_path("K-38"))
+        fallback = Path(self.journal.path("K-38"))
+        before = fallback.read_bytes()
+        corrupt = path.read_bytes() + b"broken\n"
+        path.write_bytes(corrupt)
+        with self.assertRaises(ValueError):
+            self.journal.append("K-38", "card.paused")
+        self.assertEqual(path.read_bytes(), corrupt)
+        self.assertEqual(fallback.read_bytes(), before)
+
     def test_unrelated_project_lifecycle_still_runs(self):
         self.project()
         builder = mock.Mock()

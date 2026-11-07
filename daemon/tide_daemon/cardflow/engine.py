@@ -1861,6 +1861,15 @@ class FlowEngine(PlanEditing):
             model_queue.shared().release_step(claim)
 
     def tick(self) -> None:
+        try:
+            # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
+            # może wyprzedzić rozpoznania niepełnej historii po restarcie.
+            for card in self.journal.cards_complete():
+                self.journal.read_complete(card)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
+            return
+        self._warnings.pop("journal", None)
         for card in self.journal.cards():
             self._recover_started_steps(card, fold(self.journal.read(card)))
         boxstep.recover_network(self)
@@ -3363,12 +3372,16 @@ class FlowEngine(PlanEditing):
 
     def _recover_started_steps(self, card: str, st: FlowState) -> None:
         """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started."""
+        try:
+            st = fold(self.journal.read_complete(card))
+        except (OSError, ValueError, TypeError, KeyError):
+            return  # także bezpośrednie recovery zachowuje bajty nieznanej historii
         ticket = ticket_of(st)
         for (action, key), result in st.results.items():
             if action != "step-start" or not result.get("ok") or key in st.steps:
                 continue
             intent = st.intents.get((action, key)) or {}
-            self.journal.append(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
+            self.journal.append_complete(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
                                 ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
                                 executor=intent.get("executor") or (st.started or {}).get("executor") or "",
                                 program=intent.get("program") or (st.started or {}).get("program") or "claude",

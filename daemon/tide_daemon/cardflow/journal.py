@@ -150,7 +150,11 @@ class Journal:
 
     def append(self, card: str, kind: str, /, **data) -> dict:
         with self.lock:
-            return self._append(card, kind, self.read(card), data)
+            # Tolerancyjny odczyt służy prezentacji, nigdy odbudowie kopii przy
+            # zapisie. Inaczej dowolne późniejsze zdarzenie usuwa dowód unknown.
+            exists = os.path.lexists(self.mirror_path(card)) or os.path.lexists(self.path(card))
+            events = self.read_complete(card) if exists else []
+            return self._append(card, kind, events, data)
 
     def append_complete(self, card: str, kind: str, /, **data) -> dict:
         """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""

@@ -43,13 +43,18 @@ def active_steps(builder, slug, name, engine=None):
     # jest obowiązkowy także przed pierwszą budową (bez dziennika pudełka).
     if trialhold._public_process_inventory():
         return ["nieznany stan dawnej publicznej próby"]
+    instance = builder.incus.instance(name)
+    # Brak dziennika jest prawidłowy tylko przed pierwszą budową. Istniejąca
+    # instancja lub historia wymagają pełnego skanu, także w CLI bez silnika.
+    if (instance is not None or os.path.lexists(bs.journal_path(slug))):
+        if trialhold.public_processes(journal.root):
+            return ["niepełna historia pudełek lub nierozstrzygnięta publiczna próba"]
     for st in states:
         if trialhold.preserves_project(st):
             project = (st.started or {}).get("project")
             if not project or project == slug:
                 return ["nierozstrzygnięty proces chronionej próby projektu"]
     busy = set(bs.running_steps(slug, name))
-    instance = builder.incus.instance(name)
     running = instance is not None and str(instance.get("status", "")).lower() == "running"
     for st in states:
         for step in st.steps.values():
