@@ -117,6 +117,32 @@ class ProcessIdentityRegression(unittest.TestCase):
         self.assertEqual(current["step"], "first")
         self.assertNotIn("branch", current)
 
+    def test_review3_invalid_card_project_never_stops_host_trial_box(self):
+        f = self.fixture
+        f.project()
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for project in ("proj ", "proj\n", "../proj", "Proj"):
+            for path in paths:
+                path.write_bytes(initial)
+            f.journal.append("K-38", "card.started", project=project)
+            f.journal.append("K-38", "intent", action="step-start", key="legacy", ticket="PT-176")
+            f.journal.append("K-38", "step.started", step="legacy", ticket="PT-176", runner="host")
+            f.journal.append("K-38", "step.finished", step="legacy", ticket="PT-176", result="done")
+            f.restart()
+            with self.subTest(project=project):
+                incus = mock.Mock()
+                incus.instance.return_value = {"status": "Running"}
+                builder = fixtures.Builder(SimpleNamespace(), incus=incus, policy=object(),
+                                           clock=lambda: 100, wall=lambda: 100)
+                builder.steps_source = lambda slug, name: fixtures.lifecycle.active_steps(
+                    builder, slug, name, f.engine)
+                with self.assertRaises(fixtures.BoxBusy):
+                    fixtures.lifecycle.Lifecycle(builder).stop("proj")
+                incus.stop.assert_not_called()
+                with self.assertRaises(ValueError):
+                    trialhold.read_process_history(f.journal, "K-38")
+
     def test_advance_checks_new_protection_for_selected_ticket(self):
         f = self.fixture
         f.journal.append("K-38", "step.started", step="first", ticket="PT-999", kind="ticket")
@@ -171,6 +197,25 @@ def generated_bad_histories():
     intent = {**start, "type": "intent", "action": "step-start", "key": start["step"], "ticket": "PT-176"}
     yield [intent, {"type": "result", "action": "step-start", "key": start["step"], "ok": True}, start]
     yield from generated_bad_resource_histories()
+    yield from generated_bad_card_project_histories()
+
+
+def generated_bad_card_project_histories():
+    """B1 rundy 3: wadliwy kontekst, uzupełnienia i zmiany zlecenia."""
+    good = dict(type="card.started", project="proj")
+    variants = [dict(type="card.started")]
+    variants.extend(dict(type="card.started", project=value) for value in (
+        None, [], 17, "", "proj ", "proj\n", "../proj", "Proj", "x" * 65))
+    for ticket in ("PT-176", "PT-999"):
+        start = dict(type="step.started", step="legacy-step", ticket=ticket, runner="host")
+        intent = dict(type="intent", action="step-start", key="legacy-step", ticket=ticket)
+        done = dict(type="step.finished", step="legacy-step", ticket=ticket, result="done")
+        for bad in variants:
+            yield [bad, intent, start, done]
+            yield [bad, intent, good, start, done]
+            yield [bad, start, good, done]
+            yield [good, start, bad, done, good, done]
+            yield [bad, start, dict(type="card.started", project="other"), done]
 
 
 def generated_bad_resource_histories():
@@ -242,6 +287,7 @@ class ProcessIdentityProperties(unittest.TestCase):
         omitted = {k: v for k, v in protected.items() if k != "branch"}
         neutral = {"type": "card.started", "project": "other"}
         for history in itertools.permutations((protected, omitted, neutral)):
+            history = [dict(type="card.started", project="proj"), *history]
             identity = process_identities(history)["ordinary"]
             self.assertEqual(identity.state, "ok")
             self.assertTrue(identity.held)
@@ -298,11 +344,42 @@ class ProcessIdentityProperties(unittest.TestCase):
                 self.assertIn("", identity.projects)
                 self.assertTrue(trialhold.preserves_project(st, "unrelated"))
 
+    def test_bad_card_projects_keep_unknown_scope_after_later_orders(self):
+        for index, history in enumerate(generated_bad_card_project_histories()):
+            with self.subTest(history=index):
+                st = fold(history)
+                identity = st.process_identities["legacy-step"]
+                self.assertEqual(identity.state, "unknown")
+                self.assertIn("", identity.projects)
+                self.assertTrue(trialhold.preserves_project(st, "proj"))
+                self.assertTrue(trialhold.preserves_project(st, "unrelated"))
+
+    def test_valid_card_projects_keep_precise_host_scope(self):
+        for project in ("proj", "my.project_name", "123", "x" * 64):
+            history = [dict(type="card.started", project=project),
+                       dict(type="step.started", step="legacy", ticket="PT-176", runner="host")]
+            with self.subTest(project=project):
+                st = fold(history)
+                self.assertEqual(st.process_identities["legacy"].state, "ok")
+                self.assertEqual(st.process_identities["legacy"].projects, {project})
+                self.assertTrue(trialhold.preserves_project(st, project))
+                self.assertFalse(trialhold.preserves_project(st, "unrelated"))
+
+    def test_missing_card_context_cannot_be_repaired_after_process_start(self):
+        start = dict(type="step.started", step="legacy", ticket="PT-999", runner="host")
+        history = [start, dict(type="card.started", project="proj"), start]
+        for length in (1, 2, 3):
+            with self.subTest(length=length):
+                st = fold(history[:length])
+                self.assertEqual(st.process_identities["legacy"].state, "unknown")
+                self.assertTrue(trialhold.preserves_project(st, "unrelated"))
+
     def test_console_trace_inherits_and_checks_started_identity(self):
         start = dict(type="step.started", step="ordinary", ticket="PT-999")
         entered = dict(type="step.entered", step="ordinary", consoleUnit="console.scope",
                        processFile="/console.json")
-        history = [start, entered, dict(type="step.console_opened", step="ordinary")]
+        history = [dict(type="card.started", project="proj"), start, entered,
+                   dict(type="step.console_opened", step="ordinary")]
         identity = process_identities(history)["ordinary"]
         self.assertEqual(identity.state, "ok")
         self.assertFalse(identity.held)

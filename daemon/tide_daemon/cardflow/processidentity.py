@@ -61,6 +61,15 @@ def outside_evidence(event):
                 and event.get("choice") in ("run", "run-always", "run-ticket")))
 
 
+def valid_project(value):
+    """Projekt musi być dokładnym slugiem; nie naprawiamy kontekstu historii."""
+    try:
+        bp._check_slug(value, "projekt")
+        return value == value.strip()
+    except (ValueError, TypeError):
+        return False
+
+
 def resource_state(data, card):
     """Czysta kontrola tego samego powiązania, które zapisuje Placement.entry."""
     runner = data.get("runner", "host")
@@ -72,10 +81,9 @@ def resource_state(data, card):
     if any(not isinstance(data.get(key), str) or not data[key] for key in RESOURCE_FIELDS):
         return "unknown"
     slug = data["boxSlug"]
+    if not valid_project(slug):
+        return "unknown"
     try:
-        bp._check_slug(slug, "projekt")
-        if slug != slug.strip():
-            return "unknown"
         if data["box"] == bs.box_name(slug):
             return "ok"
         if not card:
@@ -102,7 +110,7 @@ def process_identities(events):
         kind = event.get("type")
         if kind == "card.started":
             value = event.get("project")
-            project = value if isinstance(value, str) else ""
+            project = value if valid_project(value) else ""
             card = event.get("card", "")
         start = kind == "step.started" or (kind == "intent" and event.get("action") == "step-start")
         result = kind == "result" and event.get("action") == "step-start"
@@ -114,6 +122,10 @@ def process_identities(events):
         key = name if valid_name else (None, index)
         identity = identities.setdefault(key, ProcessIdentity(name if valid_name else ""))
         identity.projects.add(project)
+        if not project:
+            # Wadliwy kontekst nie wyznacza zakresu nawet dla procesu hostowego.
+            # Późniejsze zlecenie nie usuwa ani błędu, ani nieznanego projektu.
+            identity.worsen("unknown")
         # Start deklarujący zasób musi być kompletny sam w sobie. Zdarzenia
         # uzupełniające mogą dziedziczyć brakujące pola z wcześniejszego startu.
         resource = event if start and any(k in event for k in RESOURCE_FIELDS) else {
