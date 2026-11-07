@@ -17,6 +17,18 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=20), "ResolveCardStep bez odpowiedzi")
         return json.loads(box[0])
 
+    def wait_permission_after_caretaker(self, card_id):
+        # Sama kolumna „Czeka na mnie” może być przejściową migawką po automatycznej odmowie.
+        def final_permission():
+            if not self.of(card_id, "caretaker.escalated"):
+                return False
+            decided = {d["step"] for d in self.of(card_id, "step.decision")}
+            pending = self.shown(card_id)["derived"]["flow"]["decisions"]
+            return any(d["kind"] == "permission" and d["step"] not in decided for d in pending)
+
+        self.assertTrue(wait_until(final_permission, timeout=30), self.events(card_id))
+        return self.wait_column(card_id, "waiting")
+
     def test_outside_command_runs_on_consent_and_its_output_resumes_the_step(self):
         # 03.11: krok prosi o polecenie, którego piaskownica nie wykona (sieć, Docker, pełne testy).
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
@@ -154,12 +166,19 @@ class StepDecisionTest(FlowInProcess):
         # 03.11, K-16/LEGAL-66: pytanie o Docker/piaskownicę trafiało do użytkownika, który nie wiedział, co odpowiedzieć.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: srodowisko")
         self.assertTrue(self.start(card_id)["ok"])
+        # Pierwsze pytanie może chwilowo pokazać „Czeka”, zanim Tide wznowi krok ze swoją odpowiedzią.
+        def repeated_question():
+            finished = {s["step"] for s in self.of(card_id, "step.finished") if s.get("result") == "question"}
+            return [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket" and
+                    s.get("parentStep") and s["step"] in finished]
+
+        resumed = wait_until(repeated_question, timeout=30)
+        self.assertTrue(resumed, self.events(card_id))
         card = self.wait_column(card_id, "waiting")
         self.assertIn("Docker", card["derived"]["flow"]["decisions"][0]["technical"]["question"])
         answers = [d for d in self.of(card_id, "step.decision") if d.get("envAnswer")]
         self.assertEqual(len(answers), 1)
-        resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
-        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+        with open(os.path.join(resumed[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn('"result":"outside"', json.load(fh)["prompt"])
 
     def test_long_single_sandbox_command_is_granted_as_its_family(self):
@@ -281,6 +300,8 @@ class StepDecisionTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "question")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który format daty?")
+        # Stan dziennika jest widoczny przed końcem przebiegu i dostarczeniem powiadomienia w wątku Qt.
+        self.assertTrue(wait_until(lambda: bool(notices), timeout=5), "brak powiadomienia o pytaniu")
         self.assertEqual(len(notices), 1)
         self.assertEqual((notices[0]["card"], notices[0]["result"]), (card_id, "question"))
         self.flow.tick()
@@ -394,15 +415,14 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: zgoda-zabroniona")
         self.assertTrue(self.start(card_id)["ok"])
         # K-35: na polecenie, na które nie da się zezwolić, Tide sam odmawia i wznawia krok z prośbą o pojedyncze
-        # polecenia. Atrapa uparcie powtarza prośbę, więc po limicie automatycznych odmów decyzja wraca do użytkownika.
-        card = self.wait_column(card_id, "waiting")
+        # polecenia. Atrapa uparcie powtarza prośbę; od PT-148 druga automatyczna odmowa z tym samym poleceniem
+        # uruchamia opiekuna (przed `AUTO_DENY_LIMIT`), a gdy ten odda problem, decyzja wraca do użytkownika.
+        card = self.wait_permission_after_caretaker(card_id)
         self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
-        # Kolumna „Czeka na mnie” bywa widoczna chwilę przed zapisem ostatniej automatycznej odmowy (test niestabilny).
-        self.assertTrue(wait_until(lambda: len([d for d in self.of(card_id, "step.decision") if d.get("auto")]) >= 3,
-                                   timeout=10))
-        card = self.wait_column(card_id, "waiting")
         auto = [d for d in self.of(card_id, "step.decision") if d.get("auto")]
-        self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)] * 3)
+        self.assertEqual([(d["choice"], d["auto"]) for d in auto], [("deny", True)], "druga odmowa to opiekun")
+        started = self.of(card_id, "caretaker.started")
+        self.assertEqual([(r["trigger"], r["decision"]) for r in started], [("repeat", "")])
         resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
         with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn("Uruchamiaj polecenia pojedynczo", json.load(fh)["prompt"])
@@ -418,7 +438,7 @@ class StepDecisionTest(FlowInProcess):
             with self.subTest(mode=mode):
                 card_id = self.card(description=f"Test.\n\nATRAPA: {mode}")
                 self.assertTrue(self.start(card_id)["ok"])
-                card = self.wait_column(card_id, "waiting")
+                card = self.wait_permission_after_caretaker(card_id)
                 self.assertFalse(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
                 self.assertTrue(self.of(card_id, "step.decision")[0]["auto"])
                 self.assertEqual(self.decide(card_id, choice="allow")["error"], "forbidden-command")
@@ -512,12 +532,15 @@ class StepDecisionTest(FlowInProcess):
     def test_change_executor_is_kept_for_review_fixes(self):
         card_id = self.card(description="Test.\n\nATRAPA: blad-zmien\nATRAPA: review-requests 1")
         self.assertTrue(self.start(card_id)["ok"])
+        # „Czeka” może być przejściowe między drugim błędem a startem opiekuna. Decyzję oddaje jego eskalacja.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=30), self.events(card_id))
         self.wait_column(card_id, "waiting")
-        self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
+        reply = self.decide(card_id, choice="change-executor", executor="Haiku")
+        self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "review")
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
-                         [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("ticket", "Haiku"),
+                         [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("caretaker", "Opus"), ("ticket", "Haiku"),
                           ("review", "Opus"), ("fix", "Haiku"), ("review", "Opus"),
                           ("close", "Sonnet")])
 
@@ -530,7 +553,7 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
-                         [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"),
+                         [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"), ("caretaker", "Opus"),
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
                           ("close", "Sonnet")])
 
@@ -551,6 +574,19 @@ class StepDecisionTest(FlowInProcess):
         fix = next(s for s in self.of(card_id, "step.started") if s["kind"] == "fix")
         self.assertEqual(fix["executor"], "Codex standard")
 
+    def test_card_closing_can_be_reassigned_to_another_executor(self):
+        # 06.11, K-37: domknięcie karty prowadzi planista/wykonawca startu; przy limicie Claude czekało do soboty.
+        card_id = self.card(description="Test.\n\nATRAPA: powoli 3")
+        self.assertTrue(self.start(card_id)["ok"])
+        done = self.flow.engine.resolve_step(card_id, {"choice": "reassign-author", "ticket": "close",
+                                                       "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=40), self.events(card_id))
+        close = next(s for s in self.of(card_id, "step.started") if s["kind"] == "close")
+        ticket = next(s for s in self.of(card_id, "step.started") if s["kind"] == "ticket")
+        self.assertEqual((ticket["executor"], close["executor"]), ("Sonnet", "Codex standard"))
+
     def test_resume_after_answer_uses_the_reassigned_author_in_a_fresh_session(self):
         # 05.11, K-38/PT-192: wznowienie rozmowy Opusa czekało na limit Claude do soboty.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
@@ -569,7 +605,8 @@ class StepDecisionTest(FlowInProcess):
         with open(call_path, encoding="utf-8") as fh:
             call = json.load(fh)
         self.assertNotIn("--resume", call["argv"])
-        self.assertIn("Poprzedni krok tego ticketu prowadził inny wykonawca", call["prompt"])
+        self.assertIn("prowadził inny wykonawca (Sonnet)", call["prompt"])
+        self.assertIn("zaczynasz nową sesję", call["prompt"])
 
     def test_timeout_stops_both_attempts_and_preserves_worktree(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
@@ -579,7 +616,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertTrue(started["ok"], started)
         card = self.wait_column(card_id, "waiting", timeout=30)
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
-        finished = self.of(card_id, "step.finished")
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s["kind"] == "ticket"}
+        finished = [e for e in self.of(card_id, "step.finished") if e["step"] in tickets]
         self.assertEqual([(e["result"], e["reason"]) for e in finished],
                          [("error", "timeout"), ("error", "timeout")])
         self.assertTrue(all(e["wip"]["stopped"] for e in finished))
@@ -594,7 +632,8 @@ class StepDecisionTest(FlowInProcess):
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertTrue(card["derived"]["flow"]["stalledSince"])
         self.assertIn("od ", card["derived"]["note"])
-        self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
+        tickets = {s["step"] for s in self.of(card_id, "step.started") if s["kind"] == "ticket"}
+        self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished") if e["step"] in tickets],
                          ["no-progress", "no-progress"])
 
     def test_local_offline_on_retry_waits_without_cloud_fallback(self):
@@ -898,3 +937,37 @@ class ContentRefusalTest(unittest.TestCase):
             fh.write('{"type":"error","message":"exit code 1"}\n')
         self.assertFalse(content_refusal({"stepDir": base}))
         self.assertFalse(content_refusal({"stepDir": "/nie/ma"}))
+
+
+class ReviewerOverrideAfterRefusalTest(unittest.TestCase):
+    """06.11 K-60/PT-254: po odmowie dostawcy Tide sam wybrał Sonnet (limit Claude 96%); późniejsze przepięcie
+    recenzenta na Codex Astra musi wygrać przy wznowieniu review."""
+
+    def state(self, reassign_seq):
+        from tide_daemon.cardflow.state import fold
+        events = [
+            {"v": 1, "seq": 1, "type": "card.started", "entry": "now"},
+            {"v": 1, "seq": 2, "type": "step.started", "step": "K-1-PT-1-2", "kind": "review", "ticket": "PT-1",
+             "executor": "Codex standard"},
+            {"v": 1, "seq": 3, "type": "step.finished", "step": "K-1-PT-1-2", "ticket": "PT-1", "result": "error",
+             "reason": "exit"},
+            {"v": 1, "seq": 4, "type": "step.decision", "step": "K-1-PT-1-2", "ticket": "PT-1", "kind": "review",
+             "choice": "change-executor", "executor": "Sonnet", "auto": True, "refusal": True},
+            {"v": 1, "seq": reassign_seq, "type": "reviewer.reassigned", "ticket": "PT-1",
+             "sourceStep": "K-1-PT-1-2", "reviewer": "Codex Astra"},
+        ]
+        return fold(sorted(events, key=lambda e: e["seq"]))
+
+    def test_later_user_reassignment_wins_over_automatic_decision(self):
+        from tide_daemon.cardflow.engine import reviewer_override
+        st = self.state(5)
+        step, decision = st.steps["K-1-PT-1-2"], st.step_decisions["K-1-PT-1-2"]
+        self.assertEqual(reviewer_override(st, step, decision, "Sonnet"), "Codex Astra")
+
+    def test_older_reassignment_and_other_kinds_do_not_override(self):
+        from tide_daemon.cardflow.engine import reviewer_override
+        st = self.state(5)
+        step = st.steps["K-1-PT-1-2"]
+        self.assertEqual(reviewer_override(st, step, {"seq": 9}, "Sonnet"), "", "decyzja nowsza od przepięcia")
+        self.assertEqual(reviewer_override(st, {**step, "kind": "fix"}, {"seq": 4}, "Sonnet"), "")
+        self.assertEqual(reviewer_override(st, step, {"seq": 4}, "Codex Astra"), "", "ten sam wykonawca")

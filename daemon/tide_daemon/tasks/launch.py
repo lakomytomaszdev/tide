@@ -318,7 +318,8 @@ def agent_env(task: dict, base: dict) -> dict:
     pliki z `tokenFiles` tylko sprawdzone (agent czyta je sam, np. apiKeyHelper Claude Code)."""
     for path in task.get("tokenFiles") or []:
         read_token(path)
-    env = {k: v for k, v in base.items() if k not in set(task.get("unsetEnv") or [])}
+    env = {} if task.get("cleanEnv") is True else {
+        k: v for k, v in base.items() if k not in set(task.get("unsetEnv") or [])}
     env.update(task.get("env") or {})
     for name, path in (task.get("secretEnv") or {}).items():
         env[name] = read_token(path)

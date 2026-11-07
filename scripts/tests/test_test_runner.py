@@ -14,6 +14,16 @@ from tools import test_runner as runner
 from tools.test_suites import SUITES
 
 
+_POOL = tempfile.TemporaryDirectory()
+
+
+def setUpModule():
+    # Testy uruchamiacza mają własną pulę: uruchomione wprost nie czekają na miejsca przebiegów kart (06.11).
+    patcher = patch.dict("os.environ", {"TIDE_TEST_SLOTS_DIR": _POOL.name})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class SelectionTest(unittest.TestCase):
     def test_component_changes_and_more_specific_cardflow_mapping(self):
         self.assertEqual(runner.changed_suites(["apps/board/qml/Main.qml", "daemon/tide_daemon/main.py"]),
@@ -237,10 +247,22 @@ class MachineSlotsTest(unittest.TestCase):
         self.assertEqual(peak[0], 3, "dwa przebiegi po 4 wątki razem najwyżej 3 moduły naraz")
 
     def test_slot_of_a_dead_process_returns_to_the_pool(self):
+        import fcntl
         code = ("import sys, os; sys.path.insert(0, sys.argv[1]); from tools import test_runner as r; "
-                "os.environ.pop(r.SLOT_HELD, None); r.MachineSlots(1, sys.argv[2]).acquire(); os._exit(0)")
-        subprocess.run([sys.executable, "-c", code, str(runner.ROOT), str(self.dir)], check=True,
-                       env={k: v for k, v in __import__("os").environ.items() if k != runner.SLOT_HELD})
+                "os.environ.pop(r.SLOT_HELD, None); handle = r.MachineSlots(1, sys.argv[2]).acquire(); "
+                "print('locked', flush=True); sys.stdin.readline(); os._exit(0)")
+        with subprocess.Popen([sys.executable, "-c", code, str(runner.ROOT), str(self.dir)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                              env={k: v for k, v in __import__("os").environ.items() if k != runner.SLOT_HELD}) as proc:
+            self.assertEqual(proc.stdout.readline().strip(), "locked")
+            try:
+                with open(self.dir / "slot-0.lock") as contender:
+                    with self.assertRaises(BlockingIOError, msg="uchwyt nadal trzyma blokadę w żywym procesie"):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                proc.stdin.write("exit\n")
+                proc.stdin.flush()
+                self.assertEqual(proc.wait(timeout=5), 0)
         with patch.dict("os.environ", {}, clear=False) as env:
             env.pop(runner.SLOT_HELD, None)
             slots = runner.MachineSlots(1, self.dir)
@@ -260,3 +282,52 @@ class MachineSlotsTest(unittest.TestCase):
             slots = runner.MachineSlots(1, blocker / "slots")
             self.assertIsNone(slots.acquire())
             self.assertTrue(slots.disabled)
+
+    def test_read_only_pool_from_the_host_still_limits_a_sandboxed_run(self):
+        import os, stat
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop(runner.SLOT_HELD, None)
+            host = runner.MachineSlots(1, self.dir)
+            held = host.acquire()                       # host zakłada plik i trzyma jedyne miejsce
+            os.chmod(self.dir / "slot-0.lock", stat.S_IRUSR)
+            os.chmod(self.dir, stat.S_IRUSR | stat.S_IXUSR)    # jak katalog tylko do odczytu w piaskownicy
+            self.addCleanup(os.chmod, self.dir, stat.S_IRWXU)
+            self.addCleanup(os.chmod, self.dir / "slot-0.lock", stat.S_IRUSR | stat.S_IWUSR)
+            sandboxed = runner.MachineSlots(1, self.dir)
+            import threading
+            got = []
+            worker = threading.Thread(target=lambda: got.append(sandboxed.acquire()), daemon=True)
+            with redirect_stdout(io.StringIO()):
+                worker.start()
+                worker.join(0.6)
+                self.assertFalse(got, "piaskownica czeka na miejsce trzymane przez hosta")
+                self.assertFalse(sandboxed.disabled)
+                runner.MachineSlots.release(held)
+                worker.join(5)
+            self.assertTrue(got and got[0] is not None)
+            runner.MachineSlots.release(got[0])
+
+
+class ModulesOptionTest(unittest.TestCase):
+    """06.11: ponowienie padniętych modułów (cardflow/testrerun.py) idzie przez uruchamiacz — pula i izolacja stanu."""
+
+    def run_main(self, *argv):
+        out = io.StringIO()
+        with patch.object(sys, "argv", ["test_runner.py", *argv]), redirect_stdout(out), \
+                patch("sys.stderr", io.StringIO()):
+            try:
+                code = runner.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_modules_selects_exactly_the_given_known_modules(self):
+        known = runner.modules_for([(d, "test*.py") for d in sorted({d for p in SUITES.values() for d, _ in p})])
+        chosen = sorted(known)[:2]
+        code, out = self.run_main("--modules", *reversed(chosen), "--list")
+        self.assertIn(code, (0, None))
+        self.assertEqual(out.split(), chosen)
+
+    def test_unknown_module_and_mixed_selection_are_rejected(self):
+        self.assertEqual(self.run_main("--modules", "daemon/tests/test_nie_ma.py", "--list")[0], 2)
+        self.assertEqual(self.run_main("--modules", "x.py", "--changed")[0], 2)

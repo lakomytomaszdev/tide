@@ -117,6 +117,42 @@ out["activeAfter"] = js("page.cardFullView.flow.ticketConsents[0].active")
         self.assertEqual(out["consentError"], "Zlecenie zmieniło się")
         self.assertFalse(out["activeAfter"], "nowa migawka odświeża panel")
 
+    def test_talk_button_and_escalated_decision_call_the_service(self):
+        from unittest import mock
+        from tide_daemon.cardflow.engine import FlowEngine
+        from tide_daemon.cardflow import caretaker
+        events = self.caretaker_events(escalated=True)
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = mock.Mock()
+        engine.journal.read.return_value = events
+        engine._caretaker_setup = lambda st: caretaker.setup(st)
+        engine._limit_view = lambda *args: None
+        computed = engine.derived({"id": "K-8", "column": "todo"})
+        self.assertIn("talk-to-caretaker", [o["id"] for d in computed["flow"]["decisions"] for o in d["options"]])
+        data = full_card(self.data, events)
+        data["cardOpen"] = "full"
+        next(c for c in data["cards"] if c["id"] == "K-8")["derived"] = computed
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+click(named("talkToCaretaker"))
+out["button"] = calls()
+js("page.cardFullView.form.pick('talk-to-caretaker')")
+# Wspólny widok pokazuje też bazę karty; długa decyzja wymaga przewinięcia do przycisku.
+named("fullChoose")
+js('''(function () {
+    let flick = probeTarget.parent;
+    while (flick && flick.contentY === undefined) flick = flick.parent;
+    flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height,
+        probeTarget.mapToItem(flick.contentItem, 0, 0).y - flick.height / 2));
+})()''')
+wait(80)
+click(named("fullChoose"))
+out["option"] = calls()
+""", data)
+        self.assertEqual(out["button"][-1], ["TalkToCaretaker", "K-8", "{}"])
+        self.assertEqual(out["option"][-1][0:2], ["TalkToCaretaker", "K-8"])
+        self.assertEqual(json.loads(out["option"][-1][2]), {"problem": "error:K-8-PT-2-1"})
+
     def test_scenario_e_lists_stopped_steps_and_moves_them_to_codex_after_showing_the_cost(self):
         out = self.probe(STATE_PY + """
 click(card("K-8"))
@@ -330,6 +366,91 @@ out["enter"] = calls()
         self.assertTrue(old_step[4])
         self.assertEqual(old_step[3], 0, "wcześniejsze zlecenia są bez „Wznów rozmowę”")
         self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "NEW-2"])
+
+    def caretaker_events(self, escalated=False):
+        """Karta K-8: PT-2 padł dwa razy, opiekun (Opus) sprawdza go; z `escalated` oddaje decyzję."""
+        now = datetime.now().astimezone()
+        events = []
+
+        def add(etype, ago, /, **data):
+            events.append({"v": 1, "seq": len(events) + 1, "ts": (now - timedelta(minutes=ago)).isoformat(),
+                           "card": "K-8", "type": etype, **data})
+
+        def step(name, kind, ago, attempt=0, parent="", **extra):
+            add("step.started", ago, step=name, ticket="PT-2", kind=kind, executor=extra.pop("executor", "Sonnet"),
+                provider="anthropic", model="x", attempt=attempt, parentStep=parent,
+                stepDir=f"/wt/{name}.step", worktree="/wt/pt-2", branch="ticket/pt-2", **extra)
+
+        add("card.started", 60, entry="now", executor="Sonnet", program="claude", provider="anthropic")
+        step("K-8-PT-2-1", "ticket", 50)
+        add("step.finished", 49, step="K-8-PT-2-1", ticket="PT-2", result="error", reason="exit")
+        add("step.retry", 48, step="K-8-PT-2-1", ticket="PT-2")
+        step("K-8-PT-2-2", "ticket", 47, attempt=1, parent="K-8-PT-2-1")
+        add("step.finished", 46, step="K-8-PT-2-2", ticket="PT-2", result="error", reason="exit")
+        add("caretaker.started", 45, problem="error:K-8-PT-2-1", key="caretaker:error:K-8-PT-2-1:1", n=1,
+            step="K-8-care-1", target="K-8-PT-2-2", root="K-8-PT-2-1", ticket="PT-2", trigger="error",
+            triggers=["error"], watermark=len(events))
+        step("K-8-care-1", "caretaker", 44, executor="Opus")
+        if escalated:
+            add("step.finished", 20, step="K-8-care-1", ticket="PT-2", result="done", reason="")
+            add("caretaker.escalated", 19, problem="error:K-8-PT-2-1", step="K-8-care-1", target="K-8-PT-2-2",
+                ticket="PT-2", action="escalate", summary="Test pada za każdym razem.",
+                recommendation="Zmień wykonawcę.", optionId="change-executor", failed=False, error="", code="")
+        return events
+
+    def test_caretaker_work_shows_in_now_in_background_your_move_and_history(self):
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        # Dane prosto z usługi: dla kroku opiekuna usługa daje canEnter=False (wejście — PT-149/PT-158).
+        self.assertIs(derived_flow["running"][0]["canEnter"], False)
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+""", data)
+        full_state = out["full"]
+        self.assertEqual(full_state["headline"], "Opiekun zajmuje się PT-2, nic nie czeka na Ciebie.")
+        self.assertEqual(full_state["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 0]],
+                         "„Wejdź” jest ukryte dla kroku opiekuna")
+
+    def test_view_shows_enter_for_a_running_step_exactly_when_can_enter_is_true(self):
+        # Test samego widoku: przycisk „Wejdź” wynika wyłącznie z pola canEnter (nie z rodzaju kroku).
+        data = full_card(self.data, self.caretaker_events())
+        data["cardOpen"] = "full"
+        derived_flow = [c for c in data["cards"] if c["id"] == "K-8"][0]["derived"]["flow"]
+        derived_flow["running"][0]["canEnter"] = True
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+click(at("(" + ALL + ")(page.cardFullView, 'fullNowEnter')[0]"))
+out["enter"] = calls()
+""", data)
+        self.assertEqual(out["full"]["now"], [["K-8-care-1", "PT-2 · opiekun · Opus", 1]])
+        self.assertEqual(out["enter"][-1], ["EnterStep", "K-8", "K-8-care-1"])
+
+    def test_caretaker_escalation_is_signed_opiekun_in_history(self):
+        data = full_card(self.data, self.caretaker_events(escalated=True))
+        data["cardOpen"] = "full"
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["lines"] = json.loads(js("(function () { const v = page.cardFullView; const all = " + ALL + "; "
+    "return JSON.stringify(all(v, 'fullHistoryLine').map(l => [l.text, "
+    "all(l, 'historyCaretaker').filter(t => t.visible).map(t => t.text), "
+    "all(l, 'historyKind').map(t => t.text)])) })()"))
+""", data)
+        lines = {row[0]: row for row in out["lines"]}
+        signed = lines["Opiekun: oddaje decyzję — Test pada za każdym razem."]
+        self.assertEqual((signed[1], signed[2]), (["Opiekun"], ["opiekun"]))
+        self.assertTrue(all(row[1] == [] for row in out["lines"] if row is not signed),
+                        "tylko wpisy opiekuna mają podpis")
+
+    def test_card_without_caretaker_has_no_caretaker_signature(self):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["full"] = full()
+out["signed"] = js("(" + ALL + ")(page.cardFullView, 'historyCaretaker').filter(t => t.visible).length")
+""", full_d(self.data))
+        self.assertEqual(out["signed"], 0)
 
     def test_panel_button_and_cards_without_journal(self):
         out = self.probe(STATE_PY + """

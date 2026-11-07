@@ -500,6 +500,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="TalkToCaretaker">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg type="s" direction="out"/>
+  </method>
   <method name="EnterStep">
     <arg name="id" type="s" direction="in"/>
     <arg name="step" type="s" direction="in"/>
@@ -526,6 +531,11 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <method name="AddCardStepNote">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ResolveCardCaretaker">
     <arg name="id" type="s" direction="in"/>
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
@@ -1026,6 +1036,18 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)
+    def TalkToCaretaker(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.TalkToCaretaker", flush=True)
+
+        self.monitor.talk_to_caretaker(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
     def EnterStep(self, card_id: str, step_id: str, message: QDBusMessage) -> str:
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
@@ -1079,6 +1101,18 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
         self.monitor.revoke_ticket_consent(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ResolveCardCaretaker(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.ResolveCardCaretaker", flush=True)
+
+        self.monitor.resolve_card_caretaker(card_id, request, reply)
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)

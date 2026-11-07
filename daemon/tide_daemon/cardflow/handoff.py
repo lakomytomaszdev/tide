@@ -2,12 +2,82 @@
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
 
+import glob
+import os
+import re
+import shlex
+
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
 REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
 OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
+
+
+RERUN_MODULES = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
+                 "różny od 0) przez uruchamiacz projektu — ta sama pula maszyny i izolacja stanu co w pełnym przebiegu:\n"
+                 "`/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>`. Tide robi to także sam, gdy prosisz\n"
+                 "o to samo pełne polecenie na tym samym HEAD.")
+RERUN_RUNNER = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
+                "różny od 0), każdy tym samym interpreterem co `make test` i we własnym katalogu stanu:\n"
+                "`d=\"$(mktemp -d)\" && XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>`\n"
+                "(test bez izolacji nadpisał kiedyś stan działającej Tablicy).")
+RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem\n"
+                 "na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.")
+
+
+def rerun_failed(worktree: str = "") -> str:
+    """Etap A (06.11: 31% czasu testów to powtórki całego zestawu na tym samym kodzie). Przepis zależy od
+    projektu: repozytorium z `tools/test_runner.py` dostaje dokładne polecenie, inne technologie — zasadę."""
+    from .testrerun import runner_reruns
+    runner = not worktree or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))
+    how = (RERUN_MODULES if runner_reruns(worktree) else RERUN_RUNNER) if runner else RERUN_GENERIC
+    return f"""Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
+niestabilności lub obciążenia), nie powtarzaj całego zestawu. {how}
+W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie
+(ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
+pełne polecenie z akapitu wyżej. Ponowienie zmienia tylko to, co uruchamiasz, nie ocenę: porażka pierwszego
+przebiegu zostaje wynikiem, a udane ponowienie jej nie zastępuje. Rozlicz ją jak każde odstępstwo
+według zasad wyjątków od testów projektu (w Tide: `docs/testing.md`, „Wyjątki od testów”): ten sam test na bazie
+ticketu i na głównej gałęzi projektu, obciążenie, zakres, właściciel.
+"""
+
+
+OLD_BRANCH_TESTS = """Testy ticketu (także po poprawkach): ta gałąź karty powstała przed celem `make test-changed`
+i go nie ma. Obowiązuje dla niej dotychczasowa zasada: przed oddaniem uruchom raz pełny `make test` i zapisz
+polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie twórz zamiennika celu.
+"""
+
+
+def has_changed_target(worktree: str) -> bool:
+    """Czy obowiązuje `make test-changed` (06.11: gałęzie K-37/K-38 sprzed K-54 go nie mają, a kartka po K-62
+    kazała go uruchomić — agent pytał, czy przenieść infrastrukturę testów z master). Brak katalogu — nowa zasada."""
+    if not worktree or not os.path.isdir(worktree):
+        return True
+    text = ""
+    for path in [os.path.join(worktree, "Makefile"), *glob.glob(os.path.join(worktree, "mk", "*.mk"))]:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text += fh.read() + "\n"
+        except OSError:
+            continue
+    # Dawna zasada tylko dla gałęzi z celem `test`, ale bez `test-changed`; projekt bez make zostaje przy nowej.
+    return bool(re.search(r"^test-changed\s*:", text, re.M)) or not re.search(r"^test\s*:", text, re.M)
+
+
+def ticket_tests(base: str = "", worktree: str = "") -> str:
+    if not has_changed_target(worktree):
+        return OLD_BRANCH_TESTS + rerun_failed(worktree)
+    command = f"make test-changed BASE={shlex.quote(base)}" if base else \
+        "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
+    return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
+BASE to przypięty punkt startu ticketu na gałęzi karty, a nie bieżący wierzchołek karty ani master.
+Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania ticketu ani jego review;
+jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
+w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
+Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
+""" + rerun_failed(worktree)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -34,6 +104,14 @@ def close_card(*, card_id: str, title: str, description: str, worktree: str, out
     return f"""Domknij kartę {card_id}: {title}. Pracuj w worktree karty {worktree}.
 Opis karty: {description}
 Wyniki ticketów: {tickets}
+Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
+`make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
+outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
+problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
+{rerun_failed(worktree)} Gdy polecenie wymaga zgody lub wykonania
+poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
+bez nowych zmian.
 Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
 {instruction} Nie scalaj do gałęzi głównej, nie rób push i nie usuwaj worktree.
 Jako ostatnią czynność zapisz plik:
@@ -93,12 +171,17 @@ worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w
 
 
 def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,
-                   allowed=None, skipped=(), instead: str = "") -> str:
+                   allowed=None, skipped=(), instead: str = "", caretaker: bool = False) -> str:
     """Jawna decyzja do wznowionego kroku; kartka poprzedniej próby pozostaje wyżej w poleceniu.
     `allowed` — zgoda na wybrane polecenia z łańcucha (PT-124), `skipped` — niezaznaczone, `instead` — co krok ma
-    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”)."""
-    if choice == "answer":
-        detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź użytkownika: {answer}"
+    zrobić zamiast poleceń, na które nie było zgody („Zrób zamiast tego…”), `caretaker` — ponowienie z instrukcją
+    od opiekuna karty (PT-150), nie od użytkownika."""
+    if caretaker and choice == "retry":
+        detail = ("Instrukcja od opiekuna karty (opiekun sprawdził dziennik tego kroku i historię karty; instrukcja ma "
+                  f"pierwszeństwo przed wcześniejszym planem kroku):\n{answer}\nZachowaj zmiany z poprzednich prób.")
+    elif choice == "answer":
+        author = "opiekuna karty" if caretaker else "użytkownika"
+        detail = f"Pytanie z poprzedniej próby: {prior.get('question') or ''}\nOdpowiedź {author}: {answer}"
         picked = next((o for o in prior.get("options") or [] if o.get("title") == answer), None)
         if picked:
             detail += "\nUżytkownik wybrał podaną opcję."
@@ -140,7 +223,10 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
                   "diagnostyczne poleceniem `git clean -f -- <ścieżka>` (nie `rm`), "
                   "a potem zakończ krok tym samym wynikiem co poprzednio.")
     elif choice == "change-executor":
-        detail = "Użytkownik wybrał innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+        author = "Opiekun karty wybrał" if caretaker else "Użytkownik wybrał"
+        detail = f"{author} innego wykonawcę. Zachowaj zmiany z poprzednich prób w tym samym worktree."
+        if answer:
+            detail += f"\nInstrukcja dla nowej sesji wykonawcy:\n{answer}"
     elif choice == "transfer":
         detail = "Krok przekazano od innego dostawcy. Kontynuuj w tym samym worktree z commita WIP; przeczytaj notkę techniczną niżej."
     elif choice == "auto":
@@ -161,7 +247,7 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
 
 
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
-                card_branch: str, worktree: str, out_dir: str, images=()) -> str:
+                card_branch: str, worktree: str, out_dir: str, images=(), test_base: str = "") -> str:
     shots = "".join(f"- {path}\n" for path in images)
     body = description.strip() or "(karta bez opisu — zrób to, co mówi tytuł)"
     return f"""Krok ticketu {ticket} karty {card_id} w przepływie karty Tide (wejście „Od razu”, krok w tle).
@@ -173,6 +259,7 @@ Twój katalog roboczy: {worktree} (gałąź {branch}, odgałęziona od gałęzi 
 
 Opis karty:
 {body}
+{ticket_tests(test_base, worktree)}
 {f'''
 Zrzuty ekranu dołączone do zlecenia (przeczytaj je narzędziem Read):
 {shots}''' if shots else ''}
@@ -205,7 +292,7 @@ Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
                 card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
-                diff: str, note: str, rules: str) -> str:
+                diff: str, note: str, rules: str, test_base: str = "") -> str:
     """Pełne wejście niezależnego przeglądu, przekazane na stdin programu recenzenta."""
     return f"""Krok review {ticket} karty {card_id}, runda {round_no}. Sprawdź wymagania i zmiany, nie edytuj kodu.
 
@@ -219,9 +306,18 @@ Twój katalog: {worktree}
 
 Dla recenzenta:
 - sprawdź zgodność z opisem karty i zasadami projektu,
+{"- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;" + chr(10) +
+   "  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,"
+   if has_changed_target(worktree) else
+   "- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);" + chr(10) +
+   "  nie uruchamiaj go ponownie na potrzeby review,"}
+- ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
+  (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów; udane ponowienie nie zastępuje porażki,
+  oceń rozliczenie odstępstwa jak przy każdym nieudanym przebiegu,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 
+{ticket_tests(test_base, worktree)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 
@@ -241,13 +337,14 @@ Liczby mają odpowiadać raportowi. Nie rób push ani merge.
 
 
 def fix_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
-             branch: str, worktree: str, out_dir: str, review: str) -> str:
+             branch: str, worktree: str, out_dir: str, review: str, test_base: str = "") -> str:
     return f"""Krok poprawek ticketu {ticket} karty {card_id} po review, runda {round_no}.
 
 Karta {card_id}: {title}
 Opis/specyfikacja karty:
 {description.strip() or '(brak opisu)'}
 Twój katalog: {worktree}, gałąź {branch}. Popraw BLOCKER i MAJOR z raportu; uruchom odpowiednie testy.
+{ticket_tests(test_base, worktree)}
 
 Raport review:
 {review}

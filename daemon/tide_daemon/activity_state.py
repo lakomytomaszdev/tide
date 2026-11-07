@@ -143,6 +143,7 @@ class NotificationFilter(QObject):
         self._wanted = False
         self._allowed: dict = {}
         self._pending: set[QDBusPendingCallWatcher] = set()
+        self._blocking_release = False
         self.retry_first, self.retry_max = retry_ms
         self._retry_ms = self.retry_first
         self._retry = QTimer(self, singleShot=True)
@@ -198,7 +199,7 @@ class NotificationFilter(QObject):
             return
         self.cookie = int(reply.arguments()[0])
         self._retry_ms = self.retry_first
-        if not self._wanted and release_now and not self._stopped:  # stop zwolni synchronicznie poniżej
+        if not self._wanted and release_now and not self._blocking_release and not self._stopped:
             self._uninhibit(blocking=False)
 
     @pyqtSlot(str)
@@ -223,9 +224,13 @@ class NotificationFilter(QObject):
         if blocking:
             # Zatrzymanie usługi: pętla Qt już nie działa, więc odpowiedź na Inhibit odbieramy tutaj
             # i zwalniamy niżej, czekając na UnInhibit.
-            for watcher in list(self._pending):
-                watcher.waitForFinished()
-                self._inhibited(watcher, release_now=False)
+            self._blocking_release = True
+            try:
+                for watcher in list(self._pending):
+                    watcher.waitForFinished()
+                    self._inhibited(watcher, release_now=False)
+            finally:
+                self._blocking_release = False
         if self.cookie:
             self._uninhibit(blocking)
 

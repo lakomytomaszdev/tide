@@ -163,6 +163,18 @@ _Avoid_: log, historia, plan (plan to widok dziennika)
 Jedna zapisana zmiana w dzienniku karty, np. start kroku, zatwierdzenie planu, werdykt review.
 _Avoid_: wpis, event w tekstach dla użytkownika
 
+**Opiekun karty**:
+Krok w tle rodzaju `caretaker`, który Tide uruchamia sam przy problemie karty, zanim zapyta użytkownika; sprawdza problem i odpowiada jedną akcją z listy Tide. Opiekun nigdy nie zajmuje się własnym krokiem.
+_Avoid_: agent naprawczy, supervisor, auto-fix
+
+**Problem**:
+Sytuacja karty, którą sprawdza opiekun (np. błąd kroku po automatycznym ponowieniu), o stałym id bez numeru zdarzenia (`error:<pierwszy krok łańcucha prób>`); jeden łańcuch prób kroku ma naraz najwyżej jeden problem.
+_Avoid_: incydent, alarm, błąd (błąd to jeden z rodzajów problemu)
+
+**Działanie opiekuna**:
+Jeden krok opiekuna przy problemie i jego akcja (np. oddanie decyzji użytkownikowi); działania liczy się od ostatniej decyzji użytkownika albo rozwiązania problemu. Akcja spoza listy Tide albo brak poprawnego wyniku to nieudane działanie.
+_Avoid_: próba (próba to ponowienie kroku), interwencja
+
 ### Tickety
 
 **Ticket**:
@@ -233,7 +245,11 @@ Rola wykonawcy, który robi ticket (krok ticketu i poprawki).
 _Avoid_: wykonawca ticketu, implementer
 
 **Recenzent**:
-Rola wykonawcy, który robi review ticketu albo planu; zawsze inny model niż autor.
+Rola wykonawcy, który robi niezależne review ticketu albo planu w nowej sesji. Dla zwykłych ticketów
+dopuszczalny jest ten sam model z inną siłą myślenia (Codex mocny ↔ standard). Dla klas ryzyka
+wymienionych w [standardzie planu](docs/agent-plan-standard.md#recenzja-według-ryzyka) wymagany jest
+recenzent innej rodziny modeli (np. Astra / Claude względem autora Codex); brak dostępnego limitu
+takiego recenzenta oznacza oczekiwanie, bez automatycznego obniżenia wymagania.
 _Avoid_: reviewer w tekstach dla użytkownika
 
 **Klasa**:

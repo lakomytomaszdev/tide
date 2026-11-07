@@ -159,7 +159,9 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
             errors.append(f"{ident}: nieznany albo niedostępny recenzent „{row.reviewer}”")
         elif author is not None and (not independent_reviewer(author, reviewer) or
                                      (author.provider == "local") != (reviewer.provider == "local")):
-            errors.append(f"{ident}: recenzent musi mieć inny model albo siłę myślenia i zachować pracę lokalną")
+            # Ta sama reguła co przy starcie Od razu i edycji ticketu (06.11, K-60: plan z Codex mocny → Codex standard
+            # był odrzucany, więc planujący wybrał recenzenta Claude przy wyczerpanym limicie).
+            errors.append(f"{ident}: recenzent musi mieć inny model albo inną siłę myślenia i zachować pracę lokalną")
         card_name = (work.group(1) if work else ident) + ".md"
         card_path = os.path.realpath(os.path.join(folder, card_name))
         if not _inside(card_path, folder):
@@ -192,7 +194,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     if rows and not waves:
         stuck = _cycle(rows)
         through = sorted({r.get("project") or "" for r in rows if r["workId"] in stuck} - {""})
-        errors.append(f"{', '.join(stuck)}: plan zawiera cykl blokerów"
+        errors.append((f"{', '.join(stuck)}: " if stuck else "") + "plan zawiera cykl blokerów"
                       + (f" przez projekty {', '.join(through)}" if len(through) > 1 else ""))
     return Proposal(plan, rows, cards, waves, errors, artifacts)
 

@@ -561,11 +561,14 @@ class InteractiveTransferTest(FlowInProcess):
             self.assertEqual(launch.main(["--task", task]), 0)
             with mock.patch("tide_daemon.tasks.launch.claim_for_cwd", return_value=None):
                 self.assertEqual(launch.main([]), 0)
+        # Atrapa widzi terminal.open przed zapisem zdarzenia przez wątek silnika.
+        self.assertTrue(wait_until(lambda: self.of(card, "step.console_opened"), timeout=5), self.events(card))
         self.assertEqual(len(self.of(card, "step.console_opened")), 1)
 
     def test_restart_after_wip_commit_recovers_sha_diff_without_second_commit(self):
         card, first, terminal = self.full()
-        # Bezpośrednie wywołanie silnika nie może ścigać się z już uruchomionym tickiem monitora.
+        # Wstrzyknięcie awarii wywołuje silnik bez kolejki monitora. Sam timer nie kończy
+        # rozpoczętego ticka, który mógłby równolegle odzyskać właśnie zapisywany WIP.
         self.flow.stop()
         with open(os.path.join(first["worktree"], "PLANNING-WIP.md"), "w", encoding="utf-8") as fh:
             fh.write("Niedokończony plan\n")

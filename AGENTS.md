@@ -14,10 +14,20 @@ Własny motyw KDE Plasma 6 (KDE neon, Wayland, dwa monitory) z widżetami do pra
 ## Testy podczas pracy
 
 W trakcie ticketu uruchamiaj testy dobrane do zmiany (`make test-cardflow`, `make test-daemon`,
-`make test-board` albo `make test-changed BASE=<baza>`). Pełny `make test` wykonaj raz przed
-oddaniem ticketu. Domyślnie moduły biegną w liczbie procesów równej liczbie rdzeni minus dwa;
+`make test-board`). Przed oddaniem ticketu i poprawek wykonaj `make test-changed BASE=<punkt startu ticketu
+na gałęzi karty>` i zapisz wynik w notce. Recenzent sprawdza ten wynik; osobny pełny `make test`
+nie jest kryterium ticketu ani review. Ta zasada zastępuje wymóg pełnego przebiegu w kartkach
+istniejących planów (także K-37, K-38 i K-55), bez ich przepisywania. Pełny `make test` wykonaj raz
+na gałęzi karty przy jej domknięciu, przed podsumowaniem. Jeśli `test-changed` wybierze pełny zestaw,
+wykonaj go bez dodatkowego `make test`. Domyślnie moduły biegną w liczbie procesów równej liczbie rdzeni minus dwa;
 `JOBS=N` zmienia limit. Lista zestawów: `tools/test_suites.py`, instrukcja i izolacja:
 [docs/testing.md](docs/testing.md).
+
+Ponowienie bez zmian kodu (ten sam HEAD, czyste drzewo) uruchamia tylko moduły, które padły, a nie cały
+zestaw. Szczegóły: [ponowienie padniętych modułów](docs/testing.md#ponowienie-padniętych-modułów).
+
+Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent wykonują pełny `make test`
+i zapisują wynik. Szczegóły: [starsze gałęzie](docs/testing.md#starsze-gałęzie-bez-celu-test-changed).
 
 ## Agent skills
 
@@ -46,7 +56,8 @@ Standard: `~/DevWorkspace/plasma-tide/docs/agent-plan-standard.md`.
 
 Słownictwo projektu: `CONTEXT.md`. Pełny format planu i kartki oraz kontrakt kroku:
 `docs/agent-plan-standard.md`; działanie usługi: `docs/tide-daemon.md`. Karta Tablicy prowadzi dziennik,
-gałąź karty, osobne tickety, review u innego modelu i decyzje użytkownika w panelu. Przy nowej pracy wybierz
+gałąź karty, osobne tickety, niezależne review według ryzyka i decyzje użytkownika w panelu. Dobór recenzenta:
+`docs/agent-plan-standard.md`, sekcja „Recenzja według ryzyka”. Przy nowej pracy wybierz
 „Od razu”, „Lekkie”, „Pełne” albo „Mam plan” zgodnie z potrzebą; Pełne planowanie w nowym przepływie jest
 przewidziane na drugi etap, do tego czasu rozmowa planująca pozostaje w Konsoli. Zanim zaczniesz ticket,
 przeczytaj jego kartkę i plan. Gdy uruchamiasz krok w tle, zapisz wynik w `result.json` według kontraktu.

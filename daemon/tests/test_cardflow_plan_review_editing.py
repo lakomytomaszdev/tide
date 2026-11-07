@@ -278,6 +278,23 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(self.flow.engine.edit_plan(card, {"action": "return", "feedback": "Popraw ponownie"})["ok"])
         self.assertEqual(len([s for s in self.of(card, "step.started") if s["kind"] == "plan-amend"]), 5)
 
+    def test_plan_amendment_runs_on_the_reassigned_planner(self):
+        # 06.11, K-38: poprawka planu czekała na limit Claude do soboty, bo zawsze szła do pierwotnego planisty.
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        planner = self.of(card, "plan.proposed")[-1].get("planner")
+        done = self.flow.engine.resolve_step(card, {"choice": "reassign-author", "ticket": "plan",
+                                                    "executor": "Codex standard"})
+        self.assertTrue(done["ok"], done)
+        box = []
+        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Popraw tytuł #1"}), box.append)
+        self.assertTrue(wait_until(lambda: box, timeout=10))
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "plan-amend" for s in self.of(card, "step.started")),
+                                   timeout=20), self.events(card))
+        amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
+        self.assertEqual(amend["executor"], "Codex standard")
+        self.assertNotEqual(planner, "Codex standard")
+
     def test_answer_after_restart_resumes_amendment_without_stopping_ticket(self):
         card = self.card()
         path = self.proposal(card)

@@ -108,6 +108,8 @@ Rectangle {
     signal stepResolveRequested(string tag, string cardId, string request) // /Board ResolveCardStep
     signal ticketConsentRevokeRequested(string tag, string cardId, string request)
     signal stepNoteRequested(string tag, string cardId, string request)
+    signal caretakerResolveRequested(string tag, string cardId, string request)
+    signal caretakerTalkRequested(string tag, string cardId, string request)
     signal faultPreviewRequested(string tag, string cardId, string request) // /Board PreviewStepFault (PT-125)
     signal faultReportRequested(string tag, string cardId, string request)  // /Board ReportStepFault (PT-125)
     signal flowSettingsSaveRequested(string tag, string request) // /Board SetCardFlowSettings
@@ -372,10 +374,12 @@ Rectangle {
         if (method === "ResolveCardStep") stepResolveRequested(tag, cardId, JSON.stringify(params))
         else if (method === "RevokeTicketConsent") ticketConsentRevokeRequested(tag, cardId, JSON.stringify(params))
         else if (method === "AddCardStepNote") stepNoteRequested(tag, cardId, JSON.stringify(params))
+        else if (method === "ResolveCardCaretaker") caretakerResolveRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
         else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
         else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))
         else if (method === "EnterStep") enterStepRequested(tag, cardId, params.step || "")
+        else if (method === "TalkToCaretaker") caretakerTalkRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ReportStepFault") faultReportRequested(tag, cardId, JSON.stringify(params))
         else handleReply(tag, { ok: false, error: "unknown-method", message: "Tablica nie zna metody " + method + "." })
     }
@@ -728,6 +732,9 @@ Rectangle {
             else if (!managing) cardPanel.notice = reply.choice === "tide" ? "Zapisuję stan karty w YouTracku…"
                                                                            : "Zostaje stan z YouTracka."
             if (managing) manage.handleReply(tag, reply)
+        } else if (tag.indexOf("caretaker-talk:") === 0) {
+            showToast(error ? "Nie otwarto rozmowy: " + error : "Rozmowa z opiekunem otwarta w Konsoli.",
+                      error ? "rose" : "mint")
         } else if (tag.indexOf("enter-step:") === 0 || tag.indexOf("abandon-step:") === 0) {
             cardPanel.busy = false
             cardPanel.error = error
@@ -1898,6 +1905,8 @@ Rectangle {
     // --- pełna karta (PT-128) --------------------------------------------------------------------
     CardUi.CardFullView {
         id: cardFullView
+        onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
+                                                             page.fullCardId, "{}")
         objectName: "cardFullView"
         mergePreviewAvailable: true
         baseChangeAvailable: true

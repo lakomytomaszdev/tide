@@ -2284,6 +2284,818 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+## Scenariusz 03.11 — ocena na prawdziwym modelu
+
+PT-156 rozdziela dwie rzeczy: test okablowania przez `FlowEngine` na atrapach
+(`daemon/tests/test_cardflow_caretaker_0311.py`) oraz ręczną ocenę diagnozy prawdziwego
+wykonawcy. Atrapa dostaje gotową odpowiedź; jej sukces nie mierzy jakości modelu ani „95%”.
+Test sprawdza dziennik, `engine.derived()`, katalog `in/context/`, strażnik oraz skutki akcji.
+W tym zestawie granica gita przy zapisie planu i przygotowaniu review jest atrapą; testy
+piaskownicy gita pozostają w osobnym zestawie. Nie oznacza to testu izolacji systemowej.
+
+Materiały są w `tests/fixtures/caretaker-0311/`: podkatalogi `1`, `2`, `3`, `4a`, `4b`
+zawierają odtworzony dziennik karty, wycinek kroku i kryterium oceny. Są rekonstrukcją
+przyczyn z kartki K-37, a nie kopiami prywatnych dzienników. Ścieżki są umowne,
+sekrety zamaskowane. Nie wgrywaj ich do działającej Tablicy.
+
+Procedura ręczna, poza `make test`:
+
+1. Dla każdego z pięciu podkatalogów otwórz świeżą sesję wybranego prawdziwego
+   wykonawcy w Konsoli, z repozytorium tylko do odczytu. Zanotuj nazwę wykonawcy,
+   model, ustawienia rozumowania, datę i identyfikator sesji. Nie dawaj mu `expected.md`.
+2. Przekaż `journal.jsonl`, `step.log`, `docs/agent-plan-standard.md` i
+   `docs/sandbox-and-permissions.md`. W przypadku 2 dołącz odrzucony
+   `2/plan.md` i kartki `2/tickets/1.md`, `2/tickets/2.md` z katalogu materiałów;
+   poprzednia propozycja i błędy są w dzienniku. Nagłówek „Krok” w wycinkach
+   przypadków 1, 2 i 4a wskazuje konkretne zdarzenie `step.started`.
+   W przypadku 3 zatwierdzona baza i decyzja A są w dzienniku. Dla 4b oceń oba
+   przebiegi, a nie tylko ostatnią linię błędu.
+3. Użyj zadania: „Jesteś opiekunem karty Tide. Na podstawie dołączonych źródeł
+   zdiagnozuj przyczynę i zaproponuj jedną akcję z kontraktu opiekuna. Nie wykonuj
+   akcji, poleceń ani zapisów w repozytorium lub Tablicy. Zwróć JSON jak wynik
+   kroku: result=done, action oraz wymagane pola. Dozwolone są retry (step,
+   instruction, reason), return-plan (feedback, reason), retry-stage lub escalate
+   (summary, recommendation); opcjonalny report zawiera description. Nie możesz
+   zatwierdzać planu, wydawać zgody, scalać ani odrzucać ticketu. Ścieżki w materiale
+   są umowne. Po JSON wyjaśnij diagnozę, wskazując konkretne zdarzenia i linie.”
+4. Zapisz surową odpowiedź poza repozytorium przed otwarciem `expected.md` danego
+   przypadku. Porównaj osobno: trafność przyczyny, oparcie jej na źródłach,
+   kompletność parametrów akcji i zachowanie granic decyzji użytkownika. Błędne
+   wyjaśnienie przy trafnej nazwie akcji nie zalicza diagnozy.
+5. W notce karty K-37 zapisz dla każdego przypadku: wykonawcę/model, sesję, wynik
+   JSON, ocenę każdego kryterium (tak/nie z uzasadnieniem), cytowany zamaskowany
+   dowód oraz ewentualną lukę Tide. Zachowaj odpowiedź modelu; nie dopisuj jej do
+   testowego expected.md. Kolejne oceny rób w nowych sesjach, bez poprzednich odpowiedzi.
+
+Ocena nie jest bramką testów i nie uruchamia się automatycznie. Testy nie wywołują
+prawdziwych modeli. Doprecyzowanie koordynatora z 06.11 zachowuje kontrakt PT-143:
+zły wynik lub niedozwolona akcja oddają natychmiast dokładnie jedną decyzję
+z rekomendacją i streszczeniem jednej próby (`test_bad_*`). Limit dotyczy błędów
+wykonania poprawnej akcji (`test_failed_action_limit_*`), np. wskazania obcego kroku
+w retry albo utrzymującego się błędu etapu. Każdy z pięciu przypadków ma oba warianty;
+nie ma testów oznaczonych jako oczekiwane porażki. Gdy błędny wynik nie niesie
+rekomendacji modelu, Tide dodaje techniczną wskazówkę sprawdzenia błędu i wyboru
+dalszego działania. Nie jest ona diagnozą przypisywaną modelowi.
+
+## Opiekun karty (K-37)
+
+Opiekun karty to krok w tle rodzaju `caretaker` („opiekun”), który Tide uruchamia sam przy problemie karty, zanim
+zapyta użytkownika (PT-143). Cały opiekun bez Qt i bez dysku jest w `daemon/tide_daemon/cardflow/caretaker.py`:
+publiczne `problems()`, `owned()`, `brief()`, `parse_result()`, `problem_id()` i rejestry `TRIGGERS`, `ACTIONS`,
+`HISTORY_LABELS`, `BRIEF_SECTIONS`. Kolejne tickety tylko dopisują wpisy w rejestrach i własne `####` w podsekcjach
+poniżej. Silnik ma jedno wejście: `FlowEngine._caretake(card, st)` na końcu `_tick_card` — po istniejących
+automatach (ponowienie, mocniejszy wykonawca, odpowiedź o środowisko, auto-odmowa) i przed `_queue_notices`;
+krok opiekuna kończy się istniejącym `_poll`/`_finish` (gałąź `_finish_caretaker`).
+
+Przebieg: wyzwalacz daje problem → `caretaker.started` (`problem`, `key` = `caretaker:<problem>:<n>`, `n`, `step`,
+`target` — krok problemu, `root`, `ticket`, `trigger`, `watermark` — ostatni `seq` dziennika w chwili startu) →
+istniejąca para „zamiar → wynik” `step-start` i `step.started` z `kind: caretaker` → wynik opiekuna w
+`<krok>/out/result.json` → `step.finished` z `outcome` (wynik `parse_result`) → akcja z rejestru albo nieudane
+działanie → `caretaker.escalated`. Akcje inne niż oddanie decyzji kończą się `caretaker.action` (`problem, step,
+target, ticket, action, params, ok, error, code, label, retried, stale, detail?`) po parze „zamiar → wynik”
+`caretaker-action` — „Ponowienie, limit i nieaktualne akcje” niżej (PT-150).
+
+Stan i widok:
+
+- Kroki opiekuna nie są w `FlowState.steps` (osobno `caretakers`, `caretaker_runs`, `caretaker_outcomes`,
+  `caretaker_escalations`, `caretaking`), więc żaden wyzwalacz, „ostatni krok ticketu” ani decyzja ich nie widzą —
+  bez rekursji. `running()` je obejmuje (sloty dostawcy, zatrzymanie przy Gotowe/Archiwum, `busy_reason`).
+- Dopóki opiekun pracuje, decyzja problemu jest ukryta z `flow.decisions[]`, karta stoi w „W toku” ze znacznikiem
+  „opiekun sprawdza <krok>”, a `_queue_notices` nie powiadamia (także w przebiegu, w którym krok skończył się błędem,
+  zanim opiekun wystartował). `ResolveCardStep` dla tego ticketu odmawia (`no-step-question`, trwa krok tego ticketu).
+- `derived.flow.caretaker` — `{enabled, working[], escalated[]}`: `working[]` to `{problem, step, target, ticket,
+  label, startedTs}`, `escalated[]` — problemy oddane użytkownikowi, których decyzja czeka: `{problem, step,
+  target, ticket, summary, recommendation, optionId, failed, error}`. `flow.running[]` ma krok opiekuna z
+  `kind: caretaker`, `kindLabel: "opiekun"` (`labels.KIND_LABELS`), `canEnter: false`.
+- Eskalacje są przechowywane według id problemu, także gdy `target` jest pusty. Widok i adnotacja decyzji
+  korzystają z cyklu życia w `owned()`: pokazują tylko eskalację ostatniego działania przy otwartym problemie.
+- Oddana decyzja błędu ma pole `caretaker{summary, recommendation, tried[], optionId, failed}` (`tried[]` —
+  działania od ostatniego zamknięcia poza samym oddaniem decyzji: `{step, action, ok, reason, text}`, bez
+  nieaktualnych); możliwość z `optionId` jest polecona
+  i pierwsza, żadna nie jest wybrana (D10). Renderowanie w oknie decyzji to #15. Eskalacja powiadamia raz
+  (zwykłe `step.notice` kroku problemu).
+- Historia (`flow.history[]`, rodzaj `caretaker`, `actor: "caretaker"`): „Opiekun: oddaje decyzję — <streszczenie>”
+  i „Opiekun: nie udało się wykonać działania „<akcja>” — <błąd>”; wynik odrzucony przez strażnika (PT-158):
+  „Opiekun: wynik odrzucony, akcja nie wykonana — <powód>”; PT-150: „Opiekun: ponowił <krok> z instrukcją —
+  <powód>” (bez osobnego wpisu „Decyzja: ponowienie kroku” — `step.decision` z polem `caretaker` nie ma wpisu),
+  „Opiekun: nie udało się (ponowienie kroku) — not-problem-step: …”, „Opiekun: działanie „<akcja>” nieaktualne, nic
+  nie wykonano — <powód>” i „Opiekun: oddaje decyzję po N działaniach (limit) — <streszczenie prób>”.
+
+**Id problemu i liczenie działań.** `problem_id` jest jedynym miejscem budowy id (bez `seq`): wyzwalacz z krokiem —
+`<wyzwalacz>:<korzeń łańcucha parentStep>` (`error:K-37-PT-7-1`), powtórzenie przyczyny `repeat:<ticket>:<przyczyna>`,
+bez kroku `<wyzwalacz>:<etap>` (`flow-error:<etap>`, `stalled:card`), czekająca decyzja `waiting:<id decyzji>`.
+Jeden łańcuch kroków ma naraz najwyżej jeden problem — kolejny wyzwalacz na nim dołącza (`triggers[]`). `owned()`
+jest jedynym liczeniem: kroki opiekuna z danym id od ostatniego zamknięcia (decyzja użytkownika bez pola `caretaker`
+albo krok łańcucha zakończony `done`); zwraca `count`, `runs`, `next` (numer do klucza, nigdy się nie powtarza),
+`open` i `handed`. Kolejne błędy ponowionego kroku to ten sam problem; decyzja użytkownika zeruje licznik bez
+zmiany id. Dla problemu bez kroku decyzja użytkownika albo zwykły krok zakończony `done` zamyka problem
+w obrębie wskazanego ticketu, a bez ticketu — całej karty. Wynik kroku opiekuna i decyzje automatów nie zamykają
+problemu. Ponowne wystąpienie ma to samo id, licznik od zera i kolejny, niepowtarzalny numer `next`.
+
+**Restart.** `caretaker.started` bez `step.started`: wynik `step-start` jest — `step.started` dopisuje
+`_recover_started_steps`; zamiar bez wyniku rozstrzyga `_reconcile`; bez zamiaru — `_caretake` startuje krok z tym
+samym id. Nieudany start (także „przerwane restartem”) jest nieudanym działaniem. Krok nigdy nie rusza drugi raz.
+Akcja opiekuna przerwana między zamiarem a wynikiem `caretaker-action` — „Ponowienie, limit i nieaktualne akcje”.
+
+**Kiedy opiekuna nie ma** (dzisiejsza decyzja bez kroku opiekuna): karta wstrzymana, w Backlogu, Gotowych albo
+Archiwum, błąd `login`, limit dostawcy, wina `user`, opiekun wyłączony w ustawieniach (`caretakerEnabled: false`,
+bez dopisku) i karta „Tylko lokalnie” (`preferredProvider: local`) bez wykonawcy lokalnego w katalogu (decyzja
+z dopiskiem „opiekun niedostępny dla pracy tylko lokalnej”); w obu ostatnich `flow.caretaker.enabled: false`
+(„Ustawienia” niżej, PT-151).
+
+### Wyzwalacze
+
+`TRIGGERS` to lista funkcji `(st) -> [kandydat]`, kandydat `{trigger, step?, ticket?, stage?, cause?, decision?}`.
+Do startu opiekuna wystarcza wpis w rejestrze, także dla problemu bez kroku (`flow-error:<etap>`, `stalled:card`):
+`caretaker.started` ma wtedy pusty `target`, a krok opiekuna pracuje w worktree ticketu (gdy kandydat ma `ticket`)
+albo w katalogu roboczym karty (`card-branch`); aktualność problemu przed startem sprawdza zawsze `problems()`.
+
+#### Błąd kroku ticketu (`error`, PT-143)
+
+Ostatni krok ticketu (`ticket`, `fix`, `review`, `conflict`) zakończony `error` po automatycznym ponowieniu
+(`attempt ≥ 1`) i ewentualnym przejściu na mocniejszego wykonawcę, bez decyzji, bez kroku-następcy, bez
+odrzucenia ticketu; bez `login`, limitu dostawcy i winy `user`. Id: `error:<korzeń łańcucha>`.
+
+#### Ten sam powód i brak postępu (`repeat`, `no-progress`, PT-148)
+
+Dwa wpisy `TRIGGERS` (`_repeat_trigger`, `_noprogress_trigger`) po `error`. Kolejność względem automatów silnika:
+
+1. **Pierwsza porażka** — bez zmian: automatyczne ponowienie (`attempt: 0` → `step.retry` → próba 1), potem
+   (próba 1) przejście na mocniejszego wykonawcę, potem `error` opiekuna. Wyzwalacz zastępuje wyłącznie kolejną
+   *ślepą* próbę z tą samą przyczyną; przejście na mocniejszego wykonawcę, limity dostawcy (D3) i `login` zostają.
+2. **`repeat` (wyzwalacz 2)** — dwa kolejne `step.finished` w tym samym tickecie (albo tym samym rodzaju kroku
+   planu, gdy krok nie ma ticketu) z tym samym `result` i tą samą przyczyną: `faultCause`/`reason` przez
+   `faults.of_finished` (swobodny powód agenta liczy się jako ta sama przyczyna tylko przy identycznym tekście,
+   `other-<skrót>`), a dla `denied` — to samo polecenie po automatycznej odmowie łańcucha (`_auto_deny`) albo po
+   `step.retry` opiekuna tego problemu. Kolejne odmowy po jego instrukcjach pozostają w tym samym limicie. Nie
+   dotyczy `login`, limitu dostawcy i winy `user`. Kandydat nie ma decyzji (`decision` puste), więc `retry` idzie
+   ścieżką bez decyzji (`step.retry` z `caretaker` i `instruction`), a `stale` — regułą `watermark`.
+   Id: `problem_id("repeat", …)` → `repeat:<ticket>:<przyczyna>`, dla kroków planu `repeat:<rodzaj kroku>:<przyczyna>`
+   (bez `seq`); licznik działań to `owned()`. Gdy łańcuch ma już problem (np. `error:`), kandydat dołącza do niego
+   (`triggers[]`, id znanego problemu) — ponowienie opiekuna i kolejne błędy z tą samą przyczyną liczą się do jednego
+   limitu `caretakerActionLimit`.
+3. **Zamiast ślepej próby** — `FlowEngine._caretaker_takes_over` (`caretaker.takes_over`) jest pytane w trzech
+   miejscach automatycznego ponowienia próby zerowej (`_advance`, `_advance_planning`, `_plan_step_decision`)
+   i w `_auto_deny`: dla kroku, który jest drugim z tą samą przyczyną, `step.retry` ani automatyczna odmowa nie
+   powstają — krok czeka na opiekuna (`_caretake` na końcu przebiegu). Druga automatyczna odmowa łańcucha z tym samym
+   poleceniem w tickecie uruchamia więc opiekuna przed `AUTO_DENY_LIMIT`. Bez opiekuna (karta wstrzymana, Backlog,
+   „Tylko lokalnie”) zostaje dzisiejszy automat.
+4. **Po oddaniu** — gdy opiekun oddał problem (`escalate` albo limit), automatyczne ponowienie nie wraca: błąd
+   kroku z próby zerowej staje się zwykłą decyzją użytkownika (`caretaker.handed_repeat` w `decisions`, `state`,
+   `resolve_step` i powiadomieniach), z `caretaker{…}` jak przy `error`. Decyzja użytkownika zamyka problem (licznik
+   od zera, to samo id).
+5. **`no-progress` (wyzwalacz 6)** — krok zatrzymany przez strażnika (`reason: no-progress`, bez zmiany
+   `stepGuardMinutes` i `stepstop`) po automatycznym ponowieniu, także dla `planning` i `plan-review`.
+   Kontekst dostaje też powtórzony zastój próby zerowej przejętej przez `repeat`; pierwsze automatyczne
+   ponowienie zostaje. Dołącza do problemu tego łańcucha i dokłada do kartki sekcję „Krok bez postępu”: czas zastoju (od
+   `stalledSince` do zatrzymania) i końcówkę zdarzeń sesji (ostatnie 5 z `messages` wyniku kroku, po 300 znaków).
+   Wiadomości sesji i odmówione polecenie są maskowane przed normalizacją i skracaniem.
+   Dziennik kroku po ludzku jest w plikach kontekstu.
+
+Kartka (`BRIEF_SECTIONS`, `BRIEF_DETAILS`): problem `repeat` ma opis błędu kroku i sekcję „Ten sam powód drugi raz”
+(oba kroki, przyczyna, powody albo odmówione polecenie, ostrzeżenie przed ślepą powtórką); przy problemie otwartym
+przez `error` sekcje dołączonych wyzwalaczy są dopisane za opisem błędu. Wszystko przechodzi przez `faults.mask`.
+
+#### Błąd Tide i karta stoi (`flow-error`, `stalled`, PT-147)
+
+Dwa wyzwalacze bez kroku-sprawcy i bez decyzji (`caretaker.started` z pustym `target` i `decision`):
+
+- **`flow-error`** (wyzwalacz 4) — błąd Tide (`flow.error`), który się utrzymał. Silnik zapisuje błędy jednego
+  przebiegu przez `FlowEngine._flow_error`: `flow.error` raz dla tego samego etapu i tekstu, z polami `stage`, `step`,
+  `ticket` i `at` (zegar silnika); ten sam tekst w kolejnym przebiegu co najmniej 10 s po pierwszym
+  (`FLOW_ERROR_PERSIST`) dopisuje jeden `flow.error-persisted` (`error`, `stage`, `since` — `seq` pierwszego).
+  Problemem jest też błąd powtórzony z tym samym tekstem po zniknięciu (nowy `flow.error` z tekstem, który już był od
+  `card.started` w tym samym etapie). Obserwacje, utrzymanie i powtórzenia są liczone osobno dla każdego etapu:
+  równoległe błędy A/B są dwoma problemami, także przy identycznym tekście; eskalacja B nie ukrywa A.
+  Jednorazowy błąd, który w następnym przebiegu nie wystąpił, problemem nie jest. Etap (`stage`):
+  `advance:<ticket>` — dalszy etap ticketu po jego ostatnim kroku, `plan-next` — start kolejnego ticketu planu,
+  `advance` — pierwszy krok, `close` — domknięcie karty, `plan-commit` — commit planu. Id:
+  `flow-error:<etap>` (np. `flow-error:advance:PT-7`); opiekun pracuje w worktree ticketu z `flow.error`, a bez
+  ticketu — w katalogu karty. Błąd znika, gdy rusza krok jego etapu (`step.started`) albo etap wykona się bez błędu
+  w zwykłym przebiegu lub po ponowieniu (`flow.error-cleared` z `stage`; udany `result` akcji `plan-commit`
+  zdejmuje błąd commita bez startu kroku). Rozwiązanie jednego etapu nie zdejmuje błędów innych ticketów.
+  Pominięte domknięcie (np. trwa krok opiekuna) nie kasuje błędu `close`. Commit planu odbywa się raz na przebieg,
+  przed startem kolejnych ticketów; jego awaria ma wyłącznie etap `plan-commit`, także po zakończonym planowaniu.
+  Zwykły przebieg zapisuje również końcowy stan zakończonego planu.
+- **`stalled`** (wyzwalacz 5) — karta stoi (`card.stalled`: 3 minuty bez kroku, akcji i nazwanego powodu czekania)
+  i nadal nie ma nazwanego powodu (`guard_reason` liczony bez pracy opiekuna: jego kroku, czekania na slot i par
+  „zamiar → wynik”). Limit, slot dostawcy, wstrzymanie, decyzja, plan do zatwierdzenia, trwający krok albo zaczęta
+  akcja — nie ma problemu. Karta, która stoi na błędzie Tide będącym już problemem `flow-error`, nie dostaje
+  drugiego problemu. Id: `stalled:card`, katalog karty.
+
+Praca opiekuna nie jest pracą karty: `caretaker.*`, kroki, czekanie i pary „zamiar → wynik” opiekuna,
+`flow.error-persisted` i `stage.retry` nie przesuwają `last_activity_ts` i nie zdejmują „stoi”
+(`state._bookkeeping`; wyjątek to `caretaker.decision` użytkownika, który rozpoczyna nowy okres bezczynności).
+Dopóki opiekun pracuje, karta ma znacznik „opiekun sprawdza kartę” (przy błędzie ticketu —
+„opiekun sprawdza PT-…”) zamiast „stoi” albo tekstu błędu; po eskalacji (albo po limicie) wraca dzisiejszy znacznik
+błędu albo zastoju, diagnoza jest w historii („Opiekun: oddaje decyzję — …”) i w `derived.flow.caretaker.escalated[]`,
+a `flow.decisions[]` dostaje decyzję „opiekun” (PT-154). Gdy opiekun działa, powiadomienie o zastoju czeka do
+eskalacji; bez dostępnego opiekuna zostaje przy `card.stalled`.
+
+### Decyzja opiekun
+
+Eskalacja problemu `flow-error:<etap>` lub `stalled:card`, także po limicie działań, daje rodzaj `caretaker`
+w `decisions.KINDS` i `derived.flow.decisions[]` (PT-154). Niepuste `happened` i `why` opisują zatrzymanie
+karty i potrzebę decyzji. Pole `caretaker{summary, recommendation, tried[], optionId, failed}` zasila wspólny
+blok „Opiekun poleca” oraz zwijane „Co próbowano”. Okna Tablicy i Sesji pokazują „Ponów etap”, „Zamknij”
+oraz „Porozmawiaj z opiekunem”; nie wybierają żadnej domyślnie. Powiadomienie o tej decyzji powstaje raz, z zapisem `flow.notice`
+w dzienniku, także po restarcie usługi. Dotychczasowe decyzje kroków nadal korzystają ze swoich metod.
+
+`ResolveCardCaretaker(s id, s request) → s json` na `/Board` (`org.tide.Daemon.Board`) przyjmuje obiekt JSON:
+`{"choice":"retry-stage"}` albo `{"choice":"dismiss"}`. Opcjonalne `problem` wskazuje id problemu (okno przekazuje
+je z możliwości decyzji); bez niego metoda wybiera pierwszą decyzję opiekuna. Nieznany wybór daje `bad-choice`,
+brak oczekującej decyzji lub nieaktualny problem — `not-waiting`, niepoprawne pola lub format — `bad-request`.
+
+Oba wybory zapisują `caretaker.decision` i zamykają problem. `retry-stage` dodatkowo ponawia etap jednym
+przebiegiem `_advance_card` przez istniejącą ścieżkę `stage.retry`; `dismiss` nie wykonuje akcji. Następne
+wystąpienie błędu lub zastoju liczy działania od zera. Zamknięcie zastoju rozpoczyna nowy okres bezczynności;
+zamknięcie błędu usuwa jego bieżący znacznik, więc kolejne wystąpienie jest nową obserwacją etapu.
+
+Pole `caretaker` jest wyłącznie wewnętrznym oznaczeniem akcji opiekuna: `ResolveCardStep` z tym polem
+w żądaniu D-Bus zwraca `bad-request`. Sygnatury istniejących metod pozostają bez zmian.
+
+### Rozmowa z opiekunem
+
+`/Board TalkToCaretaker(s id, s request) → s json` przyjmuje `{}` albo `{"problem":"<id problemu>"}`
+i zwraca `{ok: true, step}`. Pełna karta z dziennikiem, przed zakończeniem, daje przycisk „Porozmawiaj
+z opiekunem” (`derived.flow.canTalkToCaretaker`). Ta sama możliwość w decyzji `caretaker` i w decyzjach
+eskalowanych przekazuje id konkretnego problemu. Bez id rozmowa wybiera pierwszy otwarty problem;
+gdy żadnego nie ma, służy omówieniu stanu karty, a akcje wymagające problemu są nieaktualne.
+
+Tide otwiera nadzorowaną kartę Konsoli w kontekście worktree karty. Krok `caretaker-chat` („rozmowa
+z opiekunem”) pozostaje osobno od kroków ticketów. Ma kartkę w trybie rozmowy, zamaskowane
+`in/context/` (ten sam limit 400 kB), tę samą piaskownicę i oczyszczone środowisko co opiekun w tle.
+Program działa w swoim `out/`, z zapisem wyłącznie tam; worktree i gałęzie są pod strażnikiem PT-158.
+Obowiązuje wybór wykonawcy opiekuna i „Tylko lokalnie”. Brak Konsoli daje `no-terminal`, brak przepływu
+lub zakończona karta — `no-step`, druga otwarta rozmowa tej karty — `console-open`.
+
+Rozmowa zapisuje kolejne `out/action-1.json`, `action-2.json` itd., bez nadpisywania wcześniejszych
+plików. Każdy plik stosuje kontrakt wyniku kroku opiekuna w tle (`result: done`, `action` i parametry).
+Cały JSON należy zapisać jednym wywołaniem narzędzia zapisu. Niepełny JSON jest odrzucany dopiero, gdy
+metadane pliku nie zmienią się między dwoma przebiegami; odczyt w trakcie zapisu nie zużywa nazwy akcji.
+`_poll_interactive` odczytuje pliki w kolejności numerów, utrwala zwalidowany wynik wraz z kontekstem
+w `caretaker.chat-action` i wykonuje przez wspólną ścieżkę PT-150. Klucz pary „zamiar → wynik” zawiera
+id rozmowy i nazwę pliku. Restart między zamiarem, skutkiem i wynikiem nie wykonuje akcji drugi raz;
+podmiana lub usunięcie obsłużonego pliku nie zmienia utrwalonego zlecenia.
+
+Te same rejestry, zakazy i kontrola `stale` chronią każdą akcję. Próba `approve-plan`, zgody albo scalenia
+jest odrzucona z powodem w historii. Zapis w worktree lub przesunięcie gałęzi kończy rozmowę
+z `caretaker-wrote`; do potwierdzenia zatrzymania żadne kolejne pliki akcji nie są wykonywane.
+Historia używa podpisu „Opiekun (rozmowa): …” i `mode: chat`. Rozmowa oraz jej akcje nie zwiększają
+licznika działań problemu. Zamknięcie Konsoli kończy rozmowę; nie tworzy zwykłej decyzji o wznowieniu ticketu.
+
+Kartka (sekcje `flow-error` i `stalled` w `BRIEF_SECTIONS`): tekst błędu, etap, krok i ticket, podpowiedź Tide dla
+użytkownika (`flow_error_hint`) albo od kiedy karta stoi i ostatni krok, ostatnie 15 zdarzeń karty (bez pracy
+opiekuna) i otwarte pary „zamiar → wynik”.
+
+### Zgłoszenie błędu Tide
+
+Wynik opiekuna może przy każdej akcji i każdym wyzwalaczu zawierać opcjonalne
+`"report": {"description": "opis błędu Tide"}` (1–4000 znaków). Zgłoszenie zapisuje kartę w Backlogu
+projektu `plasma-tide` albo dopisuje wystąpienie do otwartej, niescalonej karty o tym samym podpisie.
+Karta zarchiwizowana lub scalona nie przyjmuje kolejnego wystąpienia. Wspólny kod z `ReportStepFault`
+wylicza podpis, wybiera kartę i maskuje opis oraz ograniczony wycinek dziennika przez `faults.mask`.
+Dla problemu bez kroku podpis ma postać `flow/tide/<przyczyna>`: przyczyną jest etap `flow.error`
+(np. `flow/tide/advance`), a dla zastoju `stalled`. Tekst błędu pozostaje zamaskowany w treści.
+
+Samo `report` nie ponawia kroku ani etapu (A7). Osobny wpis `caretaker.reported` daje historię
+„Opiekun: zgłosił błąd Tide (K-<n>) — <powód>”. Brak projektu daje wpis niepowodzenia
+`no-report-project`; akcja główna nadal się wykonuje. Wystąpienie zawiera trwały znacznik wyliczony
+z karty źródłowej i kroku opiekuna, zapisany razem z treścią zgłoszenia. Powtórne zastosowanie zapisanego
+wyniku nie dodaje zgłoszenia drugi raz, także po przerwaniu przed wpisem `caretaker.reported` oraz po
+archiwizacji lub scaleniu karty zgłoszenia. Nowy krok opiekuna ma osobny identyfikator wystąpienia.
+
+Decyzja `caretaker` udostępnia pole „Zgłoś błąd Tide”. `PreviewStepFault` z `problem`, `description`
+i opcjonalnym `choice` pokazuje kartę bez zapisu. `ResolveCardCaretaker` z
+`{"choice":"report","problem":"flow-error:advance","description":"…"}` zapisuje zgłoszenie i zamyka
+problem bez ponawiania etapu. Pusty lub za długi opis daje `bad-request`. Dotychczasowe żądania
+`PreviewStepFault` i `ReportStepFault` z `step` zachowują swoje działanie, w tym retry po ręcznym
+`ReportStepFault`.
+
+### Akcje
+
+`ACTIONS` to `nazwa → Action(kinds, params, apply, description)`; `kinds` — wyzwalacze, przy których akcja jest
+dozwolona (`"*"` — każdy), `params` — pola wyniku (`Param(required, minimum, maximum, hint, choices)`), `apply(port,
+problem, params)` działa przez port silnika (`engine._CaretakerPort`). Walidacja jest w Tide (`parse_result`), nie
+tylko w kartce: nieznana nazwa (`approve-plan`, `allow`, `merge`, `push`, `reject`, …) → `bad-caretaker-action`;
+brak pliku albo zły format → `bad-caretaker-result`; `result` inny niż `done` → nieudane działanie (`question` niesie
+treść pytania jako streszczenie, jak `escalate`; inne — `caretaker-result`); zatrzymany albo niewystartowany krok —
+`caretaker-stopped`, `caretaker-not-started`; krok, który pisał poza `out` — `caretaker-wrote` (strażnik, przed
+walidacją wyniku, „Piaskownica i strażnik”). Długości: instrukcja/odpowiedź/uwaga do 4000 znaków, powód 1–600,
+streszczenie do 1200. Nieudany wynik kroku opiekuna (wszystkie kody powyżej) od razu oddaje problem użytkownikowi;
+nieudane wykonanie poprawnej akcji (np. `not-problem-step`) jest działaniem liczonym do limitu, po którym rusza
+kolejny krok opiekuna (PT-150, „Ponowienie, limit i nieaktualne akcje”).
+
+#### `escalate` (PT-143)
+
+Oddaje decyzję użytkownikowi: `summary` (wymagane, 1–1200 znaków), `recommendation` (wymagane, 1–600), `optionId`
+(opcjonalne, id możliwości decyzji problemu). W rejestrze nie ma akcji zatwierdzenia planu, zgody, uruchomienia poza
+piaskownicą, scalenia, push ani odrzucenia ticketu.
+
+#### `retry` (PT-150)
+
+Ponawia krok problemu z instrukcją: `step` (wymagane, id kroku z linii „Kroki do ponowienia” kartki), `instruction`
+(wymagane, 1–4000 znaków), `reason` (wymagane, 1–600). Instrukcja trafia do kartki wznowionego kroku jako
+„Instrukcja od opiekuna karty (… ma pierwszeństwo przed wcześniejszym planem kroku)” (`handoff.resume_context(…,
+caretaker=True)`); opiekun wyprowadza ją z `step-log.md`, historii i dziennika z katalogu kontekstu. Dwie ścieżki:
+
+- problem z decyzją (`decision` w `caretaker.started`, np. `error:`) — istniejące `resolve_step` `retry` z instrukcją
+  jako `answer`; `step.decision` dostaje `auto: true` i `caretaker: <problem>` (parametr silnika
+  `caretaker_problem`, niedostępny z D-Bus), a wznowienie robi `_advance` jak przy decyzji użytkownika,
+- problem bez decyzji (np. `repeat:` z #6) — wewnętrzna ścieżka automatycznego ponowienia: `step.retry` z `caretaker:
+  <problem>`, `caretakerStep` i `instruction`, bez `step.decision`; `_advance` wznawia krok z `parentStep` i
+  `attempt: 1`, z instrukcją w kartce. Do wznowienia decyzja kroku jest ukryta, a `problems()` pomija ten krok.
+
+Ponowić można tylko krok z `caretaker.problem_steps(problem, st)`: przy decyzji — krok tej decyzji, bez decyzji —
+krok łańcucha problemu bez następcy, zakończony wynikiem innym niż `done`, bez decyzji i ponowienia. Inny krok
+(także spoza karty) to nieudane działanie `not-problem-step` z powodem w `error`, liczone do limitu.
+
+#### `retry-stage` (PT-147)
+
+Ponawia etap karty od razu, raz; bez pól; dozwolona tylko przy `flow-error` i `stalled` (przy innych problemach
+`bad-caretaker-action`). Idzie wspólną ścieżką akcji (para `caretaker-action`, `caretaker.action`, limit,
+nieaktualność): `apply` → `_CaretakerPort.retry_stage` → `FlowEngine._retry_stage` zapisuje `stage.retry`
+(`problem`, `stage`, `caretaker`, `caretakerStep`) i wykonuje jeden przebieg `_advance_card` — tę samą funkcję, którą
+`_tick_card` przechodzi etapy w każdym przebiegu (ostatnie kroki ticketów, kolejny ticket planu, domknięcie karty,
+commit planu), z własną parą akcji opiekuna wyłączoną z „zaczętych akcji karty”. Wynik:
+
+- błąd Tide ponawianego etapu (przy `stalled`: dowolnego etapu) — nieudane działanie `stage-failed` z tekstem
+  błędu (błąd zapisuje zwykły `_flow_error`; ten sam etap i tekst nie daje nowego zdarzenia),
+- przebieg bez żadnego zdarzenia poza pracą opiekuna — nieudane działanie `stage-no-change`,
+- udany przebieg — `caretaker.action` z `ok: true` i `label` etapu („Opiekun: ponowił etap „advance:PT-7””); przy
+  `flow-error` rozwiązanie etapu zdejmuje jego błąd tak samo jak zwykły przebieg; błędy innych etapów pozostają,
+- `stage.retry` tego kroku opiekuna już jest (restart między zamiarem a wynikiem) — `stage-interrupted` bez drugiego
+  przebiegu: etap ponawia się dokładnie raz, a dalej i tak ponawia go zwykły przebieg.
+
+Nieudane działania liczą się do limitu: problem `flow-error`/`stalled` ma id bez `seq`, więc kolejne wystąpienia tego
+samego etapu to ten sam problem; po trzech działaniach `caretaker.escalated` z `limit: true` i kolejny opiekun nie
+startuje. Nieaktualność — reguła bez decyzji (niżej): problem zniknął (błąd zniknął, karta ruszyła) albo po
+`watermark` jest `step.started`, `step.retry` albo `step.decision` w tickecie problemu (bez ticketu — w karcie)
+albo zdarzenie karty z listy. Rozwiązanie danego etapu po `watermark` (`flow.error-cleared` lub udany wynik
+`plan-commit`) też unieważnia akcję, nawet jeśli błąd potem wrócił; wtedy `caretaker.action` ma
+`ok: false, error: "stale"`, bez `stage.retry` i bez zwiększenia licznika działań.
+
+#### `return-plan` (PT-146)
+
+Odsyła plan planującemu z uwagą opiekuna; dozwolona przy wyzwalaczu `plan-fix` (patrz „Odesłanie planu”) oraz
+problemie ticketu `error`, `repeat` albo `waiting` dla pytania (patrz „Luka w planie w trakcie realizacji”).
+Pola: `feedback` (wymagane, 1–4000 znaków — wiersz planu, bloker i błąd standardu planu 1.2; prośbę „odrocz tę
+uwagę do ticketu #n” opiekun przekazuje tu dosłownie, bez osobnej reguły rozpoznawania odroczeń), `findings`
+(opcjonalne, numery uwag ostatniego review od 1, po przecinku) i `reason` (wymagane, 1–600, do historii).
+
+### Odesłanie planu (PT-146)
+
+**Wyzwalacz 3** (`caretaker._plan_fix_trigger`, id problemu `plan-fix:<korzeń łańcucha kroków poprawy>`):
+
+- `plan.revision-failed` — krok `plan-amend` zakończył się, ale poprawiony plan nie przeszedł sprawdzenia formatu.
+  Problem ma decyzję `plan-revision-failed:<seq>`, którą `build_decisions` ukrywa na czas pracy opiekuna (jak decyzję
+  kroku); po jego wyniku decyzja wraca z `caretaker{summary, recommendation, tried[]}` (`annotate(st, plan, target)`),
+- druga nieudana poprawa formatu planu (`plan-fix`, runda ≥ 2, `plan.checked` z `valid: false`, brak propozycji):
+  problem bez decyzji; `retry` opiekuna na kroku `plan-fix` (`problem_steps` dopuszcza krok zakończony `done`, raz)
+  daje kolejny krok poprawy z instrukcją — `_planning_result` wznawia go przez `_caretaker_resume`. Gdy opiekun
+  odda problem (`escalate`, nieudany wynik albo limit działań), `build_decisions` pokazuje decyzję `plan-fix-failed`
+  (`decisions._plan_fix_decisions`) z `caretaker{summary, recommendation, tried[]}`, błędami formatu w `technical`
+  i możliwością „Ponów poprawę z instrukcją”: `ResolveCardStep retry` na kroku `plan-fix` zapisuje `step.retry`
+  z `user: true` i instrukcją użytkownika, a `_caretaker_resume` wznawia krok jak po `retry` opiekuna. Decyzja nie
+  pojawia się, gdy opiekun pracuje albo jeszcze nie oddał problemu (chyba że karta jest lokalna i opiekun nie działa).
+
+Plan czekający na zatwierdzenie po rundach review nie jest wyzwalaczem (rekomendacja po N minutach — #3). Opiekun
+nie zatwierdza planu ani różnicy: w `ACTIONS` nie ma takiej
+akcji (`approve-plan` to `bad-caretaker-action`), a `return-plan` nie woła `approve_plan`.
+
+**Akcja.** `_CaretakerPort.return_plan` woła istniejące `FlowEngine.edit_plan` z `action: return` (ta sama walidacja,
+idempotencja i ochrona ticketów, które ruszyły; `no-plan` przy braku propozycji). Parametry `caretaker_problem`,
+`caretaker_step` i `caretaker_from` są tylko po stronie silnika (nie ma ich w D-Bus): `plan.returned` dostaje
+`caretaker`, `caretakerStep` i `caretakerFrom`, a krok `plan-amend` rusza w następnym przebiegu pętli
+(`_advance_user_revision`), z uwagą opiekuna dosłownie w kartce („Uwagi: …”). Numer w `findings` spoza listy uwag
+review (`caretaker.review_items`, numeracja od 1 — ta sama w kartce i w `plan-fix/review-findings.md`) to nieudane
+działanie `bad-findings` z powodem; tak samo traktowane są znaki, których nie można odczytać jako indeks
+(np. `²`), bez pozostawienia otwartego zamiaru akcji. Wynik w `caretaker.action` (`ok: false`) liczy się do limitu.
+Powtórka po restarcie rozpoznaje własny zapis po `caretakerStep` (drugie `plan.returned` nie powstaje).
+
+**Limit.** Każde działanie (udane i nieudane) liczy się do limitu z #8 (`ACTION_LIMIT`). Żeby kolejne odesłania nie
+zaczynały limitu od zera, `plan-amend` po odesłaniu opiekuna dziedziczy łańcuch nieudanej poprawki
+(`caretaker.chain_root` → `caretakerFrom`), a zakończony `done` krok poprawy planu nie zamyka problemu. Problem zamyka
+dopiero decyzja użytkownika: odesłanie planu bez pola `caretaker` lub odrzucenie poprawki (`plan.revision-discarded`)
+przez `FlowState.plan_user_seq`, a także jawne ponowienie kroku z tego łańcucha (`step.retry` z `user: true`, bez
+`caretaker`). Po ponowieniu użytkownika kolejne odrzucenie formatu ponownie uruchamia opiekuna z nowym limitem
+działań; numery jego kroków pozostają ciągłe. Po limicie decyzja wraca do użytkownika ze streszczeniem.
+
+**Nieaktualność.** Odesłanie albo edycja planu przez użytkownika w czasie pracy opiekuna kończy jego akcję jako
+`stale` (`plan.returned` bez `caretaker`, `plan.ticket-edited`, `plan.revision-discarded`): nic nie jest wykonane,
+nie powstaje drugie `plan.returned`, a działanie nie liczy się do limitu.
+
+**Kontekst i kartka.** Sekcja `BRIEF_SECTIONS["plan-fix"]` podaje błędy sprawdzania formatu, odesłane wcześniej uwagi
+i uwagi review z numerami oraz każe wskazać w `feedback` wiersz, bloker i błąd standardu. Źródło `SOURCES["plan-fix"]`
+dokłada do `in/context/` pliki `plan-fix/errors.md`, `previous-proposal.md`, `failed-plan.md` (plan.md odrzuconej
+próby), `returned-feedback.md` i `review-findings.md`; standard planu to `docs/agent-plan-standard.md` z migawek
+dokumentów. Dostawcę opiekuna karty bez dostawcy w `card.started` („Mam plan”) wskazuje planujący z propozycji.
+
+**Historia.** „Opiekun: odesłał plan z uwagą — <powód>” z `caretaker.action`; samo `plan.returned` nie ma wpisu
+w historii, więc nic się nie dubluje.
+
+#### Luka w planie w trakcie realizacji
+
+Przy błędzie ticketu w zatwierdzonym planie opiekun może rozpoznać brak osobnej pracy, której ticket nie powinien
+wykonywać (PT-155, przypadek K-16 z 03.11). Korzysta z dotychczasowych wyzwalaczy: `error`, `repeat` lub `waiting`
+dla pytania; kroki ticketu i review zachowują swoje kartki i kontrakty `result.json`. Nie ma osobnego sygnału luki.
+
+`return-plan` wywołuje to samo `EditCardPlan` / `edit_plan` z `action: return`. Baza `plan.returned` pochodzi
+z zatwierdzonego planu i ma nadane ID ticketów, a zdarzenie zapisuje `caretaker`, `caretakerStep`, `caretakerFrom`
+i dosłowną uwagę opiekuna, np. „dodaj ticket na migrację formatu, wynika z decyzji A; tickety, które ruszyły,
+przepisz bez zmian”. Następnie istniejąca ścieżka `plan-amend` → niezależne review → różnica czeka na użytkownika.
+Opiekun nigdy nie zapisuje `plan.revision-approved`; dodane tickety dostają numery dopiero po zatwierdzeniu różnicy.
+Rozpoczętych ticketów nie można zmieniać ani usuwać: działa dotychczasowe sprawdzenie poprawki i odmowa
+`ticket-started` przy zatwierdzaniu różnicy. Opiekun nie ma akcji omijającej te bramki.
+
+Odesłanie rozwiązuje problem kroku ticketu: projekcja `plan.returned` oznacza krok jako zastąpiony poprawą planu
+(`superseded`), więc jego błąd lub pytanie nie wraca do decyzji, automatycznego ponowienia ani kolejnego opiekuna.
+Wynik i kartka kroku zostają bez zmian, a ticket czeka na różnicę planu. Po jej zatwierdzeniu przez użytkownika
+czeka jeszcze na scalenie dodanej pracy do gałęzi karty (albo jej odrzucenie przez użytkownika). Nie czeka na nowe
+tickety zależne, także pośrednio, od niego samego. Przy kolejnych poprawkach projekcja sprawdza wspólny graf
+jawnych blokerów i oczekiwań wszystkich wznowień. Najpierw zachowuje wcześniejsze oczekiwania, potem dodaje
+nowe w kolejności kroków z dziennika i ID ticketów; pomija oczekiwanie, które zamknęłoby cykl. Przykładowo,
+gdy A czeka na X zależny od B, dodanie Y zależnego od A nie zatrzyma B przed Y: B kontynuuje, umożliwiając
+kolejno scalenie X, wznowienie A i wykonanie Y. Potem silnik wznawia krok przez istniejące `_resume_step`,
+w tym samym worktree, z instrukcją uwzględnienia zmian z gałęzi karty i kontynuacji pierwotnego zakresu.
+Oczekiwanie odtwarza się z dziennika po restarcie, a start następcy usuwa je z projekcji `plan_resumes`;
+stary błąd nie wraca do decyzji. Jawne ponowienie użytkownika nadal korzysta z dotychczasowej ścieżki.
+Poprawa planu ma własny łańcuch problemu; nie dziedziczy błędu ticketu.
+
+Jeśli poprawa planu się nie powiedzie, wybór użytkownika „Odrzuć poprawkę” (`discard-revision`) kończy oczekiwanie
+ticketu na tę poprawkę. Silnik wznawia jego pierwotny zakres według zachowanego planu, bez przywracania starego
+błędu lub pytania. Blokery z wcześniejszych zatwierdzonych różnic nadal muszą być scalone albo odrzucone.
+Ta kontynuacja także odtwarza się po restarcie z istniejącego zdarzenia `plan.revision-discarded`.
+
+Druga luka przy już trwającej poprawie daje nieudane działanie `revision-active`, liczone do limitu, także
+podczas niezależnego review nowej propozycji (przed bramką `review-pending`). Gdy użytkownik
+odeśle plan albo ponowi krok po starcie opiekuna, wynik opiekuna jest `stale`: bez kolejnego `plan.returned`
+i bez zużycia limitu, także dla problemu z decyzją. Historia pokazuje jeden wpis
+„Opiekun: odesłał plan z uwagą — <powód>”.
+
+`in/context/plan/approved.md` zawiera zamaskowaną migawkę zatwierdzonego planu z dziennika (ID i treść kartek),
+a `plan/spec.md` — specyfikację propozycji. Dotychczasowe źródła dołączają kartki `plan/tickets/<ID>.md`,
+kartkę kroku oraz jego notki i końcówkę `step.log` w `steps/<krok>/`. Migawka zatwierdzonego planu odróżnia go
+od pierwotnego `plan.md` z numerami roboczymi. Wszystkie pliki podlegają wspólnemu maskowaniu i limitowi 400 kB.
+
+### Ponowienie, limit i nieaktualne akcje (PT-150)
+
+**Wspólna ścieżka akcji** (`FlowEngine._caretaker_act`, także z `_reconcile`): wynik kroku opiekuna (`outcome`
+w `step.finished`) → sprawdzenie nieaktualności → `escalate` jako jedno zdarzenie `caretaker.escalated` albo, dla
+każdej innej akcji, para „zamiar → wynik” `caretaker-action` z kluczem kroku opiekuna (`_act`) i na końcu
+`caretaker.action`. Zapisany wynik pary nie wykonuje akcji drugi raz; restart między zamiarem a wynikiem dokańcza ją
+tą samą ścieżką, a `apply` jest bezpieczne do powtórzenia (`step.decision` albo `step.retry` z `caretakerStep` tego
+kroku opiekuna nie powstaje drugi raz). Akcja nieudana
+przy wykonaniu zwraca z `apply` `{failed, error}`: wynik pary jest zapisany (`ok: true`), a `caretaker.action` ma
+`ok: false`, `code` i `error`.
+
+**Limit** `caretakerActionLimit` (1–10, domyślnie 3 — `caretaker.ACTION_LIMIT`; wartość z ustawień przez
+`caretaker.setup`, „Ustawienia” niżej, PT-151) — kroki opiekuna na problem, udane i nieudane, liczone wyłącznie
+przez `owned()` (`count`).
+Ponowiony krok, który znowu pada, to ten sam problem (id z korzenia łańcucha), więc kolejny krok opiekuna należy do
+niego. Przy `count ≥ limit` `_caretake` nie uruchamia kolejnego kroku opiekuna, tylko zapisuje `caretaker.escalated`
+z `limit: true`, `failed: true`, `code: caretaker-limit`, `count`, `step` ostatniego działania i streszczeniem prób
+(`caretaker.limit_summary`: akcja, powód, skutek każdego działania). Stan trzyma ją w `caretaker_limits` (nie jest
+wynikiem kroku opiekuna), a `owned()` daje wtedy `handed: true`; decyzja problemu ma `caretaker.tried[]` z pozycjami
+`{step, action, ok, reason, text}` (powód z pola `reason` wyniku, skutek jak w historii). Decyzja użytkownika (bez
+pola `caretaker`) zamyka problem i zeruje licznik — kolejny błąd tego kroku zaczyna od zera.
+
+**Nieaktualność** (`caretaker.stale(st, run, events)`, jedna funkcja dla obu rodzajów problemów) — sprawdzana przed
+startem kroku opiekuna i przed każdym skutkiem jego wyniku (także przed oddaniem nieudanego wyniku), ale nie po
+zaczętym zamiarze `caretaker-action`:
+
+- problem z decyzją (`decision` w `caretaker.started`; zapis sprzed PT-150 — decyzja aktualnego problemu): jest
+  `step.decision` kroku problemu bez pola `caretaker` („użytkownik już zdecydował”) albo `problems()` nie zwraca
+  problemu z tym samym id decyzji („decyzja problemu już nie czeka”),
+- problem bez decyzji: `problems()` nie zwraca już problemu („problem już nie występuje”),
+- w obu przypadkach: po `watermark` z `caretaker.started` jest zdarzenie spoza opiekuna — w łańcuchu problemu
+  (problem bez kroku: w jego tickecie, bez ticketu: w całej karcie) `step.started`, `step.retry` albo
+  `step.decision`, a w całej karcie `card.paused`, `card.moved`, `plan.returned` albo `plan.edited` („po starcie
+  opiekuna: <zdarzenie>”). Zdarzenia samego
+  opiekuna nie liczą się: `caretaker.*`, zdarzenia z `kind: caretaker` (start, czekanie na slot), zdarzenia z polem
+  `caretaker` (zapisy jego akcji) oraz wyniki i aktywność kroku opiekuna (nie ma ich na liście).
+
+Akcja nieaktualna zapisuje `caretaker.action` z `ok: false, error: "stale", stale: true` i powodem w `detail`, nic
+nie wykonuje (bez pary `caretaker-action`), nie oddaje problemu i nie liczy się do limitu (`owned()` pomija takie
+kroki). Gdy wynik odrzucił też strażnik (wznowiony przez użytkownika krok pisał w tym samym worktree), jego powód
+jest dopisany do `detail`. Wyzwalacze #5, #6 i #13 testują regułę na swoich problemach.
+
+**Pierwszeństwo slotu** (US 37): krok opiekuna zajmuje slot dostawcy jak każdy krok (`providerSlots`,
+`_wait_reason`, `_admit`, `step.waiting` z powodem „limit kroków dostawcy …”). Gotowy krok opiekuna karty
+(`caretaker.started` bez startu i bez wyniku) u tego samego dostawcy rezerwuje miejsce przed każdym innym krokiem tej
+karty (`_caretaker_reserved`: rezerwacja liczy się w `_wait_reason` jak trwający krok), więc nowy ticket karty czeka,
+a opiekun startuje w tym samym przebiegu. Rezerwacja nie dotyczy innych kart, nie omija limitu slotów ani okna
+limitu dostawcy (D3 — czeka jak inne kroki). Krok opiekuna nie wyprzedza kroków innych kart (`_earlier_waiters`):
+kroki innych kart czekające na miejsce u tego samego dostawcy (`step.waiting` z `cause: slots`) wcześniej niż on
+(`since` — początek czekania, zachowany przy zmianie powodu) zajmują miejsca w jego `_wait_reason` (licznik
+w powodzie najwyżej `limit/limit`). Kolejność to jeden porządek wspólny dla wszystkich kart: (`since`, identyfikator
+karty, ticket, rodzaj kroku) — remis w obrębie sekundy rozstrzyga identyfikator karty, więc dwaj opiekunowie
+czekający od tej samej chwili nie czekają na siebie nawzajem. Zwolnione miejsce bierze więc wcześniej czekająca karta
+niezależnie od kolejności pętli (`journal.cards()`). Pomijane są karty zakończone, wstrzymane, przeniesione do
+Gotowe, Archiwum albo Backlogu i odrzucone tickety. Opiekun zakończony przed startem (np. `stale` po decyzji
+użytkownika, gdy czekał na slot) traci czekanie: wynik (`caretaker.action`/`caretaker.escalated`) zdejmuje jego
+`step.waiting` w `fold`, więc nie blokuje kroków innych kart. Zatwierdzenie różnicy planu
+(`plan.revision-approved`) usuwa czekanie usuniętych ticketów w `fold`, również po restarcie usługi.
+Pomijane są również zwykłe kroki, których start
+blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzięki temu kolejność czekania
+ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
+Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
+zwykłych kroków, ich wcześniejsze czekanie nadal liczy się w kolejce innych kart.
+
+**Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
+i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu
+(`_advance_planning`) i w review/poprawkach planu (`_plan_step_decision`), z instrukcją w kartce wznowienia, także
+przy próbie zerowej (zamiast automatycznego ponowienia bez instrukcji).
+
+**Decyzja użytkownika przy pracującym opiekunie:** trwający krok opiekuna nie czyni ticketu „zajętym” w
+`resolve_step`, więc decyzję przyjmuje zwykłe API (StepResolve); krok wznawia `_advance`, a wynik opiekuna jest potem
+nieaktualny. Decyzja zapisana akcją opiekuna ma też `caretakerStep`: dokończenie po restarcie rozpoznaje własny
+`step.decision` (jak `step.retry`) przed walidacją `focus`, więc inna oczekująca decyzja karty nie zamienia
+wykonanego ponowienia w porażkę.
+
+**Ponowienie kroku przy błędzie trackera:** `resolve_step` z jawnym `step` (także od opiekuna) zapisuje decyzję
+tego kroku, nawet gdy nie ma trwających kroków i czeka trwały błąd komentarza YouTracka. Globalne `retry` bez
+`step` i bez problemu opiekuna nadal resetuje błędy trackera. Port opiekuna sprawdza wynik `resolve_step`:
+reset trackera albo odpowiedź bez potwierdzenia ponowienia wskazanego kroku daje nieudane działanie
+`retry-not-applied`, bez wpisu historii o udanym ponowieniu.
+
+### Kontekst
+
+Kartka (`brief`) zaczyna się od „Jesteś opiekunem karty <K-…> w Tide.” i zawiera: przesłankę z `BRIEF_SECTIONS`
+według wyzwalacza (zamaskowaną `faults.mask`), listę plików kontekstu, listę dozwolonych akcji z polami, zakazy i ścieżkę wyniku
+(„Plik wyniku: …/out/result.json”). Krok opiekuna pracuje w worktree kroku problemu (tylko do odczytu) i ma osobny
+katalog `<worktree>.caretaker-<krok>.step`.
+
+#### Opis problemu z decyzji (PT-143)
+
+Sekcja `error`: krok, wykonawca, próba, „co się stało” i „dlaczego” z decyzji błędu, powód zakończenia kroku i czyja
+wina według dziennika kroku. Dziennik kroku i pozostałe pliki są w katalogu kontekstu (niżej).
+
+#### Katalog `in/context/` (PT-153)
+
+Przy starcie kroku opiekuna (w parze „zamiar → wynik” `step-start`, po przyjęciu przez `_admit`, więc nie przy każdym
+obrocie pętli w kolejce do dostawcy) Tide buduje `<krok>/in/context/` modułem
+`daemon/tide_daemon/cardflow/caretakerctx.py` (`build(problem, st, events, …)`; `collect` — to samo w pamięci, dla
+rozmowy z opiekunem w #7). Kartka dostaje sekcję „## Kontekst” z bezwzględną ścieżką i opisem każdego pliku
+(„(przycięty do limitu)” przy przyciętych). Pliki wspólne dla każdego wyzwalacza:
+
+- `history.md` — historia karty po ludzku (`history.build`, od najstarszego wpisu, z próbami kroków),
+- `journal.jsonl` — ostatnie 200 zdarzeń dziennika karty (JSON Lines, od najstarszego),
+- `plan/plan.md`, `plan/source.md`, `plan/tickets/<id>.md` z katalogu karty w tablicy (bez planu — `plan/README.md`
+  z dopiskiem) i `steps/<krok problemu>/prompt.txt` — kartka kroku problemu,
+- dla każdego kroku problemu (łańcuch `parentStep` problemu i wszystkie kroki jego ticketu): `steps/<krok>/note.md`,
+  `review.md`, `handoff.md`, `result.json` oraz dodatkowe notki `*.md` wskazane w `notes`/`kept` wyniku lub zdarzenia
+  zakończenia (z archiwum kroku w katalogu karty), `plan-review.json` (z `<krok>/out`) i `step-log.md` —
+  ostatnie 300 zdarzeń `out/step.log` po ludzku (`faults.excerpt(…, limit=300)`, jak wycinek PT-125),
+- `attempts.md` — próby kroków problemu (wykonawca, wynik, powód, czyja wina, decyzja) i poprzednie działania
+  opiekuna przy tym samym id problemu (wynik, streszczenie, rekomendacja, błąd, `note.md`, `result.json` i dodatkowe
+  notki z `notes`/`kept` kroku opiekuna) — bez bieżącego kroku. Dodatkowe nazwy muszą wskazywać plik Markdown
+  bez składników ścieżki; odczyt nie podąża za dowiązaniami,
+- `docs/agent-plan-standard.md`, `docs/sandbox-and-permissions.md` i `docs/AGENTS-przeplyw-karty.md` (sekcja
+  „Przepływ karty” z `AGENTS.md`) — migawki dokumentów działającej usługi Tide: `tide-docs/` obok pakietu
+  (`daemon/install.sh` kopiuje tam te trzy pliki) albo repozytorium Tide przy uruchomieniu ze źródeł
+  (`caretakerctx.tide_docs_dir()`), więc dostają je też karty innych projektów; dopiero bez nich — z worktree kroku
+  opiekuna, a bez pliku i tam — dopisek „(pominięto: …)”. Katalog dokumentów jest osobnym korzeniem tylko dla tych
+  stałych nazw (inne źródła nie czytają z niego przez `ctx.read_text`).
+
+**Rejestr źródeł.** `caretakerctx.SOURCES` — wyzwalacz → lista `Source(name, build)`; `"*"` — źródła każdego
+problemu. Problem dostaje `"*"` i źródła wszystkich swoich wyzwalaczy (`triggers[]`). `build(ctx)` zwraca
+`File(path, title, text=…)` albo `File(path, title, items=[…], head=…, trim=n)` (zdarzenia od najstarszego,
+przycinane) i czyta pliki wyłącznie przez `ctx.read_text` / `ctx.read_tail`. Kolejne tickety dopisują własne wpisy
+(np. błędy sprawdzania formatu planu) bez edycji wspólnych źródeł; wyjątek w źródle daje `errors/<źródło>.md`
+zamiast przerwania startu.
+
+**Granice.** Maskowanie wyłącznie `faults.mask`: każdy plik w całości, zdarzenia każde osobno przed liczeniem
+rozmiaru. Tytuły plików także przechodzą przez maskowanie. Ścieżka zawierająca sekret (sprawdzana również przed
+sanitacją i skracaniem nazwy) dostaje unikalny alias `masked-N.*`, z rezerwacją pozostałych nazw. Alias jest nazwą
+zapisanego pliku, więc odnośnik w kartce nadal działa. W `journal.jsonl` i plikach `*.json` każdy odkodowany klucz
+i każda wartość są maskowane osobno, przed ponowną
+serializacją (dotyczy też wyniku osadzonego w `attempts.md`). Kolizje kluczy po maskowaniu dostają unikalny
+dopisek ` [N]`, z pominięciem nazw innych pól, żeby nie nadpisywać danych. Pole, które `faults.mask`
+uznaje za sekretne na próbce `nazwa=x` (`token`, `password`, `apiKey`…), traci całą wartość — także napis ze spacjami
+i liczbę w dowolnie zagnieżdżonych obiektach i listach pod tym polem; pozostałe napisy przechodzą przez
+`faults.mask`, a liczba zmieniona przez `faults.mask` (np. równa wartości
+sekretnej zmiennej środowiska) staje się `•••`. Niepoprawny lub niepełny plik JSON jest zastępowany dopiskiem
+„(pominięto: niepoprawny lub niepełny JSON)” — maskowanie surowych sekwencji ucieczki mogłoby ujawnić część sekretu.
+Tak samo uszkodzone zdarzenie w `out/step.log` (linia zaczynająca się od `{`, także przy EOF po awarii) zastępuje
+dopisek bez jego treści. Poprawne zdarzenie bez końcowego znaku nowej linii nadal trafia do wycinka po odkodowaniu;
+odkodowane wartości zdarzenia przechodzą przez maskowanie przed łączeniem i normalizacją białych znaków,
+żeby wielowierszowy sekret środowiska nadal pasował do swojej wartości. Przed rozdzieleniem stderr i zdarzeń
+`faults.mask(…, multiline_only=True)` maskuje dopasowania przekraczające granice linii: poprawny JSON wewnątrz
+sekretu nie rozcina go na jawne fragmenty. Jednoliniowe serializacje pozostają nienaruszone do odkodowania.
+Surowy stderr jest następnie maskowany całymi blokami przed podziałem na linie, usuwaniem białych znaków
+i skracaniem; odczyt zachowuje oryginalne znaki końca linii (także CRLF). Dokument `AGENTS.md` przechodzi przez
+`faults.mask` z tym samym środowiskiem przed wycięciem sekcji „Przepływ karty” i normalizacją CRLF, zarówno
+z kopii dokumentów Tide, jak i z worktree. Historia i poprzednie diagnozy opiekuna dostają zamaskowane kopie
+zdarzeń przed formatowaniem przez `caretaker.history_text`, bez zmiany źródłowego stanu karty.
+Końcówka `out/step.log` czytana od środka pliku zaczyna się od
+pierwszej pełnej linii — sekret przecięty granicą odczytu nie traci nazwy zmiennej ani prefiksu tokenu przed
+maskowaniem. Tak samo odczyt kończący się przed końcem pliku (początek pliku dłuższego niż `FILE_READ_MAX` albo plik
+dopisywany w trakcie odczytu) odrzuca ostatnią, niepełną linię i dopisuje „dalsza część pliku pominięta” — urwana
+reszta tokenu nie trafia do `faults.mask` (review PT-153, runda 2). Po odrzuceniu urwanej linii obie granice
+odrzucają też pozostałe linie przeciętej wielowierszowej wartości środowiska, której sekretność rozstrzyga
+`faults.mask`. Sprawdzenie zachowuje oryginalne białe znaki i bajty (bezstratne `surrogateescape`), przed
+formatowaniem; przesunięta granica jest sprawdzana ponownie na wypadek nakładających się wartości (review
+PT-153, runda 10). `faults.trim_secret_boundary` korzysta z tych samych wzorców co `faults.mask`, aby odrzucać
+także fragmenty cytowanych przypisań bez wartości w środowisku: na początku końcówki pierwszy cudzysłów każdego
+rodzaju może zamykać utraconą wartość, a przy urwanym końcu tymczasowe domknięcie ujawnia początek przypisania.
+Odrzucany fragment rozszerza się na całe linie i kompletne sekrety przecięte nową granicą; może obejmować też
+jawny tekst, którego nie da się odróżnić od kontynuacji sekretu. Bez dodatkowych odczytów ponad limit. Jeśli
+dopisywany dziennik ma obie granice ucięte (brakuje początku i nie osiągnięto EOF), cały odczyt zastępuje dopisek
+o pominięciu — brak obu cudzysłowów nie rozstrzyga wtedy, czy fragment jest środkiem sekretu (runda 11).
+Odczyt tylko z korzeni: katalog karty w tablicy (`flow/<K-…>`), worktree kroku opiekuna oraz worktree
+i katalogi kroków problemu z dziennika. Korzeń, który sam jest dowiązaniem (np. cały `<worktree>.step` podmieniony na
+dowiązanie do `$HOME`), odpada (`lstat`); przy odczycie korzeń jest otwierany z `O_NOFOLLOW` i porównywany
+z tożsamością (`st_dev`, `st_ino`) z chwili sprawdzenia, a każdy składnik ścieżki — względem poprzedniego (`dir_fd`)
+z `O_NOFOLLOW`; plik musi być zwykłym plikiem. Dowiązanie na dowolnym poziomie daje dopisek „(pominięto: dowiązanie
+symboliczne / plik spoza katalogu karty i worktree)”, nie treść. Całość ma najwyżej 400 kB (`MAX_BYTES = 400 000`
+bajtów): przycinane są najpierw najstarsze zdarzenia `journal.jsonl`, potem dzienników kroków, potem historii,
+z pierwszą linią „(przycięto N najstarszych zdarzeń — limit kontekstu opiekuna 400 kB)”; gdyby to nie wystarczyło,
+końcówki największych plików z dopiskiem „… (koniec pliku przycięty …)”, a plik, z którego zostałby sam dopisek,
+wypada w całości — zamiast nich jeden `przycieto.md` („(pominięto N plików kontekstu w całości …)”), na który
+budżet jest zarezerwowany z góry, więc limit obowiązuje przy dowolnej liczbie plików. Katalog kontekstu jest budowany
+od nowa przy każdym starcie.
+
+### Zmiana wykonawcy
+
+Akcja opiekuna `change-executor` (PT-145) przy błędzie, powtórzonym powodzie albo braku postępu przyjmuje
+`step`, `executor` (nazwę z katalogu), `reason` oraz opcjonalną `instruction` do 4000 znaków. Używa istniejącego
+`resolve_step` i jego `_resume_executor`, bez drugiej implementacji reguł przydziału. Krok lokalny ani karta
+„Tylko lokalnie” nie przechodzą do chmury. Opiekun musi zachować różne modele autora i recenzenta, a w trybie
+mieszanym także różnych dostawców. Istniejący wyjątek dla świadomego wyboru użytkownika pozostaje dostępny
+wyłącznie użytkownikowi. Wykonawca spoza katalogu albo naruszenie reguł daje nieudane działanie z powodem,
+liczone do limitu; krok nie jest zmieniany.
+
+Wznowienie zachowuje worktree i zmiany, ale uruchamia nową sesję. Opcjonalna instrukcja trafia do kartki nowego
+wykonawcy. Historia: „Opiekun: zmienił wykonawcę <krok> na <nazwa> — <powód>”. Akcja korzysta ze wspólnej pary
+`intent`/`result` `caretaker-action`; własny zapis `step.decision.caretakerStep` zabezpiecza restart między
+skutkiem a wynikiem pary przed drugą decyzją.
+
+### Odpowiedź na pytanie
+
+Akcja `answer` przy czekającym pytaniu przyjmuje `step`, `answer`, `reason` i `category`: `technical` albo
+`environment`. Odpowiada na pytanie kroku ticketu, review, poprawek lub konfliktu istniejącym `resolve_step`,
+a wznowiona kartka oznacza odpowiedź jako pochodzącą od opiekuna. Historia: „Opiekun: odpowiedział na pytanie
+<krok> — <powód>”. Odpowiedź ma od 1 do 4000 znaków; działanie podlega wspólnej aktualności, limitowi i parze
+„zamiar → wynik”.
+
+Tide odrzuca odpowiedzi dla `planning` i wszystkich `plan-*`, niezależnie od zadeklarowanej kategorii. Pytanie
+zostaje użytkownikowi z rekomendacją, a nieudane działanie liczy się do limitu. Kartka każe eskalować pytania
+o zakres, wymagania, wybory biznesowe oraz pytania z opcjami wariantów produktu. Kategoria nie dowodzi, że treść
+jest techniczna — rozpoznanie treści pozostaje zadaniem opiekuna; zakaz odpowiedzi przy planowaniu egzekwuje Tide.
+
+### Decyzja czeka
+
+Wyzwalacz `waiting` (PT-145) sprawdza zegar silnika i zapisany początek czekania decyzji. Po czasie **dłuższym**
+niż `caretakerDecisionMinutes` tworzy problem `waiting:<id decyzji>`. Dokładnie N minut jeszcze nie uruchamia
+opiekuna. Przy pytaniu dostępne są `answer`, `escalate` oraz `return-plan` dla luki w planie (PT-155);
+przy zgodzie na polecenie, zatwierdzeniu planu (także różnicy planu) i review po ostatniej rundzie — wyłącznie
+`escalate`. Lista akcji jest egzekwowana przez Tide,
+także przy wykonywaniu akcji. Opiekun nie tworzy zgody, nie zatwierdza planu ani nie rozstrzyga review.
+
+Decyzja pozostaje widoczna przez cały czas pracy opiekuna; `escalate` tylko dopisuje `caretaker.recommendation`
+i streszczenie. Po eskalacji ten sam problem nie uruchamia opiekuna ponownie, również po restarcie. Tożsamość
+decyzji zapobiega przenoszeniu rekomendacji na kolejną decyzję tego samego kroku. Zmiana N nie unieważnia pracy
+już uruchomionego opiekuna. Jeśli użytkownik rozstrzygnie decyzję w trakcie jego pracy, wynik opiekuna jest
+`stale`, niczego nie zmienia i nie liczy się do limitu.
+
+### Ustawienia
+
+#### Wyłącznik, wykonawca, limit działań i minuty czekania (PT-151)
+
+Cztery klucze w `$XDG_CONFIG_HOME/tide/cardflow.json`, czytane i zapisywane istniejącymi `GetCardFlowSettings`
+i `SetCardFlowSettings` (sygnatury bez zmian; zapis zmienia tylko podane klucze, reszta pliku zostaje):
+
+| Klucz | Wartość | Domyślnie |
+| --- | --- | --- |
+| `caretakerEnabled` | `true`/`false` | `true` |
+| `caretakerExecutor` | nazwa wykonawcy z katalogu albo `""` („domyślny”) | `""` |
+| `caretakerActionLimit` | liczba całkowita 1–10 — kroki opiekuna na problem | 3 |
+| `caretakerDecisionMinutes` | liczba całkowita 1–1440 — minuty czekania decyzji, zanim zajmie się nią opiekun (#3) | 10 |
+
+`GetCardFlowSettings` zwraca zawsze wszystkie cztery (wartość złego typu albo spoza zakresu w pliku — domyślna,
+`caretaker.settings_of`). Walidacja jest w usłudze (`caretaker.setting_problem`), przed zapisem całego żądania:
+zły typ albo zakres (np. `caretakerActionLimit` 0, 11 albo `"3"`, `caretakerDecisionMinutes` 0 albo 1441, `true`
+zamiast liczby) → `bad-request`; wykonawca spoza katalogu → `bad-executor`; nieznany klucz → `bad-settings` (jak
+dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają bez zmian.
+
+**Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
+`caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,
+a także rozmowa z opiekunem (#7) i zmiana wykonawcy przez opiekuna (#3)):
+
+- karta „Tylko lokalnie” — wykonawca lokalny z katalogu: `caretakerExecutor`, gdy sam jest lokalny, inaczej
+  pierwszy lokalny w kolejności katalogu; chmurowy `caretakerExecutor` jest pomijany, więc kontekst karty nie
+  wychodzi z komputera. Bez wykonawcy lokalnego opiekun nie startuje, a decyzja ma dopisek „opiekun niedostępny dla
+  pracy tylko lokalnej”,
+- inna karta — `caretakerExecutor`, jeśli jest w katalogu (wykonawca usunięty z katalogu po zapisie — domyślny),
+  inaczej najmocniejsza klasa preferowanego dostawcy karty (w trybie mieszanym — dostawcy wykonawcy karty; dla
+  Anthropic Opus, dla OpenAI Codex mocny).
+
+`caretaker.setup(st, settings, catalog)` daje `{enabled, executor, reason, note, limit, decisionMinutes}`: `reason`
+— dlaczego opiekun nie ruszy (wyłączony albo brak wykonawcy lokalnego; `caretaker.unavailable` go zwraca), `note` —
+dopisek do decyzji (tylko brak wykonawcy lokalnego). Silnik dokłada wynik do stanu przed widokami
+(`FlowState.caretaker_setup`, nie z dziennika), więc `flow.caretaker.enabled` i dopisek decyzji liczą się z tych
+samych ustawień co start. Opiekun wyłączony albo bez wykonawcy lokalnego, gdy jego krok czekał już na start (np. na
+slot), nie rusza: `caretaker.action` z `stale: true` i powodem w `detail` (bez eskalacji, nie liczy się do limitu),
+decyzja wraca jak dziś. Krok opiekuna, który już pracuje, kończy się normalnie.
+
+**Okno.** Strona „Zarządzaj” (`ManagePage.qml`), sekcja „PRZEPŁYW KARTY · OPIEKUN”: przełącznik „Opiekun karty”,
+wybór wykonawcy („Domyślny — najmocniejszy u dostawcy karty” i cały katalog, także lokalni;
+`board.js caretakerExecutorOptions`), limit działań (1–10) i minuty czekania (1–1440); „Zapisz” wysyła jedno
+`SetCardFlowSettings` z czterema kluczami, a błąd usługi pokazuje się pod sekcją.
+
+Piaskownica — „Piaskownica i strażnik” niżej. Opiekun czekający na slot dostawcy (`step.waiting` rodzaju
+`caretaker`) nie daje powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
+
+### Piaskownica i strażnik (PT-158)
+
+Granica bezpieczeństwa kroku opiekuna, wymagana przed akcjami zmieniającymi stan karty (#8): piaskownica pozwala
+pisać tylko do własnego `<krok>/out`, a strażnik niezależnie od piaskownicy sprawdza, czy krok nic poza nim nie
+zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
+
+**Piaskownica** (`agentcmd.Step.write_out_only`, ustawia ją silnik dla rodzaju `caretaker`):
+
+- Katalogiem roboczym programu jest `<krok>/out` (`Background.workdir`; `Background.cwd` — worktree — zostaje do
+  zatrzymania i dziennika sesji). Piaskownica Claude CLI daje zapis katalogowi roboczemu, więc tylko `out` jest
+  zapisywalny (`allowWrite: [out]`), a jej puste pliki-atrapy (`.bashrc`…) lądują w `out`, nie w worktree.
+- Claude: stała lista tylko do odczytu `agentcmd.read_only_tools` zamiast listy kroku — `rg`, `grep`, `cat`, `ls`,
+  `find` (`READ_ONLY_COMMANDS`, także ze wzorcami nazwanymi worktree), `git -C <worktree> log|show|diff
+  --no-ext-diff --no-textconv --ignore-submodules=all …` (opcje obowiązkowe: wyłączają `diff.external`,
+  `diff.<d>.command`, `textconv` i inspekcję submodułów) i `git -C <worktree> status --ignore-submodules=all`
+  (`READ_ONLY_GIT`),
+  `Read(//<worktree>/**)` dla Read/Grep/Glob i odczyt własnych `in`/`out`
+  (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
+  opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
+  zgodą): `READ_ONLY_BANS` — `find` z `-delete`, `-exec`/`-execdir`, `-ok`/`-okdir`, `-fprint*`, `-fls`; `rg`
+  z `--pre`, `--hostname-bin`, `--search-zip`/`-z` (także połączonym, np. `-az`, `-iz`); `git` z `--output`,
+  `--ext-diff`, `--textconv`, `--show-signature`; każde przekierowanie `>` — oraz zakaz edycji worktree i repozytorium.
+  `autoAllowBashIfSandboxed: false`: polecenie spoza listy nie ruszy.
+  Zakaz `rg *-*z*` jest zachowawczy: wildcard obejmuje spacje, więc odrzuca też bezpieczne wywołania z `z`
+  w dalszym argumencie po `-` (np. `rg -n wzorzec plik.txt`); można wtedy użyć `rg` bez opcji albo `grep`.
+- Programy pomocnicze gita (review M3): środowisko kroku opiekuna (`agentcmd.read_only_git_config`, dopisane do
+  `GIT_CONFIG_COUNT`, wygrywa z konfiguracją repozytorium) ma `core.fsmonitor=false`, `core.pager=cat`,
+  `log.showSignature=false`, `gpg.program`/`gpg.ssh.program`/`gpg.x509.program` = `/bin/false` i puste programy
+  wszystkich filtrów z konfiguracji worktree (`filter.<f>.clean|smudge|process`, `required=false`; listę czyta
+  usługa `git --git-dir <gitDir> config` przed startem, błąd odczytu — krok nie startuje), do tego
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_PAGER=cat`. Test na prawdziwym repozytorium z `diff.external`, `textconv`,
+  `diff.<d>.command`, filtrem, `core.fsmonitor` i `gpg.program` sprawdza, że żadne dozwolone polecenie gita ich
+  nie uruchamia (a zwykłe `git diff` — tak).
+- Submoduły (review runda 4/M1): ich konfiguracje mogą nazywać inne filtry niż konfiguracja worktree.
+  Każde dozwolone podpolecenie gita ma obowiązkowe `--ignore-submodules=all`, które wygrywa także z ustawieniem
+  `submodule.<nazwa>.ignore=none`; środowisko dodatkowo wymusza `status.submoduleSummary=false`.
+  Zakazy `git *--ignore-submodules=all *--i*`, `git *--no-i*`, `git *--sub*`, `git *--no-sub*` wykluczają późniejsze
+  nadpisanie opcji, jej skróty (`--ign`, `--i`), negację i żądania widoku submodułów. Reguły są zachowawcze:
+  odrzucają również np. `--ignore-space-change`. Test z prawdziwym submodułem i filtrem skonfigurowanym wyłącznie
+  w nim potwierdza uruchomienie helpera przez reprodukcję M1, odrzucenie jej przez reguły i brak helpera przy
+  dozwolonych wywołaniach `status`, `diff`, `log`, `show`.
+- Codex nie ma listy dozwolonych poleceń, więc opiekun u Codexa dostaje jej pusty podzbiór: narzędzia poleceń
+  i kodu są wyłączone (`-c features.shell_tool=false`, `unified_exec`, `code_mode`, `js_repl` —
+  `agentcmd.CODEX_NO_COMMANDS`), katalog roboczy i jedyny zapisywalny katalog to `out` (plik wyniku przez
+  `apply_patch`), `/tmp` i `$TMPDIR` są jawnie wykluczone (`sandbox_workspace_write.exclude_slash_tmp=true`,
+  `exclude_tmpdir_env_var=true`, bo `writable_roots` tylko dopisuje katalogi), a `--skip-git-repo-check` (także
+  przy wznowieniu) — bo `out` leży poza repozytorium. Kartka mówi wtedy, że krok nie ma poleceń.
+- Kartka (`caretaker.brief(…, commands=)`) wymienia listę, zakazy i strażnika.
+- Zatrzymanie kroku opiekuna (`_stop`) nie robi commita WIP (`stepstop.stop_step(commit_wip=False)`): worktree
+  i gałąź kroku zostają, jakie są, a ewentualny zapis kroku wykrywa strażnik.
+
+**Strażnik** (`cardflow/guard.py`, w silniku `_guard_baseline`, `_guard_check`, `_guard_freeze`, `_guard_rebase`,
+`_guard_thaw`, `_guard_verdict`):
+
+- Stan pod strażą: drzewo worktree kroku i — przy problemie ticketu, gdy to inny katalog — drzewo worktree karty
+  (wszystkie pliki, katalogi i dowiązania — śledzone, nieśledzone i ignorowane — bez katalogu `.git`; rekord:
+  ścieżka, typ i prawa, rozmiar, `mtime`, `ctime`, i-węzeł, cel dowiązania; skrót sha256 w podziale na wpisy
+  najwyższego poziomu), treść `<gitDir>/HEAD` każdego z tych worktree i sha gałęzi worktree kroku oraz gałęzi
+  karty. `ctime` zmienia każdy zapis i nie da się go cofnąć bez roota, więc wykrywa
+  też zapis tej samej treści i podmianę z przywróconym `mtime` — mocniej niż `git status` czy suma treści, bez
+  czytania plików. Git nie jest uruchamiany w worktree (haki, `core.fsmonitor`): drzewo czyta Python bez
+  podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez usługę, gałęzie — `FlowGit.sha`
+  w repozytorium.
+- Stan bazowy: `caretaker.guard` z `cause: start` tuż przed startem programu (po przygotowaniu katalogów kroku,
+  przed `step.started`) — `{step, repo, worktrees: [{worktree, gitDir, tree, head}], branches, refs, cause,
+  wrote}`.
+- Działania Tide w trakcie kroku opiekuna (każde `_act` tej karty z wykonaną pracą: scalenie, commit planu,
+  gałęzie, start innego kroku z przywracaniem zależności, sprzątanie…) nie są zapisem kroku: przed działaniem
+  strażnik najpierw zamraża jednostkę kroku (`stepstop.freeze_unit`, `systemctl --user freeze
+  <jednostka>.scope` — cgroup freezer zatrzymuje proces z potomkami), dopiero potem porównuje stan i zmiany
+  zapisuje jako `caretaker.guard` z `cause: check` i `wrote: [powód]` (zapis Tide ich nie przykryje; zapis kroku
+  tuż przed skutecznym zamrożeniem też tu trafia — review M1 rundy 2), wykonuje działanie, bierze stan bazowy na
+  nowo (`cause: <działanie>`) i dopiero wtedy odmraża krok (także po błędzie kontroli albo działania). Zmiana
+  w oknie działania jest więc zmianą Tide (review M1). Gdy zamrożenie się nie uda, a proces kroku żyje albo jego stanu nie da się
+  ustalić, zmiany z okna trafiają do `wrote` („zmiana w czasie działania Tide `<działanie>`, gdy kroku opiekuna
+  nie dało się zamrozić — …”) — strażnik odrzuca zamiast przepuszczać; proces już zakończony nic nie pisze.
+  `FlowState.caretaker_guards` — ostatni stan bazowy, `caretaker_wrote` — zebrane powody.
+- Koniec kroku (`_finish_caretaker`): strażnik działa pierwszy, przed `caretaker.parse_result` i niezależnie od
+  zatrzymania czy kodu wyjścia. Zmiana od stanu bazowego, wcześniej zapisane `wrote` albo brak stanu bazowego →
+  wynik odrzucony z kodem `caretaker-wrote` (`step.finished.outcome.code`, bez czytania pliku wyniku), powód np.
+  „krok opiekuna pisał poza swoim katalogiem wyjściowym: zmienione pliki w worktree <ścieżka>: opiekun-byl-tu.txt;
+  przesunięta gałąź ticket/pt-1”. Dalej jak każde nieudane działanie: `caretaker.escalated` z `failed: true`,
+  akcja nie jest wykonana, działanie liczy się w `owned()`, a historia karty ma wpis „Opiekun: wynik odrzucony,
+  akcja nie wykonana — <powód>”.
+- Ograniczenie: gałąź karty przesunięta w trakcie kroku opiekuna przez inny krok (np. rozwiązanie konfliktu
+  innego ticketu w worktree karty) nie jest działaniem Tide, więc odrzuca wynik opiekuna (bezpieczna pomyłka —
+  problem wraca do użytkownika z powodem). Tak samo działanie Tide przy kroku, którego nie dało się zamrozić
+  (np. systemd bez `freeze`).
+
 ## Docker
 
 Podgląd i obsługa kontenerów zamiast Docker Desktop — dane dla widoku „Docker” w oknie Tide (`apps/docker`) i kafelka `org.tide.docker` w docku (`widgets/docker`). Usługa rozmawia z Docker Engine API przez lokalny socket (sama biblioteka standardowa, bez `docker` CLI i bez `docker compose`). Socket z `$DOCKER_HOST` (`unix:///ścieżka`), domyślnie `/var/run/docker.sock`; `tcp://`, `ssh://` i inne → stan `unsupported`, bez łączenia się przez sieć.

@@ -102,11 +102,13 @@ Item {
         onBranchesRequested: (tag, id, request) => { if (view.backend) view.backend.listCardBranches(tag, id, request) }
         onSuggestionsRequested: (tag, id, request) => { if (view.backend) view.backend.suggestCardBase(tag, id, request) }
         onEnterStepRequested: (tag, id, step) => view.backend.enterStep(tag, id, step)
+        onCaretakerTalkRequested: (tag, id, request) => view.backend.talkToCaretaker(tag, id, request)
         onAbandonStepRequested: (tag, id, step) => view.backend.abandonStep(tag, id, step)
         onReviewResolveRequested: (tag, id, choice) => view.backend.resolveCardReview(tag, id, choice)
         onStepResolveRequested: (tag, id, request) => view.backend.resolveCardStep(tag, id, request)
         onTicketConsentRevokeRequested: (tag, id, request) => view.backend.revokeTicketConsent(tag, id, request)
         onStepNoteRequested: (tag, id, request) => view.backend.addCardStepNote(tag, id, request)
+        onCaretakerResolveRequested: (tag, id, request) => view.backend.resolveCardCaretaker(tag, id, request)
         onFaultPreviewRequested: (tag, id, request) => view.backend.previewStepFault(tag, id, request)
         onFaultReportRequested: (tag, id, request) => view.backend.reportStepFault(tag, id, request)
         onFlowSettingsSaveRequested: (tag, request) => view.backend.setCardFlowSettings(tag, request)

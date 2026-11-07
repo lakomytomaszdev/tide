@@ -31,6 +31,8 @@ XML = f"""<interface name="{IFACE}">
 </interface>"""
 WINDOW_IFACE = "org.kde.konsole.Window"
 WINDOW_XML = f"""<interface name="{WINDOW_IFACE}">
+  <method name="RecordTask"><arg name="payload" type="s" direction="in"/></method>
+  <method name="Tasks"><arg type="s" direction="out"/></method>
   <method name="sessionList"><arg type="as" direction="out"/></method>
   <method name="currentSession"><arg type="i" direction="out"/></method>
   <method name="setCurrentSession"><arg name="sessionId" type="i" direction="in"/></method>
@@ -84,6 +86,15 @@ class FakeWindow(QDBusAbstractAdaptor):
         super().__init__(parent)
         self.numbers = list(sessions)
         self.current = self.numbers[0] if self.numbers else -1
+        self.tasks = []
+
+    @pyqtSlot(str)
+    def RecordTask(self, payload):
+        self.tasks.append(json.loads(payload))
+
+    @pyqtSlot(result=str)
+    def Tasks(self):
+        return json.dumps(self.tasks)
 
     @pyqtSlot(result="QStringList")
     def sessionList(self):
@@ -100,6 +111,15 @@ class FakeWindow(QDBusAbstractAdaptor):
 
 
 def main() -> int:
+    if sys.argv[1] == "--record-task":
+        from PyQt6.QtDBus import QDBusMessage
+        app = QCoreApplication(sys.argv[:1])
+        with open(sys.argv[3], encoding="utf-8") as fh:
+            payload = fh.read()
+        message = QDBusMessage.createMethodCall(sys.argv[2], "/Windows/1", WINDOW_IFACE, "RecordTask")
+        message.setArguments([payload])
+        reply = QDBusConnection.sessionBus().call(message)
+        return 0 if reply.type() == QDBusMessage.MessageType.ReplyMessage else 1
     service, count = sys.argv[1], int(sys.argv[2])
     layout = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {"1": list(range(1, count + 1))}
     app = QCoreApplication(sys.argv[:1])

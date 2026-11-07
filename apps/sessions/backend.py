@@ -26,7 +26,7 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 # Zapisy /Board, po których usługa ma nową migawkę kart (lista „Karty w przepływie” odświeża się od razu).
-WRITES = ("ResolveCardReview", "EnterStep", "ResolveCardStep", "RevokeTicketConsent", "ApproveCardPlan", "EditCardPlan", "ReportStepFault", "AddCardStepNote")
+WRITES = ("ResolveCardReview", "EnterStep", "TalkToCaretaker", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "EditCardPlan", "ReportStepFault", "AddCardStepNote")
 
 
 def load_common(name: str):
@@ -207,6 +207,10 @@ class Backend(QObject):
 
     # Odpowiedzi z okna decyzji i pełnej karty: te same wywołania /Board co w Tablicy.
     @pyqtSlot(str, str, str)
+    def talkToCaretaker(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "TalkToCaretaker", [card_id, request])
+
+    @pyqtSlot(str, str, str)
     def enterStep(self, tag: str, card_id: str, step_id: str) -> None:
         self._write(tag, "EnterStep", [card_id, step_id])
 
@@ -229,6 +233,10 @@ class Backend(QObject):
     @pyqtSlot(str, str, str)
     def previewCardBaseChange(self, tag: str, card_id: str, request: str) -> None:
         self._write(tag, "PreviewCardBaseChange", [card_id, request])
+
+    @pyqtSlot(str, str, str)
+    def resolveCardCaretaker(self, tag: str, card_id: str, request: str) -> None:
+        self._write(tag, "ResolveCardCaretaker", [card_id, request])
 
     @pyqtSlot(str, str, str)
     def previewStepFault(self, tag: str, card_id: str, request: str) -> None:
@@ -376,7 +384,7 @@ class Backend(QObject):
                 self._load_flow_cards()
 
         self._call(BOARD_PATH, BOARD_IFACE, member, args, done,
-                   timeout=START_TIMEOUT_MS if member in ("EnterStep", "PreviewCardBaseChange", "ResolveCardStep") else 15_000)
+                   timeout=START_TIMEOUT_MS if member in ("EnterStep", "TalkToCaretaker", "PreviewCardBaseChange", "ResolveCardStep") else 15_000)
 
     def _set(self, name: str, value: str, signal) -> None:
         if getattr(self, name) != value:
