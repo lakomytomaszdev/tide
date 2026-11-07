@@ -29,7 +29,7 @@ def install(uninstall=False):
     if not uninstall:
         programs = [name for name in ('claude', 'codex') if shutil.which(name)]
         # Zachowaj zainstalowane adaptery także przy chwilowym braku programu w PATH.
-        if any('/.codex/skills/tide-issue/' in p for p in owned):
+        if any('/.codex/skills/tide-' in p for p in owned):
             programs.append('codex')
         for program in ('claude', 'codex'):
             destination = root / program / ('tide' if program == 'claude' else 'tide-issue')
@@ -37,18 +37,25 @@ def install(uninstall=False):
                 if path.is_file():
                     targets[str(destination / path.relative_to(source / program))] = path.read_bytes()
             targets[str(destination / 'references/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
+            targets[str(destination / 'references/decisions.md')] = (source / 'shared/decisions.md').read_bytes()
             targets[str(destination / 'scripts/issue_adapter.py')] = (source / 'shared/issue_adapter.py').read_bytes()
             if program == 'codex' and program in programs:
-                discoverable = Path.home() / '.codex/skills/tide-issue'
-                for name, content in list(targets.items()):
-                    if Path(name).is_relative_to(destination):
-                        targets[str(discoverable / Path(name).relative_to(destination))] = content
+                for skill in ('tide-issue', 'tide-backlog', 'tide-go'):
+                    discoverable = Path.home() / '.codex/skills' / skill
+                    source_dir = source / 'codex' if skill == 'tide-issue' else source / 'codex' / skill
+                    for path in source_dir.rglob('*'):
+                        if path.is_file():
+                            targets[str(discoverable / path.relative_to(source_dir))] = path.read_bytes()
+                    targets[str(discoverable / 'references/decisions.md')] = (source / 'shared/decisions.md').read_bytes()
+                    targets[str(discoverable / 'references/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
+                    targets[str(discoverable / 'scripts/issue_adapter.py')] = (source / 'shared/issue_adapter.py').read_bytes()
         targets[str(root / 'shared/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
     # Preflight całej paczki przed pierwszą zmianą. Obce lub lokalnie zmienione pliki zostają.
     for name in set(owned) | set(targets):
         path = Path(name)
         if ('..' in path.parts or not path.is_absolute() or
-                not (path.is_relative_to(root) or path.is_relative_to(Path.home() / '.codex/skills/tide-issue'))):
+                not (path.is_relative_to(root) or any(path.is_relative_to(Path.home() / '.codex/skills' / skill)
+                                                       for skill in ('tide-issue', 'tide-backlog', 'tide-go')))):
             raise ValueError('Manifest wskazuje plik spoza paczki Tide: ' + name)
         safe(path)
         if path.exists() and (not path.is_file() or name not in owned or digest(path.read_bytes()) != owned[name]):
