@@ -989,8 +989,8 @@ class StopStepTest(unittest.TestCase):
         self.assertIn("commondir", " ".join(result.notes))
 
     def test_the_service_git_sandbox_hides_the_user_runtime_dir_and_its_sockets(self):
-        # Sonda: filtr w `config.worktree` (konfiguracja agenta, tor ataku) wykonuje się w piaskownicy gita usługi i zapisuje
-        # w worktree, co widzi. Skrypt leży w worktree: /tmp i /run są w piaskownicy puste, a worktree jest do niej podpięty.
+        # Filtr w config.worktree nie może wykonać sondy, nawet wewnątrz worktree.
+        # Osobna kontrola argv w test_project_git_boundary sprawdza pusty /run.
         uid = os.getuid()
         # Bez tego katalogu sonda przeszłaby także bez `--tmpfs /run`, więc brak hosta ma kończyć test czerwono.
         self.assertTrue(os.path.isdir(f"/run/user/{uid}"), f"host nie ma /run/user/{uid}, sonda nic by nie dowiodła")
@@ -1013,10 +1013,7 @@ class StopStepTest(unittest.TestCase):
             fh.write("x\n")
         result = self.stop(proc, cmd)
         self.assertTrue(result.committed, result.error)
-        with open(out, encoding="utf-8") as fh:
-            seen = fh.read().split()
-        self.assertEqual(seen[:1], ["ran"], "sonda nie wykonała się w piaskownicy")
-        self.assertNotIn("VISIBLE", seen, "piaskownica gita usługi widzi /run/user/$UID: " + " ".join(seen))
+        self.assertFalse(os.path.exists(out), "hostowy Git wykonał filtr z konfiguracji projektu")
 
     def test_repository_hooks_other_than_pre_commit_do_not_run(self):
         proc, cmd, _, _ = self.start()

@@ -94,7 +94,8 @@ class StagedMergeTest(recovery.DurableMergeFixture, FlowInProcess):
                 # Prawdziwe opcje i środowisko StepGit; mounty symulujemy prawami katalogu.
                 runner.env = {argv[i + 1]: argv[i + 2] for i, arg in enumerate(argv) if arg == "--setenv"}
                 if index_dir is not None:
-                    runner.env["GIT_INDEX_FILE"] = os.path.join(index_dir, "index")
+                    runner.index = os.path.join(index_dir, "index")
+                    runner.write_roots = (index_dir,)
                 index = Path(self.git_dir, "index")
                 previous = index.read_bytes() if args[0] == "status" else None
                 mode = os.stat(self.git_dir).st_mode

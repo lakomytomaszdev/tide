@@ -64,7 +64,11 @@ Nie przyznaje wykonania plików projektu, powłoki, filtrów ani pomocników z c
 wykonuje wyłącznie systemowy Git i jego ten sam program w git-core. Nie przyznaje
 połączeń TCP ani wyjścia z zakresu IPC. Biblioteki i dane systemowego programu są
 ro; konfiguracja systemowa/globalna, lazy fetch i zmienne Git z otoczenia są
-wyłączone. Brak bwrap lub wymaganego ABI oznacza odmowę bez cichego powrotu do starego Git.
+wyłączone. Zachowane są tylko user.name/email hosta: osobne zabezpieczone
+`git config --no-includes --file` odczytuje te dwa pola, a operacja projektu
+dostaje wygenerowany plik tożsamości. Oryginalny config hosta nie jest przy niej
+montowany; lokalna i jawna tożsamość mają pierwszeństwo. Brak bwrap lub wymaganego
+ABI oznacza odmowę bez cichego powrotu do starego Git.
 
 Alternates/http-alternates i przekierowania commondir są odrzucane przed startem.
 Próba wyścigu na magazynie Git nadal ma ograniczenia jądra przy otwarciu pliku;

@@ -253,10 +253,21 @@ def namespace(payload, cwd, reads, writes):
     for path in sorted(modes, key=lambda p: (p.count("/"), p)):
         argv += [modes[path], path, path]
     source = os.path.abspath(__file__)
-    argv += ["--ro-bind", source, "/run/tide-host-git.py", "--chdir", cwd,
-             "--", "/usr/bin/python3", "-I", "/run/tide-host-git.py",
-             json.dumps({**payload, "_namespaced": True})]
-    return subprocess.run(argv).returncode
+    # Kod 1 bwrap nie oznacza „brak klucza”/„brak zmian” w Git. Potwierdzenie
+    # zapisuje wyłącznie zaufany interpreter; proces Git nie ma tu reguły Landlock.
+    with tempfile.TemporaryDirectory(prefix="tide-git-status-") as status_dir:
+        argv += ["--bind", status_dir, "/run/tide-git-status",
+                 "--ro-bind", source, "/run/tide-host-git.py", "--chdir", cwd,
+                 "--", "/usr/bin/python3", "-I", "/run/tide-host-git.py",
+                 json.dumps({**payload, "_namespaced": True, "_statusPath": "/run/tide-git-status/code"})]
+        result = subprocess.run(argv)
+        try:
+            code = int(read_file(status_dir + "/code", 16))
+            if 0 <= code <= 255 and result.returncode == code:
+                return code
+        except (OSError, ValueError):
+            pass
+        raise BoundaryError("Git: transport piaskownicy nie potwierdził wyniku operacji")
 
 
 def execute(payload):
@@ -276,11 +287,14 @@ def execute(payload):
     found = None if private or file_config or initializing else repository(cwd, explicit)
     if found and worktree and canonical(worktree) != found[3]:
         raise BoundaryError("Git: katalog administracyjny nie odpowiada jawnemu worktree")
+    if found and explicit:
+        cwd = found[3]  # Usługa mogła wystartować w innym projekcie; nie montujemy jej cwd.
     roots = [cwd] if private else ([found[0], found[3]] if found else [])
     if initializing:
         roots.append(cwd)
-    if found and os.path.isdir(found[0] + "-worktrees"):
-        roots.append(canonical(found[0] + "-worktrees"))
+    for suffix in ("-worktrees", "-wt"):
+        if found and os.path.isdir(found[0] + suffix):
+            roots.append(canonical(found[0] + suffix))
     if private:
         if not payload.get("readRoots"):
             raise BoundaryError("Git: prywatny widok bez jawnego projektu")
@@ -338,6 +352,18 @@ def execute(payload):
         return namespace(payload, cwd, reads, writes)
     with tempfile.TemporaryDirectory(prefix="tide-host-git-") as temporary:
         env["TMPDIR"] = temporary
+        if not file_config and os.environ.get("TIDE_GIT_IDENTITY_JSON"):
+            identity = json.loads(os.environ["TIDE_GIT_IDENTITY_JSON"])
+            lines = ["[user]"]
+            for key in ("name", "email"):
+                value = identity.get(key)
+                if isinstance(value, str) and not any(ord(c) < 32 and c != "\t" or ord(c) == 127 for c in value):
+                    quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t")
+                    lines.append(f'{key} = "{quoted}"')
+            identity_path = temporary + "/identity"
+            with open(identity_path, "x") as fh:
+                fh.write("\n".join(lines) + "\n")
+            env["GIT_CONFIG_GLOBAL"] = identity_path
         if file_config:
             env["GIT_DIR"] = temporary
         rules = Ruleset()
@@ -397,11 +423,17 @@ def execute(payload):
 
 
 def main():
+    payload = {}
     try:
-        return execute(json.loads(sys.argv[1]))
+        payload = json.loads(sys.argv[1])
+        code = execute(payload)
     except (BoundaryError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print("granica Git: " + str(exc), file=sys.stderr)
-        return 126
+        code = 126
+    if payload.get("_namespaced") and payload.get("_statusPath"):
+        with open(payload["_statusPath"], "x") as fh:
+            fh.write(str(code) + "\n")
+    return code
 
 
 if __name__ == "__main__":

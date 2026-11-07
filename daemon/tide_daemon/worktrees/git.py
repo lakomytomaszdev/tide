@@ -45,12 +45,14 @@ class Git:
         self.read_roots = ()
         self.write_roots = ()
         self.private = False
+        self.index = None
 
     def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
         try:
             argv = git_argv("-C", cwd, *args, executable=self.executable,
-                            read_roots=self.read_roots, write_roots=self.write_roots, private=self.private)
-            env = git_launch_env(self.env)
+                            read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
+                            index=self.index)
+            env = git_launch_env(self.env, identity=any(a in ("commit", "commit-tree", "var") for a in args))
             if self.cancel is not None:
                 proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
             else:

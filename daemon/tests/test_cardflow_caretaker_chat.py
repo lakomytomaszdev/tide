@@ -13,6 +13,7 @@ from tide_daemon.tasks.core import TaskFiles
 
 from .test_cardflow_caretaker import Journal
 from .test_cardflow_caretaker_retry import EngineOnJournal, chain, PROBLEM
+from . import gitrepos
 
 
 class CaretakerChatTest(EngineOnJournal):
@@ -23,11 +24,10 @@ class CaretakerChatTest(EngineOnJournal):
         for event in chain(Journal()).events:
             self.add("K-1", event["type"], **{k: v for k, v in event.items() if k not in ("type", "ts", "seq")})
         self.worktree = os.path.join(self.base, "card")
-        self.git_dir = os.path.join(self.base, "git-dir")
-        os.makedirs(self.worktree)
-        os.makedirs(self.git_dir)
-        with open(os.path.join(self.git_dir, "HEAD"), "w") as fh:
-            fh.write("ref: refs/heads/card/k-1\n")
+        gitrepos.git(self.base, "init", "-q", "-b", "master")
+        gitrepos.commit(self.base, "README.md", "atrapa projektu")
+        gitrepos.git(self.base, "worktree", "add", "-qb", "card/k-1", self.worktree)
+        self.git_dir = os.path.join(self.base, ".git", "worktrees", "card")
         self.add("K-1", "result", action="card-branch", key="card", ok=True,
                  branch="card/k-1", worktree=self.worktree)
         item = SimpleNamespace(id="K-1", projects=[], title="Eksport")

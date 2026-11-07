@@ -35,6 +35,19 @@ class ProjectGitBoundaryTests(unittest.TestCase):
         self.assertFalse(denied.ok)
         self.assertIn("alternates", denied.err)
 
+    def test_worktree_filter_names_are_visible_to_read_only_agent_configuration(self):
+        from tide_daemon.tasks.agentcmd import read_only_git_config
+        container = Path(str(self.repo) + "-worktrees")
+        container.mkdir()
+        wt = container / "card"
+        gitrepos.git(str(self.repo), "worktree", "add", "-qb", "card/config", str(wt))
+        gitrepos.git(str(self.repo), "config", "filter.Filtr.clean", "/must-not-run")
+        admin = str(self.repo / ".git/worktrees/card")
+        result = self.git.run(str(wt), "config", "--name-only", "--get-regexp", r"^filter\.")
+        self.assertTrue(result.ok, result.err)
+        self.assertIn("filter.Filtr.clean", result.out)
+        self.assertIn(("filter.Filtr.clean", ""), read_only_git_config(admin))
+
     def test_symlink_to_foreign_ref_cannot_make_host_read_foreign_git(self):
         target = self.foreign / ".git/refs/heads/master"
         self.assertTrue(target.is_file())
