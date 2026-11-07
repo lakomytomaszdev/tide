@@ -149,6 +149,113 @@ class InventoryTest(unittest.TestCase):
                     spawn.assert_called_once()
                     self.assertEqual(spawn.call_args.args[0][-1], "echo ordinary-test")
 
+    def test_conflicting_start_identity_blocks_outside_and_procedure_across_restart(self):
+        self.project()
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        original = paths[0].read_bytes()
+        name = "legacy-step"
+        # Każda para zapisów może nadpisać wcześniejszą tożsamość przy fold.
+        for first, second in (("intent", "step.started"), ("step.started", "step.started"),
+                              ("intent", "intent"), ("step.started", "intent")):
+            for fallback in (False, True):
+                for outside in (False, True):
+                    for path in paths:
+                        path.write_bytes(original)
+                    self.restart()
+                    for event_type, ticket in ((first, "PT-176"), (second, "PT-999")):
+                        identity = {"key": name, "action": "step-start"} if event_type == "intent" else {"step": name}
+                        self.journal.append("K-38", event_type, ticket=ticket, kind="ticket",
+                                            unit="old", worktree=str(self.root),
+                                            stepDir=str(self.root / "old.step"), **identity)
+                    self.journal.append("K-38", "result", action="step-start", key=name, ok=True)
+                    if outside:
+                        self.journal.append("K-38", "step.finished", step=name, ticket="PT-999",
+                                            result="denied", outside=True, command="echo ordinary-test", canAllow=True)
+                        self.journal.append("K-38", "step.decision", step=name, ticket="PT-999", choice="run")
+                    before = paths[0].read_bytes()
+                    if fallback:
+                        paths[1].unlink()
+                    for restarted in (False, True):
+                        if restarted:
+                            self.restart()
+                        with self.subTest(first=first, second=second, fallback=fallback,
+                                          outside=outside, restarted=restarted):
+                            with self.outside_environment() as spawn:
+                                self.engine._advance("K-38", fold(self.journal.read("K-38")))
+                                spawn.assert_not_called()
+                            for bootstrap in (False, True):
+                                trial_gate, procedure = self.procedure()
+                                with self.assertRaises(gate.TrialDenied):
+                                    trial_gate.start_registered("new", consent=True, inventory=self.inventory,
+                                                                bootstrap=bootstrap)
+                                procedure.start.assert_not_called()
+                            self.assert_lifecycle_preserved()
+                            self.assertEqual(paths[0].read_bytes(), before)
+                            self.assertEqual(paths[1].exists(), not fallback)
+                            if not fallback:
+                                self.assertEqual(paths[1].read_bytes(), before)
+
+    def test_matching_repeated_start_preserves_optional_k60_fields_across_restart(self):
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        original = paths[0].read_bytes()
+        for restarted in (False, True):
+            for path in paths:
+                path.write_bytes(original)
+            self.restart()
+            name = "K-38-PT-999-1"
+            self.journal.append("K-38", "intent", action="step-start", key=name, ticket="PT-999")
+            self.journal.append("K-38", "result", action="step-start", key=name, ok=True)
+            self.journal.append("K-38", "step.started", step=name, ticket="PT-999")
+            self.outside_history(omit_ticket=True)
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted), self.outside_environment() as spawn:
+                self.engine._advance("K-38", fold(self.journal.read("K-38")))
+                spawn.assert_called_once()
+
+    def test_optional_start_identity_cannot_change_through_an_omitted_field(self):
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        original = paths[0].read_bytes()
+        for field, value, changed in (("kind", "ticket", "review"), ("branch", "old", "new"),
+                                       ("worktree", "/old", "/new"), ("stepDir", "/old", "/new"),
+                                       ("runner", "host", "box")):
+            for path in paths:
+                path.write_bytes(original)
+            self.restart()
+            self.journal.append("K-38", "intent", action="step-start", key="ordinary", ticket="PT-999",
+                                **{field: value})
+            self.journal.append("K-38", "step.started", step="ordinary", ticket="PT-999")
+            # Poprawne pominięcie pola nadal pozwala na nową procedurę.
+            self.assertTrue(self.inventory())
+            self.journal.append("K-38", "step.started", step="ordinary", ticket="PT-999",
+                                **{field: changed})
+            before = [path.read_bytes() for path in paths]
+            for restarted in (False, True):
+                if restarted:
+                    self.restart()
+                with self.subTest(field=field, restarted=restarted):
+                    self.assertFalse(self.inventory())
+                    self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_outside_rechecks_start_identity_at_process_boundary(self):
+        step = self.outside_history()
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        changed = []
+
+        def invalidate(_):
+            # Ostatni zapis pasuje do przekazanego kroku, ale historia już jest sprzeczna.
+            for ticket in ("PT-176", "PT-999"):
+                self.journal.append("K-38", "intent", action="step-start", key=step["step"], ticket=ticket)
+            changed.extend(path.read_bytes() for path in paths)
+            return ""
+
+        with self.outside_environment() as spawn, \
+                mock.patch("tide_daemon.tasks.node.chrome_bin", side_effect=invalidate):
+            with self.assertRaises(FlowError):
+                self.engine._start_outside("K-38", step, "echo ordinary-test")
+        spawn.assert_not_called()
+        self.assertEqual([path.read_bytes() for path in paths], changed)
+
     def test_outside_rechecks_history_at_process_boundary(self):
         step = self.outside_history()
         paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]

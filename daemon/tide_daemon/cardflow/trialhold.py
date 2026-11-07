@@ -33,17 +33,26 @@ def read_process_history(journal, card):
 
 
 def _validate_outside_identity(events):
-    """Outside musi wskazywać wcześniejszy krok lub zamiar, zanim go pominiemy.
+    """Start zachowuje tożsamość, a outside wskazuje wcześniejszy krok lub zamiar.
 
     Sam ticket/nazwa outside nie zastępuje brakującej historii startu. Ticket
     bywa pominięty w starym outside, ale podany musi zgadzać się z jego krokiem.
     """
     known = {}
     for event in events:
-        if event["type"] == "step.started":
-            known[event["step"]] = event
-        elif event["type"] == "intent" and event.get("action") == "step-start":
-            known.setdefault(event["key"], event)
+        if (event["type"] == "step.started"
+                or (event["type"] == "intent" and event.get("action") == "step-start")):
+            name = event["step"] if event["type"] == "step.started" else event["key"]
+            previous = known.get(name)
+            if previous is not None:
+                if previous.get("ticket", "") != event.get("ticket", ""):
+                    raise ValueError("sprzeczna tożsamość ticketu w historii startu")
+                for field in ("kind", "branch", "worktree", "stepDir", "runner"):
+                    if field in previous and field in event and previous[field] != event[field]:
+                        raise ValueError("sprzeczna tożsamość kroku w historii startu: " + field)
+            # Pominięte opcjonalne pole nie kasuje wcześniejszej wiedzy. Dzięki temu
+            # kolejny zapis nie ukryje sprzeczności przez pośredni, skrócony wpis.
+            known[name] = {**(previous or {}), **event}
         elif _outside_evidence(event):
             name = event.get("step")
             if not isinstance(name, str) or not name.strip() or name not in known:
