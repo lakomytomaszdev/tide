@@ -421,6 +421,13 @@ class BoxRunner:
         bg.env["TIDE_CWD"] = bg.cwd
         bg.env["TIDE_STEP"] = bg.step_dir
         bg.env["PATH"] = os.path.join(bg.step_dir, "in", "bin") + os.pathsep + bg.env["PATH"]
+        if step.exposure_inputs is not None and step.tool == "codex":
+            for i, arg in enumerate(bg.argv):
+                prefix = "sandbox_workspace_write.writable_roots="
+                if arg.startswith(prefix):
+                    roots = json.loads(arg[len(prefix):])
+                    roots.append(BOX_HOME + "/.local/state/tide-git")
+                    bg.argv[i] = prefix + json.dumps(list(dict.fromkeys(roots)), ensure_ascii=False)
         # Katalog tymczasowy Claude Code leży w /tmp pudełka (zakłada go tide-step), nie na hoście.
         tmp = bg.env.get("CLAUDE_CODE_TMPDIR")
         if tmp:
@@ -448,6 +455,8 @@ class BoxRunner:
             deny.append(token)
         filesystem = dict(host.get("sandbox", {}).get("filesystem", {}))
         filesystem.update(denyRead=deny, allowWrite=[out, os.path.join(step.repo, ".git")])
+        if step.exposure_inputs is not None:
+            filesystem["allowWrite"].append(BOX_HOME + "/.local/state/tide-git")
         settings["sandbox"] = {
             "enabled": self.sandbox, "failIfUnavailable": self.sandbox, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,

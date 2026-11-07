@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +33,18 @@ class ProjectMountTests(BoxRunnerCase):
                                    env=dict(os.environ), systemctl=self.box_systemctl, sleep=lambda _: None,
                                    popen=self.popen, mount_steps=lambda box: [])
         self.chosen = self.step(exposure_inputs=inputs.Selection(self.slug, self.record["version"], (self.copy.id,)))
+
+    def test_agent_sandboxes_allow_the_private_git_view_and_approved_pack(self):
+        with mock.patch.object(agentcmd, "read_only_git_config", return_value=[]):
+            codex = self.newrunner._background(replace(self.chosen, tool="codex", binary="codex"))
+            claude = self.newrunner._background(self.chosen)
+        prefix = "sandbox_workspace_write.writable_roots="
+        roots = json.loads(next(arg[len(prefix):] for arg in codex.argv if arg.startswith(prefix)))
+        self.assertIn("/home/agent/.local/state/tide-git", roots)
+        settings = json.loads(claude.files[os.path.join(self.step_dir, "in/settings.json")])
+        filesystem = settings["sandbox"]["filesystem"]
+        self.assertIn("/home/agent/.local/state/tide-git", filesystem["allowWrite"])
+        self.assertNotIn("/packs", filesystem["denyRead"])
 
     def test_manifest_uses_readonly_administration_and_exact_project_devices(self):
         manifest = self.record["manifest"]

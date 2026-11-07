@@ -197,6 +197,8 @@ class ProjectMounts:
                     raise MountsBusy("zmiana manifestu wymaga pudełka bez żywego kroku")
             if check_only:
                 return []
+            home_mount = next(m for m in manifest["mounts"] if m["kind"] == "home")
+            home.directory(home_mount["source"] + "/.local/state/tide-git")
             req = admission.request(self.incus, "start", self.runner.box, slug=self.project,
                                     card=self.runner.card if self.runner.box != bs.box_name(self.project) else None)
             with admission.operation(self.incus, req):

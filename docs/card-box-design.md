@@ -29,6 +29,7 @@ rekord nie jest przepisywany na nową treść ani automatycznie rozszerzany.
 
 **Administracja i indeks.** `box/gitview.py`, kopiowany do `in/bin/git`, utrzymuje
 prywatny HEAD i indeks w domu pudełka. Korzysta ze wspólnych objects/refs/logs;
+wewnętrzne piaskownice obu programów mają jawny zapis do tego prywatnego widoku.
 commity nadal są od razu widoczne w projekcie. Host nigdy nie wykonuje programu
 ani nie uruchamia Git na administracji wybranej z tego prywatnego katalogu.
 Strażnik sprawdza sam HEAD kanonicznego prywatnego widoku przez deskryptory bez
