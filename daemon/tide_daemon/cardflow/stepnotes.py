@@ -65,7 +65,8 @@ def prepare(st, parent, prompt):
     prompt = _BLOCK.sub("", prompt)
     chain, name = set(), parent
     source = st.steps.get(parent) or {}
-    while name and name not in chain and name not in st.superseded:
+    # Return-plan ukrywa dawny problem jako superseded, ale nadal przewiduje wznowienie tego kroku.
+    while name and name not in chain and (name not in st.superseded or name in st.plan_resumes):
         step = st.steps.get(name) or {}
         if not step or step.get("ticket") != source.get("ticket"):
             break
@@ -105,7 +106,8 @@ def view(st):
     out = []
     for n in st.step_notes.values():
         target = delivered.get(n["noteId"], "")
-        current = n["orderSeq"] == (st.started or {}).get("seq") and n["step"] not in st.superseded
+        current = n["orderSeq"] == (st.started or {}).get("seq") and \
+            (n["step"] not in st.superseded or n["step"] in st.plan_resumes)
         leaf, seen = n["step"], set()
         while leaf not in seen:
             seen.add(leaf)

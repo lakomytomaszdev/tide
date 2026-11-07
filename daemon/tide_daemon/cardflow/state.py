@@ -598,6 +598,9 @@ def fold(events: list[dict]) -> FlowState:
             rows = (st.plan_approved or {}).get("rows", [])
             present = {r["id"] for r in rows}
             added = present - before
+            if (st.plan_revision or {}).get("kind") == "append":
+                # Ręcznie dopisany ticket nie rozszerza blokerów rozpoczętej pracy (PT-248).
+                added = set()
             # Rozpoczęte kartki są nietykalne. Oczekiwania wznowień i jawne blokery tworzą wspólny graf;
             # samo sprawdzenie kartek nie wykrywa cyklu między dwiema kolejnymi poprawkami (PT-155).
             graph = {r["id"]: set(r.get("blockers") or []) for r in rows}

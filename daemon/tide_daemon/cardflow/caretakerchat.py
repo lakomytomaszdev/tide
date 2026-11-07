@@ -57,7 +57,7 @@ class CaretakerChat:
             raise FlowError("no-worktree", "brak katalogu roboczego karty")
         name = f"{card}-chat-{st.last_seq + 1}"
 
-        def prepare(step_dir):
+        def prepare(step_dir, read_dirs):
             events = self.journal.read(card)
             now = fold(events)
             context_dir = os.path.join(step_dir, "in", caretakerctx.CONTEXT_DIR)
@@ -72,6 +72,7 @@ class CaretakerChat:
                 tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=made["worktree"],
                 repo=project.repo, step_dir=step_dir, step_id=name, model=selected.model,
                 effort=selected.effort, local=selected.route, tmp_root=self.tmp_root,
+                read_dirs=tuple(read_dirs),
                 enforce_command_policy=True, permission_mode="acceptEdits" if selected.tool == "claude" else "",
                 codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ())))
             bg.prepare()

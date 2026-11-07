@@ -1263,7 +1263,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 remaining = max(0, 96 * 1024 - len((prompt + header).encode("utf-8")))
                 context = self._project_context(extra.repo, min(32 * 1024, remaining))
                 prompt += header + context + "\n"
-        prepared = prepare(step_dir) if prepare else None
+        order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
+        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order,
+                                                route=selected.route)
+        # Przygotowany profil opiekuna musi dostać te same katalogi odczytu, zachowując własne granice zapisu.
+        prepared = prepare(step_dir, project_reads) if prepare else None
         if prepared:
             prompt = prepared.stdin
         with open(os.path.join(inp, "prompt.txt"), "w", encoding="utf-8") as fh:
@@ -1271,9 +1275,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
         session = prepared.session_id if prepared else str(uuid.uuid4()) if selected.tool == "claude" else ""
         # Repozytoria pozostałych projektów zlecenia: Claude dostaje je przez --add-dir z zakazem zapisu (reguły
         # Edit); Codex w piaskownicy workspace-write czyta dysk bez --add-dir, które dałoby mu prawo zapisu.
-        order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
-        project_reads = self._configured_reads(item, project, worktree, step_dir, order=order,
-                                                route=selected.route)
         read_dirs = [p["repo"] for p in order if not p.get("main")] if selected.tool == "claude" else []
         command = agentcmd.interactive(selected.tool, selected.binary, prompt, shots, [out, *read_dirs],
                                        selected.route)
