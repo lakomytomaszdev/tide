@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 
 from ..box import builder as bb
@@ -49,7 +50,7 @@ from ..box import settings as bsettings
 from ..box import state as bs
 from ..box import lifecycle
 from ..box.incus import IncusError
-from ..box.runner import BoxRunner
+from ..box.runner import BoxRunner, MountsBusy
 from ..tasks import agentcmd
 from . import boxaccess, boxwait
 from .state import fold
@@ -364,6 +365,19 @@ def _reserve_start(engine, placement, card_id, step_id, program):
         if boxwait.card_box_wait(fold(engine.journal.read(card_id))) == boxwait.START:
             boxwait.set_box_wait(engine.journal, card_id, "", box=placement.box)
         return _before_start(engine, placement, card_id, step_id, program)
+
+
+def start_lock(placement):
+    """Od sprawdzenia montowań do startu inny proces nie może zarezerwować pudełka."""
+    return bs.lifecycle_lock(placement.slug) if placement is not None else nullcontext()
+
+
+def check_mounts(placement, step):
+    """Zajęte pudełko to oczekiwanie, zanim powstanie zamiar step-start."""
+    try:
+        placement.runner.ensure_devices(step, check_only=True)
+    except MountsBusy as exc:
+        raise BoxWaiting("czeka na zwolnienie pudełka: " + str(exc)) from None
 
 
 def prepare_runner(engine, placement, step):

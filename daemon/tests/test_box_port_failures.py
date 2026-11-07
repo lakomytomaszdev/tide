@@ -27,7 +27,8 @@ class PortFailureTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.tmp.name})
+        env = mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.tmp.name,
+                                          "TIDE_BOARD_DIR": os.path.join(self.tmp.name, "board")})
         env.start()
         self.addCleanup(env.stop)
         self.pool = PortPool("proj", "proj")

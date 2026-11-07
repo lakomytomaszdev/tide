@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import secrets
-import shlex
 import shutil
 import stat
 import time
@@ -351,8 +350,88 @@ def other_cards(repo, card):
         return sorted({peer["card"] for _path_peer, peer in _active(repo) if peer["card"] != card}) if present else []
 
 
+def _transaction_fields(line):
+    """Pola tekstowego update-ref: pojedyncze SP i cytowanie C na bajtach jak w Git.
+
+    Apostrof i backslash poza cudzysłowem są dosłowne. Sekwencje ósemkowe
+    opisują bajty (także UTF-8), a nie punkty kodowe Unicode.
+    """
+    data = os.fsencode(line)
+    fields = []
+    pos = 0
+    escapes = {ord(k): v for k, v in {'a': 7, 'b': 8, 't': 9, 'n': 10,
+                                     'v': 11, 'f': 12, 'r': 13, '\\': 92, '"': 34}.items()}
+    while pos < len(data):
+        value = bytearray()
+        quoted = data[pos] == 34
+        if quoted:
+            pos += 1
+            while pos < len(data) and data[pos] != 34:
+                char = data[pos]
+                pos += 1
+                if char == 92:
+                    if pos == len(data):
+                        raise ValueError("urwana sekwencja cytowania C")
+                    char = data[pos]
+                    pos += 1
+                    if char in escapes:
+                        char = escapes[char]
+                    elif 48 <= char <= 51 and pos + 2 <= len(data) and all(
+                            48 <= c <= 55 for c in data[pos:pos + 2]):
+                        char = int(bytes([char]) + data[pos:pos + 2], 8)
+                        pos += 2
+                    else:
+                        raise ValueError("nieznana sekwencja cytowania C")
+                value.append(char)
+            if pos == len(data):
+                raise ValueError("niezamknięte cytowanie C")
+            pos += 1
+        else:
+            start = pos
+            while pos < len(data) and data[pos] != 32:
+                pos += 1
+            value.extend(data[start:pos])
+        if 0 in value or not quoted and any(c in b'\t\n\v\f\r ' for c in value):
+            raise ValueError("NUL lub niecytowany biały znak w polu transakcji")
+        fields.append(os.fsdecode(bytes(value)))
+        if pos < len(data):
+            if data[pos] != 32 or pos + 1 == len(data) or data[pos + 1] == 32:
+                raise ValueError("niepoprawny separator pól transakcji")
+            pos += 1
+    return fields
+
+
+def _transaction_commands(input_text, nul):
+    if not isinstance(input_text, str):
+        raise ValueError("brak tekstu transakcji")
+    if not nul:
+        if '\0' in input_text:
+            raise ValueError("NUL w transakcji tekstowej")
+        lines = input_text.split('\n')
+        if lines[-1] == "":
+            lines.pop()
+        for line in lines:
+            command, space, rest = line.partition(' ')
+            yield [command, *_transaction_fields(rest)] if space else [command]
+        return
+    if input_text and not input_text.endswith('\0'):
+        raise ValueError("brak końcowego NUL")
+    parts = iter(input_text.split('\0')[:-1])
+    for head in parts:
+        command, space, ref = head.partition(' ')
+        # W -z opcjonalny stary OID też zajmuje pole: pusty oznacza brak wartości.
+        count = {"update": 2, "create": 1, "delete": 1, "verify": 1}.get(command, 0)
+        fields = [command, ref] if space else [command]
+        for _ in range(count):
+            value = next(parts, None)
+            if value is None:
+                raise ValueError("urwana transakcja NUL")
+            fields.append(value)
+        yield fields
+
+
 def _written_refs(args, input_text):
-    """Zakres zapisu transakcji tekstowej update-ref; verify nie uprawnia do zmiany refu.
+    """Zakres zapisu transakcji update-ref; verify nie uprawnia do zmiany refu.
 
     Git dostaje ten sam tekst, który tu czytamy. Nie rozpoznajemy nieznanego protokołu
     przez domysł: brak dokładnego zakresu ma zatrzymać zaufaną operację.
@@ -361,18 +440,27 @@ def _written_refs(args, input_text):
         return []
     if "--stdin" not in args:
         return [arg for arg in args if arg.startswith("refs/")]
-    if input_text is None or "-z" in args:
-        raise StepError("strażnik refów wymaga tekstowej transakcji update-ref")
     refs = []
-    for line in input_text.splitlines():
-        fields = shlex.split(line)
-        if not fields:
-            continue
-        command = fields[0]
-        if command in ("update", "create", "delete") and len(fields) >= 2:
-            refs.append(fields[1])
-        elif command not in ("start", "prepare", "commit", "abort", "option", "verify"):
-            raise StepError("nieznane polecenie transakcji update-ref: " + command)
+    try:
+        for fields in _transaction_commands(input_text, "-z" in args):
+            if not fields:
+                raise ValueError("puste polecenie")
+            command = fields[0]
+            arity = {"update": (3, 4), "create": (3,), "delete": (2, 3), "verify": (2, 3),
+                     "start": (1,), "prepare": (1,), "commit": (1,), "abort": (1,), "option": (2,)}
+            # Nieznane rozszerzenia, w tym symref-*, wymagają osobnego ustalenia zakresu.
+            if command not in arity or len(fields) not in arity[command]:
+                raise ValueError("nieznane lub niepoprawne polecenie: " + command)
+            if command == "option" and fields[1] != "no-deref":
+                raise ValueError("nieznana opcja transakcji")
+            if command in ("update", "create", "delete", "verify"):
+                ref = fields[1]
+                if not ref.startswith("refs/") or any(ord(c) <= 32 or ord(c) == 127 for c in ref):
+                    raise ValueError("brak dokładnego pełnego refu")
+                if command != "verify":
+                    refs.append(ref)
+    except ValueError as exc:
+        raise StepError("strażnik refów: niepoprawna transakcja update-ref: " + str(exc)) from None
     return list(dict.fromkeys(refs))
 
 

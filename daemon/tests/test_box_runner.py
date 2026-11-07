@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from tide_daemon.box import runner as br
@@ -605,9 +606,9 @@ class DevicesTest(BoxRunnerCase):
         seen = []
         original = runner._ensure_locked
 
-        def slow(step, wanted):
+        def slow(step, wanted, **kwargs):
             seen.append(threading.current_thread().name)
-            return original(step, wanted)
+            return original(step, wanted, **kwargs)
 
         runner._ensure_locked = slow
         lock = br.lock_path("proj")
@@ -657,6 +658,82 @@ class DevicesTest(BoxRunnerCase):
         with self.assertRaises(agentcmd.StepError):
             self.runner().start(self.step())
         self.assertEqual(self.popen_calls, [])
+
+
+class ResumeMountWaitingTest(BoxRunnerCase):
+    def test_resume_waits_for_read_mounts_without_failed_start_and_retries_after_release(self):
+        from tide_daemon.cardflow import boxstep
+        from tide_daemon.cardflow.engine import FlowEngine, FlowDeferred
+        from tide_daemon.cardflow.journal import Journal
+        from tide_daemon.cardflow.state import fold
+
+        runner = self.runner(card="K-38")
+        runner.ensure_devices(self.step())
+        previous_out = os.path.join(self.step_dir, "out")
+        os.makedirs(previous_out)
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = Journal(os.path.join(self.tmp, "flow"), mirror=os.path.join(self.tmp, "mirror"))
+        engine.store = SimpleNamespace(load=lambda: SimpleNamespace(projects={}))
+        engine.tmp_root = os.path.join(self.tmp, "tmp")
+        engine._hidden = (set(), ())
+        engine.procs, engine._box_runners = {}, {}
+        engine._admit = mock.Mock()
+        engine._release_local = mock.Mock()
+        engine._settings_data = lambda: {}
+        engine._git_identity = lambda repo: {}
+        engine.box_settings_source = lambda: self.settings
+        engine.box_builder = lambda: SimpleNamespace(incus=self.incus, load_profile=lambda slug: {})
+        placement = boxstep.Placement("proj", "proj", "10.0.0.2", False, {}, runner)
+        engine._box_place = mock.Mock(return_value=placement)
+        selected = SimpleNamespace(tool="codex", binary="codex", route=None, name="test",
+                                   model="test", provider="openai", effort="", local=False)
+        project = SimpleNamespace(repo=self.repo, slug="proj", allowed_commands=[], denied_commands=[],
+                                  read_dirs=[], read_dirs_error="", read_dir_bindings=[])
+        card = SimpleNamespace(id="K-38", projects=[])
+        engine.journal.append(card.id, "step.started", step="A", ticket="PT-1", kind="ticket",
+                              stepDir=self.step_dir)
+        engine.journal.append(card.id, "step.finished", step="A", result="question")
+        engine.journal.append(card.id, "step.started", step="B", ticket="PT-2", kind="ticket", runner="box",
+                              box="proj", boxSlug="proj")
+        bs.mark_in_use("proj", "proj", "B")
+        before = self.device_map()
+
+        def resume():
+            return engine._launch(card, project, selected, "PT-1", {},
+                                  {"worktree": self.worktree, "branch": "feat/pt-1"}, "A-resume", [],
+                                  prompt_text="Odpowiedź na pytanie", parent_step="A")
+
+        # Rezerwacja i sprzątanie proxy są granicą sieciową; montowania i dziennik działają naprawdę.
+        with mock.patch.object(boxstep, "before_start",
+                               side_effect=lambda *args: bs.mark_in_use("proj", "proj", "A-resume")), \
+                mock.patch.object(boxstep, "configure_background"), \
+                mock.patch.object(boxstep, "proxy_of", return_value=None):
+            for _ in range(2):
+                with self.assertRaises(FlowDeferred):
+                    resume()
+                st = fold(engine.journal.read(card.id))
+                self.assertNotIn(("step-start", "A-resume"), st.results)
+                self.assertNotIn(("step-start", "A-resume"), st.intents)
+                self.assertEqual(st.waiting[("PT-1", "ticket")]["cause"], "box")
+                self.assertEqual(bs.running_steps("proj", "proj"), ["B"])
+                self.assertEqual(self.device_map(), before)
+                self.assertEqual(self.popen_calls, [])
+                engine._release_local.assert_called_with("A-resume")
+            waits = [e for e in engine.journal.read(card.id) if e["type"] == "step.waiting"]
+            self.assertEqual(len(waits), 1)
+            engine.journal.append(card.id, "step.finished", step="B", result="done")
+            bs.mark_released("proj", "proj", "B")
+            resumed = resume()
+        self.assertEqual(resumed["parentStep"], "A")
+        self.assertEqual(len(self.popen_calls), 1)
+        st = fold(engine.journal.read(card.id))
+        self.assertTrue(st.results[("step-start", "A-resume")]["ok"])
+        self.assertNotIn(("PT-1", "ticket"), st.waiting)
+        self.assertTrue(any(d.get("path") == previous_out and d.get("readonly") == "true"
+                            for d in self.device_map().values()))
+
+    def device_map(self):
+        return self.incus.device_show("proj")
 
 
 class ClaudeSettingsTest(BoxRunnerCase):

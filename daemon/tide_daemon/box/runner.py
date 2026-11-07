@@ -68,7 +68,6 @@ BOX_NO_PROXY = "localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal"
 # i wpis „ryzyko K1” w dzienniku karty.
 BOX_SANDBOX = True
 BOX_DENY_READ = ("~/.claude", "~/.codex", "/packs")
-
 BOX_HOME = bs.HOME_PATH
 BOX_USER = "agent"
 BOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -84,6 +83,10 @@ TIDE_STEP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tid
 _KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _UNIT = re.compile(r"^tide-step-[A-Za-z0-9_-]{1,64}(\.service)?$")
 _BOX = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+
+class MountsBusy(agentcmd.StepError):
+    """Montowania wymagają zwolnienia pudełka; silnik kolejkuje start przed zapisem zamiaru."""
 
 
 def box_no_proxy(bridge: str) -> str:
@@ -597,21 +600,21 @@ class BoxRunner:
             if _within(src, repo) and not _within(src, os.path.join(repo, ".git")):
                 raise agentcmd.StepError(f"montowanie {src} leży w głównym worktree projektu")
 
-    def ensure_devices(self, step: agentcmd.Step) -> list:
-        """Dodaje brakujące urządzenia (i `raw.idmap`) pod blokadą projektu; zwraca nazwy dodanych urządzeń."""
+    def ensure_devices(self, step: agentcmd.Step, *, check_only: bool = False) -> list:
+        """Dodaje urządzenia i `raw.idmap`; check_only sprawdza dostępność bez zmiany montowań."""
         wanted = self.devices_for(step)
         path = lock_path(self.slug, self.host_env)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                return self._ensure_locked(step, wanted)
+                return self._ensure_locked(step, wanted, check_only=check_only)
             except IncusError as exc:
                 raise agentcmd.StepError(f"montowania pudełka {self.box}: {exc}") from exc
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def _ensure_locked(self, step: agentcmd.Step, wanted: list) -> list:
+    def _ensure_locked(self, step: agentcmd.Step, wanted: list, *, check_only: bool = False) -> list:
         if any(d.path.startswith("/packs/") for d in wanted):
             if not self.card or self.box != bs.card_box_name(self.slug, self.card):
                 raise agentcmd.StepError("paczki wymagają osobnego pudełka karty")
@@ -632,10 +635,7 @@ class BoxRunner:
             # ani nałożyć ro na obszar pracy innego, już uruchomionego kroku.
             busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
             if busy:
-                raise agentcmd.StepError("zmiana katalogów tylko do odczytu wymaga pudełka bez innych biegnących kroków")
-            for name in sorted(stale_reads, key=lambda n: len(present[n].get("path", "")), reverse=True):
-                self.incus.device_remove(self.box, name)
-                present.pop(name)
+                raise MountsBusy("zmiana katalogów tylko do odczytu wymaga pudełka bez innych biegnących kroków")
         expected_packs = {d.name: d.values() for d in wanted if d.path.startswith("/packs/")}
         for name, values in present.items():
             if str(values.get("path", "")).startswith("/packs"):
@@ -654,21 +654,27 @@ class BoxRunner:
         if any(d.path.startswith("/packs/") for d in missing):
             busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
             if busy:
-                raise agentcmd.StepError("dodanie paczki wymaga pudełka bez innych biegnących kroków")
+                raise MountsBusy("dodanie paczki wymaga pudełka bez innych biegnących kroków")
         idmap_ok = self.incus.config_get(self.box, "raw.idmap") == idmap
         inst = self.incus.instance(self.box)
         if inst is None:
             raise agentcmd.StepError(f"pudełko {self.box} nie istnieje")
         running = str(inst.get("status", "")).lower() == "running"
-        if not missing and idmap_ok:
-            self._require_running(running)
-            return []
         stop = not idmap_ok or any(d.is_file for d in missing)
         if stop and running:
             busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
             if busy:
-                raise agentcmd.StepError(f"pudełko {self.box} wymaga zatrzymania na dodanie montowań, a biegną w nim "
-                                         f"kroki: {', '.join(busy)}")
+                raise MountsBusy(f"pudełko {self.box} wymaga zatrzymania na dodanie montowań, a biegną w nim "
+                                f"kroki: {', '.join(busy)}")
+        if check_only:
+            self._require_running(running)
+            return []
+        for name in sorted(stale_reads, key=lambda n: len(present[n].get("path", "")), reverse=True):
+            self.incus.device_remove(self.box, name)
+        if not missing and idmap_ok:
+            self._require_running(running)
+            return []
+        if stop and running:
             self.incus.stop(self.box)
         try:
             if not idmap_ok:

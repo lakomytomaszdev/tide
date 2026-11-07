@@ -2453,17 +2453,37 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except OSError:
                 pass
         try:
-            begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}", **box_fields,
-                              session=session, stepDir=step_dir, worktree=worktree, kind=kind,
-                              ticket=ticket, round=round_no, executor=selected.name,
-                              program=selected.tool, model=selected.model, provider=selected.provider,
-                              effort=selected.effort,
-                              routeUrl=selected.route.url if selected.route else "",
-                              routeKind=selected.route.kind if selected.route else "",
-                              routeTokenFile=selected.route.token_file if selected.route else "",
-                              local=selected.local, branch=made_ticket["branch"],
-                              reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                              deliveredNoteIds=note_ids, **base_context)
+            # Montowania dotyczą całego pudełka. Sprawdzamy je przed zamiarem startu,
+            # a blokada chroni wynik aż do rezerwacji i uruchomienia jednostki.
+            with boxstep.start_lock(placement):
+                if placement is not None:
+                    configured = self._configured_reads(card, project, worktree, step_dir, order=order,
+                                                        route=selected.route)
+                    boxstep.check_mounts(placement, agentcmd.Step(
+                        tool=selected.tool, binary=selected.binary, prompt="", worktree=worktree, repo=project.repo,
+                        step_dir=step_dir, step_id=step_id, branch=made_ticket["branch"],
+                        read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])), context_dirs=tuple(context_dirs)))
+                begun = self._act(card.id, "step-start", step_id, launch, unit=f"tide-step-{step_id}", **box_fields,
+                                  session=session, stepDir=step_dir, worktree=worktree, kind=kind,
+                                  ticket=ticket, round=round_no, executor=selected.name,
+                                  program=selected.tool, model=selected.model, provider=selected.provider,
+                                  effort=selected.effort,
+                                  routeUrl=selected.route.url if selected.route else "",
+                                  routeKind=selected.route.kind if selected.route else "",
+                                  routeTokenFile=selected.route.token_file if selected.route else "",
+                                  local=selected.local, branch=made_ticket["branch"],
+                                  reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
+                                  deliveredNoteIds=note_ids, **base_context)
+        except boxstep.BoxWaiting as exc:
+            boxstep.release_ports(placement.entry())
+            self._release_local(step_id)
+            self._box_defer(card.id, selected, ticket, kind, exc.reason)
+        except FlowError:
+            if step_id not in self.procs:
+                if placement is not None:
+                    boxstep.release_ports(placement.entry())
+                self._release_local(step_id)
+            raise
         except (agentcmd.StepError, OSError) as exc:
             # Błąd zapisu wyniku nie cofa uruchomienia jednostki. Otwarty zamiar pozwala
             # odzyskać krok; porty i miejsce lokalne należą do niego aż do potwierdzonego końca.
@@ -2498,13 +2518,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 boxstep.reserve_ports(self, placement, card, step_id)
             return placement
         except boxstep.BoxWaiting as exc:
-            previous = fold(self.journal.read(card)).waiting.get((ticket, kind)) or {}
-            if previous.get("reason") != exc.reason:
-                self.journal.append(card, "step.waiting", ticket=ticket, kind=kind, provider=selected.provider,
-                                    reason=exc.reason, cause="box", until="")
-            raise FlowDeferred(exc.reason) from None
+            self._box_defer(card, selected, ticket, kind, exc.reason)
         except boxstep.BoxError as exc:
             raise FlowError("box", str(exc)) from None
+
+    def _box_defer(self, card, selected, ticket, kind, reason):
+        previous = fold(self.journal.read(card)).waiting.get((ticket, kind)) or {}
+        if previous.get("reason") != reason:
+            self.journal.append(card, "step.waiting", ticket=ticket, kind=kind, provider=selected.provider,
+                                reason=reason, cause="box", until="")
+        raise FlowDeferred(reason) from None
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""

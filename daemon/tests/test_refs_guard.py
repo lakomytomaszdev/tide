@@ -344,6 +344,79 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(report["refs"], ["refs/heads/ticket/two", "refs/heads/verified", "refs/tags/foreign"])
         self.assertFalse(report["errors"])
 
+    def test_host_ref_transactions_preserve_apostrophes_and_git_c_quoting(self):
+        self.begin()
+        cases = (
+            ((), "refs/heads/release'2026", "refs/heads/release'2026"),
+            ((), "refs/heads/release'2026'", "refs/heads/release'2026'"),
+            ((), r'"refs/heads/c-\047\303\263"', "refs/heads/c-'ó"),
+            ((), r'"refs/heads/double-\"quote"', 'refs/heads/double-"quote'),
+            (("-z",), 'refs/heads/nul\'"2026', 'refs/heads/nul\'"2026'),
+        )
+        for flags, wire_ref, ref in cases:
+            with self.subTest(ref=ref):
+                text = (f"create {wire_ref}\0{self.original}\0" if flags
+                        else f"create {wire_ref} {self.original}\n")
+                result = FlowGit().run(self.repo, "update-ref", "--stdin", *flags, input_text=text)
+                self.assertTrue(result.ok, result.err)
+                self.assertEqual(gitrepos.git(self.repo, "rev-parse", ref).strip(), self.original)
+        self.assertEqual(self.finish(), {})
+
+    def test_host_text_transaction_accepts_c_quoted_object_expression(self):
+        self.begin()
+        result = FlowGit().run(self.repo, "update-ref", "--stdin", input_text=(
+            'create refs/heads/by-message ":/add initial"\n'))
+        self.assertTrue(result.ok, result.err)
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "refs/heads/by-message").strip(), self.original)
+        self.assertEqual(self.finish(), {})
+
+    def test_host_ref_transaction_refuses_unknown_or_ambiguous_input_before_git(self):
+        self.begin()
+        cases = (
+            ((), None),
+            ((), 'create "refs/heads/bad\\x27" HEAD\n'),
+            ((), 'create "refs/heads/bad\\47" HEAD\n'),
+            ((), 'create "refs/heads/bad\\000suffix" HEAD\n'),
+            ((), 'create "refs/heads/bad HEAD\n'),
+            ((), 'create "refs/heads/ok"suffix HEAD\n'),
+            ((), 'create refs/heads/ok HEAD extra\n'),
+            ((), 'create refs/heads/ok\n'),
+            ((), 'create  refs/heads/ok HEAD\n'),
+            ((), 'option future-option\n'),
+            ((), 'start extra\n'),
+            ((), '"create" refs/heads/ok HEAD\n'),
+            ((), 'future-command refs/heads/ok HEAD\n'),
+            ((), 'create refs/heads/ok HEAD\0'),
+            ((), 'create refs/heads/ok HEAD\n\n'),
+            ((), 'update HEAD HEAD\n'),
+            (("-z",), 'update refs/heads/ok\0HEAD\0'),
+            (("-z",), 'create refs/heads/ok\0HEAD'),
+            (("-z",), 'create refs/heads/ok HEAD\0'),
+            (("-z",), 'start extra\0'),
+        )
+        for flags, text in cases:
+            with self.subTest(flags=flags, text=text), mock.patch.object(Git, "run") as run:
+                with self.assertRaises(agentcmd.StepError):
+                    FlowGit().run(self.repo, "update-ref", "--stdin", *flags, input_text=text)
+                run.assert_not_called()
+        self.assertEqual(self.finish(), {})
+
+    def test_host_nul_transaction_updates_only_written_refs(self):
+        for name in ("moved", "deleted", "verified"):
+            gitrepos.git(self.repo, "update-ref", "refs/heads/" + name, self.original)
+        self.begin()
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/verified", tip)
+        result = FlowGit().run(self.repo, "update-ref", "--stdin", "-z", input_text=(
+            f"start\0option no-deref\0verify refs/heads/verified\0{tip}\0"
+            f"create refs/heads/new\0{tip}\0"
+            f"update refs/heads/moved\0{tip}\0\0"
+            "delete refs/heads/deleted\0\0prepare\0commit\0"))
+        self.assertTrue(result.ok, result.err)
+        report = self.finish()
+        self.assertEqual(report["refs"], ["refs/heads/ticket/two", "refs/heads/verified"])
+        self.assertFalse(report["errors"])
+
     def test_target_preparation_and_base_generation_are_legal_during_another_cards_step(self):
         from tide_daemon.cardflow import targetprep
         from tide_daemon.cardflow.basegeneration import BaseGeneration
