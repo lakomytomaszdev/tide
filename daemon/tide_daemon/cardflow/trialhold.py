@@ -19,9 +19,31 @@ def preserves_project(st):
                    if action == "step-start"))
 
 
+def _validate_outside_identity(events):
+    """Outside musi wskazywać wcześniejszy krok lub zamiar, zanim go pominiemy.
+
+    Sam ticket/nazwa outside nie zastępuje brakującej historii startu. Ticket
+    bywa pominięty w starym outside, ale podany musi zgadzać się z jego krokiem.
+    """
+    known = {}
+    for event in events:
+        if event["type"] == "step.started":
+            known[event["step"]] = event
+        elif event["type"] == "intent" and event.get("action") == "step-start":
+            known.setdefault(event["key"], event)
+        elif event["type"] == "outside.started":
+            name = event.get("step")
+            if not isinstance(name, str) or not name.strip() or name not in known:
+                raise ValueError("niepełna lub osierocona tożsamość outside")
+            if "ticket" in event and (not isinstance(event["ticket"], str)
+                                      or event["ticket"] != known[name].get("ticket", "")):
+                raise ValueError("tożsamość outside nie zgadza się z krokiem")
+
+
 def inventory(engine, card, st):
     try:
         events = engine.journal.read_complete(card)
+        _validate_outside_identity(events)
         # Stan z tolerancyjnego odczytu UI lub wcześniejszego ticka nie jest dowodem.
         st = fold(events)
     except (OSError, ValueError, TypeError, KeyError):
@@ -75,7 +97,7 @@ def inventory(engine, card, st):
             outside.append({"step": name, "ticket": event.get("ticket")})
             recorded.add(name)
     for event in outside:
-        if event.get("step") not in protected and not trialgate.blocked(event.get("ticket") or ""):
+        if event.get("step") not in protected and not held(event):
             continue
         try:
             state = stepstop.unit_state(event["unit"]) if event.get("unit") else "unknown"

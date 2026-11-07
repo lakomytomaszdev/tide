@@ -149,6 +149,81 @@ class InventoryTest(unittest.TestCase):
         self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
         procedure.start.assert_called_once()
 
+    def test_orphan_outside_denies_both_modes_across_restart_without_rewriting(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        for identity in ({"step": "K-38-PT-176-1"}, {}):
+            for fallback in (False, True):
+                event = {"v": 1, "seq": 2, "ts": "now", "card": "K-38",
+                         "type": "outside.started", "unit": "old.scope", **identity}
+                before = original + (json.dumps(event) + "\n").encode()
+                board.write_bytes(before if fallback else original)
+                if fallback:
+                    mirror.unlink(missing_ok=True)
+                else:
+                    mirror.write_bytes(before)
+                for restarted in (False, True):
+                    if restarted:
+                        self.restart()
+                    for bootstrap in (True, False):
+                        with self.subTest(identity=identity, fallback=fallback,
+                                          restarted=restarted, bootstrap=bootstrap):
+                            trial_gate, procedure = self.procedure()
+                            with self.assertRaises(gate.TrialDenied):
+                                trial_gate.start_registered("new", consent=True, inventory=self.inventory,
+                                                            bootstrap=bootstrap)
+                            procedure.start.assert_not_called()
+                            self.assertEqual(board.read_bytes(), before if fallback else original)
+                            self.assertEqual(mirror.exists(), not fallback)
+                            if not fallback:
+                                self.assertEqual(mirror.read_bytes(), before)
+
+    def test_linked_unprotected_outside_allows_both_modes_across_restart(self):
+        for kind, name_field in (("step.started", "step"), ("intent", "key")):
+            name = "ordinary-" + kind
+            self.journal.append("K-38", kind, **{name_field: name, "ticket": "PT-244",
+                                                "action": "step-start", "kind": "ticket"})
+            # Dawne outside nie powtarzało ticketu; tożsamość bierze z kroku.
+            self.journal.append("K-38", "outside.started", step=name, unit="ordinary.scope")
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        before = [path.read_bytes() for path in paths]
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            for bootstrap in (True, False):
+                with self.subTest(restarted=restarted, bootstrap=bootstrap):
+                    trial_gate, procedure = self.procedure()
+                    trial_gate.start_registered("new", consent=True, inventory=self.inventory,
+                                                bootstrap=bootstrap)
+                    procedure.start.assert_called_once()
+                    self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_outside_identity_must_match_an_earlier_step_before_filtering(self):
+        self.journal.append("K-38", "step.started", step="ordinary", ticket="PT-244")
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        valid = {"v": 1, "seq": 3, "ts": "now", "card": "K-38", "type": "outside.started",
+                 "step": "ordinary", "ticket": "PT-244", "unit": "old.scope"}
+        invalid = [{**valid, "step": name} for name in (None, "", " ", [], 1, "orphan")]
+        invalid.extend({**valid, "ticket": ticket} for ticket in (None, "", [], 1, "PT-245"))
+        for event in invalid:
+            before = original + (json.dumps(event) + "\n").encode()
+            mirror.write_bytes(before)
+            with self.subTest(event=event):
+                self.assertFalse(trialhold.inventory(self.engine, "K-38", fold([])))
+                self.assertEqual(mirror.read_bytes(), before)
+                self.assertEqual(board.read_bytes(), original)
+        # Późniejszy step.started nie naprawia brakującego powiązania przy starcie outside.
+        orphan = {**valid, "step": "later"}
+        later = {**valid, "seq": 4, "type": "step.started", "step": "later"}
+        before = original + (json.dumps(orphan) + "\n" + json.dumps(later) + "\n").encode()
+        mirror.write_bytes(before)
+        self.assertFalse(self.inventory())
+        self.assertEqual(mirror.read_bytes(), before)
+        self.assertEqual(board.read_bytes(), original)
+
     def test_diagnostic_decision_rechecks_card_identity_after_registration(self):
         _, procedure = self.procedure()
         self.engine.trial_gate = gate.TrialGate(procedure=procedure)
