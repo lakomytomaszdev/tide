@@ -139,9 +139,10 @@ class ProjectMountTests(BoxRunnerCase):
             self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual((admin / "HEAD").read_bytes(), original_head)
         self.assertEqual((admin / "index").read_bytes(), original_index)
-        result = Git().run(self.worktree, "status", "--porcelain")
-        self.assertTrue(result.ok, result.err)
-        self.assertEqual(result.out, "")
+        snapshot = Git().read_checkout(self.worktree)
+        self.assertEqual(snapshot["status"].out, "")
+        self.assertIn("box.txt\0", snapshot["index_entries"].out)
+        self.assertEqual((admin / "tide-index-tip").read_text(), snapshot["head"].out)
         self.assertEqual(Git().run(self.worktree, "show", "HEAD:box.txt").out, "z pudełka")
 
     def test_hardlinked_host_file_is_not_exposed_by_a_canonical_workspace(self):

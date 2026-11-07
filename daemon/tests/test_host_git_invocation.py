@@ -86,6 +86,9 @@ class HostGitInvocationTest(unittest.TestCase):
         self.assertEqual(snapshot["changes"]["unstaged"][0]["paths"], ["base.txt"])
         self.assertTrue(snapshot["indexEntries"])
         self.assertEqual(len(calls), 1)
+        # Adapter bez grupowania daje identyczny odcisk.
+        sequential = FlowGit(self.git())
+        self.assertEqual(snapshot, checkout_snapshot(lambda *args: sequential.run(*args), str(self.repo)))
 
     def test_local_snapshot_groups_ignored_and_repository_reads_but_rechecks_each_snapshot(self):
         from tide_daemon.cardflow.gitops import FlowGit
