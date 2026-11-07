@@ -155,6 +155,62 @@ class ProcessIdentityRegression(unittest.TestCase):
             f.engine._advance("K-38", selected)
         self.assertFalse(review.called)
 
+    def review4_history(self):
+        f = self.fixture
+        f.project()
+        f.journal.append("K-38", "card.started", project="proj")
+        step = f.journal.append("K-38", "step.started", step="legacy", ticket="PT-999",
+                                kind="ticket", runner="host", unit="old.scope",
+                                worktree=str(f.root), stepDir=str(f.root / "old.step"))
+        f.journal.append("K-38", "step.finished", step="legacy", ticket="PT-999",
+                         result="denied", outside=True, command="echo ordinary-test", canAllow=True)
+        f.journal.append("K-38", "step.decision", step="legacy", ticket="PT-999", choice="run")
+        # Odtwarzamy zapis starej usługi bez korzystania z nowego walidatora.
+        events = f.journal.read_complete("K-38")
+        for event in events:
+            if event.get("step") == "legacy":
+                event["ticket"] = "PT-176 "
+        content = "".join(json.dumps(event) + "\n" for event in events)
+        for path in (f.journal.path("K-38"), f.journal.mirror_path("K-38")):
+            Path(path).write_text(content)
+        step["ticket"] = "PT-176 "
+        return step
+
+    def test_review4_noncanonical_ticket_denies_outside_across_restart(self):
+        step = self.review4_history()
+        f = self.fixture
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for restarted in (False, True):
+            for path in paths:
+                path.write_bytes(initial)
+            if restarted:
+                f.restart()
+            with self.subTest(restarted=restarted), f.outside_environment() as spawn:
+                try:
+                    f.engine._start_outside("K-38", step, "echo ordinary-test")
+                except FlowError:
+                    pass
+                spawn.assert_not_called()
+
+    def test_review4_noncanonical_ticket_preserves_box_across_restart(self):
+        self.review4_history()
+        f = self.fixture
+        for restarted in (False, True):
+            if restarted:
+                f.restart()
+            with self.subTest(restarted=restarted):
+                incus = mock.Mock()
+                incus.instance.return_value = {"status": "Running"}
+                builder = fixtures.Builder(SimpleNamespace(), incus=incus, policy=object())
+                builder.steps_source = lambda slug, name: fixtures.lifecycle.active_steps(
+                    builder, slug, name, f.engine)
+                try:
+                    fixtures.lifecycle.Lifecycle(builder).stop("proj")
+                except fixtures.BoxBusy:
+                    pass
+                incus.stop.assert_not_called()
+
 
 def generated_bad_histories():
     """Przestrzeń luk review 9–13: braki, osierocenia, kolizje i kolejność."""
@@ -198,6 +254,36 @@ def generated_bad_histories():
     yield [intent, {"type": "result", "action": "step-start", "key": start["step"], "ok": True}, start]
     yield from generated_bad_resource_histories()
     yield from generated_bad_card_project_histories()
+    yield from generated_bad_ticket_histories()
+
+
+def generated_bad_ticket_histories():
+    """B1 rundy 4: niekanoniczne ID, każdy ślad i późniejsze uzupełnienia."""
+    for ticket in ("PT-176", "PT-999"):
+        prefix, number = ticket.split("-")
+        variants = [ticket + space for space in (" ", "\n", "\t", "\u00a0")]
+        variants += [" " + ticket, "\t" + ticket, ticket.lower(), f"{prefix}-0{number}",
+                     f"{prefix}-+{number}", f"{prefix}-{'1' * 7}",
+                     f"{prefix}-" + "".join(chr(ord(c) + 0xFEE0) for c in number),
+                     f"{prefix}_{number}", " ", "unknown"]
+        good = dict(type="step.started", step="legacy-step", ticket=ticket, kind="ticket", runner="host")
+        done = dict(type="step.finished", step="legacy-step", result="done")
+        for value in variants:
+            for source in ("step.started", "intent", "result", "outside.started", "outside.finished",
+                           "step.finished", "step.decision", "step.entered",
+                           "step.console_opened", "step.console_closed"):
+                event = dict(type=source, step="legacy-step", ticket=value)
+                if source in ("intent", "result"):
+                    event.update(action="step-start", key="legacy-step")
+                if source in ("step.started", "intent"):
+                    event.update(kind="ticket", runner="host")
+                    prefix_events = []
+                else:
+                    prefix_events = [good]
+                yield [*prefix_events, event]
+                yield [*prefix_events, event, good, done]
+            # Sama zmiana rodzaju kroku nie legalizuje wadliwego ID.
+            yield [dict(good, ticket=value, kind="planning")]
 
 
 def generated_bad_card_project_histories():
@@ -261,6 +347,34 @@ def generated_project_histories():
 
 
 class ProcessIdentityProperties(unittest.TestCase):
+    def test_noncanonical_tickets_stay_held_with_valid_project_and_later_completion(self):
+        for index, history in enumerate(generated_bad_ticket_histories()):
+            with self.subTest(history=index):
+                identity = process_identities([dict(type="card.started", project="proj"), *history])["legacy-step"]
+                self.assertNotEqual(identity.state, "ok")
+                self.assertTrue(identity.held)
+
+    def test_canonical_tickets_and_ticketless_card_steps_remain_valid(self):
+        for ticket in ("PT-176", "PT-999", "A1-1", "PROJECT123-999999"):
+            history = [dict(type="card.started", project="proj"),
+                       dict(type="step.started", step="legacy", ticket=ticket, kind="ticket"),
+                       dict(type="step.finished", step="legacy", result="done")]
+            with self.subTest(ticket=ticket):
+                identity = process_identities(history)["legacy"]
+                self.assertEqual(identity.state, "ok")
+                self.assertEqual(identity.protected, ticket == "PT-176")
+        for kind in ("planning", "plan-fix", "plan-import", "plan-review", "plan-amend",
+                     "plan-revise", "close", "interactive"):
+            for fields in ({}, {"ticket": ""}):
+                history = [dict(type="card.started", project="proj"),
+                           dict(type="intent", action="step-start", key="legacy", kind=kind, **fields),
+                           dict(type="step.started", step="legacy", kind=kind, **fields),
+                           dict(type="step.finished", step="legacy", result="done", **fields)]
+                with self.subTest(kind=kind, fields=fields):
+                    identity = process_identities(history)["legacy"]
+                    self.assertEqual(identity.state, "ok")
+                    self.assertFalse(identity.held)
+
     def test_generated_prefixes_never_lose_protection_or_errors(self):
         rng = random.Random(277)
         histories = list(generated_bad_histories()) + list(generated_project_histories())

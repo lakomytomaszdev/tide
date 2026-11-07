@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from .. import trialpolicy
 from ..box import profile as bp, state as bs
+from ..coordination.numbering import ticket_key
 
 CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
                              "plan-amend", "plan-revise", "close", "interactive"})
@@ -39,6 +40,11 @@ class ProcessIdentity:
             self.state = state
 
 
+def valid_ticket(value):
+    """Dokładny klucz numeracji; rozpoznawalny wariant nie jest innym ticketem."""
+    return isinstance(value, str) and bool(value) and ticket_key(value) == value
+
+
 def start_error(event):
     """Struktura starego startu; opcjonalne pola nie kasują wcześniejszej wiedzy."""
     name = "key" if event.get("type") == "intent" else "step"
@@ -51,6 +57,8 @@ def start_error(event):
         return "nieznany rodzaj kroku w dzienniku karty"
     if not (event.get("ticket") or "").strip() and kind not in CARD_STEP_KINDS:
         return "brak ticketu procesu w dzienniku karty"
+    if event.get("ticket", "") != "" and not valid_ticket(event["ticket"]):
+        return "niekanoniczny ticket procesu w dzienniku karty"
     return ""
 
 
@@ -146,6 +154,11 @@ def process_identities(events):
                 identity.projects.add("")
                 identity.worsen("unknown")
         identity.protected |= trialpolicy.blocked_event(event)
+        # Każdy jawny ślad ID podlega tej samej kontroli, także wynik i decyzja.
+        # Pusty ticket pozostaje legalny dla kroku karty; kolizję z ticketem
+        # wcześniejszego startu wykrywa niżej scalanie tożsamości.
+        if "ticket" in event and event["ticket"] != "" and not valid_ticket(event["ticket"]):
+            identity.worsen("unknown")
         if not valid_name:
             identity.worsen("unknown")
         if start:
