@@ -23,6 +23,34 @@ SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
+CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
+                             "plan-amend", "plan-revise", "close", "interactive"})
+TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
+
+
+def _validate_process_identity(event):
+    """Nieznana tożsamość nie jest dowodem, że proces nie podlega ochronie.
+
+    Starszy zapis może nie mieć kind/branch, lecz musi nazywać krok i ticket.
+    Brak ticketu jest legalny wyłącznie dla rozpoznanego rodzaju kroku karty.
+    Nie wymagamy jednostki: jej brak ma pozostać nierozstrzygniętym procesem.
+    """
+    if event["type"] == "step.started":
+        name = "step"
+    elif event["type"] == "intent" and event.get("action") == "step-start":
+        name = "key"
+    else:
+        return
+    if not isinstance(event.get(name), str) or not event[name].strip():
+        raise ValueError("niepełna tożsamość procesu w dzienniku karty")
+    for field in ("ticket", "branch"):
+        if field in event and not isinstance(event[field], str):
+            raise ValueError("nieznana tożsamość procesu w dzienniku karty")
+    kind = event.get("kind")
+    if "kind" in event and (not isinstance(kind, str) or kind not in CARD_STEP_KINDS | TICKET_STEP_KINDS):
+        raise ValueError("nieznany rodzaj kroku w dzienniku karty")
+    if not (event.get("ticket") or "").strip() and kind not in CARD_STEP_KINDS:
+        raise ValueError("brak ticketu procesu w dzienniku karty")
 
 
 def mirror_root(board_root: str, env=None) -> str:
@@ -143,6 +171,7 @@ class Journal:
                             or event["seq"] != len(events) + 1 or event.get("card") != card
                             or not isinstance(event.get("type"), str) or not event["type"]):
                         raise ValueError("niepełna lub nieznana historia zdarzeń")
+                    _validate_process_identity(event)
                     events.append(event)
                 return events
 

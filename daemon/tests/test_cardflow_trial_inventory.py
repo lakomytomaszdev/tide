@@ -37,7 +37,7 @@ class InventoryTest(unittest.TestCase):
         self.journal.append("K-38", "card.started", project="plasma-tide")
 
     def restart(self):
-        self.journal = Journal(str(self.board), mirror=str(self.root / "mirror"))
+        self.journal = Journal(str(self.board))
         self.engine = FlowEngine(SimpleNamespace(root=str(self.board)), journal=self.journal,
                                  codex_roots=[], settings=str(self.root / "settings.json"))
 
@@ -72,6 +72,96 @@ class InventoryTest(unittest.TestCase):
         trial_gate, procedure = self.procedure()
         trial_gate.start_registered("new", consent=True, inventory=self.inventory)
         procedure.start.assert_called_once()
+
+    def test_card_process_identity_is_validated_before_filtering(self):
+        path = Path(self.journal.mirror_path("K-38"))
+        original = path.read_bytes()
+        for kind, name_field in (("step.started", "step"), ("intent", "key")):
+            valid = {"v": 1, "seq": 2, "card": "K-38", "ts": "now", "type": kind,
+                     "action": "step-start", name_field: "ordinary", "kind": "ticket",
+                     "ticket": "PT-1", "branch": "ticket/pt-1"}
+            invalid = [{k: v for k, v in valid.items() if k not in (name_field, "ticket", "branch")}]
+            for field, values in {name_field: (None, "", " ", [], 1),
+                                  "ticket": (None, "", " ", [], 1),
+                                  "kind": (None, "", "future", [], 1),
+                                  "branch": (None, [], 1)}.items():
+                invalid.extend({**valid, field: value} for value in values)
+            invalid.append({k: v for k, v in valid.items() if k != "ticket"})
+            for event in invalid:
+                before = original + (json.dumps(event) + "\n").encode()
+                path.write_bytes(before)
+                with self.subTest(event=event):
+                    with self.assertRaises(ValueError):
+                        self.journal.read_complete("K-38")
+                    self.assertFalse(trialhold.inventory(self.engine, "K-38", fold([])))
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_incomplete_card_identity_blocks_start_and_lifecycle_across_restart(self):
+        self.project()
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        for kind in ("step.started", "intent"):
+            for fallback in (False, True):
+                event = {"v": 1, "seq": 2, "card": "K-38", "ts": "now", "type": kind,
+                         "action": "step-start", "kind": "ticket", "unit": "old.scope"}
+                before = original + (json.dumps(event) + "\n").encode()
+                board.write_bytes(before if fallback else original)
+                if fallback:
+                    mirror.unlink(missing_ok=True)
+                else:
+                    mirror.write_bytes(before)
+                for generation in range(2):
+                    self.restart()
+                    with self.subTest(kind=kind, fallback=fallback, generation=generation):
+                        _, procedure = self.procedure()
+                        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+                        with self.assertRaises(FlowError):
+                            self.engine.register_trial_diagnostic()
+                        procedure.start.assert_not_called()
+                        for bootstrap in (False, True):
+                            trial_gate, accepted = self.procedure()
+                            with self.assertRaises(gate.TrialDenied):
+                                trial_gate.start_registered("new", consent=True, inventory=self.inventory,
+                                                            bootstrap=bootstrap)
+                            accepted.start.assert_not_called()
+                        self.assert_lifecycle_preserved()
+                        self.engine._recover_started_steps("K-38", fold([]))
+                        self.engine.tick()
+                        with self.assertRaises(ValueError):
+                            self.journal.append("K-38", "card.paused")
+                        self.assertEqual(board.read_bytes(), before if fallback else original)
+                        self.assertEqual(mirror.exists(), not fallback)
+                        if not fallback:
+                            self.assertEqual(mirror.read_bytes(), before)
+
+    def test_complete_card_identity_allows_planning_without_ticket(self):
+        for kind in ("planning", "plan-fix", "plan-import", "plan-review", "plan-amend",
+                     "plan-revise", "close", "interactive"):
+            self.journal.append("K-38", "intent", action="step-start", key=kind, kind=kind)
+            self.journal.append("K-38", "step.started", step=kind, kind=kind, ticket="")
+        self.journal.append("K-38", "step.started", step="ordinary", kind="ticket", ticket="PT-1")
+        self.restart()
+        self.assertTrue(self.inventory())
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+        procedure.start.assert_called_once()
+
+    def test_diagnostic_decision_rechecks_card_identity_after_registration(self):
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        path = Path(self.journal.mirror_path("K-38"))
+        event = {"v": 1, "seq": len(self.journal.read_complete("K-38")) + 1,
+                 "card": "K-38", "ts": "now", "type": "step.started", "kind": "ticket"}
+        before = path.read_bytes() + (json.dumps(event) + "\n").encode()
+        path.write_bytes(before)
+        with self.assertRaises(FlowError):
+            self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+        procedure.start.assert_not_called()
+        self.assertEqual(path.read_bytes(), before)
 
     def test_final_stop_preserves_incomplete_box_history_without_engine_after_restart(self):
         path = self.project()

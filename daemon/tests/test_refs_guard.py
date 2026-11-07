@@ -472,7 +472,7 @@ class GuardTest(unittest.TestCase):
                 engine.journal = Journal(str(self.root / ("board-" + failure)))
                 engine.journal.append("K-38", "card.started", repo=self.repo)
                 engine.journal.append("K-38", "step.started", step="one", runner="box", repo=self.repo,
-                                      branch="ticket/one", kind="ticket")
+                                      branch="ticket/one", kind="ticket", ticket="PT-1")
                 for name in ("_queue_notices", "_release_local", "_release_box", "_recover_started_steps",
                              "_tick_card", "_guard_card"):
                     setattr(engine, name, mock.Mock())
@@ -533,7 +533,8 @@ class GuardTest(unittest.TestCase):
         self.begin()
         engine = mock.Mock()
         engine.journal = Journal(str(self.root / "board"))
-        engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo)
+        engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo,
+                              ticket="PT-1")
         engine.journal.append("K-38", "result", action="step-start", key="one", ok=False)
         boxstep.recover_network(engine)
         self.assertEqual(refguard._active(self.repo), [])

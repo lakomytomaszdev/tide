@@ -37,7 +37,7 @@ class PortPlacementTest(BoxFlow):
     def test_release_after_error_works_without_proxy_and_is_idempotent(self):
         placement = self.place("first")
         step = {"step": "first", **placement.entry()}
-        self.engine.journal.append(self.card_id, "step.started", **step, kind="ticket")
+        self.engine.journal.append(self.card_id, "step.started", **step, kind="ticket", ticket="PT-1")
         self.engine.journal.append(self.card_id, "step.finished", step="first", result="error")
         with mock.patch.object(boxstep, "proxy_of", return_value=None):
             boxstep.recover_network(self.engine)
@@ -52,7 +52,7 @@ class PortPlacementTest(BoxFlow):
     def test_recovery_keeps_reservation_of_open_start_intent(self):
         placement = self.place("first")
         self.engine.journal.append(self.card_id, "intent", action="step-start", key="first",
-                                   step="first", **placement.entry())
+                                   step="first", ticket="PT-1", **placement.entry())
         # Bez odtwarzania sieci: otwarty zamiar ma testować wyłącznie trwałość portów.
         with mock.patch.object(boxstep, "proxy_of", return_value=None):
             boxstep.recover_network(self.engine)
@@ -63,7 +63,7 @@ class PortPlacementTest(BoxFlow):
         from tide_daemon.cardflow.state import fold
         placement = self.place("first")
         journal = self.engine.journal
-        journal.append(self.card_id, "intent", action="step-start", key="first", **placement.entry())
+        journal.append(self.card_id, "intent", action="step-start", key="first", ticket="PT-1", **placement.entry())
         journal.append(self.card_id, "result", action="step-start", key="first", ok=True)
         self.engine._recover_started_steps(self.card_id, fold(journal.read(self.card_id)))
         step = fold(journal.read(self.card_id)).steps["first"]
