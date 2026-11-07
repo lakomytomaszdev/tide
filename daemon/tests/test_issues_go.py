@@ -93,6 +93,43 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(self.go()["error"], "version-conflict")
         self.assertEqual(self.store.snapshot()["cards"], [])
 
+    def test_many_failed_retries_with_max_report_preserve_show_success_and_replays(self):
+        self.ready("R" * (64 * 1024))
+        history = []
+        with self.fail_before_handoff():
+            original = self.go()
+            current = original
+            for number in range(40):
+                start = current["start"]
+                key = f"many-retries-{number}"
+                if number == 12:
+                    with self.interrupt_retry_response():
+                        self.assertEqual(self.retry(start, key=key)["error"], "io-error")
+                    current = {"ok": True, "apiVersion": 1,
+                               **issue_start._response(self.issues, issue_start._load(self.issues, "S-1"))}
+                else:
+                    current = self.retry(start, key=key)
+                self.assertTrue(current["ok"], (number, current))
+                self.assertEqual(current["start"]["state"], "start-error")
+                self.assertTrue(current["start"]["retryable"])
+                self.assertEqual(self.call("Show")["start"], current["start"])
+                history.append((start, key, current))
+        self.restart()
+        self.flow.stop()
+        self.service = IssueService(self.store, self.flow.engine)
+        success = self.retry(self.call("Show")["start"], key="many-retries-success")
+        self.assertTrue(success["started"], success)
+        self.assertEqual(success["card"], original["card"])
+        self.assertEqual(success["start"]["intentId"], original["start"]["intentId"])
+        self.assertEqual(success["start"]["orderId"], original["start"]["orderId"])
+        self.flow.engine.journal.append("K-1", "card.closed")
+        self.assertEqual(self.call("Show")["start"]["state"], "completed")
+        self.assertEqual(self.go(), original)
+        for start, key, response in history:
+            self.assertEqual(self.retry(start, key=key), response)
+        self.assertEqual(len(self.store.snapshot()["cards"]), 1)
+        self.assertEqual(len(self.of("K-1", "card.started")), 1)
+
     def test_parallel_retries_stale_versions_changed_payload_and_changed_card(self):
         self.ready()
         with self.fail_before_handoff():
@@ -314,6 +351,66 @@ class IssueGoTest(FlowInProcess):
         self.flow.stop()
         self.service = IssueService(self.store, self.flow.engine)
         self.assertEqual(self.call("Show")["start"]["state"], "completed")
+        self.assertEqual(self.retry(failed["start"]), {"ok": True, "apiVersion": 1, **historical})
+        self.assertEqual(len(self.of("K-1", "card.started")), 1)
+
+    def test_retry_snapshot_survives_interruption_before_projection_save_and_completed(self):
+        self.ready()
+        with self.fail_before_handoff():
+            failed = self.go()
+        save = issue_start.acceptance._save
+
+        def interrupted(store, path, value):
+            if path.startswith(issue_start.INTENTS) and value["state"] == "started":
+                raise OSError("Przerwanie po migawce, przed projekcją")
+            return save(store, path, value)
+
+        with mock.patch.object(issue_start.acceptance, "_save", side_effect=interrupted):
+            self.assertEqual(self.retry(failed["start"])["error"], "io-error")
+        intent = issue_start._load(self.issues, "S-1")
+        self.assertEqual(intent["state"], "dispatching")
+        historical = issue_start._retry_response(self.issues, intent, intent["attemptId"])
+        self.assertEqual(historical["start"]["state"], "started")
+        self.flow.engine.journal.append("K-1", "card.closed")
+        self.restart()
+        self.flow.stop()
+        self.service = IssueService(self.store, self.flow.engine)
+        shown = self.call("Show")["start"]
+        self.assertEqual(shown["state"], "completed")
+        self.assertGreater(shown["startVersion"], historical["start"]["startVersion"])
+        self.assertEqual(self.retry(failed["start"]), {"ok": True, "apiVersion": 1, **historical})
+        self.assertEqual(len(self.of("K-1", "card.started")), 1)
+
+    def test_legacy_embedded_retry_response_migration_survives_interrupted_intent_save(self):
+        self.ready()
+        with self.fail_before_handoff():
+            failed = self.go()
+            with self.interrupt_retry_response():
+                self.assertEqual(self.retry(failed["start"])["error"], "io-error")
+        intent = issue_start._load(self.issues, "S-1")
+        attempt = intent["attemptId"]
+        historical = issue_start._retry_response(self.issues, intent, attempt)
+        # Odtworzenie formatu rundy 3 z nieukończonym receipt.
+        intent["retryResponses"] = {attempt: historical}
+        path = f"{issue_start.INTENTS}/S-1.json"
+        save = issue_start.acceptance._save
+        save(self.issues, path, intent)
+        self.issues._path(issue_start._attempt_path(intent, attempt)).unlink()
+
+        def interrupted(store, rel, value):
+            if rel == path:
+                raise OSError("Przerwanie migracji po migawkach")
+            return save(store, rel, value)
+
+        with mock.patch.object(issue_start.acceptance, "_save", side_effect=interrupted):
+            self.assertEqual(self.call("Show")["error"], "io-error")
+        self.assertIn("retryResponses", issue_start.acceptance._read(self.issues, path))
+        self.assertEqual(issue_start._retry_response(self.issues, intent, attempt), historical)
+        self.restart()
+        self.flow.stop()
+        self.service = IssueService(self.store, self.flow.engine)
+        self.assertNotIn("retryResponses", issue_start._load(self.issues, "S-1"))
+        self.assertTrue(self.retry(self.call("Show")["start"], key="after-migration")["started"])
         self.assertEqual(self.retry(failed["start"]), {"ok": True, "apiVersion": 1, **historical})
         self.assertEqual(len(self.of("K-1", "card.started")), 1)
 

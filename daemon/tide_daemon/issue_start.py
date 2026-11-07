@@ -10,6 +10,7 @@ from .cardflow.engine import FlowError
 
 INTENTS = ".git/tide-issue-starts"
 RESULTS = ".git/tide-issue-start-results"
+ATTEMPTS = ".git/tide-issue-start-attempts"
 
 
 def _key(request_id):
@@ -40,10 +41,27 @@ def _load(store, ident):
                 intent.get("state") not in ("prepared", "dispatching", "queued", "started", "completed", "start-error", "reconciling") or
                 not isinstance(intent.get("attemptId"), str) or not intent["attemptId"]):
             fail("Intencja startu różni się od przyjętej sprawy.", "broken-file")
+        if "retryResponses" in intent:
+            _save(store, intent)
     return intent
 
 
+def _attempt_path(intent, attempt):
+    key = hashlib.sha256(f"{intent['intentId']}:{attempt}".encode("utf-8")).hexdigest()
+    return f"{ATTEMPTS}/{key}.json"
+
+
+def _retry_response(store, intent, attempt):
+    return acceptance._read(store, _attempt_path(intent, attempt))
+
+
 def _save(store, intent):
+    # Starszy format trzymał pełne odpowiedzi w ograniczonym pliku intencji.
+    # Najpierw utrwalamy każdą migawkę, dopiero potem usuwamy osadzoną historię.
+    for attempt, response in intent.get("retryResponses", {}).items():
+        if _retry_response(store, intent, attempt) is None:
+            acceptance._save(store, _attempt_path(intent, attempt), response)
+    intent.pop("retryResponses", None)
     acceptance._save(store, f"{INTENTS}/{intent['issue']}.json", intent)
 
 
@@ -92,6 +110,15 @@ def _public(intent):
 
 
 def _refresh(store, engine, intent):
+    attempt = intent.get("retryAttemptId")
+    saved = _retry_response(store, intent, attempt) if attempt == intent["attemptId"] else None
+    changed = False
+    if saved is not None and saved["start"]["startVersion"] > intent["startVersion"]:
+        # Proces mógł zginąć między migawką a projekcją. Jej wersja została już
+        # użyta przez trwały wynik i nie może oznaczać innego, późniejszego stanu.
+        intent.pop("error", None)
+        intent.update(saved["start"])
+        changed = True
     current = startorder.projection(engine, intent["card"], intent["orderId"])
     # Brak rezerwacji w dzienniku jest normalny tylko przed pierwszym przekazaniem.
     if current["state"] == "prepared" and intent["state"] != "prepared":
@@ -99,25 +126,23 @@ def _refresh(store, engine, intent):
     if intent["state"] == "dispatching" and current.get("attemptId") != intent["attemptId"]:
         current = {"orderId": intent["orderId"], "attemptId": intent["attemptId"],
                    "state": "reconciling", "retryable": False}
-    changed = any(intent.get(k) != v for k, v in current.items()) or ("error" in intent and "error" not in current)
-    if changed:
+    if any(intent.get(k) != v for k, v in current.items()) or ("error" in intent and "error" not in current):
         intent.pop("error", None)
         intent.update(current)
         intent["startVersion"] += 1
+        changed = True
     if "initialResponse" not in intent and intent["state"] in ("queued", "started", "completed", "start-error", "reconciling"):
         accepted = _acceptance(store, intent["issue"])
         intent["initialResponse"] = {**_response(store, intent),
                                      "alreadyAccepted": intent.get("wasAccepted", False),
                                      "commitError": accepted.get("commitError", "")}
         changed = True
-    attempt = intent.get("retryAttemptId")
     if (attempt == intent["attemptId"] and
             intent["state"] in ("queued", "started", "completed", "start-error", "reconciling") and
-            attempt not in intent.get("retryResponses", {})):
-        # Wynik próby utrwalamy w tym samym zapisie co jej projekcję, zanim
-        # Show albo kolejna decyzja retry zmienią stan lub bieżącą attemptId.
-        intent.setdefault("retryResponses", {})[attempt] = _response(store, intent)
-        changed = True
+            saved is None):
+        # Migawka musi wyprzedzać zapis projekcji i kolejną decyzję retry.
+        # Przerwanie po tym zapisie nie pozwala nadpisać jej nowszym stanem.
+        acceptance._save(store, _attempt_path(intent, attempt), _response(store, intent))
     if changed:
         _save(store, intent)
     return _public(intent)
@@ -196,10 +221,10 @@ def retry(store, engine, ident, request):
         if not intent:
             fail("Sprawa nie ma intencji startu.", "start-conflict")
         _refresh(store, engine, intent)
-        if previous and previous["attemptId"] in intent.get("retryResponses", {}):
+        response = _retry_response(store, intent, previous["attemptId"]) if previous else None
+        if response is not None:
             # Receipt mógł nie dostać odpowiedzi przed restartem. Wynik próby
             # jest niezależny od późniejszych prób i bieżącej projekcji Show.
-            response = intent["retryResponses"][previous["attemptId"]]
             acceptance._save(store, path, {**previous, "response": response})
             return response
         eligible = (issue["state"] == "accepted" and issue["card"] == intent["card"] and
@@ -221,7 +246,7 @@ def retry(store, engine, ident, request):
         intent["attemptId"] = attempt
         intent["retryAttemptId"] = attempt
         _dispatch(store, engine, intent)
-        response = intent["retryResponses"][attempt]
+        response = _retry_response(store, intent, attempt)
         acceptance._save(store, path, {**receipt, "response": response})
         return response
 
