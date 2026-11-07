@@ -1047,23 +1047,39 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _recover_import(self, card: str, st: FlowState) -> FlowState:
         """Dokańcza przejęcie planu tej samej generacji, bez nowego zlecenia."""
         preparation = st.started.get("importPreparation")
-        if st.imported is not None or preparation is None:
+        if preparation is None:
             return st
         prepared = next((e for e in self.journal.read(card)
                          if e["seq"] == preparation and e["type"] == "plan.import-prepared"), None)
         if prepared is None:
             raise FlowError("broken-import", "brakuje zapisanego źródła przejęcia planu")
-        self.journal.write_file(card, os.path.join("plan", "source.md"), prepared["source"].encode("utf-8"))
+
+        def restore(rel, text):
+            data = text.encode("utf-8")
+            target = os.path.join(self.store.root, self.journal.rel_dir(card), rel)
+            try:
+                with open(target, "rb") as fh:
+                    if fh.read() == data:
+                        return os.path.relpath(target, self.store.root)
+            except FileNotFoundError:
+                pass
+            return self.journal.write_file(card, rel, data)
+
+        # plan.imported utrwala przejęcie, ale kopie wejść są odbudowywalne.
+        # Po awarii systemu mogą zniknąć lub pozostać niepełne także po tym
+        # zdarzeniu. Naprawiamy wyłącznie niezmienne wejścia, nie propozycję.
+        restore(os.path.join("plan", "source.md"), prepared["source"])
         snapshot = {}
         if "cards" in prepared:
             # Wejścia przejęcia są osobne od później edytowanej propozycji.
             folder = os.path.join("plan", "import")
-            rel = self.journal.write_file(card, os.path.join(folder, "source.md"), prepared["source"].encode("utf-8"))
+            rel = restore(os.path.join(folder, "source.md"), prepared["source"])
             for ident, body in prepared["cards"].items():
-                self.journal.write_file(card, os.path.join(folder, "tickets", ident.lstrip("#") + ".md"),
-                                        body.encode("utf-8"))
-            self.journal.write_file(card, os.path.join(folder, "spec.md"), prepared["specification"].encode("utf-8"))
+                restore(os.path.join(folder, "tickets", ident.lstrip("#") + ".md"), body)
+            restore(os.path.join(folder, "spec.md"), prepared["specification"])
             snapshot = {"snapshotPath": os.path.join(self.store.root, rel)}
+        if st.imported is not None:
+            return st
         self.journal.append(card, "plan.imported", path=prepared["path"], rows=prepared["rows"],
                             needsCompletion=prepared["needsCompletion"], **snapshot)
         return fold(self.journal.read(card))

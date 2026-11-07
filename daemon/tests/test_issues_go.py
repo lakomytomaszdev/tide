@@ -415,7 +415,7 @@ class IssueGoTest(FlowInProcess):
         self.assertEqual(len(self.of("K-1", "card.started")), 1)
 
     def assert_import_recovery(self, boundary, *, restart=False, complete=False, hard=False,
-                               partial=False, remove_source=False, change_source=False):
+                               partial=False, remove_source=False, change_source=False, lost_copies=None):
         from . import test_cardflow_import_plan as imports
         from tide_daemon.cardflow.state import fold
 
@@ -477,15 +477,32 @@ class IssueGoTest(FlowInProcess):
             for card_path in source_cards:
                 card_path.write_text("# Zmieniona kartka\n\n- [ ] Inne wymaganie.\n")
             spec_path.write_text("# Zmieniona specyfikacja\n")
+        if lost_copies:
+            # Awaria systemu zachowała zsynchronizowany dziennik, ale utraciła
+            # niezależne zapisy wejść lub ich końcówki, już po plan.imported.
+            copies = list(Path(self.root, "flow/K-1/plan").rglob("*.md"))
+            self.assertEqual(len(copies), 3 + len(source_cards) if complete else 1)
+            for copy in copies:
+                if lost_copies == "missing":
+                    copy.unlink()
+                else:
+                    copy.write_bytes(copy.read_bytes()[:7])
+        history = self.events("K-1")
         if restart:
             self.restart()
             self.flow.stop()
             self.service = IssueService(self.store, self.flow.engine)
         self.flow.engine.tick()
         state = fold(self.flow.engine.journal.read("K-1"))
+        self.assertEqual(self.events("K-1")[:len(history)], history)
         self.assertIsNotNone(state.imported, self.events("K-1"))
         self.assertEqual(Path(self.root, "flow/K-1/plan/source.md").read_bytes(), source)
         if complete:
+            snapshot = Path(state.imported["snapshotPath"])
+            self.assertEqual(snapshot.read_bytes(), source)
+            self.assertEqual(snapshot.with_name("spec.md").read_bytes(), source_spec)
+            for card_path, body in source_cards.items():
+                self.assertEqual((snapshot.parent / "tickets" / card_path.name).read_bytes(), body)
             self.assertIsNotNone(state.plan_proposed)
             self.assertEqual(state.plan_proposed["title"], "Przekazanie")
             self.assertEqual(state.plan_proposed["specification"].encode(), source_spec)
@@ -560,6 +577,18 @@ class IssueGoTest(FlowInProcess):
 
     def test_complete_import_restart_after_imported(self):
         self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True)
+
+    def test_complete_import_restart_repairs_missing_copies_after_imported(self):
+        self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True,
+                                    remove_source=True, lost_copies="missing")
+
+    def test_complete_import_restart_repairs_partial_copies_after_imported(self):
+        self.assert_import_recovery("plan.imported", restart=True, complete=True, hard=True,
+                                    remove_source=True, lost_copies="partial")
+
+    def test_import_restart_repairs_missing_copies_after_imported(self):
+        self.assert_import_recovery("plan.imported", restart=True, hard=True,
+                                    remove_source=True, lost_copies="missing")
 
     def test_import_restart_repairs_partial_copy_from_journal_without_original(self):
         self.assert_import_recovery("source.md", restart=True, hard=True, partial=True, remove_source=True)
