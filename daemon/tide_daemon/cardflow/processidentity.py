@@ -6,6 +6,7 @@ Stan tożsamości nie potwierdza końca procesu: to osobny dowód hostowy.
 from dataclasses import dataclass, field
 
 from .. import trialpolicy
+from ..box import profile as bp, state as bs
 
 CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
                              "plan-amend", "plan-revise", "close", "interactive"})
@@ -14,6 +15,7 @@ CONSOLE_EVENTS = ("step.entered", "step.console_opened", "step.console_closed")
 IDENTITY_FIELDS = ("ticket", "kind", "branch", "worktree", "stepDir", "runner", "box", "boxSlug",
                    "consoleUnit", "processFile")
 START_FIELDS = IDENTITY_FIELDS + ("unit",)
+RESOURCE_FIELDS = ("runner", "box", "boxSlug")
 
 
 @dataclass
@@ -59,6 +61,30 @@ def outside_evidence(event):
                 and event.get("choice") in ("run", "run-always", "run-ticket")))
 
 
+def resource_state(data, card):
+    """Czysta kontrola tego samego powiązania, które zapisuje Placement.entry."""
+    runner = data.get("runner", "host")
+    has_box = any(key in data for key in ("box", "boxSlug"))
+    if runner not in ("host", "box"):
+        return "unknown"
+    if runner == "host":
+        return "inconsistent" if has_box else "ok"
+    if any(not isinstance(data.get(key), str) or not data[key] for key in RESOURCE_FIELDS):
+        return "unknown"
+    slug = data["boxSlug"]
+    try:
+        bp._check_slug(slug, "projekt")
+        if slug != slug.strip():
+            return "unknown"
+        if data["box"] == bs.box_name(slug):
+            return "ok"
+        if not card:
+            return "unknown"
+        return "ok" if data["box"] == bs.card_box_name(slug, card) else "inconsistent"
+    except (ValueError, TypeError):
+        return "unknown"
+
+
 def process_identities(events):
     """step → ok/unknown/inconsistent, z monotoniczną ochroną każdego śladu.
 
@@ -68,6 +94,7 @@ def process_identities(events):
     """
     identities = {}
     project = ""
+    card = ""
     for index, event in enumerate(events):
         if not isinstance(event, dict):
             identities[None, index] = ProcessIdentity("", state="unknown")
@@ -76,6 +103,7 @@ def process_identities(events):
         if kind == "card.started":
             value = event.get("project")
             project = value if isinstance(value, str) else ""
+            card = event.get("card", "")
         start = kind == "step.started" or (kind == "intent" and event.get("action") == "step-start")
         result = kind == "result" and event.get("action") == "step-start"
         outside = outside_evidence(event)
@@ -86,6 +114,16 @@ def process_identities(events):
         key = name if valid_name else (None, index)
         identity = identities.setdefault(key, ProcessIdentity(name if valid_name else ""))
         identity.projects.add(project)
+        # Start deklarujący zasób musi być kompletny sam w sobie. Zdarzenia
+        # uzupełniające mogą dziedziczyć brakujące pola z wcześniejszego startu.
+        resource = event if start and any(k in event for k in RESOURCE_FIELDS) else {
+            **identity.data, **{k: event[k] for k in RESOURCE_FIELDS if k in event}}
+        state = resource_state(resource, event.get("card", identity.data.get("card", card)))
+        if state != "ok":
+            identity.worsen(state)
+            # Nie zgadujemy projektu z wadliwego slugu ani z nazwy instancji.
+            # Nieznany zakres nigdy nie może zostać później zawężony.
+            identity.projects.add("")
         # Ticket karty może pracować w innym projekcie. Zbieramy każdy jawny
         # zasób przed scaleniem pól, również z późniejszego sprzecznego wpisu.
         if "boxSlug" in event:

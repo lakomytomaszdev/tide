@@ -70,6 +70,36 @@ class ProcessIdentityRegression(unittest.TestCase):
                     gate.start_registered("new", consent=True, inventory=f.inventory, bootstrap=bootstrap)
                 procedure.start.assert_not_called()
 
+    def test_review2_resource_identity_never_stops_actual_box(self):
+        f = self.fixture
+        f.project()
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for resource in ({}, {"boxSlug": "proj "}, {"boxSlug": "other"}):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            f.journal.append("K-38", "step.started", step="legacy", ticket="PT-176",
+                             runner="box", box="proj", **resource)
+            f.journal.append("K-38", "step.finished", step="legacy", ticket="PT-176", result="done")
+            f.restart()
+            with self.subTest(resource=resource):
+                incus = mock.Mock()
+                incus.instance.return_value = {"status": "Running"}
+                builder = fixtures.Builder(SimpleNamespace(), incus=incus, policy=object())
+                builder.steps_source = lambda slug, name: fixtures.lifecycle.active_steps(
+                    builder, slug, name, f.engine)
+                try:
+                    fixtures.lifecycle.Lifecycle(builder).stop("proj")
+                except fixtures.BoxBusy:
+                    pass
+                incus.stop.assert_not_called()
+                f.assert_lifecycle_preserved()
+                st = fold(f.journal.read("K-38"))
+                self.assertNotEqual(st.process_identities["legacy"].state, "ok")
+                self.assertTrue(trialhold.preserves_project(st, "proj"))
+                self.assertTrue(trialhold.preserves_project(st, "unrelated"))
+
     def test_advance_preserves_selected_ticket_with_fresh_identity(self):
         f = self.fixture
         for name, ticket in (("first", "PT-998"), ("second", "PT-999")):
@@ -140,6 +170,32 @@ def generated_bad_histories():
         yield [other, short, start]
     intent = {**start, "type": "intent", "action": "step-start", "key": start["step"], "ticket": "PT-176"}
     yield [intent, {"type": "result", "action": "step-start", "key": start["step"], "ok": True}, start]
+    yield from generated_bad_resource_histories()
+
+
+def generated_bad_resource_histories():
+    """B1 rundy 2: niepełne i sprzeczne powiązania runner/pudełko/projekt."""
+    base = dict(step="legacy-step", ticket="PT-999", kind="ticket", card="K-38")
+    valid = dict(runner="box", box="proj", boxSlug="proj")
+    variants = [{k: v for k, v in valid.items() if k != field} for field in valid]
+    for field, values in (
+        ("runner", (None, [], "other", "host", "")),
+        ("boxSlug", (None, [], "", "proj ", "proj\n", "../proj", "Proj", "x" * 65, "other")),
+        ("box", (None, [], "", "other", "proj-k-39")),
+    ):
+        variants.extend({**valid, field: value} for value in values)
+    good = dict(type="step.started", **base, **valid)
+    done = dict(type="step.finished", **base, result="done")
+    for source in ("step.started", "intent", "result", "step.entered", "step.finished",
+                   "outside.started", "step.decision"):
+        for resource in variants:
+            event = dict(type=source, **base, **resource)
+            if source in ("intent", "result"):
+                event.update(action="step-start", key=base["step"])
+            prefix = [] if source in ("step.started", "intent") else [dict(type="step.started", **base)]
+            yield [*prefix, event]
+            # Późniejsze uzupełnienie ani done nie usuwa niepewności zakresu.
+            yield [*prefix, event, good, done]
 
 
 def generated_project_histories():
@@ -210,8 +266,37 @@ class ProcessIdentityProperties(unittest.TestCase):
                 if any(e.get("boxSlug") == "third" for e in history):
                     self.assertTrue(trialhold.preserves_project(st, "third"))
                     self.assertEqual(identity.state, "inconsistent")
+                elif any(e.get("runner") == "box" and "boxSlug" not in e for e in history):
+                    self.assertEqual(identity.state, "unknown")
+                    self.assertIn("", identity.projects)
                 else:
                     self.assertEqual(identity.state, "ok")
+
+    def test_valid_resource_names_use_shared_naming_contract(self):
+        from tide_daemon.box import state as bs
+
+        for slug in ("proj", "my.project_name", "123", "x" * 64):
+            for box in (bs.box_name(slug), bs.card_box_name(slug, "K-38")):
+                start = dict(type="step.started", step="legacy", ticket="PT-176", card="K-38",
+                             runner="box", box=box, boxSlug=slug)
+                # Zdarzenia uzupełniające nie muszą powtarzać całej tożsamości.
+                history = [dict(type="card.started", project="plasma-tide"), start,
+                           dict(type="result", action="step-start", key="legacy", boxSlug=slug),
+                           dict(type="step.finished", step="legacy", ticket="PT-176", result="done")]
+                with self.subTest(slug=slug, box=box):
+                    identity = process_identities(history)["legacy"]
+                    self.assertEqual(identity.state, "ok")
+                    self.assertEqual(identity.projects, {"plasma-tide", slug})
+                    self.assertTrue(identity.held)
+
+    def test_bad_resources_keep_unknown_scope_after_completion(self):
+        for index, history in enumerate(generated_bad_resource_histories()):
+            with self.subTest(history=index):
+                st = fold(history)
+                identity = st.process_identities["legacy-step"]
+                self.assertNotEqual(identity.state, "ok")
+                self.assertIn("", identity.projects)
+                self.assertTrue(trialhold.preserves_project(st, "unrelated"))
 
     def test_console_trace_inherits_and_checks_started_identity(self):
         start = dict(type="step.started", step="ordinary", ticket="PT-999")
