@@ -18,8 +18,8 @@ Zasady:
 """
 import os
 import re
+import threading
 import time
-from threading import RLock
 
 from ..worktrees.git import Git
 
@@ -42,8 +42,12 @@ class BoardRepo:
         self.proc_root = proc_root
         self.pending: list[tuple[str, list[str]]] = []   # (komunikat, ścieżki) commitów, które się nie udały
         self.last_error = ""
-        # Kolejkę współdzielą wątki przepływu oraz synchronizacja z wątku głównego.
-        self._commit_lock = RLock()
+        # 06.11 (PT-246): wątek przepływu kart i wątek Qt opróżniały tę samą kolejkę naraz — dwa commity jednego
+        # wpisu i `IndexError: pop from empty list` w MergeCardToMain. Kolejkę opróżnia jeden wątek naraz; inny
+        # tylko dopisuje wpis i wraca od razu (review Astry: wątek Qt nie może czekać na cudzy git), a wątek
+        # opróżniający przed oddaniem blokady sprawdza, czy nie przybyło wpisów.
+        self._queue = threading.Lock()      # krótka: tylko lista `pending`
+        self._flushing = threading.Lock()   # jeden opróżniający naraz, bez czekania
 
     @property
     def git_dir(self) -> str:
@@ -123,20 +127,33 @@ class BoardRepo:
 
     def commit(self, message: str, paths: list[str]) -> str:
         """Commit tylko podanych ścieżek; najpierw zaległe. Pusty napis albo opis błędu (wtedy
-        commit czeka w `pending`)."""
-        with self._commit_lock:
+        commit czeka w `pending`). Pusty napis może też znaczyć samo zakolejkowanie, gdy kolejkę opróżnia
+        akurat inny wątek — późniejszy błąd widać w `last_error` i migawce Tablicy."""
+        with self._queue:
             self.pending.append((message, list(paths)))
-            return self.flush()
+        return self.flush()
 
     def flush(self) -> str:
         """Próbuje zaległych commitów po kolei. Przejściowy błąd (zajęty indeks, zawieszony git)
         zatrzymuje kolejkę; trwały — usuwa wpis (jego zmiany zbierze `sync()`)."""
-        with self._commit_lock:
-            return self._flush_locked()
+        while True:
+            if not self._flushing.acquire(blocking=False):
+                return ""                   # inny wątek opróżnia kolejkę i weźmie także ten wpis
+            try:
+                error = self._flush()
+            finally:
+                self._flushing.release()
+            with self._queue:
+                more = bool(self.pending)
+            if error or not more:
+                return error
 
-    def _flush_locked(self) -> str:
-        while self.pending:
-            message, paths = self.pending[0]
+    def _flush(self) -> str:
+        while True:
+            with self._queue:
+                if not self.pending:
+                    break
+                message, paths = self.pending[0]
             error, transient = self._commit_now(message, paths)
             if error and transient:
                 self.last_error = error
@@ -144,27 +161,35 @@ class BoardRepo:
             if error:
                 print(f"tide-daemon: tablica: commit „{message}” pominięty ({error}) — zmiany zbierze sync",
                       flush=True)
-            self.pending.pop(0)
+            with self._queue:
+                self.pending.pop(0)
         self.last_error = ""
         return ""
 
     def sync(self, message: str) -> bool:
         """Zaległe commity, a potem wszystko inne (zmiany z zewnątrz) jednym commitem."""
-        with self._commit_lock:
-            if not self.initialized() or self.busy():
-                return False
-            before = len(self.pending)
-            if self.flush():
-                return False
-            committed = before > 0
-            status = self.git.run(self.root, "status", "--porcelain", "-uall")
-            if not status.ok or not status.out.strip():
-                return committed
-            error, _ = self._commit_now(message, [])
-            if error:
-                self.last_error = error
-                return committed
-            return True
+        if not self._flushing.acquire(blocking=False):
+            return False                    # trwa opróżnianie kolejki; sync jest okresowy, spróbuje ponownie
+        try:
+            return self._sync(message)
+        finally:
+            self._flushing.release()
+
+    def _sync(self, message: str) -> bool:
+        if not self.initialized() or self.busy():
+            return False
+        before = len(self.pending)
+        if self._flush():                   # blokadę opróżniania trzyma już sync
+            return False
+        committed = before > 0
+        status = self.git.run(self.root, "status", "--porcelain", "-uall")
+        if not status.ok or not status.out.strip():
+            return committed
+        error, _ = self._commit_now(message, [])
+        if error:
+            self.last_error = error
+            return committed
+        return True
 
     # --- wnętrze -------------------------------------------------------------------------------
 

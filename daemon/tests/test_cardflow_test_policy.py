@@ -1,5 +1,7 @@
 """PT-243: kartki rozdzielają testy ticketu od sprawdzenia całej karty."""
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -40,7 +42,7 @@ class TestPolicyCards(unittest.TestCase):
                                           out_dir="/o", tickets=[], manual=manual)
                 self.assertIn("Przed napisaniem podsumowania uruchom raz pełny `make test`", text)
                 self.assertIn("w worktree gałęzi karty, po scaleniu ticketów", text)
-                self.assertIn("Jeśli testy nie przejdą, nie zgłaszaj done", text)
+                self.assertIn("nie zgłaszaj done", text)
                 self.assertIn("zapisz wynik error", text)
                 self.assertIn("denied albo outside", text)
                 self.assertIn("Nie scalaj do gałęzi głównej", text)
@@ -93,3 +95,92 @@ class OldCardBranchTest(unittest.TestCase):
         for text in self.cards(self.tree("test:\n\t@true\ntest-changed:\n\t@true\n")):
             with self.subTest(kind=text.splitlines()[0]):
                 self.assertIn("make test-changed BASE=" + "b" * 40, text)
+
+
+class OldRunnerJobsTest(unittest.TestCase):
+    """06.11: gałęzie sprzed wspólnej puli testów brały po 14 procesów — polecenie poza piaskownicą dostaje JOBS=4."""
+
+    def tree(self, runner):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        if runner is not None:
+            os.mkdir(os.path.join(tmp.name, "tools"))
+            with open(os.path.join(tmp.name, "tools", "test_runner.py"), "w", encoding="utf-8") as fh:
+                fh.write(runner)
+        return tmp.name
+
+    def test_pool_detection(self):
+        from tide_daemon.cardflow.engine import test_pool_available
+        self.assertFalse(test_pool_available(self.tree("def execute(): pass\n")))
+        self.assertTrue(test_pool_available(self.tree("class MachineSlots:\n    pass\n")))
+        self.assertTrue(test_pool_available(self.tree(None)), "projekt bez uruchamiacza Tide — bez zmian")
+
+
+class RerunFailedTest(unittest.TestCase):
+    """06.11 (etap A): ponowienie bez zmian kodu uruchamia tylko padnięte moduły — w każdej gałęzi karty."""
+
+    def test_every_card_kind_explains_rerun_of_failed_modules_only(self):
+        for makefile in ("test:\n\t@true\ntest-changed:\n\t@true\n", "test:\n\t@true\n"):
+            for text in OldCardBranchTest.cards(None, OldCardBranchTest.tree(self, makefile)):
+                with self.subTest(makefile=makefile, kind=text.splitlines()[0]):
+                    self.assertIn("nie powtarzaj całego zestawu", text)
+                    self.assertIn("ten sam HEAD, czysty `git status`", text)
+
+    def test_runner_repository_gets_exact_command_other_technologies_the_rule(self):
+        own = self.tree_with_runner()
+        self.assertIn("XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>",
+                      handoff.rerun_failed(own))
+        other = OldCardBranchTest.tree(self, "test:\n\t@dotnet test\n")
+        text = handoff.rerun_failed(other)
+        self.assertNotIn("unittest", text)
+        self.assertIn("narzędziem testów projektu z filtrem", text)
+
+    def tree_with_runner(self):
+        root = OldCardBranchTest.tree(self, "test:\n\t@true\ntest-changed:\n\t@true\n")
+        os.mkdir(os.path.join(root, "tools"))
+        open(os.path.join(root, "tools", "test_runner.py"), "w").close()
+        return root
+
+    def test_runner_with_modules_option_gets_the_runner_command(self):
+        root = self.tree_with_runner()
+        with open(os.path.join(root, "tools", "test_runner.py"), "w", encoding="utf-8") as fh:
+            fh.write('parser.add_argument("--modules", nargs="+")\n')
+        text = handoff.rerun_failed(root)
+        self.assertIn("/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>", text)
+        self.assertNotIn("unittest discover", text)
+
+    def test_reviewer_accepts_rerun_only_on_the_same_head(self):
+        review = OldCardBranchTest.cards(None, OldCardBranchTest.tree(self, "test:\n\t@true\ntest-changed:\n\t@true\n"))[2]
+        self.assertIn("ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD", review)
+
+    def test_documented_command_runs_a_nested_test_module(self):
+        # Wszystkie katalogi testów repozytorium są pakietami (test_every_test_directory_is_a_package).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "apps", "x", "tests"))
+        for part in ("apps", "apps/x", "apps/x/tests"):
+            open(os.path.join(tmp.name, part, "__init__.py"), "w").close()
+        with open(os.path.join(tmp.name, "apps", "x", "tests", "test_probe.py"), "w", encoding="utf-8") as fh:
+            fh.write("import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n")
+        run = subprocess.run([sys.executable, "-m", "unittest", "discover", "-t", ".", "-s", "apps/x/tests",
+                              "-p", "test_probe.py"], cwd=tmp.name, capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("Ran 1 test", run.stderr)
+
+    def test_every_test_directory_is_a_package(self):
+        """Bez `__init__.py` polecenie `unittest discover -t . -s <katalog>` nie zaimportuje modułu."""
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        sys.path.insert(0, os.path.join(root, "tools"))
+        self.addCleanup(sys.path.remove, os.path.join(root, "tools"))
+        import test_runner
+        dirs = sorted({d for pairs in test_runner.SUITES.values() for d, _ in pairs})
+        self.assertEqual([d for d in dirs if not os.path.isfile(os.path.join(root, d, "__init__.py"))], [])
+
+    def test_card_close_reruns_failed_modules_instead_of_reporting_error(self):
+        """06.11 K-68: domknięcie padło na jednym niestabilnym module, a agent podsumowania mógł tylko zgłosić błąd."""
+        text = handoff.close_card(card_id="K-68", title="t", description="d", worktree=self.tree_with_runner(),
+                                  out_dir="/o", tickets=[], manual=False)
+        self.assertIn("nie powtarzaj całego\n`make test` na tym samym kodzie", text)
+        self.assertIn("O przyjęciu odstępstwa decyduje użytkownik", text)
+        self.assertIn("udane ponowienie jej nie zastępuje", text)
+        self.assertIn("XDG_STATE_HOME=\"$d\" /usr/bin/python3 -m unittest discover -t . -s <katalog modułu> -p <plik modułu>", text)

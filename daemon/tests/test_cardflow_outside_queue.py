@@ -9,7 +9,7 @@ def stub(projects, busy=()):
     eng = flow_engine.FlowEngine.__new__(flow_engine.FlowEngine)
     eng._outside_waiting = {}
     eng._outside_seeded = True
-    eng._project = lambda card: (None, types.SimpleNamespace(slug=projects[card]))
+    eng._project = lambda card: (None, types.SimpleNamespace(slug=projects[card], repo="", denied_commands=[]))
     eng._outside_busy = lambda card: card in busy
     return eng
 
@@ -57,7 +57,7 @@ class OutsideQueueTest(unittest.TestCase):
         eng._outside_active = {"K-37-PT-9-1": ("K-37", "unit")}
         eng._start_outside = lambda *a: self.fail("miejsce zajęte")
         eng.journal = types.SimpleNamespace(read=lambda card: [])
-        step, done = {"step": "K-38-PT-1-4"}, {"command": "bash trial.sh"}
+        step, done = {"step": "K-38-PT-1-4"}, {"command": "echo trial"}
         self.assertIsNone(eng._outside_ready("K-38", step, done, {"choice": "run", "ts": "2026-11-05T17:18:00+01:00"}))
         self.assertIn("K-38-PT-1-4", eng._outside_waiting)
         eng._outside_busy = lambda card: False

@@ -356,6 +356,79 @@ Udany start zapamiętuje wybór (`$XDG_STATE_HOME/tide/new-task.json`: repozytor
 
 Wątek główny (D-Bus) nie czeka na gita: `Repos`, `SuggestBranch` i `Start` pracują w jednym wątku roboczym i odpowiadają z opóźnieniem. `--no-tasks` wyłącza obiekt.
 
+## Zatrzymanie i odtworzenie po restarcie (PT-253)
+
+SIGTERM prosi Qt o zakończenie pętli; budzik Pythona daje obsłudze sygnału sterowanie co 500 ms.
+Powrót z `app.exec()` i nawet z `app.main()` nie oznacza końca procesu: Python przy wyjściu
+dołącza wątki `ThreadPoolExecutor`, także po `shutdown(wait=False)`. Kontrolowany wolny
+`git worktree list --porcelain` odtworzył przekroczenie 5 s: wątek `tide-worktrees` czekał w
+`subprocess.run/communicate/select`, a główny w `_python_exit/threading.join`, już po powrocie
+z `app.main()`. Limit każdego polecenia wynosił 60 s, a skaner mógł przejść do kolejnego
+repozytorium. To odtworzenie mechanizmu dojścia do limitu zatrzymania systemd; nie identyfikuje
+konkretnego wolnego repozytorium z wcześniejszego zatrzymania na pulpicie.
+
+Monitor worktrees po rozpoczęciu zamykania odrzuca nową pracę, anuluje kolejkę i sygnalizuje
+anulowanie skanerowi. Bieżący git ma własną grupę procesów; anulowanie jest sprawdzane co 50 ms,
+następnie grupa dostaje SIGTERM, a najpóźniej po 200 ms SIGKILL. Dotyczy to wyłącznie gita
+uruchomionego przez skaner, wraz z jego pomocnikami. Wątek zostaje dołączony przed końcem usługi.
+Przegląd katalogów i pomiar zajętości sprawdzają ten sam znacznik anulowania. Pozostałe użycia
+klasy `Git` zachowują dotychczasowe limity; nie ma zmiany `TimeoutStopSec` ani wymuszonego wyjścia
+interpretera. Blokujący w jądrze odczyt z niedostępnego systemu plików pozostaje ograniczeniem
+anulowania kooperatywnego.
+
+Zamknięcie Tablicy zatrzymuje też jej monitor przepływu: nie przyjmuje nowych akcji, usuwa
+oczekujące akcje z kolejki, pozwala bieżącej operacji zostawić trwały zamiar/wynik i commituje
+zmiany dziennika bez oczekiwania na callback Qt. Operacje przepływu zachowują dotychczasowe
+limity. Dziennik ma kopię usługi zapisaną z `fsync`; po starcie karty i oczekujące decyzje są
+projekcją tego dziennika. Zwykły restart nie zapisuje zdarzenia ręcznego przeniesienia do Backlogu.
+Procesy kroków i poleceń poza piaskownicą pracują w osobnych jednostkach systemd; zatrzymanie
+usługi ich nie zatrzymuje. Nowy proces usługi podejmuje te same jednostki i pliki wyników.
+
+Filtr powiadomień Stream odbiera każdą odpowiedź `Inhibit` tylko raz: `waitForFinished()` podczas
+zatrzymania może także dostarczyć callback `finished`. Przy zamykaniu oba odbiory nie mogą osobno
+zwolnić tego samego ciasteczka. `stop()` zachowuje jedno synchroniczne `UnInhibit` i odrzuca późne
+sygnały aktywności oraz próby ponownego wstrzymania powiadomień. Zwykłe wyjście ze Stream nadal
+zwalnia inhibicję asynchronicznie, także gdy odpowiedź przyszła dopiero po wyjściu.
+
+`python3 -m unittest -v daemon.tests.test_daemon_lifecycle` mierzy monotonicznie koniec własnego
+procesu po SIGTERM (limit 5 s), restart do działającego D-Bus i aktualnej migawki (limit 10 s),
+zachowanie decyzji, wyników i gałęzi oraz brak powtórzenia kroków/scalenia. Scenariusze systemd
+używają wyłącznie jednostek `tide-pt253-test-<los>.service` i zakresów z osobnym losowym prefiksem,
+prywatnej magistrali oraz tymczasowych HOME/XDG/repozytoriów. Sprawdzają jednocześnie żywy krok
+i polecenie poza piaskownicą: grupy cgroup, PID-y, postęp obu procesów po restarcie oraz pojedyncze
+podjęcie obu wyników. Brak prywatnego D-Bus lub menedżera użytkownika oznacza pominięcie scenariusza,
+a nie dowód poprawnego restartu.
+
+Ręczne sprawdzenie po wdrożeniu na pulpit:
+
+1. Rozpocznij kontrolowany, dłuższy krok w tle oraz na drugiej karcie kontrolowane polecenie
+   poza piaskownicą. Zapisz ich PID-y z dzienników procesów, kolumny i dane gałęzi obu kart.
+2. Gdy oba procesy pracują, wykonaj poniższy pomiar. Wywołuje dokładnie
+   `systemctl --user restart tide-daemon` i sprawdza tożsamość obu żywych procesów po restarcie:
+
+   ```python
+   import subprocess, time
+   from pathlib import Path
+   pids = [int(input("PID kroku: ")), int(input("PID polecenia poza piaskownicą: "))]
+   def identity(pid):
+       fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+       assert fields[0] != "Z", f"proces {pid} zakończony"
+       return fields[19]  # starttime, bez pomylenia z ponownie użytym PID-em
+   before = [identity(pid) for pid in pids]
+   started = time.monotonic()
+   subprocess.run(["systemctl", "--user", "restart", "tide-daemon"], check=True)
+   elapsed = time.monotonic() - started
+   assert elapsed < 10, elapsed
+   assert [identity(pid) for pid in pids] == before
+   print(f"restart: {elapsed:.3f} s; oba procesy żyją")
+   ```
+
+3. Potwierdź przyrost dziennika/postęp obu procesów. Odczytaj aktualną migawkę przez
+   `qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.Snapshot`; sprawdź kolumny i dane gałęzi,
+   także dla karty czekającej na decyzję i karty Do sprawdzenia. Poczekaj na naturalny koniec obu
+   kontrolowanych prac: wynik każdego ma zostać podjęty raz, bez dodatkowego kroku, scalenia ani decyzji.
+   Testy automatyczne nie uruchamiają tego polecenia na docelowej usłudze.
+
 ## KRunner
 
 Wtyczka KRunnera: po wpisaniu nazwy projektu, gałęzi albo fragmentu tytułu rozmowy wznawia sesję Claude Code albo Codexa w jej katalogu, a po nazwie gałęzi otwiera worktree.
@@ -903,7 +976,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
 | `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
-| `EditCardPlan(s id, s request)` | `→ s` | zdarzenie zmiany nieruszonego ticketu (`action: edit`, `ticket`, `class`, `executor`, `reviewer`, `body`), odesłanie z uwagami (`action: return`, `feedback`) albo wejście do planującego w Konsoli (`action: enter`) |
+| `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
@@ -1121,6 +1194,49 @@ mode: full
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
+
+### Katalogi danych projektu tylko do odczytu (PT-246)
+
+W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,
+np. `~/.cache/hud-timeline`. `UpsertProject` przyjmuje `readDirs: ["/pełna/ścieżka", "~/katalog"]`;
+migawka projektu zwraca `readDirs` jako listę ścieżek kanonicznych. Brak pola w starym projekcie
+oznacza pustą listę. Pusta lista w żądaniu usuwa udostępnienie, pominięcie pola zachowuje ustawienie.
+Zapis w pliku projektu: `read-dirs` (JSON); wewnętrzne `read-dir-bindings` zachowuje powiązania dowiązań.
+
+Limit wynosi 32 wpisy. Tide usuwa duplikaty, rozwija `~/` względem użytkownika usługi i rozwiązuje
+dowiązania. Nie tworzy brakujących katalogów. Odmawia korzeni systemu, punktów montowania,
+katalogu domowego i jego przodków, katalogów sekretów (m.in. `.ssh`, `.gnupg`, `.aws`, `.azure`,
+`.kube`, `.codex`, `.claude`, `.config`, portfel kluczy i stan Tide) oraz nakładania z obszarem zapisu
+kroku. Ścieżki ze znakami wzorców uprawnień są odrzucane. Token aktualnego punktu modelu również
+nie może leżeć w udostępnionym katalogu. Błąd ustawienia nie zamienia się po cichu w inne uprawnienie.
+
+Każdy start i wznowienie ponownie sprawdza istnienie katalogów i zapamiętane cele dowiązań.
+Podmiana celu daje czytelną odmowę; trzeba usunąć stary wpis i świadomie udostępnić nowy cel.
+Katalogi dostają wyłącznie kroki projektu oraz kroki już uprawnione do odczytu tego projektu jako
+dodatkowego projektu karty/zlecenia. Nie są dopisywane globalnie do innych kart ani do poleceń hosta.
+Zmiana ustawienia działa od następnego uruchomienia, również przy wejściu do tej pracy w Konsoli.
+Już działający proces zachowuje poprzedni profil; usunięcie wpisu go nie zatrzymuje.
+
+Claude otrzymuje `allowRead` i **`denyWrite` profilu systemu plików**, obok zakazu narzędzi Edit.
+Codex zachowuje `workspace-write`: dane nie trafiają do `--add-dir` ani `writable_roots`, a domyślne
+obszary zapisu `/tmp` i `TMPDIR` są wyłączane dla tego profilu. Zachowuje to istniejący ogólny zakres
+odczytu Codexa; `readDirs` nie jest nowym mechanizmem ukrywania reszty dysku. Wejście do Konsoli dla
+tej pracy używa wspólnego profilu i zachowuje go także po usunięciu ostatniego wpisu. Nie powstaje
+nowe pudełko K-38 ani nowa ścieżka wykonywania poleceń poza piaskownicą.
+
+Dowód działania granicy: `daemon/tests/test_project_read_dirs_native.py`, włączany przez
+`TIDE_READ_DIRS_NATIVE=1`. Test używa natywnego Codex `sandbox linux` i natywnego Bash Claude
+z lokalną atrapą API (bez modelu, prawdziwych kluczy, hooków ani MCP). Raporty w
+`build/test-results/read-dirs-native/{claude,codex}-proof.json` osobno pokazują udany odczyt oraz
+niezerowe kody prób zapisu, utworzenia, usunięcia i zmiany nazwy, bezpośrednio i przez dowiązanie
+z worktree. Niedostępność piaskownicy po włączeniu testu jest błędem, nie udanym testem ani pominięciem.
+Próby wymagające zagnieżdżenia piaskownicy należy zgłosić w kroku jako `outside`.
+Jeśli Codex jest zainstalowany jako Snap, próba używa natywnego programu z tego samego
+zainstalowanego pakietu (`/snap/codex/<wersja>/bin/codex`). Wrapper `snap run` może odmówić startu
+w jednostce `tide-outside`, zanim zostanie utworzony profil. Test sprawdza granicę `workspace-write`
+samego programu; nie jest testem dodatkowych ograniczeń Snap ani zgodności jego wrappera z systemd.
+Nie zmienia to produkcyjnego wyboru programu. Artefakty `{claude,codex}-command.json` zapisują
+dokładne argv wykonanego testu obok dowodu operacji.
 
 Tag — `tags/firma.md`: `name` (bez przecinka, do 40 znaków) i `color` — nazwa pastelu z palety
 (`teal`, `lavender`, `peach`, `butter`, `rose`, `mint`, `sky`; lista z `pastel` w `theme/palette/`),
@@ -2021,6 +2137,20 @@ wybrane polecenia, a wznowiony krok dostaje listę dozwolonych i pominiętych. �
 „Zrób zamiast tego…” — `deny` z `instead`. Łańcuch odrzucany jest automatycznie tylko wtedy, gdy na żadne z jego
 poleceń nie da się zezwolić.
 
+Zgodę „uruchamiaj zawsze dla ticketu” można cofnąć w pełnej karcie (Tablica i Sesje).
+`/Board RevokeTicketConsent(id, {ticket, orderSeq, baseVersion})` przyjmuje kontekst z
+`derived.flow.ticketConsents[]` i zwraca `{ok, ticket, active: false, seq}`. Powtórzenie zwraca ten sam wynik.
+Obcy ticket daje `bad-ticket`, a stare zlecenie lub wersja bazy — `stale-context`.
+Projekcja zawiera `active`, `revoked`, `canRevoke`, `seq`, `orderSeq` i `baseVersion`.
+Źródłem jest ostatnie `outside.ticket-consent` lub `outside.ticket-consent-revoked` w bieżącym
+zleceniu i wersji bazy; nowy start i korekta bazy zerują projekcję, zachowując historię.
+Po cofnięciu automatyczne zgody i zapamiętane rodziny projektu nie uruchamiają kolejnych poleceń tego
+ticketu. Reguły projektu i inne tickety pozostają ważne. Jednorazowe ręczne „Uruchom” działa tylko dla
+swojego polecenia; nowe „Uruchamiaj dla ticketu” przywraca automatyzację. Cofnięcie unieważnia
+oczekujące decyzje automatyczne i decyzję `run-ticket`; odrębna ręczna zgoda na polecenie pozostaje.
+Kontrola bezpośrednio przed startem kolejki podlega aktualnym zakazom. Operacja cofnięcia i start
+biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, kończy się normalnie.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
@@ -2029,6 +2159,50 @@ osobne katalogi `.resume-<step>.step` i pliki wyniku; dziennik pozwala odtworzy�
 ```bash
 qdbus6 org.tide.Daemon /Board org.tide.Daemon.Board.ResolveCardStep K-12 '{"choice": "answer", "answer": "ISO 8601"}'
 ```
+
+### Uwagi do najbliższego wznowienia kroku (PT-245)
+
+`/Board AddCardStepNote(s id, s request) → s` przyjmuje obiekt JSON:
+`{step, orderSeq, requestId, text}`. `step` to konkretny bieżący krok, `orderSeq` pochodzi z
+`derived.flow.orderSeq` (numer zdarzenia `card.started`), a `requestId` to niepusty klucz klienta do
+200 znaków. Treść musi być niepusta po usunięciu białych znaków i mieć najwyżej 16 KiB UTF-8.
+Odpowiedź `{ok: true, id, noteId}` potwierdza trwały zapis `step.note-added` w dzienniku, bez
+zatrzymywania procesu ani uruchamiania sesji. Ta sama treść, krok i klucz w tym zleceniu zwracają
+ten sam `noteId` (również po doręczeniu); inna treść lub krok daje `note-conflict`. Nieaktualne
+zlecenie daje `stale-order`, krok zakończony albo zastąpiony — `stale-step`, błędna treść — `bad-note`.
+Zapis i sprawdzenie idempotencji są pod jedną blokadą dziennika.
+
+Wspólne przygotowanie wznowienia dołącza oczekujące uwagi w kolejności zapisu. Dotyczy odpowiedzi,
+retry, zmiany lub przekazania wykonawcy, przejęcia w Konsoli oraz automatycznego wznowienia po
+poleceniu poza piaskownicą. Następca wskazuje `deliveredNoteIds` w `step.started`; intencja
+`step-start` przechowuje tę samą listę do odtworzenia po awarii. Nieudany start bez trwałego
+następcy pozostawia kolejkę. Przy przejęciu istniejącego kroku listę zapisuje `step.entered`.
+Gdy nieprzejęte zadanie Konsoli zostanie atomowo anulowane, `step.console_closed.cancelledNoteIds`
+cofa potwierdzenie wyłącznie uwag dołączonych do tej próby (`consoleNoteIds` w stanie kroku).
+Próba Konsoli ma pusty plik rozstrzygnięcia w trwałym katalogu wejścia kroku, pod nazwą
+złożoną z `processFile` i unikalnego `consoleUnit`. Launcher i anulowanie zmieniają atomowo
+jego nazwę odpowiednio na `.claimed` lub `.cancelled`; wygrywa tylko jedna operacja.
+Plik i zmiana katalogu są synchronizowane na dysk przed potwierdzeniem. Trwałe `.cancelled`
+pozwala odtworzyć cofnięcie po awarii przed zapisem zdarzenia także po utracie runtime lub
+sprzątnięciu go przez `TaskFiles.sweep()`. Plik runtime nadal służy do przekazania polecenia;
+spóźniony launcher nie uruchomi zadania po trwałym anulowaniu. Starsze zadania bez tego
+śladu zachowują obsługę znacznika runtime `.cancelled`. Nieudane anulowanie lub samo
+zamknięcie Konsoli nie cofa doręczenia.
+Potwierdzenie znaczy dołączenie do polecenia, nie przeczytanie przez model. Kolejne wznowienie
+nie powtarza bloku już przekazanych uwag. Sesja może nadal pamiętać wcześniejsze instrukcje.
+
+Kolejka jest ograniczona do łańcucha `parentStep` tego samego ticketu i zlecenia. Niezależne
+review, inny ticket i nowe zlecenie nie otrzymują uwag. Uwaga nie rozszerza zgód na polecenia,
+nie zatwierdza planu i nie wymusza wznowienia po końcu pracy.
+
+Pełna karta w Tablicy i Sesjach pokazuje formularz przy konkretnym kroku oraz
+`flow.stepNotes[] = {noteId, step, text, orderSeq, requestId, status, statusLabel, successor, …}`.
+Stan to `pending` („oczekuje”), `delivered` („przekazana — <następca>”) albo `undelivered`
+(„nieprzekazana — krok zakończony”). `flow.steps[].canAddNote` określa dostępność formularza.
+Błąd/pytanie/zgoda nadal mogą czekać na wznowienie; zakończenie bez wznowienia zachowuje widoczną
+uwagę jako nieprzekazaną. Formularz zachowuje treść i klucz ponowienia po błędzie zapisu.
+Odpowiedź zapisu rozlicza szkic po `requestId` także po otwarciu innej karty; powrót do pierwszej
+pozwala wysłać następną uwagę po sukcesie albo ponowić zapis z tym samym kluczem po błędzie.
 
 ### Czyja wina błędu kroku i „Opisz problem i ponów” (PT-125)
 
@@ -3440,6 +3614,33 @@ przyjmuje `findings` (zaznaczone uwagi) i/lub `feedback` (własny tekst); do pla
 Nie przyjmuje zmian struktury planu tą drogą. Ticket z rozpoczętą gałęzią lub krokiem jest chroniony
 przed edycją również po restarcie. Taka zmiana zwraca `ticket-started`.
 Ponowienie identycznej edycji nie dopisuje drugiego zdarzenia.
+
+**Dopisanie przez użytkownika (PT-248).** W zarządzaniu zatwierdzonym planem przycisk „Dopisz ticket” otwiera
+formularz tytułu, kartki z mierzalnymi kryteriami, klasy, wykonawcy, niezależnego recenzenta i blokerów.
+Ta operacja obejmuje wyłącznie **jeden nowy ticket w jednym projekcie karty**. Blokery wskazują istniejące
+tickety planu; dopisanie nie dodaje blokerów do dotychczasowej pracy. Karta zakończona, aktywna poprawa,
+review, domknięcie lub korekta bazy wykluczają nowy zapis. Przy wstrzymanej karcie review czeka na wznowienie.
+
+Publiczne `EditCardPlan` przyjmuje `{action: "append", planFingerprint, requestKey, title, body, class,
+executor, reviewer, blockers: ["PT-42"]}` oraz opcjonalny `project` równy projektowi karty.
+`derived.flow.plan.fingerprint` jest odciskiem zatwierdzonego planu i wersji bazy, a `canAppend` informuje
+o dostępności formularza. Postęp istniejących kroków nie zmienia odcisku; edycja planu go zmienia.
+Nieaktualny odcisk daje `stale-plan`, ponowne użycie klucza z inną treścią — `request-conflict`.
+Błędy wspólnego sprawdzania formatu wracają jako `invalid-plan` z `errors[]`, bez zmiany planu i rezerwacji ID.
+
+Udany zapis tworzy pojedyncze zdarzenie `plan.proposed` z `sourceKind: append`, `appendRequest` i
+`appendRevision`. Zdarzenie atomowo utrwala propozycję z numerem roboczym oraz oczekującą różnicę.
+Nie uruchamia `planning`, `plan-amend` ani `plan-revise`, również gdy pierwotny planujący ma wyczerpany limit.
+Wybrany recenzent ticketu sprawdza propozycję istniejącą ścieżką `plan-review`; obowiązuje niezależność modelu
+albo siły myślenia oraz zachowanie lokalności. Błąd review używa zwykłych decyzji kroku.
+Werdykt `REQUEST_CHANGES` pozostawia uwagi użytkownikowi, bez automatycznej poprawki przez planującego.
+
+Po review użytkownik osobno wybiera `ApproveCardPlan` lub `EditCardPlan {action: "discard-revision"}`.
+Zatwierdzenie nadaje jeden trwały numer i kieruje ticket do zwykłej realizacji według blokerów.
+Istniejące wiersze wracają bez zmian, łącznie z treścią kartek i przydziałami; postęp pochodzi nadal z dziennika.
+Odrzucenie zachowuje dotychczasowy plan. Poprawiony ticket można zapisać z nowym kluczem żądania.
+Ponowienie identycznego zapisu (także po zatwierdzeniu lub odrzuceniu) zwraca `already: true`, bez nowej
+propozycji. Rezerwacje i odtwarzanie zatwierdzenia korzystają z istniejących trwałych zamiarów.
 
 `action: return` zapisuje `plan.returned` z uwagami i bazą porównania. Krok `plan-amend` przygotowuje
 nową propozycję; usługa oblicza dodane, usunięte i zmienione tickety oraz pola zmian.

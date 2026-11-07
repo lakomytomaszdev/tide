@@ -51,6 +51,36 @@ CHANGE_MAP["cli/"] = "issues"
 CHANGE_MAP["mk/cli.mk"] = "issues"
 CHANGE_MAP["apps/issues/"] = "issues"
 
+# Narzędzia użytkowe ładowane po ścieżce lub uruchamiane jako proces nie tworzą
+# zwykłej krawędzi importu. Jawny kontrakt obejmuje wszystkich znanych odbiorców.
+# Pozostałe tools/, zwłaszcza test_*.py, są infrastrukturą: pełny przebieg.
+FILE_TEST_MODULES = {
+    "tools/board_compat_check.py": ("daemon/tests/test_board_compat_check.py",),
+    "tools/question_corpus.py": ("daemon/tests/test_question_corpus.py",),
+    "tools/next_id.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
+    "tools/check_plans.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
+    "tools/sessions_preview.py": ("apps/sessions/tests/test_window.py",),
+}
+
+# Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty
+# (QML, generatory ładowane po ścieżce) zachowują bezpieczny dobór katalogowy.
+IMPORT_ROOTS = {"daemon/tide_daemon/": "tide_daemon"}
+
+# Uruchomienie osobnego procesu usługi nie tworzy krawędzi importu do jej kodu.
+# Te dwa małe moduły sprawdzają start/Agents oraz drogę /Board od ticketu do review.
+SERVICE_CONTRACT_MODULES = (
+    "daemon/tests/test_dbus_contract.py",
+    "daemon/tests/test_service_smoke.py",
+)
+SERVICE_PREFIX = "daemon/"
+
+# Zmiana wspólnej infrastruktury testów wymaga pełnego przebiegu, także gdy
+# pomocnik mieszka w module testowym (FlowCase/FlowInProcess).
+SHARED_TEST_MODULES = (
+    "daemon/tests/test_cardflow.py",
+    "daemon/tests/test_cardflow_dbus.py",
+)
+
 # Klucz to ścieżka modułu; wartość musi wyjaśniać wspólny zasób. Takie moduły
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.

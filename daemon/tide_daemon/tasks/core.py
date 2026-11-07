@@ -33,7 +33,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 
-from . import agentcmd
+from . import agentcmd, launch
 from . import local as local_mod
 from ..modelnames import is_cloud_model
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
@@ -225,7 +225,8 @@ class TaskFiles:
 
     Przejęcie i anulowanie to zmiana nazwy (`.claimed`, `.cancelled`) — atomowa, więc zadanie
     uruchomi się najwyżej raz, a wycofane nie uruchomi się wcale, nawet gdy Konsole spóźni się
-    o sekundę."""
+    o sekundę. Próby Konsoli z processFile i consoleUnit mają dodatkowo trwały ślad
+    rozstrzygnięcia w katalogu wejścia kroku; runtime jest tylko nośnikiem polecenia."""
 
     def __init__(self, folder: str | None = None):
         self.folder = folder or runtime_dir()
@@ -233,6 +234,17 @@ class TaskFiles:
     def write(self, payload: dict) -> str:
         os.makedirs(self.folder, mode=0o700, exist_ok=True)
         os.chmod(self.folder, 0o700)
+        state_file = launch.task_state_file(payload)
+        if state_file:
+            # Pusty plik w trwałym katalogu wejścia kroku jest wspólną granicą
+            # przejęcia/anulowania. Nie zapisujemy tu treści polecenia.
+            fd = os.open(state_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            launch.sync_directory(state_file)
+            payload = {**payload, "taskStateFile": state_file}
         name = f"{time.time_ns():020d}-{secrets.token_hex(4)}.task"
         path = os.path.join(self.folder, name)
         fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -249,10 +261,18 @@ class TaskFiles:
     @staticmethod
     def cancel(path: str) -> bool:
         """Anuluje zadanie, jeśli nikt go jeszcze nie przejął. False — launcher był szybszy."""
+        data = launch._load(path)
+        state_file = (data or {}).get("taskStateFile")
+        if state_file:
+            if not launch.resolve_task_state(state_file, "cancelled"):
+                if not os.path.exists(state_file + ".cancelled"):
+                    return False
+                launch.sync_directory(state_file)
         try:
             os.rename(path, path + ".cancelled")
         except FileNotFoundError:
-            return False
+            # Launcher mógł zabrać plik runtime, ale przegrać trwałe rozstrzygnięcie.
+            return bool(state_file)
         # Pusty ślad zostaje (claimed() go widzi), treść z poleceniem znika od razu; sprząta sweep().
         try:
             with open(path + ".cancelled", "w", encoding="utf-8"):

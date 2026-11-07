@@ -8,7 +8,9 @@ przeszedł dla oddawanych zmian; nie żąda osobnego pełnego `make test`.
 
 Pełny `make test` uruchom raz przy domknięciu karty (krok `close`), na gałęzi karty po scaleniu
 ticketów, przed podsumowaniem. Nieudany przebieg oznacza problem domknięcia: wynik `error`
-z opisem niepowodzeń zamiast `done`, bez scalania do głównej. Brak zgody lub konieczność wykonania
+z opisem niepowodzeń zamiast `done`. Wyjątek dla domknięcia wymaga jawnego rozliczenia i decyzji
+użytkownika według zasad poniżej; scalenie do głównej nadal wymaga osobnego polecenia.
+Brak zgody lub konieczność wykonania
 poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
 przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
 
@@ -28,23 +30,239 @@ make test JOBS=1             # diagnostyka bez równoległości
 
 Nazwy wszystkich zestawów wypisuje `make help`. Ich jedynym rejestrem jest
 [`tools/test_suites.py`](../tools/test_suites.py): `SUITES` definiuje cele `test-<nazwa>`,
-`CHANGE_MAP` wiąże ścieżki z zestawami, a `SERIAL_MODULES` oznacza wyjątki od równoległości.
+`CHANGE_MAP` wiąże ścieżki z zestawami, `IMPORT_ROOTS` określa kod analizowany przez AST,
+`SERVICE_CONTRACT_MODULES` wymienia mały kontrakt procesu usługi, a `SERIAL_MODULES`
+oznacza wyjątki od równoległości.
 Każdy katalog `TEST_DIRS` musi mieć zestaw; pilnuje tego test rejestru. `make test` nadal bierze
 wszystkie katalogi `TEST_DIRS` z plików `mk/*.mk`, także nowo dopisane komponenty.
 
 `make test-changed` porównuje drzewo robocze z merge-base `BASE` i `HEAD` (domyślnie `master`).
 Uwzględnia commity gałęzi, indeks, zmiany niezapisane w commicie i pliki nieśledzone poza ignorowanymi.
-Usunięcia i przeniesienia obejmują także starą ścieżkę. Najdłuższy prefiks z mapy wygrywa:
-`daemon/tide_daemon/cardflow/` i `daemon/tests/test_cardflow*` wybierają `cardflow`,
-pozostałe `daemon/` wybiera `daemon`, `apps/board/` wybiera `board` itd.
-Zestaw `cardflow` obejmuje również bezpośrednie testy jego modułów zapisane pod innymi
-nazwami: `test_base_suggestions.py` i `test_hostingcli_real.py` w `daemon/tests`.
-To heurystyka katalogów, więc przy zmianach zależności między komponentami dobierz dodatkowe
-zestawy ręcznie. Ścieżka spoza mapy (np. `Makefile`, `mk/`, `tools/`, wspólny moduł motywów
-lub dokumentacja) uruchamia pełny przebieg. Brak zmian kończy się sukcesem bez uruchamiania
-testów; nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
+Usunięcia i przeniesienia kodu lub danych obejmują także starą ścieżkę i wybierają pełny przebieg.
+
+Dla `daemon/tide_daemon/**/*.py` selektor czyta AST kodu usługi i wszystkich katalogów testów,
+bez importowania ani wykonywania tych plików. Śledzi `import`, `from ... import ...` (także
+względne, aliasy i importy wewnątrz funkcji) oraz stałe nazwy w `importlib.import_module` i
+`__import__`, także przez alias modułu lub funkcji (`import importlib as lib`,
+`from importlib import import_module as load`, odpowiedniki z `builtins`). Rozpoznaje
+zarówno `tide_daemon`, jak i `daemon.tide_daemon`. Graf uwzględnia istniejące
+`__init__.py` wszystkich pakietów nadrzędnych importowanego modułu, także dla stałej
+nazwy importu dynamicznego. Wybiera test
+importujący zmieniony moduł bezpośrednio albo przez kod pośredni i pomocniki testów,
+również poza `daemon/tests`. Zmieniony samodzielny moduł testów wybiera sam siebie.
+Brak rozpoznanych importów do zmienionego źródła oznacza dawny zestaw katalogowy.
+
+Graf zachowuje wszystkich znanych pośrednich odbiorców, także przez duże agregatory
+i fixture'y (np. `engine`, `FlowInProcess`). Nie odcina łańcuchów według głębokości ani
+liczby zależności/odbiorców: poprzednie progi mogły pomijać znane testy zależne.
+Zbiór odwiedzonych modułów kończy cykle i ogranicza koszt przejścia do rozmiaru grafu.
+Lokalna zmiana bez wielu odbiorców nadal wybiera mały zestaw; wspólny moduł może wybrać szeroki.
+
+**Świadome ograniczenie cardflow (decyzja koordynatora, 06.11.2026, PT-258/K-68):**
+dla zmian `daemon/tide_daemon/cardflow/*` dobór pozostaje szeroki. Audyt 31 modułów
+wykazał, że każdy prowadzi do wspólnego `engine.py` (albo sam jest silnikiem).
+Przykładowe wybory: `basesuggestions.py` — 79 modułów, `hostingcli.py` — 80,
+`engine.py` — 78, `state.py` — 130, wobec 75 modułów zestawu `cardflow`.
+Zachowujemy graf modułów i wszystkich znanych odbiorców. Redukcja dla lokalnego cardflow
+jest jawnie odroczona ze względu na ograniczenie pracy w toku; nie jest wynikiem tego ticketu.
+Zawężenie działa dla pozostałych komponentów oraz jawnie przypisanych narzędzi użytkowych.
+
+Gdy rozpoznanego wywołania importera dynamicznego nie da się rozstrzygnąć (np. nazwa
+w zmiennej, import względny lub `__import__` z `fromlist`), jego moduł traktowany jest
+jako potencjalny odbiorca każdego zmienionego źródła usługi. Do wyboru trafiają ten moduł
+testowy i wszystkie testy pośrednio importujące taki moduł. Poszerzenie następuje również,
+gdy źródło ma zwykły test statyczny; powód zawiera ścieżkę i linię niepewnego importu.
+Nie wykonujemy kodu w celu ustalenia wartości zmiennych.
+
+Każda zmiana kodu lub danych w `daemon/` dodatkowo wybiera `test_dbus_contract.py` (start procesu i /Agents)
+oraz `test_service_smoke.py` (ticket → review → domknięcie przez /Board). Dzięki temu
+uruchomienie usługi w osobnym procesie ma pokrycie mimo braku krawędzi importu.
+To analiza statyczna: dowolne przekazywanie funkcji importera jako wartości lub refleksja
+mogą wykraczać poza rozpoznawane wywołania; zależności danych i wszystkie scenariusze D-Bus
+nie wynikają z grafu importów. Pełny test przy domknięciu pozostaje wymagany.
+
+Zmiana wspólnych danych lub pomocników w katalogach testów, `__init__.py` oraz modułu testów
+importowanego przez inne testy wybiera pełny przebieg. `SHARED_TEST_MODULES` dodatkowo
+oznacza fixture'y `FlowCase` i `FlowInProcess`. Błąd odczytu/składni podczas analizy AST
+również przełącza na pełny zestaw. Brak zadeklarowanego modułu kontraktowego jest błędem.
+Dokumenty Markdown (`*.md`) w katalogu głównym, `docs/` i komponentach nie wybierają testów
+kodu, także przy usunięciu dokumentu. W mieszanym diffie dobór wynika z pozostałych plików.
+W `docs/` pomijane są również `.rst`, `.txt` i ilustracje (`.png`, `.jpg`, `.jpeg`, `.svg`, `.gif`, `.webp`).
+Wyjątek nie obejmuje Markdown w `tools/`, `mk/`, katalogach testów ani `fixtures/`: wspólne fixture'y
+mogą zawierać dokumenty używane jako dane. Kod i konfiguracja w `docs/` nie są pomijane.
+Narzędzia użytkowe z `FILE_TEST_MODULES` w `tools/test_suites.py` mają jawne kontrakty:
+`board_compat_check.py`, `question_corpus.py`, `next_id.py`, `check_plans.py`, `sessions_preview.py`.
+Wybierają wyłącznie zadeklarowane moduły testów; brak takiego modułu jest błędem konfiguracji.
+Pozostałe `tools/` (w tym cały uruchamiacz, rejestr i benchmarki) zachowują pełny przebieg.
+Ścieżka spoza mapy (np. `Makefile`, `mk/`, nieznane `tools/` lub wspólny moduł motywów)
+uruchamia pełny przebieg. Pozostałe komponenty zachowują mapę katalogową: najdłuższy
+prefiks wygrywa, np. `apps/board/` wybiera `board`. Ich testy często ładują kod po ścieżce
+albo badają QML, więc nie zawężamy ich na podstawie niekompletnych importów.
+
+Selektor wypisuje liczbę i każdy wybrany moduł wraz ze zmienionym plikiem oraz powodem
+(łańcuch AST, kontrakt, mapa katalogowa albo pełny przebieg). Powody zapisuje też w polu
+`selection` pliku `summary.json`. `tools/test_runner.py --changed --base <SHA> --list`
+pokazuje ten sam dobór bez uruchamiania testów. Brak zmian kończy się sukcesem bez testów;
+nieistniejąca baza kończy się błędem z prośbą o `BASE`, bez cichego pomijania kontroli.
 Gdy mapa zmian wybierze pełny zestaw w tickecie, wykonaj ten przebieg; nie uruchamiaj dodatkowego
 `make test` tylko po to, by oddać ticket. Domknięcie nadal sprawdza zintegrowaną gałąź karty.
+
+Pomiar obu selektorów: `python3 tools/test_changed_benchmark.py --base <SHA-startu-ticketu>`.
+Procedura porównuje diffy pięciu ostatnich commitów bez merge z tej bazy. Opcja
+`--history-ref <SHA>` wybiera inny punkt historii **tylko do pomiarów**: pozwala uwzględnić
+np. dokumentacyjną kartę K-71 powstałą po starcie ticketu, bez zmiany jego bazy ani checkout.
+Następnie uruchamia publiczne `make test-changed BASE=<SHA-startu-ticketu>`.
+Testy obu selektorów wykonuje na jednym bieżącym drzewie kodu; identyczne zestawy benchmarku
+mierzy raz. Publiczna walidacja pozostaje niezależnym przebiegiem. Podaje liczbę
+modułów i rzeczywisty czas wykonania, a osobno czas selekcji AST. `--output <katalog>` zachowuje
+logi, `comparison.json` i tabelę `report.md`, w tym SHA HEAD i jego drzewa, bazę, polecenie
+oraz odcisk drzewa roboczego; wznowienie w tym samym katalogu wykorzystuje
+ukończone pomiary, o ile drzewo kodu, JOBS, baza i zakres historii się nie zmieniły. To pełna procedura testowa wymagająca
+środowiska, w którym działają prywatne gniazda i piaskownice testów.
+Nieudana walidacja nie kasuje zebranego porównania, ale pozostaje zapisana w raporcie i powoduje
+niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udanego `test-changed`.
+
+## Wyjątki od testów
+
+Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
+pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
+Odstępstwo w notce ticketu, a przy domknięciu również w podsumowaniu karty, zawiera:
+
+- pierwszy wynik: polecenie, SHA, nieudane testy i odnośnik do logu;
+- wynik tego samego testu na przypiętej bazie ticketu oraz na `master`, z zapisanymi SHA,
+  poleceniami i warunkami porównania (bez zmiany zarządzanej gałęzi);
+- obciążenie maszyny przy niepowodzeniu i porównaniu, w tym równoległe przebiegi i limit procesów;
+- uzasadnienie oraz dokładny zakres odstępstwa: które niepowodzenia obejmuje, a które nadal blokują;
+- właściciela poprawki i sposób śledzenia jej wykonania.
+
+Brak danych oznacz jawnie; nie uznawaj bez dowodu, że problem występował już na bazie albo wynikał
+z obciążenia. Recenzent ocenia uzasadnienie i zakres odstępstwa. Domknięcie karty z nieudanym pełnym
+przebiegiem jest możliwe tylko z takim jawnym rozliczeniem i jawną decyzją użytkownika o przyjęciu
+odstępstwa. Do tego czasu krok zgłasza problem domknięcia, zachowując nieudany wynik. Przyjęcie
+odstępstwa nie zmienia wyniku testu na sukces i nie zastępuje osobnej zgody na scalenie do głównej.
+
+## Bezpośrednie testy usługi i izolacja stanu
+
+Z katalogu głównego repozytorium obsługujemy trzy bezpośrednie wejścia:
+
+```sh
+python3 -m unittest daemon.tests.test_state_isolation
+python3 -m unittest discover -s daemon/tests -t . -p 'test_state_isolation.py'
+python3 -m pytest -q daemon/tests/test_state_isolation.py
+```
+
+Wymagany jest interpreter z zależnościami danego testu (dla trzeciego wejścia także `pytest`).
+Nazwa modułu lub wzorzec może wskazywać dowolny test usługi, także nowy `test_cardflow*.py`.
+`daemon.tests.__init__` izoluje cały pakiet przed importami produktu. Uruchamianie samego pliku,
+które pomija wymagane importy pakietowe, nie jest dodatkowym interfejsem testowym.
+
+Każdy bezpośredni proces dostaje własny `tide-test-state-*` z `tempfile.mkdtemp`, nawet jeśli
+zastał już `XDG_STATE_HOME` sesji. `HOME` pozostaje bez zmian. Domyślny `Journal` zapisuje kopie
+w testowym `$XDG_STATE_HOME/tide/cardflow/`; nie zmieniamy produkcyjnego `mirror_root` ani nie wyłączamy kopii.
+Repozytoria, tablice i świadome nadpisania środowiska testu (również `patch.dict`) muszą wskazywać
+wyłącznie syntetyczne katalogi fixture. Izolacja domyślnego XDG nie zastępuje tej odpowiedzialności.
+
+Runner i inicjalizacja pakietu używają wspólnego kontraktu `tools/test_isolation.py`:
+`TIDE_TEST_ISOLATED=1` oraz `TIDE_TEST_STATE_DIR` wskazują istniejący bezwzględny katalog równy
+`XDG_STATE_HOME`. Sam XDG, sam marker lub niespójny komplet nie oznaczają odziedziczonej izolacji.
+Potomkowie testu, także rzeczywista usługa, dziedziczą środowisko i zapisują do tego samego katalogu.
+Potomek importujący testy pożycza go bez rejestrowania usunięcia. `state_environment` służy runnerowi
+do jawnego przekazania nowego testowego katalogu; jego właściciel musi go wcześniej utworzyć i później usunąć.
+Świadome nadpisanie XDG w fixture wymaga również przekazania zgodnego kontraktu, jeżeli potomny
+proces importujący pakiet testów ma korzystać z tego nadpisania.
+
+Przed zastąpieniem XDG zapamiętujemy w `TIDE_TEST_ORIGINAL_STATE_ROOTS` JSON z polami
+`xdg_state_home` (efektywny pierwotny XDG, z domyślnym HOME/.local/state) i
+`default_tide_state_home` (pierwotny HOME/.local/state/tide). Ten sam zapis dziedziczą potomkowie.
+Te korzenie wykorzystuje strażnik zapisów opisany niżej.
+
+Przy zwykłym zakończeniu bezpośredniego procesu jego `atexit` usuwa własny katalog. Potomkowie
+muszą zakończyć pracę przed rodzicem; nie usuwają pożyczonego katalogu (także po fork).
+Nagłe zabicie procesu bez wykonania `atexit` może pozostawić katalog tymczasowy.
+Przy uruchomieniu przez runner właścicielem pozostaje runner: jak dotychczas usuwa katalog po
+zakończeniu modułu, także nieudanego, a diagnostyka pozostaje w `.log`, `.json` i `summary.json`.
+Testy izolacji porównują lokalizacje i zawartość syntetycznych zapisów, nie mtime stanu użytkownika.
+
+## Strażnik zapisów testów usługi
+
+`tools/test_isolation.initialize()` włącza również `tools/test_guard.py`, przed importem produktu.
+Dotyczy to całego pakietu `daemon.tests`, przy bezpośrednim unittest/pytest oraz przez runner,
+bez dodatkowych fixture w modułach. Chronimy pierwotne `HOME/.local/state/tide` oraz
+`<pierwotny XDG_STATE_HOME>/tide`. Zapamiętujemy ścieżki oryginalne i rozwiązane przez `realpath`;
+sprawdzamy także dowiązania do katalogów i plików, nieistniejące jeszcze cele, ścieżki względem
+`cwd`/`dirfd`, obie strony rename/link i usuwanie lub przeniesienie przodka chronionego katalogu.
+Dowiązania rozwiązujemy komponent po komponencie w kontekście zgłaszającego procesu.
+`/proc/self` i `/proc/thread-self` zachowują jego identyfikator procesu/wątku również wtedy,
+gdy pojawią się dopiero w celu kolejnego dowiązania, np. przez `/dev/fd/N` albo własny łańcuch
+aliasów. Ponowne otwarcie chronionego pliku przez legalny deskryptor O_RDONLY z O_TRUNC
+jest blokowane przed wyzerowaniem, także w potomnej powłoce. Legalne aliasy poza ochroną
+zachowują prawo zapisu; usunięcie samego zewnętrznego dowiązania nadal jest dozwolone.
+
+Strażnik wymaga Linux x86-64, seccomp user notification (z obsługą CONTINUE) i dostępu przodka
+do `/proc/<pid>/{mem,fd,cwd}`. Nie wymaga kompilatora, roota, zmiany praw katalogu ani montowań.
+Proces wejściowy staje się nadzorcą, a jego potomek kontynuuje test. Filtr jądra obejmuje ten proces,
+nowe wątki i potomków przez fork/exec, także obce programy, statyczne pliki wykonywalne oraz procesy
+z wyczyszczonym środowiskiem. Nadzorca jest subreaperem: osierocony proces po double-fork/setsid
+lub zatrzymaniu usługi nadal ma go za przodka, zachowuje ochronę i dostęp do legalnych celów.
+Nie zmieniamy systemowego `ptrace_scope` ani uprawnień innych procesów.
+`TIDE_TEST_GUARD` podaje PID nadzorcy wyłącznie diagnostycznie:
+odziedziczoną ochronę potwierdza bezskutkowa próba `prctl` obsługiwana przez filtr, a nie wartość env.
+
+Nadzorca odczytuje cele wywołań systemowych przed ich wykonaniem. Odmawia zapisywalnego
+open/creat, truncate, unlink/rmdir, mkdir, rename, link/symlink i zmian metadanych w chronionych
+korzeniach; kontroluje też zapisy przez deskryptory i współdzielone mapowania pliku.
+W chronionych korzeniach odrzuca każde plikowe `MAP_SHARED`/`MAP_SHARED_VALIDATE`, także
+z początkowym `PROT_READ` lub `PROT_NONE`: późniejsze `mprotect` lub `pkey_mprotect` mogłoby
+umożliwić zapis bez kolejnego kontrolowanego wywołania plikowego. Dotyczy to również
+odziedziczonego deskryptora O_RDWR. Odmowa następuje już przy `mmap`, daje EPERM i trwały
+kod 125 scenariusza. To zachowawcze ograniczenie obejmuje również współdzielone mapowania
+używane wyłącznie do odczytu. Zwykły odczyt, prywatne mapowania `MAP_PRIVATE` i mapowania
+anonimowe pozostają dozwolone; prywatna zmiana pamięci nie zmienia pliku.
+Python dostaje `PermissionError`, a np. `/bin/sh`, `rm` czy `mv` — systemowy `EPERM`.
+Rozróżniamy mutację celu dowiązania od zmiany samego wpisu: unlink/rename zewnętrznego
+dowiązania jest legalne, jeśli jego wpis i katalog nadrzędny leżą poza ochroną; operacja na pliku
+wewnątrz dowiązanego katalogu nadal jest blokowana. Obsługujemy także `utimensat(fd, NULL, …)`
+(futimens używany przez tar): oceniany jest plik deskryptora, nie adres NULL.
+Mutujące `openat2` z `RESOLVE_IN_ROOT` jest zawsze odrzucane przez `EPERM` i powoduje
+kod 125 scenariusza, także dla celu poza chronionymi korzeniami. Ten tryb zmienia znaczenie
+`/`, `..` i absolutnych dowiązań względem `dirfd`; strażnik nie próbuje zastępować jego
+semantyki zwykłym `realpath`. Odczyt przez ten tryb pozostaje dozwolony.
+Nie polegamy na monkeypatchu `open`, argv potomka ani obserwowaniu zmian po fakcie.
+Nadzorca nie podlega filtrowi i zachowuje informację o naruszeniu do końca całego drzewa.
+Każda odmowa wypisuje na jego stderr `TIDE TEST GUARD:` i JSON z `scenario` (PID testu),
+`pid` sprawcy, `operation` i `targets`. Po naruszeniu wynik całego uruchomienia to **125**,
+nawet jeśli unittest/pytest wypisze sukces, produkt przechwyci wyjątek, zignoruje błąd potomka
+albo wykona `os._exit(0)`. Runner zachowuje odmowy w logu modułu i traktuje jego kod jako błąd.
+
+Awaria inicjalizacji daje `setup_error` i kod 125, bez kontynuowania niechronionego produktu.
+Utrata dostępu nadzorcy do celu również oznacza odmowę i błąd scenariusza. Mechanizmy bez
+obsługiwanej ścieżki (Linux AIO, io_uring, open-by-handle) dostają `ENOSYS`, aby biblioteka mogła
+użyć kontrolowanych odpowiedników. Nieaktualne powiadomienie po zakończeniu procesu nie jest
+naruszeniem: przed odczytem `/proc` sprawdzamy identyfikator powiadomienia w jądrze.
+Nadzorca odbiera statusy osieroconych procesów. Po zakończeniu głównego procesu testu daje
+pozostałym potomkom sekundę na zakończenie (nadal kontrolując ich mutacje), następnie kończy
+je przez SIGKILL i odbiera ich statusy przed oddaniem wyniku. Dotyczy to wyłącznie jego drzewa,
+również procesów we własnych sesjach; niezależne usługi pozostają poza tym sprzątaniem.
+Sygnał HUP filtra nie zastępuje `waitpid`: po nim nadzorca odbiera wszystkie pozostałe statusy,
+także gdy ostatni proces zakończył się między wcześniejszym WNOHANG a odczytem HUP.
+Fixture nadal powinny sprzątać procesy podczas testu. Zewnętrzny SIGTERM/SIGINT jest przekazywany
+procesowi testu, o ile ten jeszcze żyje.
+
+To ochrona przed przypadkowym przeciekiem testów, nie piaskownica do wykonywania wrogiego kodu.
+`SECCOMP_USER_NOTIF_FLAG_CONTINUE` ma wyścig między oceną ścieżki a operacją (np. celowa równoległa
+podmiana dowiązania lub argumentów syscall). Nie gwarantujemy ochrony przed takimi atakami,
+istniejącymi twardymi dowiązaniami poza korzeniami, zmianą przestrzeni montowań ani dowolnym
+urządzeniowym ioctl. Strażnik nie chroni całego HOME; fixture nadal wskazują syntetyczne dane.
+Proces usługi uruchomiony niezależnie od drzewa testu zachowuje swoje prawa. Jego legalne zmiany
+nie są naruszeniem testu: nie porównujemy mtime ani migawki wspólnego katalogu użytkownika.
+
+Test kontrolny `python3 -m unittest scripts.tests.test_state_guard` uruchamia osobne negatywne
+scenariusze pod unittest i pytest (gdy jest dostępny). Oczekuje kodu 125, diagnostyki i identycznych
+plików syntetycznego stanu. Oddzielnie sprawdza Python, potomka z domyślnym `Journal`, dalszego
+potomka, rzeczywisty tide-daemon na prywatnej magistrali oraz `/bin/sh` z rzeczywistymi poleceniami
+zapisu/usunięcia/rename. Próby `daemon/tests/guard*_probe.py` nie należą do automatycznego discover:
+uruchamia je wyłącznie test kontrolny. Brak prywatnej magistrali pomija próbę pełnej usługi,
+nie pozostałe dowody. Do oddania ticketu potrzebny jest przebieg w środowisku z tą magistralą.
 
 ## Równoległość i wynik
 
@@ -70,8 +288,8 @@ decyzji) i `test_cardflow_dbus.py` (odtworzenie pliku dziennika widoczne przed o
 w migawce). Oba przeszły po 3 próby pojedyncze, lecz pod obciążeniem 14 procesów miały
 odpowiednio 1/5 i 2/4 porażek. Uzasadnienia są przy wpisach `SERIAL_MODULES`; testy nadal
 się wykonują i ich błędy trafiają do wspólnego raportu. `FlowInProcess` dodatkowo kończy
-wątki i dostarcza ich callbacki przed restartem lub usunięciem fixture, aby praca starego
-silnika nie przechodziła do następnego testu.
+wątki i opróżnia kolejkę callbacków Qt przed restartem lub usunięciem fixture. Wyniki zamkniętego
+monitora są odrzucane, aby praca starego silnika nie przechodziła do następnego testu.
 
 Logi trafiają do unikalnego `build/test-results/run-*/`: plik `.log` i `.json` na moduł oraz
 `summary.json` z czasem, kodami wyjścia, licznikami i identyfikatorami wykonanych testów.
@@ -92,3 +310,44 @@ nie urywało się przedwcześnie. Wymaga tego samego środowiska co pełne testy
 gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. Nie uruchamiaj
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
+
+## Ponowienie padniętych modułów
+
+Etap A oszczędzania czasu testów (06.11.2026: 31% czasu testów ticketów to były powtórki całego zestawu na
+niezmienionym kodzie). Gdy przebieg ticketu padł, a autor nie zmienia żadnego pliku (podejrzenie niestabilności
+albo obciążenia), nie powtarza całego `make test-changed`/`make test`. Uruchamia tylko moduły z listy
+„Wszystkie nieudane testy” (albo z `summary.json`, `returncode` różny od 0), każdy osobno:
+
+```sh
+/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>
+```
+
+`--modules` uruchamia dokładnie te moduły z tą samą pulą maszyny, osobnym katalogiem stanu każdego modułu
+i raportem `summary.json` co pełny przebieg. Gałąź karty sprzed tej opcji ponawia moduły pojedynczo:
+`d="$(mktemp -d)" && XDG_STATE_HOME="$d" /usr/bin/python3 -m unittest discover -t . -s <katalog> -p <plik>`.
+
+W notce zapisuje pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, raport) i ponowienie (ten sam HEAD,
+czysty `git status`, lista modułów, wynik). Recenzent uznaje ponowienie tylko przy tym samym HEAD co pełny przebieg.
+Każda zmiana pliku przywraca pełne polecenie zasady testów. Pełny `make test` przy domknięciu karty zostaje;
+jeśli padnie, agent domknięcia także ponawia tylko padnięte moduły na tym samym HEAD.
+
+Ponowienie ogranicza to, co się uruchamia, a nie zmienia oceny: porażka pierwszego przebiegu pozostaje wynikiem,
+a udane ponowienie służy jako dowód do rozliczenia według [wyjątków od testów](#wyjątki-od-testów).
+Projekty w innych technologiach stosują tę samą zasadę narzędziem testów projektu z filtrem na padnięte testy.
+Tekst zasady w kartkach kroków: `rerun_failed` w `daemon/tide_daemon/cardflow/handoff.py`.
+
+Tide wymusza tę zasadę sam (`daemon/tide_daemon/cardflow/testrerun.py`): gdy polecenie poza piaskownicą to
+pełny przebieg (`make test`, `make test-changed …`), a ostatni taki przebieg w tym samym worktree padł na tym samym
+HEAD przy czystym drzewie i takim samym poleceniu (cel, BASE, JOBS), Tide uruchamia zamiast niego
+`tools/test_runner.py --modules` z modułami, które padły według `summary.json` tamtego przebiegu, i zapisuje
+w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
+oznaczają zwykły pełny przebieg. Dotyczy gałęzi, których uruchamiacz ma opcję `--modules`.
+
+## Starsze gałęzie bez celu test-changed
+
+Wyjątek dotyczy wyłącznie gałęzi, której Makefile (wraz z `mk/*.mk`) nie udostępnia jeszcze
+`test-changed`: autor i recenzent uruchamiają tam pełny `make test` i zapisują polecenie oraz wynik
+w notce. Tide sprawdza dostępność celu w worktree ticketu podczas tworzenia kartki przekazania
+(`cardflow/handoff.py`). Nie wymaga przenoszenia infrastruktury testów z głównej gałęzi do starej
+karty. Gdy cel jest dostępny, obowiązuje przypięty `BASE` i zwykłe `make test-changed`.
+Ten wyjątek nie znosi pełnego testu gałęzi karty przy domknięciu.

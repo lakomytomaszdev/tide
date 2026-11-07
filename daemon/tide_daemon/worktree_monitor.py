@@ -32,24 +32,32 @@ class WorktreeMonitor(QObject):
         self._json = "[]"
         self._refreshing = False
         self._again = False
+        self._stopped = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees")
         self._finished.connect(self._deliver)
         self._timer = QTimer(self, interval=refresh_ms)
         self._timer.timeout.connect(self.refresh)
 
     def start(self) -> None:
+        if self._stopped:
+            return
         self.refresh()
         self._timer.start()
 
     def stop(self) -> None:
+        self._stopped = True
         self._timer.stop()
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        if hasattr(self.scanner, "stop"):
+            self.scanner.stop()
+        self._pool.shutdown(wait=True, cancel_futures=True)
 
     def list_json(self) -> str:
         return self._json
 
     def refresh(self) -> None:
         """Odświeżenie na żądanie; gdy już trwa, jeszcze jedno zaraz po nim."""
+        if self._stopped:
+            return
         if self._refreshing:
             self._again = True
             return
@@ -57,6 +65,8 @@ class WorktreeMonitor(QObject):
         self._submit(self.scanner.refresh, self._after_refresh)
 
     def publish(self) -> None:
+        if self._stopped:
+            return
         live = self.live_source() if self.live_source else ()
         cards = self.card_places_source() if self.card_places_source else ()
         text = json.dumps(self.scanner.snapshot(self.cwds_source(), live=live, card_paths=cards), ensure_ascii=False)
@@ -70,6 +80,9 @@ class WorktreeMonitor(QObject):
         w wątku głównym. confirmed: JSON {ścieżka: {dirty, unmerged, unpushed, branch}} — stan
         z potwierdzenia; niepoprawny JSON oznacza odmowę dla wszystkich ścieżek."""
         paths = list(paths)
+        if self._stopped:
+            reply(json.dumps([_refused(p, "unavailable", "usługa się zamyka") for p in paths], ensure_ascii=False))
+            return
         seen = None
         if force and confirmed:
             try:
@@ -89,6 +102,9 @@ class WorktreeMonitor(QObject):
 
     def prune(self, repo_path: str, reply) -> None:
         """`git worktree prune` w tle (tylko wpisy bez katalogu); reply(json) w wątku głównym."""
+        if self._stopped:
+            reply(json.dumps({"repoPath": repo_path, "ok": False, "pruned": [], "message": "usługa się zamyka"}))
+            return
         def done(result):
             if result is None:
                 result = {"repoPath": repo_path, "ok": False, "pruned": [], "message": "błąd usługi"}
@@ -97,11 +113,13 @@ class WorktreeMonitor(QObject):
         self._submit(lambda: self.scanner.prune(repo_path), done)
 
     def open(self, path: str, app: str) -> bool:
+        if self._stopped:
+            return False
         known = any(w["path"] == path and not w["missing"] for w in json.loads(self._json))
         return bool(known and self.launchers and self.launchers.open(app, path))
 
     def show_window(self) -> bool:
-        return bool(self.launchers and self.launchers.show_window())
+        return bool(not self._stopped and self.launchers and self.launchers.show_window())
 
     def launchers_json(self) -> str:
         return json.dumps(self.launchers.available() if self.launchers
@@ -129,10 +147,14 @@ class WorktreeMonitor(QObject):
             self._submit(self.scanner.measure_stale, lambda _n: self.publish())
 
     def _submit(self, work, then) -> None:
+        if self._stopped:
+            return
         future = self._pool.submit(work)
         future.add_done_callback(lambda f: self._finished.emit(then, f))
 
     def _deliver(self, then, future) -> None:
+        if self._stopped or future.cancelled():
+            return
         try:
             result = future.result()
         except Exception as exc:  # błąd w tle nie może położyć usługi

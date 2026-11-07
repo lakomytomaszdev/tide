@@ -555,6 +555,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="RevokeTicketConsent">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="AddCardStepNote">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="ResolveCardCaretaker">
     <arg name="id" type="s" direction="in"/>
     <arg name="request" type="s" direction="in"/>
@@ -1204,6 +1214,13 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)
+    def RevokeTicketConsent(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.revoke_ticket_consent(card_id, request, lambda value: self.bus.send(pending.createReply([value])))
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
     def ResolveCardCaretaker(self, card_id: str, request: str, message: QDBusMessage) -> str:
         message.setDelayedReply(True)
         pending = QDBusMessage(message)
@@ -1225,6 +1242,18 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.PreviewStepFault", flush=True)
 
         self.monitor.preview_step_fault(card_id, request, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def AddCardStepNote(self, card_id: str, request: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+
+        def reply(text: str) -> None:
+            if self.bus is None or not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Board.AddCardStepNote", flush=True)
+
+        self.monitor.add_card_step_note(card_id, request, reply)
         return ""
 
     @pyqtSlot(str, str, QDBusMessage, result=str)

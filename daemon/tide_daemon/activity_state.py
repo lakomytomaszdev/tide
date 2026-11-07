@@ -139,9 +139,11 @@ class NotificationFilter(QObject):
         self.bus = bus or QDBusConnection.sessionBus()
         self.env = env
         self.cookie = 0
+        self._stopped = False
         self._wanted = False
         self._allowed: dict = {}
         self._pending: set[QDBusPendingCallWatcher] = set()
+        self._blocking_release = False
         self.retry_first, self.retry_max = retry_ms
         self._retry_ms = self.retry_first
         self._retry = QTimer(self, singleShot=True)
@@ -155,6 +157,8 @@ class NotificationFilter(QObject):
     # --- stan docelowy -----------------------------------------------------------------------
 
     def update(self) -> None:
+        if self._stopped:
+            return
         allow = self.state.allowed
         if allow:
             self._hold(allow)
@@ -162,6 +166,7 @@ class NotificationFilter(QObject):
             self.release()
 
     def stop(self) -> None:
+        self._stopped = True
         self.release(blocking=True)
 
     def _hold(self, allow: dict) -> None:
@@ -170,7 +175,7 @@ class NotificationFilter(QObject):
         self._allow(allow)
 
     def _inhibit(self) -> None:
-        if not self._wanted or self.cookie or self._pending:
+        if self._stopped or not self._wanted or self.cookie or self._pending:
             return
         msg = QDBusMessage.createMethodCall(*NOTIFY, "Inhibit")
         msg.setArguments([INHIBIT_ENTRY, INHIBIT_REASON, {}])
@@ -179,7 +184,8 @@ class NotificationFilter(QObject):
         watcher.finished.connect(lambda w: self._inhibited(w))
 
     def _inhibited(self, watcher: QDBusPendingCallWatcher, release_now: bool = True) -> None:
-        # Blokujące zatrzymanie i sygnał finished mogą odebrać tę samą odpowiedź — ciasteczko zwalniamy raz.
+        # Przy stop() odpowiedź odbieramy też synchronicznie. Sygnał finished
+        # może nadejść podczas czekania lub zwalniania — zużywamy odpowiedź tylko raz.
         if watcher not in self._pending:
             return
         self._pending.remove(watcher)
@@ -193,7 +199,7 @@ class NotificationFilter(QObject):
             return
         self.cookie = int(reply.arguments()[0])
         self._retry_ms = self.retry_first
-        if not self._wanted and release_now:  # wyjście ze Stream, zanim serwer odpowiedział
+        if not self._wanted and release_now and not self._blocking_release and not self._stopped:
             self._uninhibit(blocking=False)
 
     @pyqtSlot(str)
@@ -218,9 +224,13 @@ class NotificationFilter(QObject):
         if blocking:
             # Zatrzymanie usługi: pętla Qt już nie działa, więc odpowiedź na Inhibit odbieramy tutaj
             # i zwalniamy niżej, czekając na UnInhibit.
-            for watcher in list(self._pending):
-                watcher.waitForFinished()
-                self._inhibited(watcher, release_now=False)
+            self._blocking_release = True
+            try:
+                for watcher in list(self._pending):
+                    watcher.waitForFinished()
+                    self._inhibited(watcher, release_now=False)
+            finally:
+                self._blocking_release = False
         if self.cookie:
             self._uninhibit(blocking)
 

@@ -25,7 +25,7 @@ trwające kroki i jedno zdanie, gdy nic nie czeka na użytkownika. Widok `CardFu
 """
 from __future__ import annotations
 
-from . import history
+from . import history, consent
 from .labels import kind_label
 from .state import FlowState, ticket_waits
 
@@ -45,6 +45,7 @@ TICKET_STATUS = {"planned": "w planie", "queued": "w kolejce", "running": "pracu
 def enrich(st: FlowState, out: dict) -> dict:
     """Dokłada pola pełnej karty do gotowego `derived` (ten sam słownik)."""
     flow = out["flow"]
+    flow["ticketConsents"] = consent.view(st)
     flow["canTalkToCaretaker"] = bool(st.started and not st.card_finished)
     decisions = flow.get("decisions") or []
     rows = {(r.get("id") or r.get("workId")): r for r in (flow.get("plan") or {}).get("rows") or []}
@@ -57,6 +58,8 @@ def enrich(st: FlowState, out: dict) -> dict:
         ticket["executor"] = assigned.get("executor") or row.get("executor") or ""
         ticket["reviewer"] = override.get("reviewer") or assigned.get("reviewer") or row.get("reviewer") or ""
         ticket.update(ticket_status(st, ticket))
+    from .stepnotes import enrich as enrich_notes
+    enrich_notes(st, flow)
     from .caretaker import running_entries
     flow["running"] = running_steps(flow.get("steps") or [], st) + running_entries(st)
     flow["history"] = history.build(st, flow.get("steps") or [])

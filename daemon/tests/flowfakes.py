@@ -36,8 +36,14 @@ def opt(name):
 sid = opt("--session-id") or opt("--resume")
 prompt = sys.stdin.read()
 cwd = os.getcwd()
-result = re.search(r"Plik wyniku: (\S+)", prompt)
-result = result.group(1) if result else ""
+if prompt.startswith("Jesteś opiekunem karty"):
+    # Kontekst opiekuna może cytować kartki wcześniejszych kroków. Obowiązuje końcowa linia jego własnego wyniku.
+    results = re.findall(r"^Plik wyniku: (\S+)$", prompt, re.MULTILINE)
+    result = results[-1] if results else ""
+else:
+    # Planowanie podaje ścieżkę po zdaniu w tej samej linii; pozostałe kroki zachowują dawny odczyt.
+    result = re.search(r"Plik wyniku: (\S+)", prompt)
+    result = result.group(1) if result else ""
 out = os.path.dirname(result) if result else os.path.join(os.path.dirname(cwd), "missing-out")
 os.makedirs(out, exist_ok=True)
 with open(os.path.join(out, "fake-call.json"), "w", encoding="utf-8") as fh:
@@ -175,7 +181,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            kept = row["workId"].startswith("PT-") and (row is rows[0] or "Dodaj ticket na migrację formatu" in prompt)
+            # Pierwszy rozpoczęty ticket zachowuje kartkę także dla numerów z zewnętrznego trackera.
+            kept = (row is rows[0] and not row["workId"].startswith("#")) or (
+                row["workId"].startswith("PT-") and "Dodaj ticket na migrację formatu" in prompt)
             fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     if broken_structure:
         with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
@@ -333,6 +341,14 @@ if word == "pytanie-bez-pracy" and "Odpowiedź użytkownika:" not in prompt:
     finish("question", question="Który format daty?")
     sys.exit(0)
 
+if word == "poza-uwagi":
+    if "Wznowienie tego samego kroku" not in prompt:
+        until = time.monotonic() + 30
+        while not os.path.isfile(os.path.join(cwd, "release-notes")) and time.monotonic() < until:
+            time.sleep(0.05)
+        os.unlink(os.path.join(cwd, "release-notes"))
+    word = "poza"
+
 write("start")
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)
@@ -424,6 +440,13 @@ elif word in ("czeka-na", "czeka-na-blad"):
     # tylko błąd z nazwą ticketu (jak PT-191) — o czekaniu decyduje użytkownik w oknie.
     target = re.search(r"ATRAPA-CZEKA: (\S+)", prompt).group(1)
     if "jest scalony do gałęzi karty" in prompt:
+        # PT-260: dowód pobrania pracy blokera, a nie samo rozpoznanie zdania w kartce wznowienia.
+        branch = re.search(r"git merge --no-edit ([^`]+)`", prompt).group(1)
+        subprocess.run(["git", "merge", "--no-edit", branch], check=True)
+        with open(os.path.join(cwd, "ATRAPA-1.md"), encoding="utf-8") as fh:
+            dependency = fh.read()
+        with open(os.path.join(out, "dependency-read.txt"), "w", encoding="utf-8") as fh:
+            fh.write(dependency)
         finish("done")
     elif word == "czeka-na":
         finish("error", reason=f"brak modułu z {target}", waitFor=target)
@@ -465,6 +488,11 @@ elif word == "srodowisko":
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "question",
                    "question": "Czy możesz uruchomić testy z Dockerem/Testcontainers poza piaskownicą?"}, fh)
+elif word == "poza-kolejne":
+    # Każde wznowienie ponownie prosi o to samo polecenie: test granic zgody ticketu.
+    with open(result, "w", encoding="utf-8") as fh:
+        json.dump({"result": "outside", "command": "echo zewnetrzne-ok",
+                   "reason": "kolejna prośba ticketu"}, fh)
 elif word == "poza":
     if "uruchomił poza piaskownicą" in prompt and "zewnetrzne-ok" in prompt:
         finish("done")

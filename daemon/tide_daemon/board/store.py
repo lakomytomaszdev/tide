@@ -79,7 +79,7 @@ CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "n
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
-                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules")
+                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -798,6 +798,15 @@ class BoardStore:
                 _doc_set(doc, key, json.dumps(v[field_name], ensure_ascii=False))
         if "assignmentRules" in v:
             _doc_set(doc, "assignment-rules", json.dumps(v["assignmentRules"], ensure_ascii=False))
+        if "readDirs" in v:
+            from ..tasks import readaccess
+            try:
+                dirs, bindings = readaccess.normalize(v["readDirs"], writable=[doc.get("repo")],
+                    bindings=project.read_dir_bindings if project else [])
+            except ValueError as exc:
+                raise BoardError(str(exc)) from None
+            _doc_set(doc, readaccess.KEY, json.dumps(dirs, ensure_ascii=False))
+            _doc_set(doc, readaccess.BINDINGS_KEY, json.dumps(bindings, ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         change.result = {"ok": True, "slug": slug, "changed": False}
@@ -1183,6 +1192,7 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "docsDir": docs_dir, "cards": cards, "path": project.path,
             "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
             "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
+            "readDirs": list(project.read_dirs),
             "assignmentRules": project.assignment_rules}
 
 
@@ -1399,6 +1409,12 @@ def _projects(value) -> list[str]:
 
 def _project_values(data: dict, board_root: str) -> dict:
     out = {}
+    if "readDirs" in data:
+        from ..tasks import readaccess
+        try:
+            out["readDirs"] = readaccess.paths(data["readDirs"])
+        except ValueError as exc:
+            raise BoardError(str(exc)) from None
     for key in ("assignmentRules", "globalAssignmentRules"):
         if key in data:
             value = _body(data[key]).strip()

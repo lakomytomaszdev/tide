@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from . import planartifacts
 
 from ..board.model import PROJECTS_MAX
 from ..coordination import plan as plan_mod
@@ -54,6 +56,7 @@ class Proposal:
     cards: dict[str, str]
     waves: list[list[str]]
     errors: list[str]
+    artifacts: dict[str, bytes] = field(default_factory=dict)
 
 
 def _same_title(a: str, b: str) -> bool:
@@ -70,11 +73,12 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
     if not real.lower().endswith(".md") or not any(_inside(real, root) for root in allowed_roots):
         return Proposal(None, [], {}, [], ["plik planu musi być Markdownem w repozytorium lub katalogu kroku"])
     try:
-        if os.path.getsize(real) > plan_mod.MAX_BYTES:
-            raise ValueError("plan przekracza 512 KB")
-        with open(real, encoding="utf-8") as fh:
-            content = fh.read()
+        artifacts = planartifacts.read(os.path.dirname(path), plan_name=os.path.basename(path))
     except (OSError, UnicodeError, ValueError) as exc:
+        return Proposal(None, [], {}, [], [f"niepoprawne artefakty planowania: {exc}"])
+    try:
+        content = artifacts[os.path.basename(path)].decode("utf-8")
+    except (KeyError, UnicodeError, ValueError) as exc:
         return Proposal(None, [], {}, [], [f"nie można przeczytać planu: {exc}"])
     plan = plan_mod.parse(content, real)
     if plan is None:
@@ -164,14 +168,11 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
             errors.append(f"{ident}: kartka wychodzi poza katalog tickets")
         else:
             try:
-                if os.path.getsize(card_path) > plan_mod.MAX_BYTES:
-                    raise ValueError("kartka przekracza 512 KB")
-                with open(card_path, encoding="utf-8") as fh:
-                    body = fh.read()
+                body = artifacts["tickets/" + card_name].decode("utf-8")
                 if not CRITERION.search(body):
                     errors.append(f"{ident}: kartka nie ma kryteriów akceptacji")
                 cards[ident] = body
-            except (OSError, UnicodeError, ValueError):
+            except (KeyError, OSError, UnicodeError, ValueError):
                 errors.append(f"{ident}: brak czytelnej kartki tickets/{card_name}")
         rows.append({"workId": ident, "title": row.title, "sourceState": row.state if imported else "",
                      "executor": author.name if author is not None else row.agent,
@@ -179,6 +180,12 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
                      "note": row.note, "blockers": list(row.blockers),
                      **({"project": slug} if len(projects) > 1 else {}),
                      **({"fromPlan": other["path"]} if from_other else {})})
+    published = {os.path.basename(path)} | {name for name in artifacts if name.startswith('followups/')}
+    published.update('tickets/' + row['workId'].lstrip('#') + '.md' for row in rows)
+    try:
+        planartifacts.check_links(artifacts, published=published)
+    except ValueError as exc:
+        errors.append(str(exc))
     for row in rows:
         for blocker in row["blockers"]:
             if blocker not in seen:
@@ -189,7 +196,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         through = sorted({r.get("project") or "" for r in rows if r["workId"] in stuck} - {""})
         errors.append((f"{', '.join(stuck)}: " if stuck else "") + "plan zawiera cykl blokerów"
                       + (f" przez projekty {', '.join(through)}" if len(through) > 1 else ""))
-    return Proposal(plan, rows, cards, waves, errors)
+    return Proposal(plan, rows, cards, waves, errors, artifacts)
 
 
 def _cycle(rows: list[dict]) -> list[str]:

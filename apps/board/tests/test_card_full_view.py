@@ -92,6 +92,31 @@ class FixtureTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
 class FullViewTest(ProbeCase):
+    def test_ticket_consent_button_calls_public_operation_with_current_context(self):
+        events = journal_d()
+        events.append({"type": "outside.ticket-consent", "seq": 200, "ticket": "#2"})
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["visible"] = js("page.cardFullView.flow.ticketConsents[0].active")
+replies.append({"ok": False, "error": "stale-context", "message": "Zlecenie zmieniło się"})
+click(at("(" + ALL + ")(page.cardFullView, 'revokeTicketConsent')[0]"))
+out["consentError"] = js("page.cardFullView.consentError")
+click(at("(" + ALL + ")(page.cardFullView, 'revokeTicketConsent')[0]"))
+out["calls"] = calls()
+entry = next(c for c in data["cards"] if c["id"] == "K-8")["derived"]["flow"]["ticketConsents"][0]
+entry.update(active=False, revoked=True, canRevoke=False)
+set_snapshot(data)
+wait(100)
+out["activeAfter"] = js("page.cardFullView.flow.ticketConsents[0].active")
+""", full_card(self.data, events))
+        self.assertTrue(out["visible"])
+        sent = [c for c in out["calls"] if c[0] == "RevokeTicketConsent"]
+        self.assertEqual(len(sent), 2, out)
+        self.assertEqual(sent[0][1], "K-8")
+        self.assertEqual(json.loads(sent[0][2]), {"ticket": "#2", "orderSeq": events[0]["seq"], "baseVersion": 0})
+        self.assertEqual(out["consentError"], "Zlecenie zmieniło się")
+        self.assertFalse(out["activeAfter"], "nowa migawka odświeża panel")
+
     def test_talk_button_and_escalated_decision_call_the_service(self):
         from unittest import mock
         from tide_daemon.cardflow.engine import FlowEngine
@@ -318,6 +343,12 @@ out["oldButton"] = js("page.cardFullView.oldHistory.length")
 js("page.cardFullView.oldOpen = true")
 out["expanded"] = json.loads(js(HIST))
 out["enterBefore"] = len(calls())
+# Po integracji K-60 z master pełna karta ma też uwagi i zgody, więc przycisk bywa na dole okna — przewijamy do niego.
+js("(function () { const b = (" + ALL + ")(page.cardFullView, 'historyResume')[0]; let flick = b.parent;"
+   " while (flick && flick.contentY === undefined) flick = flick.parent;"
+   " flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height,"
+   " b.mapToItem(flick.contentItem, 0, 0).y - flick.height / 2)); })()")
+wait(80)
 click(at("(" + ALL + ")(page.cardFullView, 'historyResume')[0]"))
 out["enter"] = calls()
 """, data)

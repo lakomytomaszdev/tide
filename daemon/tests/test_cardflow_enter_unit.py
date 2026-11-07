@@ -13,6 +13,7 @@ from unittest import mock
 from tide_daemon.cardflow import state, execution
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
+from tide_daemon.board.model import Card, Project
 from tide_daemon.tasks import agentcmd, launch
 from tide_daemon.tasks.core import TaskFiles
 
@@ -214,6 +215,8 @@ class EnterStepTest(unittest.TestCase):
         unit_patch.start()
         self.addCleanup(unit_patch.stop)
         store = mock.Mock(root=os.path.join(self.root, "board"))
+        store.load.return_value.cards = {1: Card(1, "Karta", project="proj")}
+        store.load.return_value.projects = {"proj": Project("proj", "Projekt", repo=self.root)}
         self.engine = FlowEngine(store, journal=Journal(store.root, mirror=os.path.join(self.root, "mirror")),
                                  terminal=self.terminal, task_files=TaskFiles(os.path.join(self.root, "tasks")))
         self.step_id = "K-1-PT-1-1"
@@ -272,16 +275,39 @@ class EnterStepTest(unittest.TestCase):
         self.assertEqual(self.order, ["open"])
 
     def test_failed_terminal_open_closes_attempt_and_allows_retry(self):
+        ident = self._note()
         self.terminal.open = lambda _: ""
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
             with self.assertRaises(FlowError):
                 self.engine.enter("K-1", self.step_id)
         current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
         self.assertTrue(current["consoleClosed"])
-        self.terminal.open = lambda _: "tab"
-        self.assertEqual(self.engine.enter("K-1", self.step_id)["step"], self.step_id + "-enter-1")
+        self._assert_note_pending_and_retry(ident)
+
+    def _note(self):
+        return self.engine.add_step_note("K-1", {"step": self.step_id, "orderSeq": 1,
+            "requestId": "console-note", "text": "Nie zgub uwagi przy otwieraniu Konsoli"})["noteId"]
+
+    def _assert_note_pending_and_retry(self, ident, parent=None):
+        from tide_daemon.cardflow import stepnotes
+        self.engine = FlowEngine(self.engine.store,
+            journal=Journal(self.engine.store.root, mirror=os.path.join(self.root, "mirror")),
+            terminal=self.terminal, task_files=self.engine.task_files)
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertEqual(stepnotes.view(folded)[0]["status"], "pending")
+        self.terminal.open = mock.Mock(return_value="tab")
+        reply = self.engine.enter("K-1", parent or self.step_id)
+        plan = self.terminal.open.call_args.args[0]
+        self.assertIn("Nie zgub uwagi przy otwieraniu Konsoli", plan.prompt)
+        with open(plan.task_file, encoding="utf-8") as fh:
+            self.assertIn(ident, json.load(fh)["argv"][-1])
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertEqual(folded.steps[reply["step"]]["deliveredNoteIds"], [ident])
+        self.assertEqual(stepnotes.view(folded)[0]["successor"], reply["step"])
+        self.assertEqual(stepnotes.prepare(folded, reply["step"], "kolejne wznowienie")[1], [])
 
     def test_terminal_exception_closes_unclaimed_attempt(self):
+        ident = self._note()
         self.terminal.open = mock.Mock(side_effect=RuntimeError("D-Bus"))
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
             with self.assertRaises(FlowError):
@@ -289,8 +315,28 @@ class EnterStepTest(unittest.TestCase):
         current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
         self.assertTrue(current["consoleClosed"])
         self.assertEqual(state.fold(self.engine.journal.read("K-1")).finished[self.step_id]["result"], "stopped")
+        self._assert_note_pending_and_retry(ident)
+
+    def test_failed_open_cannot_revoke_notes_if_console_claimed_the_task(self):
+        from tide_daemon.cardflow import stepnotes
+        ident = self._note()
+
+        def claim(plan):
+            os.unlink(plan.task_file)
+            return ""
+
+        self.terminal.open = claim
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            with self.assertRaises(FlowError):
+                self.engine.enter("K-1", self.step_id)
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertFalse(folded.steps[self.step_id]["consoleClosed"])
+        self.assertEqual(folded.steps[self.step_id]["deliveredNoteIds"], [ident])
+        self.assertEqual(stepnotes.view(folded)[0]["status"], "delivered")
 
     def test_unclaimed_timeout_closes_attempt_but_failed_cancel_waits(self):
+        from tide_daemon.cardflow import stepnotes
+        ident = self._note()
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
             self.engine.enter("K-1", self.step_id)
         current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
@@ -299,10 +345,104 @@ class EnterStepTest(unittest.TestCase):
         with mock.patch.object(self.engine.task_files, "cancel", return_value=False):
             self.engine.tick()
         self.assertNotIn(self.step_id, state.fold(self.engine.journal.read("K-1")).finished)
+        self.assertEqual(stepnotes.view(state.fold(self.engine.journal.read("K-1")))[0]["status"], "delivered")
         self.engine.tick()
         current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
         self.assertTrue(current["consoleClosed"])
         self.assertEqual(state.fold(self.engine.journal.read("K-1")).finished[self.step_id]["result"], "stopped")
+        self._assert_note_pending_and_retry(ident)
+
+    def test_recovery_after_task_cancel_before_journal_close_keeps_note_pending(self):
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(self.engine.task_files.cancel(current["taskFile"]))
+        self.engine = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                                task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
+        self.engine.tick()
+        self._assert_note_pending_and_retry(ident)
+
+    def test_recovery_after_cancel_and_runtime_loss_delivers_note_in_real_retry(self):
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.assertTrue(self.engine.task_files.cancel(current["taskFile"]))
+        # Awaria przed step.console_closed, a potem restart maszyny lub sweep().
+        os.unlink(current["taskFile"] + ".cancelled")
+        self.engine = FlowEngine(self.engine.store,
+            journal=Journal(self.engine.store.root, mirror=os.path.join(self.root, "mirror")),
+            terminal=self.terminal, task_files=TaskFiles(self.engine.task_files.folder),
+            clock=lambda: current["enteredAt"] + 31)
+        self.engine.tick()
+        self._assert_note_pending_and_retry(ident)
+
+    def test_recovery_after_durable_cancel_before_runtime_rename_delivers_note(self):
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        rename = os.rename
+
+        def crash(source, target):
+            if source == current["taskFile"]:
+                raise RuntimeError("awaria po trwałym anulowaniu")
+            return rename(source, target)
+
+        with mock.patch.object(os, "rename", side_effect=crash):
+            with self.assertRaises(RuntimeError):
+                self.engine.task_files.cancel(current["taskFile"])
+        self.assertTrue(os.path.isfile(current["taskFile"]))
+        self.assertIsNone(launch.claim(current["taskFile"]), "spóźniona Konsola nie uruchomi zadania")
+        self.engine = FlowEngine(self.engine.store, journal=self.engine.journal, terminal=self.terminal,
+                                task_files=self.engine.task_files, clock=lambda: current["enteredAt"] + 31)
+        self.engine.tick()
+        self._assert_note_pending_and_retry(ident)
+
+    def test_cancelled_task_does_not_finish_stale_poll_before_transfer_recovery(self):
+        from tide_daemon.cardflow import stepnotes
+        self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        stale = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        self.engine.clock = lambda: stale["enteredAt"] + 1
+        # Jak w testach awarii przekazania: migawka odpytywania powstała przed
+        # zapisaniem decyzji i anulowaniem pliku, restart ma dopiero dokończyć WIP.
+        self.engine.journal.append("K-1", "step.transfer_requested", step=self.step_id,
+                                   ticket="PT-1", executor="Codex mocny")
+        self.assertTrue(self.engine.task_files.cancel(stale["taskFile"]))
+        stepnotes.close_console(self.engine.journal, "K-1", self.step_id, cancelled=True)
+        self.engine._poll_interactive("K-1", stale)
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertNotIn(self.step_id, folded.finished)
+        self.assertEqual(stepnotes.view(folded)[0]["status"], "pending")
+
+    def test_full_planning_handoff_cancel_keeps_note_for_real_resume(self):
+        ident = self._note()
+        self.engine.journal.append("K-1", "step.finished", step=self.step_id, result="stopped")
+        selected = execution.Execution("Sonnet", "claude", "/bin/claude", "sonnet", "anthropic")
+        item = mock.Mock(id="K-1", projects=[])
+        project = Project("proj", "Projekt", repo=self.root)
+        self.terminal.open = mock.Mock(side_effect=RuntimeError("D-Bus"))
+        with mock.patch.object(agentcmd, "resolve_git_dir", return_value="/git/worktree"):
+            with self.assertRaises(FlowError):
+                self.engine._launch_full_planning(item, project, selected,
+                    {"worktree": self.worktree, "branch": "ticket/pt-1"}, "handoff", [], [], "Przekazanie",
+                    parent_step=self.step_id, kind="ticket", ticket="PT-1")
+        self._assert_note_pending_and_retry(ident, parent="handoff")
+
+    def test_cancel_unclaimed_console_for_transfer_keeps_note_pending(self):
+        from tide_daemon.cardflow import stepnotes
+        ident = self._note()
+        with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):
+            self.engine.enter("K-1", self.step_id)
+        current = state.fold(self.engine.journal.read("K-1")).steps[self.step_id]
+        with mock.patch.object(self.engine, "_stop", return_value=True):
+            self.assertTrue(self.engine._stop_interactive_transfer("K-1", current))
+        folded = state.fold(self.engine.journal.read("K-1"))
+        self.assertEqual(stepnotes.view(folded)[0]["status"], "pending")
+        self.assertEqual(stepnotes.prepare(folded, self.step_id, "Przekazanie")[1], [ident])
 
     def test_claimed_launcher_killed_is_reconciled_after_restart(self):
         with mock.patch.object(self.engine, "_stop_for_enter", return_value=True):

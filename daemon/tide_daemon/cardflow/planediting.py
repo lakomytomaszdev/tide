@@ -2,12 +2,31 @@
 import json
 import os
 
-from . import execution, findings as review_findings, plans
+from . import execution, findings as review_findings, plans, planappend, planartifacts
 from .state import fold, ticket_of
 
 
 def _text_of(value) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+
+PLAN_AUTHOR = "plan"    # `reassign-author` z ticket=plan przepina planistę kolejnych poprawek planu
+
+
+def planner_of(st, proposal) -> str:
+    """Planista przyszłych poprawek: przepięty przez użytkownika/koordynatora (06.11, K-38: poprawka planu czekała
+    na limit Claude do soboty, bo zawsze szła do pierwotnego planisty), inaczej planista propozycji."""
+    override = (st.author_overrides.get(PLAN_AUTHOR) or {}).get("executor")
+    return override or (proposal or {}).get("planner") or ""
+
+
+def proposal_author_of(st, proposal) -> str:
+    """Autor zapisanej wersji propozycji; zmiana wykonawcy przyszłych poprawek go nie zmienia."""
+    proposal = proposal or {}
+    source = st.steps.get(proposal.get("sourceStep")) or {}
+    rows = proposal.get("rows") or [{}]
+    return source.get("executor") or proposal.get("planner") or rows[0].get("executor") or ""
 
 
 class PlanEditing:
@@ -43,8 +62,8 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
-            options = [e for e in catalog.executors if e.name != author.name and plans.independent_reviewer(author, e)
+            author = catalog.get(proposal.get("reviewAuthor") or proposal_author_of(st, proposal))
+            options = [e for e in catalog.executors if author and e.name != author.name and plans.independent_reviewer(author, e)
                        and (e.provider == "local") == (author.provider == "local")]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
             # (K-33, K-35: domyślnie brany Haiku łamał format wyniku i nie łapał rozmiaru ticketów).
@@ -55,6 +74,9 @@ class PlanEditing:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
             selected_name = st.plan_reviewer or options[0].name
+            if selected_name not in {e.name for e in options}:
+                from .engine import FlowError
+                raise FlowError("bad-reviewer", "wybierz niezależnego recenzenta autora tej wersji planu")
             selected = execution.resolve(selected_name, catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-review", self._review_prompt(card, proposal))
             return True
@@ -66,7 +88,8 @@ class PlanEditing:
             self._plan_step_decision(card, st, step, done)
             return True
         if step["kind"] == "plan-revise":
-            reply = self.propose_plan(card, os.path.join(step["stepDir"], "out", "plan.md"), continuation=True, step=step["step"])
+            source = done.get("snapshotDir") or os.path.join(step["stepDir"], "out")
+            reply = self.propose_plan(card, os.path.join(source, "plan.md"), continuation=True, step=step["step"])
             if reply["ok"]:
                 self._record_plan_review(card, verdict="REQUEST_CHANGES", reviewer=latest_review.get("executor", ""),
                                     findings=self._reviewed_findings(latest_review, step.get("reviewTip")), corrected=True)
@@ -85,10 +108,10 @@ class PlanEditing:
             reason = str(error) if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError) else ""
             raise FlowError("bad-plan-review", "recenzent nie zapisał poprawnego plan-review.json"
                             + (f": {reason}" if reason else "")) from None
-        if report["verdict"] == "REQUEST_CHANGES":
+        if report["verdict"] == "REQUEST_CHANGES" and proposal.get("sourceKind") != "append":
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            selected = execution.resolve(proposal["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
+            selected = execution.resolve(planner_of(st, proposal), catalog, config=cfg, probe=self.model_probe, which=self.which)
             # Bez człowieka w pętli poprawka dostaje to, co okno zaznaczyłoby domyślnie (blocker, major; nie nit).
             sent = review_findings.render(review_findings.selection(report["findings"]))
             self._plan_step(card, st, selected, "plan-revise", self._revision_prompt(card, proposal, sent), sent)
@@ -161,6 +184,21 @@ class PlanEditing:
         generation = (st.plan_revision or {}).get("seq") if kind == "plan-amend" else st.plan_proposed["seq"]
         step_id = f"{card}-{kind}-{generation}"
         out = worktree + f".{kind}-{step_id}.step/out"
+        if st.plan_proposed.get("artifactPath"):
+            ticket_paths = {}
+            ticket_bodies = {}
+            if kind == "plan-amend":
+                ticket_bodies = {f"tickets/{r['id']}.md": r["body"].encode("utf-8")
+                                 for r in (st.plan_revision or {}).get("baseline", []) if r.get("id") and "body" in r}
+            # Tylko zatwierdzony pakiet zmienia numery robocze na ID. Propozycja pending
+            # ma już własne nazwy, a jej nowe #n nie należą do mapy starego planu.
+            if (kind == "plan-amend" and st.plan_approved and
+                    st.plan_proposed["artifactPath"] == planartifacts.source_for_commit(st).get("artifactPath")):
+                ticket_paths = {f"tickets/{(r.get('workId') or r['id']).lstrip('#')}.md": f"tickets/{r['id']}.md"
+                                for r in st.plan_approved["rows"]}
+            text += planartifacts.prepare(st.plan_proposed["artifactPath"], os.path.dirname(out), seed=kind != "plan-review",
+                                          plan_name=os.path.basename(st.plan_proposed["planPath"]), ticket_paths=ticket_paths,
+                                          ticket_bodies=ticket_bodies)
         text += f"\nKatalog wyjściowy: {out}\nPlik wyniku: {out}/result.json\n"
         text += 'Po zapisaniu plików zapisz {"result":"done","notes":[]}.\n'
         self._launch(item, project, selected, "", made, made, step_id, [], kind=kind, prompt_text=text, review_tip=findings)
@@ -290,6 +328,8 @@ class PlanEditing:
         if request.get("action") == "return":
             self._returned_feedback(request)
         st = fold(self.journal.read(card))
+        if request.get("action") == "append":
+            return planappend.append(self, card, st, request)
         proposal = st.plan_proposed
         if request.get("action") == "return" and not proposal and st.closed and (st.started or {}).get("entry") == "now":
             self._bootstrap_direct_plan(card, st)
@@ -305,10 +345,9 @@ class PlanEditing:
                 raise FlowError("review-active", "przegląd planu już wystartował")
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            author = catalog.get(proposal.get("planner") or proposal["rows"][0]["executor"])
+            author = catalog.get(proposal.get("reviewAuthor") or proposal_author_of(st, proposal))
             selected = catalog.get(str(request.get("executor") or ""))
-            if not author or not selected or author.name == selected.name or \
-                    author.model.lower() == selected.model.lower() or \
+            if not author or not selected or not plans.independent_reviewer(author, selected) or \
                     (author.provider == "local") != (selected.provider == "local"):
                 raise FlowError("bad-reviewer", "wybierz niezależny model recenzenta planu")
             execution.resolve(selected.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
@@ -324,6 +363,8 @@ class PlanEditing:
                 self.journal.append(card, "step.decision", step=previous["step"], ticket="",
                                     choice="change-executor", executor=selected.name)
             return {"ok": True, "id": card}
+        if (st.plan_revision or {}).get("kind") == "append" and request.get("action") in ("return", "enter"):
+            raise FlowError("manual-append", "odrzuć dopisanie i zapisz poprawiony ticket w formularzu")
         if request.get("action") == "return" and st.plan_revision and not st.plan_revision.get("failed") \
                 and (caretaker_problem or not st.plan_revision.get("pending")):
             raise FlowError("revision-active", "poprawa planu już trwa")
@@ -336,7 +377,7 @@ class PlanEditing:
                 raise FlowError("no-planner-session", "brak sesji planującego")
             return self.enter(card, step["step"])
         if request.get("action") == "discard-revision":
-            if not (st.plan_revision or {}).get("failed"):
+            if not (st.plan_revision or {}).get("failed") and (st.plan_revision or {}).get("kind") != "append":
                 raise FlowError("no-failed-revision", "nie ma błędnej poprawki do odrzucenia")
             self.journal.append(card, "plan.revision-discarded")
             return {"ok": True, "id": card}
@@ -457,7 +498,7 @@ class PlanEditing:
         if not steps:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
-            selected = execution.resolve(st.plan_proposed["planner"], catalog, config=cfg, probe=self.model_probe, which=self.which)
+            selected = execution.resolve(planner_of(st, st.plan_proposed), catalog, config=cfg, probe=self.model_probe, which=self.which)
             self._plan_step(card, st, selected, "plan-amend", self._revision_prompt(card, {**st.plan_proposed, "rows": revision["baseline"]}, revision["feedback"]))
             return
         step = steps[-1]
@@ -467,14 +508,15 @@ class PlanEditing:
             return
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
-        path = os.path.join(step["stepDir"], "out", "plan.md")
+        source = done.get("snapshotDir") or os.path.join(step["stepDir"], "out")
+        path = os.path.join(source, "plan.md")
         # Kartki istniejących ticketów zatwierdzonego planu dokłada Tide (z planu bazowego) — planujący pisze tylko
         # kartki nowych ticketów, a walidator wymaga kartki dla każdego wiersza (K-16, 03.11).
         running = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         for base in revision["baseline"]:
             ident = base.get("id") or base.get("workId") or ""
             if ident and not ident.startswith("#") and base.get("body"):
-                card_file = os.path.join(step["stepDir"], "out", "tickets", ident + ".md")
+                card_file = os.path.join(source, "tickets", ident + ".md")
                 if ident in running or not os.path.exists(card_file):
                     os.makedirs(os.path.dirname(card_file), exist_ok=True)
                     with open(card_file, "w", encoding="utf-8") as fh:
@@ -517,6 +559,14 @@ class PlanEditing:
         current = st.plan_approved
         proposal = st.plan_proposed
         delta = self._difference(current["rows"], proposal["rows"])
+        if (st.plan_revision or {}).get("kind") == "append":
+            from . import baseproposal
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision-pending", "najpierw rozstrzygnij korektę bazy")
+            if st.card_finished or st.closed:
+                raise FlowError("no-plan", "karta jest już zakończona")
+            if delta["removed"] or delta["changed"] or len(delta["added"]) != 1:
+                raise FlowError("bad-append", "dopisanie musi zachować wszystkie istniejące tickety")
         started = {s.get("ticket") for s in st.steps.values() if s.get("ticket")}
         if set(delta["removed"]) & started or any(c["ticket"] in started for c in delta["changed"]):
             raise FlowError("ticket-started", "różnica zmienia ticket, który już ruszył")
@@ -549,6 +599,9 @@ class PlanEditing:
         rows = [{**r, "id": mapping[r["workId"]], "blockers": [mapping[b] for b in r["blockers"]],
                  "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card), "plan", "tickets", mapping[r["workId"]] + ".md")}
                 for r in proposal["rows"]]
+        if (st.plan_revision or {}).get("kind") == "append":
+            original = {r["id"]: r for r in current["rows"]}
+            rows = [original.get(r["id"], r) for r in rows]
         self.journal.append(card, "plan.revision-approved", difference=delta,
                             plan={"rows": rows, "map": {**current.get("map", {}), **mapping}})
         return {"ok": True, "id": card, "difference": delta}
