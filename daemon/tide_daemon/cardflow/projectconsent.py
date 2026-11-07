@@ -59,7 +59,7 @@ def _request(raw):
     return request
 
 
-def view(candidate):
+def view(candidate, current=None):
     manifest = candidate["manifest"]
     lines = [f"Projekt: {manifest['project']}; wersja zakresu zgody: {manifest['consentVersion']}",
              "Repozytoria: " + ", ".join(manifest["repositories"])]
@@ -71,7 +71,7 @@ def view(candidate):
         lines += [f"{f['path']} ({f['size']} B; sha256 {f['sha256']})" for f in copy["files"]]
     lines += [f"{p}: {mode['note']}" for p, mode in manifest["credentials"].items()]
     return {"expected": candidate["expected"], "scope": ex.SCOPE, "details": "\n".join(lines),
-            "manifest": manifest}
+            "manifest": manifest, "approved": bool(current and current["manifest"] == manifest)}
 
 
 def model(engine, card_id, st):
@@ -97,7 +97,7 @@ def model(engine, card_id, st):
            "approvedVersion": current["version"] if current else "", "approved": bool(current), "question": ""}
     try:
         _project, _card, merged = _profiles(engine, card_id, st, card)
-        out["exposure"] = view(service(engine, card_id).preview(merged, raw[REQUEST]["snapshotIds"]))
+        out["exposure"] = view(service(engine, card_id).preview(merged, raw[REQUEST]["snapshotIds"]), current)
     except (ex.ExposureError, OSError, bp.ProfileError, yamlmini.YamlError, ValueError) as exc:
         out["notes"] = [str(exc)]
     return out
@@ -110,6 +110,8 @@ def approve(engine, card_id, text, st):
             raise ex.ExposureError("Środowisko musi być mapą YAML")
         request = _request(raw)
         action = raw.get(ACTION, "approve")
+        if st.card_finished and action != "revoke":
+            raise ex.ExposureError("Zakończona karta może wycofać zgodę projektu; nowy zakres zatwierdza aktywna karta.")
         svc = service(engine, card_id)
         if action == "revoke":
             message = ex.revoke(svc.project, raw.get(EXPECTED))
@@ -118,11 +120,13 @@ def approve(engine, card_id, text, st):
         _project, _card, merged = _profiles(engine, card_id, st, {k: v for k, v in raw.items() if k not in CONTROL})
         if action == "preview":
             return {"ok": True, "id": card_id, "preview": True,
-                    "exposure": view(svc.preview(merged, request.get("snapshotIds")))}
+                    "exposure": view(svc.preview(merged, request.get("snapshotIds")), ex.current(svc.project))}
         if action != "approve":
             raise ex.ExposureError("Nieznana czynność zgody projektu")
         candidate = svc.preview(merged, request.get("snapshotIds"))
-        if raw.get(ACCEPTED) is not True or raw.get(EXPECTED) != candidate["expected"]:
+        current = ex.current(svc.project)
+        already = bool(current and current["manifest"] == candidate["manifest"])
+        if (raw.get(ACCEPTED) is not True and not already) or raw.get(EXPECTED) != candidate["expected"]:
             raise ex.ExposureError("Wymagana świadoma zgoda projektu i dokładny aktualny podgląd zakresu")
         # Przed zapisem zgody sprawdzamy review planu. Nie zapisujemy profili ani
         # nie uruchamiamy budowy na podstawie YAML z pudełka.
@@ -133,7 +137,7 @@ def approve(engine, card_id, text, st):
         boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="project-consent")
         return {"ok": True, "id": card_id, "onlyPlan": False, "boxWait": boxwait.ENVIRONMENT,
                 "consentVersion": record["version"], "message": ex.PENDING,
-                "exposure": view(svc.preview(merged, request["snapshotIds"]))}
+                "exposure": view(svc.preview(merged, request["snapshotIds"]), record)}
     except (ex.ExposureError, OSError, bp.ProfileError, yamlmini.YamlError, ValueError) as exc:
         return {"ok": False, "id": card_id, "error": "project-exposure-wait", "message": str(exc),
                 "boxWait": boxwait.ENVIRONMENT}

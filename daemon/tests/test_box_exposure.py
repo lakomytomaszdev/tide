@@ -323,15 +323,22 @@ class ServiceTests(ExposureCase):
         for card in ("K-38", "K-39"):
             model = envconsent.model(self.engine, card, fold(self.journal.read(card)))
             self.assertEqual(model["approvedVersion"], approved["consentVersion"])
+            self.assertTrue(model["exposure"]["approved"])
             self.assertIn(self.copy.directory, model["exposure"]["details"])
-        self.assertEqual(before, Path(bp.project_path(ex.PROJECT)).read_bytes())
-        self.engine.box_launcher.assert_not_called()
         with self.assertRaisesRegex(boxstep.BoxWaiting, "PT-264"):
             boxstep.place(self.engine, "K-39", ex.PROJECT, "ticket", "", ("ticket",))
+        # Ta sama zgoda projektu działa dla kolejnej karty bez kolejnego zaznaczenia.
+        preview = self.call(self.request(), "K-39")
+        reused = self.call(self.request("approve", **{projectconsent.EXPECTED: preview["exposure"]["expected"]}), "K-39")
+        self.assertTrue(reused["ok"], reused)
+        self.assertEqual(reused["consentVersion"], approved["consentVersion"])
+        self.assertEqual(before, Path(bp.project_path(ex.PROJECT)).read_bytes())
+        self.engine.box_launcher.assert_not_called()
         # Zakończenie jednej karty nie resetuje zgody ani kopii dla pozostałych.
         self.journal.append("K-38", "card.finished")
         self.assertEqual(ex.current(ex.PROJECT)["version"], approved["consentVersion"])
-        revoked = self.call(self.request("revoke", **{projectconsent.EXPECTED: approved["consentVersion"]}), "K-39")
+        self.assertFalse(self.call(self.request("approve", **ack))["ok"])
+        revoked = self.call(self.request("revoke", **{projectconsent.EXPECTED: approved["consentVersion"]}))
         self.assertTrue(revoked["ok"], revoked)
         self.assertIsNone(ex.current(ex.PROJECT))
 

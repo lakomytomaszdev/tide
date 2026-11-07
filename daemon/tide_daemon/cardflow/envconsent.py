@@ -321,10 +321,13 @@ def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     except Exception as exc:
         raise FlowError("bad-card", str(exc)) from None
     st = fold(engine.journal.read(card_id))
-    if st.started is None or st.card_finished:
+    if st.started is None:
         raise FlowError("no-card", f"{card_id}: karta nie ma aktywnego przepływu")
     from ..box import exposure
-    if _project_state(engine, card_id)[0] == exposure.PROJECT:
+    project_scope = _project_state(engine, card_id)[0] == exposure.PROJECT
+    if st.card_finished and (not project_scope or only_plan):
+        raise FlowError("no-card", f"{card_id}: karta nie ma aktywnego przepływu")
+    if project_scope:
         from . import projectconsent
         if only_plan:
             plan = engine.approve_plan(card_id) if st.plan_proposed and not st.plan_approved else {}

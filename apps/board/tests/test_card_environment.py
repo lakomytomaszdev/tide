@@ -114,6 +114,33 @@ press('envApprove')
         self.assertIn("exposure-accepted: true", second[2])
         self.assertIn(model["exposure"]["expected"], second[2])
 
+    def test_exact_existing_project_consent_needs_no_new_checkbox(self):
+        from daemon.tests import test_box_exposure as fixture
+        case = fixture.ServiceTests("test_consent_model_explains_project_scope_and_k1_and_does_not_scan_packs")
+        case.setUp()
+        try:
+            from tide_daemon.cardflow import envconsent, projectconsent
+            preview = case.call(case.request())
+            result = case.call(case.request("approve", **{
+                projectconsent.EXPECTED: preview["exposure"]["expected"], projectconsent.ACCEPTED: True}))
+            self.assertTrue(result["ok"], result)
+            model = envconsent.model(case.engine, "K-39", fixture.fold(case.journal.read("K-39")))
+        finally:
+            case.doCleanups()
+        out = self.probe_card("""
+open_card()
+out['checkboxes'] = js(ALL + "(page.cardPanel, 'envProjectConsent').length")
+out['approved'] = text('envProjectApproved')
+out['enabled'] = js(ALL + "(page.cardPanel, 'envApprove')[0].enabled")
+press('envApprove')
+""", model)
+        self.assertEqual(out["checkboxes"], 0)
+        self.assertIn("Kolejna karta", out["approved"][0])
+        self.assertTrue(out["enabled"])
+        [call] = calls_of(out, "ApproveCardEnvironment")
+        self.assertIn("exposure-accepted: false", call[2])
+        self.assertIn(model["exposure"]["expected"], call[2])
+
     def test_items_show_risk_from_the_service_and_red_ones_start_unchecked(self):
         model = environment()
         out = self.probe_card("""

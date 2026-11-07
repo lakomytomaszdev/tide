@@ -460,8 +460,8 @@ class PlacementTest(BoxFlow):
             boxstep.started(self.engine, placement, self.card_id, "s2", "claude")
         events = self.risk_events()
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["text"], "poświadczenia agenta czytelne dla kodu w pudełku (grupa docker); "
-                                            "pełna ochrona: K3")
+        self.assertEqual(events[0]["text"], "K1: grupa docker = root pudełka; "
+                                            "denyRead nie chroni poświadczeń przed kodem z Dockerem.")
 
     def test_no_k1_risk_with_k3_or_without_docker(self):
         self.build_box({"tide-box": 1, "docker": {"enabled": True}})

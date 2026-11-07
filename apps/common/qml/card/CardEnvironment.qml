@@ -106,11 +106,22 @@ ColumnLayout {
     }
     QQC2.CheckBox {
         objectName: "envProjectConsent"
-        visible: section.projectExposure
+        visible: section.projectExposure && !section.exposure.approved
         text: "Zatwierdzam pokazany zakres i wersję zgody projektu"
         checked: section.exposureAccepted
         enabled: !section.busy && !!section.exposure.expected
         onToggled: section.exposureAccepted = checked
+    }
+    Text {
+        objectName: "envProjectApproved"
+        Layout.fillWidth: true
+        visible: section.projectExposure && !!section.exposure.approved
+        text: "Ten dokładny zakres ma już zgodę projektu. Kolejna karta nie wymaga ponownego zaznaczenia."
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
     }
     Text {
         objectName: "envProjectStatus"
@@ -311,15 +322,8 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: section.projectExposure
         spacing: 8
-        Tide.TextButton {
-            objectName: "envApprove"
-            text: section.planPending ? "Zatwierdź plan i środowisko" : "Zatwierdź środowisko"
-            variant: "filled"
-            enabled: !section.busy && (!section.projectExposure || section.exposureAccepted)
-            opacity: enabled ? 1 : 0.45
-            onClicked: section.approveRequested(section.composeYaml(), false)
-        }
         Tide.TextButton {
             objectName: "envProjectPreview"
             visible: section.projectExposure
@@ -341,6 +345,19 @@ ColumnLayout {
                 section.exposureAccepted = false
                 section.approveRequested(section.composeYaml("revoke"), false)
             }
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: 8
+        Tide.TextButton {
+            objectName: "envApprove"
+            text: section.planPending ? "Zatwierdź plan i środowisko" : "Zatwierdź środowisko"
+            variant: "filled"
+            enabled: !section.busy && (!section.projectExposure || section.exposureAccepted || !!section.exposure.approved)
+            opacity: enabled ? 1 : 0.45
+            onClicked: section.approveRequested(section.composeYaml(), false)
         }
         Tide.TextButton {
             objectName: "envOnlyPlan"
