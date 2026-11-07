@@ -58,6 +58,7 @@ from . import execution
 from . import evidence
 from . import faults
 from . import fullcard
+from . import ticketentry
 from . import guard
 from . import limits as flow_limits
 from . import planning
@@ -634,6 +635,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             st.caretaker_setup = self._caretaker_setup(st)
         out = derived(st, card)
         if out:
+            ticketentry.enrich(st, out)
             self._limit_view(st, out)
             if st.closed and not st.merged:
                 out["flow"]["mainBranch"] = self._main_branches.get((st.started or {}).get("repo") or "", "")
@@ -1585,6 +1587,41 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {"ticket": got["ids"][0], "title": title}
 
     def enter(self, card_id: str, step_id: str) -> dict:
+        """Stare wejście po ID albo warunkowe przejęcie próby wybranej z Snapshot."""
+        if not step_id.lstrip().startswith("{"):
+            return self._enter_step(card_id, step_id)
+        try:
+            card_id = f"K-{card_num(card_id)}"
+            request = json.loads(step_id)
+        except (ValueError, BoardError):
+            raise FlowError("bad-request", "Niepoprawna karta lub żądanie EnterStep.") from None
+        if (not isinstance(request, dict) or set(request) != {"ticket", "step", "revision"} or
+                not all(isinstance(value, str) and value for value in request.values()) or
+                not re.fullmatch(r"PT-[1-9][0-9]*", request["ticket"])):
+            raise FlowError("bad-request", "Podaj ticket, krok i znacznik aktualności z Snapshot.")
+        st = fold(self.journal.read(card_id))
+        projected = ticketentry.view(st)
+
+        def refusal(code, message):
+            return {"ok": False, "error": code, "message": message, "attempts": projected["attempts"]}
+
+        if request["revision"] != projected["revision"]:
+            return refusal("stale-context", "Stan karty zmienił się. Odczytaj aktualne możliwości i wybierz ponownie.")
+        candidates = [item for item in projected["attempts"]
+                      if item["ticket"] == request["ticket"] and item["available"]]
+        if len(candidates) != 1 or candidates[0]["id"] != request["step"]:
+            current = [item for item in projected["attempts"]
+                       if item["ticket"] == request["ticket"] and item["currentAttempt"]]
+            code = current[0]["error"] if not candidates and len(current) == 1 else "no-step"
+            return refusal(code or "no-step", "Brak jednej jednoznacznej dostępnej próby tego ticketu.")
+        # Monitor wykonuje wybór i istniejące przejęcie w jednym szeregowym zadaniu.
+        try:
+            return self._enter_step(card_id, request["step"])
+        except FlowError as exc:
+            projected = ticketentry.view(fold(self.journal.read(card_id)))
+            return refusal(exc.code, str(exc))
+
+    def _enter_step(self, card_id: str, step_id: str) -> dict:
         """Przejmuje krok w karcie Konsoli. Dziennik oznacza zajęte worktree przed uruchomieniem karty."""
         try:
             num = card_num(card_id)

@@ -1,5 +1,33 @@
 # Sprawa Tide z rozmowy
 
+## Otwarcie karty i przejęcie ticketu
+
+Plugin udostępnia `/tide:card K-N [PT-N]`, a Codex `$tide-card K-N [PT-N]`.
+Bez ticketu oba wejścia uruchamiają `tide card open K-N --json` przez wspólny helper;
+rozmowa, sesja i uprawnienia należą do PT-149 (`TalkToCaretaker`). Z ticketem wywołują
+`tide card open K-N --ticket PT-N --json`. `--ticket` wyklucza `--problem`.
+
+CLI wykorzystuje `Snapshot`: `derived.flow.ticketEntryVersion: 1`, `entryRevision`
+oraz istniejące `steps` rozszerzone o `attempt` (kolejność startu w dzienniku), `round`,
+`currentAttempt`, `available` i `error`. Zakończona próba ustępuje kolejnemu startowi
+tego ticketu. Wybór wymaga jednej dostępnej bieżącej próby z tego zlecenia i wersji
+bazy; daty aktywności nie uczestniczą w wyborze. Brak takiej próby daje listę ID,
+ticketów, ról/prób i dostępności, bez odczytu dowolnych ścieżek.
+
+Warunkowe `EnterStep(K-N, JSON {ticket,step,revision})` ponownie sprawdza stan
+w szeregowym wątku przepływu. Nowa próba, zlecenie lub zmiana stanu daje
+`stale-context` i aktualną listę; adapter nie ponawia automatycznie operacji.
+Przejęcie korzysta z istniejącego zatrzymania procesu i wznowienia sesji w Konsoli,
+w worktree ticketu. Odmowy, m.in. `worktree-busy`, `already-entered`, `console-open`,
+`no-session`, `not-stopped` i `interactive-evidence-unsafe`, pozostają odmowami.
+Po sukcesie instrukcję dopisuje użytkownik w przejętej sesji.
+
+Adapter card nie analizuje kodu ani nie wykonuje akcji opiekuna. Zatwierdzenia,
+wstrzymywanie, odpowiedzi i odesłanie planu nadal należą do panelu i wspólnej ścieżki
+K-37. Instalacja zawsze zawiera oba adaptery pod XDG_DATA_HOME; przy dostępnym
+Codexie dodatkowo instaluje `~/.codex/skills/tide-card`. Obowiązuje istniejąca ochrona
+kolizji, kopia zapasowa i odinstalowanie wyłącznie własnych plików.
+
 Paczka zawiera jedno źródło syntezy (`cli/agents/shared/synthesis.md`), wspólny helper
 operacji CLI oraz dwa wejścia: plugin Claude Code `tide` i skill Codexa `tide-issue`.
 Raport opisuje problem i oczekiwanie, a przyjęcie sprawy pozostaje decyzją użytkownika.

@@ -29,7 +29,7 @@ def install(uninstall=False):
     if not uninstall:
         programs = [name for name in ('claude', 'codex') if shutil.which(name)]
         # Zachowaj zainstalowane adaptery także przy chwilowym braku programu w PATH.
-        if any('/.codex/skills/tide-issue/' in p for p in owned):
+        if any('/.codex/skills/tide-issue/' in p or '/.codex/skills/tide-card/' in p for p in owned):
             programs.append('codex')
         for program in ('claude', 'codex'):
             destination = root / program / ('tide' if program == 'claude' else 'tide-issue')
@@ -44,11 +44,21 @@ def install(uninstall=False):
                     if Path(name).is_relative_to(destination):
                         targets[str(discoverable / Path(name).relative_to(destination))] = content
         targets[str(root / 'shared/synthesis.md')] = (source / 'shared/synthesis.md').read_bytes()
+        card = root / 'codex/tide-card'
+        targets[str(card / 'SKILL.md')] = (source / 'tide-card/SKILL.md').read_bytes()
+        for destination in (card, root / 'claude/tide'):
+            targets[str(destination / 'references/card.md')] = (source / 'shared/card.md').read_bytes()
+            targets[str(destination / 'scripts/card_adapter.py')] = (source / 'shared/card_adapter.py').read_bytes()
+        if 'codex' in programs:
+            for name, content in list(targets.items()):
+                if Path(name).is_relative_to(card):
+                    targets[str(Path.home() / '.codex/skills/tide-card' / Path(name).relative_to(card))] = content
     # Preflight całej paczki przed pierwszą zmianą. Obce lub lokalnie zmienione pliki zostają.
     for name in set(owned) | set(targets):
         path = Path(name)
         if ('..' in path.parts or not path.is_absolute() or
-                not (path.is_relative_to(root) or path.is_relative_to(Path.home() / '.codex/skills/tide-issue'))):
+                not (path.is_relative_to(root) or path.is_relative_to(Path.home() / '.codex/skills/tide-issue')
+                     or path.is_relative_to(Path.home() / '.codex/skills/tide-card'))):
             raise ValueError('Manifest wskazuje plik spoza paczki Tide: ' + name)
         safe(path)
         if path.exists() and (not path.is_file() or name not in owned or digest(path.read_bytes()) != owned[name]):

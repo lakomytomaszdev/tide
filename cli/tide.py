@@ -19,7 +19,11 @@ FILE_MAX = 20 * 1024 * 1024
 EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
               "conflict": 4, "version-conflict": 4, "start-conflict": 4, "not-found": 5,
               "git-busy": 6, "io-error": 7, "broken-file": 7,
-              "console-open": 4, "no-step": 5, "no-terminal": 3}
+              "console-open": 4, "no-step": 5, "no-terminal": 3,
+              "stale-context": 4, "worktree-busy": 6, "already-entered": 4,
+              "base-decision": 4, "not-stopped": 6, "no-session": 5,
+              "no-session-source": 5, "no-worktree": 5, "no-branch": 5,
+              "interactive-evidence-unsafe": 4, "broken-evidence": 4}
 
 
 class CliError(Exception):
@@ -41,7 +45,9 @@ def parser():
     card_actions = card.add_subparsers(dest="action", required=True, parser_class=Parser)
     card_opening = card_actions.add_parser("open", help="otwórz rozmowę opiekuna przez PT-149")
     card_opening.add_argument("id", help="K-N")
-    card_opening.add_argument("--problem", help="identyfikator problemu opiekuna")
+    target = card_opening.add_mutually_exclusive_group()
+    target.add_argument("--problem", help="identyfikator problemu opiekuna")
+    target.add_argument("--ticket", help="przejmij bieżącą próbę PT-N w Konsoli")
     backlog = commands.add_parser("backlog", help="przyjmij przeczytaną wersję sprawy do Backlogu")
     backlog.add_argument("id", help="S-N")
     backlog.add_argument("--expected-version", required=True, type=int)
@@ -175,7 +181,7 @@ class PublicApi:
 class BoardApi(PublicApi):
     path, iface = "/Board", "org.tide.Daemon.Board"
 
-    def available(self):
+    def available(self, name="TalkToCaretaker"):
         try:
             values = self.request(self.path, "org.freedesktop.DBus.Introspectable", "Introspect")
         except CliError as exc:
@@ -188,12 +194,58 @@ class BoardApi(PublicApi):
             node = ET.fromstring(values[0])
         except (ValueError, ET.ParseError):
             raise CliError("api-incompatible", "Nieprawidłowy opis publicznego API Tablicy.") from None
-        for method in node.findall(f"interface[@name='{self.iface}']/method[@name='TalkToCaretaker']"):
+        for method in node.findall(f"interface[@name='{self.iface}']/method[@name='{name}']"):
             inputs = [a.get("type") for a in method.findall("arg") if a.get("direction", "in") == "in"]
             outputs = [a.get("type") for a in method.findall("arg") if a.get("direction") == "out"]
             if inputs == ["s", "s"] and outputs == ["s"]:
                 return True
         return False
+
+    def enter_ticket(self, card_id, ticket):
+        if not re.fullmatch(r"K-[1-9][0-9]*", card_id) or not re.fullmatch(r"PT-[1-9][0-9]*", ticket):
+            raise CliError("bad-request", "Podaj kartę K-N i ticket PT-N.")
+        if not self.available("EnterStep"):
+            raise CliError("api-incompatible", "Brak publicznego EnterStep(s, s) → s.")
+        values = self.request(self.path, self.iface, "Snapshot")
+        try:
+            snapshot = json.loads(values[0]) if len(values) == 1 else None
+            cards = snapshot["cards"]
+            if not isinstance(cards, list):
+                raise ValueError()
+            cards = [card for card in cards if card["id"] == card_id]
+            if not cards:
+                return {"ok": False, "error": "not-found", "message": "Nie znaleziono karty.", "attempts": []}
+            if len(cards) != 1:
+                raise ValueError()
+            flow = (cards[0].get("derived") or {}).get("flow", {})
+            if not flow:
+                return {"ok": False, "error": "no-step", "message": "Karta nie ma prób.", "attempts": []}
+            if (type(flow.get("ticketEntryVersion")) is not int or flow["ticketEntryVersion"] != 1
+                    or not isinstance(flow.get("entryRevision"), str) or not flow["entryRevision"]):
+                raise ValueError()
+            attempts = [{key: step[key] for key in ("id", "ticket", "kind", "attempt", "round",
+                                                    "currentAttempt", "available", "error")}
+                        for step in flow["steps"]]
+            if any(type(item["available"]) is not bool or type(item["currentAttempt"]) is not bool
+                   for item in attempts):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise CliError("api-incompatible", "Brak projekcji aktualnych prób ticketów v1 w Snapshot.") from None
+        candidates = [item for item in attempts if item["ticket"] == ticket and
+                      item["currentAttempt"] and item["available"]]
+        if len(candidates) != 1:
+            current = [item for item in attempts if item["ticket"] == ticket and item["currentAttempt"]]
+            error = current[0]["error"] if len(current) == 1 and current[0]["error"] else "no-step"
+            return {"ok": False, "error": error,
+                    "message": "Brak jednej jednoznacznej dostępnej próby ticketu. Wybierz z aktualnych możliwości.",
+                    "attempts": attempts}
+        request = {"ticket": ticket, "step": candidates[0]["id"], "revision": flow["entryRevision"]}
+        values = self.request(self.path, self.iface, "EnterStep", card_id, json.dumps(request, ensure_ascii=False))
+        result = self.open_reply(values, "EnterStep")
+        if not result["ok"] and "attempts" not in result:
+            # Aktualna usługa dodaje listę także przy odmowach; starszej nie obchodzimy.
+            raise CliError("api-incompatible", "EnterStep nie udostępnia warunkowego przejęcia próby v1.")
+        return result
 
     def open(self, card_id, problem=None):
         if not re.fullmatch(r"K-[1-9][0-9]*", card_id) or (problem is not None and not problem.strip()):
@@ -202,6 +254,10 @@ class BoardApi(PublicApi):
             raise CliError("api-incompatible", "Brak publicznego TalkToCaretaker(s, s) → s z PT-149.")
         data = {} if problem is None else {"problem": problem}
         values = self.request(self.path, self.iface, "TalkToCaretaker", card_id, json.dumps(data, ensure_ascii=False))
+        return self.open_reply(values, "TalkToCaretaker")
+
+    @staticmethod
+    def open_reply(values, method):
         try:
             result = json.loads(values[0]) if len(values) == 1 and isinstance(values[0], str) else None
             if not isinstance(result, dict) or type(result.get("ok")) is not bool:
@@ -212,7 +268,7 @@ class BoardApi(PublicApi):
             elif not isinstance(result.get("error"), str) or not result["error"]:
                 raise ValueError()
         except (ValueError, TypeError):
-            raise CliError("api-incompatible", "Nieprawidłowa odpowiedź TalkToCaretaker z PT-149.") from None
+            raise CliError("api-incompatible", f"Nieprawidłowa odpowiedź {method}.") from None
         return result
 
 
@@ -304,7 +360,8 @@ def main(argv=None):
     try:
         args = parser().parse_args(argv)
         if args.command == "card":
-            result = BoardApi().open(args.id, args.problem)
+            api = BoardApi()
+            result = api.enter_ticket(args.id, args.ticket) if args.ticket is not None else api.open(args.id, args.problem)
         else:
             api = PublicApi()
             result = api.call("Info")
@@ -415,6 +472,10 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=False))
     elif not result["ok"]:
         print(result.get("message", result.get("error", "Błąd usługi Tide.")), file=sys.stderr)
+        for attempt in result.get("attempts", []):
+            print(f"{attempt['id']} · {attempt['ticket']} · {attempt['kind']} / {attempt['attempt']} · "
+                  + ("dostępna" if attempt["available"] else attempt.get("error") or "niedostępna"),
+                  file=sys.stderr)
     elif "issue" in result:
         issue = result["issue"]
         print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
@@ -438,7 +499,10 @@ def main(argv=None):
     elif "attachment" in result:
         print(f"{result['id']}: zapisano {result['attachment']['name']} do {args.output}")
     elif "step" in result:
-        print(f"Rozmowa opiekuna: {result['step']}")
+        if getattr(args, "ticket", None):
+            print(f"Przejęto próbę {result['step']} w Konsoli. Dopisz instrukcję w otwartej sesji.")
+        else:
+            print(f"Rozmowa opiekuna: {result['step']}")
     else:
         print(f"Tide API v{result['apiVersion']}")
     if result.get("commitError") and not as_json:
