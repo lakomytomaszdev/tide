@@ -731,15 +731,109 @@ class GuardTest(unittest.TestCase):
                 self.begin("two")
                 self.assertEqual(self.finish("two"), {})
 
-    def test_recovery_cancels_snapshot_of_a_start_that_never_ran(self):
+    def restarting_engine(self, board="board"):
+        engine = FlowEngine.__new__(FlowEngine)
+        engine.journal = Journal(str(self.root / board))
+        engine.journal.append("K-38", "card.started", repo=self.repo)
+        engine.procs, engine.watch = {}, {}
+        engine._box_network_errors = {}
+        engine._unit_state = mock.Mock(return_value="inactive")
+        for method in ("_queue_notices", "_release_local", "_release_box"):
+            setattr(engine, method, mock.Mock())
+        engine._codex_broken_mcp = mock.Mock(return_value=False)
+        engine.tmp_root = str(self.root / "tmp")
+        return engine
+
+    def test_restart_checks_process_exited_before_start_ack_and_preserves_foreign_refs(self):
+        for code in (2, 0):
+            for delete_k60 in (False, True):
+                with self.subTest(code=code, delete_k60=delete_k60):
+                    for name in ("55", "60"):
+                        gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-" + name, self.original)
+                    self.begin()
+                    engine = self.restarting_engine(f"board-{code}-{delete_k60}")
+                    step_dir = self.root / f"step-{code}-{delete_k60}"
+                    (step_dir / "in").mkdir(parents=True)
+                    intent = engine.journal.append(
+                        "K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo,
+                        kind="ticket", ticket="PT-1", branch="ticket/one", worktree=self.worktrees["one"],
+                        stepDir=str(step_dir))
+                    gitrepos.commit(self.worktrees["two"], f"restart-{code}-{delete_k60}")
+                    tip = gitrepos.git(self.repo, "rev-parse", "ticket/two").strip()
+                    gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-55", tip)
+                    if delete_k60:
+                        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/card/k-60")
+                    else:
+                        gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-60", tip)
+                    gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
+                    # Wrapper zakończył proces, ale usługa nie zapisała jeszcze potwierdzenia startu.
+                    (step_dir / "in" / stepstop.EXIT_CODE_FILE).write_text(f"{code}\n")
+                    with mock.patch.object(boxstep, "proxy_of", return_value=None), \
+                            mock.patch.object(refguard, "cancel", wraps=refguard.cancel) as cancel:
+                        engine._reconcile("K-38", intent)
+                        st = fold(engine.journal.read("K-38"))
+                        self.assertTrue(st.results[("step-start", "one")]["ok"])
+                        engine._poll("K-38", st.steps["one"])
+                        boxstep.recover_network(engine)
+                    cancel.assert_not_called()
+                    refs = refguard._refs(self.repo)
+                    self.assertEqual(refs["refs/heads/ticket/one"]["oid"], self.original)
+                    self.assertEqual(refs["refs/heads/card/k-55"]["oid"], tip)
+                    self.assertEqual(refs.get("refs/heads/card/k-60"), None if delete_k60 else refs["refs/heads/card/k-55"])
+                    st = fold(engine.journal.read("K-38"))
+                    self.assertEqual(st.finished["one"]["exit"], code)
+                    self.assertEqual(st.finished["one"]["reason"], "refs.guard")
+                    guards = [e for e in engine.journal.read("K-38") if e["type"] == "refs.guard"]
+                    self.assertEqual(len(guards), 1)
+                    self.assertFalse(guards[0]["errors"])
+                    self.assertTrue({"refs/heads/ticket/one", "refs/heads/card/k-55",
+                                     "refs/heads/card/k-60"}.issubset(guards[0]["refs"]))
+                    self.assertEqual(refguard.other_cards(self.repo, "K-99"), [])
+
+    def test_restart_without_execution_evidence_keeps_intent_and_snapshot(self):
         self.begin()
-        engine = mock.Mock()
-        engine.journal = Journal(str(self.root / "board"))
+        engine = self.restarting_engine()
+        intent = engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box",
+                                       repo=self.repo, ticket="PT-1", branch="ticket/one")
+        with mock.patch.object(boxstep, "proxy_of", return_value=None), \
+                mock.patch.object(refguard, "finish") as finish, mock.patch.object(refguard, "cancel") as cancel:
+            for state in ("unknown", "inactive"):
+                engine._unit_state.return_value = state
+                engine._reconcile("K-38", intent)
+                boxstep.recover_network(engine)
+        self.assertNotIn(("step-start", "one"), fold(engine.journal.read("K-38")).results)
+        finish.assert_not_called()
+        cancel.assert_not_called()
+        engine._release_box.assert_not_called()
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), ["K-38"])
+
+    def test_recovery_keeps_snapshot_of_historical_failed_start_without_execution_evidence(self):
+        self.begin()
+        engine = self.restarting_engine()
+        step_dir = self.root / "step"
+        (step_dir / "in").mkdir(parents=True)
         engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo,
-                              ticket="PT-1")
+                              ticket="PT-1", branch="ticket/one", stepDir=str(step_dir))
         engine.journal.append("K-38", "result", action="step-start", key="one", ok=False)
-        boxstep.recover_network(engine)
-        self.assertEqual(refguard._active(self.repo), [])
+        with mock.patch.object(boxstep, "proxy_of", return_value=None):
+            boxstep.recover_network(engine)
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), ["K-38"])
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-55", tip)
+        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
+        (step_dir / "in" / stepstop.EXIT_CODE_FILE).write_text("2\n")
+        with mock.patch.object(boxstep, "proxy_of", return_value=mock.Mock()), \
+                mock.patch.object(refguard, "cancel", wraps=refguard.cancel) as cancel:
+            boxstep.recover_network(engine)
+            boxstep.recover_network(engine)
+        cancel.assert_not_called()
+        refs = refguard._refs(self.repo)
+        self.assertEqual(refs["refs/heads/ticket/one"]["oid"], self.original)
+        self.assertEqual(refs["refs/heads/card/k-55"]["oid"], tip)
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), [])
+        guards = [e for e in engine.journal.read("K-38") if e["type"] == "refs.guard"]
+        self.assertEqual(len(guards), 1)
+        self.assertFalse(guards[0]["errors"])
 
 
 class RunnerGuardTest(BoxRunnerCase):

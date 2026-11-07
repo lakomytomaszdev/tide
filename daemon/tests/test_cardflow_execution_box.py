@@ -772,26 +772,26 @@ class DeniedTest(BoxFlow):
         boxstep.recover_network(self.engine)
         self.assertEqual([e for e in bs.events(SLUG, SLUG) if e["type"] == "box.release"], releases)
 
-    def test_reconcile_inactive_start_releases_use_and_context(self):
-        for code in (None, 2):
-            with self.subTest(code=code):
-                name = "failed-start-" + str(code)
-                placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
-                log = boxstep.before_start(self.engine, placement, self.card_id, name)
-                intent = self.engine.journal.append(self.card_id, "intent", action="step-start", key=name,
-                                                   kind="ticket", ticket="PT-1", unit="tide-step-" + name,
-                                                   **placement.entry())
-                with mock.patch.object(self.engine, "_unit_state", return_value="inactive"), \
-                        mock.patch.object(flow_engine.stepstop, "read_exit_code", return_value=code), \
-                        mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
-                    self.engine._reconcile(self.card_id, intent)
-                self.assertFalse(fold(self.engine.journal.read(self.card_id)).results[("step-start", name)]["ok"])
-                self.engine._box_network_state = None  # Nowy proces usługi, zamiar już nie jest otwarty.
-                boxstep.recover_network(self.engine)
-                self.assert_released(name, log)
-                self.assertEqual(self.proxy.calls[-1], ("clear", placement.ip))
+    def test_reconcile_exited_start_releases_use_and_context_after_poll(self):
+        name = "exited-start"
+        placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
+        log = boxstep.before_start(self.engine, placement, self.card_id, name)
+        intent = self.engine.journal.append(self.card_id, "intent", action="step-start", key=name,
+                                           kind="ticket", ticket="PT-1", unit="tide-step-" + name,
+                                           **placement.entry())
+        with mock.patch.object(self.engine, "_unit_state", return_value="inactive"), \
+                mock.patch.object(flow_engine.stepstop, "read_exit_code", return_value=2), \
+                mock.patch.object(bs, "mark_released", side_effect=OSError("write failure")):
+            self.engine._reconcile(self.card_id, intent)
+            st = fold(self.engine.journal.read(self.card_id))
+            self.assertTrue(st.results[("step-start", name)]["ok"])
+            self.engine._poll(self.card_id, st.steps[name])
+        self.engine._box_network_state = None  # Nowy proces usługi, krok już jest zakończony.
+        boxstep.recover_network(self.engine)
+        self.assert_released(name, log)
+        self.assertEqual(self.proxy.calls[-1], ("clear", placement.ip))
 
-    def test_reconcile_inactive_start_releases_immediately(self):
+    def test_reconcile_inactive_start_without_exit_code_keeps_use_and_context(self):
         placement = boxstep.place(self.engine, self.card_id, SLUG, "ticket", "", BOX_STEP_KINDS)
         log = boxstep.before_start(self.engine, placement, self.card_id, "failed-start")
         intent = self.engine.journal.append(self.card_id, "intent", action="step-start", key="failed-start",
@@ -799,7 +799,9 @@ class DeniedTest(BoxFlow):
                                            **placement.entry())
         with mock.patch.object(self.engine, "_unit_state", return_value="inactive"):
             self.engine._reconcile(self.card_id, intent)
-        self.assert_released("failed-start", log)
+        self.assertNotIn(("step-start", "failed-start"), fold(self.engine.journal.read(self.card_id)).results)
+        self.assertIn("failed-start", bs.running_steps(SLUG, SLUG))
+        self.assertTrue(boxaccess.read(log))
 
     def test_recovery_without_proxy_still_releases_finished_step(self):
         step, log = self.prepared_step("finished-offline")
