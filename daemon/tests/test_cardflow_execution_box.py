@@ -217,7 +217,7 @@ class PlacementTest(BoxFlow):
                 self.assertEqual(fold(self.events_now()).box_wait, boxwait.REBUILD)
 
     def test_existing_card_copy_requires_its_own_clean_snapshot(self):
-        self.build_box({"tide-box": 1, "box": "per-card"})
+        self.build_box({"tide-box": 1, "box": "per-card"}, running=False)
         original = self.place()
         self.change_snapshot(original.box, lambda snapshots: snapshots.clear())
         with self.assertRaises(FlowDeferred):
@@ -317,7 +317,7 @@ class PlacementTest(BoxFlow):
                              for d in self.incus().device_show(SLUG).values()))
 
     def test_card_per_card_overrides_project_and_mounts_pack_only_in_card_copy(self):
-        self.build_box({"tide-box": 1, "box": "per-project"})
+        self.build_box({"tide-box": 1, "box": "per-project"}, running=False)
         self.approve_pack(box="per-card")
         placement = self.place()
         self.assertTrue(placement.per_card)
@@ -325,11 +325,11 @@ class PlacementTest(BoxFlow):
         self.mount_pack(placement)
 
     def test_card_per_card_without_packs_overrides_project(self):
-        self.build_box({"tide-box": 1, "box": "per-project"})
+        self.build_box({"tide-box": 1, "box": "per-project"}, running=False)
         bp.save_card(SLUG, self.card_id, {"tide-box": 1, "box": "per-card"})
         self.assertEqual(self.place().box, bs.card_box_name(SLUG, self.card_id))
 
-    def test_pack_isolated_from_independent_unit_left_after_other_card_step(self):
+    def test_pack_waits_while_independent_unit_keeps_other_box_active(self):
         self.build_box({"tide-box": 1, "box": "per-project"})
         other = self.card()
         placement_b = boxstep.place(self.engine, other, SLUG, "ticket", "", BOX_STEP_KINDS)
@@ -346,10 +346,11 @@ class PlacementTest(BoxFlow):
         boxstep._release_resources(self.engine, {"step": "other-step", "boxSlug": SLUG, "box": placement_b.box})
         self.assertEqual(bs.running_steps(SLUG, placement_b.box), [])
         self.approve_pack(box="per-project")
-        placement_a = self.place()
+        with self.assertRaisesRegex(boxstep.BoxWaiting, 'globalny slot'):
+            self.place()
         self.assertEqual(placement_b.box, SLUG)
-        self.assertEqual(placement_a.box, bs.card_box_name(SLUG, self.card_id))
-        self.mount_pack(placement_a)
+        copy = self.incus().instance(bs.card_box_name(SLUG, self.card_id))
+        self.assertEqual(copy['status'], 'Stopped')
         self.assertIsNone(process.poll())
 
     def test_pack_refuses_resume_in_previously_shared_box(self):
@@ -383,7 +384,7 @@ class PlacementTest(BoxFlow):
         self.assertEqual(self.incus_calls("copy"), [])
 
     def test_resume_keeps_card_copy_after_switch_to_project_mode(self):
-        self.build_box({"tide-box": 1, "box": "per-card"})
+        self.build_box({"tide-box": 1, "box": "per-card"}, running=False)
         original = self.place()
         self.engine.journal.append(self.card_id, "step.started", step="parent", runner="box", box=original.box,
                                    boxSlug=SLUG, boxIp=original.ip, kind="ticket", ticket="PT-1")
@@ -1060,7 +1061,7 @@ class BoxStepInProcessTest(BoxFlow):
         self.assertEqual(argv[argv.index("--resume") + 1], first["session"])
 
     def test_resume_after_local_unavailable_still_starts_in_the_same_card_box(self):
-        self.build_box({"tide-box": 1, "box": "per-card"})
+        self.build_box({"tide-box": 1, "box": "per-card"}, running=False)
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         first = self.started(card_id)

@@ -44,6 +44,9 @@ class BoxRunnerCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
+        memory = mock.patch('tide_daemon.box.admission.read_memory', return_value=(78 * 1024**3, 60 * 1024**3))
+        memory.start()
+        self.addCleanup(memory.stop)
         self.home = env["HOME"]
         self.repo = os.path.join(self.home, "DevWorkspace", "proj")
         self.wt_root = self.repo + "-worktrees"
@@ -540,7 +543,8 @@ class DevicesTest(BoxRunnerCase):
         subs = [a[0] if a[0] != "config" else " ".join(a[:3] if a[1] == "device" else a[:2]) for a in lines]
         stop, start = subs.index("stop"), len(subs) - 1 - subs[::-1].index("start")
         first_add = subs.index("config device add")
-        self.assertLess(stop, subs.index("config set"))
+        idmap = next(i for i, a in enumerate(lines) if any(v.startswith('raw.idmap=') for v in a))
+        self.assertLess(stop, idmap)
         self.assertLess(stop, first_add)
         self.assertGreater(start, len(subs) - 1 - subs[::-1].index("config device add"))
         self.assertEqual(self.incus.instance("proj")["status"], "Running")
@@ -642,6 +646,7 @@ class DevicesTest(BoxRunnerCase):
 
     def test_per_card_devices_go_to_the_card_copy(self):
         card_box = bs.card_box_name("proj", "K-38")
+        self.incus.stop('proj')  # v1: uruchomiona jest wyłącznie kopia karty
         self.incus.launch("tide-base", card_box)
         runner = self.runner(card="K-38", per_card=True)
         self.assertEqual(runner.box, card_box)

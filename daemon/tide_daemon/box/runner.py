@@ -608,7 +608,14 @@ class BoxRunner:
         with open(path, "a", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                return self._ensure_locked(step, wanted, check_only=check_only)
+                if check_only:
+                    return self._ensure_locked(step, wanted, check_only=True)
+                from . import admission
+                req = admission.request(self.incus, 'start', self.box, slug=self.slug,
+                                        card=self.card if self.box != bs.box_name(self.slug) else None)
+                with admission.operation(self.incus, req):
+                    self.incus.config_set(self.box, admission.limits())
+                    return self._ensure_locked(step, wanted)
             except IncusError as exc:
                 raise agentcmd.StepError(f"montowania pudełka {self.box}: {exc}") from exc
             finally:
@@ -686,7 +693,10 @@ class BoxRunner:
                 self.incus.device_add(self.box, dev.name, "disk", dev.values())
         finally:
             if stop and running:
-                self.incus.start(self.box)
+                from . import admission
+                admission.start(self.incus, self.box)
+                from .lifecycle import require_no_swap
+                require_no_swap(self.incus, self.box)
         if stop and running:
             self.wait_user_manager(self.box)
         self._require_running(running)

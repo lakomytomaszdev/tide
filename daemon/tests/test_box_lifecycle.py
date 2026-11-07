@@ -101,7 +101,7 @@ class LifecycleTest(BoxCase):
         start = next(i for i, a in enumerate(calls) if a[0] == "start")
         limits = next(i for i, a in enumerate(calls) if a[:2] == ["config", "set"])
         self.assertLess(limits, start)
-        self.assertTrue({"limits.cpu=3", "limits.memory=7GiB"}.issubset(calls[limits]))
+        self.assertTrue({"limits.cpu=8", "limits.memory=25769803776"}.issubset(calls[limits]))
         self.assertFalse(any("limits.memory.swap=" in arg for call in calls for arg in call))
         self.assertTrue(any(a[0] == "exec" and a[-2:] == ["--", "true"] for a in calls[start:]))
         self.assertFalse(any(a[:3] in (["config", "device", "unset"], ["config", "device", "set"],
@@ -296,13 +296,13 @@ class LifecycleMountTest(BoxRunnerCase):
         placement = boxstep.Placement("proj", "proj", "10.0.0.2", False, {}, self.runner())
         bs.mark_in_use("proj", "proj", "s1")
         boxstep.prepare_runner(engine, placement, self.step())
-        self.assertEqual(self.incus.config_get("proj", "limits.cpu"), "3")
-        self.assertEqual(self.incus.config_get("proj", "limits.memory"), "7GiB")
+        self.assertEqual(self.incus.config_get("proj", "limits.cpu"), "8")
+        self.assertEqual(self.incus.config_get("proj", "limits.memory"), "25769803776")
         import shlex
         from .fakebin import calls
         argv = [shlex.split(line)[1:] for line in calls(self.env) if line.startswith("incus ")]
         start = next(i for i, a in enumerate(argv) if a[0] == "start")
-        config = next(i for i, a in enumerate(argv) if "limits.cpu=3" in a)
+        config = next(i for i, a in enumerate(argv) if "limits.cpu=8" in a)
         check = next(i for i, a in enumerate(argv) if "tide-no-swap" in a)
         self.assertLess(config, start)
         self.assertLess(start, check)

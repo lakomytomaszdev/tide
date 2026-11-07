@@ -156,6 +156,9 @@ def dispatch(argv):
     elif cmd == "delete":
         inst_or_die(data, args[1])
         del data["instances"][args[1]]
+    elif cmd == "operation" and args[1] == "list":
+        print(json.dumps(data.get('operations', [])))
+        return 0
     elif cmd == "list":
         print(json.dumps([public(n, v) for n, v in sorted(data["instances"].items())]))
     elif cmd == "info":

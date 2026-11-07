@@ -718,7 +718,10 @@ class InventoryTest(unittest.TestCase):
         procedure.start.assert_called_once()
         self.assertEqual(path.read_bytes(), before)
         incus = mock.Mock()
-        incus.instance.return_value = {"status": "Running"}
+        incus.project = 'user-1000'
+        incus.operations.return_value = []
+        incus.list.return_value = []
+        incus.instance.side_effect = lambda name: {'status': 'Stopped' if incus.stop.called else 'Running'}
         builder = Builder(SimpleNamespace(), incus=incus, policy=object())
         lifecycle.Lifecycle(builder).stop("proj")
         incus.stop.assert_called_once_with("proj")
@@ -771,6 +774,8 @@ class InventoryTest(unittest.TestCase):
     def test_unrelated_project_lifecycle_still_runs(self):
         self.project()
         builder = mock.Mock()
+        builder.incus.project = 'user-1000'
+        builder.incus.operations.return_value = []
         builder.incus.list.return_value = []
         with mock.patch.object(boxstep, "settings_of", return_value=SimpleNamespace(enabled=True)), \
                 mock.patch.object(boxstep, "builder_of", return_value=builder), \
