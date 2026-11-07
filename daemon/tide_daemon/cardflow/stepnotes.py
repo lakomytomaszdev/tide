@@ -58,20 +58,31 @@ def add(journal, card, request, fold):
         return {"ok": True, "id": card, "noteId": note["noteId"]}
 
 
+def _chain(st, parent):
+    """Łańcuch uwag trwa po skasowaniu oczekiwania planu przez nieudany start następcy."""
+    chain, name = set(), parent
+    source = st.steps.get(parent) or {}
+    if parent in st.superseded and parent not in st.plan_resumes:
+        return chain
+    # Bieżący następca zachowuje przodków ukrytych przez return-plan, także bez deliveredNoteIds.
+    # Granice zlecenia, ticketu i bazy nadal odcinają historyczne uwagi.
+    while name and name not in chain:
+        step = st.steps.get(name) or {}
+        if not step or step.get("ticket") != source.get("ticket") or \
+                step.get("seq", 0) <= (st.started or {}).get("seq", 0) or \
+                step.get("baseVersion", 0) != source.get("baseVersion", 0):
+            break
+        chain.add(name)
+        name = step.get("parentStep") or ""
+    return chain
+
+
 def prepare(st, parent, prompt):
     """Wspólne przygotowanie polecenia, bez zmiany stanu doręczenia."""
     if not parent:
         return prompt, []
     prompt = _BLOCK.sub("", prompt)
-    chain, name = set(), parent
-    source = st.steps.get(parent) or {}
-    # Return-plan ukrywa dawny problem jako superseded, ale nadal przewiduje wznowienie tego kroku.
-    while name and name not in chain and (name not in st.superseded or name in st.plan_resumes):
-        step = st.steps.get(name) or {}
-        if not step or step.get("ticket") != source.get("ticket"):
-            break
-        chain.add(name)
-        name = step.get("parentStep") or ""
+    chain = _chain(st, parent)
     delivered = {ident for step in st.steps.values() for ident in step.get("deliveredNoteIds", [])}
     notes = [n for n in st.step_notes.values() if n["step"] in chain and
              n["orderSeq"] == (st.started or {}).get("seq") and n["noteId"] not in delivered]
@@ -106,8 +117,6 @@ def view(st):
     out = []
     for n in st.step_notes.values():
         target = delivered.get(n["noteId"], "")
-        current = n["orderSeq"] == (st.started or {}).get("seq") and \
-            (n["step"] not in st.superseded or n["step"] in st.plan_resumes)
         leaf, seen = n["step"], set()
         while leaf not in seen:
             seen.add(leaf)
@@ -115,6 +124,7 @@ def view(st):
             if not child:
                 break
             leaf = child
+        current = n["orderSeq"] == (st.started or {}).get("seq") and n["step"] in _chain(st, leaf)
         # Błąd/pytanie/zgoda nadal mogą być wznowione. Done kończy łańcuch autora przed niezależnym review.
         waiting = current and not st.card_finished and n["step"] in st.steps and \
             st.steps[n["step"]].get("ticket") not in st.rejected and \

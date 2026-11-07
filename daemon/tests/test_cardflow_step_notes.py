@@ -145,6 +145,9 @@ class NotesFlowTest(FlowInProcess):
         self.assertEqual((notes[0]["status"], notes[0]["successor"]), ("delivered", successor["step"]))
 
     def test_answer_and_retry_deliver_in_order(self):
+        # Integracja z master (K-37): po drugim błędzie opiekun karty sam wznawia krok, zanim użytkownik doda uwagi.
+        # Ten test sprawdza ręczną decyzję użytkownika, więc działa bez opiekuna.
+        self.flow.engine.set_flow_settings({"caretakerEnabled": False})
         for mode, choice in [("pytanie-bez-pracy", "answer"), ("blad-dwa", "retry")]:
             with self.subTest(mode=mode):
                 card = self.card(description="ATRAPA: " + mode)

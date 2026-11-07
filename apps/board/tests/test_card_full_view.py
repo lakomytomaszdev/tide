@@ -343,6 +343,12 @@ out["oldButton"] = js("page.cardFullView.oldHistory.length")
 js("page.cardFullView.oldOpen = true")
 out["expanded"] = json.loads(js(HIST))
 out["enterBefore"] = len(calls())
+# Po integracji K-60 z master pełna karta ma też uwagi i zgody, więc przycisk bywa na dole okna — przewijamy do niego.
+js("(function () { const b = (" + ALL + ")(page.cardFullView, 'historyResume')[0]; let flick = b.parent;"
+   " while (flick && flick.contentY === undefined) flick = flick.parent;"
+   " flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height,"
+   " b.mapToItem(flick.contentItem, 0, 0).y - flick.height / 2)); })()")
+wait(80)
 click(at("(" + ALL + ")(page.cardFullView, 'historyResume')[0]"))
 out["enter"] = calls()
 """, data)
