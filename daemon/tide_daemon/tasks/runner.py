@@ -42,16 +42,20 @@ class HostRunner:
     def start(self, step: agentcmd.Step, *, before_start: Callable[[agentcmd.Background], None] | None = None
               ) -> Started:
         from ..box import trialgate
+        from .inputs import selected
         trialgate.require_step(step)
-        bg = agentcmd.background(step)
-        bg.prepare()
-        if before_start is not None:
-            before_start(bg)
-        trialgate.require_step(step)
-        return Started(bg, bg.start(systemd_run=self.systemd_run))
+        with selected(step, "host") as (adapted, _inputs):
+            bg = agentcmd.background(adapted)
+            bg.prepare()
+            if before_start is not None:
+                before_start(bg)
+            trialgate.require_step(step)
+            return Started(bg, bg.start(systemd_run=self.systemd_run))
 
     def kill(self, step: dict, *, proc: object = None, grace: float = 10.0) -> bool:
         return stepstop.terminate(proc, step.get("unit") or "", grace)
 
     def env(self, step: agentcmd.Step) -> dict:
-        return agentcmd.background(step).env
+        from .inputs import selected
+        with selected(step, "host") as (adapted, _inputs):
+            return agentcmd.background(adapted).env

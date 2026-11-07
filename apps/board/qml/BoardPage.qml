@@ -781,8 +781,9 @@ Rectangle {
             // Odmowę waliduje usługa; panel pokazuje jej komunikat i pozycje (nowe do zaznaczenia), nic nie zgaduje.
             cardPanel.busy = false
             cardPanel.environmentError = error
-            cardPanel.environmentReply = error ? reply : null
-            if (!error) cardPanel.notice = reply.onlyPlan
+            cardPanel.environmentReply = error || reply.exposure || reply.revoked ? reply : null
+            if (!error) cardPanel.notice = reply.preview ? "Podgląd zakresu gotowy. Zaznacz zgodę po przeczytaniu."
+                : reply.message ? reply.message : reply.onlyPlan
                 ? "Plan zatwierdzony. Środowisko czeka na zatwierdzenie."
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
         } else if (tag.indexOf("branch-diff:") === 0) {

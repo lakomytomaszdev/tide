@@ -526,6 +526,17 @@ def snapshot_access(slug, snapshot_id, env=None):
         yield _load_at(store, slug, snapshot_id, env)
 
 
+@contextmanager
+def snapshots_access(slug, snapshot_ids, env=None):
+    """Wiele wejść pod jedną blokadą; nie zagnieżdżaj snapshot_access tego projektu.
+
+    Odbiorcy PT-263/PT-264 trzymają magazyn przed blokadą zgody i urządzeń.
+    To tylko odczyt istniejących kopii, bez kopiowania i ponownego skanowania źródeł.
+    """
+    with _store(slug, env) as store:
+        yield tuple(_load_at(store, slug, ident, env) for ident in snapshot_ids)
+
+
 def _revoke_at(store, snapshot_id):
     fd = _open_dir(store, _snapshot_id(snapshot_id))
     try:

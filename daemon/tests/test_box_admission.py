@@ -205,14 +205,18 @@ class AdmissionTest(BoxCase):
         from tide_daemon.tasks import agentcmd
 
         app = QCoreApplication.instance() or QCoreApplication([])
+        # Badamy wyścig blokad, niezależnie od bramki plasma-tide czekającej na PT-264.
+        slug = 'admission-fixture'
+        bs.record(slug, 'box.approved', slug, source='ui')
         for entry in ('stopped', 'per-card', 'reservation', 'devices'):
             with self.subTest(entry=entry):
-                self.approve({**PROFILE, 'box': 'per-card' if entry == 'per-card' else 'per-project'})
-                self.b.build('plasma-tide')
-                Lifecycle(self.b).stop('plasma-tide')
+                bp.save_project(slug, {**PROFILE, 'project': slug,
+                                      'box': 'per-card' if entry == 'per-card' else 'per-project'})
+                self.b.build(slug)
+                Lifecycle(self.b).stop(slug)
                 with mock.patch.object(ad, 'read_memory', return_value=(78 * ad.GiB, 27 * ad.GiB)):
                     with self.assertRaises(bb.SlotWaiting):
-                        self.b.build('plasma-tide')
+                        self.b.build(slug)
                     with self.assertRaises(bb.SlotWaiting):
                         self.b.build('second', PROFILE)
 
@@ -243,13 +247,13 @@ class AdmissionTest(BoxCase):
                     box_builder=lambda: self.b, take_notices=lambda: [],
                     _repo=lambda card: os.path.join(self.tmp, 'unused-repo'),
                     store=SimpleNamespace(repo=SimpleNamespace(commit=lambda *args: ''), load=lambda: SimpleNamespace(
-                        projects={'plasma-tide': {}, 'second': {}}, cards={})))
+                        projects={slug: {}, 'second': {}}, cards={})))
 
                 def attempt():
-                    placement = SimpleNamespace(slug='plasma-tide')
+                    placement = SimpleNamespace(slug=slug)
                     try:
                         if entry in ('stopped', 'per-card'):
-                            results['placement'] = boxstep.place(engine, 'K-38', 'plasma-tide', 'ticket', '', ('ticket',))
+                            results['placement'] = boxstep.place(engine, 'K-38', slug, 'ticket', '', ('ticket',))
                         elif entry == 'reservation':
                             boxstep.before_start(engine, placement, 'K-38', 'racing-start')
                         else:
@@ -282,12 +286,12 @@ class AdmissionTest(BoxCase):
                         self.assertTrue(at_lock.wait(5), 'start kroku nie dotarł do blokady projektu')
                         worker = ad.tick(self.b)
                         self.assertTrue(provisioning.wait(5), 'przebudowa nie dotarła do provision')
-                        self.assertEqual(self.b.status('plasma-tide').journal_state, bs.BUILDING)
+                        self.assertEqual(self.b.status(slug).journal_state, bs.BUILDING)
                         calls_before = self.incus_calls()
                         allow_lock.set()
-                        monitor.box_status('plasma-tide', lambda result: None)
+                        monitor.box_status(slug, lambda result: None)
                         self.assertTrue(status_done.wait(2), 'BoxStatus czeka na start kroku za przebudową')
-                        monitor.stop_box('plasma-tide', '', lambda result: None)
+                        monitor.stop_box(slug, '', lambda result: None)
                         self.assertTrue(stop_done.wait(2), 'StopBox czeka na start kroku za przebudową')
                         self.assertEqual(results['stop'], 'box-busy')
                         self.assertIn('trwa budowa lub operacja pudełka', results['waiting'])
@@ -296,7 +300,7 @@ class AdmissionTest(BoxCase):
                         self.assertEqual(state['owner']['kind'], 'build')
                         self.assertEqual(state['queue'][0]['name'], 'second')
                         self.assertIn('globalny slot', state['queue'][0]['reason'])
-                        self.assertEqual(bs.running_steps('plasma-tide', 'plasma-tide'), [])
+                        self.assertEqual(bs.running_steps(slug, slug), [])
                         # Odroczony start nie mutuje Incusa ani nie usuwa rezerwacji budowy.
                         self.assertEqual([c for c in self.incus_calls() if c[0] in ('start', 'copy')],
                                          [c for c in calls_before if c[0] in ('start', 'copy')])
@@ -311,7 +315,7 @@ class AdmissionTest(BoxCase):
                         app.processEvents()
                         for req in self.state()['queue']:
                             ad.cancel(req['id'])
-                        Lifecycle(self.b).stop('plasma-tide')
+                        Lifecycle(self.b).stop(slug)
 
     def test_exact_limits_below_and_above_44_gib_ignore_profile(self):
         for total in (21, 32, 44, 78):

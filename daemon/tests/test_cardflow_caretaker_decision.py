@@ -34,6 +34,7 @@ class CaretakerDecisionTest(unittest.TestCase):
         engine._notices = []
         engine._caretaker_withheld = mock.Mock(return_value=set())
         engine._limit_view = mock.Mock()
+        engine._environment_view = mock.Mock()
         return engine, events
 
     def test_both_triggers_and_limit_give_a_decision_and_one_notice_even_after_restart(self):

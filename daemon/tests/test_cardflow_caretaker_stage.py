@@ -300,6 +300,7 @@ class StageObservationTest(unittest.TestCase):
         self.engine._repo = mock.Mock(return_value="/r")
         self.engine._plan_files = mock.Mock(return_value={})
         self.engine._card_column = mock.Mock(return_value="todo")
+        self.engine._environment_view = mock.Mock()
 
     def observe(self, ticket, error=None):
         self.engine._flow_error("K-1", {"error": error or f"FlowGitError: brak {ticket}",

@@ -23,6 +23,14 @@ ColumnLayout {
     property var consented: []               // identyfikatory pozycji zaznaczonych przez użytkownika
     property string toggleLine: ""           // fragment YAML wybrany przełącznikiem pozycji (`toggle.on` / `toggle.off`)
     property bool editing: false
+    property bool exposureAccepted: false
+    property string seenExposure: ""
+    readonly property bool projectExposure: !!(environment && environment.projectExposure)
+    readonly property var exposure: (reply && reply.exposure) || (environment && environment.exposure) || ({})
+    onExposureChanged: {
+        if (seenExposure !== (exposure.expected || "")) exposureAccepted = false
+        seenExposure = exposure.expected || ""
+    }
     readonly property var shownItems: reply && reply.items && reply.items.length ? reply.items
                                       : (environment && environment.items) || []
     signal approveRequested(string yaml, bool onlyPlan)
@@ -32,12 +40,18 @@ ColumnLayout {
     Layout.fillWidth: true
 
     // Tekst wysyłany do usługi: YAML z modelu (albo poprawiony w „Zmień”) plus zaznaczenia użytkownika.
-    function composeYaml() {
+    function composeYaml(action) {
         let text = editing ? editor.text : (environment.yaml || "")
         text = text.replace(/\s*$/, "\n")
         if (toggleLine !== "") text += toggleLine + "\n"
         if (consented.length > 0)
             text += environment.acceptKey + ":\n" + consented.map(id => "  - " + JSON.stringify(id)).join("\n") + "\n"
+        if (projectExposure && environment.exposureControls) {
+            const keys = environment.exposureControls
+            text += keys.action + ": " + (action || "approve") + "\n"
+            text += keys.expected + ": " + JSON.stringify(action === "revoke" ? environment.approvedVersion : (exposure.expected || "")) + "\n"
+            text += keys.accepted + ": " + (exposureAccepted ? "true" : "false") + "\n"
+        }
         return text
     }
 
@@ -61,12 +75,64 @@ ColumnLayout {
 
     Text {
         Layout.fillWidth: true
-        text: "Środowisko karty"
+        text: section.projectExposure ? "Środowisko i zgoda projektu" : "Środowisko karty"
         textFormat: Text.PlainText
         color: Tide.Tokens.sky
         font.family: Tide.Theme.uiFamily
         font.pointSize: Tide.Tokens.fontSizePt * 1.1
         font.bold: true
+    }
+    Text {
+        objectName: "envProjectScope"
+        Layout.fillWidth: true
+        visible: section.projectExposure
+        text: section.exposure.scope || ""
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textPrimary
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
+    }
+    Text {
+        objectName: "envProjectManifest"
+        Layout.fillWidth: true
+        visible: section.projectExposure
+        text: section.exposure.details || ""
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.monoFamily
+        font.pointSize: Tide.Tokens.fontSizePt * 0.9
+        wrapMode: Text.WrapAnywhere
+    }
+    QQC2.CheckBox {
+        objectName: "envProjectConsent"
+        visible: section.projectExposure && !section.exposure.approved
+        text: "Zatwierdzam pokazany zakres i wersję zgody projektu"
+        checked: section.exposureAccepted
+        enabled: !section.busy && !!section.exposure.expected
+        onToggled: section.exposureAccepted = checked
+    }
+    Text {
+        objectName: "envProjectApproved"
+        Layout.fillWidth: true
+        visible: section.projectExposure && !!section.exposure.approved
+        text: "Ten dokładny zakres ma już zgodę projektu. Kolejna karta nie wymaga ponownego zaznaczenia."
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
+    }
+    Text {
+        objectName: "envProjectStatus"
+        Layout.fillWidth: true
+        visible: section.projectExposure && text !== ""
+        text: (section.reply && section.reply.message) || ""
+        textFormat: Text.PlainText
+        color: Tide.Tokens.waiting
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
     }
     Text {
         objectName: "envState"
@@ -240,6 +306,7 @@ ColumnLayout {
         wrapMode: TextEdit.Wrap
         font.family: Tide.Theme.monoFamily
         placeholderText: "Profil karty (YAML)"
+        onTextChanged: section.exposureAccepted = false
     }
     Text {
         objectName: "envError"
@@ -255,12 +322,40 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: section.projectExposure
+        spacing: 8
+        Tide.TextButton {
+            objectName: "envProjectPreview"
+            visible: section.projectExposure
+            text: "Pokaż dokładny zakres"
+            variant: "outline"
+            enabled: !section.busy && !!section.environment && !!section.environment.exposureControls
+            onClicked: {
+                section.exposureAccepted = false
+                section.approveRequested(section.composeYaml("preview"), false)
+            }
+        }
+        Tide.TextButton {
+            objectName: "envProjectRevoke"
+            visible: section.projectExposure && !!section.environment.approvedVersion
+            text: "Wycofaj zgodę projektu"
+            variant: "outline"
+            enabled: !section.busy
+            onClicked: {
+                section.exposureAccepted = false
+                section.approveRequested(section.composeYaml("revoke"), false)
+            }
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
         spacing: 8
         Tide.TextButton {
             objectName: "envApprove"
             text: section.planPending ? "Zatwierdź plan i środowisko" : "Zatwierdź środowisko"
             variant: "filled"
-            enabled: !section.busy
+            enabled: !section.busy && (!section.projectExposure || section.exposureAccepted || !!section.exposure.approved)
             opacity: enabled ? 1 : 0.45
             onClicked: section.approveRequested(section.composeYaml(), false)
         }
@@ -280,6 +375,7 @@ ColumnLayout {
             enabled: !section.busy
             onClicked: {
                 if (!section.editing) editor.text = section.environment.yaml || ""
+                section.exposureAccepted = false
                 section.editing = !section.editing
             }
         }

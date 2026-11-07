@@ -87,7 +87,8 @@ Rectangle {
     signal environmentApproveRequested(string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
     property string environmentError: ""
     property var environmentReply: null                             // odmowa usługi: pozycje do ponownego pokazania
-    readonly property var flowEnvironment: flowPlan ? (flowPlan.environment || null) : null
+    readonly property var flowEnvironment: (flowPlan && flowPlan.environment)
+        || (card && card.derived && card.derived.flow && card.derived.flow.environment) || null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
     signal mergeMainRequested(string cardId)
@@ -493,20 +494,6 @@ Rectangle {
                     }
                 }
             }
-            // PT-172: pakiet zgód środowiska karty — wspólny komponent z K-35; model liczy usługa (flow.plan.environment).
-            CardUi.CardEnvironment {
-                id: cardEnvironment
-                Layout.fillWidth: true
-                environment: panel.flowEnvironment
-                planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
-                busy: panel.busy
-                error: panel.environmentError
-                reply: panel.environmentReply
-                onApproveRequested: (yaml, onlyPlan) => {
-                    panel.busy = true
-                    panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
-                }
-            }
             QQC2.TextArea {
                 id: planFeedback
                 objectName: "cardPlanFeedback"
@@ -549,6 +536,20 @@ Rectangle {
                     panel.busy = true
                     panel.planApproveRequested(panel.card.id)
                 }
+            }
+        }
+
+        CardUi.CardEnvironment {
+            id: cardEnvironment
+            Layout.fillWidth: true
+            environment: panel.descriptionOnly ? null : panel.flowEnvironment
+            planPending: !!panel.flowPlan && panel.flowPlan.status === "pending"
+            busy: panel.busy
+            error: panel.environmentError
+            reply: panel.environmentReply
+            onApproveRequested: (yaml, onlyPlan) => {
+                panel.busy = true
+                panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
             }
         }
 

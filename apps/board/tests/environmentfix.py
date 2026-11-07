@@ -19,7 +19,7 @@ from tide_daemon.cardflow import envconsent  # noqa: E402
 from tide_daemon.cardflow.state import fold  # noqa: E402
 
 CARD = "K-6"
-SLUG = "plasma-tide"
+SLUG = "legacy-environment"
 
 PROJECT = {"tide-box": 1, "stacks": ["docker"],
            "docker": {"enabled": True, "images": ["testcontainers/ryuk:0.11.0"]}}
@@ -56,7 +56,7 @@ def environment(project=PROJECT, box=CARD_BOX, wait="", prepare=None, repo_files
         for name, body in (repo_files or {}).items():
             with open(os.path.join(repo, name), "w", encoding="utf-8") as fh:
                 fh.write(body)
-        with mock.patch.dict(os.environ, {"TIDE_BOARD_DIR": board}):
+        with mock.patch.dict(os.environ, {"TIDE_BOARD_DIR": board, "XDG_STATE_HOME": os.path.join(board, "state")}):
             if project is not None:
                 bp.save_project(SLUG, project)
             if prepare:

@@ -93,9 +93,9 @@ def docker_note() -> str:
         notes = [n.get("note", "") for n in templates.load("docker").get("image_notes", []) if "K1" in n.get("note", "")]
     except (templates.TemplateError, OSError, KeyError):
         notes = []
-    off = [p for p, active in sorted(k3.K3_PROGRAMS.items()) if not active]
+    off = [p for p in sorted(k3.K3_PROGRAMS) if not k3.k3_active(p)]
     k3_text = f"K3 nieaktywne ({', '.join(off)})" if off else "K3 aktywne"
-    return " ".join([templates.DOCKER_RISK_NOTE, *notes[:1], f"{k3_text}."]).strip()
+    return " ".join([templates.DOCKER_RISK_NOTE, *notes[:1], f"{k3_text}.", k3.K1_NOTE if off else ""]).strip()
 
 
 def _profile_items(profile: dict, known, scope: str, accepted=(), locked_red=False) -> list:
@@ -232,6 +232,10 @@ def yaml_base(card: dict) -> str:
 def model(engine, card_id: str, st) -> dict:
     """Sekcja „Środowisko karty” dla panelu planu."""
     slug, repo = _project_state(engine, card_id)
+    from ..box import exposure
+    if slug == exposure.PROJECT:
+        from . import projectconsent
+        return projectconsent.model(engine, card_id, st)
     project, new, tmpl_items, empty, notes = _project_profile(slug, repo)
     card = _card_proposal(engine, card_id, st, slug)
     known = templates.known_domains()
@@ -317,8 +321,19 @@ def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     except Exception as exc:
         raise FlowError("bad-card", str(exc)) from None
     st = fold(engine.journal.read(card_id))
-    if st.started is None or st.card_finished:
+    if st.started is None:
         raise FlowError("no-card", f"{card_id}: karta nie ma aktywnego przepływu")
+    from ..box import exposure
+    project_scope = _project_state(engine, card_id)[0] == exposure.PROJECT
+    if st.card_finished and (not project_scope or only_plan):
+        raise FlowError("no-card", f"{card_id}: karta nie ma aktywnego przepływu")
+    if project_scope:
+        from . import projectconsent
+        if only_plan:
+            plan = engine.approve_plan(card_id) if st.plan_proposed and not st.plan_approved else {}
+            boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="ui")
+            return {"ok": True, "id": card_id, "onlyPlan": True, "boxWait": boxwait.ENVIRONMENT, "plan": plan}
+        return projectconsent.approve(engine, card_id, text, st)
     try:
         prepared = prepare(engine, card_id, text, st)
     except EnvError as exc:

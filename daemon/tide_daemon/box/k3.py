@@ -36,8 +36,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-# Wynik P-3 dla programów agentów. Zmiana na False przywraca K1 (osobne logowanie w pudełku) tylko dla tego programu.
+# Wynik P-3/PT-175 z docs/box-prototype.md, przebieg 4. Nowy program nie
+# dziedziczy potwierdzenia przez samą obecność w słowniku ani wartość truthy.
 K3_PROGRAMS = {"claude": True, "codex": True}
+K3_CONFIRMATIONS = {"claude": "P-3/PT-175:claude-base-url-v1",
+                    "codex": "P-3/PT-175:codex-tide-provider-v1"}
+K1_NOTE = "K1: grupa docker = root pudełka; denyRead nie chroni poświadczeń przed kodem z Dockerem."
 
 DEFAULT_TTL = 24 * 3600.0          # zapas: krok kończy się revoke_step, atrapa i tak nie żyje dłużej
 OAUTH_BETA = "oauth-2025-04-20"    # token subskrypcyjny Claude wymaga tej bety (P-3)
@@ -45,7 +49,14 @@ OAUTH_BETA = "oauth-2025-04-20"    # token subskrypcyjny Claude wymaga tej bety 
 
 def k3_active(program: str) -> bool:
     """Czy program agenta działa w pudełku z K3 (atrapa + proxy wstrzykujące), a nie z własnym logowaniem (K1)."""
-    return bool(K3_PROGRAMS.get(str(program), False))
+    return (K3_PROGRAMS.get(str(program)) is True and
+            bool(K3_CONFIRMATIONS.get(str(program))) and program in PROGRAM_ROUTE)
+
+
+def credential_mode(program: str) -> dict:
+    active = k3_active(program)
+    return {"mode": "K3" if active else "K1", "confirmation": K3_CONFIRMATIONS.get(program, "") if active else "",
+            "note": "K3: poświadczenia hosta wstawia proxy; w pudełku są atrapy." if active else K1_NOTE}
 
 
 def login_programs(programs=("claude", "codex")) -> tuple:
@@ -260,7 +271,8 @@ class GrantRegistry:
 
     def restore(self, step: str, ip: str, route: str, key: str, ttl: float) -> None:
         """Odtwarza atrapę aktywnego kroku z prywatnego stanu usługi po restarcie, bez zmiany klucza agenta."""
-        if not step or not key or route not in self.routes or ipaddress.ip_address(ip).version != 4 or ttl <= 0:
+        if (not step or not key or route not in self.routes or not k3_active(self.routes[route].program)
+                or ipaddress.ip_address(ip).version != 4 or ttl <= 0):
             raise ValueError("niepoprawny albo wygasły kontekst K3 kroku")
         grant = Grant(step, ip, route, key, self.clock() + min(float(ttl), DEFAULT_TTL))
         with self._lock:

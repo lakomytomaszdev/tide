@@ -72,6 +72,9 @@ def configure(proxy, placement, step: str, log: str, bg, *, codex_step_dir: str 
     saved = data.get("grant")
     if not saved:
         return
+    program = {route: p for p, route in k3.PROGRAM_ROUTE.items()}.get(saved["route"], "")
+    if not k3.k3_active(program):
+        raise ValueError("K3 utraciło potwierdzenie; odmowa cichego przejścia do K1")
     grant = k3.Grant(step, placement.ip, saved["route"], saved["key"])
     credentials = k3.step_credentials(grant, base)
     bg.env.update(credentials.env)

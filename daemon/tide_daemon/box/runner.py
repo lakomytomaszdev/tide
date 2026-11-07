@@ -412,8 +412,10 @@ class BoxRunner:
                        codex_mcp=() if step.codex_mcp is None else step.codex_mcp, node_home="", chrome_bin="")
 
     def _background(self, step: agentcmd.Step) -> agentcmd.Background:
-        bstep = self.box_step(step)
-        bg = agentcmd.background(bstep)
+        from ..tasks.inputs import selected
+        with selected(step, "box") as (adapted, _inputs):
+            bstep = self.box_step(adapted)
+            bg = agentcmd.background(bstep)
         bg.env.update(proxy_env(self.proxy_base()))
         bg.env["TIDE_CWD"] = bg.cwd
         bg.env["TIDE_STEP"] = bg.step_dir
@@ -481,6 +483,7 @@ class BoxRunner:
     def devices_for(self, step: agentcmd.Step) -> list:
         """Urządzenia dyskowe kroku. Kolejność listy nie decyduje o montowaniu (Incus sortuje po `path`) — nakładki ro
         są nad `.git`, bo ich ścieżki leżą pod `.git/`."""
+        self._require_mount_adapter(step)
         repo = os.path.realpath(step.repo)
         git = os.path.join(repo, ".git")
         if not os.path.isdir(git):
@@ -746,6 +749,7 @@ class BoxRunner:
               ) -> Started:
         from . import trialgate
         trialgate.require_step(step)
+        self._require_mount_adapter(step)
         bg = self._background(step)
         # Nie `bg.prepare()`: katalog kroku jest rw w pudełku, zapis usługi nie może iść za dowiązaniem.
         fs = StepDir(worktrees_root(os.path.realpath(step.repo)), bg.step_dir)
@@ -789,6 +793,12 @@ class BoxRunner:
                 refguard.cancel(step.repo, self.card, step.step_id)
                 raise
         return Started(bg, proc)
+
+    def _require_mount_adapter(self, step):
+        from . import exposure
+        if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
+            raise agentcmd.StepError("manifest projektu: czeka na odebrany adapter montowań PT-264; "
+                                     "brak powrotu do historycznych urządzeń per karta")
 
     def _client_env(self) -> dict:
         """Środowisko klienta `incus` na hoście — bez zmiennych kroku (nic z `in/env`)."""

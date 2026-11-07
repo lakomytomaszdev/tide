@@ -252,6 +252,7 @@ class Step:
     # programu. Claude: stała lista poleceń tylko do odczytu (`read_only_tools`, zamiast `allowed_tools`) i zakaz
     # edycji worktree i repozytorium; Codex: jedyny zapisywalny `out` i żadnych poleceń (`CODEX_NO_COMMANDS`).
     write_out_only: bool = False
+    exposure_inputs: object = None # hostowy wybór wejść z wersjonowanego manifestu PT-263, nigdy z promptu
 
 
 @dataclass

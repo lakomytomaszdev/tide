@@ -127,6 +127,7 @@ out["activeAfter"] = js("page.cardFullView.flow.ticketConsents[0].active")
         engine.journal.read.return_value = events
         engine._caretaker_setup = lambda st: caretaker.setup(st)
         engine._limit_view = lambda *args: None
+        engine._environment_view = lambda *args: None
         computed = engine.derived({"id": "K-8", "column": "todo"})
         self.assertIn("talk-to-caretaker", [o["id"] for d in computed["flow"]["decisions"] for o in d["options"]])
         data = full_card(self.data, events)
