@@ -4,6 +4,7 @@ Skaner to filtr, nie gwarancja. Trafienia zawierają wyłącznie ścieżkę i na
 reguły, nigdy sekret. `files` pozwala ręcznie zawęzić dopasowania wzorca.
 """
 import glob
+import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +12,9 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}\Z")
@@ -98,6 +102,10 @@ def _read(path):
             data = fh.read(MAX_FILE + 1)
             if len(data) > MAX_FILE:
                 raise PackError(f"packs: plik przekracza limit: {path}")
+            after = os.fstat(fh.fileno())
+            if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(data) != info.st_size:
+                raise PackError("packs: źródło zmieniło się podczas odczytu")
             return data, info
     finally:
         os.close(fd)
@@ -259,3 +267,305 @@ def cleanup(slug, card, incus, journal):
         removed.append(target)
     if removed:
         journal.append(card, "packs.removed", removed=removed)
+
+
+# Rdzeń v1. Powyższe adaptery PT-173 pozostają dla historycznych wywołań;
+# zgoda i urządzenia v1 konsumują poniższe API, bez ponownego czytania źródeł.
+SNAPSHOT_VERSION = 1
+SNAPSHOT_ID = re.compile(r"[0-9a-f]{32}\Z")
+
+
+@dataclass(frozen=True)
+class SnapshotFile:
+    path: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class PackSnapshot:
+    project: str
+    card: str
+    name: str
+    id: str
+    version: int
+    directory: str
+    files: tuple[SnapshotFile, ...]
+    size: int
+    scanner: dict
+
+    def to_dict(self):
+        """Opis kopii dla manifestu PT-263; sam opis nie stanowi zgody."""
+        return asdict(self)
+
+
+def snapshot_root(slug, env=None):
+    """Hostowy magazyn poza home i worktree udostępnianymi pudełku."""
+    from . import profile as bp
+    bp._check_slug(slug, "projekt")
+    env = os.environ if env is None else env
+    base = env.get("XDG_STATE_HOME") or os.path.join(
+        env.get("HOME") or os.path.expanduser("~"), ".local", "state")
+    if not os.path.isabs(base):
+        raise PackError("packs: magazyn wymaga ścieżki bezwzględnej")
+    return os.path.join(base, "tide", "pack-snapshots", slug)
+
+
+def _open_dir(parent, name):
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+
+
+@contextmanager
+def _store(slug, env=None):
+    """Zakotwiczone deskryptory i blokada wspólna dla publikacji/wycofania/usuwania."""
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in snapshot_root(slug, env).split(os.sep)[1:]:
+            if not part or part in (".", ".."):
+                raise PackError("packs: niekanoniczna ścieżka magazynu")
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = _open_dir(fd, part)
+            os.close(fd)
+            fd = child
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _write_at(parent, name, content):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o400, dir_fd=parent)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _read_at(parent, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(fd, "rb") as fh:
+        info = os.fstat(fh.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE:
+            raise PackError("packs: niedozwolony plik w kopii")
+        content = fh.read(MAX_FILE + 1)
+        after = os.fstat(fh.fileno())
+        if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(content) != info.st_size:
+            raise PackError("packs: kopia zmieniła się podczas odczytu")
+        return content
+
+
+def _copy_at(parent, relative, content):
+    parts = relative.split("/")
+    fd = os.dup(parent)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            child = _open_dir(fd, part)
+            os.close(fd)
+            fd = child
+        _write_at(fd, parts[-1], content)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def create_snapshot(slug, card, spec, env=None):
+    """Skan i niezależna, atomowo publikowana kopia. Nie zatwierdza ani nie montuje.
+
+    Identyfikator karty jest organizacyjny. Dostęp do kopii ogranicza projekt,
+    a zatwierdzenie konkretnego id/wersji należy do hostowego manifestu PT-263.
+    """
+    from . import state as bs
+    bs.card_box_name(slug, card)
+    errors = []
+    validate_specs([spec], errors)
+    if errors or not isinstance(spec, dict):
+        raise PackError("packs: niepoprawny opis nowej kopii")
+    report, data = inspect(spec)
+    if report["blocked"]:
+        raise PackError("packs: trafienia filtra; wybierz ręcznie files")
+    snapshot_id = uuid.uuid4().hex
+    files = tuple(SnapshotFile(p.lstrip("/"), len(b), hashlib.sha256(b).hexdigest())
+                  for p, b in data.items())
+    snapshot = PackSnapshot(slug, card.strip().upper(), spec["name"], snapshot_id,
+                            SNAPSHOT_VERSION,
+                            os.path.join(snapshot_root(slug, env), snapshot_id, "data"),
+                            files, report["size"], report)
+    with _store(slug, env) as store:
+        if snapshot_id in os.listdir(store):
+            raise PackError("packs: identyfikator kopii jest już zajęty")
+        stage = ".stage-" + snapshot_id
+        os.mkdir(stage, 0o700, dir_fd=store)
+        try:
+            stage_fd = _open_dir(store, stage)
+            try:
+                os.mkdir("data", 0o700, dir_fd=stage_fd)
+                data_fd = _open_dir(stage_fd, "data")
+                try:
+                    for path, content in data.items():
+                        _copy_at(data_fd, path.lstrip("/"), content)
+                    _sync_dirs(data_fd)
+                finally:
+                    os.close(data_fd)
+                _write_at(stage_fd, "snapshot.json", json.dumps(snapshot.to_dict()).encode("utf-8"))
+                os.fsync(stage_fd)
+            finally:
+                os.close(stage_fd)
+            os.rename(stage, snapshot_id, src_dir_fd=store, dst_dir_fd=store)
+            os.fsync(store)
+        finally:
+            if stage in os.listdir(store):
+                shutil.rmtree(stage, dir_fd=store)
+    return snapshot
+
+
+def _sync_dirs(fd):
+    for name in os.listdir(fd):
+        if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+            child = _open_dir(fd, name)
+            try:
+                _sync_dirs(child)
+            finally:
+                os.close(child)
+    os.fsync(fd)
+
+
+def _inventory(fd, prefix="", budget=None):
+    budget = [0, 0] if budget is None else budget
+    out = []
+    for name in sorted(os.listdir(fd)):
+        relative = prefix + name
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child = _open_dir(fd, name)
+            try:
+                out.extend(_inventory(child, relative + "/", budget))
+            finally:
+                os.close(child)
+        else:
+            budget[0] += 1
+            budget[1] += info.st_size
+            if budget[0] > MAX_FILES or budget[1] > MAX_TOTAL:
+                raise PackError("packs: przekroczone limity kopii")
+            content = _read_at(fd, name)
+            out.append(SnapshotFile(relative, len(content), hashlib.sha256(content).hexdigest()))
+    return out
+
+
+def _snapshot_id(value):
+    if not isinstance(value, str) or not SNAPSHOT_ID.fullmatch(value):
+        raise PackError("packs: niepoprawny identyfikator kopii")
+    return value
+
+
+def _load_at(store, slug, snapshot_id, env=None):
+    fd = _open_dir(store, _snapshot_id(snapshot_id))
+    try:
+        if "revoked" in os.listdir(fd):
+            raise PackError("packs: kopia wycofana")
+        try:
+            raw = json.loads(_read_at(fd, "snapshot.json"))
+            files = tuple(SnapshotFile(**entry) for entry in raw.pop("files"))
+            snapshot = PackSnapshot(files=files, **raw)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise PackError("packs: nieprawidłowy opis kopii") from exc
+        directory = os.path.join(snapshot_root(slug, env), snapshot_id, "data")
+        if (snapshot.project != slug or snapshot.id != snapshot_id or
+                type(snapshot.version) is not int or snapshot.version != SNAPSHOT_VERSION or
+                not isinstance(snapshot.card, str) or
+                not re.fullmatch(r"K-[1-9][0-9]{0,8}", snapshot.card) or
+                not isinstance(snapshot.name, str) or not NAME.fullmatch(snapshot.name) or
+                type(snapshot.size) is not int or
+                snapshot.directory != directory or not isinstance(snapshot.scanner, dict) or
+                snapshot.scanner.get("blocked") is not False):
+            raise PackError("packs: niezgodna tożsamość lub wersja kopii")
+        if any(not isinstance(f.path, str) or type(f.size) is not int or
+               not isinstance(f.sha256, str) for f in files):
+            raise PackError("packs: nieprawidłowa lista plików kopii")
+        data_fd = _open_dir(fd, "data")
+        try:
+            actual = tuple(sorted(_inventory(data_fd), key=lambda f: f.path))
+        finally:
+            os.close(data_fd)
+        if (actual != tuple(sorted(files, key=lambda f: f.path)) or
+                snapshot.size != sum(f.size for f in actual) or
+                snapshot.scanner != {"count": len(actual), "size": snapshot.size,
+                                     "paths": ["/" + f.path for f in actual[:20]],
+                                     "hits": [], "blocked": False, "scanner": FILTER_NOTE}):
+            raise PackError("packs: zmieniona lub częściowa kopia")
+        return snapshot
+    finally:
+        os.close(fd)
+
+
+def load_snapshot(slug, snapshot_id, env=None):
+    """Weryfikuje kopię projektu także po restarcie; nie stanowi zgody na ekspozycję.
+
+    Karta odbiorcy nie jest granicą. Obcy projekt szuka wyłącznie w swoim magazynie.
+    """
+    with snapshot_access(slug, snapshot_id, env) as snapshot:
+        return snapshot
+
+
+@contextmanager
+def snapshot_access(slug, snapshot_id, env=None):
+    """PT-264 trzyma ten kontekst do końca montowania, aby wycofanie nie wyprzedziło ekspozycji.
+
+    Kolejność blokad: magazyn, potem urządzenia. Żadna ścieżka urządzeń nie może
+    brać blokady magazynu w odwrotnej kolejności. `load_snapshot` wystarcza do opisu.
+    """
+    with _store(slug, env) as store:
+        yield _load_at(store, slug, snapshot_id, env)
+
+
+def _revoke_at(store, snapshot_id):
+    fd = _open_dir(store, _snapshot_id(snapshot_id))
+    try:
+        try:
+            _write_at(fd, "revoked", b"1\n")
+        except FileExistsError:
+            pass
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def revoke_snapshot(slug, snapshot_id, env=None):
+    """Blokuje przyszłe ekspozycje; nie wymazuje danych poznanych już w projekcie."""
+    with _store(slug, env) as store:
+        _revoke_at(store, snapshot_id)
+
+
+def delete_snapshot(slug, snapshot_id, *, confirm_detached, env=None):
+    """Usuwa jedną kopię po hostowym potwierdzeniu PT-264.
+
+    Callback (projekt, id) -> dokładnie True musi sprawdzić wszystkie urządzenia
+    tej kopii pod blokadą montowań PT-264. To interfejs zaufanej usługi, nie IPC
+    ani dane z pudełka. Najpierw wycofujemy kopię, nawet gdy odłączenie zawiedzie.
+    """
+    _snapshot_id(snapshot_id)
+    with _store(slug, env) as store:
+        trash = ".deleting-" + snapshot_id
+        present = os.listdir(store)
+        if snapshot_id not in present and trash not in present:
+            return False
+        if snapshot_id in present:
+            _revoke_at(store, snapshot_id)
+        if not callable(confirm_detached) or confirm_detached(slug, snapshot_id) is not True:
+            raise PackError("packs: brak potwierdzenia odłączenia kopii")
+        if snapshot_id in present:
+            if trash in present:
+                raise PackError("packs: niejednoznaczny stan usuwania kopii")
+            os.rename(snapshot_id, trash, src_dir_fd=store, dst_dir_fd=store)
+            os.fsync(store)
+        shutil.rmtree(trash, dir_fd=store)
+        os.fsync(store)
+        return True
