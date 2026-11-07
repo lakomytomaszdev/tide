@@ -34,7 +34,7 @@ ADAPTER_SPEC.loader.exec_module(ADAPTER)
 
 
 class DecisionAdapterTest(unittest.TestCase):
-    """Stub-CLI contract: confirmation, saved operation identity and replay payload."""
+    """Kontrakt atrapowego CLI: potwierdzenie, tożsamość zapisu i ładunek replay."""
 
     def invoke(self, argv):
         return ADAPTER.run(ADAPTER.parser().parse_args(argv))
@@ -72,6 +72,27 @@ class DecisionAdapterTest(unittest.TestCase):
                     self.invoke(['backlog', '--session', str(session), '--id', 'S-4',
                                  '--expected-version', '4', '--decision', shown['confirmation']])
             self.assertEqual(dispatch.call_count, 1)
+
+    def test_explicit_new_version_decision_overrides_stale_presentation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp, 'S-4')
+            issue = {'id': 'S-4', 'version': 4, 'state': 'ready', 'report': 'Raport v4'}
+            info = {'ok': True, 'apiVersion': 1, 'capabilities': ['issue.create', 'issue.show',
+                'issue.update', 'issue.attach', 'issue.submit', 'issue.accept']}
+            with mock.patch.object(ADAPTER, 'cli', side_effect=[info, {'ok': True, 'issue': issue}]):
+                self.invoke(['inspect', '--session', str(session), '--id', 'S-4', '--destination', 'backlog'])
+
+            def accept_v6(*argv):
+                operation = json.loads((session / 'session.json').read_text())['decisionOperation']
+                self.assertEqual(operation['expectedVersion'], 6)
+                self.assertEqual(argv[argv.index('--expected-version') + 1], '6')
+                return {'ok': True, 'accepted': True, 'card': 'K-6', 'acceptedVersion': 6}
+
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', side_effect=accept_v6):
+                accepted = self.invoke(['backlog', '--session', str(session), '--id', 'S-4',
+                                        '--expected-version', '6', '--decision', 'backlog S-4 v6'])
+            self.assertTrue(accepted['accepted'])
 
     def test_go_lost_answer_replays_same_request_launch_and_retry_has_new_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +158,16 @@ class DecisionAdapterTest(unittest.TestCase):
                 retry_result = self.invoke(['retry-replay', '--session', str(session)])
             self.assertEqual(retry_calls[0], retry_calls[1])
             self.assertEqual(retry_result['currentStart']['state'], 'completed')
+
+            original_go = {'ok': True, 'accepted': True, 'card': 'K-2', 'startError': {'code': 'failed'},
+                           'start': {'state': 'start-error'}, 'currentStart': {'state': 'completed'}}
+            with mock.patch.object(ADAPTER, 'cli', return_value=info), \
+                    mock.patch.object(ADAPTER, 'decision_cli', return_value=original_go) as original_replay:
+                history = self.invoke(['replay', '--session', str(session)])
+            self.assertTrue(history['startError'])
+            self.assertEqual(history['currentStart']['state'], 'completed')
+            self.assertEqual(original_replay.call_args.args[original_replay.call_args.args.index('--request-id') + 1],
+                             first_identity['requestId'])
 
 
 class EvaluatorTest(unittest.TestCase):

@@ -13,12 +13,16 @@ class AdapterError(Exception):
 
 
 def save(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
     temporary = path.with_suffix('.tmp')
-    with temporary.open('w', encoding='utf-8') as stream:
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
         json.dump(data, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
+    os.chmod(path, 0o600)
 
 
 def cli(*args):
@@ -33,7 +37,7 @@ def cli(*args):
 
 
 def decision_cli(*args):
-    """Accept a recorded start-error result as data; preserve the CLI's exit semantics."""
+    """Zachowuje wynik startError jako dane, respektując kod wyjścia CLI."""
     process = subprocess.run(['tide', *map(str, args), '--json'], capture_output=True, text=True)
     try:
         reply = json.loads(process.stdout)
@@ -123,12 +127,14 @@ def parser():
 def run(args):
     check_api(args)
     folder = args.session.resolve()
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(folder, 0o700)
     state_path = folder / 'session.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else None
 
     def session_state():
-        folder.mkdir(parents=True, exist_ok=True)
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(folder, 0o700)
         return json.loads(state_path.read_text()) if state_path.exists() else {}
 
     def issue_show(ident):
@@ -142,10 +148,10 @@ def run(args):
         # „tego raportu” działa wyłącznie dla migawki zapisanej przez inspect.
         exact = expected.casefold()
         if received.strip().casefold() == exact:
-            return
+            return True
         if prior and prior.get('confirmation', '').casefold() == received.strip().casefold():
             if prior.get('expected') == expected:
-                return
+                return False
         raise AdapterError('Brak jednoznacznej decyzji dla dokładnej wersji i ustawień: ' + expected)
 
     if args.action in ('inspect', 'backlog', 'go', 'replay', 'retry-inspect', 'retry-start', 'retry-replay'):
@@ -178,8 +184,8 @@ def run(args):
             verb = args.action
             expected_version = args.expected_version
             expected = f'{verb} {args.id} v{expected_version}'
-            require_decision(expected, args.decision, state.get('presented'))
-            if state.get('presented') and state['presented'].get('id') == args.id:
+            explicit = require_decision(expected, args.decision, state.get('presented'))
+            if not explicit and state.get('presented') and state['presented'].get('id') == args.id:
                 if state['presented'].get('version') != expected_version:
                     raise AdapterError('version-conflict: przedstawiona wersja nie zgadza się z decyzją.')
                 if state['presented'].get('destination') != verb:
@@ -189,7 +195,7 @@ def run(args):
                 launch = json.loads(args.launch.read_text(encoding='utf-8'))
                 if not isinstance(launch, dict):
                     raise AdapterError('Ustawienia go muszą być obiektem JSON.')
-            if state.get('presented', {}).get('expected') == expected and state['presented'].get('launch') != launch:
+            if not explicit and state.get('presented', {}).get('expected') == expected and state['presented'].get('launch') != launch:
                 raise AdapterError('Ustawienia różnią się od przedstawionych; pokaż raport i ustawienia ponownie.')
             payload = {'id': args.id, 'verb': verb, 'expectedVersion': expected_version,
                        'launch': launch, 'requestId': str(uuid.uuid4()), 'decision': args.decision,
