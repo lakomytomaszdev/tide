@@ -106,7 +106,8 @@ class DeduplicationTest(FaultReportCase):
     def failed_card(self, title, reason="no-result", fault="tide", cause="write-denied"):
         card_id = self.card(title=title)
         journal = self.engine.journal
-        journal.append(card_id, "card.started", entry="now", executor="Sonnet", program="claude", provider="anthropic")
+        journal.append(card_id, "card.started", entry="now", executor="Sonnet", program="claude", provider="anthropic",
+                       project="proj")
         for attempt in (0, 1):
             name = f"{card_id}-PT-1-{attempt + 1}"
             step_dir = os.path.join(self.base, "steps", name + ".step")

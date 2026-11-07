@@ -185,6 +185,7 @@ class PacksRunnerTest(BoxRunnerCase):
         self.runner(card="K-38").ensure_devices(self.step())
         from tide_daemon.cardflow.journal import Journal
         journal = Journal(bp.board_dir())
+        journal.append("K-38", "card.started", project="proj")
         journal.append("K-38", "step.started", step="s1", ticket="PT-999")
         journal.append("K-38", "step.finished", step="s1", result="error")
         packs.cleanup("proj", "K-38", self.incus, journal)

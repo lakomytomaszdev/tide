@@ -18,6 +18,7 @@ class PortPlacementTest(BoxFlow):
         super().setUp()
         self.flow.stop()
         self.card_id = self.card()
+        self.engine.journal.append(self.card_id, "card.started", project=SLUG)
         self.build_box(PROFILE)
 
     def place(self, step):

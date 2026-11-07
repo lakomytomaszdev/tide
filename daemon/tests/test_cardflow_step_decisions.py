@@ -614,7 +614,7 @@ class IsolationTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}, {"id": "PT-3", "blockers": []}])
         for ticket in ("PT-2", "PT-3"):
             journal.append(card, "step.started", step=f"s-{ticket}", ticket=ticket, kind="ticket")
@@ -643,7 +643,7 @@ class RejectFailedTicketTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         row = {"executor": "Sonnet", "reviewer": "Opus", "class": "standard", "note": ""}
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": [], "title": "a", **row},
                                                    {"id": "PT-3", "blockers": ["PT-2"], "title": "b", **row}])
@@ -714,7 +714,7 @@ class MergeRetryTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}])
         journal.append(card, "step.started", step="t", ticket="PT-2", kind="ticket")
         journal.append(card, "step.finished", step="t", ticket="PT-2", result="done")
