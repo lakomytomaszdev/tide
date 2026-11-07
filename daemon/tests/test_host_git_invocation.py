@@ -69,6 +69,63 @@ class HostGitInvocationTest(unittest.TestCase):
         self.assertTrue(result.ok, result.err)
         self.assertIn("filter.Filtr.clean", result.out)
 
+    def test_checkout_snapshot_reads_share_one_boundary_without_losing_paths_or_state(self):
+        from tide_daemon.cardflow.gitops import FlowGit
+        from tide_daemon.cardflow.mergepreview import checkout_snapshot
+        (self.repo / "base.txt").write_text("zmiana")
+        name = "plik\nz nową linią.txt"
+        (self.repo / name).write_text("nieśledzony")
+        calls = []
+        original = KernelTransport.run
+        def measured(transport, *args, **kwargs):
+            calls.append(args[0])
+            return original(transport, *args, **kwargs)
+        with mock.patch.object(KernelTransport, "run", measured):
+            snapshot = checkout_snapshot(FlowGit(self.git()).run, str(self.repo))
+        self.assertEqual(snapshot["changes"]["untracked"][0]["paths"], [name])
+        self.assertEqual(snapshot["changes"]["unstaged"][0]["paths"], ["base.txt"])
+        self.assertTrue(snapshot["indexEntries"])
+        self.assertEqual(len(calls), 1)
+
+    def test_local_snapshot_groups_ignored_and_repository_reads_but_rechecks_each_snapshot(self):
+        from tide_daemon.cardflow.gitops import FlowGit
+        from tide_daemon.cardflow.basechange import local_snapshot
+        (self.repo / ".git/info/exclude").write_text("ignored.bin\n")
+        (self.repo / "ignored.bin").write_text("dane")
+        calls = []
+        original = KernelTransport.run
+        def measured(transport, *args, **kwargs):
+            calls.append(args[0])
+            return original(transport, *args, **kwargs)
+        flow = FlowGit(self.git())
+        with mock.patch.object(KernelTransport, "run", measured):
+            first = local_snapshot(flow, str(self.repo), str(self.repo))
+            (self.repo / "base.txt").write_text("późniejsza zmiana")
+            second = local_snapshot(flow, str(self.repo), str(self.repo))
+        self.assertEqual(first["ignored"], ["ignored.bin"])
+        self.assertFalse(first["changes"]["unstaged"])
+        self.assertTrue(second["changes"]["unstaged"])
+        self.assertEqual(len(calls), 4)  # Dwie świeże migawki i dwa sprawdzenia repo źródłowego.
+
+    def test_checkout_batch_detached_head_and_protocol_failures_are_explicit(self):
+        gitrepos.git(str(self.repo), "checkout", "--detach", "-q")
+        snapshot = self.git().read_checkout(str(self.repo))
+        self.assertEqual(snapshot["symbolic"].code, 1)
+        self.assertEqual(snapshot["symbolic"].out, "")
+        for output in ("{}", "not json", '{"head": {"code": 0, "out": "", "err": ""}}'):
+            with self.subTest(output=output):
+                git = self.git()
+                with mock.patch.object(git.cancel, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                    with self.assertRaisesRegex(OSError, "niepoprawny wynik"):
+                        git.read_checkout(str(self.repo))
+
+    def test_checkout_batch_does_not_accept_arbitrary_commands(self):
+        result = self.git().run(str(self.repo), "config", "--file", str(self.repo / ".git/config"),
+                                "core.worktree", "/foreign", checkout="all")
+        self.assertFalse(result.ok)
+        self.assertIn("niepoprawne żądanie", result.err)
+        self.assertNotIn("worktree", (self.repo / ".git/config").read_text())
+
     def test_excludes_outside_project_cannot_supply_repository_configuration(self):
         excludes = Path(self.tmp.name) / "host-excludes"
         excludes.write_text("private.bin\n")

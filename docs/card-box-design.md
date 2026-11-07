@@ -70,6 +70,17 @@ dostaje wygenerowany plik tożsamości. Oryginalny config hosta nie jest przy ni
 montowany; lokalna i jawna tożsamość mają pierwszeństwo. Brak bwrap lub wymaganego
 ABI oznacza odmowę bez cichego powrotu do starego Git.
 
+Odczyty pojedynczej migawki checkoutu mogą współdzielić jeden start bwrap.
+Zaufany interpreter wykonuje stałą listę odczytów HEAD, gałęzi, statusu, indeksu
+i administracji; każdy proces Git dostaje tę samą politykę Landlock i przypięte
+gitdir/worktree. To nie jest interfejs dowolnego batch argv ani trwały worker.
+Wyniki mają sprawdzany pełny format, a błąd dowolnego wymaganego odczytu odmawia
+migawki. Każda następna migawka ponawia odczyty i walidację granicy; nie ma cache
+zmiennego stanu między podglądem, zgodą i wykonaniem. Odciski plików, sprawdzanie
+repozytorium źródłowego oraz porównania kolejnych faz pozostają obowiązkowe.
+Migawka nadal jest odczytem wieloetapowym, a nie atomową transakcją Git.
+Plan mountów i uprawnienia PT-263/PT-266 nie są przez to rozszerzane.
+
 Alternates/http-alternates i przekierowania commondir są odrzucane przed startem.
 Próba wyścigu na magazynie Git nadal ma ograniczenia jądra przy otwarciu pliku;
 sama wcześniejsza walidacja ścieżki nie jest jedyną granicą. Prywatny widok

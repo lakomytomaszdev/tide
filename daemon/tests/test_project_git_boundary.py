@@ -34,6 +34,8 @@ class ProjectGitBoundaryTests(unittest.TestCase):
         denied = self.git.run(str(self.repo), "cat-file", "-p", self.oid)
         self.assertFalse(denied.ok)
         self.assertIn("alternates", denied.err)
+        with self.assertRaisesRegex(OSError, "alternates"):
+            self.git.read_checkout(str(self.repo))
 
     def test_worktree_filter_names_are_visible_to_read_only_agent_configuration(self):
         from tide_daemon.tasks.agentcmd import read_only_git_config
@@ -62,6 +64,15 @@ class ProjectGitBoundaryTests(unittest.TestCase):
         (self.repo / ".git/refs/heads/foreign").symlink_to(target)
         self.assertFalse(self.flow.sha(str(self.repo), "refs/heads/foreign"))
 
+    def test_checkout_batch_cannot_follow_foreign_head_ref(self):
+        target = self.foreign / ".git/refs/heads/master"
+        original = target.read_bytes()
+        (self.repo / ".git/refs/heads/foreign").symlink_to(target)
+        gitrepos.git(str(self.repo), "symbolic-ref", "HEAD", "refs/heads/foreign")
+        with self.assertRaises(OSError):
+            self.git.read_checkout(str(self.repo), include_ignored=True)
+        self.assertEqual(target.read_bytes(), original)
+
     def test_project_config_cannot_execute_program_or_redirect_a_write(self):
         marker = self.base / "must-not-exist"
         hook = self.repo / "hook"
@@ -73,6 +84,7 @@ class ProjectGitBoundaryTests(unittest.TestCase):
         run = self.git.run(str(self.repo), "status", "--porcelain")
         self.assertTrue(run.ok, run.err)
         self.assertEqual(self.git.run(str(self.repo), "rev-parse", "--show-toplevel").out.strip(), str(self.repo))
+        self.assertTrue(self.git.read_checkout(str(self.repo))["status"].ok)
         self.assertFalse(marker.exists())
         self.assertEqual((self.foreign / "data.txt").read_bytes(), original)
 

@@ -285,6 +285,13 @@ def execute(payload):
         payload = {**payload, "args": args}
         cwd = "/tmp"
     found = None if private or file_config or initializing else repository(cwd, explicit)
+    checkout = payload.get("checkout")
+    if checkout is not None:
+        if (checkout not in ("all", "normal") or not found or private or
+                type(payload.get("checkoutIgnored", False)) is not bool or
+                command != ["status", "--porcelain=v1", "-z", "--untracked-files=" + checkout,
+                            "--ignore-submodules=none"]):
+            raise BoundaryError("Git: niepoprawne żądanie migawki checkoutu")
     if found and worktree and canonical(worktree) != found[3]:
         raise BoundaryError("Git: katalog administracyjny nie odpowiada jawnemu worktree")
     if found and explicit:
@@ -410,6 +417,37 @@ def execute(payload):
             safe = [executable, "--no-pager", *config_cwd, *pinned, *args]
             def invoke(argv, **kwargs):
                 return subprocess.run(argv, env=env, preexec_fn=rules.restrict, pass_fds=(rules.fd,), **kwargs)
+
+            def perform():
+                if checkout is None:
+                    return invoke(safe).returncode
+                # Lista jest stała; odbiorca nie dostarcza dowolnego programu ani
+                # kolejnych argv. Każdy Git dostaje te same prawa Landlock.
+                commands = [
+                    ("head", ["rev-parse", "--verify", "HEAD"]),
+                    ("symbolic", ["symbolic-ref", "--quiet", "HEAD"]),
+                    ("status", command),
+                    ("index", ["rev-parse", "--path-format=absolute", "--git-path", "index"]),
+                    ("gitdir", ["rev-parse", "--absolute-git-dir"]),
+                    ("index_entries", ["ls-files", "--stage", "-v", "-z"]),
+                ]
+                if payload.get("checkoutIgnored"):
+                    commands += [
+                        ("ignored", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]),
+                        ("repository", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+                    ]
+                prefix = args[:-len(command)]
+                results = {}
+                for name, tail in commands:
+                    result = invoke([executable, "--no-pager", *pinned, *prefix, *tail],
+                                    capture_output=True, text=True, errors="replace")
+                    if result.returncode not in ((0, 1) if name == "symbolic" else (0,)):
+                        print(result.stderr, file=sys.stderr)
+                        return result.returncode
+                    results[name] = dict(code=result.returncode, out=result.stdout, err=result.stderr)
+                print(json.dumps(results, ensure_ascii=True))
+                return 0
+
             index_commands = {"status", "diff", "ls-files", "add", "commit", "update-index", "read-tree",
                               "write-tree", "checkout", "checkout-index", "reset", "merge", "restore"}
             if (found and found[2] != found[1] and command and command[0] in index_commands and
@@ -430,11 +468,11 @@ def execute(payload):
                         if sync.returncode:
                             raise BoundaryError("Git: synchronizacja indeksu hosta odmówiona")
                         atomic_text(path, tip + "\n")
-                    result = invoke(safe)
-                    if result.returncode == 0:
+                    code = perform()
+                    if code == 0:
                         atomic_text(path, head_tip(found[1], found[2]) + "\n")
-                    return result.returncode
-            return invoke(safe).returncode
+                    return code
+            return perform()
         finally:
             rules.close()
 

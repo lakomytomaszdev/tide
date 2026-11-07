@@ -7,6 +7,7 @@ Zasady:
 - GIT_TERMINAL_PROMPT=0: git nigdy nie czeka na hasło,
 - LC_ALL=C: komunikaty i format wyjścia niezależne od języka systemu.
 """
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -47,11 +48,12 @@ class Git:
         self.private = False
         self.index = None
 
-    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
+    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None,
+            checkout=None, checkout_ignored=False) -> Result:
         try:
             argv = git_argv("-C", cwd, *args, executable=self.executable,
                             read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
-                            index=self.index)
+                            index=self.index, checkout=checkout, checkout_ignored=checkout_ignored)
             env = git_launch_env(self.env, identity=any(a in ("commit", "commit-tree", "var") for a in args))
             if self.cancel is not None:
                 proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
@@ -62,6 +64,28 @@ class Git:
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Result(-1, "", str(exc))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())
+
+    def read_checkout(self, cwd, *options, untracked_files="all", include_ignored=False):
+        """Świeże odczyty migawki w jednym uruchomieniu granicy, bez cache stanu."""
+        result = self.run(cwd, *options, "status", "--porcelain=v1", "-z",
+                          "--untracked-files=" + untracked_files, "--ignore-submodules=none",
+                          checkout=untracked_files, checkout_ignored=include_ignored)
+        if not result.ok:
+            raise OSError("nie można odczytać checkoutu: " + result.err)
+        expected = {"head", "symbolic", "status", "index", "gitdir", "index_entries"}
+        if include_ignored:
+            expected.update(("ignored", "repository"))
+        try:
+            data = json.loads(result.out)
+            if (not isinstance(data, dict) or set(data) != expected or
+                    any(not isinstance(row, dict) or set(row) != {"code", "out", "err"} or
+                        type(row["code"]) is not int or not isinstance(row["out"], str) or
+                        not isinstance(row["err"], str) or row["code"] not in
+                        ((0, 1) if name == "symbolic" else (0,)) for name, row in data.items())):
+                raise ValueError("niepełny wynik")
+            return {name: Result(**row) for name, row in data.items()}
+        except (ValueError, TypeError) as exc:
+            raise OSError("niepoprawny wynik migawki checkoutu") from exc
 
 
 @dataclass

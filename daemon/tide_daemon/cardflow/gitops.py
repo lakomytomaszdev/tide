@@ -89,6 +89,11 @@ class FlowGit:
         existing = {line.strip() for line in listed.out.splitlines() if line.strip()} if listed.ok else set()
         return pick_main_branch(existing, current.out.strip() if current.ok else "")
 
+    def read_checkout(self, cwd, **kwargs):
+        # Adaptery innych backendów mogą zachować pojedyncze odczyty przez run.
+        reader = getattr(type(self.git), "read_checkout", None)
+        return reader(self.git, cwd, *HARDENED, **kwargs) if reader else None
+
     def sha(self, repo: str, ref: str) -> str:
         res = self.run(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
         return res.out.strip() if res.ok else ""

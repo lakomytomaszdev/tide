@@ -53,8 +53,10 @@ def git_launch_env(source=None, *, identity=False):
 
 
 def git_argv(*args, executable="git", read_roots=(), write_roots=(), private=False,
-             index=None, launcher=SANDBOX) -> list:
+             index=None, checkout=None, checkout_ignored=False, launcher=SANDBOX) -> list:
     payload = {"executable": "/usr/bin/git" if executable == "git" else executable,
                "args": [*HOST_OPTIONS, *map(str, args)], "readRoots": list(read_roots),
                "writeRoots": list(write_roots), "private": private, "index": index}
+    if checkout is not None:
+        payload.update(checkout=checkout, checkoutIgnored=checkout_ignored)
     return ["/usr/bin/python3", "-I", launcher, json.dumps(payload, ensure_ascii=False)]
