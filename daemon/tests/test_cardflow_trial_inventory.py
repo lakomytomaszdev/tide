@@ -1,6 +1,7 @@
 """PT-261: kompletność inwentaryzacji na plikach Tablicy, bez prawdziwych procesów."""
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -72,6 +73,132 @@ class InventoryTest(unittest.TestCase):
         trial_gate, procedure = self.procedure()
         trial_gate.start_registered("new", consent=True, inventory=self.inventory)
         procedure.start.assert_called_once()
+
+    def outside_history(self, *, choice="run", invalid="", omit_ticket=False):
+        name = "K-38-PT-999-1"
+        step = self.journal.append("K-38", "step.started", step=name, ticket="PT-999", kind="ticket",
+                                   unit="old", worktree=str(self.root), stepDir=str(self.root / "old.step"))
+        identity = {} if omit_ticket else {"ticket": "PT-999"}
+        self.journal.append("K-38", "step.finished", step=name, result="denied", outside=True,
+                            command="echo ordinary-test", canAllow=True,
+                            **({"ticket": "PT-176"} if invalid == "request" else identity))
+        if choice:
+            self.journal.append("K-38", "step.decision", step=name, choice=choice, auto=True,
+                                **({"ticket": "PT-176"} if invalid == "decision" else identity))
+        if invalid == "orphan":
+            self.journal.append("K-38", "outside.started", step="orphan", unit="old.scope")
+        return step
+
+    @contextmanager
+    def outside_environment(self):
+        with mock.patch.object(self.engine, "_project", return_value=(None, SimpleNamespace(
+                slug="proj", denied_commands=[]))), \
+                mock.patch("tide_daemon.tasks.node.node_home", return_value=""), \
+                mock.patch("tide_daemon.tasks.node.chrome_bin", return_value=""), \
+                mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as spawn:
+            yield spawn
+
+    def test_invalid_outside_history_blocks_resume_and_auto_consent_across_restart(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        for invalid in ("request", "decision", "orphan", "truncated"):
+            for choice in ("", "run", "run-always", "run-ticket"):
+                if invalid == "decision" and not choice:
+                    continue
+                for fallback in (False, True):
+                    mirror.write_bytes(original)
+                    board.write_bytes(original)
+                    self.restart()
+                    self.outside_history(choice=choice, invalid=invalid)
+                    before = mirror.read_bytes() + (b'{"v":' if invalid == "truncated" else b"")
+                    board.write_bytes(before)
+                    if fallback:
+                        mirror.unlink()
+                    else:
+                        mirror.write_bytes(before)
+                    for restarted in (False, True):
+                        if restarted:
+                            self.restart()
+                        with self.subTest(invalid=invalid, choice=choice, fallback=fallback, restarted=restarted), \
+                                self.outside_environment() as spawn:
+                            for _ in range(2):
+                                self.engine._advance("K-38", fold(self.journal.read("K-38")))
+                            spawn.assert_not_called()
+                            self.assertEqual(board.read_bytes(), before)
+                            self.assertEqual(mirror.exists(), not fallback)
+                            if not fallback:
+                                self.assertEqual(mirror.read_bytes(), before)
+
+    def test_valid_outside_with_omitted_ticket_runs_after_restart(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        for choice in ("", "run", "run-always", "run-ticket"):
+            for restarted in (False, True):
+                mirror.write_bytes(original)
+                board.write_bytes(original)
+                self.restart()
+                self.outside_history(choice=choice, omit_ticket=True)
+                if restarted:
+                    self.restart()
+                with self.subTest(choice=choice, restarted=restarted), self.outside_environment() as spawn:
+                    self.engine._advance("K-38", fold(self.journal.read("K-38")))
+                    if not choice:
+                        self.engine._advance("K-38", fold(self.journal.read("K-38")))
+                    spawn.assert_called_once()
+                    self.assertEqual(spawn.call_args.args[0][-1], "echo ordinary-test")
+
+    def test_outside_rechecks_history_at_process_boundary(self):
+        step = self.outside_history()
+        paths = [Path(self.journal.path("K-38")), Path(self.journal.mirror_path("K-38"))]
+        changed = []
+
+        def invalidate(_):
+            self.journal.append("K-38", "step.decision", step=step["step"], ticket="PT-176", choice="run")
+            changed.extend(path.read_bytes() for path in paths)
+            return ""
+
+        with self.outside_environment() as spawn, \
+                mock.patch("tide_daemon.tasks.node.chrome_bin", side_effect=invalidate):
+            with self.assertRaises(FlowError):
+                self.engine._start_outside("K-38", step, "echo ordinary-test")
+        spawn.assert_not_called()
+        self.assertEqual([path.read_bytes() for path in paths], changed)
+
+    def test_direct_outside_start_requires_current_recorded_request_and_consent(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = mirror.read_bytes()
+        for invalid in ("no-consent", "command", "decision-command", "step", "missing-history"):
+            mirror.write_bytes(original)
+            board.write_bytes(original)
+            self.restart()
+            step = self.outside_history(choice="" if invalid == "no-consent" else "run")
+            command = "echo ordinary-test"
+            if invalid == "command":
+                command = "echo changed"
+            elif invalid == "decision-command":
+                self.journal.append("K-38", "step.decision", step=step["step"], choice="run", command="echo changed")
+            elif invalid == "step":
+                step = {**step, "worktree": str(self.root / "other")}
+            elif invalid == "missing-history":
+                mirror.unlink()
+                board.unlink()
+            before = [path.read_bytes() if path.exists() else None for path in (mirror, board)]
+            with self.subTest(invalid=invalid), self.outside_environment() as spawn:
+                with self.assertRaises(FlowError):
+                    self.engine._start_outside("K-38", step, command)
+                spawn.assert_not_called()
+                self.assertEqual([path.read_bytes() if path.exists() else None for path in (mirror, board)], before)
+
+    def test_invalid_outside_history_stops_tick_before_recovery(self):
+        self.outside_history(invalid="request")
+        before = Path(self.journal.mirror_path("K-38")).read_bytes()
+        with mock.patch.object(self.engine, "_recover_started_steps") as recover:
+            self.engine.tick()
+        recover.assert_not_called()
+        self.assertEqual(Path(self.journal.mirror_path("K-38")).read_bytes(), before)
 
     def test_card_process_identity_is_validated_before_filtering(self):
         path = Path(self.journal.mirror_path("K-38"))

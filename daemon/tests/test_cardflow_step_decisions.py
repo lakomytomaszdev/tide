@@ -94,6 +94,7 @@ class StepDecisionTest(FlowInProcess):
         # Po restarcie usługi polecenie w toku (outside.started bez zakończenia) nie może wywrócić przebiegu karty.
         engine._outside_active = None
         step = {"step": "K-1-PT-1-9", "ticket": "PT-1", "stepDir": self.base}
+        engine.journal.append(card_id, "step.started", **step)
         engine.journal.append(card_id, "outside.started", step="K-1-PT-1-9", ticket="PT-1", command="echo x",
                               unit="tide-outside-K-1-PT-1-9", log="/nonexistent", exitFile=os.path.join(self.base, "in", "exit-code"))
         self.assertIsNone(engine._outside_ready(card_id, step, {"command": "echo x"}, {"choice": "run"}))

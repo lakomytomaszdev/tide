@@ -22,11 +22,11 @@ def preserves_project(st):
 def _outside_evidence(event):
     return (event["type"] == "outside.started"
             or (event["type"] == "step.finished" and event.get("outside"))
-            or (event["type"] == "step.decision" and event.get("choice") == "run"))
+            or (event["type"] == "step.decision" and event.get("choice") in ("run", "run-always", "run-ticket")))
 
 
 def read_process_history(journal, card):
-    """Wspólna kontrola historii przed inwentaryzacją i ochroną zasobów."""
+    """Wspólna kontrola historii przed wykonaniem, inwentaryzacją i ochroną zasobów."""
     events = journal.read_complete(card)
     _validate_outside_identity(events)
     return events

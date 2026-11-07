@@ -1865,7 +1865,7 @@ class FlowEngine(PlanEditing):
             # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
             # może wyprzedzić rozpoznania niepełnej historii po restarcie.
             for card in self.journal.cards_complete():
-                self.journal.read_complete(card)
+                trialhold.read_process_history(self.journal, card)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
             return
@@ -1922,6 +1922,7 @@ class FlowEngine(PlanEditing):
         boxstep.lifecycle.tick(self)
 
     def _tick_card(self, card: str, st: FlowState) -> None:
+        self._outside_history(card)
         trialhold.inventory(self, card, st)
         self._recover_transfer_requests(card, st)
         st = fold(self.journal.read(card))
@@ -2171,6 +2172,11 @@ class FlowEngine(PlanEditing):
             return
         step = st.steps.get(st.last_step) or {}
         done = st.finished.get(st.last_step) or {}
+        if done.get("outside"):
+            try:
+                self._outside_history(card, step)
+            except FlowError:
+                return
         result = done.get("result")
         if (step.get("ticket") or "") in st.rejected and result != "done":
             # Odrzucony ticket (także z decyzji o błędzie kroku) nie jest wznawiany ani ponawiany (K-16/LEGAL-75).
@@ -2688,6 +2694,7 @@ class FlowEngine(PlanEditing):
                 raise FlowError("red-domain", "; ".join(exc.errors)) from None
             self.journal.append(card, "box.rebuild-requested", step=focus, domain=domain, project=slug)
         if choice in ("run", "run-always", "run-ticket"):
+            self._outside_history(card, step)
             if step.get("runner") == boxstep.RUNNER:
                 raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
             from ..board.commands import outside_allowed, outside_pattern
@@ -4055,12 +4062,37 @@ class FlowEngine(PlanEditing):
         data["outsideCommands"] = allowed
         self._write_settings(data)
 
+    def _outside_history(self, card: str, step: dict | None = None, *, command: str | None = None):
+        """Niepełna historia nie uprawnia do zgody, startu ani sprzątania outside."""
+        try:
+            events = trialhold.read_process_history(self.journal, card)
+            if step is not None:
+                st = fold(events)
+                name = step.get("step") or ""
+                recorded = st.steps.get(name)
+                if recorded is None or any(recorded.get(key) != step.get(key) for key in
+                                           ("ticket", "kind", "runner", "worktree", "stepDir", "branch")):
+                    raise ValueError("tożsamość outside nie zgadza się z zapisanym krokiem")
+                self._trial_check(recorded)
+                if command is not None:
+                    done = st.finished.get(name) or {}
+                    decision = st.step_decisions.get(name) or {}
+                    if (done.get("result") != "denied" or not done.get("outside")
+                            or done.get("command") != command
+                            or decision.get("choice") not in ("run", "run-always", "run-ticket")
+                            or ("command" in decision and decision["command"] != command)
+                            or name in st.outside_started):
+                        raise ValueError("brak aktualnej prośby i zgody na start outside")
+            return events
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
+
     def _outside_ready(self, card: str, step: dict, done: dict, decision: dict):
         """Zgoda na polecenie poza piaskownicą: uruchamia je raz (jednostka systemd, kod wyjścia w pliku) i zwraca
         decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
         self._trial_check(step)
         name = step.get("step") or ""
-        events = [e for e in self.journal.read(card) if e.get("step") == name and
+        events = [e for e in self._outside_history(card, step) if e.get("step") == name and
                   e.get("type") in ("outside.started", "outside.finished")]
         finished = next((e for e in events if e["type"] == "outside.finished"), None)
         if finished:
@@ -4177,6 +4209,10 @@ class FlowEngine(PlanEditing):
         poleceń): gdy dziś pasuje do zapamiętanej rodziny projektu, uruchamia się bez pytania."""
         if trialhold.held(step):
             return
+        try:
+            self._outside_history(card, step)
+        except FlowError:
+            return
         if step.get("runner") == boxstep.RUNNER:
             if done.get("canAllow", True):
                 self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
@@ -4259,6 +4295,7 @@ class FlowEngine(PlanEditing):
             raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
         if step.get("runner") == boxstep.RUNNER:
             raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
+        self._outside_history(card, step, command=command)
         name = step.get("step") or ""
         folder = os.path.join(step.get("stepDir") or "", "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
@@ -4277,12 +4314,14 @@ class FlowEngine(PlanEditing):
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
                 exit_file, "/bin/sh", "-c", command]
-        with open(log, "ab") as out:
-            self._trial_check(step)
+        # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
+        # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
+        with open(log, "ab") as out, self.journal.lock:
+            self._outside_history(card, step, command=command)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-        self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
-                            unit=unit, log=log, exitFile=exit_file)
+            self.journal.append(card, "outside.started", step=name, ticket=step.get("ticket") or "", command=command,
+                                unit=unit, log=log, exitFile=exit_file)
         if self._outside_active is None:
             self._outside_active = {}
         self._outside_active[name] = (card, unit)

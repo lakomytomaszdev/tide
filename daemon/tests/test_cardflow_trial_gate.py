@@ -585,7 +585,11 @@ class EngineGateTest(unittest.TestCase):
         self.assertTrue(folder.is_symlink())
 
     def test_unrelated_outside_still_runs_as_before_k60(self):
-        step = self.old_step("PT-999")
+        step = self.journal.append("K-60", "step.started", step="K-60-PT-999-1", ticket="PT-999",
+                                   worktree=str(self.root), stepDir=str(self.root / "ordinary.step"))
+        self.journal.append("K-60", "step.finished", step=step["step"], outside=True,
+                            result="denied", command="echo ordinary-test")
+        self.journal.append("K-60", "step.decision", step=step["step"], choice="run")
         with mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as spawn, \
                 mock.patch("tide_daemon.tasks.node.node_home", return_value=""), \
                 mock.patch("tide_daemon.tasks.node.chrome_bin", return_value=""):
