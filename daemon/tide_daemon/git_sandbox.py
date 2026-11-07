@@ -83,6 +83,10 @@ def atomic_text(path, value):
 def initialize_indexes(repo):
     """Przed pierwszą ekspozycją, przy zatrzymanym pudełku; bez czytania jego home."""
     common = canonical(repo + "/.git")
+    if os.path.lexists(common + "/tide-boundary"):
+        if read_file(common + "/tide-boundary", 64) != "project-git:2\n":
+            raise BoundaryError("Git: nieznany kontrakt indeksu")
+        return  # Nowy worktree bez znacznika zostanie jawnie zsynchronizowany z HEAD.
     folder = common + "/worktrees"
     for name in os.listdir(folder) if os.path.isdir(folder) else ():
         admin = canonical(folder + "/" + name)
@@ -158,6 +162,8 @@ def repository(cwd, explicit=""):
             raise BoundaryError("Git: wskaźnik .git nie odpowiada rejestrowi worktree")
         worktree = target
     elif Path(admin).name == ".git":
+        if not explicit and admin != worktree + "/.git":
+            raise BoundaryError("Git: wskaźnik worktree nie może wybierać obcego common-dir")
         common = admin
         worktree = str(Path(common).parent)
     else:
@@ -263,6 +269,8 @@ def execute(payload):
         payload = {**payload, "args": args}
         cwd = "/tmp"
     found = None if private or file_config or initializing else repository(cwd, explicit)
+    if found and worktree and canonical(worktree) != found[3]:
+        raise BoundaryError("Git: katalog administracyjny nie odpowiada jawnemu worktree")
     roots = [cwd] if private else ([found[0], found[3]] if found else [])
     if initializing:
         roots.append(cwd)
@@ -367,7 +375,7 @@ def execute(payload):
                 with os.fdopen(lockfd, "r+") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX)
                     tip = head_tip(found[1], found[2])
-                    old = read_file(path, 128).strip() if os.path.lexists(path) else tip
+                    old = read_file(path, 128).strip() if os.path.lexists(path) else None
                     if old != tip:
                         sync = invoke([executable, *pinned, "-c", "core.hooksPath=/dev/null", "-c",
                                        "core.fsmonitor=false", "read-tree", "--reset", tip], capture_output=True)

@@ -13,6 +13,10 @@ import subprocess
 import sys
 
 
+def relative_admin(admin):
+    return ".local/state/tide-git/" + hashlib.sha256(str(admin).encode()).hexdigest()
+
+
 def run(args):
     cwd = Path.cwd()
     i = 0
@@ -42,7 +46,7 @@ def run(args):
     common = admin.parent.parent
     if (admin / "gitdir").read_text().strip() != str(pointer):
         raise ValueError("wskaźnik nie odpowiada administracji hosta")
-    view = Path.home() / ".local/state/tide-git" / hashlib.sha256(str(admin).encode()).hexdigest()
+    view = Path.home() / relative_admin(admin)
     view.mkdir(parents=True, exist_ok=True)
     identity = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME",
                 "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"}

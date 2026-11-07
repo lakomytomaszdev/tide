@@ -8,7 +8,7 @@ from unittest import mock
 from .test_box_runner import BoxRunnerCase, PROXY
 from . import gitrepos
 from tide_daemon.box import exposure, mounts, packs, state as bs
-from tide_daemon.box.runner import BoxRunner, MountsBusy
+from tide_daemon.box.runner import BoxRunner, MountsBusy, host_home_dir
 from tide_daemon.tasks import agentcmd, inputs
 
 
@@ -119,7 +119,7 @@ class ProjectMountTests(BoxRunnerCase):
         original_head = (admin / "HEAD").read_bytes()
         original_index = (admin / "index").read_bytes()
         (Path(self.worktree) / "box.txt").write_text("z pudełka")
-        env = {**gitrepos.ENV, "HOME": self.home}
+        env = {**gitrepos.ENV, "HOME": host_home_dir(self.slug)}
         for args in (("add", "box.txt"), ("commit", "-m", "add box data")):
             run = subprocess.run(["/usr/bin/python3", gitview.__file__, "-C", self.worktree, *args],
                                  env=env, capture_output=True, text=True)
@@ -157,3 +157,48 @@ class ProjectMountTests(BoxRunnerCase):
         self.assertEqual(approved["manifest"]["mountContract"], 2)
         with self.assertRaises(agentcmd.StepError):
             self.newrunner.ensure_devices(self.chosen)
+
+    def test_new_worktree_after_mount_gets_a_fresh_host_index_after_box_commit(self):
+        self.newrunner.ensure_devices(self.chosen)
+        from tide_daemon.box import gitview
+        from tide_daemon.worktrees.git import Git
+        wt = Path(self.repo + "-worktrees") / "late"
+        gitrepos.git(self.repo, "worktree", "add", "-q", "-b", "card/late", str(wt))
+        (wt / "late.txt").write_text("późny worktree")
+        env = {**gitrepos.ENV, "HOME": host_home_dir(self.slug)}
+        for args in (("add", "late.txt"), ("commit", "-m", "add late data")):
+            run = subprocess.run(["/usr/bin/python3", gitview.__file__, "-C", str(wt), *args],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+        admin = Path((wt / ".git").read_text().strip()[8:])
+        self.assertFalse((admin / "tide-index-tip").exists())
+        status = Git().run(str(wt), "status", "--porcelain")
+        self.assertTrue(status.ok, status.err)
+        self.assertEqual(status.out, "")
+
+    def test_raw_git_detached_private_head_is_reported_and_its_commit_is_preserved(self):
+        self.newrunner.ensure_devices(self.chosen)
+        from tide_daemon.box import gitview, refguard
+        from tide_daemon.worktrees.git import Git
+        admin = Path((Path(self.worktree) / ".git").read_text().strip()[8:])
+        boxhome = host_home_dir(self.slug)
+        refguard.begin(self.repo, "K-38", "detached", str(admin), branch="feat/pt-1",
+                       worktree=self.worktree, box_view_home=boxhome)
+        env = {**gitrepos.ENV, "HOME": boxhome}
+        initial = subprocess.run(["/usr/bin/python3", gitview.__file__, "-C", self.worktree, "status", "--porcelain"],
+                                 env=env, capture_output=True, text=True)
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        view = Path(boxhome) / gitview.relative_admin(admin)
+        rawenv = {**env, "GIT_DIR": str(view), "GIT_COMMON_DIR": self.repo + "/.git", "GIT_WORK_TREE": self.worktree}
+        def raw(*args):
+            return subprocess.run(["/usr/bin/git", *args], env=rawenv, check=True, capture_output=True, text=True).stdout.strip()
+        raw("checkout", "--detach", "HEAD")
+        (Path(self.worktree) / "detached.txt").write_text("zachowany commit")
+        raw("add", "detached.txt")
+        raw("commit", "-m", "add detached data")
+        oid = raw("rev-parse", "HEAD")
+        report = refguard.finish(self.repo, "K-38", "detached")
+        self.assertIn("box-view/HEAD", report["files"])
+        self.assertEqual(report["boxViewHead"], oid)
+        self.assertEqual((view / "HEAD").read_text(), "ref: refs/heads/feat/pt-1\n")
+        self.assertEqual(Git().run(self.repo, "show", oid + ":detached.txt").out, "zachowany commit")

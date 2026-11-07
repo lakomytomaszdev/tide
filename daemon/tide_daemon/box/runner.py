@@ -437,7 +437,7 @@ class BoxRunner:
         path = os.path.join(inp, "settings.json")
         host = json.loads(bg.files[path])
         deny = list(BOX_DENY_READ) + [os.path.join(inp, ENV_FILE)]
-        if self._pack_specs():
+        if self._pack_specs() or (step.exposure_inputs is not None and step.exposure_inputs.snapshot_ids):
             deny.remove("/packs")  # zatwierdzone kopie mają być czytelne; zapis blokuje Incus
         settings = {k: v for k, v in host.items() if k != "sandbox"}
         if step.local is not None and step.local.token_file:
@@ -796,7 +796,8 @@ class BoxRunner:
         with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
             from . import refguard
             refguard.begin(step.repo, self.card, step.step_id, bg.git_dir,
-                           branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
+                           branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree,
+                           box_view_home=host_home_dir(self.slug, self.host_env) if step.exposure_inputs is not None else "")
             try:
                 trialgate.require_step(step)
                 proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,

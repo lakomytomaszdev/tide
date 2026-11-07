@@ -30,7 +30,13 @@ rekord nie jest przepisywany na nową treść ani automatycznie rozszerzany.
 **Administracja i indeks.** `box/gitview.py`, kopiowany do `in/bin/git`, utrzymuje
 prywatny HEAD i indeks w domu pudełka. Korzysta ze wspólnych objects/refs/logs;
 commity nadal są od razu widoczne w projekcie. Host nigdy nie wykonuje programu
-ani nie otwiera administracji wybranej z tego prywatnego katalogu. Plik `.git`
+ani nie uruchamia Git na administracji wybranej z tego prywatnego katalogu.
+Strażnik sprawdza sam HEAD kanonicznego prywatnego widoku przez deskryptory bez
+podążania za symlinkami; nie interpretuje jego config ani indeksu. Odłączony HEAD
+lub inna gałąź dają `refs.guard`, zachowują obserwowany OID w raporcie i przywracają
+przypisanie gałęzi. Działa to także po użyciu `/usr/bin/git` z tym widokiem, bez
+zaufania do wrappera. Jest to kontrola stanu kanonicznego widoku, nie dowód wszystkich
+poleceń roota w dowolnej administracji. Plik `.git`
 w zapisywalnym worktree jest niezaufaną wskazówką: host sprawdza jego zgodność
 z rejestrem pod bazowym montowaniem ro i przypina własne `--git-dir`/`--work-tree`.
 Podmiana nie wybiera obcego projektu. Nie polegamy na nakładce pojedynczego pliku

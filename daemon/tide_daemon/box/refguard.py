@@ -295,7 +295,7 @@ def _open_worktree(repo, worktree):
         os.close(root)
 
 
-def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
+def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree="", box_view_home=""):
     """Zapisuje migawkę dopiero pod blokadą; prepare wykonuje zaufane montowania runnera."""
     with locked(repo):
         peers = list(_active(repo))
@@ -352,6 +352,9 @@ def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
             _save(path, peer)
         snapshot = dict(active=True, started=time.time_ns(), card=card, step=step, gitDir=git_dir, branch=branch,
                         allowed=sorted(allowed), refs=refs, files=files, worktree=worktree)
+        if box_view_home:
+            from ..git_sandbox import canonical
+            snapshot["boxViewHome"] = canonical(box_view_home)
         if worktree:
             fd = _open_worktree(repo, worktree)
             try:
@@ -591,7 +594,7 @@ def finish(repo, card, step, *, branch="", active_only=False):
             if "report" in saved:
                 return saved["report"]
             previous = saved.get("pendingReport", {})
-            for field in ("refs", "files", "head"):
+            for field in ("refs", "files", "head", "boxViewHead"):
                 if field in previous:
                     report[field] = previous[field]
         except FileNotFoundError as exc:
@@ -679,6 +682,28 @@ def finish(repo, card, step, *, branch="", active_only=False):
                         _restore(fd, ".git", saved["pointer"])
                 finally:
                     os.close(fd)
+        if saved.get("boxViewHome"):
+            with checking("box-view/HEAD"):
+                from .gitview import relative_admin
+                root = os.open(saved["boxViewHome"], DIR_FLAGS)
+                try:
+                    try:
+                        with _parent(root, relative_admin(saved["gitDir"]) + "/HEAD") as (parent, name):
+                            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            if stat.S_ISREG(info.st_mode) and (info.st_nlink != 1 or info.st_size > 8192):
+                                raise StepError("niebezpieczny prywatny HEAD")
+                            node = _node(parent, name)
+                            wanted = ("ref: " + saved["branch"] + "\n").encode()
+                            if not node or node.get("kind") != "file" or base64.b64decode(node["data"]) != wanted:
+                                report["files"].append("box-view/HEAD")
+                                if node and node.get("kind") == "file":
+                                    report["boxViewHead"] = base64.b64decode(node["data"]).decode("utf-8", "replace").strip()
+                                _restore(parent, name, {"kind": "file", "mode": 0o644,
+                                                       "data": base64.b64encode(wanted).decode("ascii")})
+                    except FileNotFoundError:
+                        pass  # Krok mógł nie użyć Git; nie czytamy innych prywatnych administracji.
+                finally:
+                    os.close(root)
         for field in ("refs", "files"):
             report[field] = sorted(set(report[field]))
         result = report if any(report.values()) else {}

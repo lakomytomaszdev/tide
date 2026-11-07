@@ -285,3 +285,25 @@ def revoke(project, version, env=None):
             state["generation"] += 1
             _write(fd, "state.json", state, replace=True)
     return "Wycofano przyszłe udostępnienia; kopie już poznane w projekcie mogą pozostać."
+
+
+@contextmanager
+def snapshot_mount_access(project, ident, env=None):
+    """Mount z opublikowanej historii; callback trzyma już blokadę paczek."""
+    with _store(project, env) as fd:
+        state = _state(fd)
+        entries = []
+        for name in os.listdir(fd):
+            if not (name.startswith("manifest-") and name.endswith(".json")):
+                continue
+            record = _read(fd, name)
+            manifest = record.get("manifest")
+            if (not isinstance(manifest, dict) or manifest.get("project") != project or
+                    record.get("digest") != _hash(manifest)):
+                raise ExposureError("niezgodna historia urządzeń projektu")
+            if record.get("generation", state["generation"] + 1) > state["generation"]:
+                continue  # Sam audyt niedokończonego approve nie upoważnia do urządzeń.
+            entries += [i for i in manifest["inputs"] if i["snapshot"]["id"] == ident]
+        if not entries or any(entry != entries[0] for entry in entries):
+            raise ExposureError("brak jednoznacznego historycznego urządzenia kopii")
+        yield entries[0]["mount"]

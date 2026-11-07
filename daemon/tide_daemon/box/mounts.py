@@ -242,18 +242,7 @@ class ProjectMounts:
         if project != self.project:
             return False
         try:
-            with exposure._store(project, self.env) as fd:
-                state = exposure._state(fd)
-                entries = []
-                for filename in os.listdir(fd):
-                    if filename.startswith("manifest-") and filename.endswith(".json"):
-                        record = exposure._read(fd, filename)
-                        if record.get("digest") != exposure._hash(record.get("manifest")):
-                            return False
-                        entries += [i for i in record["manifest"]["inputs"] if i["snapshot"]["id"] == ident]
-                if not entries or any(i != entries[0] for i in entries):
-                    return False
-                mount = entries[0]["mount"]
+            with exposure.snapshot_mount_access(project, ident, self.env) as mount:
                 name, expected = device_name(mount), values(mount)
                 instances = self.incus.list()
                 for inst in instances:
