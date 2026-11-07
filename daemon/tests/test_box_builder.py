@@ -4,6 +4,7 @@ Wszystko na atrapie `incus` z fakebin.py — prawdziwy Incus nie jest potrzebny 
 i ustawienia są tymczasowe.
 """
 import io
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import shlex
@@ -138,6 +139,20 @@ class BoxCase(unittest.TestCase):
 
 
 class FakeIncusTest(BoxCase):
+    def test_concurrent_clients_preserve_every_update_and_valid_state(self):
+        incus = Incus("user-1000", binary=self.fake_incus)
+        incus.init("tide-base", "parallel")
+
+        def update(index):
+            incus.config_set("parallel", {f"user.test-{index}": str(index)})
+            self.assertIsNotNone(incus.instance("parallel"))
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            list(pool.map(update, range(36)))
+        config = incus.config_show("parallel")["config"]
+        self.assertEqual({key: config.get(key) for key in (f"user.test-{i}" for i in range(36))},
+                         {f"user.test-{i}": str(i) for i in range(36)})
+
     def test_fake_records_argv_keeps_state_and_runs_exec_locally(self):
         inc = Incus("user-1000", binary=self.fake_incus)
         inc.launch("tide-base", "t1", {"limits.cpu": 2})

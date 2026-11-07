@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import threading
 from datetime import datetime, timezone
 
@@ -22,6 +23,34 @@ SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
+CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
+                             "plan-amend", "plan-revise", "close", "interactive"})
+TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
+
+
+def _validate_process_identity(event):
+    """Nieznana tożsamość nie jest dowodem, że proces nie podlega ochronie.
+
+    Starszy zapis może nie mieć kind/branch, lecz musi nazywać krok i ticket.
+    Brak ticketu jest legalny wyłącznie dla rozpoznanego rodzaju kroku karty.
+    Nie wymagamy jednostki: jej brak ma pozostać nierozstrzygniętym procesem.
+    """
+    if event["type"] == "step.started":
+        name = "step"
+    elif event["type"] == "intent" and event.get("action") == "step-start":
+        name = "key"
+    else:
+        return
+    if not isinstance(event.get(name), str) or not event[name].strip():
+        raise ValueError("niepełna tożsamość procesu w dzienniku karty")
+    for field in ("ticket", "branch"):
+        if field in event and not isinstance(event[field], str):
+            raise ValueError("nieznana tożsamość procesu w dzienniku karty")
+    kind = event.get("kind")
+    if "kind" in event and (not isinstance(kind, str) or kind not in CARD_STEP_KINDS | TICKET_STEP_KINDS):
+        raise ValueError("nieznany rodzaj kroku w dzienniku karty")
+    if not (event.get("ticket") or "").strip() and kind not in CARD_STEP_KINDS:
+        raise ValueError("brak ticketu procesu w dzienniku karty")
 
 
 def mirror_root(board_root: str, env=None) -> str:
@@ -73,6 +102,33 @@ class Journal:
     def has(self, card: str) -> bool:
         return os.path.isfile(self.mirror_path(card)) or os.path.isfile(self.path(card))
 
+    def cards_complete(self) -> list[str]:
+        """Rejestr dla kontroli bezpieczeństwa; błąd listowania propaguje unknown.
+
+        Brak katalogu jest prawidłowy przed pierwszym zapisem. Istniejący katalog
+        musi być czytelny i nie może być dowiązaniem. Katalog karty bez dziennika
+        też trafia do wyniku, aby read_complete odmówił zamiast pominąć historię.
+        """
+        with self.lock:
+            found = set()
+            for root, mirror in ((self.mirror, True), (os.path.join(self.root, FLOW_DIR), False)):
+                try:
+                    mode = os.lstat(root).st_mode
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISDIR(mode):
+                    raise ValueError("rejestr kart nie jest katalogiem")
+                for name in os.listdir(root):
+                    card = name[:-6] if mirror and name.endswith(".jsonl") else name
+                    if mirror and not name.endswith(".jsonl"):
+                        continue
+                    if not CARD_DIR_RE.fullmatch(card):
+                        continue
+                    if not mirror and not stat.S_ISDIR(os.lstat(os.path.join(root, name)).st_mode):
+                        raise ValueError("rejestr karty nie jest katalogiem")
+                    found.add(card)
+            return sorted(found)
+
     def read(self, card: str) -> list[dict]:
         """Zdarzenia karty z kopii usługi (albo z tablicy, gdy kopii nie ma). Pamięć po rozmiarze i mtime."""
         source = self.mirror_path(card) if os.path.isfile(self.mirror_path(card)) else self.path(card)
@@ -88,22 +144,65 @@ class Journal:
         self._cache[card] = (key, events)
         return list(events)
 
+    def read_complete(self, card: str) -> list[dict]:
+        """Odczyt dla bramki: błąd lub brak historii nie jest pustą historią.
+
+        Bez tolerancyjnego parsera/cache i bez naprawiania plików. Istniejąca
+        kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
+        OSError/ValueError oznaczają dla wywołującego stan unknown.
+        """
+        with self.lock:
+            source = self.mirror_path(card)
+            try:
+                os.lstat(source)
+            except FileNotFoundError:
+                source = self.path(card)
+            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, encoding="utf-8") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    raise ValueError("dziennik nie jest zwykłym plikiem")
+                events = []
+                for line in fh:
+                    if not line.endswith("\n"):
+                        raise ValueError("niepełny zapis zdarzenia")
+                    event = json.loads(line)
+                    if (not isinstance(event, dict) or type(event.get("v")) is not int
+                            or event["v"] != SCHEMA or type(event.get("seq")) is not int
+                            or event["seq"] != len(events) + 1 or event.get("card") != card
+                            or not isinstance(event.get("type"), str) or not event["type"]):
+                        raise ValueError("niepełna lub nieznana historia zdarzeń")
+                    _validate_process_identity(event)
+                    events.append(event)
+                return events
+
     # --- zapis -----------------------------------------------------------------------------------
 
     def append(self, card: str, kind: str, /, **data) -> dict:
         with self.lock:
-            events = self.read(card)
-            event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
-            line = json.dumps(event, ensure_ascii=False) + "\n"
-            os.makedirs(self.mirror, mode=0o700, exist_ok=True)
-            if not os.path.isfile(self.mirror_path(card)) and events:
-                _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
-            with open(self.mirror_path(card), "a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.flush()
-                os.fsync(fh.fileno())
-            self._restore(card)
-            return event
+            # Tolerancyjny odczyt służy prezentacji, nigdy odbudowie kopii przy
+            # zapisie. Inaczej dowolne późniejsze zdarzenie usuwa dowód unknown.
+            exists = os.path.lexists(self.mirror_path(card)) or os.path.lexists(self.path(card))
+            events = self.read_complete(card) if exists else []
+            return self._append(card, kind, events, data)
+
+    def append_complete(self, card: str, kind: str, /, **data) -> dict:
+        """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
+        with self.lock:
+            return self._append(card, kind, self.read_complete(card), data)
+
+    def _append(self, card, kind, events, data):
+        # Wywołujący trzyma lock od odczytu aż do końca zapisu.
+        event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
+        line = json.dumps(event, ensure_ascii=False) + "\n"
+        os.makedirs(self.mirror, mode=0o700, exist_ok=True)
+        if not os.path.isfile(self.mirror_path(card)) and events:
+            _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
+        with open(self.mirror_path(card), "a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        self._restore(card)
+        return event
 
     def write_file(self, card: str, rel: str, data: bytes) -> str:
         """Plik w katalogu karty w tablicy (wyjście kroku); ścieżka względna do commita."""

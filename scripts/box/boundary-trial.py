@@ -188,6 +188,12 @@ def cli_proof():
 
 
 def main(argv=None):
+    from tide_daemon.box import trialgate
+    try:
+        trialgate.require_public()
+    except trialgate.TrialDenied as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     global OUT, failures
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-missing", action="store_true",

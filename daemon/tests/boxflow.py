@@ -196,6 +196,8 @@ class BoxFlow(FlowInProcess):
         profile = self.approve(profile)
         builder = self.builder()
         incus = builder.incus
+        # Tak jak Builder.build: historia powstaje przed instancją i montowaniami.
+        bs.record(SLUG, "box.build", SLUG, phase="start")
         incus.init("tide-base", SLUG)
         builder._attach_home(SLUG)
         if nic:

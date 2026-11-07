@@ -41,7 +41,7 @@ class PrepareTest(unittest.TestCase):
             self.assertTrue(trial.deployed_plan_guard_ready(ROOT / "daemon/tide_daemon/cardflow/gitops.py"))
             self.assertEqual(trial.failures, [])
 
-    def test_main_never_starts_the_box_proof_without_a_deployed_guard(self):
+    def test_main_is_held_before_preparation_logs_or_processes(self):
         replies = [subprocess.CompletedProcess([], 0, "", ""),
                    subprocess.CompletedProcess([], 0, '{"usable":true}', "")]
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(trial, "ROOT", Path(tmp)), \
@@ -49,9 +49,11 @@ class PrepareTest(unittest.TestCase):
                 mock.patch.object(trial, "OUT"), mock.patch.object(trial, "failures", []), \
                 mock.patch.object(trial, "run", side_effect=replies), \
                 mock.patch.object(trial, "cli_proof") as proof, redirect_stdout(io.StringIO()):
-            self.assertEqual(trial.main([]), 1)
+            self.assertEqual(trial.main(["--prepare-missing", "--enable-snapshots", "--retry-failed-build"]), 3)
             proof.assert_not_called()
-            self.assertEqual(trial.failures, ["host-plan-guard"])
+            self.assertEqual(trial.failures, [])
+            trial.run.assert_not_called()
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def prepare(self, *, exists=False, profile=False, status_code=0, approve_code=0, status_error="",
                 state=None, retry_failed=False):

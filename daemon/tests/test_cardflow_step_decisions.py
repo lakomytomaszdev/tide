@@ -94,6 +94,7 @@ class StepDecisionTest(FlowInProcess):
         # Po restarcie usługi polecenie w toku (outside.started bez zakończenia) nie może wywrócić przebiegu karty.
         engine._outside_active = None
         step = {"step": "K-1-PT-1-9", "ticket": "PT-1", "stepDir": self.base}
+        engine.journal.append(card_id, "step.started", **step)
         engine.journal.append(card_id, "outside.started", step="K-1-PT-1-9", ticket="PT-1", command="echo x",
                               unit="tide-outside-K-1-PT-1-9", log="/nonexistent", exitFile=os.path.join(self.base, "in", "exit-code"))
         self.assertIsNone(engine._outside_ready(card_id, step, {"command": "echo x"}, {"choice": "run"}))
@@ -136,12 +137,19 @@ class StepDecisionTest(FlowInProcess):
         # 03.11, K-16/LEGAL-66: pytanie o Docker/piaskownicę trafiało do użytkownika, który nie wiedział, co odpowiedzieć.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: srodowisko")
         self.assertTrue(self.start(card_id)["ok"])
+        # Pierwsze pytanie może chwilowo pokazać „Czeka”, zanim Tide wznowi krok ze swoją odpowiedzią.
+        def repeated_question():
+            finished = {s["step"] for s in self.of(card_id, "step.finished") if s.get("result") == "question"}
+            return [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket" and
+                    s.get("parentStep") and s["step"] in finished]
+
+        resumed = wait_until(repeated_question, timeout=30)
+        self.assertTrue(resumed, self.events(card_id))
         card = self.wait_column(card_id, "waiting")
         self.assertIn("Docker", card["derived"]["flow"]["decisions"][0]["technical"]["question"])
         answers = [d for d in self.of(card_id, "step.decision") if d.get("envAnswer")]
         self.assertEqual(len(answers), 1)
-        resumed = [s for s in self.of(card_id, "step.started") if s["kind"] == "ticket"][1]
-        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+        with open(os.path.join(resumed[0]["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
             self.assertIn('"result":"outside"', json.load(fh)["prompt"])
 
     def test_long_single_sandbox_command_is_granted_as_its_family(self):

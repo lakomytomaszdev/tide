@@ -19,6 +19,7 @@ class HomeMigrationTest(BoxCase):
     def test_attach_preserves_multiline_idmap_and_full_config_from_json(self):
         builder = self.builder()
         builder.settings = replace(builder.settings, agent_uid=1001, agent_gid=1002)
+        bs.record("plasma-tide", "box.build", "plasma-tide", phase="start")
         builder.incus.init("tide-base", "plasma-tide")
         builder.incus.config_set("plasma-tide", {"raw.idmap": "uid 1000 1001\ngid 1000 1002"})
         run = builder.incus._run
@@ -51,12 +52,15 @@ class HomeMigrationTest(BoxCase):
     def legacy(self, card=""):
         name = bs.card_box_name("plasma-tide", card) if card else "plasma-tide"
         incus = self.builder().incus
+        # Stary dom ma pełną historię; brak historii jest osobnym testem bramki.
+        bs.record("plasma-tide", "box.build", name, phase="start")
         incus.init("tide-base", name)
         volume = bs.home_volume(name)
         incus.volume_create("tide", volume)
         incus.device_add(name, "home", "disk", {"pool": "tide", "source": volume, "path": bs.HOME_PATH})
         incus.snapshot_create(name, "clean")
         incus.start(name)
+        bs.record("plasma-tide", "box.ready", name, duration=0)
         source = os.path.join(self.env["TIDE_FAKE_INCUS_STATE"], "volumes", volume)
         os.makedirs(source)
         return name, source

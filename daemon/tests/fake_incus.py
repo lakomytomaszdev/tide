@@ -14,6 +14,7 @@
 - `/sys/fs/cgroup/memory.swap.max` w argv `exec` jest podmieniane na plik atrapy: domyślnie `0`
   (Incus 6.0 z twardym limitem pamięci); `$TIDE_FAKE_SWAP_MAX` zmienia treść, `missing` symuluje brak pliku.
 """
+import fcntl
 import json
 import os
 import shlex
@@ -87,6 +88,19 @@ def new_instance(data, config, devices, status):
 
 
 def main(argv):
+    # Kilku klientów (polling, reset, start) korzysta z jednego pliku stanu.
+    # Blokada obejmuje odczyt i zapis; sama unikalna nazwa tmp gubiłaby zmiany.
+    os.makedirs(STATE, exist_ok=True)
+    with open(os.path.join(STATE, "state.lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = dispatch(argv)
+    # Długi proces pudełka nie może blokować odczytu ani zatrzymania instancji.
+    if isinstance(result, tuple):
+        return run_exec(*result)
+    return result
+
+
+def dispatch(argv):
     with open(os.environ["TIDE_FAKE_LOG"], "a", encoding="utf-8") as fh:
         fh.write("incus " + shlex.join(argv).replace("\n", "\\n") + "\n")
     args, project, i = [], None, 0
@@ -283,7 +297,7 @@ def main(argv):
             die(f"Alias already exists: {alias}")
         data["images"][alias] = {"source": args[1]}
     elif cmd == "exec":
-        return run_exec(data, args[1:], rest)
+        return data, args[1:], rest
     else:
         die(f"atrapa: nieobsługiwane polecenie {cmd}", 2)
     save(data)

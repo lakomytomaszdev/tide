@@ -142,7 +142,7 @@ class LifecycleTest(BoxCase):
         journal = Journal(bp.board_dir())
         journal.append("K-38", "card.started", project="plasma-tide")
         journal.append("K-38", "step.started", step="long", runner="box", boxSlug="plasma-tide",
-                       box="plasma-tide", unit="long.service")
+                       box="plasma-tide", unit="long.service", ticket="PT-1")
         engine = SimpleNamespace(journal=journal, procs={"long": SimpleNamespace(poll=lambda: poll)},
                                  _unit_state=mock.Mock(return_value=unit_state))
         self.b.steps_source = lambda slug, name: lc.active_steps(self.b, slug, name, engine)

@@ -8,6 +8,7 @@ from unittest import mock
 
 from tide_daemon.box import builder as bb, cli, command, profile as bp, runner as br, state as bs
 from tide_daemon.box.ports import PortPool
+from tide_daemon.box import trialgate
 from .test_box_runner import BoxRunnerCase, FAKE_SYSTEMD_RUN
 from . import gitrepos
 
@@ -56,6 +57,9 @@ class CommandTest(BoxRunnerCase):
         os.chmod(self.systemd, 0o755)
         self.real_runner = br.BoxRunner
         for patcher in (mock.patch.object(command.base, "ensure_proxy", return_value=(self.proxy, False)),
+                        # Historyczny adapter testujemy wyłącznie na atrapie Incusa.
+                        # Odmowa publicznego wejścia ma osobne testy bez tej podmiany.
+                        mock.patch.object(trialgate, "require_public"),
                         mock.patch.object(command, "project_repo", return_value=self.repo),
                         mock.patch.object(command.br, "BoxRunner", side_effect=self.command_runner)):
             patcher.start()

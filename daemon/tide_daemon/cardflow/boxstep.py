@@ -468,6 +468,14 @@ def recover_network(engine) -> None:
     failed_starts = set()
     for card in engine.journal.cards():
         events = engine.journal.read(card)
+        from .trialhold import held
+        # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
+        # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
+        protected = {s.get("step") or s.get("key") for s in events if held(s)}
+        protected.discard(None)
+        protected.discard("")
+        events = [e for e in events if not held(e) and e.get("step") not in protected
+                  and e.get("key") not in protected]
         st = fold(events)
         # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
         # oznacza, że nie uruchomiono procesu. Nie dotykamy rezerwacji trwającego zamiaru.

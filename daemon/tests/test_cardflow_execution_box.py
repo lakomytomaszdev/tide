@@ -161,7 +161,7 @@ class PlacementTest(BoxFlow):
             self.box_place()
 
     def test_environment_wait_blocks_resume_of_a_host_execution_step(self):
-        self.engine.journal.append(self.card_id, "step.started", step="host", kind="ticket")
+        self.engine.journal.append(self.card_id, "step.started", step="host", kind="ticket", ticket="PT-1")
         boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
         with self.assertRaises(boxstep.BoxWaiting) as caught:
             self.place(parent="host")
@@ -344,7 +344,7 @@ class PlacementTest(BoxFlow):
     def test_pack_refuses_resume_in_previously_shared_box(self):
         self.build_box()
         self.engine.journal.append(self.card_id, "step.started", step="shared", runner="box",
-                                   box=SLUG, boxSlug=SLUG, kind="ticket")
+                                   box=SLUG, boxSlug=SLUG, kind="ticket", ticket="PT-1")
         self.approve_pack()
         with self.assertRaisesRegex(boxstep.BoxError, "nie można wznowić"):
             self.place(parent="shared")
@@ -364,7 +364,7 @@ class PlacementTest(BoxFlow):
     def test_resume_keeps_the_instance_after_profile_mode_changes(self):
         self.build_box()
         self.engine.journal.append(self.card_id, "step.started", step="parent", runner="box", box=SLUG,
-                                   boxSlug=SLUG, boxIp="10.0.0.2", kind="ticket")
+                                   boxSlug=SLUG, boxIp="10.0.0.2", kind="ticket", ticket="PT-1")
         bp.save_project(SLUG, {"tide-box": 1, "box": "per-card", "network": {"domains": ["api.example.org"]}})
         placement = self.place(parent="parent")
         self.assertEqual(placement.box, SLUG)
@@ -375,7 +375,7 @@ class PlacementTest(BoxFlow):
         self.build_box({"tide-box": 1, "box": "per-card"})
         original = self.place()
         self.engine.journal.append(self.card_id, "step.started", step="parent", runner="box", box=original.box,
-                                   boxSlug=SLUG, boxIp=original.ip, kind="ticket")
+                                   boxSlug=SLUG, boxIp=original.ip, kind="ticket", ticket="PT-1")
         bp.save_project(SLUG, {"tide-box": 1, "box": "per-project"})
         resumed = self.place(parent="parent")
         self.assertEqual((resumed.box, resumed.runner.box), (original.box, original.box))

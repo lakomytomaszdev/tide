@@ -30,15 +30,33 @@ def active_steps(builder, slug, name, engine=None):
     CLI czyta te same trwałe dzienniki co silnik, bez tworzenia drugiego źródła stanu.
     """
     from ..cardflow.journal import Journal
+    from ..cardflow import trialhold
     from ..cardflow.state import fold
     from .runner import BoxRunner
 
     journal = engine.journal if engine is not None else Journal(bp.board_dir())
-    busy = set(bs.running_steps(slug, name))
+    try:
+        states = [fold(trialhold.read_process_history(journal, card)) for card in journal.cards_complete()]
+    except (OSError, ValueError, TypeError, KeyError):
+        return ["niepełna historia kart"]
+    # Dawny runner --demo nie miał box.use ani karty. Skan trwałych śladów
+    # jest obowiązkowy także przed pierwszą budową (bez dziennika pudełka).
+    if trialhold._public_process_inventory():
+        return ["nieznany stan dawnej publicznej próby"]
     instance = builder.incus.instance(name)
+    # Brak dziennika jest prawidłowy tylko przed pierwszą budową. Istniejąca
+    # instancja lub historia wymagają pełnego skanu, także w CLI bez silnika.
+    if (instance is not None or os.path.lexists(bs.journal_path(slug))):
+        if trialhold.public_processes(journal.root):
+            return ["niepełna historia pudełek lub nierozstrzygnięta publiczna próba"]
+    for st in states:
+        if trialhold.preserves_project(st):
+            project = (st.started or {}).get("project")
+            if not project or project == slug:
+                return ["nierozstrzygnięty proces chronionej próby projektu"]
+    busy = set(bs.running_steps(slug, name))
     running = instance is not None and str(instance.get("status", "")).lower() == "running"
-    for card in journal.cards():
-        st = fold(journal.read(card))
+    for st in states:
         for step in st.steps.values():
             if step.get("boxSlug") != slug or step.get("box") != name:
                 continue
@@ -118,6 +136,9 @@ class Lifecycle:
         try:
             b.require_idle(slug, name)
         except BoxBusy as exc:
+            from ..cardflow import trialhold
+            if trialhold.public_processes(bp.board_dir()):
+                return  # nie dopisujemy odroczenia do niepełnej historii chronionych procesów
             previous = bs.events(slug, name)
             if not previous or previous[-1].get("result") != "deferred":
                 bs.record(slug, "box.reset", name, b.wall, duration=0.0, result="deferred",
@@ -158,17 +179,34 @@ def tick(engine):
     settings = boxstep.settings_of(engine)
     if not settings.enabled:
         return
+    from ..cardflow import trialhold
+    try:
+        states = {card: fold(trialhold.read_process_history(engine.journal, card))
+                  for card in engine.journal.cards_complete()}
+    except (OSError, ValueError, TypeError, KeyError):
+        # Nie ufamy nawet projektowi z tolerancyjnie odczytanego fragmentu.
+        # Bez pełnej historii nie da się bezpiecznie zawęzić zakresu ochrony.
+        return
+    if not trialhold.public_inventory(engine):
+        return  # nieznany proces dawnego CLI: bez automatycznego stop/reset/cleanup
     projects = os.path.join(bp.board_dir(), "projects")
     try:
         slugs = [s for s in os.listdir(projects) if os.path.isfile(os.path.join(projects, s, "box.yaml"))]
     except FileNotFoundError:
         return
     closed = {}
-    for card in engine.journal.cards():
-        st = fold(engine.journal.read(card))
+    frozen = set()
+    for card, st in states.items():
+        if trialhold.preserves_project(st):
+            project = (st.started or {}).get("project")
+            if not project:
+                return  # nie można bezpiecznie zawęzić ochrony do jednego projektu
+            frozen.add(project)
         if st.closed and st.started:
             closed.setdefault(st.started.get("project"), set()).add(card)
     for slug in slugs:
+        if slug in frozen:
+            continue  # dawne próby zachowują pudełka, paczki, rezerwacje i WIP
         try:
             b = boxstep.builder_of(engine, settings)
             lifecycle = Lifecycle(b)
