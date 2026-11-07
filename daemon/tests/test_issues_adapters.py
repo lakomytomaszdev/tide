@@ -440,9 +440,23 @@ class AdapterTest(unittest.TestCase):
     run_cli = integration.IssuesDbusTest.run_cli
     board_call = integration.IssuesDbusTest.board_call
 
-    def prepare(self):
+    def prepare(self, *, with_repo=False):
+        if with_repo:
+            from . import flowfakes
+            from .test_cardflow_dbus import CLAUDE_MD, git
+            repo = Path(self.tmp, 'alfa')
+            repo.mkdir()
+            git(str(repo), 'init', '-q', '-b', 'master', env=self.env)
+            (repo / 'CLAUDE.md').write_text(CLAUDE_MD, encoding='utf-8')
+            git(str(repo), 'add', 'CLAUDE.md', env=self.env)
+            git(str(repo), 'commit', '-q', '-m', 'init', env=self.env)
+            flowfakes.install(str(Path(self.tmp, 'fakebin')))
+            self.env['XDG_RUNTIME_DIR'] = str(Path(self.tmp, 'run'))
+            Path(self.env['XDG_RUNTIME_DIR']).mkdir(mode=0o700)
+            self.env['TIDE_SYSTEMD_RUN'] = str(Path(self.tmp, 'fakebin/systemd-run'))
         self.start()
-        self.board_call('UpsertProject', '{"name":"Alfa"}')
+        project = {'name': 'Alfa', **({'repo': str(repo)} if with_repo else {})}
+        self.assertTrue(self.board_call('UpsertProject', json.dumps(project))['ok'])
         self.env['REAL_TIDE'] = self.cli
         self.env['ISSUE_CALLS'] = str(Path(self.tmp, 'calls.jsonl'))
         observer = Path(self.tmp, 'fakebin/tide')
@@ -501,7 +515,7 @@ class AdapterTest(unittest.TestCase):
                                      '--destination', 'backlog')
                 self.assertTrue(shown['presented'])
                 self.assertEqual(shown['issue']['version'], 4)
-                self.assertIn(self.report.read_text(), shown['issue']['report'])
+                self.assertIn(Path(self.report).read_text(encoding='utf-8'), shown['issue']['report'])
                 self.assertEqual(self.run_cli('issue', 'show', ready['id'])['issue']['state'], 'ready')
 
                 changed = self.run_cli('issue', 'update', ready['id'], '--expected-version', '4',
@@ -532,13 +546,13 @@ class AdapterTest(unittest.TestCase):
                 self.assertRegex(accepted['card'], r'^K-[1-9][0-9]*$')
 
     def test_both_adapters_go_replays_identical_launch_and_request_after_lost_reply(self):
-        self.prepare()
+        self.prepare(with_repo=True)
         for n, script in enumerate(self.adapters):
             with self.subTest(adapter=script):
                 ready = self.ready_issue('Go: zażółć / argument ; dane')
                 folder = Path(self.tmp, 'go-decision-' + str(n))
                 launch = Path(self.tmp, 'launch-' + str(n) + '.json')
-                launch.write_text('{"planning":"light","provider":"gęś ; echo nope"}', encoding='utf-8')
+                launch.write_text('{"entry":"planning","mode":"light","executor":"Sonnet"}', encoding='utf-8')
                 shown = self.adapter(script, 'inspect', '--session', folder, '--id', ready['id'],
                                      '--destination', 'go', '--launch', launch)
                 self.assertEqual(shown['launch'], json.loads(launch.read_text(encoding='utf-8')))
