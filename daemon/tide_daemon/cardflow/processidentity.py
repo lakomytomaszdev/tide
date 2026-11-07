@@ -234,9 +234,11 @@ def process_identities(events):
                 else:
                     identity.data[field_name] = value
             if outside:
-                if kind == "outside.started" and "unit" in event:
-                    unit = event["unit"]
-                    if not isinstance(unit, str):
+                if kind == "outside.started":
+                    # Outside uruchamia osobny proces: jego jednostka musi być
+                    # zapisana w tym starcie, nie odziedziczona z kroku.
+                    unit = event.get("unit")
+                    if not isinstance(unit, str) or not unit.strip():
                         identity.worsen("unknown")
                     elif identity.outside_unit is not None and identity.outside_unit != unit:
                         identity.worsen("inconsistent")

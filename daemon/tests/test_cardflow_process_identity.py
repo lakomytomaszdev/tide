@@ -246,6 +246,35 @@ class ProcessIdentityRegression(unittest.TestCase):
                 with self.subTest(barrier="lifecycle"):
                     f.assert_lifecycle_preserved()
 
+    def test_review7_incomplete_outside_unit_blocks_unrelated_process_and_box_stop(self):
+        f = self.fixture
+        f.project()
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for fields, restarted in itertools.product(({}, {"unit": ""}, {"unit": "   "}), (False, True)):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            for event in outside_unit_history("PT-999", fields):
+                f.journal.append("K-38", event["type"], **{k: v for k, v in event.items() if k != "type"})
+            step = f.outside_history()
+            if restarted:
+                f.restart()
+            with self.subTest(fields=fields, restarted=restarted):
+                with self.subTest(barrier="model"):
+                    identity = process_identities(f.journal.read_complete("K-38"))["legacy-step"]
+                    self.assertEqual(identity.state, "unknown")
+                with self.subTest(barrier="inventory"):
+                    self.assertFalse(f.inventory())
+                with self.subTest(barrier="outside"), f.outside_environment() as spawn:
+                    try:
+                        f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    except FlowError:
+                        pass
+                    spawn.assert_not_called()
+                with self.subTest(barrier="lifecycle"):
+                    f.assert_lifecycle_preserved()
+
     def test_review5_incomplete_action_blocks_unrelated_outside_and_box_stop(self):
         f = self.fixture
         f.project()
@@ -321,6 +350,30 @@ def generated_bad_histories():
     yield from generated_bad_ticket_histories()
     yield from generated_bad_action_histories()
     yield from generated_bad_type_histories()
+    yield from generated_bad_outside_unit_histories()
+
+
+def outside_unit_history(ticket, fields):
+    """Jednostka kroku nie zastępuje jednostki późniejszego procesu outside."""
+    return [dict(type="card.started", project="proj"),
+            dict(type="step.started", step="legacy-step", ticket=ticket, kind="ticket",
+                 runner="host", unit="legacy.scope"),
+            dict(type="step.finished", step="legacy-step", ticket=ticket, result="denied",
+                 outside=True, command="echo legacy"),
+            dict(type="step.decision", step="legacy-step", ticket=ticket, choice="run"),
+            dict(type="outside.started", step="legacy-step", ticket=ticket, command="echo legacy",
+                 log="/missing/log", exitFile="/missing/exit", **fields)]
+
+
+def generated_bad_outside_unit_histories():
+    """M1 rundy 7: brak jednostki outside pozostaje nieznany po uzupełnieniu."""
+    variants = [{}] + [{"unit": value} for value in ("", "   ", "\t\n", "\u00a0", None, [], 17)]
+    for ticket, fields in itertools.product(("PT-176", "PT-999"), variants):
+        history = outside_unit_history(ticket, fields)
+        good = {**history[-1], "unit": "outside.scope"}
+        finished = dict(type="outside.finished", step="legacy-step", ticket=ticket, exitCode=0)
+        for later in ([], [finished], [good], [good, finished], [finished, good]):
+            yield [*history, *later]
 
 
 def generated_bad_type_histories():
@@ -457,6 +510,25 @@ def generated_project_histories():
 
 
 class ProcessIdentityProperties(unittest.TestCase):
+    def test_incomplete_outside_units_remain_unknown_after_completion_and_repair(self):
+        for index, history in enumerate(generated_bad_outside_unit_histories()):
+            with self.subTest(history=index):
+                identity = process_identities(history)["legacy-step"]
+                self.assertEqual(identity.state, "unknown")
+                self.assertTrue(identity.held)
+                self.assertEqual(identity.protected, history[1]["ticket"] == "PT-176")
+                self.assertEqual(identity.data["unit"], "legacy.scope")
+
+    def test_complete_outside_has_separate_unit_and_allows_unitless_completion(self):
+        history = outside_unit_history("PT-999", {"unit": "outside.scope"})
+        for later in ([], [dict(type="outside.finished", step="legacy-step", exitCode=0)]):
+            with self.subTest(later=later):
+                identity = process_identities(history + later)["legacy-step"]
+                self.assertEqual(identity.state, "ok")
+                self.assertFalse(identity.held)
+                self.assertEqual(identity.data["unit"], "legacy.scope")
+                self.assertEqual(identity.outside_unit, "outside.scope")
+
     def test_unknown_types_remain_unknown_with_valid_context_and_later_completion(self):
         for index, history in enumerate(generated_bad_type_histories()):
             with self.subTest(history=index):
