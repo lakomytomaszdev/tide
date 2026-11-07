@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from ..box import builder as bb
@@ -161,6 +162,16 @@ def denied_log_path(slug: str, step_id: str) -> str:
 
 # ------------------------------------------------------------ wybór
 
+@contextmanager
+def _start_lock(slug):
+    """Szeregowy wykonawca kart odracza start zamiast czekać na budowę w tle."""
+    try:
+        with bs.lifecycle_lock(slug, blocking=False):
+            yield
+    except bb.BoxBusy as exc:
+        raise BoxWaiting(f"{WAIT_BUILD}: {exc}") from None
+
+
 def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -> Placement | None:
     st = fold(engine.journal.read(card_id))
     forced = False
@@ -235,19 +246,22 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         return None          # projekt z profilem, ale bez zbudowanego pudełka — jak dziś
     _require_compatible(engine, card_id, builder, status)
     name = status.box
-    if per_card and not forced:
-        name = bs.card_box_name(slug, card_id)
+    # Odczyt zgodnego pudełka nie rezerwuje projektu. Budowa mogła zdobyć blokadę
+    # od tego czasu; wszystkie dalsze operacje przygotowania muszą wtedy ustąpić.
+    with _start_lock(slug):
+        if per_card and not forced:
+            name = bs.card_box_name(slug, card_id)
+            try:
+                builder.copy_for_card(slug, card_id)        # nowy przepis odtwarza nieaktywną kopię
+            except (bb.BoxBusy, bb.BuildError, IncusError, OSError) as exc:
+                raise BoxWaiting(f"czeka na pudełko (kopia karty: {exc})") from None
+            _require_compatible(engine, card_id, builder, builder.status(slug, card=card_id, profile=profile))
         try:
-            builder.copy_for_card(slug, card_id)        # nowy przepis odtwarza nieaktywną kopię
-        except (bb.BoxBusy, bb.BuildError, IncusError, OSError) as exc:
-            raise BoxWaiting(f"czeka na pudełko (kopia karty: {exc})") from None
-        _require_compatible(engine, card_id, builder, builder.status(slug, card=card_id, profile=profile))
-    try:
-        builder.ensure_home(slug, card_id if per_card else "")
-    except (bb.BuildError, IncusError, OSError, ValueError) as exc:
-        raise BoxWaiting(f"czeka na pudełko (dom: {exc})") from None
-    runner = runner_of(engine, settings, slug, card_id, per_card)
-    ip = _ready(engine, card_id, builder, runner, settings, name, slug, per_card)
+            builder.ensure_home(slug, card_id if per_card else "")
+        except (bb.BuildError, IncusError, OSError, ValueError) as exc:
+            raise BoxWaiting(f"czeka na pudełko (dom: {exc})") from None
+        runner = runner_of(engine, settings, slug, card_id, per_card)
+        ip = _ready(engine, card_id, builder, runner, settings, name, slug, per_card)
     if boxwait.card_box_wait(fold(engine.journal.read(card_id))) in (boxwait.START, boxwait.REBUILD):
         boxwait.set_box_wait(engine.journal, card_id, "", box=name)
     return Placement(slug, name, ip, per_card, profile, runner, bool(full["docker"]["enabled"]))
@@ -363,7 +377,7 @@ def before_start(engine, placement: Placement, card_id: str, step_id: str, progr
 
 
 def _reserve_start(engine, placement, card_id, step_id, program):
-    with bs.lifecycle_lock(placement.slug):
+    with _start_lock(placement.slug):
         # Od wyboru miejsca CLI mogło zatrzymać/resetować/usunąć pudełko. Ponowna kontrola
         # i gotowość są atomowe względem operacji destrukcyjnych aż do trwałego box.use.
         builder = builder_of(engine, settings_of(engine))
@@ -378,14 +392,17 @@ def _reserve_start(engine, placement, card_id, step_id, program):
 
 def prepare_runner(engine, placement, step):
     """Limity z aktualnego profilu przed ewentualnym restartem na montowania, kontrola swapu po nim."""
-    with bs.lifecycle_lock(placement.slug):
-        builder = builder_of(engine, settings_of(engine))
-        try:
-            builder.incus.config_set(placement.box, lifecycle.limits(builder.load_profile(placement.slug)))
-            placement.runner.ensure_devices(step)
-            lifecycle.require_no_swap(builder.incus, placement.box)
-        except (bb.BuildError, IncusError) as exc:
-            raise agentcmd.StepError(f"przygotowanie pudełka {placement.box}: {exc}") from exc
+    try:
+        with _start_lock(placement.slug):
+            builder = builder_of(engine, settings_of(engine))
+            try:
+                builder.incus.config_set(placement.box, lifecycle.limits(builder.load_profile(placement.slug)))
+                placement.runner.ensure_devices(step)
+                lifecycle.require_no_swap(builder.incus, placement.box)
+            except (bb.BuildError, IncusError) as exc:
+                raise agentcmd.StepError(f"przygotowanie pudełka {placement.box}: {exc}") from exc
+    except BoxWaiting as exc:
+        raise agentcmd.StepError(exc.reason) from exc
 
 
 def _before_start(engine, placement, card_id, step_id, program):

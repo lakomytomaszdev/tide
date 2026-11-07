@@ -1,5 +1,6 @@
 """Budżet v1: wyścigi, rzeczywiste zasoby po awarii i próg pamięci hosta."""
 import json
+import contextlib
 import multiprocessing
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -195,6 +196,122 @@ class AdmissionTest(BoxCase):
                     ad.cancel(req['id'])
                 if kind == 'build':
                     Lifecycle(self.b).stop('plasma-tide')
+
+    def test_step_start_racing_rebuild_leaves_status_and_stop_responsive(self):
+        from PyQt6.QtCore import QCoreApplication
+        from tide_daemon.cardflow_monitor import CardFlowMonitor
+        from tide_daemon.cardflow import boxstep, boxcontrol, envconsent
+        from tide_daemon.cardflow.engine import FlowError
+        from tide_daemon.tasks import agentcmd
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        for entry in ('stopped', 'per-card', 'reservation', 'devices'):
+            with self.subTest(entry=entry):
+                self.approve({**PROFILE, 'box': 'per-card' if entry == 'per-card' else 'per-project'})
+                self.b.build('plasma-tide')
+                Lifecycle(self.b).stop('plasma-tide')
+                with mock.patch.object(ad, 'read_memory', return_value=(78 * ad.GiB, 27 * ad.GiB)):
+                    with self.assertRaises(bb.SlotWaiting):
+                        self.b.build('plasma-tide')
+                    with self.assertRaises(bb.SlotWaiting):
+                        self.b.build('second', PROFILE)
+
+                at_lock, allow_lock, provisioning, release = (threading.Event() for _ in range(4))
+                status_done, stop_done = threading.Event(), threading.Event()
+                results = {}
+                original_lock = bs.lifecycle_lock
+
+                @contextlib.contextmanager
+                def scheduled_lock(slug, **kwargs):
+                    # Przeplot po odczycie zgodnego zatrzymanego pudełka i migawki,
+                    # przed pierwszym prawdziwym flock w ścieżce startu kroku.
+                    if threading.current_thread().name.startswith('tide-cardflow') and not at_lock.is_set():
+                        at_lock.set()
+                        if not allow_lock.wait(10):
+                            raise RuntimeError('timeout przeplotu startu')
+                    with original_lock(slug, **kwargs):
+                        yield
+
+                def provision(*args):
+                    provisioning.set()
+                    if not release.wait(10):
+                        raise RuntimeError('timeout kontrolowanej przebudowy')
+                    raise bb.BuildError('koniec kontrolowanej przebudowy')
+
+                engine = SimpleNamespace(journal=Journal(bp.board_dir()), procs={},
+                    box_settings_source=lambda: dataclasses.replace(self.settings, enabled=True),
+                    box_builder=lambda: self.b, take_notices=lambda: [],
+                    _repo=lambda card: os.path.join(self.tmp, 'unused-repo'),
+                    store=SimpleNamespace(repo=SimpleNamespace(commit=lambda *args: ''), load=lambda: SimpleNamespace(
+                        projects={'plasma-tide': {}, 'second': {}}, cards={})))
+
+                def attempt():
+                    placement = SimpleNamespace(slug='plasma-tide')
+                    try:
+                        if entry in ('stopped', 'per-card'):
+                            results['placement'] = boxstep.place(engine, 'K-38', 'plasma-tide', 'ticket', '', ('ticket',))
+                        elif entry == 'reservation':
+                            boxstep.before_start(engine, placement, 'K-38', 'racing-start')
+                        else:
+                            boxstep.prepare_runner(engine, placement, None)
+                    except (boxstep.BoxWaiting, agentcmd.StepError) as exc:
+                        results['waiting'] = str(exc)
+
+                def status(*args):
+                    try:
+                        results['status'] = envconsent.status(engine, *args)
+                    finally:
+                        status_done.set()
+
+                def stop(*args):
+                    try:
+                        boxcontrol.stop(engine, *args)
+                    except FlowError as exc:
+                        results['stop'] = exc.code
+                    finally:
+                        stop_done.set()
+
+                engine.tick, engine.box_status, engine.stop_box = attempt, status, stop
+                monitor = CardFlowMonitor(engine)
+                worker = None
+                with mock.patch.object(bs, 'lifecycle_lock', scheduled_lock), \
+                        mock.patch('tide_daemon.box.refguard.other_cards', return_value=[]), \
+                        mock.patch.object(self.b, '_provision', side_effect=provision):
+                    try:
+                        monitor.tick()
+                        self.assertTrue(at_lock.wait(5), 'start kroku nie dotarł do blokady projektu')
+                        worker = ad.tick(self.b)
+                        self.assertTrue(provisioning.wait(5), 'przebudowa nie dotarła do provision')
+                        self.assertEqual(self.b.status('plasma-tide').journal_state, bs.BUILDING)
+                        calls_before = self.incus_calls()
+                        allow_lock.set()
+                        monitor.box_status('plasma-tide', lambda result: None)
+                        self.assertTrue(status_done.wait(2), 'BoxStatus czeka na start kroku za przebudową')
+                        monitor.stop_box('plasma-tide', '', lambda result: None)
+                        self.assertTrue(stop_done.wait(2), 'StopBox czeka na start kroku za przebudową')
+                        self.assertEqual(results['stop'], 'box-busy')
+                        self.assertIn('trwa budowa lub operacja pudełka', results['waiting'])
+                        self.assertNotIn('placement', results)
+                        state = results['status']['admission']
+                        self.assertEqual(state['owner']['kind'], 'build')
+                        self.assertEqual(state['queue'][0]['name'], 'second')
+                        self.assertIn('globalny slot', state['queue'][0]['reason'])
+                        self.assertEqual(bs.running_steps('plasma-tide', 'plasma-tide'), [])
+                        # Odroczony start nie mutuje Incusa ani nie usuwa rezerwacji budowy.
+                        self.assertEqual([c for c in self.incus_calls() if c[0] in ('start', 'copy')],
+                                         [c for c in calls_before if c[0] in ('start', 'copy')])
+                        self.assertEqual(self.state()['owner'], state['owner'])
+                    finally:
+                        allow_lock.set()
+                        release.set()
+                        if monitor._pool is not None:
+                            monitor._pool.shutdown(wait=True)
+                            monitor._pool = None
+                        self.finish_retry(worker)
+                        app.processEvents()
+                        for req in self.state()['queue']:
+                            ad.cancel(req['id'])
+                        Lifecycle(self.b).stop('plasma-tide')
 
     def test_exact_limits_below_and_above_44_gib_ignore_profile(self):
         for total in (21, 32, 44, 78):
