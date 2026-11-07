@@ -3,7 +3,7 @@ import json
 import os
 import stat
 
-from ..box import trialgate
+from ..box import state as bs, trialgate
 from ..tasks import stepstop
 from .state import fold
 
@@ -116,6 +116,16 @@ def public_inventory(engine):
     return not items
 
 
+def _validate_box_event(event):
+    """Tożsamość zdarzenia musi być znana przed pominięciem niechronionej próby."""
+    if (not isinstance(event, dict) or type(event.get("v")) is not int
+            or event["v"] != bs.SCHEMA or event.get("type") not in bs.EVENTS):
+        raise ValueError("nieznany format zdarzenia pudełka")
+    fields = ("ts", "box", "step") if event["type"] in ("box.use", "box.release") else ("ts", "box")
+    if any(not isinstance(event.get(key), str) or not event[key].strip() for key in fields):
+        raise ValueError("niepełna tożsamość zdarzenia pudełka")
+
+
 def public_processes(board_root):
     """Odczyt śladów CLI i dzienników pudełek bez zmiany historii kart."""
     root = os.path.join(board_root, "projects")
@@ -161,15 +171,18 @@ def public_processes(board_root):
                 content = source.read(4 * 1024 * 1024 + 1)
             if len(content) > 4 * 1024 * 1024:
                 raise ValueError("dziennik przekracza limit odczytu")
+            if content and not content.endswith("\n"):
+                raise ValueError("urwany wpis dziennika pudełka")
             active = {}
             for line in content.splitlines():
                 event = json.loads(line)
-                if not isinstance(event, dict):
-                    raise ValueError("nieznane zdarzenie")
-                name = event.get("step") or ""
-                if not (str(name).startswith("demo-") or held({"step": name})):
+                _validate_box_event(event)
+                if event["type"] not in ("box.use", "box.release"):
                     continue
-                key = (event.get("box") or "", name)
+                name = event["step"]
+                if not (name.startswith("demo-") or held({"step": name})):
+                    continue
+                key = (event["box"], name)
                 if event.get("type") == "box.use":
                     active[key] = {"project": slug, "box": key[0], "step": name, "state": "unknown"}
                 elif event.get("type") == "box.release":

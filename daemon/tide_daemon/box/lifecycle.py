@@ -136,6 +136,9 @@ class Lifecycle:
         try:
             b.require_idle(slug, name)
         except BoxBusy as exc:
+            from ..cardflow import trialhold
+            if trialhold.public_processes(bp.board_dir()):
+                return  # nie dopisujemy odroczenia do niepełnej historii chronionych procesów
             previous = bs.events(slug, name)
             if not previous or previous[-1].get("result") != "deferred":
                 bs.record(slug, "box.reset", name, b.wall, duration=0.0, result="deferred",

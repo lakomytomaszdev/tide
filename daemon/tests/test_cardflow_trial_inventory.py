@@ -62,7 +62,7 @@ class InventoryTest(unittest.TestCase):
         box = self.projects / "proj/box"
         box.mkdir(parents=True)
         path = box / "journal.jsonl"
-        path.write_text('{"type":"box.ready","box":"proj"}\n')
+        bs.record("proj", "box.ready", "proj", duration=0)
         (self.projects / "proj/box.yaml").write_text("tide-box: 1\n")
         return path
 
@@ -99,6 +99,119 @@ class InventoryTest(unittest.TestCase):
         incus.instance.return_value = None
         builder = Builder(SimpleNamespace(), incus=incus, policy=object())
         builder.require_idle("proj", "proj")
+
+    def test_box_history_validates_envelope_and_process_identity_before_filtering(self):
+        path = self.project()
+        valid = {"v": 1, "ts": "2026-11-07T00:00:00+0100", "type": "box.use",
+                 "box": "proj", "step": "ordinary-step"}
+        invalid = [{}, {"v": 1, "type": "box.use", "box": "proj"}]
+        for field, values in {"v": (None, True, 1.0, 2),
+                              "type": (None, [], "box.future"),
+                              "ts": (None, 123, ""),
+                              "box": (None, [], 123, "", " "),
+                              "step": (None, [], {}, 123, "", " ")}.items():
+            invalid.append({key: value for key, value in valid.items() if key != field})
+            invalid.extend({**valid, field: value} for value in values)
+        invalid.append({**valid, "type": "box.release", "step": None})
+        invalid.append({**valid, "type": "box.ready", "v": 2})
+        for event in invalid:
+            before = (json.dumps(event) + "\n" + json.dumps({**valid, "type": "box.release"}) + "\n").encode()
+            path.write_bytes(before)
+            with self.subTest(event=event):
+                self.assertEqual(trialhold.public_processes(str(self.board)),
+                                 [{"state": "unknown", "path": str(path)}])
+                self.assertEqual(path.read_bytes(), before)
+
+        before = json.dumps(valid).encode()
+        path.write_bytes(before)
+        self.assertEqual(trialhold.public_processes(str(self.board)),
+                         [{"state": "unknown", "path": str(path)}])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_incomplete_box_process_blocks_final_operations_and_cleanup_after_restart(self):
+        path = self.project()
+        before = b'{"v":1,"type":"box.use","box":"proj"}\n'
+        path.write_bytes(before)
+        self.journal.append("K-38", "card.started", project="proj")
+        self.journal.append("K-38", "card.closed")
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted):
+                incus = mock.Mock()
+                incus.instance.return_value = {"status": "Running", "config": {
+                    bs.COPY_OF_KEY: "proj", bs.CARD_KEY: "K-38"}}
+                incus.list.return_value = [{"name": "proj"}]
+                builder = Builder(SimpleNamespace(), incus=incus, policy=object())
+                managed = lifecycle.Lifecycle(builder)
+                for operation in (lambda: managed.stop("proj"), lambda: builder.reset("proj"),
+                                  lambda: builder.destroy("proj")):
+                    with self.assertRaises(BoxBusy):
+                        operation()
+                    self.assertEqual(path.read_bytes(), before)
+                managed.close_card("proj", "K-38")
+                incus.stop.assert_not_called()
+                incus.snapshot_restore.assert_not_called()
+                incus.delete.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+                with mock.patch.object(boxstep, "settings_of", return_value=SimpleNamespace(enabled=True)), \
+                        mock.patch.object(boxstep, "builder_of") as build, \
+                        mock.patch("tide_daemon.box.packs.cleanup") as cleanup:
+                    lifecycle.tick(self.engine)
+                build.assert_not_called()
+                cleanup.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_incomplete_box_process_blocks_fresh_public_diagnostic_after_restart(self):
+        path = self.project()
+        before = b'{"v":1,"type":"box.use","box":"proj"}\n'
+        path.write_bytes(before)
+        for generation in range(2):
+            if generation:
+                self.restart()
+            with self.subTest(generation=generation):
+                _, procedure = self.procedure()
+                binding = procedure.snapshot()
+                procedure.snapshot = lambda: replace(binding, attempt=str(generation),
+                                                       target=binding.target + str(generation))
+                self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+                name = self.engine.register_trial_diagnostic()["step"]
+                with self.assertRaises(FlowError):
+                    self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+                procedure.start.assert_not_called()
+                for bootstrap in (False, True):
+                    trial_gate, accepted = self.procedure()
+                    with self.subTest(bootstrap=bootstrap), self.assertRaises(gate.TrialDenied):
+                        trial_gate.start_registered("new", consent=True, inventory=self.inventory,
+                                                    bootstrap=bootstrap)
+                    accepted.start.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_complete_box_history_preserves_release_and_unrelated_process_semantics(self):
+        path = self.project()
+        for kind in bs.EVENTS:
+            if kind not in ("box.use", "box.release"):
+                bs.record("proj", kind, "proj", **({"duration": 0} if kind in bs.TIMED else {}))
+        bs.mark_in_use("proj", "proj", "ordinary-step")
+        self.assertTrue(trialhold.public_inventory(self.engine))
+        bs.mark_in_use("proj", "proj", "demo-old")
+        self.assertFalse(trialhold.public_inventory(self.engine))
+        bs.mark_released("proj", "proj", "demo-old")
+        bs.mark_released("proj", "proj", "ordinary-step")
+        before = path.read_bytes()
+        self.restart()
+        self.assertTrue(trialhold.public_inventory(self.engine))
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+        procedure.start.assert_called_once()
+        self.assertEqual(path.read_bytes(), before)
+        incus = mock.Mock()
+        incus.instance.return_value = {"status": "Running"}
+        builder = Builder(SimpleNamespace(), incus=incus, policy=object())
+        lifecycle.Lifecycle(builder).stop("proj")
+        incus.stop.assert_called_once_with("proj")
 
     def test_recovery_and_later_append_preserve_corrupt_fallback(self):
         _, procedure = self.procedure()

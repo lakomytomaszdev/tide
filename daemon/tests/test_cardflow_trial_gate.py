@@ -521,7 +521,8 @@ class EngineGateTest(unittest.TestCase):
     def test_old_public_cli_without_card_step_is_inventoried_without_cleanup(self):
         path = Path(self.store.root) / "projects/proj/box/journal.jsonl"
         path.parent.mkdir(parents=True)
-        old = '{"type":"box.use","box":"proj","step":"demo-20261106120000-abcd1234"}\n'
+        old = ('{"v":1,"ts":"2026-11-06T12:00:00+0100","type":"box.use",'
+               '"box":"proj","step":"demo-20261106120000-abcd1234"}\n')
         path.write_text(old)
         self.assertFalse(trialhold.inventory(self.engine, "K-38", fold(self.journal.read("K-38"))))
         self.assertEqual(path.read_text(), old)
@@ -533,7 +534,8 @@ class EngineGateTest(unittest.TestCase):
     def test_raw_demo_guard_and_leases_survive_inventory_and_restart(self):
         path = Path(self.store.root) / "projects/proj/box/journal.jsonl"
         path.parent.mkdir(parents=True)
-        path.write_text('{"type":"box.ready","box":"proj"}\n')
+        original = '{"v":1,"ts":"2026-11-06T12:00:00+0100","type":"box.ready","box":"proj"}\n'
+        path.write_text(original)
         pool = PortPool("proj", "proj")
         owner = "demo-20261106120000-abcd1234"
         procedure = HostProcedure(self.tmp.name)
@@ -552,7 +554,7 @@ class EngineGateTest(unittest.TestCase):
                                   for p in Path(pool.folder).iterdir()}, before)
         # Wolna blokada nie jest dowodem końca jednostki w pudełku.
         self.assert_history_denies_new_procedure(self.restart(), procedure, store)
-        self.assertEqual(path.read_text(), '{"type":"box.ready","box":"proj"}\n')
+        self.assertEqual(path.read_text(), original)
 
     def test_public_state_without_project_journal_is_not_lost(self):
         pool = PortPool("removed-project", "old-box")
