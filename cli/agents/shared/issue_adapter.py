@@ -160,7 +160,7 @@ def run(args):
         state.setdefault('waivers', []).append(waiver)
         state['missing'] = remaining
         save(state_path, state)
-    if not state['missing'] and not state['attachErrors']:
+    if not state['missing'] and not state['attachErrors'] and state['state'] == 'draft':
         persist(cli('issue', 'submit', state['id'], '--expected-version', state['version'])['issue'])
     return open_issue()
 

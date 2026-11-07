@@ -359,8 +359,12 @@ class AdapterTest(unittest.TestCase):
                 self.assertNotIn('Brak dostępu do bajtów dowodów:', final['report'])
                 self.assertEqual(final['attachments'], issue['attachments'])
                 self.assertTrue(any(c[:3] == ['issue', 'open', ready['id']] for c in self.calls()))
-                # Kolejna poprawka nie usuwa historii jawnej rezygnacji ani dowodów.
+                # Ponowienie identycznego raportu zachowuje gotową wersję bez drugiego submit.
+                submitted = [c for c in self.calls() if c[:3] == ['issue', 'submit', ready['id']]]
                 corrected = self.finish(script, folder)
+                self.assertEqual((corrected['id'], corrected['state'], corrected['version']),
+                                 (ready['id'], 'ready', ready['version']))
+                self.assertEqual([c for c in self.calls() if c[:3] == ['issue', 'submit', ready['id']]], submitted)
                 retained = self.run_cli('issue', 'show', corrected['id'])['issue']
                 self.assertIn('rezygnuję z drugiego obrazu', retained['report'])
                 self.assertNotIn('Pozostaje draft.', retained['report'])
@@ -465,6 +469,7 @@ class AdapterTest(unittest.TestCase):
             final = self.finish(script, folder)
             self.assertEqual((final['id'], final['state']), (ready['id'], 'ready'))
             self.assertGreater(final['version'], ready['version'])
+            self.assertTrue(any(c[:3] == ['issue', 'submit', ready['id']] for c in self.calls()))
             stored = self.run_cli('issue', 'show', final['id'])['issue']
             self.assertEqual(stored['title'], 'Filtr projektu')
             self.assertEqual(stored['project'], 'alfa')
