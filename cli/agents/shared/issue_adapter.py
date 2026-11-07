@@ -39,6 +39,12 @@ def check_api():
         raise AdapterError('Wymagane API spraw v1 z create/show/update/attach/submit.')
 
 
+def missing_notice(missing):
+    if not missing:
+        return ''
+    return '\n\nBrak dostępu do bajtów dowodów: ' + ', '.join(missing) + '. Pozostaje draft.\n'
+
+
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest='action', required=True)
@@ -117,9 +123,7 @@ def run(args):
         state['missing'] = list(dict.fromkeys([*state['missing'], *args.missing]))
 
         def described():
-            result = report
-            if state['missing']:
-                result += '\n\nBrak dostępu do bajtów dowodów: ' + ', '.join(state['missing']) + '. Pozostaje draft.\n'
+            result = report + missing_notice(state['missing'])
             if state['attachErrors']:
                 result += '\n\nBłąd attach: ' + ', '.join(state['attachErrors']) + '. Nie potwierdzono załączenia; pozostaje draft.\n'
             for waiver in state.get('waivers', []):
@@ -149,10 +153,12 @@ def run(args):
             raise AdapterError('Wymagana odrębna jawna rezygnacja z konkretnego brakującego dowodu.')
         waiver = ('Jawna rezygnacja użytkownika z dowodu „' + args.evidence +
                   '”: ' + args.decision + '\nOgraniczenie dowodów pozostaje; pliku nie dołączono.\n')
-        report = issue['report'] + '\n\n' + waiver
+        remaining = [item for item in state['missing'] if item != args.evidence]
+        report = issue['report'].replace(missing_notice(state['missing']), missing_notice(remaining))
+        report += '\n\n' + waiver
         update(report, state['title'], state['project'])
         state.setdefault('waivers', []).append(waiver)
-        state['missing'].remove(args.evidence)
+        state['missing'] = remaining
         save(state_path, state)
     if not state['missing'] and not state['attachErrors']:
         persist(cli('issue', 'submit', state['id'], '--expected-version', state['version'])['issue'])

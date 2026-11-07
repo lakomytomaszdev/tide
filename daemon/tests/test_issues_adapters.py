@@ -355,16 +355,43 @@ class AdapterTest(unittest.TestCase):
                 final = self.run_cli('issue', 'show', ready['id'])['issue']
                 self.assertIn('rezygnuję z drugiego obrazu', final['report'])
                 self.assertIn('pliku nie dołączono', final['report'])
+                self.assertNotIn('Pozostaje draft.', final['report'])
+                self.assertNotIn('Brak dostępu do bajtów dowodów:', final['report'])
                 self.assertEqual(final['attachments'], issue['attachments'])
                 self.assertTrue(any(c[:3] == ['issue', 'open', ready['id']] for c in self.calls()))
                 # Kolejna poprawka nie usuwa historii jawnej rezygnacji ani dowodów.
                 corrected = self.finish(script, folder)
                 retained = self.run_cli('issue', 'show', corrected['id'])['issue']
                 self.assertIn('rezygnuję z drugiego obrazu', retained['report'])
+                self.assertNotIn('Pozostaje draft.', retained['report'])
                 self.assertEqual(retained['attachments'], issue['attachments'])
         # Daemon nie ma ukrytej listy brakujących dowodów wynikającej z prozy.
         fresh = self.run_cli('issue', 'create', '--title', 'Brak obrazu', '--report', self.report)['issue']
         self.assertEqual(self.run_cli('issue', 'submit', fresh['id'], '--expected-version', '1')['issue']['state'], 'ready')
+
+    def test_both_adapters_partial_waiver_keeps_only_remaining_blocker(self):
+        self.prepare()
+        for n, script in enumerate(self.adapters):
+            with self.subTest(adapter=script):
+                folder = Path(self.tmp, 'partial-waiver-' + str(n))
+                initial = self.begin(script, folder)
+                self.finish(script, folder, '--missing', 'drugi obraz', '--missing', 'trzeci obraz')
+                partial = self.adapter(script, 'waive', '--session', folder, '--evidence', 'drugi obraz',
+                                       '--decision', 'rezygnuję z drugiego obrazu')
+                self.assertEqual((partial['id'], partial['state']), (initial['id'], 'draft'))
+                report = self.run_cli('issue', 'show', initial['id'])['issue']['report']
+                self.assertIn('Brak dostępu do bajtów dowodów: trzeci obraz. Pozostaje draft.', report)
+                self.assertNotIn('Brak dostępu do bajtów dowodów: drugi obraz', report)
+                self.assertIn('rezygnuję z drugiego obrazu', report)
+                self.assertFalse(any(c[:3] == ['issue', 'submit', initial['id']] for c in self.calls()))
+                final = self.adapter(script, 'waive', '--session', folder, '--evidence', 'trzeci obraz',
+                                     '--decision', 'rezygnuję z trzeciego obrazu')
+                self.assertEqual((final['id'], final['state']), (initial['id'], 'ready'))
+                report = self.run_cli('issue', 'show', initial['id'])['issue']['report']
+                self.assertNotIn('Pozostaje draft.', report)
+                for decision in ('rezygnuję z drugiego obrazu', 'rezygnuję z trzeciego obrazu'):
+                    self.assertIn(decision, report)
+                self.assertIn('pliku nie dołączono', report)
 
     def test_both_adapters_attach_failure_and_conflict_after_waiver(self):
         self.prepare()
