@@ -41,7 +41,7 @@ from .. import codex_homes
 from ..agents.claude import synthetic_user
 from ..agents.jsonl import JsonlTail, read_head
 from ..worktrees.git import MAIN_CANDIDATES, Result
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, SANDBOX
 from .agentcmd import EXIT_CODE_FILE
 
 WIP_MESSAGE = "WIP: step stopped before it finished"
@@ -258,6 +258,7 @@ class StepGit:
             # Prywatna kopia indeksu przeżywa kolejne wywołania, ale nie odsłania innych plików /tmp.
             argv += ["--bind", index_dir, "/tmp/tide-index"]
         argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
+        argv += ["--ro-bind", SANDBOX, "/run/tide-git-host.py"]
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
                "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
                "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
@@ -273,7 +274,11 @@ class StepGit:
 
     def run(self, *args, timeout=120, index_dir: str | None = None) -> Result:
         try:
-            proc = subprocess.run([*self.sandbox(index_dir), *git_argv(*self.opts, *args)], capture_output=True, text=True,
+            proc = subprocess.run([*self.sandbox(index_dir), *git_argv(*self.opts, *args,
+                                  launcher="/run/tide-git-host.py",
+                                  read_roots=(self.inp,) if os.path.isdir(self.inp) else (),
+                                  write_roots=("/tmp/tide-index",) if index_dir is not None else (),
+                                  index="/tmp/tide-index/index" if index_dir is not None else None)], capture_output=True, text=True,
                                   errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired) as exc:

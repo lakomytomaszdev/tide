@@ -1524,9 +1524,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return "(pominięto: osiągnięto limit danych dodatkowych projektów)"
         root = os.path.realpath(repo)
         try:
-            from ..gitcommand import git_argv
+            from ..gitcommand import git_argv, git_launch_env
             listed = subprocess.run(git_argv("-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard"),
-                                    capture_output=True, timeout=30)
+                                    capture_output=True, timeout=30, env=git_launch_env())
         except (OSError, subprocess.TimeoutExpired):
             raise FlowError("extra-project", f"nie można odczytać plików dodatkowego projektu {repo}") from None
         if listed.returncode != 0:

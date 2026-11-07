@@ -12,7 +12,7 @@ import tarfile
 import tempfile
 
 from ..board.store import BoardStore
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 from . import profile as bp
 
 PUBLIC_NUGET = "https://api.nuget.org/v3/index.json"
@@ -33,9 +33,9 @@ def project_repo(slug):
 def archive_head(repo, destination):
     try:
         revision = subprocess.run(git_argv("-C", repo, "rev-parse", "--verify", "HEAD^{commit}"),
-                                  check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+                                  check=True, capture_output=True, text=True, timeout=30, env=git_launch_env()).stdout.strip()
         subprocess.run(git_argv("-C", repo, "archive", "--format=tar", f"--output={destination}", revision),
-                       check=True, capture_output=True, timeout=120)
+                       check=True, capture_output=True, timeout=120, env=git_launch_env())
     except (OSError, subprocess.SubprocessError) as exc:
         raise VerificationError("nie można przygotować kopii HEAD projektu do verify") from exc
     return revision

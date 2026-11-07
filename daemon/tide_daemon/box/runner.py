@@ -48,7 +48,7 @@ import stat
 import subprocess
 import sys
 import time
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -364,7 +364,7 @@ class BoxRunner:
                  step_env: Callable[[agentcmd.Step], dict] | None = None,
                  journal: Callable[[str, dict], None] | None = None, env: dict | None = None,
                  systemd_run: str = SYSTEMD_RUN, systemctl: str = SYSTEMCTL, tide_step=None,
-                 popen=subprocess.Popen, sleep=time.sleep, extra_devices=()):
+                 popen=subprocess.Popen, sleep=time.sleep, extra_devices=(), mount_steps=None):
         self.settings = settings
         self.slug = slug
         self.card = card
@@ -380,6 +380,7 @@ class BoxRunner:
         self._popen, self._sleep = popen, sleep
         self._risk_logged = False
         self.extra_devices = tuple(extra_devices)
+        self.mount_steps = mount_steps
 
     # --- środowisko ------------------------------------------------------------------------------
 
@@ -483,7 +484,10 @@ class BoxRunner:
     def devices_for(self, step: agentcmd.Step) -> list:
         """Urządzenia dyskowe kroku. Kolejność listy nie decyduje o montowaniu (Incus sortuje po `path`) — nakładki ro
         są nad `.git`, bo ich ścieżki leżą pod `.git/`."""
-        self._require_mount_adapter(step)
+        from . import exposure
+        if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
+            from .mounts import ProjectMounts
+            return ProjectMounts(self).devices(step)
         repo = os.path.realpath(step.repo)
         git = os.path.join(repo, ".git")
         if not os.path.isdir(git):
@@ -605,6 +609,10 @@ class BoxRunner:
 
     def ensure_devices(self, step: agentcmd.Step, *, check_only: bool = False) -> list:
         """Dodaje urządzenia i `raw.idmap`; check_only sprawdza dostępność bez zmiany montowań."""
+        from . import exposure
+        if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
+            from .mounts import ProjectMounts
+            return ProjectMounts(self).ensure(step, check_only)
         wanted = self.devices_for(step)
         path = lock_path(self.slug, self.host_env)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -758,6 +766,10 @@ class BoxRunner:
         # Nie instalujemy nic jako root pudełka; zapis podlega tym samym kontrolom dowiązań co reszta kroku.
         with open(TIDE_STEP_SCRIPT, encoding="utf-8") as source:
             fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-step"), source.read(), mode=0o700)
+        if step.exposure_inputs is not None:
+            from . import gitview
+            with open(gitview.__file__, encoding="utf-8") as source:
+                fs.write(os.path.join(bg.step_dir, "in", "bin", "git"), source.read(), mode=0o755)
         from . import test_artifacts
         with open(test_artifacts.__file__, encoding="utf-8") as source:
             fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-test"), source.read(), mode=0o755)
@@ -797,8 +809,9 @@ class BoxRunner:
     def _require_mount_adapter(self, step):
         from . import exposure
         if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
-            raise agentcmd.StepError("manifest projektu: czeka na odebrany adapter montowań PT-264; "
-                                     "brak powrotu do historycznych urządzeń per karta")
+            from .mounts import ProjectMounts
+            with ProjectMounts(self).access(step):
+                pass
 
     def _client_env(self) -> dict:
         """Środowisko klienta `incus` na hoście — bez zmiennych kroku (nic z `in/env`)."""
@@ -934,7 +947,7 @@ def _demo(argv: list) -> int:
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
     common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"),
-                            capture_output=True, text=True, check=True).stdout.strip()
+                            capture_output=True, text=True, check=True, env=git_launch_env()).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")
     step_id = args.finish_guard or f"demo-{stamp}-{secrets.token_hex(4)}"

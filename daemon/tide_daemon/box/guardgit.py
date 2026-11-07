@@ -78,6 +78,9 @@ def trusted(repo):
             # Stały program i zamknięte środowisko: GIT_DIR/COMMON_DIR/CONFIG_COUNT,
             # PATH, LD_PRELOAD itd. z otoczenia nie przechodzą do procesu hosta.
             git = Git(executable="/usr/bin/git")
+            git.private = True
+            git.read_roots = (repo,)
+            git.write_roots = (repo,)
             git.env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
                        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0",
                        "GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"}

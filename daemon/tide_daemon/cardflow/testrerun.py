@@ -33,7 +33,9 @@ def is_full_test(command: str) -> bool:
 
 def _git(worktree: str, *args: str) -> str | None:
     try:
-        run = subprocess.run(["git", "-C", worktree, *args], capture_output=True, text=True, timeout=30)
+        from ..gitcommand import git_argv, git_launch_env
+        run = subprocess.run(git_argv("-C", worktree, *args), capture_output=True, text=True, timeout=30,
+                             env=git_launch_env())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return run.stdout if run.returncode == 0 else None

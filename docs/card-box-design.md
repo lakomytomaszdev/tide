@@ -7,6 +7,90 @@ K-38: zamiast coraz drobniejszych zgód — zamknięte środowisko, w którym ag
 Oznaczenia: **[sprawdzone]** — wynik z tego komputera (03.11.2026); **[założenie]** — do potwierdzenia prototypem
 albo w rozmowie; **[decyzja]** — pytanie do użytkownika (zebrane w sekcji 9).
 
+## Kontrakt granicy projektu v2 — PT-264 (07.11.2026)
+
+Ta sekcja zastępuje historyczne założenie „całe `.git` rw + nakładki ro” w dalszej
+części projektu. Zmianę zakresu zatwierdzono przy wznowieniu PT-264 o 15:33.
+Implementacja wymaga odbioru niezależną rodziną modeli; sam opis nie otwiera
+bramki PT-261 i nie zastępuje prób PT-273/PT-274.
+
+**Domena zaufania pozostaje projektem.** Wszystkie jego karty mogą czytać wspólne
+obiekty, refy, wejścia, worktrees, home i robocze wyniki. Nie ma granicy poufności
+między kartami. Hostowe magazyny wyników, werdyktów, zgód i strażnika pozostają
+poza urządzeniami. `per-card` nie daje prawa montowania wspólnego rodzica projektów.
+
+**Manifest PT-263.** Nowe propozycje mają `mountContract: 2`. Bazowe `.git` jest
+ro, a tylko `objects`, `refs`, `logs` mają osobne źródła rw. Hostowe config,
+hooks, info, config.worktree i rejestr administracji worktrees nie znajdują się
+w źródle rw obejmującym całą administrację. Workspaces i dedykowany home projektu
+są rw; wyłącznie dokładne `PackSnapshot.directory` wejść są ro. Zmiana planu
+zmienia odcisk i wymaga nowego podglądu oraz świadomej zgody projektu. Istniejący
+rekord nie jest przepisywany na nową treść ani automatycznie rozszerzany.
+
+**Administracja i indeks.** `box/gitview.py`, kopiowany do `in/bin/git`, utrzymuje
+prywatny HEAD i indeks w domu pudełka. Korzysta ze wspólnych objects/refs/logs;
+commity nadal są od razu widoczne w projekcie. Host nigdy nie wykonuje programu
+ani nie otwiera administracji wybranej z tego prywatnego katalogu. Plik `.git`
+w zapisywalnym worktree jest niezaufaną wskazówką: host sprawdza jego zgodność
+z rejestrem pod bazowym montowaniem ro i przypina własne `--git-dir`/`--work-tree`.
+Podmiana nie wybiera obcego projektu. Nie polegamy na nakładce pojedynczego pliku
+w zapisywalnym źródle ani na maskowaniu tego pliku przed zwykłym użytkownikiem.
+
+Przed ekspozycją host zapisuje w chronionej administracji `tide-boundary` i punkty
+`tide-index-tip`. Po przesunięciu refu przez prywatny widok host odtwarza swój
+indeks z nowego HEAD przed operacją wymagającą indeksu. Nie kopiuje indeksu z domu
+pudełka. Zmiany robocze pozostają na dysku. Ten mechanizm dotyczy worktrees
+projektu prowadzonych przez Tide; główny indeks użytkownika nie jest synchronizowany.
+Karty nadal podlegają serializacji PT-266. Równoległa ręczna praca na indeksie tego
+samego worktree nie jest osobną domeną ani obsługiwanym sposobem zachowania stagingu.
+
+**Wszystkie hostowe operacje Git.** `gitcommand.git_argv` prowadzi przez izolowany
+interpreter `git_sandbox.py`, także dla FlowGit, skanera, Tablicy, opiekuna,
+przygotowania źródeł, ponowień testów i StepGit. Osobny rootfs bwrap zawiera tylko
+program systemowy, jego biblioteki/dane ro oraz jawne korzenie projektu.
+Nie ma hostowego `/tmp`, `/run`, procesów, IPC ani sieci. To ogranicza także
+zmiany metadanych przez chmod/utime i gniazda ścieżkowe; sama polityka plików
+Landlock nie wystarcza do ich ochrony. Landlock ABI co najmniej 6
+ogranicza pliki do jawnego repozytorium/workspaces i jawnych plików wejścia/wyjścia
+wybranych przez usługę. Rozstrzyga dostęp także po późniejszej podmianie symlinka.
+Nie przyznaje wykonania plików projektu, powłoki, filtrów ani pomocników z config;
+wykonuje wyłącznie systemowy Git i jego ten sam program w git-core. Nie przyznaje
+połączeń TCP ani wyjścia z zakresu IPC. Biblioteki i dane systemowego programu są
+ro; konfiguracja systemowa/globalna, lazy fetch i zmienne Git z otoczenia są
+wyłączone. Brak bwrap lub wymaganego ABI oznacza odmowę bez cichego powrotu do starego Git.
+
+Alternates/http-alternates i przekierowania commondir są odrzucane przed startem.
+Próba wyścigu na magazynie Git nadal ma ograniczenia jądra przy otwarciu pliku;
+sama wcześniejsza walidacja ścieżki nie jest jedyną granicą. Prywatny widok
+`guardgit` zachowuje swój algorytm własnego refu i CAS, ale też używa tej granicy.
+Zatwierdzone argv usługi są zaufanym opisem jej operacji, nie dowolnym poleceniem
+przyjmowanym od pudełka. Jawny plik archiwum/indeksu nie upoważnia config do
+wybrania kolejnego celu. Kod zainstalowanej usługi musi być poza źródłami rw.
+
+**Urządzenia PT-264.** Kolejność to paczki → zgoda → urządzenia. Blokada zgody
+szereguje również operacje na urządzeniach. Adapter porównuje kompletny efektywny
+zestaw urządzeń, także dziedziczonych, a nie tylko ich nazwy. Odrzuca dodatkowe
+dyski, urządzenia/gniazda, surowe konfiguracje i uprzywilejowany kontener. Zmiana
+montowań wymaga braku żywego kroku i zatrzymania całego pudełka, także Dockera.
+Przed podłączeniem źródeł odrzucane są hardlinki i pliki specjalne; symlinki
+zwykłych danych rozwiązują się w przestrzeni pudełka. Nieznany mount pozostaje
+niezmieniony i blokuje start. Callback `detach_snapshot` odłącza wyłącznie własne
+udowodnione urządzenia we wszystkich instancjach projektu przed usunięciem danych
+PT-262; nie resetuje innych kart. Reset projektu odmawia także przy żywej kopii karty.
+
+**Wpływ na gotowe tickety.** PT-263 zachowuje wersjonowany magazyn zgód, lecz
+wyprowadza nowy plan i odcisk. PT-266 zachowuje serializację, własny ref i CAS;
+jego prywatny Git dostaje dodatkową granicę procesu. PT-169 ma nowy adapter v1,
+nie używa starej ścieżki montowań dla plasma-tide. PT-262 nadal wyłącznie kopiuje,
+skanuje i usuwa dane po callbacku. PT-268/PT-269 muszą konsumować dokładną nową
+zgodę; nie wolno aktywować ich dawnymi profilami kart. Integracja wyboru kroku
+i polityki projektu pozostaje w PT-265/PT-269. Wykonana historyczna część K-38,
+WIP i wyniki review nie są przepisywane.
+
+Automatyczne dowody są na jednorazowych repozytoriach i atrapie urządzeń.
+Nie oznaczają zaliczenia root/Dockera na prawdziwym Incusie. Ten odbiór wymaga
+zarejestrowanego celu PT-273 i bramki PT-274; nie używa `.git` użytkownika.
+
 ## 1. Cel i kryteria sukcesu
 
 **Cel.** Krok w tle (ticket, review, poprawka, planowanie) pracuje w pudełku projektu: instaluje paczki, stawia

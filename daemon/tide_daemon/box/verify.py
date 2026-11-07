@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class Source:
 
 def _git(worktree, *args, **kwargs):
     proc = subprocess.run(git_argv("-C", worktree, *args), stdin=subprocess.DEVNULL,
-                          stderr=subprocess.PIPE, timeout=120, **kwargs)
+                          stderr=subprocess.PIPE, timeout=120, env=git_launch_env(), **kwargs)
     if proc.returncode:
         raise ValueError("verify: git: " + proc.stderr.decode(errors="replace").strip())
     return proc.stdout.decode().strip() if proc.stdout is not None else ""

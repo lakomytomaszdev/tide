@@ -10,7 +10,7 @@ Zasady:
 import os
 import subprocess
 from dataclasses import dataclass
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
@@ -35,22 +35,27 @@ class Result:
 
 
 class Git:
-    """Uruchamia gita w podanym katalogu. Podmienialny w testach (np. inny plik wykonywalny)."""
+    """Systemowy Git w granicy procesu; testy mogą podmieniać run/cancel."""
 
     def __init__(self, executable: str = "git", timeout: float = 60, cancel=None):
         self.executable = executable
         self.timeout = timeout
         self.env = dict(os.environ, **GIT_ENV)
         self.cancel = cancel
+        self.read_roots = ()
+        self.write_roots = ()
+        self.private = False
 
     def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
         try:
-            argv = git_argv("-C", cwd, *args, executable=self.executable)
+            argv = git_argv("-C", cwd, *args, executable=self.executable,
+                            read_roots=self.read_roots, write_roots=self.write_roots, private=self.private)
+            env = git_launch_env(self.env)
             if self.cancel is not None:
-                proc = self.cancel.run(argv, env=self.env, timeout=timeout or self.timeout, input_text=input_text)
+                proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
             else:
                 proc = subprocess.run(argv, capture_output=True, text=True,
-                                      errors="replace", env=self.env, timeout=timeout or self.timeout,
+                                      errors="replace", env=env, timeout=timeout or self.timeout,
                                       **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Result(-1, "", str(exc))

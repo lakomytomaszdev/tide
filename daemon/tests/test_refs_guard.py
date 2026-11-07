@@ -1095,4 +1095,5 @@ class HostGitTest(unittest.TestCase):
                 git.run("commit", "-m", "test")
         self.assertEqual(len(results), 3)
         for argv in results:
-            self.assertEqual(tuple(argv[1:5]), HOST_OPTIONS)
+            self.assertEqual(argv[:2], ["/usr/bin/python3", "-I"])
+            self.assertEqual(tuple(json.loads(argv[-1])["args"][:4]), HOST_OPTIONS)
