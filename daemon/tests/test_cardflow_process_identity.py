@@ -211,6 +211,35 @@ class ProcessIdentityRegression(unittest.TestCase):
                     pass
                 incus.stop.assert_not_called()
 
+    def test_review5_incomplete_action_blocks_unrelated_outside_and_box_stop(self):
+        f = self.fixture
+        f.project()
+        f.journal.append("K-38", "card.started", project="proj")
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for source, fields, restarted in itertools.product(
+                ("intent", "result"), ({}, {"action": "step-start "}), (False, True)):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            f.journal.append("K-38", source, key="legacy", ticket="PT-176", kind="ticket",
+                             runner="host", unit="legacy.scope", worktree=str(f.root),
+                             stepDir=str(f.root / "legacy.step"), **fields)
+            step = f.outside_history()
+            if restarted:
+                f.restart()
+            with self.subTest(source=source, fields=fields, restarted=restarted):
+                identities = process_identities(f.journal.read_complete("K-38"))
+                self.assertIn("legacy", identities)
+                self.assertNotEqual(identities["legacy"].state, "ok")
+                self.assertTrue(identities["legacy"].protected)
+                self.assertFalse(f.inventory())
+                with f.outside_environment() as spawn:
+                    with self.assertRaises(FlowError):
+                        f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    spawn.assert_not_called()
+                f.assert_lifecycle_preserved()
+
 
 def generated_bad_histories():
     """Przestrzeń luk review 9–13: braki, osierocenia, kolizje i kolejność."""
@@ -255,6 +284,25 @@ def generated_bad_histories():
     yield from generated_bad_resource_histories()
     yield from generated_bad_card_project_histories()
     yield from generated_bad_ticket_histories()
+    yield from generated_bad_action_histories()
+
+
+def generated_bad_action_histories():
+    """B1 rundy 5: dyskryminator nie może usuwać śladu ani późniejszego błędu."""
+    variants = [{}] + [{"action": value} for value in (
+        None, [], {}, 17, "", "step-start ", " step-start", "STEP-START", "future-action")]
+    for source, ticket, fields in itertools.product(("intent", "result"), ("PT-176", "PT-999"), variants):
+        good = dict(type="step.started", step="legacy-step", ticket=ticket, kind="ticket",
+                    runner="host", unit="old.scope", worktree="/work", stepDir="/step")
+        bad = {**good, "type": source, "key": "legacy-step", **fields}
+        del bad["step"]
+        prefix = [dict(type="card.started", project="proj")]
+        yield [*prefix, bad]
+        yield [*prefix, good, bad]
+        yield [*prefix, bad, good, dict(type="step.finished", step="legacy-step", result="done")]
+        # Ani późniejszy poprawny dyskryminator, ani brak nazwy nie usuwa niepewności.
+        yield [*prefix, {k: v for k, v in bad.items() if k != "key"},
+               {**bad, "action": "step-start"}, good]
 
 
 def generated_bad_ticket_histories():
@@ -510,6 +558,28 @@ class GeneratedHistoryBarriers(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.f.project()
+
+    def test_known_nonprocess_actions_allow_inventory_and_outside_after_restart(self):
+        f = self.f
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for action in ("reserve", "card-branch", "ticket-branch", "review-branch", "step-reopen",
+                       "plan-commit", "cleanup", "merge", "youtrack-create", "youtrack-link", "youtrack-note"):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            # Rezerwacja/gałąź chronionego ticketu nie oznacza startu jego procesu.
+            for source in ("intent", "result"):
+                f.journal.append("K-38", source, action=action, key="PT-176", ticket="PT-176",
+                                 branch="ticket/pt-176-old", worktree=str(f.root), ok=True)
+            with self.subTest(action=action):
+                self.assertEqual(process_identities(f.journal.read_complete("K-38")), {})
+                step = f.outside_history()
+                f.restart()
+                self.assertTrue(f.inventory())
+                with f.outside_environment() as spawn:
+                    f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    spawn.assert_called_once()
 
     def test_explicit_box_project_denies_inventory_and_lifecycle_after_restart(self):
         f = self.f

@@ -17,6 +17,11 @@ IDENTITY_FIELDS = ("ticket", "kind", "branch", "worktree", "stepDir", "runner", 
                    "consoleUnit", "processFile")
 START_FIELDS = IDENTITY_FIELDS + ("unit",)
 RESOURCE_FIELDS = ("runner", "box", "boxSlug")
+# Akcje metadanych i Gita nie są śladami procesu kroku. Nowy dyskryminator
+# wymaga jawnej klasyfikacji; brak lub literówka nie dowodzi braku procesu.
+NON_PROCESS_ACTIONS = frozenset({"reserve", "card-branch", "ticket-branch", "review-branch",
+                                 "step-reopen", "plan-commit", "cleanup", "merge",
+                                 "youtrack-create", "youtrack-link", "youtrack-note"})
 
 
 @dataclass
@@ -120,8 +125,11 @@ def process_identities(events):
             value = event.get("project")
             project = value if valid_project(value) else ""
             card = event.get("card", "")
-        start = kind == "step.started" or (kind == "intent" and event.get("action") == "step-start")
-        result = kind == "result" and event.get("action") == "step-start"
+        action = event.get("action")
+        uncertain_action = kind in ("intent", "result") and (
+            not isinstance(action, str) or (action != "step-start" and action not in NON_PROCESS_ACTIONS))
+        start = kind == "step.started" or (kind == "intent" and (action == "step-start" or uncertain_action))
+        result = kind == "result" and (action == "step-start" or uncertain_action)
         outside = outside_evidence(event)
         if not (start or result or outside or kind in CONSOLE_EVENTS or kind in ("step.decision", "step.finished")):
             continue
@@ -129,6 +137,10 @@ def process_identities(events):
         valid_name = isinstance(name, str) and bool(name.strip())
         key = name if valid_name else (None, index)
         identity = identities.setdefault(key, ProcessIdentity(name if valid_name else ""))
+        if uncertain_action:
+            # Przechowujemy cały ślad bez naprawiania action. Nawet poprawny
+            # późniejszy start/wynik nie rozstrzyga nieznanej operacji z historii.
+            identity.worsen("unknown")
         identity.projects.add(project)
         if not project:
             # Wadliwy kontekst nie wyznacza zakresu nawet dla procesu hostowego.
