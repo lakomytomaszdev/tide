@@ -17,6 +17,8 @@ GiB = 1024 ** 3
 RECHECK_SECONDS = 5
 _local = threading.local()
 changed = threading.Event()
+_dispatch_lock = threading.Lock()
+_worker = None
 
 
 def read_memory():
@@ -44,7 +46,13 @@ def memory_limit(total):
 
 
 def limits():
-    total, _ = read_memory()
+    try:
+        total, _ = read_memory()
+    except (OSError, ValueError, KeyError) as exc:
+        if getattr(_local, 'request', None) is not None:
+            with locked():
+                defer_start(f'brak poprawnego pomiaru pamięci hosta: {exc}')
+        raise
     return {'limits.cpu': 8, 'limits.memory': str(memory_limit(total))}
 
 
@@ -145,12 +153,12 @@ def reconcile(state, incus, busy=False):
     return active
 
 
-def wait(state, req, reason):
+def wait(state, req, reason, *, front=False):
     from .builder import SlotWaiting
     entry = next((q for q in state['queue'] if q['id'] == req['id']), None)
     if entry is None:
-        entry = dict(req, queued=time.time())
-        state['queue'].append(entry)
+        entry = dict(req, queued=req.get('queued', time.time()))
+        state['queue'].insert(0 if front else len(state['queue']), entry)
     entry['reason'] = reason
     save(state)
     raise SlotWaiting(reason)
@@ -206,6 +214,7 @@ def operation(incus, req, *, enqueue=True):
                 defer(state, f'brak poprawnego pomiaru pamięci hosta: {exc}')
             if not reuse and available < limit + 4 * GiB:
                 defer(state, f'za mało MemAvailable: {available} B; potrzeba {limit + 4 * GiB} B')
+            req = next((q for q in state['queue'] if q['id'] == req['id']), req)
             state['queue'] = [q for q in state['queue'] if q['id'] != req['id']]
             state['owner'] = {k: req[k] for k in ('project', 'name', 'kind')}
             save(state)  # zamiar przed jakąkolwiek mutacją Incusa
@@ -257,7 +266,7 @@ def start(incus, name, *, slug=None, card=None):
 def defer_start(reason):
     req = _local.request
     if req['kind'] in ('build', 'base', 'start'):
-        wait(load(), req, reason)
+        wait(load(), req, reason, front=True)
     from .builder import BuildError
     raise BuildError(reason)
 
@@ -314,16 +323,31 @@ def queued(kind):
 
 
 def tick(builder):
-    """Jedna próba FIFO; wołana co 5 s oraz po potwierdzonym zwolnieniu slotu."""
+    """Jedna próba FIFO poza szeregowym wykonawcą kart; najwyżej jeden klient kolejki.
+
+    Wątek nie jest rezerwacją: operation() nadal trzyma hostowy lease przez całą
+    budowę/start, a po końcu klienta stan rekonstruuje się z rzeczywistego Incusa.
+    """
+    global _worker
+    with _dispatch_lock:
+        if _worker is not None and _worker.is_alive():
+            return _worker
+        state = snapshot(builder.incus)  # restart zawsze zaczyna od zasobów hosta
+        if state.get('error') or not state['queue']:
+            return None
+        req = state['queue'][0]
+        if state['owner'] and not (req['kind'] == 'start' and state['owner']['name'] == req['name']):
+            return None
+        if req['project'] != builder.incus.project:
+            return None
+        _worker = threading.Thread(target=_tick, args=(builder, req), name='box-admission', daemon=True)
+        _worker.start()
+        return _worker
+
+
+def _tick(builder, req):
+    """Długie ponowienie; operation() ponownie sprawdza stan i anulowanie."""
     from .builder import SlotWaiting
-    state = snapshot(builder.incus)  # restart zawsze zaczyna od zasobów hosta
-    if state.get('error') or not state['queue']:
-        return
-    req = state['queue'][0]
-    if state['owner'] and not (req['kind'] == 'start' and state['owner']['name'] == req['name']):
-        return
-    if req['project'] != builder.incus.project:
-        return
     try:
         _local.dispatched = req['id']
         if req['kind'] == 'build':

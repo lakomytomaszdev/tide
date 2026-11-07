@@ -74,8 +74,9 @@ def stop(engine, slug, card=""):
     builder = boxstep.builder_of(engine, boxstep.settings_of(engine))
     # Ten sam lock co rezerwacja kroku, budowa i cykl życia. Kontrola obejmuje
     # także żywych klientów silnika, których nie widać jeszcze w box.use.
+    # Zajęty projekt daje szybką odmowę, aby inne akcje kart nadal działały.
     try:
-        with bs.lifecycle_lock(slug):
+        with bs.lifecycle_lock(slug, blocking=False):
             _require_owner(slug, card, name, builder.incus.instance(name))
             duration = lifecycle.Lifecycle(builder).stop(slug, card or None)
     except bb.BoxBusy as exc:

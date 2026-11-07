@@ -188,6 +188,7 @@ def tick(engine):
     """Wywoływane po obsłużeniu kroków; odroczone sprzątanie jest ponawiane także po restarcie."""
     from ..cardflow import boxstep
     from ..cardflow.state import fold
+    from .builder import BoxBusy
     settings = boxstep.settings_of(engine)
     if not settings.enabled:
         return
@@ -234,21 +235,23 @@ def tick(engine):
             b = boxstep.builder_of(engine, settings)
             lifecycle = Lifecycle(b)
             from . import packs
-            for card in closed.get(slug, set()):
-                # Stan ostatniego kroku (także error) nie zmienia obowiązku sprzątania.
-                names = (bs.box_name(slug), bs.card_box_name(slug, card))
-                with bs.lifecycle_lock(slug):
+            with bs.lifecycle_lock(slug, blocking=False):
+                for card in closed.get(slug, set()):
+                    # Stan ostatniego kroku (także error) nie zmienia obowiązku sprzątania.
+                    names = (bs.box_name(slug), bs.card_box_name(slug, card))
                     if not any(active_steps(b, slug, name, engine) for name in names):
                         packs.cleanup(slug, card, b.incus, engine.journal)
-            lifecycle.idle(slug)
-            for inst in b.incus.list():
-                config = inst.get("config") or {}
-                card = config.get(bs.CARD_KEY)
-                if not card or config.get(bs.COPY_OF_KEY) != bs.box_name(slug):
-                    continue
-                if card in closed.get(slug, set()):
-                    lifecycle.close_card(slug, card)
-                else:
-                    lifecycle.idle(slug, card)
+                lifecycle.idle(slug)
+                for inst in b.incus.list():
+                    config = inst.get("config") or {}
+                    card = config.get(bs.CARD_KEY)
+                    if not card or config.get(bs.COPY_OF_KEY) != bs.box_name(slug):
+                        continue
+                    if card in closed.get(slug, set()):
+                        lifecycle.close_card(slug, card)
+                    else:
+                        lifecycle.idle(slug, card)
+        except BoxBusy:
+            continue  # budowa w tle nie zatrzymuje zegara kart
         except Exception as exc:
             print(f"tide-daemon: cykl życia pudełka {slug}: {exc!r}", flush=True)

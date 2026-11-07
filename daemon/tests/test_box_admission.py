@@ -50,6 +50,152 @@ class AdmissionTest(BoxCase):
     def state(self):
         return ad.snapshot(self.b.incus)
 
+    def test_unknown_later_measurement_preserves_request_and_retries(self):
+        for kind in ('start', 'build', 'base'):
+            for measurement in (2, 3):
+                for error in (OSError('procfs'), ValueError('unknown'), KeyError('MemTotal')):
+                    with self.subTest(kind=kind, measurement=measurement, error=type(error).__name__):
+                        if kind == 'start':
+                            self.b.build('plasma-tide')
+                            Lifecycle(self.b).stop('plasma-tide')
+                            run = lambda: Lifecycle(self.b).start('plasma-tide')
+                        elif kind == 'build':
+                            run = lambda: self.b.build('plasma-tide', PROFILE)
+                        else:
+                            run = BaseBuilder(self.settings, self.b.incus, self.policy).build
+                        values = [(78 * ad.GiB, 60 * ad.GiB)] * (measurement - 1) + [error]
+                        with mock.patch.object(ad, 'read_memory', side_effect=values), \
+                                mock.patch.object(self.b.incus, 'start') as start:
+                            with self.assertRaisesRegex(bb.SlotWaiting, 'pomiaru'):
+                                run()
+                            start.assert_not_called()
+                        state = self.state()
+                        self.assertIsNone(state['owner'])
+                        self.assertEqual(state['history'], [])
+                        self.assertEqual(len(state['queue']), 1)
+                        self.assertEqual(state['queue'][0]['kind'], kind)
+                        # Także automatyczne ponowienie musi zachować oczekiwanie.
+                        with mock.patch.object(ad, 'read_memory', side_effect=values):
+                            self.retry()
+                        self.assertEqual(self.state()['queue'][0]['args'], state['queue'][0]['args'])
+                        self.assertEqual(self.state()['queue'][0]['queued'], state['queue'][0]['queued'])
+                        self.assertEqual(self.state()['history'], [])
+                        with mock.patch.object(BaseBuilder, '_provision',
+                                               side_effect=lambda name, *args: self.b.incus.stop(name)):
+                            self.retry()
+                        self.assertEqual(self.state()['queue'], [])
+                        self.assertEqual(self.state()['history'], [])
+                        if kind != 'base':
+                            self.assertTrue(self.b.status('plasma-tide').running)
+                            Lifecycle(self.b).stop('plasma-tide')
+
+    def retry(self, builder=None):
+        self.finish_retry(ad.tick(builder or self.b))
+
+    def finish_retry(self, worker=None):
+        worker = worker or ad._worker
+        if worker is not None:
+            worker.join(15)
+            self.assertFalse(worker.is_alive(), 'klient kolejki nie zakończył próby')
+
+    def test_unknown_later_measurement_preserves_fifo_position(self):
+        with mock.patch.object(ad, 'read_memory', return_value=(78 * ad.GiB, 27 * ad.GiB)):
+            for slug in ('plasma-tide', 'second'):
+                with self.assertRaises(bb.SlotWaiting):
+                    self.b.build(slug, PROFILE)
+        original = self.state()['queue']
+        with mock.patch.object(ad, 'read_memory', side_effect=[
+                (78 * ad.GiB, 60 * ad.GiB), ValueError('unknown')]):
+            self.retry()
+        queued = self.state()['queue']
+        self.assertEqual([q['id'] for q in queued], [q['id'] for q in original])
+        self.assertEqual(queued[0]['queued'], original[0]['queued'])
+        self.assertEqual(queued[0]['args'], original[0]['args'])
+        self.assertIn('pomiaru', queued[0]['reason'])
+
+    def test_queued_project_and_base_build_leave_monitor_responsive(self):
+        from PyQt6.QtCore import QCoreApplication
+        from tide_daemon.cardflow_monitor import CardFlowMonitor
+        from tide_daemon.cardflow import envconsent, boxcontrol
+        from tide_daemon.cardflow.engine import FlowError
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        for kind in ('build', 'base'):
+            with self.subTest(kind=kind):
+                entered, release = threading.Event(), threading.Event()
+                status_done, stop_done = threading.Event(), threading.Event()
+                results = {}
+
+                def provision(*args):
+                    entered.set()
+                    if not release.wait(10):
+                        raise RuntimeError('timeout atrapy budowy')
+                    if kind == 'base':
+                        self.b.incus.stop(self.settings.base_image)
+                    else:
+                        raise bb.BuildError('koniec kontrolowanej budowy')
+
+                engine = SimpleNamespace(journal=Journal(bp.board_dir()), procs={},
+                    box_settings_source=lambda: dataclasses.replace(self.settings, enabled=True),
+                    box_builder=lambda: self.b, take_notices=lambda: [],
+                    store=SimpleNamespace(load=lambda: SimpleNamespace(
+                        projects={'plasma-tide': {}, 'second': {}}, cards={})))
+                engine.tick = lambda: lifecycle.tick(engine)
+
+                def status(*args):
+                    try:
+                        results['status'] = envconsent.status(engine, *args)
+                    finally:
+                        status_done.set()
+
+                def stop(*args):
+                    try:
+                        boxcontrol.stop(engine, *args)
+                    except FlowError as exc:
+                        results['stop'] = exc.code
+                    finally:
+                        stop_done.set()
+
+                engine.box_status, engine.stop_box = status, stop
+                monitor = CardFlowMonitor(engine)
+                run = (lambda: self.b.build('plasma-tide', PROFILE)) if kind == 'build' else \
+                    BaseBuilder(self.settings, self.b.incus, self.policy).build
+                with mock.patch.object(ad, 'read_memory', return_value=(78 * ad.GiB, 27 * ad.GiB)):
+                    with self.assertRaises(bb.SlotWaiting):
+                        run()
+                    with self.assertRaises(bb.SlotWaiting):
+                        self.b.build('second', PROFILE)
+                target = self.b if kind == 'build' else BaseBuilder
+                worker = None
+                with mock.patch.object(target, '_provision', side_effect=provision):
+                    try:
+                        monitor.tick()
+                        self.assertTrue(entered.wait(5), 'budowa nie ruszyła')
+                        # Kilka ticków nie może zlecić tej samej budowy drugi raz.
+                        worker = ad.tick(self.b)
+                        self.assertIs(ad.tick(self.b), worker)
+                        monitor.box_status('plasma-tide', lambda result: None)
+                        self.assertTrue(status_done.wait(2), 'BoxStatus czeka na budowę')
+                        state = results['status']['admission']
+                        self.assertEqual(state['owner']['kind'], kind)
+                        self.assertEqual(state['queue'][0]['name'], 'second')
+                        monitor.stop_box('plasma-tide', '', lambda result: None)
+                        self.assertTrue(stop_done.wait(2), 'StopBox czeka na budowę')
+                        self.assertEqual(results['stop'], 'box-busy' if kind == 'build' else 'unknown-box-owner')
+                        self.assertEqual(self.state()['owner']['kind'], kind)
+                        self.assertIsNone(self.b.incus.instance('second'))
+                    finally:
+                        release.set()
+                        if monitor._pool is not None:
+                            monitor._pool.shutdown(wait=True)
+                            monitor._pool = None
+                        self.finish_retry(worker)
+                        app.processEvents()
+                for req in self.state()['queue']:
+                    ad.cancel(req['id'])
+                if kind == 'build':
+                    Lifecycle(self.b).stop('plasma-tide')
+
     def test_exact_limits_below_and_above_44_gib_ignore_profile(self):
         for total in (21, 32, 44, 78):
             with self.subTest(total=total), mock.patch.object(ad, 'read_memory', return_value=(total * ad.GiB, total * ad.GiB)):
@@ -85,7 +231,7 @@ class AdmissionTest(BoxCase):
         state = self.state()
         self.assertIsNone(state['owner'])
         self.assertIn('pomiaru', state['queue'][0]['reason'])
-        ad.tick(self.b)
+        self.retry()
         self.assertEqual(self.state()['owner']['name'], 'plasma-tide')
 
     def test_two_builds_queue_survives_new_builder_and_cancel_preserves_owner(self):
@@ -95,7 +241,7 @@ class AdmissionTest(BoxCase):
         self.assertEqual(len(self.state()['queue']), 1)
         # Nowy klient/usługa nie dziedziczą obiektów ani „procesu budowy”.
         restarted = self.builder()
-        ad.tick(restarted)
+        self.retry(restarted)
         self.assertIsNone(restarted.incus.instance('second'))
         identifier = self.state()['queue'][0]['id']
         self.assertTrue(ad.cancel(identifier))
@@ -110,14 +256,14 @@ class AdmissionTest(BoxCase):
         with mock.patch.object(self.b.incus, 'stop'):
             with self.assertRaisesRegex(bb.BuildError, 'potwierdzenia zatrzymania'):
                 Lifecycle(self.b).stop('plasma-tide')
-        ad.tick(self.builder())
+        self.retry(self.builder())
         self.assertIsNone(self.b.incus.instance('second'))
         Lifecycle(self.b).stop('plasma-tide')
         with mock.patch.object(ad, 'read_memory', return_value=(78 * ad.GiB, 27 * ad.GiB)):
-            ad.tick(self.b)
+            self.retry()
         self.assertIsNone(self.state()['owner'])
         self.assertIsNone(self.b.incus.instance('second'))
-        ad.tick(self.b)
+        self.retry()
         self.assertEqual(self.state()['owner']['name'], 'second')
 
     def test_memory_can_drop_between_reservation_and_actual_start(self):
@@ -184,7 +330,7 @@ class AdmissionTest(BoxCase):
         with self.assertRaises(bb.SlotWaiting):
             with ad.operation(self.b.incus, req):
                 self.fail('druga budowa została dopuszczona')
-        ad.tick(self.builder())
+        self.retry(self.builder())
         self.assertIsNone(self.b.incus.instance('second'))
 
     def test_unknown_inventory_does_not_erase_owner(self):
@@ -212,20 +358,25 @@ class AdmissionTest(BoxCase):
                 self.b.build('plasma-tide')
             with mock.patch.object(lifecycle.time, 'monotonic', return_value=100) as clock, mock.patch.object(ad, 'tick', wraps=ad.tick) as attempt:
                 lifecycle.tick(engine)
+                self.finish_retry()
                 self.assertEqual(attempt.call_count, 1)
                 clock.return_value = 104.9
                 lifecycle.tick(engine)
+                self.finish_retry()
                 self.assertEqual(attempt.call_count, 1)
                 clock.return_value = 105
                 lifecycle.tick(engine)
+                self.finish_retry()
                 self.assertEqual(attempt.call_count, 2)
         lifecycle.tick(engine)
+        self.finish_retry()
         self.assertEqual(self.state()['owner']['name'], 'plasma-tide')
         with self.assertRaises(bb.SlotWaiting):
             self.b.build('second', PROFILE)
         Lifecycle(self.b).stop('plasma-tide')
         engine._box_admission_next = float('inf')
         lifecycle.tick(engine)  # sygnał zwolnienia nie czeka na upływ następnych 5 s
+        self.finish_retry()
         self.assertEqual(self.state()['owner']['name'], 'second')
 
     def test_unknown_incus_state_and_inflight_server_operation_block_recovery(self):

@@ -77,11 +77,12 @@ _held = threading.local()
 
 
 @contextmanager
-def lifecycle_lock(slug):
+def lifecycle_lock(slug, *, blocking=True):
     """Wspólna blokada projektu dla CLI, demona i rezerwacji kroku; zagnieżdżalna w wątku.
 
     Osobny plik od blokady montowań i dziennika: kolejność to cykl życia → montowania/dziennik.
     Blokada projektu obejmuje też kopiowanie migawki oraz destroy wszystkich kopii.
+    blocking=False zwraca BoxBusy zamiast zatrzymywać obsługę kart na czas budowy.
     """
     path = journal_path(slug) + ".lifecycle.lock"
     held = getattr(_held, "paths", set())
@@ -90,7 +91,11 @@ def lifecycle_lock(slug):
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            from .builder import BoxBusy
+            raise BoxBusy(f'{slug}: trwa budowa lub operacja pudełka') from None
         _held.paths = held | {path}
         try:
             yield
