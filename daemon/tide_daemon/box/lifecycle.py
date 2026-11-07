@@ -50,10 +50,8 @@ def active_steps(builder, slug, name, engine=None):
         if trialhold.public_processes(journal.root):
             return ["niepełna historia pudełek lub nierozstrzygnięta publiczna próba"]
     for st in states:
-        if trialhold.preserves_project(st):
-            project = (st.started or {}).get("project")
-            if not project or project == slug:
-                return ["nierozstrzygnięty proces chronionej próby projektu"]
+        if trialhold.preserves_project(st, slug):
+            return ["nierozstrzygnięty proces chronionej próby projektu"]
     busy = set(bs.running_steps(slug, name))
     running = instance is not None and str(instance.get("status", "")).lower() == "running"
     for st in states:
@@ -87,6 +85,7 @@ class Lifecycle:
         from .builder import BuildError
         b = self.builder
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
+        b.require_idle(slug, name)
         st = b.status(slug, card)
         if not st.usable:
             raise BuildError(f"pudełko {name} nie jest gotowe do startu: {st.error or st.state}")
@@ -197,11 +196,7 @@ def tick(engine):
     closed = {}
     frozen = set()
     for card, st in states.items():
-        if trialhold.preserves_project(st):
-            project = (st.started or {}).get("project")
-            if not project:
-                return  # nie można bezpiecznie zawęzić ochrony do jednego projektu
-            frozen.add(project)
+        frozen.update(slug for slug in slugs if trialhold.preserves_project(st, slug))
         if st.closed and st.started:
             closed.setdefault(st.started.get("project"), set()).add(card)
     for slug in slugs:

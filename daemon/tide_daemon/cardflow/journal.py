@@ -19,13 +19,12 @@ import stat
 import threading
 from datetime import datetime, timezone
 
+from .processidentity import start_error
+
 SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
-CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
-                             "plan-amend", "plan-revise", "close", "interactive"})
-TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
 
 
 def _validate_process_identity(event):
@@ -35,22 +34,12 @@ def _validate_process_identity(event):
     Brak ticketu jest legalny wyłącznie dla rozpoznanego rodzaju kroku karty.
     Nie wymagamy jednostki: jej brak ma pozostać nierozstrzygniętym procesem.
     """
-    if event["type"] == "step.started":
-        name = "step"
-    elif event["type"] == "intent" and event.get("action") == "step-start":
-        name = "key"
-    else:
+    if not (event["type"] == "step.started"
+            or (event["type"] == "intent" and event.get("action") == "step-start")):
         return
-    if not isinstance(event.get(name), str) or not event[name].strip():
-        raise ValueError("niepełna tożsamość procesu w dzienniku karty")
-    for field in ("ticket", "branch"):
-        if field in event and not isinstance(event[field], str):
-            raise ValueError("nieznana tożsamość procesu w dzienniku karty")
-    kind = event.get("kind")
-    if "kind" in event and (not isinstance(kind, str) or kind not in CARD_STEP_KINDS | TICKET_STEP_KINDS):
-        raise ValueError("nieznany rodzaj kroku w dzienniku karty")
-    if not (event.get("ticket") or "").strip() and kind not in CARD_STEP_KINDS:
-        raise ValueError("brak ticketu procesu w dzienniku karty")
+    error = start_error(event)
+    if error:
+        raise ValueError(error)
 
 
 def mirror_root(board_root: str, env=None) -> str:
