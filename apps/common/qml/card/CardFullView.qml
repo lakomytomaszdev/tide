@@ -94,6 +94,7 @@ Rectangle {
     readonly property alias form: form
 
     signal backRequested()
+    signal navigateRequested(string viewId, string item)
     signal answered(string decisionId, string method, var params)
     signal previewRequested(string decisionId, string method, var params)
     signal decisionsRequested()
@@ -513,6 +514,13 @@ Rectangle {
                     variant: "outline"
                     Accessible.name: "Edytuj opis karty w szufladzie"
                     onClicked: view.descriptionRequested()
+                }
+                Tide.TextButton {
+                    objectName: "fullSourceIssue"
+                    visible: !!view.card && !!view.card.sourceIssue
+                    text: view.card ? "Raport i dowody " + (view.card.sourceIssue || "") + " · wersja " + (view.card.sourceIssueVersion || 0) : ""
+                    variant: "outline"
+                    onClicked: view.navigateRequested("issues", view.card.sourceIssue)
                 }
                 Tide.TextButton {
                     id: menuButton

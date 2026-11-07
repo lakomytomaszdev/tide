@@ -21,6 +21,7 @@ istniejących planów, w tym K-37, K-38 i K-55. Nie przepisujemy tych planów.
 make test-cardflow           # test_cardflow*.py oraz testy basesuggestions i hostingcli
 make test-daemon             # wszystkie testy usługi
 make test-board              # okno Tablicy (apps/board/tests)
+make test-issues             # magazyn spraw i proces CLI na prywatnym D-Bus
 make test-changed BASE=<SHA-startu-ticketu>
 make test                   # raz przy domknięciu karty, na gałęzi karty
 make test JOBS=4             # ograniczenie liczby jednoczesnych procesów

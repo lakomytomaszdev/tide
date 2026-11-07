@@ -26,6 +26,8 @@ Rectangle {
 
     property var snapshot: null
     property string cardId: ""
+    property string sourceIssue: ""
+    readonly property bool issueMode: sourceIssue !== ""
     property bool fromMove: false
     property bool busy: false
     property string error: ""
@@ -389,7 +391,7 @@ Rectangle {
                             spacing: 10
                             Text {
                                 objectName: "launchCardId"
-                                text: dialog.cardId
+                                text: dialog.sourceIssue || dialog.cardId
                                 textFormat: Text.PlainText
                                 color: Tide.Tokens.sky
                                 font.family: Tide.Theme.monoFamily
@@ -491,6 +493,7 @@ Rectangle {
                                 QQC2.ScrollBar.vertical: QQC2.ScrollBar {}
                                 TextEdit {
                                     id: taskEdit
+                                    readOnly: dialog.issueMode
                                     objectName: "launchTask"
                                     width: taskFlick.width
                                     wrapMode: TextEdit.Wrap
@@ -824,12 +827,12 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: 10
                         Repeater {
-                            model: Logic.LAUNCH_ENTRIES
+                            model: dialog.issueMode ? Logic.LAUNCH_ENTRIES.filter(e => e.id !== "spec") : Logic.LAUNCH_ENTRIES
                             ChoiceCard {
                                 required property var modelData
                                 objectName: "launchEntry-" + modelData.id
                                 choiceId: modelData.id
-                                choices: Logic.LAUNCH_ENTRIES.map(e => e.id)
+                                choices: Logic.LAUNCH_ENTRIES.filter(e => !dialog.issueMode || e.id !== "spec").map(e => e.id)
                                 selected: dialog.entry
                                 title: modelData.title
                                 desc: modelData.desc
@@ -1067,7 +1070,7 @@ Rectangle {
                 BaseSuggestions {
                     id: baseSuggestions
                     Layout.fillWidth: true
-                    active: basePicker.active && !basePicker.pinned
+                    active: basePicker.active && !basePicker.pinned && !dialog.issueMode
                     cardId: dialog.cardId
                     project: dialog.workProject ? dialog.workProject.slug : ""
                     repo: dialog.workProject ? dialog.workProject.repo : ""
@@ -1342,7 +1345,7 @@ Rectangle {
                         enabled: dialog.canStart
                         strong: true
                         horizontalPadding: 16
-                        text: dialog.busy ? "Uruchamiam…" : "Uruchom agenta  Ctrl+↵"
+                        text: dialog.busy ? "Uruchamiam…" : dialog.issueMode ? "Przyjmij i zleć  Ctrl+↵" : "Uruchom agenta  Ctrl+↵"
                         fill: Tide.Tokens.accent
                         textColor: Tide.Tokens.backgroundDesktop
                         toolTip: "Uruchom agenta (Ctrl+Enter)"

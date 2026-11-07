@@ -10,6 +10,13 @@
       "default": true
     },
     {
+      "id": "issues",
+      "title": "Sprawy",
+      "icon": "issues",
+      "module": "apps/issues",
+      "qml": "IssuesView.qml"
+    },
+    {
       "id": "sessions",
       "title": "Sesje",
       "icon": "sessions",

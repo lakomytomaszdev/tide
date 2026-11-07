@@ -20,12 +20,15 @@ Wszystkie ścieżki zapisu powstają z ID karty i slugów po walidacji, a dodatk
 że po rozwinięciu dowiązań leżą w katalogu tablicy.
 """
 import os
+import contextlib
+import fcntl
 import json
 import secrets
 import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from threading import RLock
 
 from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
@@ -119,6 +122,8 @@ class BoardStore:
         self.repo = BoardRepo(self.root, git)
         self.git = self.repo.git
         self.clock = clock
+        self._transaction_lock = RLock()
+        self._transaction_depth = 0
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
 
@@ -127,7 +132,30 @@ class BoardStore:
     def exists(self) -> bool:
         return is_board_repo(self.root)
 
+    @contextlib.contextmanager
+    def transaction(self):
+        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
+        with self._transaction_lock:
+            if self._transaction_depth or not self.repo.initialized():
+                yield
+                return
+            fd = os.open(os.path.join(self.repo.git_dir, "tide-board.lock"),
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                self._transaction_depth += 1
+                from ..issue_acceptance import recover
+                recover(self)
+                yield
+            finally:
+                self._transaction_depth = 0
+                os.close(fd)
+
     def load(self) -> Board:
+        with self.transaction():
+            return self._load()
+
+    def _load(self) -> Board:
         board = Board()
         if not self.exists():
             for name, color, description in SEED_TAGS:  # podgląd tagów, które powstaną z tablicą
@@ -523,11 +551,16 @@ class BoardStore:
         zapisaliśmy. W trakcie revert/merge/rebase z konfliktami — nic."""
         if not self.exists():
             return False
-        return self.repo.sync(message)
+        with self.transaction():
+            return self.repo.sync(message)
 
     # --- plany zapisu --------------------------------------------------------------------------
 
     def _execute(self, planner) -> dict:
+        with self.transaction():
+            return self._execute_locked(planner)
+
+    def _execute_locked(self, planner) -> dict:
         dry = planner(self.load())            # błąd referencji tu — zanim cokolwiek trafi na dysk
         if not dry.commits:
             return {**dry.result, "commitError": ""}
@@ -1144,6 +1177,9 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "extraProjects": [{"slug": p.slug, "name": p.name, "repo": p.repo, "repoMissing": p.repo_missing}
                           for p in extra],
         "description": card.description,
+        "sourceIssue": card.source_issue, "sourceIssueVersion": card.source_issue_version,
+        "sourceIssueHash": card.source_issue_hash, "sourceIssueReport": card.source_issue_report,
+        "sourceIssueManifest": card.source_issue_manifest,
         "derived": derived, "path": card.path,
     }
 

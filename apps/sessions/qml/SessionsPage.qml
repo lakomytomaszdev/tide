@@ -12,6 +12,7 @@ import "sessions.js" as Logic
 
 Rectangle {
     id: page
+    signal navigateRequested(string viewId, string item)
 
     property var coordinators: []
     property var board: null
@@ -640,6 +641,7 @@ Rectangle {
 
     // --- wspólny komponent karty (apps/common/qml/card): ten sam co w Tablicy, bez kopii ----------------
     CardUi.CardFullView {
+        onNavigateRequested: (viewId, item) => page.navigateRequested(viewId, item)
         id: cardFullView
         objectName: "cardFullView"
         anchors.fill: parent

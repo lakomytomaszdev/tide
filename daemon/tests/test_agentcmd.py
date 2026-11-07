@@ -181,6 +181,15 @@ class BackgroundClaudeTest(BackgroundBase):
                            "allowWrite": [out]},
             "network": {"allowedDomains": []}})
 
+    def test_read_only_directories_are_denied_for_shell_writes_too(self):
+        folder = os.path.join(self.step_dir, "in", "evidence")
+        cmd = agentcmd.background(self.step(read_dirs=(folder,)))
+        filesystem = self.settings(cmd)["sandbox"]["filesystem"]
+        self.assertIn(folder, filesystem["allowRead"])
+        self.assertIn(folder, filesystem["denyWrite"])
+        self.assertNotIn(folder, filesystem["allowWrite"])
+        self.assertIn(f"Edit(/{folder}/**)", cmd.argv)
+
     def test_step_files_exclude_sandbox_dummies_and_set_the_author(self):
         cmd = agentcmd.background(self.step(git_name="Krok", git_email="krok@tide.invalid"))
         inp = os.path.join(self.step_dir, "in")

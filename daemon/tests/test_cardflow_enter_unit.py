@@ -220,7 +220,8 @@ class EnterStepTest(unittest.TestCase):
         self.engine = FlowEngine(store, journal=Journal(store.root, mirror=os.path.join(self.root, "mirror")),
                                  terminal=self.terminal, task_files=TaskFiles(os.path.join(self.root, "tasks")))
         self.step_id = "K-1-PT-1-1"
-        self.engine.journal.append("K-1", "card.started", executor="Sonnet", program="claude", repo=self.root)
+        self.engine.journal.append("K-1", "card.started", executor="Sonnet", program="claude", repo=self.root,
+                                   sourceEvidence=None)
         self.engine.journal.append("K-1", "step.started", step=self.step_id, ticket="PT-1", kind="ticket",
                                    executor="Sonnet", program="claude", session=self.SID, worktree=self.worktree,
                                    stepDir=self.step_dir, branch="ticket/pt-1", repo=self.root)

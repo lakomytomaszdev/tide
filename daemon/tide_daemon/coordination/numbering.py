@@ -294,6 +294,6 @@ def _reserved(groups, reservations) -> list[dict]:
                 continue
             text = (f"{key} („{next(iter(titles.values())) or '(bez tytułu)'}”, {group.name}) jest zarezerwowany "
                     f"dla „{shown[key]}” — jeśli to inny ticket, weź nowy numer z "
-                    f"make -C ~/DevWorkspace/plasma-tide next-id; jeśli ten sam (inny język albo słowa), nic nie rób.")
+                    f"tide next-id; jeśli ten sam (inny język albo słowa), nic nie rób.")
             out.append(_warning("reserved-elsewhere", SOFT, text, [group.name], ticket=key, prefix=key.split("-")[0]))
     return out

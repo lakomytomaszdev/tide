@@ -24,7 +24,10 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "daemon"))
+DAEMON = os.path.join(REPO, "daemon")
+if not os.path.isdir(os.path.join(DAEMON, "tide_daemon")):
+    DAEMON = os.path.join(os.path.dirname(REPO), "daemon")
+sys.path.insert(0, DAEMON)
 
 from tide_daemon.coordination import numbering, repoplans  # noqa: E402
 from tide_daemon.coordination.repoplans import RepoPlans  # noqa: E402

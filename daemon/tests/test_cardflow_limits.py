@@ -234,6 +234,20 @@ class LimitProjectionTest(unittest.TestCase):
 
 
 class TransferFlowTest(FlowInProcess):
+    def start_until_limit(self, card, metric):
+        poll = self.flow.engine._poll
+
+        def exhausted(card_id, step):
+            # Start dopuszcza 25%; pierwszy odczyt logu musi już widzieć wyczerpany limit.
+            # Odpowiedź StartCard może dotrzeć do testu dopiero po tym odczycie.
+            metric["remaining"] = 0
+            return poll(card_id, step)
+
+        with mock.patch.object(self.flow.engine, "_poll", side_effect=exhausted):
+            self.assertTrue(self.start(card)["ok"])
+            self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
+                                            self.of(card, "step.finished")), timeout=30), self.events(card))
+
     def resolve(self, card, request):
         replies = []
         self.board.resolve_card_step(card, json.dumps(request), replies.append)
@@ -301,10 +315,7 @@ class TransferFlowTest(FlowInProcess):
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
-        self.assertTrue(self.start(card)["ok"])
-        metric["remaining"] = 0
-        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
-                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        self.start_until_limit(card, metric)
         first = self.of(card, "step.started")[0]
         self.assertEqual(len(self.of(card, "step.started")), 1)
         answer = self.resolve(card, {"choice": "wait-limit"})
@@ -324,10 +335,7 @@ class TransferFlowTest(FlowInProcess):
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
-        self.assertTrue(self.start(card)["ok"])
-        metric["remaining"] = 0
-        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
-                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        self.start_until_limit(card, metric)
         first = self.of(card, "step.started")[0]
         self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
         metric.update(remaining=40, readTs=now + 1001)
