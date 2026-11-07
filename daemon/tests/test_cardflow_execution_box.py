@@ -829,6 +829,10 @@ class BoxStepInProcessTest(BoxFlow):
             self.assertTrue(self.start(card_id)["ok"])
             step = self.started_box(card_id)
         self.assertEqual(begin.call_args.kwargs["branch"], step["branch"])
+        with open(os.path.join(step["stepDir"], "in", "settings.json")) as fh:
+            filesystem = json.load(fh)["sandbox"]["filesystem"]
+        # Brak załączników nie tworzy fikcyjnego katalogu odczytu do zamontowania.
+        self.assertNotIn(os.path.join(step["stepDir"], "in", "images"), filesystem.get("denyWrite", []))
         finished = self.finished(card_id)
         with open(os.path.join(step["stepDir"], "in", "prompt.txt")) as fh:
             prompt = fh.read()
@@ -890,7 +894,7 @@ class BoxStepInProcessTest(BoxFlow):
 
         # Artefakty istnieją przed startem autora — test nie ściga się z monitorem.
         # Sprawdzamy przekazanie i prompty; kontrolę czystości przez bwrap testuje gitops.
-        def clean_tip(repo, branch, path):
+        def clean_tip(repo, branch, path, *, untracked=True):
             return self.engine.git.sha(repo, f"refs/heads/{branch}")
 
         with mock.patch.object(boxstep, "configure_background", side_effect=prepare), \
@@ -1084,6 +1088,7 @@ class BoxStepInProcessTest(BoxFlow):
         self.assertEqual(self.incus_calls("exec"), [])
 
     def test_outside_limit_does_not_hold_box_steps_and_two_steps_run_in_parallel(self):
+        from tide_daemon.cardflow.engine import OUTSIDE_PER_PROJECT
         from .test_cardflow_plan_integration import PlanFlowTest
         from .test_cardflow_gitops import LocalStepGit
         # Ten test dotyczy współbieżności runnerów. Osobne testy gitops sprawdzają bwrap;
@@ -1104,7 +1109,7 @@ class BoxStepInProcessTest(BoxFlow):
                 fh.write(f"# Ticket {number}\nATRAPA: powoli 4\nATRAPA-PLIK: {number}\n- [ ] Wynik.\n")
         self.assertTrue(PlanFlowTest.submit(self, card, path)["ok"])
         # Polecenie poza piaskownicą trwa w tym projekcie (OUTSIDE_PER_PROJECT wyczerpane).
-        self.engine._outside_active = {"zewn": (card, "")}
+        self.engine._outside_active = {f"zewn-{i}": (card, "") for i in range(OUTSIDE_PER_PROJECT)}
         self.assertTrue(self.engine._outside_busy(card))
         self.assertTrue(PlanFlowTest.approve(self, card)["ok"])
         # D7 dopuszcza gałęzie równoległych ticketów tej samej karty.

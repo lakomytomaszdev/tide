@@ -81,6 +81,14 @@ class DurableMergeFixture:
         self.assertTrue(wait_until(lambda: box, timeout=20), "MergeCardToMain bez odpowiedzi")
         return json.loads(box[0])
 
+    def close_after_rework(self, summary):
+        """Nowe domknięcie ma własny start; samo spóźnione card.closed sprzed poprawki jest ignorowane."""
+        journal = self.flow.engine.journal
+        step = "close-rework-" + str(len(journal.read(self.card_id)))
+        journal.append(self.card_id, "step.started", step=step, kind="close")
+        journal.append(self.card_id, "step.finished", step=step, result="done")
+        journal.append(self.card_id, "card.closed", step=step, summary=summary)
+
     def crash_after(self, kind, *, stage=None, action=None):
         journal = self.flow.engine.journal
         original = journal.append
@@ -444,7 +452,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(self.sha(self.target), self.before)
         self.assertEqual(git(self.repo, "write-tree").strip(), abandoned["resultTree"])
         self.assertEqual(Path(self.repo, "result.txt").read_text(), "wynik karty\n")
-        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Po poprawkach")
+        self.close_after_rework("Po poprawkach")
         self.crash_after("intent", action="main-merge")
         self.restart_stopped()
         self.assertTrue(self.merge()["ok"])
@@ -467,7 +475,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
         self.write(self.source_tree, "later.txt", "poprawka planu\n")
         self.commit(self.source_tree, "plan revision")
         journal.append(self.card_id, "plan.revision-discarded")
-        journal.append(self.card_id, "card.closed", summary="Nowe domknięcie")
+        self.close_after_rework("Nowe domknięcie")
         self.restart_stopped()
         self.assertTrue(self.merge()["ok"])
         events = self.flow.engine.journal.read(self.card_id)
@@ -478,7 +486,7 @@ class DurableMergeTest(DurableMergeFixture, FlowInProcess):
     def test_abandoned_materialization_never_adopts_foreign_staged_work(self):
         self.crash_after("main-merge.checkpoint", stage="materialized")
         self.flow.engine.moved(self.card_id, "todo", "waiting", "revision")
-        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Nowe domknięcie")
+        self.close_after_rework("Nowe domknięcie")
         self.write(self.repo, "local.txt", "obca praca staged\n")
         git(self.repo, "add", "local.txt")
         index = git(self.repo, "write-tree")

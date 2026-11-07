@@ -24,7 +24,8 @@ FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
 CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
-                             "plan-amend", "plan-revise", "close", "interactive"})
+                             "plan-amend", "plan-revise", "close", "interactive",
+                             "caretaker", "caretaker-chat"})
 TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
 
 

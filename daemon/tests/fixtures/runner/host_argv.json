@@ -9,7 +9,8 @@
   "files": {
    "<ROOT>/home/proj-wt/pt-1.step/in/gitconfig": "[user]\n\tname = Krok\n\temail = krok@tide.invalid\n[core]\n\texcludesFile = <ROOT>/home/proj-wt/pt-1.step/in/ignore\n",
    "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n",
-   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": true,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n"
+   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": true,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n",
+   "<ROOT>/home/proj-wt/pt-1.step/in/skills.json": "[]\n"
   },
   "gitDir": "<ROOT>/home/proj/.git/worktrees/pt-1",
   "popen": {
@@ -74,7 +75,7 @@
     "XDG_RUNTIME_DIR": "/run/user/1000"
    },
    "newSession": true,
-   "stdin": "Zrób ticket"
+   "stdin": "Zrób ticket\n\nSkille użytkownika dostępne w tym kroku (nazwa → SKILL.md):\nBrak dostępnych skilli użytkownika.\nGdy polecenie wymienia skilla, przeczytaj jego pełny SKILL.md z powyższej ścieżki i stosuj instrukcje oraz potrzebne zasoby względem oryginalnego katalogu. W Codexie można użyć natywnego skilla albo odczytać ten plik bezpośrednio. Reguły kroku mają pierwszeństwo przed instrukcjami skilla (w tym publikacją, pytaniami i uruchamianiem poleceń). Nie wczytuj ustawień, hooków ani MCP użytkownika. Jeżeli wymagany skill nie jest dostępny także w katalogu programu/projektu, nie zastępuj go domysłem: zakończ result.json z result=error i nazwą brakującego skilla.\n"
   },
   "unit": "tide-step-bgolden01"
  },
@@ -88,7 +89,8 @@
   "files": {
    "<ROOT>/home/proj-wt/pt-1.step/in/gitconfig": "[user]\n\tname = Krok\n\temail = krok@tide.invalid\n[core]\n\texcludesFile = <ROOT>/home/proj-wt/pt-1.step/in/ignore\n",
    "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n",
-   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": true,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\",\n        \"<ROOT>/token\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  },\n  \"apiKeyHelper\": \"cat -- <ROOT>/token\"\n}\n"
+   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": true,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\",\n        \"<ROOT>/token\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  },\n  \"apiKeyHelper\": \"cat -- <ROOT>/token\"\n}\n",
+   "<ROOT>/home/proj-wt/pt-1.step/in/skills.json": "[]\n"
   },
   "gitDir": "<ROOT>/home/proj/.git/worktrees/pt-1",
   "popen": {
@@ -164,7 +166,7 @@
     "XDG_RUNTIME_DIR": "/run/user/1000"
    },
    "newSession": true,
-   "stdin": "Zrób ticket"
+   "stdin": "Zrób ticket\n\nSkille użytkownika dostępne w tym kroku (nazwa → SKILL.md):\nBrak dostępnych skilli użytkownika.\nGdy polecenie wymienia skilla, przeczytaj jego pełny SKILL.md z powyższej ścieżki i stosuj instrukcje oraz potrzebne zasoby względem oryginalnego katalogu. W Codexie można użyć natywnego skilla albo odczytać ten plik bezpośrednio. Reguły kroku mają pierwszeństwo przed instrukcjami skilla (w tym publikacją, pytaniami i uruchamianiem poleceń). Nie wczytuj ustawień, hooków ani MCP użytkownika. Jeżeli wymagany skill nie jest dostępny także w katalogu programu/projektu, nie zastępuj go domysłem: zakończ result.json z result=error i nazwą brakującego skilla.\n"
   },
   "unit": "tide-step-bgolden01"
  },
@@ -178,7 +180,8 @@
   "files": {
    "<ROOT>/home/proj-wt/pt-1.step/in/gitconfig": "[user]\n\tname = Krok\n\temail = krok@tide.invalid\n[core]\n\texcludesFile = <ROOT>/home/proj-wt/pt-1.step/in/ignore\n",
    "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n",
-   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": false,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n"
+   "<ROOT>/home/proj-wt/pt-1.step/in/settings.json": "{\n  \"sandbox\": {\n    \"enabled\": true,\n    \"failIfUnavailable\": true,\n    \"allowUnsandboxedCommands\": false,\n    \"autoAllowBashIfSandboxed\": false,\n    \"filesystem\": {\n      \"denyRead\": [\n        \"~\"\n      ],\n      \"allowRead\": [\n        \"<ROOT>/home/proj-wt/pt-1\",\n        \"<ROOT>/home/proj/.git\",\n        \"<ROOT>/home/proj-wt/pt-1.step/in\",\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ],\n      \"allowWrite\": [\n        \"<ROOT>/home/proj-wt/pt-1.step/out\"\n      ]\n    },\n    \"network\": {\n      \"allowedDomains\": []\n    }\n  },\n  \"includeCoAuthoredBy\": false,\n  \"attribution\": {\n    \"commit\": \"\",\n    \"pr\": \"\"\n  }\n}\n",
+   "<ROOT>/home/proj-wt/pt-1.step/in/skills.json": "[]\n"
   },
   "gitDir": "<ROOT>/home/proj/.git/worktrees/pt-1",
   "popen": {
@@ -250,7 +253,7 @@
     "XDG_RUNTIME_DIR": "/run/user/1000"
    },
    "newSession": true,
-   "stdin": "Zrób ticket"
+   "stdin": "Zrób ticket\n\nSkille użytkownika dostępne w tym kroku (nazwa → SKILL.md):\nBrak dostępnych skilli użytkownika.\nGdy polecenie wymienia skilla, przeczytaj jego pełny SKILL.md z powyższej ścieżki i stosuj instrukcje oraz potrzebne zasoby względem oryginalnego katalogu. W Codexie można użyć natywnego skilla albo odczytać ten plik bezpośrednio. Reguły kroku mają pierwszeństwo przed instrukcjami skilla (w tym publikacją, pytaniami i uruchamianiem poleceń). Nie wczytuj ustawień, hooków ani MCP użytkownika. Jeżeli wymagany skill nie jest dostępny także w katalogu programu/projektu, nie zastępuj go domysłem: zakończ result.json z result=error i nazwą brakującego skilla.\n"
   },
   "unit": "tide-step-bgolden01"
  },
@@ -262,7 +265,8 @@
   ],
   "files": {
    "<ROOT>/home/proj-wt/pt-1.step/in/gitconfig": "[user]\n\tname = Krok\n\temail = krok@tide.invalid\n[core]\n\texcludesFile = <ROOT>/home/proj-wt/pt-1.step/in/ignore\n",
-   "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n"
+   "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n",
+   "<ROOT>/home/proj-wt/pt-1.step/in/skills.json": "[]\n"
   },
   "gitDir": "<ROOT>/home/proj/.git/worktrees/pt-1",
   "popen": {
@@ -327,7 +331,7 @@
     "XDG_RUNTIME_DIR": "/run/user/1000"
    },
    "newSession": true,
-   "stdin": "Zrób ticket"
+   "stdin": "Zrób ticket\n\nSkille użytkownika dostępne w tym kroku (nazwa → SKILL.md):\nBrak dostępnych skilli użytkownika.\nGdy polecenie wymienia skilla, przeczytaj jego pełny SKILL.md z powyższej ścieżki i stosuj instrukcje oraz potrzebne zasoby względem oryginalnego katalogu. W Codexie można użyć natywnego skilla albo odczytać ten plik bezpośrednio. Reguły kroku mają pierwszeństwo przed instrukcjami skilla (w tym publikacją, pytaniami i uruchamianiem poleceń). Nie wczytuj ustawień, hooków ani MCP użytkownika. Jeżeli wymagany skill nie jest dostępny także w katalogu programu/projektu, nie zastępuj go domysłem: zakończ result.json z result=error i nazwą brakującego skilla.\n"
   },
   "unit": "tide-step-bgolden01"
  },
@@ -339,7 +343,8 @@
   ],
   "files": {
    "<ROOT>/home/proj-wt/pt-1.step/in/gitconfig": "[user]\n\tname = Krok\n\temail = krok@tide.invalid\n[core]\n\texcludesFile = <ROOT>/home/proj-wt/pt-1.step/in/ignore\n",
-   "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n"
+   "<ROOT>/home/proj-wt/pt-1.step/in/ignore": "/.bash_profile\n/.bashrc\n/.claude\n/.gitconfig\n/.gitmodules\n/.idea\n/.mcp.json\n/.profile\n/.ripgreprc\n/.vscode\n/.zprofile\n/.zshrc\n/.agents/\n/.codex/\n",
+   "<ROOT>/home/proj-wt/pt-1.step/in/skills.json": "[]\n"
   },
   "gitDir": "<ROOT>/home/proj/.git/worktrees/pt-1",
   "popen": {
@@ -405,7 +410,7 @@
     "XDG_RUNTIME_DIR": "/run/user/1000"
    },
    "newSession": true,
-   "stdin": "Zrób ticket"
+   "stdin": "Zrób ticket\n\nSkille użytkownika dostępne w tym kroku (nazwa → SKILL.md):\nBrak dostępnych skilli użytkownika.\nGdy polecenie wymienia skilla, przeczytaj jego pełny SKILL.md z powyższej ścieżki i stosuj instrukcje oraz potrzebne zasoby względem oryginalnego katalogu. W Codexie można użyć natywnego skilla albo odczytać ten plik bezpośrednio. Reguły kroku mają pierwszeństwo przed instrukcjami skilla (w tym publikacją, pytaniami i uruchamianiem poleceń). Nie wczytuj ustawień, hooków ani MCP użytkownika. Jeżeli wymagany skill nie jest dostępny także w katalogu programu/projektu, nie zastępuj go domysłem: zakończ result.json z result=error i nazwą brakującego skilla.\n"
   },
   "unit": "tide-step-bgolden01"
  }

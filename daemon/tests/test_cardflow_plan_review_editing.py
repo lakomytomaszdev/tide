@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from . import flowfakes
 from . import test_cardflow_plan_integration as fixtures
 from .test_cardflow import FlowInProcess
@@ -148,7 +149,10 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
                         "koniec tyknięcia przed bezpośrednią edycją zatwierdzonego planu")
         approved = self.flow.engine.approve_plan(card)
-        self.approve_environment(card)
+        # Monitor jest zatrzymany: także zgodę zapisujemy bezpośrednio w silniku.
+        with mock.patch.object(self.flow.engine, "box_launcher", lambda *_args: None):
+            environment = self.flow.engine.approve_environment(card, "tide-box: 1\n", False)
+        self.assertTrue(environment["ok"], environment)
         ident = approved["map"]["#2"]
         self.flow.engine.edit_plan(card, {"action": "edit", "ticket": ident, "executor": "Opus", "reviewer": "Sonnet"})
         self.assertEqual(self.of(card, "plan.ticket-edited")[-1]["ticket"], ident)

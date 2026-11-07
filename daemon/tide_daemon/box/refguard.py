@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import stat
 import time
@@ -350,8 +351,33 @@ def other_cards(repo, card):
         return sorted({peer["card"] for _path_peer, peer in _active(repo) if peer["card"] != card}) if present else []
 
 
+def _written_refs(args, input_text):
+    """Zakres zapisu transakcji tekstowej update-ref; verify nie uprawnia do zmiany refu.
+
+    Git dostaje ten sam tekst, który tu czytamy. Nie rozpoznajemy nieznanego protokołu
+    przez domysł: brak dokładnego zakresu ma zatrzymać zaufaną operację.
+    """
+    if not args or args[0] != "update-ref":
+        return []
+    if "--stdin" not in args:
+        return [arg for arg in args if arg.startswith("refs/")]
+    if input_text is None or "-z" in args:
+        raise StepError("strażnik refów wymaga tekstowej transakcji update-ref")
+    refs = []
+    for line in input_text.splitlines():
+        fields = shlex.split(line)
+        if not fields:
+            continue
+        command = fields[0]
+        if command in ("update", "create", "delete") and len(fields) >= 2:
+            refs.append(fields[1])
+        elif command not in ("start", "prepare", "commit", "abort", "option", "verify"):
+            raise StepError("nieznane polecenie transakcji update-ref: " + command)
+    return list(dict.fromkeys(refs))
+
+
 @contextmanager
-def host_operation(repo, args):
+def host_operation(repo, args, *, input_text=None):
     """Zaufana zmiana konkretnego refu/configu przez gitops, bez zatwierdzania obcych zmian."""
     with locked(repo, existing_only=True) as present:
         if not present:
@@ -361,7 +387,7 @@ def host_operation(repo, args):
         if not peers:
             yield
             return
-        refs = [arg for arg in args if arg.startswith("refs/")] if args[0] == "update-ref" else []
+        refs = _written_refs(args, input_text)
         if args[:2] == ("worktree", "add") and "-b" in args:
             refs = ["refs/heads/" + args[args.index("-b") + 1]]
         paths = []

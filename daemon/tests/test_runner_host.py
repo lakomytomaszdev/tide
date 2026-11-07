@@ -1,7 +1,9 @@
 """PT-180 — HostRunner buduje dokładnie dzisiejsze argv i środowisko kroku.
 
 Złoty plik `fixtures/runner/host_argv.json` powstał z kodu sprzed wprowadzenia `Runner` (`agentcmd.background`
-+ `Background.start`). Test składa kroki (Claude, Codex, wznowienie, punkt lokalny z tokenem), przechwytuje
++ `Background.start`), z dodanym na master kontraktem skilli (`skills.json` i instrukcja w stdin).
+Pozostałe argv, środowisko i pliki zachowują zapis sprzed refaktoru.
+Test składa kroki (Claude, Codex, wznowienie, punkt lokalny z tokenem), przechwytuje
 wywołanie `subprocess.Popen` i porównuje z zapisem. Prawdziwy program ani systemd-run nie startują.
 Gdy pliku brakuje albo jest pusty, test go zapisuje i kończy się błędem (odtworzenie świadome: opróżnij plik).
 """

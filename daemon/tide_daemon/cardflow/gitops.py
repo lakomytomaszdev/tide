@@ -72,7 +72,7 @@ class FlowGit:
         # Aktualizujemy tylko konkretne ścieżki/refy zmieniane przez tę operację usługi.
         if args and (args[0] == "update-ref" or args[:2] in (("worktree", "remove"), ("worktree", "add"))):
             from ..box import refguard
-            with refguard.host_operation(cwd, args):
+            with refguard.host_operation(cwd, args, input_text=input_text):
                 return self.git.run(cwd, *HARDENED, *args, timeout=timeout, **options)
         return self.git.run(cwd, *HARDENED, *args, timeout=timeout, **options)
 

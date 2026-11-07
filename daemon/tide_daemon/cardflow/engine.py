@@ -2354,7 +2354,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
         image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
-                                       if d == os.path.join(step_dir, "in", "images") or os.path.isdir(d)]
+                                       if (shots and d == os.path.join(step_dir, "in", "images")) or os.path.isdir(d)]
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir, box=placement is not None)
         if placement is not None:

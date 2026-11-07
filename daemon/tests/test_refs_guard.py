@@ -5,6 +5,7 @@ from dataclasses import replace
 import io
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import threading
 import unittest
@@ -322,6 +323,52 @@ class GuardTest(unittest.TestCase):
         path = str(self.root / "repo-worktrees" / "future-card")
         service.branch_worktree(self.repo, "card/future", path, "master")
         self.assertEqual(self.finish(), {})
+
+    def test_host_ref_transaction_updates_only_written_refs_in_guard_snapshot(self):
+        """Transakcje targetprep/basegeneration nie maskują obcego zapisu ani refu verify."""
+        flowgit = FlowGit()
+        for ref in ("refs/heads/verified", "refs/heads/deleted", "refs/heads/moved"):
+            gitrepos.git(self.repo, "update-ref", ref, self.original)
+        self.begin()
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "update-ref", "refs/heads/verified", tip)
+        gitrepos.git(self.repo, "tag", "foreign")
+        result = flowgit.run(self.repo, "update-ref", "--stdin", input_text=(
+            f"start\noption no-deref\nverify refs/heads/verified {tip}\n"
+            f"create refs/tide/merge-targets/test {self.original}\n"
+            f"create refs/heads/new-target {self.original}\n"
+            f"update refs/heads/moved {tip} {self.original}\n"
+            f"delete refs/heads/deleted {self.original}\nprepare\ncommit\n"))
+        self.assertTrue(result.ok, result.err)
+        report = self.finish()
+        self.assertEqual(report["refs"], ["refs/heads/ticket/two", "refs/heads/verified", "refs/tags/foreign"])
+        self.assertFalse(report["errors"])
+
+    def test_target_preparation_and_base_generation_are_legal_during_another_cards_step(self):
+        from tide_daemon.cardflow import targetprep
+        from tide_daemon.cardflow.basegeneration import BaseGeneration
+        flowgit = FlowGit()
+        remote = "refs/remotes/team/release"
+        # Ref zdalny istnieje już przed migawką — nie jest częścią tworzenia celu.
+        gitrepos.git(self.repo, "update-ref", remote, self.original)
+        self.begin(card="K-99")
+        op = {"key": "other-card", "repo": self.repo, "targetRef": "refs/heads/release",
+              "targetCommitBefore": self.original, "targetWorktree": "/unused",
+              "targetPreparation": {"createRef": True, "createWorktree": False,
+                                    "remoteRef": remote, "remoteCommit": self.original}}
+        targetprep.provision(flowgit, op, [], lambda *args, **kw: None)
+        engine = SimpleNamespace(git=flowgit, journal=Journal(str(self.root / "board"),
+                                                            mirror=str(self.root / "mirror")))
+        generation = BaseGeneration(engine)
+        intent = {"repo": self.repo, "key": "generation", "lockReason": "tide-base-change:test",
+                  "oldBase": {}, "newBase": {}, "generation": [], "previousBaseVersion": 1, "baseVersion": 2}
+        row = {"branch": "card/new-generation", "base": self.original, "oldCommit": self.original,
+               "ownerRef": "refs/tide/base-owners/test", "archiveRef": "refs/tide/base-archives/test",
+               "worktree": str(self.root / "repo-worktrees" / "generation")}
+        generation.prepare("K-38", intent, row)
+        self.assertEqual(self.finish(card="K-99"), {})
+        self.begin("two", card="K-38")
+        self.assertEqual(self.finish("two", card="K-38"), {})
 
     def test_host_merge_and_worktree_cleanup_do_not_trigger_older_guard(self):
         config = self.common / "worktrees/two/config.worktree"

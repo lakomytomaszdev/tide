@@ -440,10 +440,12 @@ class BoxRunner:
             token = os.path.join(inp, LOCAL_TOKEN_FILE)
             settings["apiKeyHelper"] = f"cat -- {token}"
             deny.append(token)
+        filesystem = dict(host.get("sandbox", {}).get("filesystem", {}))
+        filesystem.update(denyRead=deny, allowWrite=[out, os.path.join(step.repo, ".git")])
         settings["sandbox"] = {
             "enabled": self.sandbox, "failIfUnavailable": self.sandbox, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
-            "filesystem": {"denyRead": deny, "allowWrite": [out, os.path.join(step.repo, ".git")]},
+            "filesystem": filesystem,
             "network": {"allowedDomains": []}}
         bg.files[path] = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
 
@@ -505,6 +507,21 @@ class BoxRunner:
         devices.append(Device(_device_name("worktrees"), root))
         devices.append(Device(_device_name("home"), host_home_dir(self.slug, self.host_env), path=BOX_HOME))
         devices.extend(self.extra_devices)
+        # Sam --add-dir nie daje dostępu do hosta, a pod <repo>-worktrees
+        # rozszerzałby zapis przez istniejące montowanie rw. Nakładka ro działa
+        # dla obu programów, także przy wyłączonej piaskownicy Claude (K1).
+        for source in dict.fromkeys([*step.read_dirs, *step.context_dirs]):
+            canonical = os.path.realpath(source)
+            if canonical != os.path.normpath(source) or not os.path.isdir(source):
+                raise agentcmd.StepError(f"katalog tylko do odczytu zniknął lub zmienił cel: {source}")
+            if (_within(worktree, source) or _within(source, worktree)
+                    or _within(step_dir, source) or _within(os.path.join(step_dir, "out"), source)
+                    or _within(source, os.path.join(step_dir, "out"))
+                    or _within(git, source) or _within(source, git)):
+                raise agentcmd.StepError(f"katalog tylko do odczytu nakłada się na obszar zapisu kroku: {source}")
+            import hashlib
+            devices.append(Device(_device_name("read", hashlib.sha256(source.encode()).hexdigest()[:24]),
+                                  source, readonly=True))
         if self.card:
             from . import packs
             specs = self._pack_specs()
@@ -599,6 +616,26 @@ class BoxRunner:
             if not self.card or self.box != bs.card_box_name(self.slug, self.card):
                 raise agentcmd.StepError("paczki wymagają osobnego pudełka karty")
         present = self.incus.device_show(self.box)
+        read_prefix = _device_name("read") + "-"
+        expected_reads = {d.name: d.values() for d in wanted if d.name.startswith(read_prefix)}
+        for name, values in expected_reads.items():
+            if name in present and any(
+                    (str(present[name].get(k, "")).lower() != str(v).lower() if k == "readonly"
+                     else present[name].get(k) != v) for k, v in values.items()):
+                raise agentcmd.StepError("zmienione montowanie tylko do odczytu — odmowa startu: " + name)
+            if any(other != name and entry.get("path") == values["path"]
+                   for other, entry in present.items()):
+                raise agentcmd.StepError("obce montowanie w katalogu tylko do odczytu: " + values["path"])
+        stale_reads = [name for name in present if name.startswith(read_prefix) and name not in expected_reads]
+        if stale_reads or any(name not in present for name in expected_reads):
+            # Montowania dotyczą całego pudełka. Zmiana nie może odebrać odczytu
+            # ani nałożyć ro na obszar pracy innego, już uruchomionego kroku.
+            busy = [s for s in bs.running_steps(self.slug, self.box) if s != step.step_id]
+            if busy:
+                raise agentcmd.StepError("zmiana katalogów tylko do odczytu wymaga pudełka bez innych biegnących kroków")
+            for name in sorted(stale_reads, key=lambda n: len(present[n].get("path", "")), reverse=True):
+                self.incus.device_remove(self.box, name)
+                present.pop(name)
         expected_packs = {d.name: d.values() for d in wanted if d.path.startswith("/packs/")}
         for name, values in present.items():
             if str(values.get("path", "")).startswith("/packs"):

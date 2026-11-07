@@ -14,7 +14,7 @@ def held(step):
 
 def preserves_project(st):
     """Także hostowy zamiar bez step.started mógł już utworzyć proces."""
-    return (any(held(step) for step in st.steps.values())
+    return (any(held(step) for step in (*st.steps.values(), *st.caretakers.values()))
             or any(held({**intent, "step": name}) for (action, name), intent in st.intents.items()
                    if action == "step-start"))
 
@@ -72,7 +72,7 @@ def inventory(engine, card, st):
         # Jej zachowany błąd oznacza unknown również po restarcie usługi.
         return False
     items = []
-    known = dict(st.steps)
+    known = {**st.steps, **st.caretakers}
     for (action, name), intent in st.intents.items():
         if action == "step-start" and name not in known:
             known[name] = {**intent, "step": name}

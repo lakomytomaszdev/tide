@@ -92,7 +92,7 @@ class InventoryTest(unittest.TestCase):
     @contextmanager
     def outside_environment(self):
         with mock.patch.object(self.engine, "_project", return_value=(None, SimpleNamespace(
-                slug="proj", denied_commands=[]))), \
+                slug="proj", repo=str(self.root), denied_commands=[]))), \
                 mock.patch("tide_daemon.tasks.node.node_home", return_value=""), \
                 mock.patch("tide_daemon.tasks.node.chrome_bin", return_value=""), \
                 mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as spawn:
@@ -329,6 +329,26 @@ class InventoryTest(unittest.TestCase):
                         self.journal.read_complete("K-38")
                     self.assertFalse(trialhold.inventory(self.engine, "K-38", fold([])))
                     self.assertEqual(path.read_bytes(), before)
+
+    def test_caretaker_kinds_preserve_complete_history_and_ticket_identity_after_restart(self):
+        for kind in ("caretaker", "caretaker-chat"):
+            for ticket in ("", "PT-176"):
+                name = kind + (ticket or "-card")
+                self.journal.append("K-38", "intent", action="step-start", key=name, kind=kind, ticket=ticket)
+                self.journal.append("K-38", "step.started", step=name, kind=kind, ticket=ticket)
+                self.restart()
+                history = trialhold.read_process_history(self.journal, "K-38")
+                self.assertEqual(fold(history).caretakers[name]["ticket"], ticket)
+                if ticket:
+                    self.assertTrue(trialhold.held(fold(history).caretakers[name]))
+                    self.assertTrue(trialhold.preserves_project(fold(history)))
+
+    def test_historical_caretaker_without_intent_is_included_in_inventory(self):
+        self.journal.append("K-38", "step.started", step="care", kind="caretaker", ticket="PT-176")
+        self.restart()
+        self.assertFalse(self.inventory())
+        inventories = [e for e in self.journal.read("K-38") if e["type"] == "k38.inventory"]
+        self.assertEqual(inventories[-1]["items"][0]["step"], "care")
 
     def test_incomplete_card_identity_blocks_start_and_lifecycle_across_restart(self):
         self.project()

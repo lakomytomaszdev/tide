@@ -316,13 +316,13 @@ class PreviewScenarios:
         journal.append(other, "card.started", entry="now", repo=self.repo)
         journal.append(other, "result", action="card-branch", key="card", ok=True,
                        branch="another-card", worktree="/no-checkout")
-        journal.append(other, "step.started", step="foreign", kind="ticket", branch="master", worktree=self.repo)
+        journal.append(other, "step.started", step="foreign", kind="ticket", ticket="PT-1", branch="master", worktree=self.repo)
         r = self.preview()
         self.assertEqual(r["reason"], "protected-target")
         journal.append(other, "step.finished", step="foreign", result="done")
         self.assertTrue(self.preview()["canMerge"])
         # Worktree jest chroniony także po zmianie gałęzi przez czynny krok.
-        journal.append(other, "step.started", step="moved", kind="ticket", branch="old-branch", worktree=self.repo)
+        journal.append(other, "step.started", step="moved", kind="ticket", ticket="PT-1", branch="old-branch", worktree=self.repo)
         self.assertEqual(self.preview()["reason"], "protected-target")
 
     def test_other_card_branch_is_protected_even_without_a_running_step(self):
@@ -340,7 +340,7 @@ class PreviewScenarios:
         journal.append(self.card_id, "outside.finished", step="outside")
         other = self.card()
         journal.append(other, "card.started", entry="now", repo=self.repo)
-        journal.append(other, "step.started", step="foreign", kind="ticket", branch="master", worktree=self.repo)
+        journal.append(other, "step.started", step="foreign", kind="ticket", ticket="PT-1", branch="master", worktree=self.repo)
         journal.append(other, "step.finished", step="foreign", result="denied", outside=True)
         journal.append(other, "outside.started", step="foreign")
         self.assertEqual(self.preview()["reason"], "protected-target")

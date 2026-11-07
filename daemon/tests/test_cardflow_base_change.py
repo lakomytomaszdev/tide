@@ -239,7 +239,7 @@ class BaseChangeTest(StartBaseSetup):
 
     def test_active_and_unknown_process_finished_before_exit_then_wip(self):
         self.ask()
-        self.flow.engine.journal.append(self.ident, "step.started", step="parallel", kind="ticket", unit="worker",
+        self.flow.engine.journal.append(self.ident, "step.started", step="parallel", kind="ticket", ticket=self.started["ticket"], unit="worker",
                                        branch=self.started["branch"], worktree=self.started["worktree"])
         for state in ("active", "unknown"):
             with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value=state), \
@@ -318,7 +318,7 @@ class BaseChangeTest(StartBaseSetup):
         versioned = self.preview()
         self.assertEqual(versioned["baseVersion"], 2)
         self.assertNotEqual(versioned["previewId"], initial["previewId"])
-        journal.append(self.ident, "step.started", step="process", kind="ticket", unit="process",
+        journal.append(self.ident, "step.started", step="process", kind="ticket", ticket=self.started["ticket"], unit="process",
                        branch=self.started["branch"], worktree=self.started["worktree"])
         journal.append(self.ident, "step.finished", step="process", result="done")
         with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive"):

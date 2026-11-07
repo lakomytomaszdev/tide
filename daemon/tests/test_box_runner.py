@@ -245,10 +245,10 @@ class ArgvTest(BoxRunnerCase):
     def test_existing_regular_files_are_rewritten(self):
         self.runner().start(self.step())
         with open(os.path.join(self.step_dir, "in", "prompt.txt"), "w", encoding="utf-8") as fh:
-            fh.write("stara treść, dłuższa niż nowy prompt\n")
+            fh.write("stara treść, dłuższa niż nowy prompt ze skillami\n" * 100)
         self.runner().start(self.step(step_id="s2"))
         with open(os.path.join(self.step_dir, "in", "prompt.txt"), encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), "Zrób ticket")
+            self.assertEqual(fh.read(), "Zrób ticket" + agentcmd.skills_mod.prompt([], "claude"))
         self.assertEqual(len(self.popen_calls), 2)
 
     def test_newline_in_a_value_is_refused(self):
@@ -338,6 +338,48 @@ class ProxyEnvTest(BoxRunnerCase):
 
 
 class DevicesTest(BoxRunnerCase):
+    def test_read_dirs_and_previous_outputs_get_readonly_mounts_including_under_worktrees(self):
+        external = os.path.join(self.tmp, "dataset")
+        sibling = os.path.join(self.wt_root, "dataset")
+        previous = os.path.join(self.wt_root, "previous.step", "out")
+        for path in (external, sibling, previous):
+            os.makedirs(path)
+        for tool in ("claude", "codex"):
+            with self.subTest(tool=tool):
+                devices = self.runner().devices_for(self.step(tool, read_dirs=(external, sibling),
+                                                             context_dirs=(previous,)))
+                for path in (external, sibling, previous):
+                    [device] = [d for d in devices if (d.path or d.source) == path]
+                    self.assertEqual(device.source, path)
+                    self.assertTrue(device.readonly)
+
+    def test_read_mounts_are_applied_and_removed_when_idle_but_never_changed_under_a_running_step(self):
+        data = os.path.join(self.wt_root, "dataset")
+        os.makedirs(data)
+        runner = self.runner()
+        runner.start(self.step(read_dirs=(data,)))
+        [name] = [name for name, (_kind, values) in self.device_map().items() if values["path"] == data]
+        self.assertEqual(self.device_map()[name][1]["readonly"], "true")
+        bs.mark_in_use("proj", "proj", "s1")
+        with self.assertRaisesRegex(agentcmd.StepError, "bez innych biegnących kroków"):
+            runner.start(self.step(step_id="s2"))
+        self.assertIn(name, runner.incus.device_show("proj"))
+        bs.mark_released("proj", "proj", "s1")
+        runner.start(self.step(step_id="s2"))
+        self.assertNotIn(name, runner.incus.device_show("proj"))
+
+    def test_existing_writable_mount_cannot_replace_a_readonly_mount(self):
+        data = os.path.join(self.tmp, "dataset")
+        os.makedirs(data)
+        runner = self.runner()
+        step = self.step(read_dirs=(data,))
+        runner.start(step)
+        [device] = [d for d in runner.devices_for(step) if d.source == data]
+        runner.incus.device_remove("proj", device.name)
+        runner.incus.device_add("proj", device.name, "disk", {"source": data, "path": data})
+        with self.assertRaisesRegex(agentcmd.StepError, "zmienione montowanie"):
+            runner.start(self.step(step_id="s2", read_dirs=(data,)))
+
     def device_map(self, box="proj"):
         return {a[7]: (a[8], dict(x.split("=", 1) for x in a[9:])) for a in self.adds(box)}
 
@@ -618,6 +660,15 @@ class DevicesTest(BoxRunnerCase):
 
 
 class ClaudeSettingsTest(BoxRunnerCase):
+    def test_box_keeps_host_deny_write_for_read_dirs_and_previous_outputs(self):
+        readonly = (os.path.join(self.tmp, "dataset"), os.path.join(self.wt_root, "sibling"))
+        context = os.path.join(self.wt_root, "previous.step", "out")
+        step = self.step(read_dirs=readonly, context_dirs=(context,))
+        bg = self.runner()._background(step)
+        self.assertEqual(self.settings_of(bg)["sandbox"]["filesystem"]["denyWrite"], [*readonly, context])
+        for path in (*readonly, context):
+            self.assertIn(path, bg.argv)
+
     def settings_of(self, bg):
         return json.loads(bg.files[os.path.join(self.step_dir, "in", "settings.json")])
 

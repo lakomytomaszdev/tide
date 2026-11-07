@@ -55,9 +55,11 @@ class PortFailureTest(unittest.TestCase):
                 engine._release_local = mock.Mock()
                 engine._box_place = mock.Mock(return_value=placement)
                 engine._settings_data = lambda: {}
+                engine._git_identity = lambda repo: {}
                 engine._hidden = (set(), ())
                 engine.procs, engine._box_runners = {}, {}
                 engine.tmp_root = self.tmp.name
+                engine.store = SimpleNamespace(load=lambda: SimpleNamespace(projects={}))
                 engine.journal = Journal(os.path.join(self.tmp.name, failure),
                                          mirror=os.path.join(self.tmp.name, failure + "-mirror"))
                 append = engine.journal.append
@@ -69,7 +71,8 @@ class PortFailureTest(unittest.TestCase):
 
                 selected = SimpleNamespace(tool="codex", binary="codex", route=None, name="test",
                                            model="test", provider="openai", effort="", local=False)
-                project = SimpleNamespace(repo=self.tmp.name, allowed_commands=[], denied_commands=[])
+                project = SimpleNamespace(repo=self.tmp.name, slug="proj", allowed_commands=[], denied_commands=[],
+                                          read_dirs=[], read_dirs_error="", read_dir_bindings=[])
                 with mock.patch.object(engine.journal, "append", side_effect=fail), \
                         mock.patch.object(boxstep, "before_start"), \
                         mock.patch.object(boxstep, "prepare_runner"), \
@@ -77,7 +80,7 @@ class PortFailureTest(unittest.TestCase):
                         mock.patch("tide_daemon.tasks.dotnet.is_dotnet", return_value=False), \
                         mock.patch("tide_daemon.tasks.node.is_node", return_value=False):
                     with self.assertRaises((FlowError, OSError)):
-                        engine._launch(SimpleNamespace(id="K-38"), project, selected, "PT-171", {},
+                        engine._launch(SimpleNamespace(id="K-38", projects=[]), project, selected, "PT-171", {},
                                        {"worktree": self.tmp.name, "branch": "ticket/pt-171"}, "first", [],
                                        prompt_text="test")
                 runner.start.assert_called_once()

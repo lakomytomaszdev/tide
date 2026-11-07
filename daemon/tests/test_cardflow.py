@@ -24,6 +24,12 @@ from .test_cardflow_dbus import CLAUDE_MD, git, test_root
 class _FlowMonitor(CardFlowMonitor):
     """Monitor testu w tym samym procesie co ręczne operacje na silniku."""
 
+    def start(self):
+        # Produkcyjny stop kończy usługę. Fixture dopuszcza ponowny start tego
+        # samego monitora po barierze w stop(), także po anulowaniu ticka.
+        self._stopped = False
+        super().start()
+
     def stop(self):
         # Produkcja kończy cały proces. Test zachowuje proces i zaraz dotyka silnika
         # albo dziennika, więc musi najpierw dokończyć biegnący tick starego monitora.
