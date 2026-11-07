@@ -111,13 +111,26 @@ def generated_bad_histories():
         yield [{k: v for k, v in start.items() if k != field}]
     yield [dict(type="step.started", kind="ticket", unit="old.scope")]
     yield [dict(type="intent", action="step-start", key="K-38-PT-176-1")]
-    for kind in ("outside.started", "outside.finished", "step.finished", "step.decision"):
+    for kind in ("outside.started", "outside.finished", "step.finished", "step.decision",
+                 "step.entered", "step.console_opened", "step.console_closed"):
         evidence = dict(type=kind, step="legacy-step", outside=True, choice="run")
         yield [evidence]
         yield [{k: v for k, v in evidence.items() if k != "step"}]
         yield [start, {**evidence, "ticket": "PT-176"}]
         yield [start, {**evidence, "ticket": None}]
         yield [evidence, start]
+    for field in ("consoleUnit", "processFile"):
+        entered = dict(type="step.entered", step=start["step"],
+                       consoleUnit="console.scope", processFile="/console.json")
+        for value in (None, [], 17):
+            yield [start, {**entered, field: value}]
+        yield [start, entered, {**entered, field: "other"}]
+        yield [start, entered, {"type": "step.console_opened", "step": start["step"], field: "other"}]
+    for kind in ("step.entered", "step.console_opened", "step.console_closed"):
+        for fields in ({}, {"consoleUnit": "old.scope", "processFile": "/console.json"}):
+            yield [dict(type=kind, step="K-38-PT-176-1", **fields)]
+    for value in (None, [], 17, ""):
+        yield [dict(start, runner="box", box="proj", boxSlug=value)]
     yield [dict(type="outside.started", step="K-38-PT-176-1", unit="old.scope")]
     for field in ("ticket", "kind", "branch", "worktree", "stepDir", "runner", "unit"):
         other = {**start, field: "PT-176" if field == "ticket" else "other"}
@@ -129,10 +142,27 @@ def generated_bad_histories():
     yield [intent, {"type": "result", "action": "step-start", "key": start["step"], "ok": True}, start]
 
 
+def generated_project_histories():
+    """Projekt pudełka może różnić się od projektu karty; żaden ślad go nie zwalnia."""
+    start = dict(type="step.started", step="legacy", ticket="PT-176", runner="box",
+                 boxSlug="proj", box="proj")
+    finished = dict(type="step.finished", step="legacy", ticket="PT-176", result="done")
+    for source in ("step.started", "intent", "result", "step.entered", "step.finished"):
+        resource = {**start, "type": source}
+        if source in ("intent", "result"):
+            resource.update(action="step-start", key=start["step"])
+        short = {k: v for k, v in start.items() if k not in ("box", "boxSlug")}
+        for later in ([], [finished], [short, finished],
+                      [dict(start, boxSlug="third"), finished],
+                      [dict(type="card.started", project="new"), finished]):
+            prefix = [] if source == "step.started" else [short]
+            yield [dict(type="card.started", project="plasma-tide"), *prefix, resource, *later]
+
+
 class ProcessIdentityProperties(unittest.TestCase):
     def test_generated_prefixes_never_lose_protection_or_errors(self):
         rng = random.Random(277)
-        histories = list(generated_bad_histories())
+        histories = list(generated_bad_histories()) + list(generated_project_histories())
         atoms = [event for history in histories for event in history]
         histories.extend([rng.choice(atoms) for _ in range(rng.randrange(1, 20))] for _ in range(300))
         rank = {"ok": 0, "unknown": 1, "inconsistent": 2}
@@ -146,6 +176,7 @@ class ProcessIdentityProperties(unittest.TestCase):
                     self.assertGreaterEqual(rank[current[key].state], rank[identity.state])
                     if identity.protected:
                         self.assertTrue(current[key].protected)
+                    self.assertTrue(identity.projects <= current[key].projects)
                 self.assertEqual(current, process_identities(history[:length]))
                 previous = current
             self.assertEqual(history, before, "reduktor zmienił historię wejściową")
@@ -169,6 +200,33 @@ class ProcessIdentityProperties(unittest.TestCase):
         self.assertTrue(trialhold.preserves_project(st, "old"))
         self.assertFalse(trialhold.preserves_project(st, "new"))
 
+    def test_all_explicit_projects_remain_protected_after_later_results(self):
+        for index, history in enumerate(generated_project_histories()):
+            with self.subTest(history=index):
+                st = fold(history)
+                identity = st.process_identities["legacy"]
+                self.assertTrue({"plasma-tide", "proj"} <= identity.projects)
+                self.assertTrue(trialhold.preserves_project(st, "proj"))
+                if any(e.get("boxSlug") == "third" for e in history):
+                    self.assertTrue(trialhold.preserves_project(st, "third"))
+                    self.assertEqual(identity.state, "inconsistent")
+                else:
+                    self.assertEqual(identity.state, "ok")
+
+    def test_console_trace_inherits_and_checks_started_identity(self):
+        start = dict(type="step.started", step="ordinary", ticket="PT-999")
+        entered = dict(type="step.entered", step="ordinary", consoleUnit="console.scope",
+                       processFile="/console.json")
+        history = [start, entered, dict(type="step.console_opened", step="ordinary")]
+        identity = process_identities(history)["ordinary"]
+        self.assertEqual(identity.state, "ok")
+        self.assertFalse(identity.held)
+        self.assertEqual(identity.data["consoleUnit"], "console.scope")
+        self.assertEqual(identity.data["processFile"], "/console.json")
+        identity = process_identities(history + [dict(entered, ticket="PT-176")])["ordinary"]
+        self.assertEqual(identity.state, "inconsistent")
+        self.assertTrue(identity.protected)
+
 
 class GeneratedHistoryBarriers(unittest.TestCase):
     def setUp(self):
@@ -176,6 +234,28 @@ class GeneratedHistoryBarriers(unittest.TestCase):
         self.f.setUp()
         self.addCleanup(self.f.doCleanups)
         self.f.project()
+
+    def test_explicit_box_project_denies_inventory_and_lifecycle_after_restart(self):
+        f = self.f
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for index, history in enumerate(generated_project_histories()):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            for event in history:
+                f.journal.append("K-38", event["type"], **{k: v for k, v in event.items() if k != "type"})
+            for restarted in (False, True):
+                if restarted:
+                    f.restart()
+                with self.subTest(history=index, restarted=restarted):
+                    self.assertFalse(f.inventory())
+                    for bootstrap in (False, True):
+                        gate, procedure = f.procedure()
+                        with self.assertRaises(fixtures.gate.TrialDenied):
+                            gate.start_registered("new", consent=True, inventory=f.inventory, bootstrap=bootstrap)
+                        procedure.start.assert_not_called()
+                    f.assert_lifecycle_preserved()
 
     def test_every_generated_unknown_history_denies_process_and_lifecycle_after_restart(self):
         f = self.f

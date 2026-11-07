@@ -10,7 +10,9 @@ from .. import trialpolicy
 CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review",
                              "plan-amend", "plan-revise", "close", "interactive"})
 TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
-IDENTITY_FIELDS = ("ticket", "kind", "branch", "worktree", "stepDir", "runner", "box", "boxSlug")
+CONSOLE_EVENTS = ("step.entered", "step.console_opened", "step.console_closed")
+IDENTITY_FIELDS = ("ticket", "kind", "branch", "worktree", "stepDir", "runner", "box", "boxSlug",
+                   "consoleUnit", "processFile")
 START_FIELDS = IDENTITY_FIELDS + ("unit",)
 
 
@@ -77,13 +79,22 @@ def process_identities(events):
         start = kind == "step.started" or (kind == "intent" and event.get("action") == "step-start")
         result = kind == "result" and event.get("action") == "step-start"
         outside = outside_evidence(event)
-        if not (start or result or outside or kind in ("step.decision", "step.finished")):
+        if not (start or result or outside or kind in CONSOLE_EVENTS or kind in ("step.decision", "step.finished")):
             continue
         name = event.get("key") if kind in ("intent", "result") else event.get("step")
         valid_name = isinstance(name, str) and bool(name.strip())
         key = name if valid_name else (None, index)
         identity = identities.setdefault(key, ProcessIdentity(name if valid_name else ""))
         identity.projects.add(project)
+        # Ticket karty może pracować w innym projekcie. Zbieramy każdy jawny
+        # zasób przed scaleniem pól, również z późniejszego sprzecznego wpisu.
+        if "boxSlug" in event:
+            slug = event["boxSlug"]
+            if isinstance(slug, str) and slug.strip():
+                identity.projects.add(slug)
+            else:
+                identity.projects.add("")
+                identity.worsen("unknown")
         identity.protected |= trialpolicy.blocked_event(event)
         if not valid_name:
             identity.worsen("unknown")
