@@ -309,31 +309,48 @@ class FlowEngine(PlanEditing):
         Nie jest metodą D-Bus ani obsługą wyniku agenta. Do odbioru PT-273 odmawia.
         Każda rejestracja ma nową tożsamość, także po restarcie.
         """
+        with self.journal.lock:
+            try:
+                events = self.journal.read_complete("K-38")
+                return self._register_trial_diagnostic(events)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
+
+    def _register_trial_diagnostic(self, events):
         from dataclasses import asdict
         name = "k38-diagnostic-" + uuid.uuid4().hex
         try:
             binding = self.trial_gate.register_bootstrap(name)
         except trialgate.TrialDenied as exc:
             raise FlowError("k38-trial-held", str(exc)) from None
-        for event in self.journal.read("K-38"):
+        for event in events:
             if event.get("type") != "k38.diagnostic-requested":
                 continue
             previous = event.get("binding")
             if (not isinstance(previous, dict) or not previous.get("target") or not previous.get("attempt")
                     or previous["target"] == binding.target or previous["attempt"] == binding.attempt):
                 raise FlowError("k38-trial-held", "K-38 v1: wymagany nowy cel i próba także po restarcie")
-        self.journal.append("K-38", "k38.diagnostic-requested", step=name, binding=asdict(binding))
+        self.journal.append_complete("K-38", "k38.diagnostic-requested", step=name, binding=asdict(binding))
         return {"ok": True, "step": name}
 
     def _resolve_trial_diagnostic(self, card, request):
+        # Walidacja, konsumpcja i końcowa kontrola procesu pod jedną blokadą.
+        # Zapis zgody nie może wcześniej naprawić uszkodzonego fallbacku Tablicy.
+        with self.journal.lock:
+            try:
+                events = self.journal.read_complete(card)
+                return self._start_trial_diagnostic(card, request, events)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
+
+    def _start_trial_diagnostic(self, card, request, events):
         name = request.get("step")
-        events = self.journal.read(card)
         if (card != "K-38" or set(request) != {"step", "choice"} or request.get("choice") != "run"
                 or not any(e.get("type") == "k38.diagnostic-requested" and e.get("step") == name for e in events)
                 or any(e.get("type") == "k38.diagnostic-consumed" and e.get("step") == name for e in events)):
             raise FlowError("k38-trial-held", "brak hostowej zgody na zarejestrowaną diagnostykę")
         # Dziennik konsumujemy PRZED startem. Restart lub błąd wymaga nowej rejestracji i decyzji.
-        self.journal.append(card, "k38.diagnostic-consumed", step=name)
+        self.journal.append_complete(card, "k38.diagnostic-consumed", step=name)
         def safe():
             try:
                 cards = set(self.journal.cards_complete()) | {"K-38"}

@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from tide_daemon.box import lifecycle, state as bs, trialgate as gate
-from tide_daemon.box.builder import Builder
+from tide_daemon.box.builder import BoxBusy, Builder
 from tide_daemon.cardflow import boxstep, trialhold
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
@@ -225,7 +225,8 @@ class InventoryTest(unittest.TestCase):
                 self.restart()
             with self.subTest(restarted=restarted):
                 self.assertFalse(self.inventory())
-                self.assertTrue(trialhold.public_inventory(self.engine))
+                self.assertFalse(trialhold.public_inventory(self.engine))
+                self.assertEqual(trialhold.public_processes(str(self.board)), [])
                 incus = mock.Mock()
                 incus.instance.return_value = {"status": "Running"}
                 incus.list.return_value = []
@@ -251,3 +252,117 @@ class InventoryTest(unittest.TestCase):
                 mock.patch.object(self.journal, "cards_complete", side_effect=PermissionError("rejestr")):
             lifecycle.tick(self.engine)
         builder.assert_not_called()
+
+    def test_diagnostic_public_decision_preserves_corrupt_fallback_across_restart(self):
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        name = self.engine.register_trial_diagnostic()["step"]
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        mirror.unlink()
+        corrupt = board.read_bytes() + b'{"type":"step.started","ticket":"PT-176",BROKEN}\n'
+        board.write_bytes(corrupt)
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted), self.assertRaises(FlowError):
+                self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+            procedure.start.assert_not_called()
+            self.assertEqual(board.read_bytes(), corrupt)
+            self.assertFalse(mirror.exists())
+
+    def test_diagnostic_registration_preserves_corrupt_history_before_adapter(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        board = Path(self.journal.path("K-38"))
+        original = board.read_bytes()
+        corrupt = original + b'{"type":"step.started","ticket":"PT-176",BROKEN}\n'
+        for fallback in (False, True):
+            if fallback:
+                mirror.unlink()
+                board.write_bytes(corrupt)
+            else:
+                mirror.write_bytes(corrupt)
+            _, procedure = self.procedure()
+            self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+            with self.subTest(fallback=fallback), \
+                    mock.patch.object(self.engine.trial_gate, "register_bootstrap",
+                                      wraps=self.engine.trial_gate.register_bootstrap) as register, \
+                    self.assertRaises(FlowError):
+                self.engine.register_trial_diagnostic()
+            register.assert_not_called()
+            self.assertEqual(board.read_bytes(), corrupt if fallback else original)
+            if fallback:
+                self.assertFalse(mirror.exists())
+            else:
+                self.assertEqual(mirror.read_bytes(), corrupt)
+
+    def test_valid_fallback_diagnostic_never_uses_tolerant_history(self):
+        mirror = Path(self.journal.mirror_path("K-38"))
+        mirror.unlink()
+        _, procedure = self.procedure()
+        self.engine.trial_gate = gate.TrialGate(procedure=procedure)
+        with mock.patch.object(self.journal, "read", side_effect=AssertionError("tolerancyjny odczyt")):
+            name = self.engine.register_trial_diagnostic()["step"]
+            # Także zapis konsumpcji ma odtworzyć wyłącznie pełny fallback.
+            mirror.unlink()
+            self.engine.resolve_step("K-38", {"step": name, "choice": "run"})
+        procedure.start.assert_called_once()
+        events = self.journal.read_complete("K-38")
+        self.assertEqual(events[-1]["type"], "k38.diagnostic-consumed")
+
+    def assert_lifecycle_preserved(self):
+        incus = mock.Mock()
+        incus.instance.return_value = {"status": "Running"}
+        incus.list.return_value = []
+        settings = SimpleNamespace(enabled=True, idle_hours=0)
+        builder = Builder(settings, incus=incus, policy=object(), clock=lambda: 100, wall=lambda: 100)
+        builder.steps_source = lambda slug, name: lifecycle.active_steps(builder, slug, name, self.engine)
+        with mock.patch.object(boxstep, "settings_of", return_value=settings), \
+                mock.patch.object(boxstep, "builder_of", return_value=builder), \
+                mock.patch("tide_daemon.box.packs.cleanup") as cleanup:
+            lifecycle.tick(self.engine)
+        incus.stop.assert_not_called()
+        incus.delete.assert_not_called()
+        cleanup.assert_not_called()
+        # Bez wcześniejszego ticka także ostatnia kontrola operacji odmawia.
+        for engine in (self.engine, None):
+            with self.subTest(engine=engine is not None):
+                self.assertTrue(lifecycle.active_steps(builder, "proj", "proj", engine))
+        with self.assertRaises(BoxBusy):
+            lifecycle.Lifecycle(builder).stop("proj")
+        incus.stop.assert_not_called()
+
+    def test_public_demo_without_card_preserves_lifecycle_across_restart(self):
+        self.project()
+        Path(self.journal.mirror_path("K-38")).unlink()
+        board = Path(self.journal.path("K-38"))
+        board.unlink()
+        board.parent.rmdir()
+        ports = self.root / "state/tide/box/proj/ports"
+        ports.mkdir(parents=True)
+        guard = ports / "proj.demo-1234567890abcdef.lock"
+        guard.write_bytes(b"")
+        bs.record("proj", "box.ready", "proj", clock=lambda: 0, duration=0)
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+            with self.subTest(restarted=restarted):
+                self.assertEqual(self.journal.cards_complete(), [])
+                self.assert_lifecycle_preserved()
+                self.assertEqual(guard.read_bytes(), b"")
+
+    def test_host_start_intent_without_step_preserves_lifecycle_across_restart(self):
+        self.project()
+        self.journal.append("K-38", "card.started", project="proj")
+        self.journal.append("K-38", "intent", action="step-start", key="K-38-PT-176-1", ticket="PT-176")
+        self.journal.append("K-38", "card.closed")
+        bs.record("proj", "box.ready", "proj", clock=lambda: 0, duration=0)
+        for restarted in (False, True):
+            if restarted:
+                self.restart()
+                for intent in fold(self.journal.read("K-38")).open_intents(include_background=True):
+                    self.engine._reconcile("K-38", intent)
+            with self.subTest(restarted=restarted):
+                self.assertFalse(self.inventory())
+                self.assert_lifecycle_preserved()
+                self.assertFalse(fold(self.journal.read("K-38")).steps)

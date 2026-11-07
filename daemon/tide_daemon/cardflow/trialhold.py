@@ -12,6 +12,13 @@ def held(step):
     return trialgate.blocked_event(step)
 
 
+def preserves_project(st):
+    """Także hostowy zamiar bez step.started mógł już utworzyć proces."""
+    return (any(held(step) for step in st.steps.values())
+            or any(held({**intent, "step": name}) for (action, name), intent in st.intents.items()
+                   if action == "step-start"))
+
+
 def inventory(engine, card, st):
     try:
         events = engine.journal.read_complete(card)
@@ -95,7 +102,23 @@ def public_inventory(engine):
     Bez trwałej tożsamości procesu nie potwierdzamy końca samym brakiem klienta
     CLI. Aktywne/osierocone demo wymaga osobnego ustalenia stanu przez hosta.
     """
-    root = os.path.join(engine.journal.root, "projects")
+    items = public_processes(engine.journal.root)
+    try:
+        # Publiczne CLI mogło nigdy nie mieć karty. Nie tworzymy jej przy skanie.
+        if "K-38" in engine.journal.cards_complete():
+            with engine.journal.lock:
+                events = engine.journal.read_complete("K-38")
+                previous = next((e for e in reversed(events) if e.get("type") == "k38.public-inventory"), {})
+                if items != previous.get("items", []):
+                    engine.journal.append_complete("K-38", "k38.public-inventory", version=1, items=items)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return not items
+
+
+def public_processes(board_root):
+    """Odczyt śladów CLI i dzienników pudełek bez zmiany historii kart."""
+    root = os.path.join(board_root, "projects")
     items = _public_process_inventory()
     try:
         if not stat.S_ISDIR(os.lstat(root).st_mode):
@@ -154,11 +177,7 @@ def public_inventory(engine):
             items.extend(active.values())
         except (OSError, ValueError, UnicodeError):
             items.append({"state": "unknown", "path": path})
-    events = engine.journal.read("K-38")
-    previous = next((e for e in reversed(events) if e.get("type") == "k38.public-inventory"), {})
-    if items != previous.get("items", []):
-        engine.journal.append("K-38", "k38.public-inventory", version=1, items=items)
-    return not items
+    return items
 
 
 def _public_process_inventory():

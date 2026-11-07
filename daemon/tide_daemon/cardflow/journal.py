@@ -150,18 +150,26 @@ class Journal:
 
     def append(self, card: str, kind: str, /, **data) -> dict:
         with self.lock:
-            events = self.read(card)
-            event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
-            line = json.dumps(event, ensure_ascii=False) + "\n"
-            os.makedirs(self.mirror, mode=0o700, exist_ok=True)
-            if not os.path.isfile(self.mirror_path(card)) and events:
-                _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
-            with open(self.mirror_path(card), "a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.flush()
-                os.fsync(fh.fileno())
-            self._restore(card)
-            return event
+            return self._append(card, kind, self.read(card), data)
+
+    def append_complete(self, card: str, kind: str, /, **data) -> dict:
+        """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
+        with self.lock:
+            return self._append(card, kind, self.read_complete(card), data)
+
+    def _append(self, card, kind, events, data):
+        # Wywołujący trzyma lock od odczytu aż do końca zapisu.
+        event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
+        line = json.dumps(event, ensure_ascii=False) + "\n"
+        os.makedirs(self.mirror, mode=0o700, exist_ok=True)
+        if not os.path.isfile(self.mirror_path(card)) and events:
+            _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
+        with open(self.mirror_path(card), "a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+        self._restore(card)
+        return event
 
     def write_file(self, card: str, rel: str, data: bytes) -> str:
         """Plik w katalogu karty w tablicy (wyjście kroku); ścieżka względna do commita."""

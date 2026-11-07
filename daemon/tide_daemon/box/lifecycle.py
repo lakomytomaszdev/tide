@@ -30,6 +30,7 @@ def active_steps(builder, slug, name, engine=None):
     CLI czyta te same trwałe dzienniki co silnik, bez tworzenia drugiego źródła stanu.
     """
     from ..cardflow.journal import Journal
+    from ..cardflow import trialhold
     from ..cardflow.state import fold
     from .runner import BoxRunner
 
@@ -38,6 +39,15 @@ def active_steps(builder, slug, name, engine=None):
         states = [fold(journal.read_complete(card)) for card in journal.cards_complete()]
     except (OSError, ValueError, TypeError, KeyError):
         return ["niepełna historia kart"]
+    # Dawny runner --demo nie miał box.use ani karty. Skan trwałych śladów
+    # jest obowiązkowy także przed pierwszą budową (bez dziennika pudełka).
+    if trialhold._public_process_inventory():
+        return ["nieznany stan dawnej publicznej próby"]
+    for st in states:
+        if trialhold.preserves_project(st):
+            project = (st.started or {}).get("project")
+            if not project or project == slug:
+                return ["nierozstrzygnięty proces chronionej próby projektu"]
     busy = set(bs.running_steps(slug, name))
     instance = builder.incus.instance(name)
     running = instance is not None and str(instance.get("status", "")).lower() == "running"
@@ -169,7 +179,7 @@ def tick(engine):
         # Nie ufamy nawet projektowi z tolerancyjnie odczytanego fragmentu.
         # Bez pełnej historii nie da się bezpiecznie zawęzić zakresu ochrony.
         return
-    if "K-38" in states and not trialhold.public_inventory(engine):
+    if not trialhold.public_inventory(engine):
         return  # nieznany proces dawnego CLI: bez automatycznego stop/reset/cleanup
     projects = os.path.join(bp.board_dir(), "projects")
     try:
@@ -179,9 +189,11 @@ def tick(engine):
     closed = {}
     frozen = set()
     for card, st in states.items():
-        from ..cardflow.trialhold import held
-        if st.started and any(held(s) for s in st.steps.values()):
-            frozen.add(st.started.get("project"))
+        if trialhold.preserves_project(st):
+            project = (st.started or {}).get("project")
+            if not project:
+                return  # nie można bezpiecznie zawęzić ochrony do jednego projektu
+            frozen.add(project)
         if st.closed and st.started:
             closed.setdefault(st.started.get("project"), set()).add(card)
     for slug in slugs:
