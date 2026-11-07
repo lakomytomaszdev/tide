@@ -108,6 +108,9 @@ class BoxFlow(FlowInProcess):
         self.engine = self.flow.engine
 
     def prepare_box_fakes(self):
+        memory = mock.patch('tide_daemon.box.admission.read_memory', return_value=(78 * 1024**3, 60 * 1024**3))
+        memory.start()
+        self.addCleanup(memory.stop)
         # Przed FlowInProcess.setUp: katalog bazowy znamy dopiero po nim, więc atrapy leżą w osobnym katalogu.
         import tempfile, shutil
         self.boxtmp = os.path.realpath(tempfile.mkdtemp(prefix="tide-boxflow-"))

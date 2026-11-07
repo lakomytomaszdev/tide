@@ -131,6 +131,11 @@ class BaseBuilder:
         for program, version in (("Claude Code", agents.CLAUDE_VERSION), ("Codex", agents.CODEX_VERSION)):
             if not agents.pinned(version):
                 raise bb.BuildError(f"wersja {program} nie jest przypięta: {version!r}")
+        return self._execute_build()
+
+    @bb.admission.queued('base')
+    def _execute_build(self) -> BaseResult:
+        proxy = bb.proxy_url(self.policy)
         name = self.settings.base_image
         folder = bb.state_dir(name)
         os.makedirs(folder, exist_ok=True)
@@ -154,14 +159,16 @@ class BaseBuilder:
         if self.incus.instance(name) is not None:
             self.incus.delete(name, force=True)
         result.steps.append("init")
-        self.incus.init(SOURCE_IMAGE, name)
+        self.incus.init(SOURCE_IMAGE, name, bb.admission.limits())
         result.steps.append("nic")
         self._box.apply_nic_filter(name)
         ip = None
         try:
-            self.incus.start(name)
+            bb.admission.start(self.incus, name)
             ip = self._box._wait_ip(name)
             self.policy.set_box_policy(ip, list(build_domains()), False, denied)
+            from .lifecycle import require_no_swap
+            require_no_swap(self.incus, name, netenv.proxy_env(proxy))
             self._provision(name, proxy, result)
         except BaseException:
             self._stop_quietly(name)           # nieudana budowa nie zostawia uruchomionego tide-base
@@ -228,7 +235,7 @@ def login(settings: BoxSettings, slug: str | None, out, incus: Incus | None = No
     policy = policy or bproxy.running() or bb.ProxyMissing()
     proxy = bb.proxy_url(policy)
     if str(inst.get("status", "")).lower() != "running":
-        incus.start(name)
+        bb.admission.start(incus, name, slug=slug)
     ip = bb.Builder(settings, incus, policy=policy)._wait_ip(name)
     composed = bproxy.compose_policy(bp.load_project(slug))
     policy.set_box_policy(ip, list(composed.domains), False, os.path.join(bb.state_dir(slug), "login-denied.log"))

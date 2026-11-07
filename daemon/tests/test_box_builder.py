@@ -91,6 +91,9 @@ class BoxCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
+        memory = mock.patch('tide_daemon.box.admission.read_memory', return_value=(78 * 1024**3, 60 * 1024**3))
+        memory.start()
+        self.addCleanup(memory.stop)
         # Szablony stosów z fixture'a (dane i skrypty powłoki) zamiast box/stacks.
         self.stacks = os.path.join(self.tmp, "stacks")
         os.makedirs(self.stacks)
@@ -406,12 +409,12 @@ class BuildTest(BoxCase):
             os.dup2(saved, 0)
             os.close(saved)
 
-    def test_limits_and_disk_come_from_profile(self):
+    def test_global_limits_override_profile_but_disk_comes_from_profile(self):
         self.approve({**PROFILE, "resources": {"cpu": 3, "memory": "6GiB", "disk": "25GB"}})
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
         self.assertEqual(init, ["init", "--project", "user-1000", "tide-base", "plasma-tide",
-                                "-c", "limits.cpu=3", "-c", "limits.memory=6GiB",
+                                "-c", "limits.cpu=8", "-c", "limits.memory=25769803776",
                                 "-c", "security.nesting=true"])
         self.assertFalse(any("security.syscalls.intercept." in arg for arg in init),
                          "runc 1.2.6 działa bez intercept zabronionego w projekcie ograniczonym")
@@ -422,7 +425,7 @@ class BuildTest(BoxCase):
         self.approve({k: v for k, v in PROFILE.items() if k != "docker"})
         self.builder().build("plasma-tide")
         init = [a for a in self.incus_calls() if a[0] == "init"][0]
-        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=24GiB"])
+        self.assertEqual(init[5:], ["-c", "limits.cpu=8", "-c", "limits.memory=25769803776"])
         self.assertIn("size=60GB", [a for a in self.incus_calls() if "root" in a][0])
 
     def test_vm_is_refused_without_incus(self):

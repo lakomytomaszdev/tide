@@ -64,7 +64,7 @@ class Incus:
         # `--project` zaraz po podpoleceniu (dwuczłonowym: `snapshot create`, `config device set`, …).
         args = list(args)
         head = 1
-        if args and args[0] in ("snapshot", "config", "storage", "file") and len(args) > 1:
+        if args and args[0] in ("snapshot", "config", "storage", "file", "operation") and len(args) > 1:
             head = 2
             if args[0] == "config" and args[1] == "device" or args[0] == "storage" and args[1] == "volume":
                 head = 3
@@ -99,8 +99,16 @@ class Incus:
         self.call("delete", name, *(["--force"] if force else []))
 
     def list(self) -> list:
-        data = json.loads(self.call("list", "--format", "json").stdout or "[]")
-        return data if isinstance(data, list) else []
+        data = json.loads(self.call("list", "--format", "json").stdout)
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("niepoprawna lista instancji Incusa")
+        return data
+
+    def operations(self) -> list:
+        data = json.loads(self.call("operation", "list", "--format", "json").stdout)
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("niepoprawna lista operacji Incusa")
+        return data
 
     def instance(self, name: str):
         """Instancja o **dokładnie** tej nazwie (filtr `incus list` dopasowuje też przedrostki — P-5)."""

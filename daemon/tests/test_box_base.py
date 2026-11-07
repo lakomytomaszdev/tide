@@ -298,6 +298,9 @@ class BaseCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
+        memory = mock.patch('tide_daemon.box.admission.read_memory', return_value=(78 * 1024**3, 60 * 1024**3))
+        memory.start()
+        self.addCleanup(memory.stop)
         self.scripts = os.path.join(self.tmp, "stacks")
         os.makedirs(self.scripts)
         with open(os.path.join(self.scripts, "base.sh"), "w", encoding="utf-8") as fh:
@@ -364,6 +367,8 @@ class BaseBuildTest(BaseCase):
     def test_every_exec_goes_through_the_proxy_as_root_with_pinned_versions(self):
         self.base_builder().build()
         execs = [a for a in self.incus_calls() if a[0] == "exec"]
+        self.assertEqual(sum('tide-no-swap' in a for a in execs), 1)
+        execs = [a for a in execs if 'tide-no-swap' not in a]
         self.assertEqual(len(execs), len(bbase.STEPS))
         for argv in execs:
             self.assertIn(f"HTTPS_PROXY={PROXY}", argv)
@@ -432,8 +437,8 @@ class BaseBuildTest(BaseCase):
         self.assertFalse([a for a in argvs if a[0] in ("publish", "snapshot")])
         self.assertFalse([l for l in calls(self.env) if "base.sh codex" in l])
         self.assertEqual(self.proxy._policies, {})
-        self.assertEqual(argvs[-1][:2], ["stop", "--project"])   # nieudana budowa zatrzymuje tide-base
-        self.assertIn("tide-base", argvs[-1])
+        self.assertIn(['stop', '--project', 'user-1000', 'tide-base'], argvs)
+        self.assertEqual(self.fake_state()['instances']['tide-base']['status'], 'Stopped')
 
     def test_no_ip_stops_tide_base_without_touching_the_policy(self):
         b = self.base_builder()
@@ -441,8 +446,8 @@ class BaseBuildTest(BaseCase):
             with self.assertRaisesRegex(bb.BuildError, "IPv4"):
                 b.build()
         argvs = self.incus_calls()
-        self.assertEqual(argvs[-1][:2], ["stop", "--project"])
-        self.assertIn("tide-base", argvs[-1])
+        self.assertIn(['stop', '--project', 'user-1000', 'tide-base'], argvs)
+        self.assertEqual(self.fake_state()['instances']['tide-base']['status'], 'Stopped')
         self.assertEqual(self.proxy.seen, [])
         self.assertFalse([l for l in calls(self.env) if l.startswith("clear_box_policy")])
 

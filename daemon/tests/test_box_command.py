@@ -160,6 +160,7 @@ class CommandTest(BoxRunnerCase):
         self.assertIn(wrapper, self.launches[-1][0])
 
     def test_card_mounts_only_accepted_prepared_copies_readonly_and_removes_them(self):
+        self.incus.stop('proj')  # v1: działa wyłącznie pudełko karty z paczką
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": ["logs"], "accepted_red": ["pack:logs"]})
         source = os.path.join(os.path.dirname(br.host_home_dir("proj")), "packs", "k-38", "logs")
         os.makedirs(source)
@@ -282,6 +283,7 @@ class CommandTest(BoxRunnerCase):
         self.assertEqual(gitrepos.git(other, "rev-parse", "HEAD").strip(), tips[0])
 
     def test_per_card_profile_uses_copy_and_the_same_card_policy(self):
+        self.incus.stop('proj')  # v1: pudełko źródłowe musi zwolnić wspólny slot
         bp.save_card("proj", "K-38", {"tide-box": 1, "box": "per-card",
                                        "network": {"domains": ["extra.example.org"]}})
         code, _, err = self.run_internal(["run", "proj", "--card", "K-38", "--worktree", self.worktree,

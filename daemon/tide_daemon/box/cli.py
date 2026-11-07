@@ -33,6 +33,14 @@ def format_status(st) -> str:
     if st.get("warning") and state == "clean":
         state = "clean (zbudowane z ostrzeżeniem: verify nieudane)"
     lines = [f"pudełko: {st['box']}", f"stan: {state}"]
+    admission = st.get('admission') or {}
+    lines.append('budżet v1: jedno aktywne pudełko lub budowa (wspólny limit hosta)')
+    if admission.get('owner'):
+        lines.append('globalny slot: ' + admission['owner']['name'])
+    if admission.get('error'):
+        lines.append(admission['error'])
+    for position, request in enumerate(admission.get('queue', []), 1):
+        lines.append(f"kolejka {position}: {request['name']} ({request['kind']}): {request['reason']}")
     if st.get("journalState") != st["state"]:
         lines.append(f"stan w dzienniku: {st.get('journalState', '—')}")
     lines.append(f"hash: {st.get('recipeHash') or '—'}")

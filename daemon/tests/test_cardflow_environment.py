@@ -303,6 +303,11 @@ class EnvEngineTest(EnvBase):
         boxwait.set_box_wait(self.engine.journal, other, boxwait.START)
 
         class Builder:
+            def __init__(self):
+                self.incus = mock.Mock(project='user-1000')
+                self.incus.operations.return_value = []
+                self.incus.list.return_value = [{'name': SLUG, 'status': 'Running'}]
+
             def status(self, slug):
                 return bs.BoxStatus(slug=slug, box=bs.box_name(slug), state=bs.CLEAN, exists=True, running=True,
                                     nic_filtering=True, recipe_hash="abc", profile_hash="abc")
@@ -312,6 +317,8 @@ class EnvEngineTest(EnvBase):
         self.assertEqual((out["state"], out["recipeHash"], out["profileHash"], out["nicFiltering"]),
                          ("clean", "abc", "abc", True))
         self.assertEqual(out["nicLabel"], "filtrowanie NIC: tak")
+        self.assertEqual(out['admission']['owner']['name'], SLUG)
+        self.assertEqual(out['admission']['incusProject'], 'user-1000')
         self.assertEqual({c["card"]: c["boxWait"] for c in out["cards"]}, {self.card_id: "", other: "start"})
         Builder.status = lambda self, slug: bs.BoxStatus(slug=slug, box="x", state=bs.NONCOMPLIANT)
         self.assertEqual(self.engine.box_status(SLUG)["nicLabel"], "filtrowanie NIC: nie")
