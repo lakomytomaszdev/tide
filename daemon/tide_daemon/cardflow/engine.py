@@ -5677,6 +5677,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
+            if fold(self.journal.read(card)).paused:
+                # Wstrzymana karta nie uruchamia nowych poleceń poza piaskownicą i nie trzyma miejsca w kolejce
+                # (07.11, K-38/PT-264: automatyczna zgoda 3 min po wstrzymaniu puściła pełne testy w trakcie gry).
+                # Po wznowieniu zgoda wraca do kolejki; polecenie już uruchomione kończy się normalnie.
+                self._outside_waiting.pop(name, None)
+                return None
             if not consent.before_start(self, card, step, done, decision):
                 return None
             if self._outside_busy(card):

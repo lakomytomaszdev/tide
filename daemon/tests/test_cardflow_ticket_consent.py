@@ -116,6 +116,23 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.assertEqual(json.loads(Path(self.settings).read_text())["outsideCommands"],
                          {"proj": ["echo zewnetrzne-ok *"]})
 
+    def test_paused_card_does_not_start_approved_command_until_resumed(self):
+        """07.11 (K-38/PT-264): automatyczna zgoda 3 min po wstrzymaniu karty puściła pełne testy w trakcie gry."""
+        from tide_daemon.cardflow.state import fold
+        card, eng, steps, _ = self.seeded()
+        self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"choice": "run", "step": "s1"}))["ok"])
+        st = fold(eng.journal.read(card))
+        with mock.patch.object(eng, "_outside_busy", return_value=True):
+            eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
+        self.assertIn("s1", eng._outside_waiting)
+        eng.journal.append(card, "card.paused")
+        self.assertIsNone(eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"]))
+        self.assertFalse(self.of(card, "outside.started"))
+        self.assertNotIn("s1", eng._outside_waiting)     # wstrzymana karta nie blokuje kolejki innym
+        eng.journal.append(card, "card.resumed")
+        eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
+        self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1"])
+
     def test_running_command_finishes_and_separate_manual_once_still_starts(self):
         from tide_daemon.cardflow.state import fold
         card, eng, steps, request = self.seeded()
