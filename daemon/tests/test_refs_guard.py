@@ -3,9 +3,12 @@ import concurrent.futures
 import contextlib
 from dataclasses import replace
 import io
+import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import threading
 import unittest
 from unittest import mock
@@ -315,6 +318,205 @@ class GuardTest(unittest.TestCase):
         self.begin("two", card="K-99")
         self.commit("two")
         self.assertEqual(self.finish("two", card="K-99"), {})
+
+    def test_incident_k55_k60_survive_finish_abort_and_fresh_process_recovery(self):
+        for ending in ("finish", "abort", "restart"):
+            for delete_k60 in (False, True):
+                with self.subTest(ending=ending, delete_k60=delete_k60):
+                    for name in ("55", "60"):
+                        gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-" + name, self.original)
+                    self.begin()
+                    gitrepos.commit(self.worktrees["two"], f"{ending}-{delete_k60}")
+                    tip = gitrepos.git(self.repo, "rev-parse", "ticket/two").strip()
+                    gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-55", tip)
+                    gitrepos.git(self.repo, "update-ref", "refs/heads/card/k-60", tip)
+                    if delete_k60:
+                        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/card/k-60")
+                    gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
+                    if ending == "restart":
+                        # Świeży interpreter, bez pamięci/blokad autora migawki.
+                        script = ("import json, sys; from tide_daemon.box import refguard; "
+                                  "print(json.dumps(refguard.finish(sys.argv[1], 'K-38', 'one', active_only=True)))")
+                        env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(__file__)))
+                        proc = subprocess.run([sys.executable, "-c", script, self.repo], env=env,
+                                              check=True, text=True, capture_output=True)
+                        result = json.loads(proc.stdout)
+                    elif ending == "abort":
+                        engine = FlowEngine.__new__(FlowEngine)
+                        engine.journal = mock.Mock()
+                        engine.journal.read.return_value = []
+                        for method in ("_queue_notices", "_release_local", "_release_box"):
+                            setattr(engine, method, mock.Mock())
+                        engine._codex_broken_mcp = mock.Mock(return_value=False)
+                        engine.tmp_root = str(self.root / "tmp")
+                        engine.procs, engine.watch = {}, {}
+                        step = dict(step="one", runner="box", repo=self.repo, branch="ticket/one", kind="ticket")
+                        engine._finish("K-38", step, forced={"result": "stopped", "reason": "abort"})
+                        result = next(c.kwargs for c in engine.journal.append.call_args_list
+                                      if c.args[1] == "refs.guard")
+                    else:
+                        result = self.finish()
+                    self.assertFalse(result["errors"])
+                    self.assertTrue({"refs/heads/card/k-55", "refs/heads/card/k-60",
+                                     "refs/heads/ticket/one"}.issubset(result["refs"]))
+                    self.assertEqual(gitrepos.git(self.repo, "rev-parse", "card/k-55").strip(), tip)
+                    refs = refguard._refs(self.repo)
+                    if delete_k60:
+                        self.assertNotIn("refs/heads/card/k-60", refs)
+                    else:
+                        self.assertEqual(refs["refs/heads/card/k-60"]["oid"], tip)
+                    self.assertEqual(refs["refs/heads/ticket/one"]["oid"], self.original)
+                    self.assertEqual(refguard._active(self.repo), [])
+
+    def test_restart_reservation_blocks_other_card_and_duplicate_begin(self):
+        self.begin()
+        before = Path(refguard._path(self.repo, "K-38", "one")).read_bytes()
+        script = ("import sys; from tide_daemon.box import refguard; "
+                  "refguard.begin(sys.argv[1], 'K-99', 'two', sys.argv[2], branch='ticket/two')")
+        env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(__file__)))
+        proc = subprocess.run([sys.executable, "-c", script, self.repo, str(self.common / "worktrees/two")],
+                              env=env, text=True, capture_output=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("trwa krok innej karty", proc.stderr)
+        with self.assertRaisesRegex(agentcmd.StepError, "już aktywna"):
+            self.begin()
+        self.assertEqual(Path(refguard._path(self.repo, "K-38", "one")).read_bytes(), before)
+        self.assertEqual(refguard.other_cards(self.repo, "K-99"), ["K-38"])
+
+    def test_finish_cannot_change_trusted_branch_from_begin(self):
+        self.begin()
+        with mock.patch.object(refguard, "_restore") as restore:
+            result = refguard.finish(self.repo, "K-38", "one", branch="master")
+        self.assertTrue(result["errors"])
+        restore.assert_not_called()
+        self.assertTrue(refguard._active(self.repo))
+        self.assertEqual(self.finish(), {})
+
+    def test_unknown_persisted_state_is_not_discarded_after_restart(self):
+        self.begin()
+        path = Path(refguard._path(self.repo, "K-38", "one"))
+        path.write_text("{przerwany zapis")
+        for operation in (lambda: self.begin("two", card="K-99"),
+                          lambda: refguard.other_cards(self.repo, "K-99")):
+            with self.assertRaises(ValueError):
+                operation()
+        self.assertEqual(path.read_text(), "{przerwany zapis")
+        self.assertTrue(self.finish()["errors"])
+
+    def test_recovery_does_not_follow_replaced_worktree_directory(self):
+        self.begin()
+        worktree = Path(self.worktrees["one"])
+        moved = worktree.with_name("moved")
+        worktree.rename(moved)
+        victim = self.root / "foreign-worktree"
+        victim.mkdir()
+        pointer = victim / ".git"
+        pointer.write_text("nie ruszać\n")
+        worktree.symlink_to(victim, target_is_directory=True)
+        self.assertTrue(self.finish()["errors"])
+        self.assertEqual(pointer.read_text(), "nie ruszać\n")
+
+    def test_host_snapshot_cannot_be_placed_inside_project_mounts(self):
+        for state in (str(self.common / "state"), str(self.root / "repo-worktrees/state")):
+            with self.subTest(state=state), mock.patch.dict(os.environ, XDG_STATE_HOME=state):
+                with self.assertRaisesRegex(agentcmd.StepError, "stan hosta"):
+                    self.begin()
+
+    def test_common_dir_and_admin_symlinks_are_rejected_before_git(self):
+        def begin():
+            refguard.begin(self.repo, "K-38", "one", str(self.common / "worktrees/one"),
+                           branch="ticket/one", worktree=self.worktrees["one"])
+
+        pointer = self.common / "worktrees/one/commondir"
+        pointer.write_text(str(self.root / "foreign"))
+        with self.assertRaisesRegex(agentcmd.StepError, "commondir"):
+            begin()
+        pointer.write_text("../..\n")
+        admin = self.common / "worktrees/one"
+        moved = self.common / "worktrees/moved"
+        admin.rename(moved)
+        admin.symlink_to(moved, target_is_directory=True)
+        with self.assertRaises((OSError, agentcmd.StepError)):
+            begin()
+        self.assertEqual(refguard._active(self.repo), [])
+
+    def test_git_storage_redirects_are_rejected_without_touching_target(self):
+        for name in ("refs/heads/outside", "logs/refs/heads/outside", "objects/outside"):
+            with self.subTest(name=name):
+                victim = self.root / "victim"
+                victim.write_text("nie ruszać\n")
+                path = self.common / name
+                path.symlink_to(victim)
+                with self.assertRaises(agentcmd.StepError):
+                    self.begin()
+                self.assertEqual(victim.read_text(), "nie ruszać\n")
+                path.unlink()
+        alternate = self.common / "objects/info/alternates"
+        alternate.write_text(str(self.root / "outside-objects") + "\n")
+        with self.assertRaisesRegex(agentcmd.StepError, "alternates"):
+            self.begin()
+
+    def test_reflog_hardlink_blocks_repair_without_writing_outside_project(self):
+        self.begin()
+        victim = self.root / "foreign-log"
+        victim.write_text("nie ruszać\n")
+        log = self.common / "logs/refs/heads/ticket/one"
+        log.unlink()
+        os.link(victim, log)
+        (self.common / "refs/heads/ticket/one").unlink()
+        self.assertTrue(self.finish()["errors"])
+        self.assertEqual(victim.read_text(), "nie ruszać\n")
+        self.assertTrue(refguard._active(self.repo))
+        log.unlink()
+        self.assertFalse(self.finish()["errors"])
+        self.assertEqual(victim.read_text(), "nie ruszać\n")
+
+    def test_project_config_includes_hooks_and_environment_do_not_control_guard_git(self):
+        marker = self.root / "hook-ran"
+        hook = self.common / "hooks/reference-transaction"
+        hook.write_text("#!/bin/sh\necho BAD > '" + str(marker) + "'\n")
+        hook.chmod(0o755)
+        bad_include = self.root / "included-config"
+        bad_include.write_text("invalid config [\n")
+        config = self.common / "config"
+        with config.open("a") as fh:
+            fh.write(f"\n[include]\npath = {bad_include}\n[core]\nworktree = /nonexistent/outside\n")
+        poisoned = {"GIT_DIR": "/nonexistent/foreign", "GIT_COMMON_DIR": "/nonexistent/foreign",
+                    "GIT_OBJECT_DIRECTORY": "/nonexistent/foreign", "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": str(hook.parent)}
+        # Testowa modyfikacja refu wprost: zwykły Git celowo nie czyta zatrutej konfiguracji.
+        with mock.patch.dict(os.environ, poisoned):
+            refguard.begin(self.repo, "K-38", "one", str(self.common / "worktrees/one"),
+                           branch="ticket/one", worktree=self.worktrees["one"])
+            (self.common / "refs/heads/ticket/one").unlink()
+            result = self.finish()
+        self.assertFalse(result["errors"])
+        self.assertFalse(marker.exists())
+        self.assertEqual(refguard._refs(self.repo)["refs/heads/ticket/one"]["oid"], self.original)
+
+    def test_packed_refs_and_reading_other_card_objects_remain_supported(self):
+        tip = self.commit("two")
+        gitrepos.git(self.repo, "branch", "card/k-55", tip)
+        gitrepos.git(self.repo, "pack-refs", "--all")
+        self.begin()
+        self.assertEqual(refguard._git(self.repo, "show", "card/k-55:two"), "x")
+        gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
+        self.assertFalse(self.finish()["errors"])
+        self.assertEqual(gitrepos.git(self.repo, "rev-parse", "card/k-55").strip(), tip)
+
+    def test_sha256_repository_keeps_its_object_format_in_private_gitdir(self):
+        repo = str(self.root / "sha256")
+        os.mkdir(repo)
+        gitrepos.git(repo, "init", "-q", "-b", "master", "--object-format=sha256")
+        gitrepos.commit(repo, "initial")
+        tip = gitrepos.git(repo, "rev-parse", "HEAD").strip()
+        wt = repo + "-worktrees/one"
+        gitrepos.git(repo, "worktree", "add", "-q", "-b", "ticket/one", wt)
+        refguard.begin(repo, "K-38", "one", os.path.join(repo, ".git/worktrees/one"),
+                       branch="ticket/one", worktree=wt)
+        gitrepos.git(repo, "update-ref", "-d", "refs/heads/ticket/one")
+        self.assertFalse(refguard.finish(repo, "K-38", "one")["errors"])
+        self.assertEqual(gitrepos.git(repo, "rev-parse", "ticket/one").strip(), tip)
 
     def test_host_creates_a_future_card_branch_without_triggering_guard(self):
         self.begin()

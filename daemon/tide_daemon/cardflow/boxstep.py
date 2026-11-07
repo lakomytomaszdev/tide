@@ -200,7 +200,7 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     from ..box import refguard
     others = refguard.other_cards(engine._repo(card_id), card_id)
     if others:
-        raise BoxWaiting("czeka na zakończenie kroków innej karty w repozytorium: " + ", ".join(others))
+        raise BoxWaiting("czeka na repozytorium (jedna karta naraz): " + ", ".join(others))
     builder = builder_of(engine, settings)
     try:
         effective = bp.merge(profile, bp.load_card(slug, card_id) or {"tide-box": 1}).profile

@@ -105,6 +105,17 @@ class PlacementTest(BoxFlow):
         self.assertEqual(self.waits()[-1]["cause"], "box")
         self.assertEqual(fold(self.events_now()).box_wait, boxwait.ENVIRONMENT)
 
+    def test_repository_serialization_is_recorded_for_the_card_panel(self):
+        self.build_box()
+        with mock.patch.object(refguard, "other_cards", return_value=["K-55", "K-60"]):
+            for kind in BOX_STEP_KINDS:
+                with self.subTest(kind=kind), self.assertRaises(FlowDeferred):
+                    self.box_place(kind)
+                waiting = fold(self.events_now()).waiting[("PT-1", kind)]
+                self.assertEqual(waiting["reason"], "czeka na repozytorium (jedna karta naraz): K-55, K-60")
+                self.assertEqual(waiting["cause"], "box")
+        self.assertEqual(self.incus_calls("exec"), [])
+
     def test_failed_rebuild_without_instance_keeps_all_execution_kinds_waiting(self):
         self.build_box()
         boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.REBUILD)
