@@ -78,6 +78,12 @@ Zatwierdzone argv usługi są zaufanym opisem jej operacji, nie dowolnym polecen
 przyjmowanym od pudełka. Jawny plik archiwum/indeksu nie upoważnia config do
 wybrania kolejnego celu. Kod zainstalowanej usługi musi być poza źródłami rw.
 
+Hostowe tworzenie i usuwanie worktrees zachowuje także używaną przez Planner
+konwencję `<repo>/.claude/worktrees`; to nadal wnętrze jawnego projektu. Przy
+`worktree list` istniejący checkout poza typowym kontenerem nie wymaga montowania
+jego katalogu ani rodzica: granica udostępnia tylko jego sprawdzony wskaźnik `.git`
+ro, ze zgodnym common-dir i hostową administracją. Nie zmienia to planu urządzeń pudełka.
+
 **Urządzenia PT-264.** Kolejność to paczki → zgoda → urządzenia. Blokada zgody
 szereguje również operacje na urządzeniach. Adapter porównuje kompletny efektywny
 zestaw urządzeń, także dziedziczonych, a nie tylko ich nazwy. Odrzuca dodatkowe

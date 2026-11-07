@@ -48,6 +48,14 @@ class ProjectGitBoundaryTests(unittest.TestCase):
         self.assertIn("filter.Filtr.clean", result.out)
         self.assertIn(("filter.Filtr.clean", ""), read_only_git_config(admin))
 
+    def test_external_registered_worktree_is_not_reported_as_missing(self):
+        wt = self.base / "synthetic-home/codex/task"
+        gitrepos.git(str(self.repo), "worktree", "add", "-q", "-b", "card/external", str(wt))
+        result = self.git.run(str(self.repo), "worktree", "list", "--porcelain")
+        self.assertTrue(result.ok, result.err)
+        block = next(b for b in result.out.split("\n\n") if "worktree " + str(wt) + "\n" in b)
+        self.assertNotIn("prunable", block)
+
     def test_symlink_to_foreign_ref_cannot_make_host_read_foreign_git(self):
         target = self.foreign / ".git/refs/heads/master"
         self.assertTrue(target.is_file())

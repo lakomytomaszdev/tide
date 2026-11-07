@@ -69,6 +69,36 @@ class HostGitInvocationTest(unittest.TestCase):
         self.assertTrue(result.ok, result.err)
         self.assertIn("filter.Filtr.clean", result.out)
 
+    def test_task_worktree_inside_project_can_be_created_and_removed(self):
+        folder = self.repo / ".claude/worktrees"
+        folder.mkdir(parents=True)
+        target = folder / "task"
+        for args in (("worktree", "add", "-q", "-b", "task/local", str(target)),
+                     ("worktree", "remove", str(target))):
+            result = self.git().run(str(self.repo), *args)
+            self.assertTrue(result.ok, result.err)
+        self.assertFalse(target.exists())
+
+    def test_task_worktree_cannot_be_created_in_another_project(self):
+        foreign = Path(self.tmp.name) / "foreign"
+        folder = foreign / ".claude/worktrees"
+        folder.mkdir(parents=True)
+        result = self.git().run(str(self.repo), "worktree", "add", "-q", "-b", "task/foreign", str(folder / "task"))
+        self.assertFalse(result.ok)
+        self.assertIn("poza jawnym katalogiem projektu", result.err)
+        self.assertFalse((folder / "task").exists())
+
+    def test_task_worktree_container_symlink_cannot_redirect_creation(self):
+        foreign = Path(self.tmp.name) / "foreign"
+        foreign.mkdir()
+        (self.repo / ".claude").mkdir()
+        folder = self.repo / ".claude/worktrees"
+        folder.symlink_to(foreign)
+        result = self.git().run(str(self.repo), "worktree", "add", "-q", "-b", "task/symlink", str(folder / "task"))
+        self.assertFalse(result.ok)
+        self.assertIn("dowiązanie", result.err)
+        self.assertFalse((foreign / "task").exists())
+
     def test_read_only_environment_disables_all_repository_filter_drivers(self):
         from tide_daemon.tasks import agentcmd
         from .test_agentcmd import BackgroundCodexTest
@@ -123,6 +153,24 @@ class HostGitInvocationTest(unittest.TestCase):
         with mock.patch.object(sandbox.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
             with self.assertRaisesRegex(sandbox.BoundaryError, "transport"):
                 sandbox.execute({"args": ["--git-dir", str(self.repo / ".git"), "config", "--get", "absent.key"]})
+
+    def test_external_registered_worktree_exposes_only_its_verified_pointer_when_listing(self):
+        from tide_daemon import git_sandbox as sandbox
+        target = Path(self.tmp.name) / "synthetic-home/codex/task"
+        gitrepos.git(str(self.repo), "worktree", "add", "-q", "-b", "task/external", str(target))
+        captured = []
+        def launch(argv, **kwargs):
+            captured.append(argv)
+            status_dir = argv[argv.index("/run/tide-git-status") - 1]
+            Path(status_dir, "code").write_text("0\n")
+            return subprocess.CompletedProcess(argv, 0)
+        with mock.patch.object(sandbox.subprocess, "run", launch):
+            self.assertEqual(sandbox.execute({"args": ["-C", str(self.repo), "worktree", "list"]}), 0)
+        argv = captured[0]
+        at = argv.index(str(target / ".git"))
+        self.assertEqual(argv[at - 1], "--ro-bind")
+        self.assertNotIn(str(target), argv)
+        self.assertNotIn(str(target.parent), argv)
 
     def test_confirmed_git_no_match_preserves_exit_code_and_uses_target_cwd(self):
         from tide_daemon import git_sandbox as sandbox

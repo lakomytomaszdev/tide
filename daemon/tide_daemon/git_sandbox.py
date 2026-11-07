@@ -302,6 +302,22 @@ def execute(payload):
     writes = roots + list(payload.get("writeRoots", ()))
     if not found and not private and not file_config and not initializing:
         reads.append(cwd)
+    if found and command[:2] == ["worktree", "list"]:
+        # Git sprawdza istnienie .git zarejestrowanych checkoutów. Dla worktrees
+        # spoza konwencjonalnego kontenera pokazujemy wyłącznie sprawdzony wskaźnik,
+        # nie ich katalog domowy ani treść. Inaczej istniejący checkout staje się
+        # w widoku skanera pozornie prunable.
+        registry = found[1] + "/worktrees"
+        for name in os.listdir(registry) if os.path.isdir(registry) else ():
+            admin = canonical(registry + "/" + name)
+            pointer = read_file(admin + "/gitdir", 8192).strip()
+            if not os.path.isfile(pointer) or any(within(pointer, root) for root in writes):
+                continue
+            target = canonical(os.path.dirname(pointer))
+            registered = repository(target)
+            if not registered or registered[1:3] != (found[1], admin) or pointer != target + "/.git":
+                raise BoundaryError("Git: niespójny zewnętrzny rejestr worktree")
+            reads.append(canonical(pointer))
     if command[:1] == ["worktree"] and len(command) > 1 and command[1] in ("add", "remove"):
         i = 2
         while i < len(command):
@@ -314,7 +330,8 @@ def execute(payload):
                 target = os.path.abspath(os.path.join(cwd, item))
                 if not found:
                     raise BoundaryError("Git: worktree bez jawnego repozytorium")
-                candidates = (found[0] + "-worktrees", found[0] + "-wt")
+                candidates = (found[0] + "-worktrees", found[0] + "-wt",
+                              found[0] + "/.claude/worktrees")
                 container = next((p for p in candidates if within(target, p) and target != p), None)
                 if container is None or not os.path.isdir(container):
                     raise BoundaryError("Git: worktree poza jawnym katalogiem projektu")
