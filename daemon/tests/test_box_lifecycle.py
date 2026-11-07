@@ -91,14 +91,12 @@ class LifecycleTest(BoxCase):
             self.life.start("plasma-tide")
         self.assertEqual(self.b.incus.instance("plasma-tide")["status"], "Stopped")
 
-    def test_cli_stop_start_readiness_limits_and_status_duration(self):
-        code, _, err = self.run_cli("stop", "plasma-tide", builder=self.b)
-        self.assertEqual(code, 0, err)
+    def test_stop_start_readiness_limits_and_status_duration(self):
+        self.life.stop("plasma-tide")
         profile = {**PROFILE, "resources": {"cpu": 3, "memory": "7GiB", "swap": False}}
         self.approve(profile)
         before = len(self.incus_calls())
-        code, _, err = self.run_cli("start", "plasma-tide", builder=self.b)
-        self.assertEqual(code, 0, err)
+        self.life.start("plasma-tide")
         calls = self.incus_calls()[before:]
         start = next(i for i, a in enumerate(calls) if a[0] == "start")
         limits = next(i for i, a in enumerate(calls) if a[:2] == ["config", "set"])
@@ -112,15 +110,17 @@ class LifecycleTest(BoxCase):
         for kind in ("box.stop", "box.ready"):
             event = [e for e in bs.events("plasma-tide") if e["type"] == kind][-1]
             self.assertIsInstance(event["duration"], (int, float))
-        _, text, _ = self.run_cli("status", "plasma-tide", builder=self.b)
-        self.assertIn("box.stop:", text)
+        self.assertTrue(any(e["type"] == "box.stop" for e in bs.events("plasma-tide")))
 
-    def test_cli_busy_refuses_stop_reset_build(self):
+    def test_busy_refuses_stop_reset_build(self):
         bs.mark_in_use("plasma-tide", "plasma-tide", "PT-182")
         before = len(self.incus_calls())
         for command in ("stop", "reset", "build"):
-            code, _, err = self.run_cli(command, "plasma-tide", builder=self.b)
-            self.assertEqual(code, 3, err)
+            with self.assertRaises(bb.BoxBusy):
+                if command == "stop":
+                    self.life.stop("plasma-tide")
+                else:
+                    getattr(self.b, command)("plasma-tide")
         self.assertFalse(any(a[0] in ("stop", "delete", "snapshot") for a in self.incus_calls()[before:]))
 
     def age(self):
@@ -161,12 +161,12 @@ class LifecycleTest(BoxCase):
                 with self.assertRaises(bb.BoxBusy):
                     self.b.reset("plasma-tide")
 
-    def test_cli_checks_persisted_unit_even_without_box_use(self):
+    def test_stop_checks_persisted_unit_even_without_box_use(self):
         self.runtime()
         self.b.steps_source = None
         with mock.patch("tide_daemon.box.runner.BoxRunner.step_state", return_value="active") as check:
-            code, _, _ = self.run_cli("stop", "plasma-tide", builder=self.b)
-        self.assertEqual(code, 3)
+            with self.assertRaises(bb.BoxBusy):
+                self.life.stop("plasma-tide")
         check.assert_called_once()
 
     def test_stopped_box_has_no_live_unit_but_live_client_still_blocks_reset(self):

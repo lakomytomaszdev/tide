@@ -581,6 +581,16 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="slug" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
+  <method name="BoxCardStatus">
+    <arg name="slug" type="s" direction="in"/>
+    <arg name="card" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="StopBox">
+    <arg name="slug" type="s" direction="in"/>
+    <arg name="card" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
   <method name="CardBranchDiff">
     <arg name="id" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
@@ -1244,6 +1254,20 @@ class BoardAdaptor(QDBusAbstractAdaptor):
                 print("tide-daemon: nie udało się odesłać wyniku Board.BoxStatus", flush=True)
 
         self.monitor.box_status(slug, reply)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def BoxCardStatus(self, slug: str, card: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.box_status(slug, lambda value: self.bus.send(pending.createReply([value])), card)
+        return ""
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def StopBox(self, slug: str, card: str, message: QDBusMessage) -> str:
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        self.monitor.stop_box(slug, card, lambda value: self.bus.send(pending.createReply([value])))
         return ""
 
     @pyqtSlot(str, QDBusMessage, result=str)

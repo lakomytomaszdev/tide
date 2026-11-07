@@ -325,6 +325,21 @@ class ProxyEnvTest(BoxRunnerCase):
         bstep = runner.box_step(step)
         self.assertEqual((bstep.node_home, bstep.chrome_bin), ("", ""))
 
+    def test_host_session_bus_is_neither_forwarded_nor_mounted(self):
+        socket = f"/run/user/{os.getuid()}/bus"
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=" + socket,
+                                          "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=/host/system-bus"}):
+            runner = self.runner()
+            runner.start(self.step())
+        for env in (runner.env(self.step()), self.env_file(), runner._client_env()):
+            if "DBUS_SESSION_BUS_ADDRESS" in env:
+                self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], "unix:path=/nonexistent/tide-step/bus")
+            self.assertNotIn("DBUS_SYSTEM_BUS_ADDRESS", env)
+        for device in runner.incus.device_show(runner.box).values():
+            source = device.get("source", "")
+            self.assertNotEqual(source, socket)
+            self.assertFalse(source and socket.startswith(source.rstrip("/") + "/"), source)
+
     def test_proxy_base_from_running_proxy_and_from_bridge(self):
         running = mock.Mock(listen="10.9.9.1", port=18081)
         with mock.patch("tide_daemon.box.proxy.running", return_value=running):

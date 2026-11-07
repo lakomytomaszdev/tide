@@ -382,18 +382,14 @@ def _thread_launcher(slug: str, profile: dict, action: str) -> None:
 
 # ------------------------------------------------------------ BoxStatus
 
-def status(engine, slug: str) -> dict:
+def status(engine, slug: str, card: str = "") -> dict:
     """`BoxStatus(slug)`: stan, hash, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu."""
-    from .engine import FlowError, fold
-    try:
-        bp._check_slug(slug, "projekt")
-    except bp.ProfileError as exc:
-        raise FlowError("bad-project", str(exc)) from None
+    from .engine import fold
+    from . import boxcontrol
+    card, name = boxcontrol.target(engine, slug, card)
     board = engine.store.load()
-    if slug not in board.projects:
-        raise FlowError("no-project", f"nie ma projektu {slug}")
     builder = (engine.box_builder or (lambda: box_builder.Builder(box_settings.load())))()
-    st = builder.status(slug)
+    st = builder.status(slug, card) if card else builder.status(slug)
     out = st.to_dict()
     out["nicLabel"] = "filtrowanie NIC: " + ("tak" if st.nic_filtering else "nie")
     cards = []
@@ -404,5 +400,7 @@ def status(engine, slug: str) -> dict:
         if engine.journal.has(cid):
             cards.append({"card": cid, "boxWait": boxwait.card_box_wait(fold(engine.journal.read(cid)))})
     out["cards"] = cards
+    out["timings"] = [{k: e[k] for k in ("type", "duration", "reason") if k in e}
+                      for e in bs.events(slug, name) if e.get("type") in ("box.stop", "box.reset") and "duration" in e]
     out["ok"] = True
     return out

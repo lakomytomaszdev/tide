@@ -95,12 +95,12 @@ class PortFailureTest(unittest.TestCase):
                             engine._reconcile("K-38", intent)
                             self.assert_reserved()
                             self.assertNotIn(("step-start", "first"), fold(engine.journal.read("K-38")).results)
-                            # Dopiero koniec klienta przy nadal nieistniejącej jednostce zamyka zamiar.
+                            # Sam koniec klienta bez kodu wrappera nie rozstrzyga, czy proces ruszył.
                             proc.poll.return_value = 0
                             engine._reconcile("K-38", intent)
-                        self.assertFalse(fold(engine.journal.read("K-38")).results[("step-start", "first")]["ok"])
-                        self.assertEqual(self.pool.acquire("other", PROFILE)["PORT"], "4300")
-                        self.pool.release("other")
+                        self.assertNotIn(("step-start", "first"), fold(engine.journal.read("K-38")).results)
+                        self.assert_reserved()
+                        self.pool.release(owner)
                         continue
                 self.assert_reserved()
                 self.pool.release(owner)

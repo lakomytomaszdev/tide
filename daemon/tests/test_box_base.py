@@ -480,26 +480,21 @@ class BaseCliTest(BaseCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_base_with_k3_needs_no_login(self):
-        code, out, err = self.run_cli("base", base_builder=self.base_builder())
-        self.assertEqual(code, 0, err)
-        self.assertIn("obraz bazowy tide-base", out)
-        self.assertIn("base-denied.log", out)
-        self.assertIn("niepotrzebne", out)
-        self.assertNotIn(bbase.LOGIN_HINT, out)
+        result = self.base_builder().build()
+        self.assertEqual(result.image, "tide-base")
+        self.assertIn("base-denied.log", result.denied_log)
+        self.assertFalse(result.login)
 
     def test_base_without_agent_login_ends_with_the_login_hint_not_an_error(self):
         with mock.patch.dict(k3.K3_PROGRAMS, {"claude": False, "codex": False}):
-            code, out, err = self.run_cli("base", base_builder=self.base_builder())
-        self.assertEqual(code, 0, err)
-        self.assertIn("zaloguj: tide box login", out)
-        self.assertIn("claude, codex", out)
+            result = self.base_builder().build()
+        self.assertEqual(tuple(result.login), ("claude", "codex"))
 
-    def test_base_error_is_exit_1(self):
-        code, _, err = self.run_cli("base", base_builder=self.base_builder(policy=bb.ProxyMissing()))
-        self.assertEqual(code, 1)
-        self.assertIn("tide box base: proxy Tide", err)
+    def test_base_without_proxy_fails(self):
+        with self.assertRaisesRegex(bb.BuildError, "proxy Tide"):
+            self.base_builder(policy=bb.ProxyMissing()).build()
 
-    def test_cli_base_starts_its_own_proxy_and_stops_it(self):
+    def test_proxy_helper_reuses_or_creates_service_and_refuses_unavailable_proxy(self):
         started = []
 
         class Service:
@@ -531,12 +526,11 @@ class BaseCliTest(BaseCase):
             with self.assertRaisesRegex(bb.BuildError, "bez proxy"):
                 bbase.ensure_proxy(self.settings, start=lambda _s: None)
 
-    def test_cli_base_without_bridge_fails_before_incus(self):
-        # Prawdziwy start_service: atrapa incus jest w PATH, ale mostka incusbr0 atrapa nie zna.
+    def test_disabled_cli_base_does_not_need_a_bridge(self):
         with mock.patch("tide_daemon.box.proxy.bridge_address", return_value=None):
             code, _, err = self.run_cli("base")
-        self.assertEqual(code, 1)
-        self.assertIn("proxy Tide nie wstało", err)
+        self.assertEqual(code, 3)
+        self.assertIn("wyłączone", err)
         self.assertFalse([a for a in self.incus_calls() if a[0] != "network"])
 
 
@@ -548,7 +542,7 @@ class LoginTest(BaseCase):
         self.assertIn("nic do zalogowania", out.getvalue())
         self.assertEqual(self.incus_calls(), [])
         code = cli.main(["login"], out=io.StringIO(), err=io.StringIO())
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 3)
 
     def test_k1_login_opens_incus_exec_as_agent_in_the_project_box(self):
         inc = Incus("user-1000", binary=self.fake_incus)
@@ -594,7 +588,7 @@ class LoginTest(BaseCase):
         self.assertEqual(self.proxy.seen, [])
         self.assertEqual(len(self.incus_calls()), before)
 
-    def test_cli_login_while_steps_run_is_exit_3(self):
+    def test_disabled_cli_login_never_opens_a_proxy(self):
         bs.record("plasma-tide", "box.use", bs.box_name("plasma-tide"), step="K-1-PT-1-1")
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(k3.K3_PROGRAMS, {"claude": False}), \
@@ -602,7 +596,7 @@ class LoginTest(BaseCase):
             code = cli.main(["login", "plasma-tide"], out=out, err=err)
         self.assertEqual(code, 3, err.getvalue())
         self.assertIn("tide box login:", err.getvalue())
-        self.assertIn("K-1-PT-1-1", err.getvalue())
+        self.assertIn("wyłączone", err.getvalue())
         self.assertEqual(self.proxy.seen, [])
         self.assertEqual(self.incus_calls(), [])
 

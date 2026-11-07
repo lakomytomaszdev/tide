@@ -4,6 +4,7 @@ Wszystko na atrapie `incus` z fakebin.py — prawdziwy Incus nie jest potrzebny 
 i ustawienia są tymczasowe.
 """
 import io
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -134,7 +135,12 @@ class BoxCase(unittest.TestCase):
 
     def run_cli(self, *argv, builder=None):
         out, err = io.StringIO(), io.StringIO()
-        code = cli.main(list(argv), out=out, err=err, builder=builder)
+        # Status renderowany z odpowiedzi usługi; rdzeń buildera testowany oddzielnie.
+        def request(member, slug, *card):
+            self.assertIn(member, ("BoxStatus", "BoxCardStatus"))
+            status = (builder or self.builder()).status(slug, card[0] if card else None).to_dict()
+            return {**status, "ok": True}
+        code = cli.main(list(argv), out=out, err=err, request=request)
         return code, out.getvalue(), err.getvalue()
 
 
@@ -378,7 +384,7 @@ class BuildTest(BoxCase):
         self.assertEqual(bs.journal_state("plasma-tide", "plasma-tide"), (bs.CLEAN, True))
         st = self.builder().status("plasma-tide")
         self.assertTrue(st.warning)
-        self.assertIn("zbudowane z ostrzeżeniem", cli.format_status(st))
+        self.assertIn("zbudowane z ostrzeżeniem", cli.format_status(st.to_dict()))
 
     def test_failing_build_step_is_an_error(self):
         self.approve({**PROFILE, "setup": ["exit 7"]})
@@ -489,11 +495,10 @@ class CardCopyTest(BoxCase):
         self.assertEqual(create, [])
         self.assertEqual(inst["status"], "Stopped")
         bs.mark_in_use("plasma-tide", name, "PT-2")
-        code, _, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
-        self.assertEqual(code, 3, err)
+        with self.assertRaises(bb.BoxBusy):
+            b.reset("plasma-tide", "K-38")
         bs.mark_released("plasma-tide", name, "PT-2")
-        code, out, err = self.run_cli("reset", "plasma-tide", "--card", "K-38", builder=b)
-        self.assertEqual(code, 0, err)
+        b.reset("plasma-tide", "K-38")
         self.assertIn(["snapshot", "restore", "--project", "user-1000", name, "clean"], self.incus_calls())
         st = b.status("plasma-tide", "K-38")
         self.assertTrue(st.nic_filtering)
@@ -596,13 +601,11 @@ class StatusResetDestroyTest(BoxCase):
         b.build("plasma-tide")
         bs.mark_in_use("plasma-tide", "plasma-tide", "PT-1")
         self.assertEqual(b.status("plasma-tide").state, bs.IN_USE)
-        code, _, err = self.run_cli("reset", "plasma-tide", builder=b)
-        self.assertEqual(code, 3)
-        self.assertIn("PT-1", err)
+        with self.assertRaisesRegex(bb.BoxBusy, "PT-1"):
+            b.reset("plasma-tide")
         self.assertNotIn("restore", " ".join(" ".join(a) for a in self.incus_calls()))
         bs.mark_released("plasma-tide", "plasma-tide", "PT-1")
-        code, out, _ = self.run_cli("reset", "plasma-tide", builder=b)
-        self.assertEqual(code, 0, out)
+        b.reset("plasma-tide")
         self.assertIn(["snapshot", "restore", "--project", "user-1000", "plasma-tide", "clean"], self.incus_calls())
         # reset przywraca rootfs; /home/agent to katalog hosta (urządzenie dyskowe) — nie jest ruszany
         self.assertFalse([a for a in self.incus_calls() if a[:2] == ["storage", "volume"] and "delete" in a])
@@ -615,11 +618,7 @@ class StatusResetDestroyTest(BoxCase):
         b.copy_for_card("plasma-tide", "K-38")
         b.copy_for_card("plasma-tide", "K-40")
         Incus("user-1000", binary=self.fake_incus).launch("tide-base", "plasma-tide-other")   # obce pudełko
-        code, _, err = self.run_cli("destroy", "plasma-tide", builder=b)
-        self.assertEqual(code, 2)
-        self.assertIn("--yes", err)
-        code, out, _ = self.run_cli("destroy", "plasma-tide", "--yes", builder=b)
-        self.assertEqual(code, 0, out)
+        b.destroy("plasma-tide")
         self.assertEqual(sorted(self.fake_state()["instances"]), ["plasma-tide-other"])
         self.assertEqual(self.fake_state()["volumes"], [])
         self.assertEqual(bs.journal_state("plasma-tide", "plasma-tide")[0], bs.ABSENT)
@@ -644,30 +643,26 @@ class ApproveTest(BoxCase):
 
     def test_approve_validates_saves_and_records_cli_consent(self):
         path = self.write_profile("tide-box: 1\nstacks: [node]\nnetwork: { domains: [registry.npmjs.org] }\n")
-        code, out, err = self.run_cli("approve", "plasma-tide", "--file", path)
-        self.assertEqual(code, 0, err)
+        bb.approve("plasma-tide", Path(path).read_text())
         self.assertEqual(bp.load_project("plasma-tide")["stacks"], ["node"])
         ev = [e for e in bs.events("plasma-tide") if e["type"] == "box.approved"]
         self.assertEqual((ev[0]["source"], ev[0]["accepted_red"]), ("cli", []))
 
     def test_approve_rejects_schema_errors(self):
         path = self.write_profile("tide-box: 1\nnetwork: { full: true }\n")
-        code, _, err = self.run_cli("approve", "plasma-tide", "--file", path)
-        self.assertEqual(code, 1)
-        self.assertIn("network.full", err)
+        with self.assertRaisesRegex(bp.ProfileError, "network.full"):
+            bb.approve("plasma-tide", Path(path).read_text())
         self.assertIsNone(bp.load_project("plasma-tide"))
 
     def test_red_item_requires_explicit_flag(self):
         path = self.write_profile("tide-box: 1\nnetwork: { domains: [github.com, registry.npmjs.org] }\n")
-        code, _, err = self.run_cli("approve", "plasma-tide", "--file", path)
-        self.assertEqual(code, 1)
-        self.assertIn("--accept-red github.com", err)
+        with self.assertRaisesRegex(bp.ProfileError, "--accept-red github.com"):
+            bb.approve("plasma-tide", Path(path).read_text())
         self.assertIsNone(bp.load_project("plasma-tide"))
-        code, _, err = self.run_cli("approve", "plasma-tide", "--file", path, "--accept-red", "registry.npmjs.org")
-        self.assertEqual(code, 1)
+        with self.assertRaises(bp.ProfileError):
+            bb.approve("plasma-tide", Path(path).read_text(), ["registry.npmjs.org"])
         self.assertIsNone(bp.load_project("plasma-tide"))
-        code, _, err = self.run_cli("approve", "plasma-tide", "--file", path, "--accept-red", "github.com")
-        self.assertEqual(code, 0, err)
+        bb.approve("plasma-tide", Path(path).read_text(), ["github.com"])
         ev = [e for e in bs.events("plasma-tide") if e["type"] == "box.approved"][-1]
         self.assertEqual((ev["source"], ev["accepted_red"]), ("cli", ["github.com"]))
 
@@ -688,10 +683,8 @@ class CliTest(BoxCase):
         for argv in (a for a in self.incus_calls() if a[0] == "exec"):
             self.assertIn(f"NO_PROXY={netenv.BOX_NO_PROXY}", argv)
 
-    def test_tide_entry_point_build_without_running_proxy_fails_before_incus(self):
-        # Osobny proces czyta prawdziwe box/stacks; profil bez stosów, żeby nic z nich nie biegło na atrapie.
-        # Ustawienia z sekcji `box` w cardflow.json (ten sam plik co proxy PT-168); proxy w tym procesie nie biegnie,
-        # a własne proxy polecenia (PT-192, base-wlasne-proxy-cli) nie wstaje bez mostka — odmowa przed incus.
+    def test_disabled_tide_entry_point_build_fails_before_incus(self):
+        # Dawne wejście odmawia przed odczytem profilu i uruchamianiem proxy/Incusa.
         self.approve({**PROFILE, "stacks": []})
         path = bset.settings_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -705,8 +698,8 @@ class CliTest(BoxCase):
         env = {**os.environ, "PYTHONPATH": DAEMON}
         proc = subprocess.run([sys.executable, os.path.join(DAEMON, "tide.py"), "box", "build", "plasma-tide"],
                               env=env, stdin=subprocess.PIPE, capture_output=True, text=True, timeout=60)
-        self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertIn("tide box build: proxy Tide", proc.stderr)
+        self.assertEqual(proc.returncode, 3, proc.stderr)
+        self.assertIn("wyłączone", proc.stderr)
         self.assertFalse([a for a in self.incus_calls() if a[0] != "network"])
 
 

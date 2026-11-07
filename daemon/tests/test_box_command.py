@@ -1,4 +1,5 @@
-"""PT-191: CLI przez prawdziwy BoxRunner i atrapę Incusa, bez agenta i sieci."""
+"""Regresja adaptera PT-191 przez BoxRunner i atrapę Incusa; publiczne CLI jest wyłączone."""
+import argparse
 import io
 import json
 import os
@@ -6,8 +7,8 @@ import re
 import subprocess
 from unittest import mock
 
-from tide_daemon.box import builder as bb, cli, command, profile as bp, runner as br, state as bs
-from tide_daemon.box.ports import PortPool
+from tide_daemon.box import builder as bb, command, profile as bp, runner as br, state as bs
+from tide_daemon.box.ports import PortPool, PoolExhausted
 from tide_daemon.box import trialgate
 from .test_box_runner import BoxRunnerCase, FAKE_SYSTEMD_RUN
 from . import gitrepos
@@ -78,10 +79,27 @@ class CommandTest(BoxRunnerCase):
             raise OSError("spawn failed")
         return subprocess.Popen(argv, **kw)
 
-    def run_cli(self, argv=None):
+    def run_internal(self, argv=None):
         out, err = io.StringIO(), io.StringIO()
-        code = cli.main(argv or ["run", "proj", "--worktree", self.worktree, "--", "/usr/bin/env"],
-                        out=out, err=err, builder=self.builder)
+        # Regresja historycznego adaptera bibliotecznego na atrapie. Publiczne CLI
+        # jest wyłączone i ma osobne testy w test_box_cli_service.py.
+        argv = argv or ["run", "proj", "--worktree", self.worktree, "--", "/usr/bin/env"]
+        if "--" not in argv or argv.index("--") == len(argv) - 1:
+            return 2, "", "brak polecenia"
+        cut = argv.index("--")
+        parser = argparse.ArgumentParser()
+        parser.add_argument("slug")
+        parser.add_argument("--worktree", default="")
+        parser.add_argument("--card", default="")
+        args = parser.parse_args(argv[1:cut])
+        try:
+            code = command.run_command(args, argv[cut + 1:], out, err, builder=self.builder)
+        except (bb.BoxBusy, PoolExhausted) as exc:
+            print(str(exc), file=err)
+            code = 3
+        except (bb.BuildError, bp.ProfileError, command.br.IncusError, OSError, ValueError) as exc:
+            print(str(exc), file=err)
+            code = 1
         return code, out.getvalue(), err.getvalue()
 
     def env_for_launch(self):
@@ -94,7 +112,7 @@ class CommandTest(BoxRunnerCase):
     def test_run_uses_step_policy_devices_ports_and_no_agent_tokens(self):
         with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "host-secret", "OPENAI_API_KEY": "host-secret",
                                          "GH_TOKEN": "host-secret", "DOCKER_HOST": "unix:///host/docker.sock"}):
-            code, out, err = self.run_cli()
+            code, out, err = self.run_internal()
         self.assertEqual(code, 0, err)
         folder, env = self.env_for_launch()
         denied_path = re.search(r"^dziennik proxy: (.+)$", err, re.M).group(1)
@@ -125,13 +143,13 @@ class CommandTest(BoxRunnerCase):
 
     def test_separator_preserves_argv_and_exit_status(self):
         tail = ["/bin/sh", "-c", 'printf "%s\\n" "$@"; exit 37', "args", "--card", "a b", "$(false)", ""]
-        code, out, err = self.run_cli(["run", "proj", "--worktree", self.worktree, "--", *tail])
+        code, out, err = self.run_internal(["run", "proj", "--worktree", self.worktree, "--", *tail])
         self.assertEqual(code, 37, err)
         self.assertEqual(out, "--card\na b\n$(false)\n\n")
         self.assertEqual(self.launches[-1][0][-len(tail):], tail)
 
     def test_default_wrapper_matches_runner_without_relying_on_the_image_version(self):
-        code, out, err = self.run_cli(["run", "proj", "--worktree", self.worktree,
+        code, out, err = self.run_internal(["run", "proj", "--worktree", self.worktree,
                                        "--", "/bin/sh", "-c", "printf compatible; exit 23"])
         self.assertEqual(code, 23, err)
         self.assertEqual(out, "compatible")
@@ -150,7 +168,7 @@ class CommandTest(BoxRunnerCase):
         # Zachowujemy argv device add, bo po zakończeniu urządzenie ma zostać zdjęte.
         add = self.incus.device_add
         with mock.patch.object(self.incus, "device_add", wraps=add) as added:
-            code, out, err = self.run_cli(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
+            code, out, err = self.run_internal(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
                                            "--", "/bin/true"])
         self.assertEqual(code, 0, err)
         packs = [c for c in added.call_args_list if c.args[1].startswith("tide-pack-")]
@@ -163,14 +181,14 @@ class CommandTest(BoxRunnerCase):
 
     def test_unaccepted_pack_is_never_mounted(self):
         bp.save_card("proj", "K-38", {"tide-box": 1, "packs": ["logs"]})
-        code, _, err = self.run_cli(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
+        code, _, err = self.run_internal(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
                                      "--", "/bin/true"])
         self.assertEqual(code, 0, err)
         self.assertFalse(any(k.startswith("tide-pack-") for k in self.incus.device_show("proj")))
 
     def test_spawn_failure_releases_ports_and_policy(self):
         self.spawn_error = True
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 1, err)
         self.assertEqual(bs.running_steps("proj", "proj"), [])
         self.assertFalse(self.proxy.steps)
@@ -178,18 +196,18 @@ class CommandTest(BoxRunnerCase):
 
     def test_unknown_unit_keeps_reservations_and_next_run_recovers_after_confirmed_end(self):
         self.unit_state = "unknown"
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 0, err)
         self.assertEqual(len(bs.running_steps("proj", "proj")), 1)
         self.assertIn("rezerwacja pozostaje", err)
         self.unit_state = "inactive"
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 0, err)
         self.assertEqual(bs.running_steps("proj", "proj"), [])
 
     def test_main_repository_gets_separate_worktree_and_never_mounts_main_tree(self):
         with mock.patch.object(command.os, "getcwd", return_value=self.repo):
-            code, _, err = self.run_cli(["run", "proj", "--", "/bin/pwd"])
+            code, _, err = self.run_internal(["run", "proj", "--", "/bin/pwd"])
         self.assertEqual(code, 0, err)
         folder, env = self.env_for_launch()
         self.assertNotEqual(env["TIDE_CWD"], self.repo)
@@ -198,19 +216,19 @@ class CommandTest(BoxRunnerCase):
 
     def test_missing_or_empty_separator_is_argument_error(self):
         for argv in (["run", "proj"], ["run", "proj", "--"]):
-            self.assertEqual(self.run_cli(argv)[0], 2)
+            self.assertEqual(self.run_internal(argv)[0], 2)
         self.assertFalse(self.launches)
 
     def test_missing_nic_filter_and_changed_clean_snapshot_refuse_to_launch(self):
         self.incus.device_set("proj", "eth0", {"security.ipv4_filtering": False})
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 1, err)
         self.assertFalse(self.launches)
         self.builder.apply_nic_filter("proj")
         self.incus.config_set("proj", {bs.RECIPE_KEY: "wrong"})
         self.incus.snapshot_create("proj", "clean", reuse=True)
         self.incus.config_set("proj", {bs.RECIPE_KEY: json.dumps(self.builder.stamp(self.profile))})
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 1, err)
         self.assertIn("migawki clean", err)
         self.assertFalse(self.launches)
@@ -219,7 +237,7 @@ class CommandTest(BoxRunnerCase):
         pool = PortPool("proj", "proj")
         pool.acquire("K-1/first", self.profile)
         pool.acquire("K-2/second", self.profile)
-        code, _, err = self.run_cli()
+        code, _, err = self.run_internal()
         self.assertEqual(code, 3, err)
         self.assertFalse(self.launches)
         self.assertEqual(self.proxy.calls, [])
@@ -230,13 +248,13 @@ class CommandTest(BoxRunnerCase):
         root = os.path.join(os.path.dirname(br.host_home_dir("proj")), "packs", "k-38")
         os.makedirs(root)
         os.symlink(self.repo, os.path.join(root, "logs"))
-        code, _, err = self.run_cli(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
+        code, _, err = self.run_internal(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
                                      "--", "/bin/true"])
         self.assertEqual(code, 1, err)
         self.assertFalse(self.launches)
 
     def test_ref_guard_reports_foreign_ref_without_restoring_and_still_cleans_resources(self):
-        code, _, err = self.run_cli(["run", "proj", "--worktree", self.worktree, "--", "/usr/bin/git",
+        code, _, err = self.run_internal(["run", "proj", "--worktree", self.worktree, "--", "/usr/bin/git",
                                      "update-ref", "-d", "refs/heads/master"])
         self.assertEqual(code, 1, err)
         self.assertIn("refs.guard", err)
@@ -258,7 +276,7 @@ class CommandTest(BoxRunnerCase):
             return spawn(argv, **kw)
 
         with mock.patch.object(self, "spawn", side_effect=concurrent_commit):
-            code, _, err = self.run_cli()
+            code, _, err = self.run_internal()
         self.assertEqual(code, 1, err)  # nierozpoznana zmiana jest raportowana
         self.assertIn("refs/heads/card/k-55", err)
         self.assertEqual(gitrepos.git(other, "rev-parse", "HEAD").strip(), tips[0])
@@ -266,7 +284,7 @@ class CommandTest(BoxRunnerCase):
     def test_per_card_profile_uses_copy_and_the_same_card_policy(self):
         bp.save_card("proj", "K-38", {"tide-box": 1, "box": "per-card",
                                        "network": {"domains": ["extra.example.org"]}})
-        code, _, err = self.run_cli(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
+        code, _, err = self.run_internal(["run", "proj", "--card", "K-38", "--worktree", self.worktree,
                                      "--", "/bin/true"])
         self.assertEqual(code, 0, err)
         self.assertIn("extra.example.org", self.proxy.calls[0][1])

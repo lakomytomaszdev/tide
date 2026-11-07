@@ -20,7 +20,7 @@ import stat
 import time
 
 from ..tasks.agentcmd import StepError
-from ..worktrees.git import Git
+from . import guardgit
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -42,6 +42,9 @@ def locked(repo, *, existing_only=False):
     from ..cardflow.gitops import lock_for
     with lock_for(repo):
         root = _root(repo)
+        for exposed in (os.path.realpath(repo), os.path.realpath(repo) + "-worktrees"):
+            if os.path.commonpath((os.path.realpath(root), exposed)) == exposed:
+                raise StepError("strażnik refów: stan hosta wewnątrz montowania projektu")
         if existing_only and not os.path.isdir(root):
             yield False
             return
@@ -63,6 +66,11 @@ def _save(path, value):
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        parent = os.open(os.path.dirname(path), DIR_FLAGS)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -85,7 +93,8 @@ def _active(repo):
 
 
 def _git(repo, *args):
-    result = Git().run(repo, *args)
+    with guardgit.trusted(repo) as (git, private):
+        result = git.run(private, "--git-dir=" + private, *args)
     if not result.ok:
         raise StepError("strażnik refów: git: " + result.err)
     return result.out.strip()
@@ -272,17 +281,35 @@ def _open_git(repo):
     return os.open(os.path.join(os.path.realpath(repo), ".git"), DIR_FLAGS)
 
 
+def _open_worktree(repo, worktree):
+    base = os.path.realpath(repo) + "-worktrees"
+    relative = os.path.relpath(worktree, base)
+    if (not os.path.isabs(worktree) or os.path.normpath(worktree) != worktree
+            or any(p in ("", ".", "..") for p in relative.split("/"))):
+        raise StepError("strażnik refów: worktree poza katalogiem projektu")
+    root = os.open(base, DIR_FLAGS)
+    try:
+        with _parent(root, relative + "/.git") as (parent, _name):
+            return os.dup(parent)
+    finally:
+        os.close(root)
+
+
 def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
     """Zapisuje migawkę dopiero pod blokadą; prepare wykonuje zaufane montowania runnera."""
     with locked(repo):
         peers = list(_active(repo))
         if any(peer["card"] != card for _path_peer, peer in peers):
             raise StepError("strażnik refów: w repozytorium trwa krok innej karty")
+        if any(peer["step"] == step for _path_peer, peer in peers):
+            raise StepError("strażnik refów: próba już aktywna; wymaga uzgodnienia po restarcie")
         if not branch:
             raise StepError("strażnik refów: brak zaufanej gałęzi kroku")
         branch = "refs/heads/" + branch
+        head = guardgit.admin(repo, git_dir)
         _git(repo, "check-ref-format", branch)
-        if _git(repo, "--git-dir=" + git_dir, "symbolic-ref", "--quiet", "HEAD") != branch:
+        if (not head or head["kind"] != "file"
+                or base64.b64decode(head["data"]) != ("ref: " + branch + "\n").encode()):
             raise StepError("strażnik refów: HEAD nie wskazuje przypisanej gałęzi kroku")
         root = _open_git(repo)
         try:
@@ -300,6 +327,8 @@ def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
             p == own_config and n.get("kind") == "file" and not n["data"])}
         allowed = {branch}
         refs = _refs(repo)
+        if not refs.get(branch) or refs[branch]["target"]:
+            raise StepError("strażnik refów: zaufana gałąź nie jest istniejącym refem bezpośrednim")
         # Nie utrwalamy naruszenia sąsiada jako nowego punktu przywracania.
         # Inaczej drugi kończący krok mógłby odtworzyć usunięty już obcy hak/ref.
         for _path_peer, peer in peers:
@@ -324,7 +353,7 @@ def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree=""):
         snapshot = dict(active=True, started=time.time_ns(), card=card, step=step, gitDir=git_dir, branch=branch,
                         allowed=sorted(allowed), refs=refs, files=files, worktree=worktree)
         if worktree:
-            fd = os.open(worktree, DIR_FLAGS)
+            fd = _open_worktree(repo, worktree)
             try:
                 snapshot["pointer"] = _node(fd, ".git")
             finally:
@@ -520,15 +549,10 @@ def _restore_symref(repo, ref, old, now):
                 with os.fdopen(fd, "wb") as fh:
                     if _refs(repo).get(ref) != now:
                         raise StepError(f"{ref}: zmieniony po porównaniu")
-                    if old:
-                        value = "ref: " + old["target"] if old["target"] else old["oid"]
-                        fh.write((value + "\n").encode())
+                    fh.write((old["oid"] + "\n").encode())
                     fh.flush()
                     os.fsync(fh.fileno())
-                if old:
-                    os.replace(lock, name, src_dir_fd=parent, dst_dir_fd=parent)
-                else:
-                    os.unlink(name, dir_fd=parent)
+                os.replace(lock, name, src_dir_fd=parent, dst_dir_fd=parent)
             finally:
                 try:
                     os.unlink(lock, dir_fd=parent)
@@ -560,6 +584,8 @@ def finish(repo, card, step, *, branch="", active_only=False):
         path = _path(repo, card, step)
         try:
             saved = _load(path)
+            if branch and "refs/heads/" + branch != saved["branch"]:
+                raise StepError("strażnik refów: gałąź zakończenia różna od zaufanej gałęzi startu")
             if active_only and not saved.get("active"):
                 return {}
             if "report" in saved:
@@ -572,7 +598,7 @@ def finish(repo, card, step, *, branch="", active_only=False):
             if not active_only:
                 report["errors"].append(str(exc))
             return report if report["errors"] else {}
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, StepError) as exc:
             report["errors"].append(str(exc))
             return report
         with checking("pliki"):
@@ -613,21 +639,22 @@ def finish(repo, card, step, *, branch="", active_only=False):
                 # z sumy allowed sąsiadów ani z aktualnego HEAD. CAS chroni
                 # także własny ref przed ruchem po porównaniu; alias nie daje
                 # prawa zapisu jego celu.
-                if (old and old["target"]) or (now and now["target"]):
+                # Start wymaga istniejącej gałęzi bezpośredniej. Stara migawka,
+                # która tego nie dowodzi, nie daje prawa do usuwania refu.
+                if not old or old["target"]:
+                    report["errors"].append(f"{ref}: brak zaufanej wartości początkowej")
+                    continue
+                if now and now["target"]:
                     with checking(ref):
                         _restore_symref(repo, ref, old, now)
                     continue
                 zero = "0" * len((now or old)["oid"])
-                if old:
-                    args = (ref, old["oid"], now["oid"] if now else zero)
-                else:
-                    args = ("-d", ref, now["oid"])
+                args = (ref, old["oid"], now["oid"] if now else zero)
                 with checking(ref):
-                    result = Git().run(repo, "update-ref", "--no-deref", *args)
-                    if not result.ok:
-                        report["errors"].append(f"{ref}: {result.err}")
+                    _git(repo, "update-ref", "--no-deref", *args)
         with checking("HEAD"):
-            expected = "refs/heads/" + branch if branch else saved["branch"]
+            expected = saved["branch"]
+            guardgit.admin(repo, saved["gitDir"])
             common = os.path.join(os.path.realpath(repo), ".git")
             relative = os.path.relpath(saved["gitDir"], common)
             if not relative.startswith("worktrees/") or ".." in relative.split("/"):
@@ -645,7 +672,7 @@ def finish(repo, card, step, *, branch="", active_only=False):
                 os.close(root)
         if saved.get("worktree"):
             with checking("worktree/.git"):
-                fd = os.open(saved["worktree"], DIR_FLAGS)
+                fd = _open_worktree(repo, saved["worktree"])
                 try:
                     if _node(fd, ".git") != saved["pointer"]:
                         report["files"].append("worktree/.git")
