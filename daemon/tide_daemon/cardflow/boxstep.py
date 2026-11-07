@@ -200,7 +200,7 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
     from ..box import refguard
     others = refguard.other_cards(engine._repo(card_id), card_id)
     if others:
-        raise BoxWaiting("czeka na zakończenie kroków innej karty w repozytorium: " + ", ".join(others))
+        raise BoxWaiting("czeka na repozytorium (jedna karta naraz): " + ", ".join(others))
     builder = builder_of(engine, settings)
     try:
         effective = bp.merge(profile, bp.load_card(slug, card_id) or {"tide-box": 1}).profile
@@ -465,7 +465,6 @@ def recover_network(engine) -> None:
     """Uzgadnia zwolnienia oraz polityki/K3; obejmuje oba okna awarii startu i końca kroku."""
     proxy = proxy_of(engine)
     active, ended = [], []
-    failed_starts = set()
     for card in engine.journal.cards():
         events = engine.journal.read(card)
         from .trialhold import held
@@ -490,8 +489,14 @@ def recover_network(engine) -> None:
         for (action, key), intent in st.intents.items():
             if (action == "step-start" and intent.get("runner") == RUNNER and key not in st.steps
                     and (action, key) in st.results and not st.results[(action, key)].get("ok")):
+                # Dawny wynik ok=False mógł oznaczać proces zakończony przed potwierdzeniem startu.
+                # Bez dowodu końca nie zwalniamy migawki ani zasobów; potwierdzony brak startu
+                # obsługuje synchronicznie BoxRunner.start, anulując migawkę po błędzie Popen.
+                from ..tasks import stepstop
+                if engine._unit_state({**intent, "step": key}) != "inactive" or \
+                        stepstop.read_exit_code(intent.get("stepDir") or "") is None:
+                    continue
                 ended.append((card, {**intent, "step": key}))
-                failed_starts.add((card, key))
     signature = (proxy, tuple(sorted(s["step"] for _card, s in active)),
                  tuple(sorted(s["step"] for _card, s in ended)))
     if getattr(engine, "_box_network_state", None) == signature:
@@ -502,17 +507,13 @@ def recover_network(engine) -> None:
             from ..box import refguard
             repo = step.get("repo") or (fold(engine.journal.read(card)).started or {}).get("repo")
             if repo:
-                if (card, step["step"]) in failed_starts:
-                    # Tylko start bez procesu można anulować bez kontroli końcowej.
-                    refguard.cancel(repo, card, step["step"])
-                else:
-                    guarded = refguard.finish(repo, card, step["step"], branch=step.get("branch") or "",
-                                              active_only=True)
-                    if guarded:
-                        engine.journal.append(card, "refs.guard", step=step["step"],
-                                              ticket=step.get("ticket") or "", **guarded)
-                        if guarded.get("errors"):
-                            released = False  # Zachowujemy oryginalną migawkę i ponawiamy w każdym ticku.
+                guarded = refguard.finish(repo, card, step["step"], branch=step.get("branch") or "",
+                                          active_only=True)
+                if guarded:
+                    engine.journal.append(card, "refs.guard", step=step["step"],
+                                          ticket=step.get("ticket") or "", **guarded)
+                    if guarded.get("errors"):
+                        released = False  # Zachowujemy oryginalną migawkę i ponawiamy w każdym ticku.
         except (OSError, ValueError) as exc:
             released = False
             print(f"tide-daemon: przepływ karty {card}: kontrola refów po {step['step']}: {exc!r}", flush=True)

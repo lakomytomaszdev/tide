@@ -3366,7 +3366,12 @@ class FlowEngine(PlanEditing):
             proc = self.procs.get(key)
             if state == "inactive" and code is None and proc is not None and proc.poll() is None:
                 return  # Klient może dopiero tworzyć jednostkę; zachowujemy otwarty zamiar i porty.
-            if state == "active" or (code == 0 and os.path.isfile(result)):
+            if intent.get("runner") == boxstep.RUNNER and state == "inactive" and code is None:
+                return  # Brak jednostki/kodu nie dowodzi, że proces nigdy nie wystartował.
+            if state == "active" or (intent.get("runner") == boxstep.RUNNER and code is not None) or \
+                    (code == 0 and os.path.isfile(result)):
+                # Kod wrappera, również niezerowy i bez result.json, potwierdza wykonanie procesu.
+                # Odtwarzamy krok; _poll/_finish odbiorą błąd i sprawdzą refy przed zwolnieniem próby.
                 git_dir = ""
                 try:
                     git_dir = agentcmd.resolve_git_dir(self._repo(card), intent.get("worktree") or "")
