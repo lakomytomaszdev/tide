@@ -22,6 +22,7 @@ class AppendPlanDbusTest(FlowCase):
         self.assertTrue(self.call("StartCard", card, json.dumps({"entry": "plan", "planPath": path}))["ok"])
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
         self.assertTrue(self.call("ApproveCardPlan", card)["ok"])
+        self.approve_environment(card)
         self.assertTrue(wait_until(lambda: any(s.get("ticket") == "PT-1" and s["result"] == "question"
                                              for s in self.of(card, "step.finished")), timeout=20))
         plan = self.shown(card)["derived"]["flow"]["plan"]

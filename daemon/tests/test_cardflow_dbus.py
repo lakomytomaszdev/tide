@@ -120,6 +120,12 @@ class FlowCase(unittest.TestCase):
     def start(self, card_id, **extra):
         return self.call("StartCard", card_id, json.dumps({"entry": "now", "executor": "Sonnet", **extra}))
 
+    def approve_environment(self, card_id):
+        """Jawna zgoda na minimalne środowisko w scenariuszach wykonania planu."""
+        reply = self.call("ApproveCardEnvironment", card_id, "tide-box: 1\n", False)
+        self.assertTrue(reply["ok"], reply)
+        return reply
+
     def shown(self, card_id) -> dict:
         return next(c for c in self.call("Snapshot")["cards"] if c["id"] == card_id)
 

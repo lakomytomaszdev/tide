@@ -297,7 +297,7 @@ class TransferFlowTest(FlowInProcess):
 
     def test_wait_for_reset_resumes_same_provider_after_known_reset(self):
         # Pierwszy odczyt sygnału limitu musi już widzieć wyczerpaną metrykę.
-        self.stop_flow()
+        self.stop_flow_worker()
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,
@@ -327,7 +327,7 @@ class TransferFlowTest(FlowInProcess):
     def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
         # StartCard może oddać odpowiedź dopiero po wykryciu szybkiego sygnału atrapy.
         # Włączamy odpytywanie po zmianie metryki, aby step.limit miało właściwe okno i reset.
-        self.flow.stop()
+        self.stop_flow_worker()
         self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}

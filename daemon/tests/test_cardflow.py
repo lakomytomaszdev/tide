@@ -44,6 +44,53 @@ class _FlowMonitor(CardFlowMonitor):
 
 
 class MonitorFixtureTest(unittest.TestCase):
+    def test_worker_barrier_keeps_start_and_environment_actions_available(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        engine.start.return_value = {"ok": True, "ticket": "PT-1"}
+        engine.approve_environment.return_value = {"ok": True, "boxWait": ""}
+        monitor = _FlowMonitor(engine)
+        self.addCleanup(monitor.stop)
+        fixture = FlowInProcess()
+        fixture.flow = monitor
+        entered, release = threading.Event(), threading.Event()
+
+        def tick():
+            entered.set()
+            release.wait(2)
+
+        engine.tick.side_effect = tick
+        monitor.start()
+        self.assertTrue(entered.wait(2))
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        self.addCleanup(release.set)
+        fixture.stop_flow_worker()
+        self.assertTrue(release.is_set(), "bariera czeka na bieżący tick")
+        self.assertFalse(monitor._timer.isActive())
+        self.assertFalse(monitor._ticking)
+
+        replies = []
+        monitor.start_card("K-1", '{"entry":"now"}', replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=2))
+        self.assertTrue(json.loads(replies.pop())["ok"], "bariera nie zamyka API StartCard")
+        monitor.approve_environment("K-1", "tide-box: 1\n", False, replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=2))
+        self.assertTrue(json.loads(replies.pop())["ok"], "bariera nie zamyka API ApproveCardEnvironment")
+        self.assertEqual(engine.tick.call_count, 1, "akcje nie wznawiają odpytywania")
+        monitor.start()
+        self.assertTrue(wait_until(lambda: engine.tick.call_count == 2, timeout=2))
+        monitor.stop()
+        monitor.start_card("K-1", '{"entry":"now"}', replies.append)
+        monitor.approve_environment("K-1", "tide-box: 1\n", False, replies.append)
+        self.assertEqual([json.loads(reply)["error"] for reply in replies], ["unavailable", "unavailable"])
+        self.assertEqual(engine.start.call_count, 1, "zamknięty monitor nadal odrzuca akcje")
+        self.assertEqual(engine.approve_environment.call_count, 1)
+
     def test_restart_after_cancelling_a_queued_tick_polls_again(self):
         app()
         engine = mock.Mock()
@@ -193,8 +240,14 @@ class FlowInProcess(unittest.TestCase):
         self.flow = self.make_flow()
 
     def stop_flow_worker(self):
-        """Bariera przed ręcznym wywołaniem silnika: stop() nie czeka na trwające zadanie."""
-        self.flow.stop()
+        """Pauza odpytywania i bariera wątku; API monitora nadal przyjmuje akcje testu."""
+        self.flow._timer.stop()
+        if self.flow._pool is not None:
+            self.flow._pool.shutdown(wait=True, cancel_futures=False)
+            self.flow._pool = None
+        # Dostarczamy zakończenia także ticka: kolejne start() ma wznowić odpytywanie.
+        app().processEvents()
+        self.flow._ticking = False
 
     # --- pomocnicze -------------------------------------------------------------------------------
 

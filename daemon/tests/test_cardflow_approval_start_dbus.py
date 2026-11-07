@@ -73,6 +73,10 @@ class ApprovalStartBusTest(FlowCase):
     def approve(self, card):
         reply = self.call("ApproveCardPlan", card)
         self.assertTrue(reply["ok"], reply)
+        # Zatwierdzenie planu nie zastępuje zgody środowiska (PT-172).
+        self.assertEqual(self.of(card, "box.wait")[-1]["value"], "environment")
+        self.assertEqual(self.ticket_starts(card), [], "ticket czeka na jawną zgodę środowiska")
+        self.approve_environment(card)
         return reply
 
     def ticket_starts(self, card):

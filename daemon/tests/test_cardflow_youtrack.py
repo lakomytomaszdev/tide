@@ -236,7 +236,7 @@ class YouTrackFlowTest(FlowInProcess):
     def test_offline_result_comment_does_not_block_next_ticket(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))['ok'])
-        self.flow.stop()
+        self.stop_flow_worker()
         self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
                         'kończymy tick monitora przed bezpośrednim zatwierdzaniem planu')
         self.flow.engine.approve_plan(card)
