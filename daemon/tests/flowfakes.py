@@ -60,6 +60,7 @@ word, count = (mode.group(1), int(mode.group(2) or 0)) if mode else ("gotowe", 0
 file_match = re.search(r"ATRAPA-PLIK: ([a-zA-Z0-9_-]+)", prompt)
 work = os.path.join(cwd, "ATRAPA-" + file_match.group(1) + ".md" if file_match else "ATRAPA.md")
 
+# TIDE_FAKE_AGENT_READY: instrumentacja po inicjalizacji, przed obsługą kroku.
 if prompt.startswith("Jesteś opiekunem karty"):
     # Krok opiekuna (PT-143): co zrobić mówi „ATRAPA-OPIEKUN: …” w opisie problemu (powód błędu kroku).
     care = re.search(r"ATRAPA-OPIEKUN: ([a-z-]+)", prompt)

@@ -43,8 +43,10 @@ def instrument(folder):
     for name in ("claude", "codex"):
         binary = Path(folder, name)
         text = binary.read_text()
-        binary.write_text(text.replace('if prompt.startswith("Jesteś opiekunem karty"):',
-                                       READ_EVIDENCE + '\nif prompt.startswith("Jesteś opiekunem karty"):', 1))
+        marker = "# TIDE_FAKE_AGENT_READY: instrumentacja po inicjalizacji, przed obsługą kroku."
+        if text.count(marker) != 1:
+            raise ValueError(f"{binary}: brak jednoznacznego miejsca instrumentacji")
+        binary.write_text(text.replace(marker, READ_EVIDENCE, 1))
 
 
 @requires_dbus
