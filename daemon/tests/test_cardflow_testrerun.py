@@ -175,7 +175,7 @@ class SubstituteTest(unittest.TestCase):
             self.assertEqual(testrerun.substitute(events, self.repo, other)[0], other, other)
 
     def interrupted_run(self, plan=True, started=("good", "bad", "slow"), finished=("good", "bad"),
-                        exit_code="przekroczony czas", count=3):
+                        exit_code="przekroczony czas", count=3, crashed=()):
         if not os.path.exists(os.path.join(self.repo, "pkg/tests/test_slow.py")):
             self.write("pkg/tests/test_slow.py", "import unittest\nclass T(unittest.TestCase):\n"
                                                   "    def test_ok(self):\n        pass\n")
@@ -194,9 +194,12 @@ class SubstituteTest(unittest.TestCase):
             open(os.path.join(run, stem + ".log"), "w").close()
             if name in finished:
                 report = {"tests": 1, "ids": [], "skipped": 0, "failures": [], "errors": [],
-                          "unexpected_successes": []}
+                          "unexpected_successes": [], "returncode": 0}
                 if name == "bad":
                     report["failures"] = [f"pkg.tests.test_{name}.T.test_ok"]
+                    report["returncode"] = 1
+                if name in crashed:
+                    report["returncode"] = -11  # raport bez porażek, proces padł po jego zapisie
                 with open(os.path.join(run, stem + ".json"), "w", encoding="utf-8") as fh:
                     json.dump(report, fh)
         log = os.path.join(self.root, "cut.log")
@@ -215,16 +218,27 @@ class SubstituteTest(unittest.TestCase):
             self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command)
             self.assertNotIn("test_good.py", command)
 
-    def test_interrupted_run_without_plan_uses_started_modules_when_all_are_accounted(self):
+    def test_interrupted_run_without_module_list_runs_in_full(self):
+        """Starszy uruchamiacz (bez modules.json i kodu wyjścia w raporcie modułu): pełny przebieg."""
         events = self.interrupted_run(plan=False)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc")
+
+    def test_module_that_crashed_after_its_report_is_rerun(self):
+        """Review 08.11: worker zapisuje raport przed końcem procesu — liczy się kod wyjścia, nie sam raport."""
+        events = self.interrupted_run(crashed=("good",))
         command = testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0]
-        self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command)
+        self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_good.py pkg/tests/test_slow.py", command)
+
+    def test_only_the_engine_timeout_description_counts_as_a_cut(self):
+        self.assertTrue(testrerun.interrupted("przekroczony czas"))
+        for other in ("brak", "lost", "", None, 0, 1, 2, True):
+            self.assertFalse(testrerun.interrupted(other), other)
+        for code in (143, "143", 137, 130):
+            self.assertTrue(testrerun.interrupted(code), code)
 
     def test_interrupted_run_with_unknown_unstarted_modules_runs_in_full(self):
         """Bez listy modułów nie wiadomo, które się nie zaczęły — nie wolno ich pominąć."""
-        events = self.interrupted_run(plan=False, started=("good", "bad"), count=3)
-        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
-                         "make test-changed BASE=abc")
         events = self.interrupted_run(plan=True, started=("good", "bad"), count=3)
         command = testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0]
         self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command, "plan zna niezaczęty")

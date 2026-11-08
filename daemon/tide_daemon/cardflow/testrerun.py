@@ -20,8 +20,10 @@ VALUE = r"[A-Za-z0-9_./:@+-]+"
 # receptury; przy porównaniu przebiegów jest pomijany, a ponowienie pisze raport tam, gdzie wskazuje bieżące polecenie.
 FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS|TEST_OUTPUT)={VALUE})*$")
 OUTPUT_TOKEN = re.compile(rf"(?:^| )TEST_OUTPUT={VALUE}(?= |$)")
-# Ucięcie przez Tide (limit czasu, zatrzymanie jednostki): wtedy raport końcowy nie powstaje.
+# Ucięcie przez Tide (limit czasu, zatrzymanie jednostki): wtedy raport końcowy nie powstaje. Opis wyniku zamiast
+# kodu wpisuje silnik wyłącznie przy limicie czasu (engine.py, OUTSIDE_TIMEOUT); inne opisy nie są ucięciem.
 INTERRUPTED = {130, 137, 143}
+INTERRUPTED_TEXT = {"przekroczony czas"}
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
 JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?= |$)")
 OUTPUT = re.compile(rf"(?:^| )TEST_OUTPUT=({VALUE})(?= |$)")
@@ -74,7 +76,7 @@ def interrupted(exit_code) -> bool:
     if isinstance(exit_code, str):
         text = exit_code.strip()
         if not text.lstrip("-").isdigit():
-            return bool(text)
+            return text in INTERRUPTED_TEXT
         exit_code = int(text)
     return isinstance(exit_code, int) and exit_code in INTERRUPTED
 
@@ -84,18 +86,13 @@ def _stem(module: str) -> str:
 
 
 def unfinished_modules(directory: str, count: int, root: str) -> list[str]:
-    """Przebieg ucięty bez summary.json: moduły padnięte albo bez wyniku. Lista modułów z `modules.json`
-    uruchamiacza, a dla starszego uruchamiacza z logów modułów — tylko gdy liczba zgadza się z nagłówkiem,
-    bo niezaczętego modułu nie wolno pominąć. Pusta lista = nie podmieniaj."""
+    """Przebieg ucięty bez summary.json: moduły padnięte albo bez wyniku. Lista modułów z `modules.json` uruchamiacza
+    (niezaczętego modułu nie wolno pominąć), zaliczony tylko moduł z raportem z kodem wyjścia procesu 0. Starszy
+    uruchamiacz nie zapisuje ani listy, ani kodu wyjścia w raporcie modułu — wtedy pełny przebieg. Pusta lista =
+    nie podmieniaj."""
     try:
         with open(os.path.join(directory, "modules.json"), encoding="utf-8") as fh:
             planned = json.load(fh)["modules"]
-    except FileNotFoundError:
-        try:
-            planned = sorted(name[:-4].replace("__", "/") + ".py" for name in os.listdir(directory)
-                             if name.endswith(".log"))
-        except OSError:
-            return []
     except (OSError, ValueError, KeyError, TypeError):
         return []
     if not isinstance(planned, list) or len(planned) != count or len(set(planned)) != count or not all(
@@ -107,7 +104,8 @@ def unfinished_modules(directory: str, count: int, root: str) -> list[str]:
         try:
             with open(os.path.join(directory, _stem(module) + ".json"), encoding="utf-8") as fh:
                 report = json.load(fh)
-            ok = isinstance(report, dict) and not report.get("crash") and all(
+            code = report.get("returncode") if isinstance(report, dict) else None
+            ok = type(code) is int and code == 0 and all(
                 isinstance(report.get(k), list) and not report[k]
                 for k in ("failures", "errors", "unexpected_successes"))
         except (OSError, ValueError):
