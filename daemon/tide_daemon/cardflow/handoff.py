@@ -51,6 +51,25 @@ polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie
 """
 
 
+def sandbox_tests(full: str, worktree: str = "") -> str:
+    """08.11: kroki uruchamiały pełny przebieg w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp
+    i zagnieżdżonego bwrap), a potem drugi raz poza nią — obciążenie maszyny 40–58 na 16 rdzeniach.
+    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”)."""
+    from .testrerun import runner_reruns
+    known = not worktree or not os.path.isdir(worktree)
+    if known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py")):
+        targeted = "`make test-cardflow`, `make test-daemon`, `make test-board`"
+        targeted += (" albo `/usr/bin/python3 tools/test_runner.py --modules <moduły>`"
+                     if known or runner_reruns(worktree) else " albo inny zestaw `make test-<zestaw>`")
+    else:
+        targeted = "narzędziem testów projektu z filtrem na zmieniony obszar"
+    return f"""W piaskownicy kroku uruchamiaj tylko testy celowane ({targeted}).
+Wymagany {full} zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy: część modułów (D-Bus, zapis do /tmp, zagnieżdżona
+piaskownica) i tak tam pada, a drugi przebieg poza piaskownicą tylko dociąża maszynę.
+"""
+
+
 def has_changed_target(worktree: str) -> bool:
     """Czy obowiązuje `make test-changed` (06.11: gałęzie K-37/K-38 sprzed K-54 go nie mają, a kartka po K-62
     kazała go uruchomić — agent pytał, czy przenieść infrastrukturę testów z master). Brak katalogu — nowa zasada."""
@@ -69,7 +88,7 @@ def has_changed_target(worktree: str) -> bool:
 
 def ticket_tests(base: str = "", worktree: str = "") -> str:
     if not has_changed_target(worktree):
-        return OLD_BRANCH_TESTS + rerun_failed(worktree)
+        return OLD_BRANCH_TESTS + sandbox_tests("pełny `make test`", worktree) + rerun_failed(worktree)
     command = f"make test-changed BASE={shlex.quote(base)}" if base else \
         "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
     return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
@@ -78,7 +97,7 @@ Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania 
 jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
 w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
 Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
-""" + rerun_failed(worktree)
+""" + sandbox_tests(f"`{command}`", worktree) + rerun_failed(worktree)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -106,6 +125,8 @@ def close_card(*, card_id: str, title: str, description: str, worktree: str, out
 Opis karty: {description}
 Wyniki ticketów: {tickets}
 Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
+Pełny `make test` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy kroku.
 Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
 `make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
 outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych

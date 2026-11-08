@@ -26,6 +26,28 @@ class TestPolicyCards(unittest.TestCase):
                 self.assertIn("K-37, K-38 i K-55", text)
                 self.assertIn("Zapisz polecenie i wynik w notce", text)
 
+    def test_step_runs_only_targeted_tests_in_sandbox_and_full_run_outside(self):
+        """08.11: kroki uruchamiały pełne `make test-changed` w piaskownicy (moduły padały bez D-Bus i zapisu do /tmp),
+        a potem drugi raz poza nią — obciążenie maszyny 40–58 na 16 rdzeniach."""
+        common = dict(card_id="K-62", title="Testy", description="d", ticket="PT-243",
+                      branch="ticket/pt-243-tests", worktree="/w", out_dir="/o", test_base=self.base)
+        cards = [handoff.ticket_card(**common, project="p", card_branch="card/k-62"),
+                 handoff.fix_card(**common, round_no=1, review="MAJOR: popraw test")]
+        for text in cards:
+            with self.subTest(kind=text.splitlines()[0]):
+                self.assertIn("W piaskownicy kroku uruchamiaj tylko testy celowane", text)
+                self.assertIn("`make test-cardflow`, `make test-daemon`, `make test-board`", text)
+                self.assertIn("`/usr/bin/python3 tools/test_runner.py --modules <moduły>`", text)
+                self.assertIn(f"Wymagany `make test-changed BASE={self.base}` zgłoś od razu jako polecenie "
+                              "poza piaskownicą (wynik `outside`)", text)
+                self.assertIn("bez wcześniejszej próby pełnego przebiegu w piaskownicy", text)
+
+    def test_close_reports_full_run_outside_without_sandbox_attempt(self):
+        text = handoff.close_card(card_id="K-62", title="Testy", description="d", worktree="/w",
+                                  out_dir="/o", tickets=[], manual=False)
+        self.assertIn("Pełny `make test` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`)", text)
+        self.assertIn("bez wcześniejszej próby pełnego przebiegu w piaskownicy", text)
+
     def test_reviewer_checks_changed_tests_without_demanding_full_run(self):
         text = handoff.review_card(card_id="K-62", title="Testy", description="d", ticket="PT-243",
                                    round_no=1, card_branch="card/k-62", ticket_branch="ticket/pt-243",
@@ -90,6 +112,13 @@ class OldCardBranchTest(unittest.TestCase):
                 self.assertNotIn("make test-changed BASE=", text)
                 self.assertIn("pełny `make test`", text)
                 self.assertIn("Nie przenoś infrastruktury testów z master", text)
+
+    def test_old_branch_reports_full_run_outside_without_sandbox_attempt(self):
+        for text in self.cards(self.tree("test:\n\t@true\ntest-daemon:\n\t@true\n")):
+            with self.subTest(kind=text.splitlines()[0]):
+                self.assertIn("W piaskownicy kroku uruchamiaj tylko testy celowane", text)
+                self.assertIn("Wymagany pełny `make test` zgłoś od razu jako polecenie poza piaskownicą", text)
+                self.assertIn("bez wcześniejszej próby pełnego przebiegu w piaskownicy", text)
 
     def test_branch_with_target_uses_changed_tests(self):
         for text in self.cards(self.tree("test:\n\t@true\ntest-changed:\n\t@true\n")):

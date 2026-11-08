@@ -14,6 +14,14 @@ Brak zgody lub konieczność wykonania
 poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
 przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
 
+Krok w tle (ticket, poprawki, domknięcie) uruchamia w piaskownicy kroku tylko testy celowane
+(`make test-cardflow`, `make test-daemon`, `make test-board` albo `tools/test_runner.py --modules`).
+Wymagany `make test-changed BASE=…` (a przy domknięciu pełny `make test`) zgłasza od razu jako
+polecenie `outside`, bez wcześniejszej próby w piaskownicy. 08.11.2026 kroki puszczały pełny przebieg
+najpierw w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp i zagnieżdżonego bwrap), a potem drugi raz
+poza nią — obciążenie maszyny 40–58 na 16 rdzeniach. Tekst w kartkach: `sandbox_tests`
+w `daemon/tide_daemon/cardflow/handoff.py`.
+
 Ta zasada zastępuje wymóg pełnego `make test` przed oddaniem ticketu zapisany w kartkach
 istniejących planów, w tym K-37, K-38 i K-55. Nie przepisujemy tych planów.
 
