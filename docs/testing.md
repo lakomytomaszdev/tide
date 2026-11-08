@@ -141,6 +141,21 @@ współbieżności i braku działania pozostają oddzielne. Test priorytetu rapo
 pierwszą atrapę dopiero po potwierdzeniu obecności raportu w kolejce, zamiast polegać
 na dwusekundowym opóźnieniu atrapy.
 
+Test równoległego StartCard i odczytu CLI używa bariery `release-hosting`: rzeczywisty
+proces atrapy CLI musi nadal czekać, gdy nadejdzie poprawna odpowiedź StartCard.
+Budżet odpowiedzi wynosi 60 s, a atrapa i jej deadline 120 s; zwolnienie w `finally`
+kończy CLI kontrolowanym błędem i pozwala sprawdzić ostrzeżenie. To sprawdzenie
+niezależności operacji zastępuje dawny wyścig odpowiedzi z 2-sekundowym oknem przy
+4-sekundowym timeout CLI. Pomiar wykazał 5,66 s lokalnego startu z chronionym Git;
+stos pokazywał pracę rezerwacji, podczas gdy osobny wątek nadal czekał na CLI.
+Test nie potwierdza już dawnego progu 2 s. Testy timeoutu hostingcli pozostają osobne.
+
+Dwie próby edycji pracującego ticketu używają tej samej bariery `release-agent`,
+aby naturalny koniec ośmiosekundowej atrapy nie zastąpił sprawdzanego zatrzymania.
+Po zwolnieniu oczekiwanie końca planu ma budżet 120 s (zmierzony dawny wynik 26,25 s
+przekroczył 25 s). Test poświadczeń kolejnych programów czeka na domknięcie poprzedniej
+karty: koniec jej ticketu nie zwalnia jeszcze blokady jednego repozytorium.
+
 Zmiana budżetu wymaga zmierzonego uzasadnienia i review tak jak kod testu. Nie zastępuje
 naprawy błędnego wyniku, nie wyłącza granic ani kontroli puli/izolacji i nie jest
 odstępstwem od wcześniejszych nieudanych przebiegów. Po zmianie obowiązuje nowy

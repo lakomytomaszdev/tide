@@ -1008,6 +1008,11 @@ class BoxStepInProcessTest(BoxFlow):
                 self.assertTrue(wait_until(lambda: self.proxy.grants.check(grant["key"], step["boxIp"], grant["route"]) is None,
                                            timeout=5))
 
+                # Kolejny program dostaje osobną kartę tego samego repozytorium.
+                # Koniec ticketu nie zwalnia jeszcze blokady całej karty.
+                self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=120),
+                                self.events(card_id))
+
     def decide(self, card_id, **request):
         reply = []
         self.board.resolve_card_step(card_id, json.dumps(request), reply.append)
