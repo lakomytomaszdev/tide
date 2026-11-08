@@ -275,6 +275,48 @@ class ProcessIdentityRegression(unittest.TestCase):
                 with self.subTest(barrier="lifecycle"):
                     f.assert_lifecycle_preserved()
 
+    def test_review9_outside_completion_requires_prior_separate_process(self):
+        f = self.fixture
+        f.project()
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        for late_start, restarted in itertools.product((False, True), (False, True)):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            history = outside_unit_history("PT-999", {"unit": "outside.scope"})
+            start = history.pop()
+            history.append(dict(type="outside.finished", step="legacy-step", ticket="PT-999",
+                                command="echo legacy", exit=0, tail=""))
+            if late_start:
+                history.append(start)
+            for event in history:
+                f.journal.append("K-38", event["type"], **{k: v for k, v in event.items() if k != "type"})
+            step = f.outside_history()
+            if restarted:
+                f.restart()
+            with self.subTest(late_start=late_start, restarted=restarted):
+                with self.subTest(barrier="model"):
+                    identity = process_identities(f.journal.read_complete("K-38"))["legacy-step"]
+                    self.assertEqual(identity.state, "unknown")
+                    self.assertFalse(identity.protected)
+                with self.subTest(barrier="inventory"):
+                    self.assertFalse(f.inventory())
+                with self.subTest(barrier="outside"), f.outside_environment() as spawn:
+                    try:
+                        f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    except FlowError:
+                        pass
+                    spawn.assert_not_called()
+                with self.subTest(barrier="resume"), f.outside_environment() as spawn:
+                    st = fold(f.journal.read_complete("K-38"))
+                    with self.assertRaises(FlowError):
+                        f.engine._outside_ready("K-38", st.steps["legacy-step"],
+                                                st.finished["legacy-step"], st.step_decisions["legacy-step"])
+                    spawn.assert_not_called()
+                with self.subTest(barrier="lifecycle"):
+                    f.assert_lifecycle_preserved()
+
     def test_review8_incomplete_console_blocks_unrelated_process_and_box_stop(self):
         f = self.fixture
         f.project()
@@ -384,6 +426,7 @@ def generated_bad_histories():
     yield from generated_bad_action_histories()
     yield from generated_bad_type_histories()
     yield from generated_bad_outside_unit_histories()
+    yield from generated_bad_outside_order_histories()
     yield from generated_bad_console_histories()
 
 
@@ -443,6 +486,20 @@ def generated_bad_outside_unit_histories():
         finished = dict(type="outside.finished", step="legacy-step", ticket=ticket, exitCode=0)
         for later in ([], [finished], [good], [good, finished], [finished, good]):
             yield [*history, *later]
+
+
+def generated_bad_outside_order_histories():
+    """M1 rundy 9: usunięcie/przestawienie całego startu, także z późniejszą naprawą."""
+    for ticket, fields in itertools.product(("PT-176", "PT-999"), ({}, {"unit": "outside.scope"})):
+        history = outside_unit_history(ticket, {"unit": "outside.scope"})
+        start = history.pop()
+        finished = dict(type="outside.finished", step="legacy-step", ticket=ticket,
+                        command="echo legacy", exit=0, tail="", **fields)
+        done = dict(type="step.finished", step="legacy-step", ticket=ticket, result="done")
+        # Zakończenie z własnym unit również nie dowodzi wcześniejszego startu.
+        for events in ([finished], [finished, start], [finished, start, finished]):
+            for later in ([], [done]):
+                yield [*history, *events, *later]
 
 
 def generated_bad_type_histories():
@@ -579,6 +636,15 @@ def generated_project_histories():
 
 
 class ProcessIdentityProperties(unittest.TestCase):
+    def test_outside_completion_without_prior_start_stays_unknown_after_repair(self):
+        for index, history in enumerate(generated_bad_outside_order_histories()):
+            with self.subTest(history=index):
+                identity = process_identities(history)["legacy-step"]
+                self.assertEqual(identity.state, "unknown")
+                self.assertTrue(identity.held)
+                self.assertEqual(identity.protected, history[1]["ticket"] == "PT-176")
+                self.assertEqual(identity.data["unit"], "legacy.scope")
+
     def test_incomplete_outside_units_remain_unknown_after_completion_and_repair(self):
         for index, history in enumerate(generated_bad_outside_unit_histories()):
             with self.subTest(history=index):

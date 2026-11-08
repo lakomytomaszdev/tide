@@ -153,7 +153,8 @@ def process_identities(events):
     """step → ok/unknown/inconsistent, z monotoniczną ochroną każdego śladu.
 
     Niepełny wpis pozostaje unknown nawet po późniejszym uzupełnieniu. Outside
-    wymaga wcześniejszego startu/zamiaru. Brak nazwy ma osobną tożsamość unknown,
+    wymaga wcześniejszego startu/zamiaru kroku, a zakończenie outside — wcześniejszego
+    startu jego osobnego procesu. Brak nazwy ma osobną tożsamość unknown,
     zatem nie znika przez filtrowanie ani przez kolizję z poprawnym krokiem.
     """
     identities = {}
@@ -258,6 +259,11 @@ def process_identities(events):
                 else:
                     identity.data[field_name] = value
             if outside:
+                if kind == "outside.finished" and identity.outside_unit is None:
+                    # Tylko wcześniejszy outside.started ustala tę jednostkę.
+                    # Start kroku ani unit zakończenia nie dowodzą startu outside;
+                    # późniejsze uzupełnienie nie może usunąć wykrytej niepewności.
+                    identity.worsen("unknown")
                 if kind == "outside.started":
                     # Outside uruchamia osobny proces: jego jednostka musi być
                     # zapisana w tym starcie, nie odziedziczona z kroku.
