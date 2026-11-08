@@ -17,6 +17,17 @@ IDENTITY_FIELDS = ("ticket", "kind", "branch", "worktree", "stepDir", "runner", 
                    "consoleUnit", "processFile")
 START_FIELDS = IDENTITY_FIELDS + ("unit",)
 RESOURCE_FIELDS = ("runner", "box", "boxSlug")
+CONSOLE_FIELDS = ("consoleUnit", "processFile")
+# (dowody własne zdarzenia, dowody dopuszczające dziedziczenie). Każde
+# uruchomienie osobnego procesu musi zapisać swój komplet, a potwierdzenie
+# otwarcia/zamknięcia może odwołać się do wcześniejszego kompletu Konsoli.
+# unit kroku pozostaje opcjonalne/puste przed przejściem do Konsoli.
+REQUIRED_PROCESS_TEXT = {
+    "outside.started": (("unit",), ()),
+    "step.entered": (CONSOLE_FIELDS, ()),
+    "step.console_opened": ((), CONSOLE_FIELDS),
+    "step.console_closed": ((), CONSOLE_FIELDS),
+}
 # Akcje metadanych i Gita nie są śladami procesu kroku. Nowy dyskryminator
 # wymaga jawnej klasyfikacji; brak lub literówka nie dowodzi braku procesu.
 NON_PROCESS_ACTIONS = frozenset({"reserve", "card-branch", "ticket-branch", "review-branch",
@@ -69,6 +80,17 @@ class ProcessIdentity:
 def valid_ticket(value):
     """Dokładny klucz numeracji; rozpoznawalny wariant nie jest innym ticketem."""
     return isinstance(value, str) and bool(value) and ticket_key(value) == value
+
+
+def complete_process_evidence(event, previous):
+    """Wymagane dowody i jawne pola Konsoli są niepustym tekstem."""
+    kind = event.get("type")
+    own, inherited = REQUIRED_PROCESS_TEXT.get(kind, ((), ())) if isinstance(kind, str) else ((), ())
+    current = {**previous, **event}
+    values = [event.get(key) for key in own]
+    values.extend(current.get(key) for key in inherited)
+    values.extend(event[key] for key in CONSOLE_FIELDS if key in event)
+    return all(isinstance(value, str) and bool(value.strip()) for value in values)
 
 
 def start_error(event):
@@ -198,6 +220,8 @@ def process_identities(events):
             identity.worsen("unknown")
         if not valid_name:
             identity.worsen("unknown")
+        if not complete_process_evidence(event, identity.data):
+            identity.worsen("unknown")
         if start:
             if start_error(event):
                 identity.worsen("unknown")
@@ -238,11 +262,10 @@ def process_identities(events):
                     # Outside uruchamia osobny proces: jego jednostka musi być
                     # zapisana w tym starcie, nie odziedziczona z kroku.
                     unit = event.get("unit")
-                    if not isinstance(unit, str) or not unit.strip():
-                        identity.worsen("unknown")
-                    elif identity.outside_unit is not None and identity.outside_unit != unit:
-                        identity.worsen("inconsistent")
-                    else:
-                        identity.outside_unit = unit
+                    if isinstance(unit, str) and unit.strip():
+                        if identity.outside_unit is not None and identity.outside_unit != unit:
+                            identity.worsen("inconsistent")
+                        else:
+                            identity.outside_unit = unit
                 identity.outside.append(dict(event))
     return identities

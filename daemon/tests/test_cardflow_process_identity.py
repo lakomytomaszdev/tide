@@ -275,6 +275,39 @@ class ProcessIdentityRegression(unittest.TestCase):
                 with self.subTest(barrier="lifecycle"):
                     f.assert_lifecycle_preserved()
 
+    def test_review8_incomplete_console_blocks_unrelated_process_and_box_stop(self):
+        f = self.fixture
+        f.project()
+        paths = [Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))]
+        initial = paths[0].read_bytes()
+        variants = ({}, {"consoleUnit": "", "processFile": ""},
+                    {"consoleUnit": "   ", "processFile": "   "},
+                    {"consoleUnit": "console.scope"}, {"processFile": "/console.json"})
+        for fields, restarted in itertools.product(variants, (False, True)):
+            for path in paths:
+                path.write_bytes(initial)
+            f.restart()
+            for event in console_history("PT-999", fields):
+                f.journal.append("K-38", event["type"], **{k: v for k, v in event.items() if k != "type"})
+            f.journal.append("K-38", "step.console_opened", step="legacy-step")
+            step = f.outside_history()
+            if restarted:
+                f.restart()
+            with self.subTest(fields=fields, restarted=restarted):
+                with self.subTest(barrier="model"):
+                    identity = process_identities(f.journal.read_complete("K-38"))["legacy-step"]
+                    self.assertNotEqual(identity.state, "ok")
+                with self.subTest(barrier="inventory"):
+                    self.assertFalse(f.inventory())
+                with self.subTest(barrier="outside"), f.outside_environment() as spawn:
+                    try:
+                        f.engine._start_outside("K-38", step, "echo ordinary-test")
+                    except FlowError:
+                        pass
+                    spawn.assert_not_called()
+                with self.subTest(barrier="lifecycle"):
+                    f.assert_lifecycle_preserved()
+
     def test_review5_incomplete_action_blocks_unrelated_outside_and_box_stop(self):
         f = self.fixture
         f.project()
@@ -351,6 +384,42 @@ def generated_bad_histories():
     yield from generated_bad_action_histories()
     yield from generated_bad_type_histories()
     yield from generated_bad_outside_unit_histories()
+    yield from generated_bad_console_histories()
+
+
+def console_history(ticket, fields):
+    return [dict(type="card.started", project="proj"),
+            dict(type="step.started", step="legacy-step", ticket=ticket, kind="ticket",
+                 runner="host", unit="legacy.scope"),
+            dict(type="step.entered", step="legacy-step", **fields)]
+
+
+def generated_bad_console_histories():
+    """M1 rundy 8: dowody własne wejścia i dziedziczone otwarcia/zamknięcia."""
+    complete = dict(consoleUnit="console.scope", processFile="/console.json")
+    variants = [{}]
+    for field in complete:
+        variants.append({k: v for k, v in complete.items() if k != field})
+        variants.extend({**complete, field: value}
+                        for value in ("", "   ", "\t\n", "\u00a0", None, [], {}, 17))
+    for ticket, fields in itertools.product(("PT-176", "PT-999"), variants):
+        history = console_history(ticket, fields)
+        good = dict(type="step.entered", step="legacy-step", **complete)
+        opened = dict(type="step.console_opened", step="legacy-step")
+        closed = dict(type="step.console_closed", step="legacy-step")
+        done = dict(type="step.finished", step="legacy-step", result="done")
+        for later in ([], [opened], [closed, done], [good, opened, closed, done], [closed, good, done]):
+            yield [*history, *later]
+        # Każde wejście wymaga własnych dowodów, także po kompletnym wejściu.
+        yield [*history[:-1], good, history[-1], closed, done]
+        for kind in ("step.console_opened", "step.console_closed"):
+            event = dict(type=kind, step="legacy-step", **fields)
+            # Otwarcie i zamknięcie bez pełnych wcześniejszych danych.
+            yield [*history[:-1], event, good, closed, done]
+            # Pominięcie dziedziczy, lecz jawna pusta/błędna wartość nie może
+            # zostać zastąpiona wcześniejszą poprawną wartością.
+            if any(not isinstance(value, str) or not value.strip() for value in fields.values()):
+                yield [*history[:-1], good, event, closed, done]
 
 
 def outside_unit_history(ticket, fields):
@@ -693,11 +762,12 @@ class ProcessIdentityProperties(unittest.TestCase):
                 self.assertTrue(trialhold.preserves_project(st, "unrelated"))
 
     def test_console_trace_inherits_and_checks_started_identity(self):
-        start = dict(type="step.started", step="ordinary", ticket="PT-999")
+        start = dict(type="step.started", step="ordinary", ticket="PT-999", unit="")
         entered = dict(type="step.entered", step="ordinary", consoleUnit="console.scope",
                        processFile="/console.json")
         history = [dict(type="card.started", project="proj"), start, entered,
-                   dict(type="step.console_opened", step="ordinary")]
+                   dict(type="step.console_opened", step="ordinary"),
+                   dict(type="step.console_closed", step="ordinary")]
         identity = process_identities(history)["ordinary"]
         self.assertEqual(identity.state, "ok")
         self.assertFalse(identity.held)
@@ -706,6 +776,13 @@ class ProcessIdentityProperties(unittest.TestCase):
         identity = process_identities(history + [dict(entered, ticket="PT-176")])["ordinary"]
         self.assertEqual(identity.state, "inconsistent")
         self.assertTrue(identity.protected)
+
+    def test_incomplete_console_evidence_cannot_be_repaired_or_finished(self):
+        for index, history in enumerate(generated_bad_console_histories()):
+            with self.subTest(history=index):
+                identity = process_identities(history)["legacy-step"]
+                self.assertNotEqual(identity.state, "ok")
+                self.assertTrue(identity.held)
 
 
 class GeneratedHistoryBarriers(unittest.TestCase):
