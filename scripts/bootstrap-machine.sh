@@ -297,6 +297,9 @@ else
     for path in "${CONFIG_FILES[@]}" "${MIRRORED_DIRS[@]}" "${ADD_ONLY_DIRS[@]}"; do
         [[ -e "$HOME/$path" ]] && { has_look=1; break; }
     done
+    # install-cli dokłada skille Tide do Codexa tylko wtedy, gdy widzi `codex` w PATH; instalatory agentów kładą
+    # programy w ~/.local/bin, którego świeża sesja (katalog powstał po zalogowaniu) jeszcze nie ma w PATH.
+    [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
     targets=(install-daemon install-tide-window install-cli)
     [[ $has_look -eq 1 ]] && targets=(pre-install-backup "${targets[@]}")
     [[ $has_look -eq 1 ]] || echo "  Brak plików wyglądu Plasmy — kopia zapasowa niepotrzebna."
