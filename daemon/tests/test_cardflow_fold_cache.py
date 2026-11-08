@@ -128,7 +128,9 @@ class FoldCacheTest(unittest.TestCase):
         from types import SimpleNamespace
         from tide_daemon.cardflow.engine import FlowEngine
 
-        engine = FlowEngine(SimpleNamespace(root=self.journal.root), journal=self.journal,
+        # Bez projektu karty: widok środowiska K-38 kończy się na FlowError („no-project”).
+        store = SimpleNamespace(root=self.journal.root, load=lambda: SimpleNamespace(cards={}, projects={}))
+        engine = FlowEngine(store, journal=self.journal,
                             settings=str(self.root / "settings.json"), codex_roots=[])
         with mock.patch("tide_daemon.cardflow.journal.fold", wraps=fold) as actual:
             base = engine.card_base(self.card)

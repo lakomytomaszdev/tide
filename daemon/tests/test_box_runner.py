@@ -709,7 +709,8 @@ class ResumeMountWaitingTest(BoxRunnerCase):
                                    model="test", provider="openai", effort="", local=False)
         project = SimpleNamespace(repo=self.repo, slug="proj", allowed_commands=[], denied_commands=[],
                                   read_dirs=[], read_dirs_error="", read_dir_bindings=[])
-        card = SimpleNamespace(id="K-38", projects=[])
+        card = SimpleNamespace(id="K-38", projects=[], source_issue="", source_issue_version=0, source_issue_hash="",
+                               source_issue_report="", source_issue_manifest="")
         engine.journal.append(card.id, "card.started", project="proj")
         engine.journal.append(card.id, "step.started", step="A", ticket="PT-1", kind="ticket",
                               stepDir=self.step_dir)

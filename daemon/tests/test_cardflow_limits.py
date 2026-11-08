@@ -327,19 +327,12 @@ class TransferFlowTest(FlowInProcess):
         self.assertEqual(reviewers[0]["provider"], "anthropic")
 
     def test_wait_for_reset_resumes_same_provider_after_known_reset(self):
-        # Pierwszy odczyt sygnału limitu musi już widzieć wyczerpaną metrykę.
-        self.stop_flow_worker()
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
-        self.stop_flow_worker()  # Start dopuszczony przy 25%, odczyt wyczerpania przed pierwszym poll.
-        self.assertTrue(self.start(card)["ok"])
-        metric["remaining"] = 0
-        self.flow.start()
-        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
-                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        self.start_until_limit(card, metric)
         limit = self.of(card, "step.limit")[-1]
         self.assertEqual((limit["window"], limit["resetTs"]), ("session", now + 1000))
         first = self.of(card, "step.started")[0]
@@ -356,23 +349,13 @@ class TransferFlowTest(FlowInProcess):
         self.wait_column(card, "review", timeout=50)
 
     def test_limit_without_any_choice_resumes_by_itself_after_the_reset(self):
-        # StartCard może oddać odpowiedź dopiero po wykryciu szybkiego sygnału atrapy.
-        # Włączamy odpytywanie po zmianie metryki, aby step.limit miało właściwe okno i reset.
-        self.stop_flow_worker()
-        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         now = self.flow.engine.clock()
         metric = {"remaining": 25, "readTs": now, "resetTs": now + 1000}
         self.flow.engine.limits_source = lambda: {"available": True,
                                                   "services": {"claude": {"session": metric}}}
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
-        self.stop_flow_worker()
-        self.assertTrue(self.start(card)["ok"])
-        metric["remaining"] = 0
-        self.flow.start()
-        self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
-                                        self.of(card, "step.finished")), timeout=30), self.events(card))
+        self.start_until_limit(card, metric)
         first = self.of(card, "step.started")[0]
-        self.assertEqual(self.of(card, "step.limit")[0]["window"], "session")
         self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
         metric.update(remaining=40, readTs=now + 1001)
         self.flow.engine.clock = lambda: now + 1001

@@ -346,6 +346,7 @@ class GuardTest(unittest.TestCase):
                         engine = FlowEngine.__new__(FlowEngine)
                         engine.journal = mock.Mock()
                         engine.journal.read.return_value = []
+                        engine.journal.state.return_value = fold([])
                         for method in ("_queue_notices", "_release_local", "_release_box"):
                             setattr(engine, method, mock.Mock())
                         engine._codex_broken_mcp = mock.Mock(return_value=False)
@@ -772,6 +773,7 @@ class GuardTest(unittest.TestCase):
         engine = FlowEngine.__new__(FlowEngine)
         engine.journal = mock.Mock()
         engine.journal.read.return_value = []
+        engine.journal.state.return_value = fold([])
         engine._queue_notices = mock.Mock()
         engine._release_local = mock.Mock()
         engine._release_box = mock.Mock()

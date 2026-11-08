@@ -82,7 +82,9 @@ class PortFailureTest(unittest.TestCase):
                         mock.patch("tide_daemon.tasks.dotnet.is_dotnet", return_value=False), \
                         mock.patch("tide_daemon.tasks.node.is_node", return_value=False):
                     with self.assertRaises((FlowError, OSError)):
-                        engine._launch(SimpleNamespace(id="K-38", projects=[]), project, selected, "PT-171", {},
+                        engine._launch(SimpleNamespace(id="K-38", projects=[], source_issue="", source_issue_version=0,
+                                                       source_issue_hash="", source_issue_report="",
+                                                       source_issue_manifest=""), project, selected, "PT-171", {},
                                        {"worktree": self.tmp.name, "branch": "ticket/pt-171"}, "first", [],
                                        prompt_text="test")
                 runner.start.assert_called_once()

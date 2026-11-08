@@ -2626,7 +2626,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Pełne wyniki poleceń poza piaskownicą poprzednich kroków (<krok>/outside/outside.log).
         image_dirs += [os.path.join(os.path.dirname(d), "outside") for d in context_dirs]
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
-                                       if (shots and d == os.path.join(step_dir, "in", "images")) or os.path.isdir(d)]
+                                       if ((shots or issue_shots) and d == os.path.join(step_dir, "in", "images")) or os.path.isdir(d)]
         if source_evidence:
             read_dirs.append(os.path.join(step_dir, "in", "evidence"))
         from .. import resources

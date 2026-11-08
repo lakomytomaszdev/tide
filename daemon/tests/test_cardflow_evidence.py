@@ -305,8 +305,8 @@ class EvidenceInteractiveTest(AcceptedFixture):
         step_dir = Path(self.base, "codex.step")
         data.materialize(step_dir)
         (step_dir / "out").mkdir()
-        engine.journal.append(card, "card.started", sourceEvidence=data.source)
-        engine.journal.append(card, "step.started", step="codex", program="codex", kind="ticket",
+        engine.journal.append(card, "card.started", sourceEvidence=data.source, project=item.project)
+        engine.journal.append(card, "step.started", step="codex", program="codex", kind="ticket", ticket="PT-1",
                               worktree=self.repo, stepDir=str(step_dir), repo=self.repo)
         terminal = _Terminal()
         terminal.launchers = SimpleNamespace(agents=self.fakes,
@@ -478,6 +478,7 @@ class EvidenceProcessTest(AcceptedFixture):
         self.flow.approve_plan(card, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=15), self.events(card))
         self.assertTrue(json.loads(box[0])["ok"], box)
+        self.approve_environment(card)     # zatwierdzenie planu nie zastępuje zgody środowiska (PT-172)
         ticket, _ = self.observed(card, 3)
         self.assertEqual(ticket["kind"], "ticket")
         self.answer(card, ticket)

@@ -432,7 +432,7 @@ BARRIERS = {
         negative=NEG, positive=[f"{FLOW}:RestartInProcessTest.test_restart_during_a_step_neither_loses_it_nor_duplicates_events",
                                 "daemon.tests.test_cardflow_full_planning:FullPlanningTest.test_restart_does_not_open_second_console"]),
     "console": dict(
-        consumers=[("cardflow/engine.py", "FlowEngine.enter"), ("cardflow/engine.py", "FlowEngine._stop_for_enter"),
+        consumers=[("cardflow/engine.py", "FlowEngine._enter_step"), ("cardflow/engine.py", "FlowEngine._stop_for_enter"),
                    ("cardflow/engine.py", "FlowEngine._recover_console_openings"),
                    ("cardflow/engine.py", "FlowEngine._stop_interactive_transfer"),
                    ("cardflow/engine.py", "FlowEngine._resolve_transfer")],
@@ -489,7 +489,7 @@ _LOCK = True
 EFFECT_SCOPE = {
     ("cardflow/engine.py", "FlowEngine._start_outside", "Popen"): ("outside", "direct", {"_outside_history"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "Konsola"): ("step-launch", "direct", {"_process_check"}, _LOCK),
-    ("cardflow/engine.py", "FlowEngine.enter", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),
+    ("cardflow/engine.py", "FlowEngine._enter_step", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch.launch", "start kroku"): ("step-launch", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._recover_console_openings", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),
     ("box/lifecycle.py", "Lifecycle.stop", "incus.stop"): ("box-lifecycle", "direct", {"require_idle"}, False),
@@ -612,6 +612,10 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine.resolve_caretaker"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine.resolve_step"): "console",
     ("cardflow/engine.py", "FlowEngine.set_paused"): "advance-resume",
+    # Wybór próby z Snapshot przechodzi do _enter_step (konsument bariery console).
+    ("cardflow/engine.py", "FlowEngine.enter"): "console",
+    ("cardflow/engine.py", "FlowEngine._start"): "step-launch",
+    ("cardflow/startorder.py", "start"): "step-launch",
     ("cardflow/engine.py", "FlowEngine.start"): "step-launch",
     ("cardflow/engine.py", "FlowEngine.start_import"): "step-launch",
     ("cardflow/engine.py", "FlowEngine.start_planning"): "step-launch",
@@ -636,6 +640,15 @@ DELEGATIONS = {
     ("dbus_service.py", "BoardAdaptor.SetCardPaused"): "advance-resume",
     ("dbus_service.py", "BoardAdaptor.StartCard"): "step-launch",
     ("dbus_service.py", "BoardAdaptor.StopBox"): "box-lifecycle",
+    # Sprawy (master): przyjęcie i ponowienie startu prowadzą do startorder.start → FlowEngine._start;
+    # pozostałe metody adaptera łączy z nim wspólne wywołanie IssueService.call (dyspozytor po nazwie).
+    **{("dbus_service.py", f"IssuesAdaptor.{name}"): "step-launch" for name in (
+        "AcceptIssue", "Attach", "Create", "Detach", "Info", "List", "PreviewIssueLaunch", "ReadAttachment",
+        "Reject", "Reopen", "RetryIssueStart", "Show", "Submit", "Update", "_flow_call")},
+    ("cardflow_monitor.py", "CardFlowMonitor.issue_call"): "step-launch",
+    ("issues.py", "IssueService.call"): "step-launch",
+    **{("issue_start.py", name): "step-launch" for name in (
+        "_dispatch", "_prepare", "accept", "recover", "retry")},
 }
 
 
@@ -643,6 +656,9 @@ DELEGATIONS = {
 # zdarzenia z rodzajem śladu procesu, ale wynik nie dopuszcza skutku objętego barierą tożsamości.
 # Funkcja z surowym odczytem, która nie jest konsumentem bariery ani nie ma tu uzasadnienia, daje porażkę.
 RAW_READS = {
+    ("cardflow/startorder.py", "projection"):
+        "stan zlecenia startu ze sprawy dla odpowiedzi API (queued/started/completed); nie uruchamia procesu, "
+        "start idzie przez FlowEngine._start (bariera step-launch)",
     ("cardflow/caretaker.py", "stale"):
         "aktualność problemu opiekuna; wynik może zatrzymać akcję, a start i wznowienie przechodzą "
         "własne bariery _launch/resolve_step w silniku",
@@ -693,6 +709,8 @@ AMBIGUOUS_RULES = (
     (r"^self\.branches\.stop$", "CardDeriver gałęzi Tablicy"),
     (r"^source\.build$", "źródło kontekstu opiekuna (caretakerctx), nie Builder.build"),
     (r"^b\.running_steps$", "b = self.builder → Builder.running_steps; Lifecycle.idle jest delegacją box-lifecycle"),
+    (r"^(self\.bus|bus)\.call$", "QDBusConnection.call (sesyjna szyna D-Bus), nie IssueService.call spraw"),
+    (r"^subprocess\.call$", "subprocess.call w opakowaniu jednostki kroku, nie IssueService.call spraw"),
     (r"^boxstep\.lifecycle\.tick$",
      "box/lifecycle.tick przez moduł boxstep; FlowEngine.tick (recovery) i lifecycle.tick (idle-tick) są konsumentami"),
 )
