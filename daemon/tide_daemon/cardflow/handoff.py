@@ -60,6 +60,10 @@ SOURCE_LABELS = {
     testpolicy.DETECTED: "wykryte z Makefile",
     testpolicy.RULES: "zasady projektu (CLAUDE.md/AGENTS.md) — brak zatwierdzonego kontraktu i celu make",
 }
+# Zasada ogólna przy zastosowanym kontrakcie: przyczyna zależy od pola (review PT-279, runda 1, NIT 1).
+RULES_NO_FIELD = "zasady projektu (CLAUDE.md/AGENTS.md) — zatwierdzony kontrakt nie podaje tego polecenia"
+RULES_MISSING_TARGET = ("zasady projektu (CLAUDE.md/AGENTS.md) — ta gałąź nie ma celu make "
+                        "z zatwierdzonego kontraktu")
 UNAPPROVED_LINE = ("Kontrakt testów w profilu projektu nie jest zatwierdzony i nie jest stosowany: jego polecenia "
                    "nie są wymogiem tego kroku.\n")
 RULES_CHANGED = ("Testy ticketu (także po poprawkach): projekt nie podaje polecenia testów zmian. Przed oddaniem "
@@ -72,16 +76,26 @@ def _policy(policy: TestPolicy | None, worktree: str, base: str) -> TestPolicy:
     return policy if policy is not None else testpolicy.master_policy(worktree, base)
 
 
-def source_line(source: str, *, close: bool = False) -> str:
-    """Jawna linia źródła polecenia (PT-279). Źródło `compat` (zgodność z master bez potwierdzenia celem) — bez linii."""
-    label = SOURCE_LABELS.get(source)
+def source_line(source: str, *, close: bool = False, label: str = "") -> str:
+    """Jawna linia źródła polecenia (PT-279). Źródło `compat` (zgodność z master bez potwierdzenia celem) — bez linii.
+    `label` zastępuje domyślny opis źródła (rzeczywista przyczyna zasady ogólnej)."""
+    label = label or SOURCE_LABELS.get(source)
     if not label:
         return ""
     return f"Źródło polecenia {'pełnych testów' if close else 'testów ticketu'}: {label}.\n"
 
 
+def _source_label(policy: TestPolicy, *, close: bool) -> str:
+    """Przyczyna zasady ogólnej dla danego pola, gdy kontrakt jest zastosowany; inaczej opis domyślny."""
+    source = policy.full_source if close else policy.changed_source
+    if source != testpolicy.RULES or not (policy.declared_changed or policy.declared_full):
+        return ""
+    return RULES_MISSING_TARGET if ("full" if close else "changed") in policy.missing else RULES_NO_FIELD
+
+
 def _notes(policy: TestPolicy, *, close: bool = False) -> str:
-    out = source_line(policy.full_source if close else policy.changed_source, close=close)
+    out = source_line(policy.full_source if close else policy.changed_source, close=close,
+                      label=_source_label(policy, close=close))
     if policy.unapproved:
         out += UNAPPROVED_LINE
     if close and "full" in policy.missing:

@@ -232,6 +232,43 @@ class DetectionRuleTest(unittest.TestCase):
         self.assertIn("nie ma celu `test` — obowiązuje zasada projektu", close)
         self.assertIn(handoff.RULES_FULL, close)
 
+    def test_approved_make_with_directory_or_file_option_is_kept(self):
+        # Review PT-279 r1, MAJOR 1: cele głównego Makefile nie rozstrzygają o `make -C …` / `make -f …`.
+        files = dict(NO_TARGETS, **{"tests/Makefile": "test:\n\t@true\n\ntest-changed:\n\t@true\n"})
+        for full, changed in (("make test -C tests", "make test-changed -C tests BASE={base}"),
+                              ("make test -f tests/Makefile", "make -f tests/Makefile test-changed BASE={base}"),
+                              ("make --directory=tests test", "make --directory=tests test-changed BASE={base}")):
+            with self.subTest(full=full):
+                policy = self.policy(files, {"changed": changed, "full": full}, True)
+                self.assertEqual((policy.full, policy.full_source), (full, "profile"))
+                self.assertEqual(policy.changed_source, "profile")
+                self.assertEqual(policy.changed, changed.replace("{base}", BASE))
+                self.assertEqual((policy.missing, policy.legacy), ((), False))
+                close = handoff.close_card(card_id="K", title="t", description="d", worktree="/w", out_dir="/o",
+                                           tickets=[], manual=False, policy=policy)
+                self.assertIn(f"uruchom raz pełny `{full}`", close)
+                self.assertIn("Źródło polecenia pełnych testów: zatwierdzony kontrakt", close)
+                self.assertNotIn("nie ma celu", close)
+                self.assertNotIn(handoff.RULES_FULL, close)
+
+    def test_rules_source_line_names_the_real_reason(self):
+        # Review PT-279 r1, NIT 1: przy zastosowanym kontrakcie zasada ogólna nie wynika z braku kontraktu.
+        only_changed = self.policy(CHANGED, {"changed": "pytest -q --since {base}", "full": ""}, True)
+        close = handoff.close_tests("/w", only_changed)
+        self.assertIn(f"Źródło polecenia pełnych testów: {handoff.RULES_NO_FIELD}.", close)
+        self.assertNotIn(handoff.SOURCE_LABELS["rules"], close)
+        only_full = self.policy(CHANGED, {"changed": "", "full": "pytest -q"}, True)
+        ticket = handoff.ticket_tests(BASE, "/w", only_full)
+        self.assertIn(f"Źródło polecenia testów ticketu: {handoff.RULES_NO_FIELD}.", ticket)
+        missing = self.policy(NO_TARGETS, {"changed": "make test-changed BASE={base}", "full": "make test"}, True)
+        self.assertIn(f"Źródło polecenia testów ticketu: {handoff.RULES_MISSING_TARGET}.",
+                      handoff.ticket_tests(BASE, "/w", missing))
+        self.assertIn(f"Źródło polecenia pełnych testów: {handoff.RULES_MISSING_TARGET}.",
+                      handoff.close_tests("/w", missing))
+        plain = self.policy(NO_MAKEFILE)
+        self.assertIn(f"Źródło polecenia testów ticketu: {handoff.SOURCE_LABELS['rules']}.",
+                      handoff.ticket_tests(BASE, "/w", plain))
+
     def test_approved_contract_wins_over_detection(self):
         policy = self.policy(CHANGED, DOTNET, True)
         self.assertEqual(policy.source, "profile")
@@ -410,6 +447,10 @@ class MakeTargetsTest(unittest.TestCase):
         self.assertEqual(testpolicy.make_target("dotnet test Foo.sln"), "")
         self.assertEqual(testpolicy.make_target("make"), "")
         self.assertEqual(testpolicy.make_target("make 'unclosed"), "")
+        for command in ("make test -C tests", "make -C tests test", "make test -f tests/Makefile",
+                        "make --directory=tests test-changed BASE=x", "make -j4 test"):
+            with self.subTest(command=command):
+                self.assertEqual(testpolicy.make_target(command), "")
 
 
 class MasterCompatibilityTest(unittest.TestCase):

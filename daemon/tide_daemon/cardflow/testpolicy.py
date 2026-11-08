@@ -112,14 +112,18 @@ def make_targets(directory: str) -> list[str]:
 
 def make_target(command: str) -> str:
     """Cel `make`, od którego zaczyna się polecenie (`make test-changed BASE=…` → `test-changed`), po zmiennych
-    środowiska na początku; "" dla poleceń innych niż `make <cel>`."""
+    środowiska na początku; "" dla poleceń innych niż `make <cel>`. Polecenie z dowolną opcją `make` (`-C tests`,
+    `-f tests/Makefile`, `--directory=…`) też daje "": cele z `Makefile` i `mk/*.mk` worktree nie rozstrzygają
+    wtedy, czy cel istnieje, więc decyzja nie może uznać go za brakujący (review PT-279, runda 1)."""
     try:
         tokens = shlex.split(command or "")
     except ValueError:
         return ""
     while tokens and _ASSIGN.match(tokens[0]):
         tokens = tokens[1:]
-    return tokens[1] if len(tokens) > 1 and tokens[0] == "make" else ""
+    if len(tokens) < 2 or tokens[0] != "make" or any(token.startswith("-") for token in tokens[1:]):
+        return ""
+    return tokens[1]
 
 
 def _expand(command: str, base: str) -> tuple[str, bool]:
