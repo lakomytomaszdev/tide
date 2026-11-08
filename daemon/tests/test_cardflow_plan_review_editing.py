@@ -204,7 +204,7 @@ class PlanReviewEditingTest(FlowInProcess):
             self.assertTrue(self.approve(card)["ok"])
             self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")), self.events(card))
             self.assertEqual(len(self.of(card, "plan.revision-approved")), 1)
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=120), self.events(card))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=25), self.events(card))
 
     def test_enter_opens_planner_in_console(self):
         from .test_cardflow_enter_unit import _Terminal

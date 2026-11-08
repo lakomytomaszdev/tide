@@ -11,9 +11,6 @@ from .test_cardflow_merge_preview import fingerprint
 from tide_daemon.cardflow import basechange, baseproposal
 from tide_daemon.cardflow.state import fold
 
-# Wynik funkcjonalny z wieloma świeżymi migawkami chronionego Git, nie próg wydajności.
-BASE_RESULT_TIMEOUT = 120
-
 
 class BaseChangeTest(StartBaseSetup):
     def setUp(self):
@@ -26,7 +23,7 @@ class BaseChangeTest(StartBaseSetup):
     def call(self, method, request):
         box = []
         getattr(self.board, method)(self.ident, json.dumps(request), box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=BASE_RESULT_TIMEOUT), method)
+        self.assertTrue(wait_until(lambda: box, timeout=30), method)
         return json.loads(box[0])
 
     def preview(self, **request):

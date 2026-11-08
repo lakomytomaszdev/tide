@@ -1081,7 +1081,23 @@ class RunnerGuardTest(BoxRunnerCase):
 
 
 class HostGitTest(unittest.TestCase):
+    def test_disabled_box_keeps_pre_boundary_argv_for_flow_and_step_git(self):
+        results = self.argvs()
+        self.assertEqual(len(results), 3)
+        for argv in results:
+            self.assertEqual(tuple(argv[1:5]), HOST_OPTIONS)
+            self.assertNotIn("git_sandbox.py", " ".join(argv))
+
     def test_shared_argv_protects_plain_flow_and_step_git(self):
+        from .test_host_git_invocation import boundary_on
+        boundary_on(self)
+        results = self.argvs()
+        self.assertEqual(len(results), 3)
+        for argv in results:
+            self.assertEqual(argv[:2], ["/usr/bin/python3", "-I"])
+            self.assertEqual(tuple(json.loads(argv[-1])["args"][:4]), HOST_OPTIONS)
+
+    def argvs(self):
         from tide_daemon.cardflow.gitops import FlowGit
         results = []
 
@@ -1095,7 +1111,4 @@ class HostGitTest(unittest.TestCase):
             git = stepstop.StepGit("/repo", "/repo/.git/worktrees/a", "/worktree", "/step")
             with mock.patch.object(git, "sandbox", return_value=[]):
                 git.run("commit", "-m", "test")
-        self.assertEqual(len(results), 3)
-        for argv in results:
-            self.assertEqual(argv[:2], ["/usr/bin/python3", "-I"])
-            self.assertEqual(tuple(json.loads(argv[-1])["args"][:4]), HOST_OPTIONS)
+        return results

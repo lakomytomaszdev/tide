@@ -13,6 +13,8 @@ from .test_host_git_invocation import KernelTransport
 
 class GitInitializationBoundaryTest(unittest.TestCase):
     def setUp(self):
+        from .test_host_git_invocation import boundary_on
+        boundary_on(self)
         # Wszystkie cele, również pozorny „obcy host”, należą do tej fixture.
         build = Path(__file__).resolve().parents[2] / "build"
         build.mkdir(exist_ok=True)

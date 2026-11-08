@@ -133,7 +133,7 @@ def worktree_config_enabled(git_dir: str) -> bool:
     nic nie chronią, a każda nowa (plik) wymaga zatrzymania pudełka. `git config --file` czyta wyłącznie ten plik
     (bez `include`, bez konfiguracji systemowej i użytkownika). Błąd odczytu → StepError (nie „wyłączone”)."""
     path = os.path.join(git_dir, "config")
-    run = subprocess.run(git_argv("config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig"),
+    run = subprocess.run(git_argv("config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig", boundary=True),
                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
                          env={"PATH": os.environ.get("PATH") or "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1",
                               "LC_ALL": "C"})
@@ -956,7 +956,8 @@ def _demo(argv: list) -> int:
     args, command = demo_args(argv)
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
-    common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+    common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                                     boundary=True),
                             capture_output=True, text=True, check=True, env=git_launch_env()).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")

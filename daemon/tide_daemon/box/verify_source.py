@@ -9,7 +9,7 @@ from .builder import BuildError
 
 
 def git(worktree, *args):
-    result = subprocess.run(git_argv("-C", str(worktree), *args), capture_output=True, text=True, env=git_launch_env())
+    result = subprocess.run(git_argv("-C", str(worktree), *args, boundary=True), capture_output=True, text=True, env=git_launch_env())
     if result.returncode:
         raise BuildError("źródła verify: " + result.stderr.strip())
     return result.stdout.strip()

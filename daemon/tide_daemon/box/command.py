@@ -19,7 +19,7 @@ from .ports import PortPool, DEMO_OWNER
 
 
 def _git(cwd, *args):
-    result = subprocess.run(git_argv("-C", cwd, *args), capture_output=True, text=True, timeout=60,
+    result = subprocess.run(git_argv("-C", cwd, *args, boundary=True), capture_output=True, text=True, timeout=60,
                             stdin=subprocess.DEVNULL, env=git_launch_env())
     if result.returncode:
         raise bb.BuildError("git: " + result.stderr.strip())

@@ -33,8 +33,105 @@ def kernel_invocation(argv, **kwargs):
 REAL_RUN = subprocess.run
 
 
+def boundary_on(case):
+    """Scenariusze granicy: usługa z `box.enabled` (bez pliku ustawień w izolowanym stanie testu)."""
+    patcher = mock.patch("tide_daemon.gitcommand.box_enabled", return_value=True)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
+class ConditionalBoundaryTest(unittest.TestCase):
+    """Wyłączone pudełko = argv i otoczenie sprzed PT-264; granica tylko dla danych pudełka."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="pt264-conditional-")
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.repo = self.base / "project"
+        self.foreign = self.base / "foreign"
+        for repo in (self.repo, self.foreign):
+            repo.mkdir()
+            gitrepos.git(str(repo), "init", "-q", "-b", "master")
+            gitrepos.commit(str(repo), "data.txt", str(repo))
+        self.config = self.base / "config"
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.config)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def settings(self, enabled):
+        (self.config / "tide").mkdir(parents=True, exist_ok=True)
+        (self.config / "tide/cardflow.json").write_text(json.dumps({"box": {"enabled": enabled}}))
+
+    def test_disabled_box_runs_plain_git_with_the_callers_environment(self):
+        from tide_daemon.gitcommand import HOST_OPTIONS, git_argv, git_command
+        for enabled in (None, False):
+            if enabled is not None:
+                self.settings(enabled)
+            args = ("-C", str(self.repo), "status", "--porcelain")
+            self.assertEqual(git_argv(*args), ["git", *HOST_OPTIONS, *args])
+            caller_env = {"PATH": "/x", "GIT_OPTIONAL_LOCKS": "0"}
+            self.assertEqual(git_command(*args, env=caller_env), (["git", *HOST_OPTIONS, *args], caller_env))
+            self.assertEqual(git_command(*args), (["git", *HOST_OPTIONS, *args], None))
+
+    def test_enabled_box_keeps_the_full_boundary(self):
+        from tide_daemon.gitcommand import git_argv, git_command
+        self.settings(True)
+        argv = git_argv("-C", str(self.repo), "status")
+        self.assertEqual(argv[:2], ["/usr/bin/python3", "-I"])
+        self.assertTrue(argv[2].endswith("git_sandbox.py"))
+        argv, env = git_command("-C", str(self.repo), "status", env={"PATH": "/x", "LD_PRELOAD": "/evil"})
+        self.assertTrue(argv[2].endswith("git_sandbox.py"))
+        self.assertNotIn("LD_PRELOAD", env)
+
+    def test_box_path_and_exposed_repository_keep_the_boundary_while_box_is_disabled(self):
+        from tide_daemon.gitcommand import git_argv
+        self.settings(False)
+        self.assertTrue(git_argv("-C", str(self.repo), "status", boundary=True)[2].endswith("git_sandbox.py"))
+        self.assertTrue(git_argv("--git-dir", str(self.repo / ".git"), "config", "-l", private=True)[2]
+                        .endswith("git_sandbox.py"))
+        gitrepos.git(str(self.repo), "worktree", "add", "-q", "-b", "wt", str(self.base / "project-worktrees/wt"))
+        (self.repo / ".git/tide-boundary").write_text("project-git:2\n")
+        for args in (("-C", str(self.repo / "sub")), ("-C", str(self.base / "project-worktrees/wt")),
+                     ("--git-dir", str(self.repo / ".git/worktrees/wt")),
+                     ("config", "--file", str(self.repo / ".git/config"))):
+            self.assertTrue(git_argv(*args, "status")[2].endswith("git_sandbox.py"), args)
+        self.assertEqual(git_argv("-C", str(self.foreign), "status")[0], "git")
+
+    def test_unreadable_repository_pointer_chooses_the_boundary(self):
+        from tide_daemon.gitcommand import git_argv
+        broken = self.base / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text("not a pointer\n")
+        self.assertTrue(git_argv("-C", str(broken), "status")[2].endswith("git_sandbox.py"))
+
+    def test_alternates_in_exposed_repository_cannot_import_foreign_objects_with_box_disabled(self):
+        from tide_daemon.cardflow.gitops import FlowGit
+        self.settings(False)
+        oid = gitrepos.git(str(self.foreign), "rev-parse", "HEAD").strip()
+        git = Git()
+        git.env = dict(gitrepos.ENV)
+        (self.repo / ".git/tide-boundary").write_text("project-git:2\n")
+        (self.repo / ".git/objects/info/alternates").write_text(str(self.foreign / ".git/objects") + "\n")
+        self.assertFalse(FlowGit(git).sha(str(self.repo), oid))
+        self.assertIn("alternates", git.run(str(self.repo), "cat-file", "-p", oid).err)
+
+    def test_disabled_box_checkout_snapshot_matches_plain_git(self):
+        (self.repo / "new.txt").write_text("n\n")
+        git = Git()
+        git.env = dict(gitrepos.ENV)
+        with mock.patch("subprocess.run", wraps=subprocess.run) as run:
+            snapshot = git.read_checkout(str(self.repo), include_ignored=True)
+        self.assertTrue(all(call.args[0][0] == "git" for call in run.call_args_list))
+        self.assertEqual(snapshot["head"].out.strip(), gitrepos.git(str(self.repo), "rev-parse", "HEAD").strip())
+        self.assertIn("?? new.txt", snapshot["status"].out)
+        self.assertEqual(snapshot["symbolic"].out.strip(), "refs/heads/master")
+        self.assertEqual(set(snapshot), {"head", "symbolic", "status", "index", "gitdir", "index_entries",
+                                         "ignored", "repository"})
+
+
 class HostGitInvocationTest(unittest.TestCase):
     def setUp(self):
+        boundary_on(self)
         self.tmp = tempfile.TemporaryDirectory(prefix="pt264-invocation-")
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name) / "project"

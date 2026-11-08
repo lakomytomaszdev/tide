@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from ..gitcommand import git_argv, git_launch_env
+from ..gitcommand import boundary_active, git_command
 
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
@@ -51,10 +51,10 @@ class Git:
     def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None,
             checkout=None, checkout_ignored=False) -> Result:
         try:
-            argv = git_argv("-C", cwd, *args, executable=self.executable,
-                            read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
-                            index=self.index, checkout=checkout, checkout_ignored=checkout_ignored)
-            env = git_launch_env(self.env, identity=any(a in ("commit", "commit-tree", "var") for a in args))
+            argv, env = git_command("-C", cwd, *args, executable=self.executable, env=self.env,
+                                    identity=any(a in ("commit", "commit-tree", "var") for a in args),
+                                    read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
+                                    index=self.index, checkout=checkout, checkout_ignored=checkout_ignored)
             if self.cancel is not None:
                 proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
             else:
@@ -66,10 +66,13 @@ class Git:
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())
 
     def read_checkout(self, cwd, *options, untracked_files="all", include_ignored=False):
-        """Świeże odczyty migawki w jednym uruchomieniu granicy, bez cache stanu."""
-        result = self.run(cwd, *options, "status", "--porcelain=v1", "-z",
-                          "--untracked-files=" + untracked_files, "--ignore-submodules=none",
-                          checkout=untracked_files, checkout_ignored=include_ignored)
+        """Świeże odczyty migawki, bez cache stanu: w granicy jednym jej uruchomieniem, bez granicy
+        tymi samymi poleceniami Git po kolei (jak przed PT-264)."""
+        status = ("status", "--porcelain=v1", "-z", "--untracked-files=" + untracked_files,
+                  "--ignore-submodules=none")
+        if not self.private and not boundary_active(("-C", cwd, *options)):
+            return self._read_checkout_direct(cwd, options, status, include_ignored)
+        result = self.run(cwd, *options, *status, checkout=untracked_files, checkout_ignored=include_ignored)
         if not result.ok:
             raise OSError("nie można odczytać checkoutu: " + result.err)
         expected = {"head", "symbolic", "status", "index", "gitdir", "index_entries"}
@@ -86,6 +89,22 @@ class Git:
             return {name: Result(**row) for name, row in data.items()}
         except (ValueError, TypeError) as exc:
             raise OSError("niepoprawny wynik migawki checkoutu") from exc
+
+    def _read_checkout_direct(self, cwd, options, status, include_ignored):
+        commands = [("head", ("rev-parse", "--verify", "HEAD")), ("symbolic", ("symbolic-ref", "--quiet", "HEAD")),
+                    ("status", status), ("index", ("rev-parse", "--path-format=absolute", "--git-path", "index")),
+                    ("gitdir", ("rev-parse", "--absolute-git-dir")),
+                    ("index_entries", ("ls-files", "--stage", "-v", "-z"))]
+        if include_ignored:
+            commands += [("ignored", ("ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")),
+                         ("repository", ("rev-parse", "--path-format=absolute", "--git-common-dir"))]
+        results = {}
+        for name, tail in commands:
+            result = self.run(cwd, *options, *tail)
+            if result.code not in ((0, 1) if name == "symbolic" else (0,)):
+                raise OSError("nie można odczytać checkoutu: " + result.err)
+            results[name] = result
+        return results
 
 
 @dataclass

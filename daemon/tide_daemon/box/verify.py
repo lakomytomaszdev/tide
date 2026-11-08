@@ -15,7 +15,7 @@ class Source:
 
 
 def _git(worktree, *args, **kwargs):
-    proc = subprocess.run(git_argv("-C", worktree, *args), stdin=subprocess.DEVNULL,
+    proc = subprocess.run(git_argv("-C", worktree, *args, boundary=True), stdin=subprocess.DEVNULL,
                           stderr=subprocess.PIPE, timeout=120, env=git_launch_env(), **kwargs)
     if proc.returncode:
         raise ValueError("verify: git: " + proc.stderr.decode(errors="replace").strip())

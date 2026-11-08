@@ -61,9 +61,20 @@ projektu prowadzonych przez Tide; główny indeks użytkownika nie jest synchron
 Karty nadal podlegają serializacji PT-266. Równoległa ręczna praca na indeksie tego
 samego worktree nie jest osobną domeną ani obsługiwanym sposobem zachowania stagingu.
 
-**Wszystkie hostowe operacje Git.** `gitcommand.git_argv` prowadzi przez izolowany
-interpreter `git_sandbox.py`, także dla FlowGit, skanera, Tablicy, opiekuna,
-przygotowania źródeł, ponowień testów i StepGit. Osobny rootfs bwrap zawiera tylko
+**Hostowe operacje Git na danych pudełka.** Każde hostowe wywołanie Git przechodzi
+przez `gitcommand` (FlowGit, skaner, Tablica, opiekun, przygotowanie źródeł,
+ponowienia testów, StepGit). Granica — izolowany interpreter `git_sandbox.py` —
+jest włączona, gdy (1) usługa ma `box.enabled` (plik ustawień czytany ponownie po
+każdej zmianie, bez restartu), (2) wywołanie dotyczy repozytorium oznaczonego
+`<common-dir>/tide-boundary` — znacznik zapisuje `initialize_indexes` przed pierwszym
+wystawieniem repozytorium pudełku i zostaje także po wyłączeniu pudełka — albo
+(3) wywołuje ją ścieżka pudełkowa (`box/*`, strażnik refów, migawka checkoutu w trybie
+granicy). Niepewny odczyt (błąd stat ustawień, nieczytelny wskaźnik `.git`
+lub `commondir`) wybiera granicę. W pozostałych przypadkach — pudełko wyłączone
+i repozytorium nigdy niewystawione — argv i otoczenie są takie jak przed K-38:
+`git -c core.hooksPath=/dev/null -c core.fsmonitor=false …` bez drugiego interpretera
+(decyzja właściciela 08.11, pomiar ~4× sumy czasów modułów przy granicy bezwarunkowej;
+[decyzje PT-264](agents/pt-264/decisions.md#granica-gita-warunkowa)). Osobny rootfs bwrap zawiera tylko
 program systemowy, jego biblioteki/dane ro oraz jawne korzenie projektu.
 Nie ma hostowego `/tmp`, `/run`, procesów, IPC ani sieci. To ogranicza także
 zmiany metadanych przez chmod/utime i gniazda ścieżkowe; sama polityka plików
@@ -103,9 +114,9 @@ w C i polecił pozostawić bezpieczeństwo oraz mechanizmy produktu bez zmian.
 
 Ryzyko resztkowe to dłuższe operacje i podatność na obciążenie; rozrzut BASE
 wyniósł 12,318%, a dwa z czterech surowych ilorazów przekroczyły 1,6. Akceptacja
-średniej nie jest gwarancją opóźnienia każdej operacji. Etap 2 / K-75 ma rozważyć
-zawężenie piaskownicy Gita do repozytoriów zapisywalnych przez pudełko albo rdzeń
-natywny. Pełny pomiar, hash źródła i zakres decyzji:
+średniej nie jest gwarancją opóźnienia każdej operacji. Zawężenie granicy do danych
+pudełka weszło do PT-264 (powyżej); etap 2 / K-75 może rozważyć dalsze zawężenie
+per repozytorium przy włączonym pudełku albo rdzeń natywny. Pełny pomiar, hash źródła i zakres decyzji:
 [decyzje PT-264](agents/pt-264/decisions.md#asked-akceptacja-narzutu-git-w-v1-bez-przebudowy-w-c).
 Historyczny kod 1 native40 według progu 1,05 i wcześniejsze porażki funkcjonalne
 pozostają zapisane. Wymagane są aktualny `test-changed`, niezależne review,

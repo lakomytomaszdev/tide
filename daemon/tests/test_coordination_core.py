@@ -972,7 +972,7 @@ class ActionsTest(World):
         asked = []
         target = actions.diff_target(b, "TOM-140", trees, git=lambda repo, br: asked.append((repo, br)) or True)
         self.assertEqual(target, {"repo": world["repo"], "main": "master", "branch": "tom-140-guard"})
-        self.assertEqual(json.loads(actions.diff_argv(target)[-1])["args"], ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+        self.assertEqual(actions.diff_argv(target), ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
                                                      "-C", world["repo"], "diff", "--stat", "--patch",
                                                      "master...tom-140-guard"])
         self.assertIsNone(actions.diff_target(b, "TOM-140", trees, git=lambda repo, br: False), "gałęzi nie ma")

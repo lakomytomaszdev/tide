@@ -32,9 +32,9 @@ def project_repo(slug):
 
 def archive_head(repo, destination):
     try:
-        revision = subprocess.run(git_argv("-C", repo, "rev-parse", "--verify", "HEAD^{commit}"),
+        revision = subprocess.run(git_argv("-C", repo, "rev-parse", "--verify", "HEAD^{commit}", boundary=True),
                                   check=True, capture_output=True, text=True, timeout=30, env=git_launch_env()).stdout.strip()
-        subprocess.run(git_argv("-C", repo, "archive", "--format=tar", f"--output={destination}", revision),
+        subprocess.run(git_argv("-C", repo, "archive", "--format=tar", f"--output={destination}", revision, boundary=True),
                        check=True, capture_output=True, timeout=120, env=git_launch_env())
     except (OSError, subprocess.SubprocessError) as exc:
         raise VerificationError("nie można przygotować kopii HEAD projektu do verify") from exc

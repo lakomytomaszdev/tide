@@ -280,8 +280,7 @@ class MergeTest(unittest.TestCase):
             self.assertEqual(fh.read(), "ticket\n")
         self.assertEqual(git(self.card, "status", "--porcelain"), "")
 
-    @unittest.skipUnless(sandbox_available(), "bwrap niedostępny w tym środowisku")
-    def test_smudge_cannot_write_outside_card_worktree(self):
+    def smudge_merge(self):
         marker = os.path.join(self.base, "filter-ran")
         inside = os.path.join(self.card, "filter-ran")
         git(self.repo, "config", "filter.evil.smudge", f"sh -c 'touch {inside}; touch {marker}; cat'")
@@ -289,9 +288,20 @@ class MergeTest(unittest.TestCase):
         self.ticket_commit()
         merged = self.merge()
         self.assertFalse(merged["already"])
-        self.assertFalse(os.path.exists(inside), "hostowy Git nie wykonuje już filtrów projektu")
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(git(self.card, "status", "--porcelain", "--untracked-files=no"), "")
+        return os.path.exists(inside)
+
+    @unittest.skipUnless(sandbox_available(), "bwrap niedostępny w tym środowisku")
+    def test_smudge_cannot_write_outside_card_worktree(self):
+        # Wyłączone pudełko: zachowanie sprzed PT-264 — filtr działa tylko w piaskownicy worktree karty.
+        self.assertTrue(self.smudge_merge(), "filtr smudge był faktycznie uruchomiony")
+
+    @unittest.skipUnless(sandbox_available(), "bwrap niedostępny w tym środowisku")
+    def test_boundary_does_not_run_project_filters(self):
+        from .test_host_git_invocation import boundary_on
+        boundary_on(self)
+        self.assertFalse(self.smudge_merge(), "hostowy Git w granicy nie wykonuje filtrów projektu")
 
 
 class ReviewDiffTest(unittest.TestCase):

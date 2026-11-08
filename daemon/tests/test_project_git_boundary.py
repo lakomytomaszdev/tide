@@ -12,6 +12,8 @@ from tide_daemon.worktrees.git import Git
 
 class ProjectGitBoundaryTests(unittest.TestCase):
     def setUp(self):
+        from .test_host_git_invocation import boundary_on
+        boundary_on(self)
         self.tmp = tempfile.TemporaryDirectory(prefix="pt264-git-")
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)

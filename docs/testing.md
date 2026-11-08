@@ -123,25 +123,19 @@ niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udaneg
 
 ## Wyjątki od testów
 
-### Budżety oczekiwania w testach funkcjonalnych chronionego Git
+### Budżety oczekiwania przy granicy hostowego Git
 
-PT-264 uruchamia hostowy Git w osobnej granicy procesu. Po pogrupowaniu świeżych odczytów
-pomiar na jednorazowych repozytoriach nadal wykazał callback korekty trzech worktrees po
-36,33 s, scalenia po 14,25 s i zakończenie planu pięciu ticketów po 68,89 s
-(obciążenie 1-minutowe odpowiednio 13,42, 18,27 i 18,03). Dawne oczekiwania 30/10/40 s
-przerywały testy przed otrzymaniem odpowiedzi lub zdarzenia końcowego. Pomiar
-gotowości nie wykonał dalszych asercji tych przerwanych scenariuszy. Szczegóły i SHA pomiarów:
-`docs/agents/pt-264/decisions.md` oraz notki kroku PT-264.
-
-Te trzy rodzaje testów funkcjonalnych mają jawne, nadal ograniczone budżety: 120 s dla
-callbacku korekty bazy, 60 s dla callbacku scalenia i 120 s dla zakończenia planu fal.
-Budżet korekty obejmuje także `BaseChangeInProcessTest.call` dla `ResolveCardStep`
-z `choice: change-base`. Pomiar tego scenariusza na `fc41f42b` wykazał odpowiedź po
-19,30 s przy limicie 15 s (obciążenie 1-minutowe 8,33); kod usługi i tego modułu
-pozostał identyczny na `d8c73621`. Oczekiwania zwykłych podglądów i żądań pozostają 15 s.
-To czas na otrzymanie wyniku, nie obietnica czasu odpowiedzi produktu. Asercje wyniku,
-zachowania plików, zdarzeń i kolejności nadal muszą przejść. Krótkie okna sprawdzania
-współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
+Granica hostowego Git (PT-264) działa tylko dla danych pudełka: przy `box.enabled`,
+dla repozytorium oznaczonego `tide-boundary` i w modułach ścieżki pudełkowej. Testy
+z wyłączonym pudełkiem uruchamiają więc Git jak przed PT-264 i mają pierwotne budżety
+oczekiwania: 30 s dla callbacku korekty bazy (15 s dla `BaseChangeInProcessTest.call`),
+10 s dla callbacku scalenia i 40/30/25 s dla zakończenia planu fal. Wcześniejsze
+podniesienie do 120/60/120 s kompensowało narzut granicy przy każdym wywołaniu
+(pomiar właściciela 08.11: suma czasów modułów ~4× bazy) i zostało cofnięte razem
+z warunkową granicą (`docs/agents/pt-264/decisions.md`, „Granica Gita warunkowa”).
+Scenariusze granicy sprawdzają moduły z włączonym pudełkiem (`boundary_on`
+w `daemon/tests/test_host_git_invocation.py`); nie mierzą czasu odpowiedzi.
+Krótkie okna sprawdzania współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
 pierwszą atrapę dopiero po potwierdzeniu obecności raportu w kolejce, zamiast polegać
 na dwusekundowym opóźnieniu atrapy.
 
@@ -156,8 +150,7 @@ Test nie potwierdza już dawnego progu 2 s. Testy timeoutu hostingcli pozostają
 
 Dwie próby edycji pracującego ticketu używają tej samej bariery `release-agent`,
 aby naturalny koniec ośmiosekundowej atrapy nie zastąpił sprawdzanego zatrzymania.
-Po zwolnieniu oczekiwanie końca planu ma budżet 120 s (zmierzony dawny wynik 26,25 s
-przekroczył 25 s). Test poświadczeń kolejnych programów czeka na domknięcie poprzedniej
+Po zwolnieniu oczekiwanie końca planu ma pierwotny budżet 25 s. Test poświadczeń kolejnych programów czeka na domknięcie poprzedniej
 karty: koniec jej ticketu nie zwalnia jeszcze blokady jednego repozytorium.
 
 Zmiana budżetu wymaga zmierzonego uzasadnienia i review tak jak kod testu. Nie zastępuje
