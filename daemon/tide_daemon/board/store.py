@@ -813,12 +813,15 @@ class BoardStore:
             doc.body = v["description"]
         writes = []
         if "tests" in v:  # kontrakt testów żyje w profilu `projects/<slug>/box.yaml`, nie we frontmatterze
-            if project is not None and project.box_unreadable:
+            profile = project
+            if profile is None:  # profil środowiska może istnieć jeszcze przed plikiem projektu
+                profile = Project(slug=slug, name=name)
+                self._load_project_tests(profile, board.errors)
+            if profile.box_unreadable:
                 raise BoardError(f"projects/{slug}/{project_tests.PROFILE_FILE}: profilu nie da się odczytać "
                                  "(zob. błędy Tablicy) — zapis kontraktu odrzucony, plik bez zmian")
-            old_text = project.box_text if project is not None else None
-            current = dict(project.tests) if project is not None and not project.tests_error else \
-                project_tests.empty()
+            old_text = profile.box_text
+            current = dict(profile.tests) if not profile.tests_error else project_tests.empty()
             new_text = project_tests.save_tests(old_text, {**current, **v["tests"]})
             if new_text != (old_text or ""):
                 writes.append((os.path.join("projects", slug, project_tests.PROFILE_FILE), new_text))

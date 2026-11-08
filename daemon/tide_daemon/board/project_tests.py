@@ -211,7 +211,10 @@ def save_tests(text, tests: dict) -> str:
     block = render_block(validate_tests({name: tests.get(name, "") for name in FIELDS}))
     if text is None:
         return f"{SCHEMA_LINE}\n{block}" if block else ""
-    lines = text.splitlines(keepends=True)
+    # Tak jak przy odczycie BOM nie jest częścią pierwszego klucza; zachowujemy go przy zapisie.
+    content = text.lstrip("\ufeff")
+    bom = text[:len(text) - len(content)]
+    lines = content.splitlines(keepends=True)
     blocks = _blocks(lines)
     if not blocks:
         if not block:
@@ -226,4 +229,4 @@ def save_tests(text, tests: dict) -> str:
         out += lines[cursor:start]
         cursor = end
     out += lines[cursor:]
-    return "".join(out)
+    return bom + "".join(out)

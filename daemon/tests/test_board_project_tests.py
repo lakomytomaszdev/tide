@@ -36,6 +36,36 @@ class ProjectTestsCase(BoardCase):
 
 
 class SaveAndReadTest(ProjectTestsCase):
+    def test_create_project_preserves_existing_profile_and_omitted_tests(self):
+        self.store.upsert_project({"slug": "other", "name": "Other"})
+        for slug, tests in (("app", ""), ("with-tests", 'tests:\n  changed: "make c {base}"\n')):
+            with self.subTest(slug=slug):
+                original = '# profil\ntide-box: 1\napt: [git]\nverify: ["true"]\n' + tests
+                self.write(f"projects/{slug}/box.yaml", original)
+                result = self.store.upsert_project({"slug": slug, "name": "App", "tests": {"full": "make test"}})
+                expected = original.replace(tests, "") if tests else original
+                expected += 'tests:\n' + ('  changed: "make c {base}"\n' if tests else '') + '  full: "make test"\n'
+                self.assertEqual(read_bytes(self.box(slug)), expected.encode("utf-8"))
+                self.assertEqual(self.project(slug)["tests"],
+                                 {"changed": "make c {base}" if tests else "", "full": "make test"})
+                self.assertEqual(self.project(slug)["testsError"], "")
+                self.assertEqual(result["commitError"], "")
+                self.assertEqual(git_out(self.root, "show", "--name-only", "--format=", "HEAD").split(),
+                                 [f"projects/{slug}.md", f"projects/{slug}/box.yaml"])
+
+    def test_bom_profile_replaces_and_removes_first_tests_block(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        suffix = '# środowisko\ntide-box: 1\napt: [git]\nverify: ["true"]\n'
+        self.write("projects/app/box.yaml", '\ufefftests:\n  full: "make old"\n' + suffix)
+        self.assertEqual(self.project()["tests"]["full"], "make old")
+        self.store.upsert_project({"slug": "app", "tests": {"full": "make new"}})
+        self.assertEqual(read_bytes(self.box()), ('\ufefftests:\n  full: "make new"\n' + suffix).encode("utf-8"))
+        self.assertEqual((self.project()["tests"], self.project()["testsError"]),
+                         ({"changed": "", "full": "make new"}, ""))
+        self.store.upsert_project({"slug": "app", "tests": {"full": ""}})
+        self.assertEqual(read_bytes(self.box()), ('\ufeff' + suffix).encode("utf-8"))
+        self.assertEqual((self.project()["tests"], self.project()["testsError"]), (project_tests.empty(), ""))
+
     def test_upsert_writes_profile_with_schema_and_snapshot_returns_same_values(self):
         result = self.store.upsert_project({"slug": "app", "name": "App", "tests": CONTRACT})
         self.assertEqual((result["ok"], result["changed"], result["commitError"]), (True, True, ""))
@@ -199,6 +229,19 @@ class ValidationTest(ProjectTestsCase):
 
 
 class DamagedFileTest(ProjectTestsCase):
+    def test_create_project_over_unreadable_profile_changes_nothing(self):
+        self.store.upsert_project({"slug": "other", "name": "Other"})
+        raw = b"tide-box: 1\napt: [git]\n# \xff\n"
+        os.makedirs(os.path.dirname(self.box()), exist_ok=True)
+        with open(self.box(), "wb") as fh:
+            fh.write(raw)
+        head, tree = self.head(), self.tree()
+        with self.assertRaisesRegex(BoardError, "nie da się odczytać"):
+            self.store.upsert_project({"slug": "app", "name": "App", "tests": CONTRACT})
+        self.assertEqual(read_bytes(self.box()), raw)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "projects", "app.md")))
+        self.assertEqual((self.head(), self.tree()), (head, tree))
+
     def test_damaged_block_gives_empty_contract_error_and_board_error(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         self.store.upsert_project({"slug": "other", "name": "Other", "tests": CONTRACT})
