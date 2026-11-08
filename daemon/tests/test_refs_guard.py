@@ -792,9 +792,10 @@ class GuardTest(unittest.TestCase):
                 self.begin()
                 engine = FlowEngine.__new__(FlowEngine)
                 engine.journal = Journal(str(self.root / ("board-" + failure)))
-                engine.journal.append("K-38", "card.started", repo=self.repo)
+                engine.journal.append("K-38", "card.started", repo=self.repo, project="proj")
                 engine.journal.append("K-38", "step.started", step="one", runner="box", repo=self.repo,
-                                      branch="ticket/one", kind="ticket", ticket="PT-1")
+                                      branch="ticket/one", kind="ticket", ticket="PT-1",
+                                      box="proj", boxSlug="proj")
                 for name in ("_queue_notices", "_release_local", "_release_box", "_recover_started_steps",
                              "_tick_card", "_guard_card"):
                     setattr(engine, name, mock.Mock())
@@ -805,7 +806,9 @@ class GuardTest(unittest.TestCase):
                 engine._local_claims, engine._warnings, engine._worktree_heads = {}, {}, {}
                 engine.box_proxy = mock.Mock()
                 engine.store = mock.Mock(root=str(self.root / "store"))
-                step = fold(engine.journal.read("K-38")).steps["one"]
+                st = fold(engine.journal.read("K-38"))
+                self.assertEqual(st.process_identities["one"].state, "ok")
+                step = st.steps["one"]
                 gitrepos.commit(self.worktrees["one"], "engine-" + failure)
                 gitrepos.git(self.repo, "update-ref", "-d", "refs/heads/ticket/one")
                 hook = self.common / "hooks/new-hook"
@@ -854,7 +857,7 @@ class GuardTest(unittest.TestCase):
     def restarting_engine(self, board="board"):
         engine = FlowEngine.__new__(FlowEngine)
         engine.journal = Journal(str(self.root / board))
-        engine.journal.append("K-38", "card.started", repo=self.repo)
+        engine.journal.append("K-38", "card.started", project="proj", repo=self.repo)
         engine.procs, engine.watch = {}, {}
         engine._box_network_errors = {}
         engine._unit_state = mock.Mock(return_value="inactive")
@@ -876,6 +879,7 @@ class GuardTest(unittest.TestCase):
                     (step_dir / "in").mkdir(parents=True)
                     intent = engine.journal.append(
                         "K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo,
+                        box="proj", boxSlug="proj",
                         kind="ticket", ticket="PT-1", branch="ticket/one", worktree=self.worktrees["one"],
                         stepDir=str(step_dir))
                     gitrepos.commit(self.worktrees["two"], f"restart-{code}-{delete_k60}")

@@ -139,7 +139,7 @@ class ChainPermissionRequestTest(FlowInProcess):
         self.step = f"{self.card_id}-PT-1-1"
         journal = self.engine.journal
         journal.append(self.card_id, "card.started", entry="now", executor="Sonnet", program="claude",
-                       provider="anthropic")
+                       provider="anthropic", project="proj")
         journal.append(self.card_id, "step.started", step=self.step, ticket="PT-1", kind="ticket", executor="Sonnet",
                        provider="anthropic", attempt=0, stepDir="/wt/x.step")
         journal.append(self.card_id, "step.finished", step=self.step, ticket="PT-1", result="denied", command=CHAIN,

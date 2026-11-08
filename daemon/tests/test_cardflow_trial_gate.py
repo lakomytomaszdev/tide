@@ -585,6 +585,7 @@ class EngineGateTest(unittest.TestCase):
         self.assertTrue(folder.is_symlink())
 
     def test_unrelated_outside_still_runs_as_before_k60(self):
+        self.journal.append("K-60", "card.started", project="plasma-tide")
         step = self.journal.append("K-60", "step.started", step="K-60-PT-999-1", ticket="PT-999",
                                    worktree=str(self.root), stepDir=str(self.root / "ordinary.step"))
         self.journal.append("K-60", "step.finished", step=step["step"], outside=True,

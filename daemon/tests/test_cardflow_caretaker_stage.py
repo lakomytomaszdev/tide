@@ -290,6 +290,7 @@ class StageObservationTest(unittest.TestCase):
         self.engine._settings_data = mock.Mock(return_value={})
         self.engine.models_config = self.engine.catalog = None
         self.engine.journal = SimpleNamespace(read=lambda card: self.j.events,
+                                             read_complete=lambda card: self.j.events,
                                              append=lambda card, kind, **fields: self.j.add(kind, **fields))
         self.engine.clock = mock.Mock(return_value=100.0)
         self.engine.git = mock.Mock()
@@ -363,7 +364,7 @@ class StageObservationTest(unittest.TestCase):
         self.failing_pair()
         run = care(self.j, FLOW_PROBLEM, "flow-error", ticket="PT-7")
 
-        def advance(card, st):
+        def advance(card, st, *, own=None):
             if st.steps[st.last_step]["ticket"] == "PT-8":
                 raise FlowGitError("brak PT-8")
 
@@ -766,9 +767,9 @@ class StageEngineTest(FlowInProcess):
         self.advancing = {"on": False}
         real = engine._advance
 
-        def advance(card, st):
+        def advance(card, st, *, own=None):
             if self.advancing["on"] or not st.steps:
-                return real(card, st)
+                return real(card, st, own=own)
             return None
 
         def section(problem, st):

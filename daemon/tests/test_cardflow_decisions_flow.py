@@ -94,7 +94,7 @@ class DecisionStepTargetTest(FlowInProcess):
         self.card_id = self.card()
         journal = self.engine.journal
         journal.append(self.card_id, "card.started", entry="now", executor="Sonnet", program="claude",
-                       provider="anthropic")
+                       provider="anthropic", project="proj")
         for ticket in ("PT-1", "PT-2"):
             journal.append(self.card_id, "step.started", step=f"{self.card_id}-{ticket}-1", ticket=ticket,
                            kind="ticket", executor="Sonnet", provider="anthropic", attempt=0)

@@ -51,6 +51,7 @@ class PlacementTest(BoxFlow):
         super().setUp()
         self.flow.stop()
         self.card_id = self.card()
+        self.engine.journal.append(self.card_id, "card.started", project=SLUG)
 
     def place(self, kind="ticket", parent=""):
         return boxstep.place(self.engine, self.card_id, SLUG, kind, parent, BOX_STEP_KINDS)
@@ -400,7 +401,7 @@ class PlacementTest(BoxFlow):
 
     def test_reconcile_start_intent_checks_the_box_instead_of_the_host(self):
         self.build_box()
-        self.engine.journal.append(self.card_id, "card.started", repo=self.repo)
+        self.engine.journal.append(self.card_id, "card.started", repo=self.repo, project=SLUG)
         self.engine.box_proxy = bproxy.ProxyService(self.proxy.listen, self.proxy.port)
         placement = self.place()
         log = boxstep.before_start(self.engine, placement, self.card_id, "crash")
@@ -499,7 +500,7 @@ class DeniedTest(BoxFlow):
         guard.start()
         self.addCleanup(guard.stop)
         self.engine.journal.append(self.card_id, "card.started", entry="now", executor="Sonnet", program="claude",
-                                   provider="anthropic", repo=self.repo)
+                                   provider="anthropic", repo=self.repo, project=SLUG)
 
     def step(self, card_id, name, result: dict, log_text=""):
         step_dir = os.path.join(self.base, "steps", name + ".step")
@@ -616,7 +617,7 @@ class DeniedTest(BoxFlow):
     def test_entry_from_another_card_in_the_same_box_does_not_make_denied(self):
         other = self.card(title="Inna karta")
         self.engine.journal.append(other, "card.started", entry="now", executor="Sonnet", program="claude",
-                                   provider="anthropic", repo=self.repo)
+                                   provider="anthropic", repo=self.repo, project=SLUG)
         self.step(other, "K-2-PT-2-1", {"result": "done", "notes": []})
         self.deny("K-2-PT-2-1", "evil.example.org")          # dziennik kroku innej karty
         step = self.step(self.card_id, "K-1-PT-1-1",
@@ -666,7 +667,7 @@ class DeniedTest(BoxFlow):
     def test_release_resets_the_policy_for_remaining_steps_or_clears_it(self):
         other = self.card(title="Inna karta")
         self.engine.journal.append(other, "card.started", entry="now", executor="Sonnet", program="claude",
-                                   provider="anthropic", repo=self.repo)
+                                   provider="anthropic", repo=self.repo, project=SLUG)
         first = self.step(self.card_id, "K-1-PT-1-1", {"result": "done", "notes": []})
         second = self.step(other, "K-2-PT-2-1", {"result": "done", "notes": []})
         self.engine._finish(self.card_id, first, exit_code=0)

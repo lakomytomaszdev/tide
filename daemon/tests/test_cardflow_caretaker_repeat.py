@@ -345,7 +345,7 @@ class EngineJournalTest(unittest.TestCase):
         self.engine = FlowEngine(store, journal, catalog=executors.default_catalog, settings=settings,
                                  tmp_root=self.base)
         self.journal = journal
-        journal.append("K-1", "card.started", entry="now", executor="Sonnet", provider="anthropic",
+        journal.append("K-1", "card.started", project="proj", entry="now", executor="Sonnet", provider="anthropic",
                        preferredProvider="anthropic", column="todo")
 
     def add(self, etype, **fields):

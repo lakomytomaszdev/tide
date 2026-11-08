@@ -710,6 +710,7 @@ class ResumeMountWaitingTest(BoxRunnerCase):
         project = SimpleNamespace(repo=self.repo, slug="proj", allowed_commands=[], denied_commands=[],
                                   read_dirs=[], read_dirs_error="", read_dir_bindings=[])
         card = SimpleNamespace(id="K-38", projects=[])
+        engine.journal.append(card.id, "card.started", project="proj")
         engine.journal.append(card.id, "step.started", step="A", ticket="PT-1", kind="ticket",
                               stepDir=self.step_dir)
         engine.journal.append(card.id, "step.finished", step="A", result="question")

@@ -247,6 +247,14 @@ def devices(slug, card, specs, env=None):
 
 def cleanup(slug, card, incus, journal):
     from . import state as bs
+    from ..cardflow import trialhold
+    from ..cardflow.state import fold
+    try:
+        states = [fold(trialhold.read_process_history(journal, key)) for key in journal.cards_complete()]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise PackError("packs: nieznana historia procesów — sprzątanie wstrzymane") from exc
+    if any(trialhold.preserves_project(st, slug) for st in states):
+        raise PackError("packs: nierozstrzygnięty proces — sprzątanie wstrzymane")
     target = root(slug, card)
     if os.path.realpath(os.path.dirname(target)) != os.path.dirname(target):
         raise PackError("packs: dowiązanie w katalogu sprzątania")

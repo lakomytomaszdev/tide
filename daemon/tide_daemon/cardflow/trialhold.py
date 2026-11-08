@@ -6,60 +6,25 @@ import stat
 from ..box import state as bs, trialgate
 from ..tasks import stepstop
 from .state import fold
+from .processidentity import process_identities
 
 
 def held(step):
-    return trialgate.blocked_event(step)
+    return step.get("_identityHeld") is True or trialgate.blocked_event(step)
 
 
-def preserves_project(st):
+def preserves_project(st, project=None):
     """Także hostowy zamiar bez step.started mógł już utworzyć proces."""
-    return (any(held(step) for step in (*st.steps.values(), *st.caretakers.values()))
-            or any(held({**intent, "step": name}) for (action, name), intent in st.intents.items()
-                   if action == "step-start"))
-
-
-def _outside_evidence(event):
-    return (event["type"] == "outside.started"
-            or (event["type"] == "step.finished" and event.get("outside"))
-            or (event["type"] == "step.decision" and event.get("choice") in ("run", "run-always", "run-ticket")))
+    return any(identity.held and (project is None or "" in identity.projects or project in identity.projects)
+               for identity in st.process_identities.values())
 
 
 def read_process_history(journal, card):
     """Wspólna kontrola historii przed wykonaniem, inwentaryzacją i ochroną zasobów."""
     events = journal.read_complete(card)
-    _validate_outside_identity(events)
+    if any(identity.state != "ok" for identity in process_identities(events).values()):
+        raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
     return events
-
-
-def _validate_outside_identity(events):
-    """Start zachowuje tożsamość, a outside wskazuje wcześniejszy krok lub zamiar.
-
-    Sam ticket/nazwa outside nie zastępuje brakującej historii startu. Ticket
-    bywa pominięty w starym outside, ale podany musi zgadzać się z jego krokiem.
-    """
-    known = {}
-    for event in events:
-        if (event["type"] == "step.started"
-                or (event["type"] == "intent" and event.get("action") == "step-start")):
-            name = event["step"] if event["type"] == "step.started" else event["key"]
-            previous = known.get(name)
-            if previous is not None:
-                if previous.get("ticket", "") != event.get("ticket", ""):
-                    raise ValueError("sprzeczna tożsamość ticketu w historii startu")
-                for field in ("kind", "branch", "worktree", "stepDir", "runner"):
-                    if field in previous and field in event and previous[field] != event[field]:
-                        raise ValueError("sprzeczna tożsamość kroku w historii startu: " + field)
-            # Pominięte opcjonalne pole nie kasuje wcześniejszej wiedzy. Dzięki temu
-            # kolejny zapis nie ukryje sprzeczności przez pośredni, skrócony wpis.
-            known[name] = {**(previous or {}), **event}
-        elif _outside_evidence(event):
-            name = event.get("step")
-            if not isinstance(name, str) or not name.strip() or name not in known:
-                raise ValueError("niepełna lub osierocona tożsamość outside")
-            if "ticket" in event and (not isinstance(event["ticket"], str)
-                                      or event["ticket"] != known[name].get("ticket", "")):
-                raise ValueError("tożsamość outside nie zgadza się z krokiem")
 
 
 def inventory(engine, card, st):
@@ -72,13 +37,10 @@ def inventory(engine, card, st):
         # Jej zachowany błąd oznacza unknown również po restarcie usługi.
         return False
     items = []
-    known = {**st.steps, **st.caretakers}
-    for (action, name), intent in st.intents.items():
-        if action == "step-start" and name not in known:
-            known[name] = {**intent, "step": name}
-    for name, step in known.items():
-        if not held(step):
+    for name, identity in st.process_identities.items():
+        if not identity.held:
             continue
+        step = {**identity.data, **st.steps.get(name, {}), **st.caretakers.get(name, {})}
         try:
             if step.get("mode") == "interactive":
                 from ..tasks import launch
@@ -105,19 +67,12 @@ def inventory(engine, card, st):
             engine.journal.append(card, "k38.handoff", step=name, ticket=step.get("ticket"), version=1,
                                   instruction=trialgate.MESSAGE, preserved=True,
                                   excluded=step.get("ticket") in trialgate.EXCLUDED)
-    protected = {i["step"] for i in items}
-    outside = [e for e in events if e.get("type") == "outside.started"]
-    recorded = {e.get("step") for e in outside}
-    for event in events:
-        # Stare outside nie miało intent przed Popen. Oczekująca prośba lub zgoda
-        # bez outside.started może oznaczać awarię tuż po utworzeniu klienta.
-        name = event.get("step")
-        if _outside_evidence(event) and name not in recorded:
-            outside.append({"step": name, "ticket": event.get("ticket")})
-            recorded.add(name)
+    outside = []
+    for identity in st.process_identities.values():
+        if identity.held and identity.outside:
+            started = [e for e in identity.outside if e.get("type") == "outside.started"]
+            outside.extend(started or [{"step": identity.name, "ticket": identity.data.get("ticket")}])
     for event in outside:
-        if event.get("step") not in protected and not held(event):
-            continue
         try:
             state = stepstop.unit_state(event["unit"]) if event.get("unit") else "unknown"
             # outside.started nie potwierdza utworzenia scope przez asynchroniczny systemd-run.

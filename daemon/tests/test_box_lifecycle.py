@@ -244,6 +244,7 @@ class LifecycleTest(BoxCase):
         self.b.incus.device_add("plasma-tide", dev.name, "disk", dev.values())
         journal = Journal(bp.board_dir())
         journal.append("K-38", "card.started", project="plasma-tide")
+        journal.append("K-38", "step.started", step="s1", ticket="PT-999")
         journal.append("K-38", "step.finished", step="s1", result="error")
         journal.append("K-38", "card.closed")
         engine = SimpleNamespace(journal=journal, procs={},

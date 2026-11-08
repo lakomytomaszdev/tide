@@ -74,7 +74,7 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.flow._timer.stop()
         self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         eng = self.flow.engine
-        order = eng.journal.append(card, "card.started", entry="plan", repo=self.repo, baseVersion=1)
+        order = eng.journal.append(card, "card.started", project="proj", entry="plan", repo=self.repo, baseVersion=1)
         eng.journal.append(card, "plan.approved", rows=[{"id": "PT-1"}, {"id": "PT-2"}])
         steps = []
         for index in range(1, 4):

@@ -57,7 +57,8 @@ class OutsideQueueTest(unittest.TestCase):
         eng._outside_active = {"K-37-PT-9-1": ("K-37", "unit")}
         eng._start_outside = lambda *a: self.fail("miejsce zajęte")
         step = {"step": "K-38-PT-1-4", "ticket": "PT-1", "kind": "ticket"}
-        history = [{"type": "step.started", **step}]
+        history = [{"type": "card.started", "project": "plasma-tide"},
+                   {"type": "step.started", **step}]
         eng.journal = types.SimpleNamespace(read=lambda card: history, read_complete=lambda card: history)
         step, done = step, {"command": "echo trial"}
         self.assertIsNone(eng._outside_ready("K-38", step, done, {"choice": "run", "ts": "2026-11-05T17:18:00+01:00"}))

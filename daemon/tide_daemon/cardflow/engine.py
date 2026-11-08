@@ -542,12 +542,32 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _trial_check(ticket):
         try:
             if isinstance(ticket, dict):
-                if trialgate.blocked_event(ticket):
+                if trialhold.held(ticket):
                     raise trialgate.TrialDenied(trialgate.MESSAGE)
             else:
                 trialgate.require_ticket(ticket)
         except trialgate.TrialDenied as exc:
             raise FlowError("k38-trial-held", str(exc)) from None
+
+    def _process_state(self, card):
+        """Ścisły odczyt i jeden model tożsamości przed skutkami procesu."""
+        try:
+            return fold(trialhold.read_process_history(self.journal, card))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise FlowError("process-history", f"nieznana historia procesów — operacja wstrzymana: {exc}") from None
+
+    def _process_check(self, card, step):
+        st = self._process_state(card)
+        name = step.get("step") or step.get("key") or ""
+        identity = st.process_identities.get(name)
+        if identity is not None:
+            if identity.held:
+                raise FlowError("k38-trial-held", trialgate.MESSAGE)
+            from .processidentity import START_FIELDS
+            if any(k in step and k in identity.data and step[k] != identity.data[k] for k in START_FIELDS):
+                raise FlowError("process-history", "tożsamość procesu nie zgadza się z historią")
+        self._trial_check(step)
+        return st
 
     def register_trial_diagnostic(self):
         """Wyłącznie integracja hostowej procedury PT-273; brak polecenia i ścieżek w żądaniu.
@@ -557,7 +577,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """
         with self.journal.lock:
             try:
-                events = self.journal.read_complete("K-38")
+                events = trialhold.read_process_history(self.journal, "K-38")
                 return self._register_trial_diagnostic(events)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
@@ -584,7 +604,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Zapis zgody nie może wcześniej naprawić uszkodzonego fallbacku Tablicy.
         with self.journal.lock:
             try:
-                events = self.journal.read_complete(card)
+                events = trialhold.read_process_history(self.journal, card)
                 return self._start_trial_diagnostic(card, request, events)
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 raise FlowError("k38-trial-held", "K-38 v1: niepełna historia diagnostyki") from exc
@@ -1392,6 +1412,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
         self._trial_check({"ticket": ticket, "step": step_id})
+        self._process_check(item.id, {"ticket": ticket, "step": step_id})
         context_state = fold(self.journal.read(item.id))
         if baseproposal.blocked(context_state):
             raise FlowDeferred("decyzja o bazie karty")
@@ -1500,7 +1521,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     cwd=claim_dir, branch=made["branch"], title=payload["title"],
                     argv=command.argv, task_file=task_file)
         try:
-            opened = self.terminal.open(plan)
+            with self.journal.lock:
+                self._process_check(item.id, {"step": step_id})
+                opened = self.terminal.open(plan)
         except Exception as exc:
             print(f"tide-daemon: planowanie {item.id}: Konsola: {exc!r}", flush=True)
             opened = ""
@@ -1683,7 +1706,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
-        st = fold(self.journal.read(card_id))
+        st = self._process_state(card_id)
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
@@ -1831,7 +1854,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     prompt=prompt, cwd=claim_dir, branch=current.get("branch") or "", title=payload["title"],
                     argv=command.argv, task_file=task_file)
         try:
-            mode = self.terminal.open(plan)
+            with self.journal.lock:
+                self._process_check(card_id, {"step": new_id})
+                mode = self.terminal.open(plan)
         except Exception as exc:
             print(f"tide-daemon: przepływ karty {card_id}: Konsola: {exc!r}", flush=True)
             mode = ""
@@ -1883,6 +1908,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return stepstop.unit_state(step.get("unit") or "")
 
     def _stop_for_enter(self, card: str, step: dict) -> bool:
+        try:
+            self._process_check(card, step)
+        except FlowError:
+            return False
         stopped = stepstop.stop_step(self.procs.get(step.get("step") or ""), unit=step.get("unit") or "",
                                      worktree=step.get("worktree") or "", step_dir=step.get("stepDir") or "",
                                      repo=step.get("repo") or self._repo(card), git_dir=step.get("gitDir") or "",
@@ -2321,6 +2350,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
         self._trial_check({"ticket": ticket, "step": step_id})
+        self._process_check(card.id, {"ticket": ticket, "step": step_id})
         self._admit(card.id, selected, ticket, kind, step_id)
         try:
             placement = self._box_place(card.id, project, selected, ticket, kind, parent_step, step_id)
@@ -2449,7 +2479,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if placement is not None:
                     boxstep.prepare_runner(self, placement, runner_step)
                 self._trial_check(ticket)
-                bg, proc = runner.start(runner_step, before_start=copy_images)
+                with self.journal.lock:
+                    self._process_check(card.id, {"ticket": ticket, "step": step_id})
+                    bg, proc = runner.start(runner_step, before_start=copy_images)
             except BaseException:
                 if placement is not None:
                     boxstep.start_failed(self, placement, step_id)
@@ -2707,16 +2739,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _complete_manual_finish(self, card: str, column: str) -> bool:
         """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
-        st = fold(self.journal.read(card))
+        try:
+            st = self._process_state(card)
+        except FlowError:
+            return False
         if baseproposal.generation_blocked(st):
             return False
         if st.card_finished:
             return True
         # Dawny ruch do Gotowe/Archiwum nie uprawnia do zatrzymania chronionej próby.
         # Sprawdzamy całą kartę przed pierwszym stopem, także okno sprzed step.started.
-        if any(trialhold.held(step) for step in st.steps.values()) or any(
-                trialhold.held({**intent, "step": name})
-                for (action, name), intent in st.intents.items() if action == "step-start"):
+        if trialhold.preserves_project(st):
             return False
         for step in st.running():
             if not self._stop(card, step, "stopped", ""):
@@ -2935,7 +2968,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         continue
                     current.last_step = name
                     try:
-                        self._advance(card, current)
+                        self._advance(card, current, own=own)
                     except FlowDeferred:
                         pass
                     except Exception as exc:
@@ -2951,7 +2984,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         self._plan_next(card, current)
                         self._clear_flow_error(card, "plan-next", own=own)
                     elif not latest:
-                        self._advance(card, current)
+                        self._advance(card, current, own=own)
                         self._clear_flow_error(card, "advance", own=own)
                 except FlowDeferred:
                     pass
@@ -3101,9 +3134,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._resume_step(card, st, step, choice)
         return True
 
-    def _advance(self, card: str, st: FlowState) -> None:
+    def _advance(self, card: str, st: FlowState, *, own: tuple | None = None) -> None:
         """Jedna zmiana etapu ticketu: ticket → review → poprawki/review → scalenie i sprzątanie.
         Start kolejnych ticketów i domknięcie wykonuje wyłącznie `_advance_card`, raz po obsłudze ticketów."""
+        selected = st.last_step
+        try:
+            st = self._process_state(card)
+        except FlowError:
+            return
+        # Ścisły odczyt zachowuje wszystkie ślady procesu, ale bieżąca akcja
+        # opiekuna nadal nie blokuje własnego ponowienia etapu (jak w _advance_card).
+        if own is not None and own[0] == "caretaker-action":
+            st.intents.pop(own, None)
+        # Fale wybierają kolejny ticket przez last_step, niezależnie od kolejności
+        # startów w dzienniku. Zachowujemy wyłącznie selektor, nigdy stare dane.
+        if selected:
+            if selected not in st.steps:
+                return
+            st.last_step = selected
         if trialhold.held(st.steps.get(st.last_step) or {}) or baseproposal.blocked(st):
             return
         if st.open_intents():
@@ -3521,6 +3569,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return f"{prefix}{max(numbers, default=0) + 1}"
 
     def _resolve_transfer(self, card: str, st: FlowState, request: dict) -> dict:
+        st = self._process_state(card)
         choice = request.get("choice") or ""
         focus = str(request.get("step") or decision_step(st) or "")
         step = st.steps.get(focus) or {}
@@ -3579,6 +3628,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _stop_interactive_transfer(self, card: str, step: dict) -> bool:
         """Zamyka rzeczywistą sesję Konsoli albo anuluje nieprzejęte zadanie przed migawką WIP."""
+        try:
+            self._process_check(card, step)
+        except FlowError:
+            return False
         task = step.get("taskFile") or ""
         claim_dir = os.path.join(step.get("stepDir") or "", "in", "console-claim")
         try:
@@ -3622,6 +3675,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _recover_console_openings(self, card: str, st: FlowState) -> None:
         """Otwiera oczekujące zadanie Konsoli po przerwaniu usługi między zapisem a terminal.open."""
+        try:
+            st = self._process_state(card)
+        except FlowError:
+            return
         if self.terminal is None or not self.terminal.available():
             return
         for step in [*st.steps.values(), *st.caretakers.values()]:
@@ -3645,7 +3702,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             tool=step.get("program") or "", prompt="", cwd=payload["cwd"],
                             branch=step.get("branch") or "", title=payload["title"],
                             argv=payload["argv"], task_file=task)
-                opened = self.terminal.open(plan)
+                with self.journal.lock:
+                    self._process_check(card, step)
+                    opened = self.terminal.open(plan)
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty {card}: wznowienie Konsoli: {exc!r}", flush=True)
                 continue
@@ -4307,7 +4366,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _resume_step(self, card: str, st: FlowState, step: dict, decision: dict, *, attempt=0) -> None:
         """Ten sam ticket i worktree; nowa próba ma osobny katalog wyniku i zdarzenie."""
-        self._trial_check(step)
+        st = self._process_check(card, step)
         if step.get("step") in st.superseded and step.get("step") not in st.plan_resumes:
             raise FlowError("stale-context", "Nie można wznowić sesji poprzedniego kontekstu.")
         if any(s.get("parentStep") == step.get("step") for s in st.steps.values()):
@@ -4660,7 +4719,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _reconcile(self, card: str, intent: dict) -> None:
         """Akcja zaczęta przed restartem usługi, bez wyniku: dokończenie albo jawny błąd (nigdy druga kopia)."""
-        if trialhold.held(intent) or trialgate.blocked(intent.get("key") or ""):
+        try:
+            self._process_check(card, intent)
+        except FlowError:
             return
         action, key = intent.get("action"), intent.get("key")
         if action == "main-merge":
@@ -4750,7 +4811,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _recover_started_steps(self, card: str, st: FlowState) -> None:
         """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started."""
         try:
-            st = fold(self.journal.read_complete(card))
+            st = fold(trialhold.read_process_history(self.journal, card))
         except (OSError, ValueError, TypeError, KeyError):
             return  # także bezpośrednie recovery zachowuje bajty nieznanej historii
         ticket = ticket_of(st)
@@ -4789,7 +4850,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return (st.started or {}).get("repo") or ""
 
     def _poll(self, card: str, step: dict) -> None:
-        if trialhold.held(step):
+        try:
+            self._process_check(card, step)
+        except FlowError:
             return
         if step.get("mode") == "interactive":
             self._poll_interactive(card, step)
@@ -4898,7 +4961,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     self.clock() - float(step.get("enteredAt") or self.clock()) > 30)
 
     def _guard(self, card: str, step: dict, *, stop_stalled: bool = True) -> None:
-        if trialhold.held(step):
+        try:
+            self._process_check(card, step)
+        except FlowError:
             return
         name = step.get("step") or ""
         now = time.monotonic()
@@ -5016,6 +5081,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _stop(self, card: str, step: dict, result: str, reason: str, stalled_since: str = "",
               *, handoff: bool = False) -> bool:
+        try:
+            self._process_check(card, step)
+        except FlowError:
+            return False
         if step.get("kind") == "caretaker-chat":
             if not self._stop_caretaker_chat(step):
                 return False

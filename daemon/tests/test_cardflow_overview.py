@@ -23,7 +23,7 @@ class OverviewTest(unittest.TestCase):
         self.store = SimpleNamespace(root=self.board,
                                      load=lambda: SimpleNamespace(cards={1: SimpleNamespace(column="todo")}))
         self.engine = FlowEngine(self.store, self.journal, clock=lambda: self.now[0])
-        self.journal.append("K-1", "card.started", entry="plan", repo=self.temp.name, column="todo")
+        self.journal.append("K-1", "card.started", entry="plan", repo=self.temp.name, column="todo", project="proj")
 
     def test_plan_approval_notifies_once(self):
         self.journal.append("K-1", "plan.proposed", rows=[], title="Plan")

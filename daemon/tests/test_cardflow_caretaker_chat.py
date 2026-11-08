@@ -175,7 +175,12 @@ class CaretakerChatTest(EngineOnJournal):
     def test_restart_before_entered_recovers_the_prepared_console(self):
         events = self.journal.read("K-1")
         cut = next(i for i, e in enumerate(events) if e["type"] == "step.entered")
-        before_entered = fold(events[:cut])
+        # Restart ma widzieć ten sam prefiks w trwałej historii, nie tylko
+        # w przekazanej projekcji, którą kontrola procesu ponownie odczytuje.
+        for path in (self.journal.path("K-1"), self.journal.mirror_path("K-1")):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.writelines(json.dumps(event) + "\n" for event in events[:cut])
+        before_entered = fold(self.journal.read_complete("K-1"))
         step = before_entered.caretakers[self.name]
         self.assertEqual(step["mode"], "interactive")
         self.assertTrue(step["taskFile"] and step["consoleUnit"])
@@ -183,6 +188,8 @@ class CaretakerChatTest(EngineOnJournal):
         self.engine._recover_console_openings("K-1", before_entered)
         self.engine.terminal.open.assert_called_once()
         self.assertEqual(self.engine.terminal.open.call_args.args[0].task_file, step["taskFile"])
+        self.assertEqual([e["seq"] for e in self.journal.read_complete("K-1")],
+                         list(range(1, cut + 2)))
 
     def test_claimed_task_without_launcher_identity_cannot_be_declared_stopped(self):
         os.rename(self.step["taskFile"], self.step["taskFile"] + ".claimed")

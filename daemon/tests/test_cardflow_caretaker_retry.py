@@ -260,6 +260,8 @@ class EngineOnJournal(unittest.TestCase):
         self.journal = self.engine.journal
 
     def add(self, card, etype, **fields):
+        if etype == "card.started":
+            fields = {"project": "proj", **fields}
         return self.journal.append(card, etype, **fields)
 
 

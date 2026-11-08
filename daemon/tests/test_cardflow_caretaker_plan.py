@@ -402,6 +402,7 @@ class ActionOnJournalTest(EngineOnJournal):
                 {"result": "done", "action": "return-plan", "feedback": "Wiersz #1.",
                  "reason": "Powód.", "findings": "²"}, caretaker.problems(st)[0], st)
             self.assertTrue(parsed["ok"])
+            self.add("K-1", "step.started", step=run["step"], kind="caretaker", ticket="")
             self.add("K-1", "step.finished", step=run["step"], result="done", outcome=parsed)
             # Restart między zamiarem a wynikiem: odtworzenie musi zamknąć także niepoprawną akcję.
             intent = self.add("K-1", "intent", action="caretaker-action", key=run["step"],
