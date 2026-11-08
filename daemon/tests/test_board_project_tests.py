@@ -171,6 +171,21 @@ class SaveAndReadTest(ProjectTestsCase):
 
 
 class ValidationTest(ProjectTestsCase):
+    def test_all_line_separators_reject_write_without_changes(self):
+        self.store.upsert_project({"slug": "app", "name": "App", "tests": CONTRACT})
+        md = os.path.join(self.root, "projects", "app.md")
+        before = (read_bytes(self.box()), read_bytes(md), self.head(), self.tree())
+        for separator in "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+            for field in project_tests.FIELDS:
+                with self.subTest(separator=repr(separator), field=field):
+                    command = f"pytest -k 'a{separator}b'" + (" {base}" if field == "changed" else "")
+                    with self.assertRaisesRegex(BoardError, "jedną linią"):
+                        self.store.upsert_project({"slug": "app", "description": "zmiana",
+                                                   "tests": {field: command}})
+                    self.assertEqual((read_bytes(self.box()), read_bytes(md), self.head(), self.tree()), before)
+                    self.assertEqual(self.project()["tests"], CONTRACT)
+                    self.assertEqual(self.project()["testsError"], "")
+
     def test_rejected_contracts_change_nothing(self):
         self.store.upsert_project({"slug": "app", "name": "App", "tests": CONTRACT})
         before, head, tree = read(self.box()), self.head(), self.tree()
@@ -229,6 +244,23 @@ class ValidationTest(ProjectTestsCase):
 
 
 class DamagedFileTest(ProjectTestsCase):
+    def test_colon_in_plain_scalar_requires_quotes(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for value in ("make: test", "make:\ttest", "make:"):
+            with self.subTest(value=value):
+                self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {value}\n")
+                snapshot = self.store.snapshot()
+                project = next(p for p in snapshot["projects"] if p["slug"] == "app")
+                self.assertEqual(project["tests"], project_tests.empty())
+                self.assertTrue(project["testsError"].startswith("tests:"))
+                self.assertTrue(any(e["path"].endswith("projects/app/box.yaml")
+                                    for e in snapshot["errors"]))
+        for value in ('"make: test"', "'make: test'", "https://example.org"):
+            with self.subTest(value=value):
+                self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {value}\n")
+                self.assertEqual(self.project()["tests"]["full"], value.strip("\"'"))
+                self.assertEqual(self.project()["testsError"], "")
+
     def test_create_project_over_unreadable_profile_changes_nothing(self):
         self.store.upsert_project({"slug": "other", "name": "Other"})
         raw = b"tide-box: 1\napt: [git]\n# \xff\n"

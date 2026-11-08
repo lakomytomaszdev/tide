@@ -23,6 +23,8 @@ GRANT_NOTE = ("polecenie zawiera `*` (albo nie jest pojedynczym poleceniem) — 
               "zgody; uruchomienie wymaga zgody w kroku")
 
 _PARAM = re.compile(r"\{[^{}]*\}")
+# Te same separatory, które splitlines() rozpoznaje przy odczycie i podmianie bloku.
+_LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _TOP_KEY = re.compile(r"^tests[ \t]*:")
 _NOT_STRING = re.compile(
     r"^(?:[-+]?(?:\d[\d_]*\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|0[xXoObB][0-9a-fA-F_]+|true|false|null|~|[-+]?\.(?:inf|nan))$",
@@ -51,7 +53,7 @@ def validate_tests(data) -> dict:
             raise ValueError(f"tests.{name} musi być napisem")
         if "\0" in value:
             raise ValueError(f"tests.{name} zawiera znak NUL")
-        if "\n" in value or "\r" in value:
+        if any(separator in value for separator in _LINE_BREAKS):
             raise ValueError(f"tests.{name} musi być jedną linią")
         value = value.strip()
         if len(value) > COMMAND_MAX:
@@ -157,6 +159,8 @@ def _scalar(text: str) -> str:
         raise ValueError("oczekiwano napisu (najlepiej w cudzysłowie)")
     if _NOT_STRING.match(text):
         raise ValueError("oczekiwano napisu, a nie liczby, true/false ani null (użyj cudzysłowu)")
+    if re.search(r":(?:[ \t]|$)", text):
+        raise ValueError("dwukropek z odstępem lub na końcu wymaga napisu w cudzysłowie")
     return text
 
 
