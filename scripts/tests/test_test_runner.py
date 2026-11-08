@@ -133,7 +133,8 @@ class Example(unittest.TestCase):
 class Example(unittest.TestCase):
     def test_cache_off(self): self.assertEqual(os.environ.get("QML_DISABLE_DISK_CACHE"), "1")
 ''')
-        with redirect_stdout(io.StringIO()):
+        # Rodzic z inną wartością: uruchamiacz ma ją wymusić, nie dziedziczyć.
+        with redirect_stdout(io.StringIO()), patch.dict("os.environ", {"QML_DISABLE_DISK_CACHE": "0"}):
             results = runner.execute(runner.modules_for([("example", "test*.py")], self.root),
                                      1, self.root / "logs", self.root)
         self.assertTrue(all(r["returncode"] == 0 for r in results), results)
