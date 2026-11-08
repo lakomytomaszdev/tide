@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 
 from .privatebus import wait_until
 from . import test_cardflow_plan_integration as plan_tests
@@ -230,23 +231,57 @@ class WaveFlowTest(FlowInProcess):
     def test_queued_direct_step_preserves_screenshot_after_dialog_removes_source(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"providerSlots": {"anthropic": 1}}, fh)
-        first = self.card(description="ATRAPA: powoli 2")
-        second = self.card()
-        self.assertTrue(self.start(first)["ok"])
-        image = os.path.join(self.base, "shot.png")
-        with open(image, "wb") as fh:
-            fh.write(b"screenshot-data")
-        self.assertTrue(self.start(second, images=[image])["ok"])
-        os.unlink(image)
-        self.wait_column(second, "review", timeout=15)
-        started = self.of(second, "step.started")[0]
-        with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
-            self.assertEqual(fh.read(), b"screenshot-data")
-        # 04.11, K-49: narzędzie Read odrzucało zrzut spoza katalogów sesji — katalog zrzutów jest do odczytu.
-        with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
-            argv = json.load(fh)["argv"]
-        images = os.path.join(started["stepDir"], "in", "images")
-        self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+        first = self.card(description="ATRAPA: na-sygnal")
+        second = self.card(description="ATRAPA: na-sygnal")
+        try:
+            self.assertTrue(self.start(first)["ok"])
+            signal = Path(self.started(first)["stepDir"], "out", "release-agent")
+            image = os.path.join(self.base, "shot.png")
+            with open(image, "wb") as fh:
+                fh.write(b"screenshot-data")
+            self.assertTrue(self.start(second, images=[image])["ok"])
+            self.assertTrue(wait_until(lambda: any(e.get("cause") == "slots" for e in
+                                                  self.of(second, "step.waiting")), timeout=5))
+            self.assertEqual(self.of(second, "step.started"), [], "Zrzut ma czekać w kolejce")
+            self.assertFalse(self.of(first, "step.finished"))
+            os.unlink(image)
+            signal.touch()
+
+            def received_image():
+                starts = self.of(second, "step.started")
+                return starts and Path(starts[0]["stepDir"], "out", "fake-call.json").is_file()
+
+            # Czytamy wejście rzeczywistego procesu; kolumna review jest przejściowa
+            # i mogła już zniknąć, zanim callback startu zwrócił sterowanie testowi.
+            self.assertTrue(wait_until(received_image, timeout=60), self.events(second))
+            started = self.of(second, "step.started")[0]
+            self.assertFalse(self.of(second, "step.finished"), "Druga atrapa nadal czeka na kontrolę wejść")
+            self.assertFalse(os.path.exists(image))
+            with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
+                self.assertEqual(fh.read(), b"screenshot-data")
+            # 04.11, K-49: Read musi móc odczytać zrzut z katalogu wejść kroku.
+            with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+                argv = json.load(fh)["argv"]
+            images = os.path.join(started["stepDir"], "in", "images")
+            self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+        finally:
+            # Start w bieżącym ticku musi się zakończyć przed odczytem listy,
+            # także gdy asercja zawiedzie przed zapisem step.started.
+            self.stop_flow()
+            released = []
+            for card in (first, second):
+                for started in self.of(card, "step.started"):
+                    if started["kind"] == "ticket":
+                        Path(started["stepDir"], "out", "release-agent").touch()
+                        released.append(started)
+            for started in released:
+                proc = self.flow.engine.procs.get(started["step"])
+                if proc is not None:
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.flow.engine._runner_for(started).kill(started, proc=proc)
+                        proc.wait(timeout=5)
 
     def test_retry_uses_own_worktree_while_another_ticket_is_running(self):
         card = self.card()
