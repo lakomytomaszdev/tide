@@ -1,6 +1,5 @@
 """Instalacja na nowej maszynie (scripts/bootstrap-machine.sh): pakiety z kodu, strażnik symulacji apt/dnf
 na nagranych wyjściach (Ubuntu 26.04, Fedora 44) i tryb --check, który niczego nie zmienia."""
-import os
 import re
 import subprocess
 import tempfile
@@ -64,8 +63,14 @@ class DnfTransactionTest(unittest.TestCase):
         self.assertEqual(packages.blocked(plan), ["qt6-qtbase → 0:6.11.2-3.fc44",
                                                   "kf6-kcoreaddons → 0:6.24.0-1.fc44"])
 
+    def test_dnf4_table_header_is_not_a_package(self):
+        plan = packages.parse_dnf(fixture("dnf4-qt-upgrade.txt"))
+        self.assertEqual(plan["install"], ["python3-pyqt6"])
+        self.assertEqual([name for name, _, _ in plan["upgrade"]], ["qt6-qtbase", "qt6-qtbase-gui"])
+
     def test_guard_exit_codes(self):
-        for name, code in {"dnf-fedora-44.txt": 0, "dnf-nothing.txt": 0, "dnf-qt-upgrade.txt": 3}.items():
+        for name, code in {"dnf-fedora-44.txt": 0, "dnf-nothing.txt": 0, "dnf-qt-upgrade.txt": 3,
+                           "dnf4-qt-upgrade.txt": 3, "dnf-unknown-package.txt": 4}.items():
             with self.subTest(name):
                 result = subprocess.run(["/usr/bin/python3", str(ROOT / "scripts" / "bootstrap_packages.py"),
                                          "guard", "dnf"], input=fixture(name), capture_output=True, text=True)
@@ -105,8 +110,41 @@ class PackagesFromCodeTest(unittest.TestCase):
             self.assertNotIn("", required)
 
 
-class CheckModeTest(unittest.TestCase):
-    """--check na udawanym Kubuntu: diagnoza, symulacja apt bez sudo, żadnego make ani sudo."""
+FAKE_BUSCTL = r"""#!/usr/bin/python3
+# Atrapa busctl: usługa Tide na magistrali sesji, gdy FAKE_DBUS=1. Odpowiedzi w formacie `busctl -j`.
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_CALLS"], "a") as fh:
+    fh.write("busctl " + " ".join(args) + "\n")
+if os.environ.get("FAKE_DBUS") != "1":
+    sys.exit(1)
+if "status" in args:
+    sys.exit(0)
+method = args[args.index("call") + 4] if "call" in args else ""
+replies = {
+    "Info": {"ok": True, "apiVersion": 1, "resources": {}},
+    "Snapshot": {"exists": False, "cards": [], "projects": []},
+    "Status": {"search": {"enabled": os.environ.get("FAKE_SEARCH", "1") == "1"}},
+    "SetSemanticSearch": {"ok": True, "error": ""},
+    "UpsertTag": {"ok": True, "name": "własne", "changed": False},
+}
+if method not in replies:
+    sys.exit(1)
+print(json.dumps({"type": "s", "data": [json.dumps(replies[method])]}))
+"""
+
+FAKE_WINDOW = r"""#!/usr/bin/python3
+# Atrapa okna Tide: zapisuje argumenty i pusty zrzut z --grab.
+import os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_CALLS"], "a") as fh:
+    fh.write("tide.py " + " ".join(args) + "\n")
+open(args[args.index("--grab") + 1], "wb").write(b"png")
+"""
+
+
+class ScriptTest(unittest.TestCase):
+    """Skrypt na udawanym systemie: atrapy menedżera pakietów, sudo, make, systemctl i busctl."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -118,36 +156,61 @@ class CheckModeTest(unittest.TestCase):
         self.bin.mkdir()
         self.calls = base / "calls.log"
         self.calls.write_text("")
-        (base / "os-release").write_text('ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Kubuntu 26.04 LTS"\n')
         self.os_release = base / "os-release"
+        self.meminfo = base / "meminfo"
+        self.system("ubuntu", "26.04", "Kubuntu 26.04 LTS")
+        self.memory(32)
         self.simulation = FIXTURES / "apt-qt-upgrade.txt"
+        self.plasma = "6.6.4"
+        self.dbus = False
+        self.search = True
         fakes = {
             # Każde wywołanie zapisujemy; sudo i make nie mogą paść w trybie --check.
             "sudo": "exit 1",
-            "make": "exit 1",
+            "make": "exit 0",
             "apt-get": f'[ "$1" = -s ] && cat "{self.simulation}" && exit 0; exit 1',
             "dpkg-query": "exit 1",
             "rpm": "exit 1",
-            "plasmashell": 'echo "plasmashell 6.6.4"',
-            "systemctl": "exit 1",
-            "busctl": "exit 1",
+            "plasmashell": 'echo "plasmashell $FAKE_PLASMA"',
+            "systemctl": '[ "$FAKE_DBUS" = 1 ] || exit 1; case "$*" in *is-enabled*) echo enabled ;; esac; exit 0',
         }
         for name, body in fakes.items():
             path = self.bin / name
             path.write_text(f'#!/bin/sh\necho "{name} $*" >> "{self.calls}"\n{body}\n')
             path.chmod(0o755)
+        busctl = self.bin / "busctl"
+        busctl.write_text(FAKE_BUSCTL)
+        busctl.chmod(0o755)
 
-    def run_check(self):
+    def system(self, os_id, version, name):
+        like = "debian" if os_id == "ubuntu" else ""
+        self.os_release.write_text(f'ID={os_id}\nID_LIKE={like}\nVERSION_ID="{version}"\nPRETTY_NAME="{name}"\n')
+
+    def memory(self, gb):
+        self.meminfo.write_text(f"MemTotal:       {gb * 1024 * 1024 - 300000} kB\nMemFree:        1000 kB\n")
+
+    def install_window(self):
+        window = self.home / ".local/share/tide/tide-window/tide.py"
+        window.parent.mkdir(parents=True)
+        window.write_text(FAKE_WINDOW)
+        window.chmod(0o755)
+
+    def run_script(self, *args):
         env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin", "LANG": "C.UTF-8",
-               "TIDE_BOOTSTRAP_OS_RELEASE": str(self.os_release)}
-        return subprocess.run(["bash", str(SCRIPT), "--check"], capture_output=True, text=True, env=env,
+               "TIDE_BOOTSTRAP_OS_RELEASE": str(self.os_release), "TIDE_BOOTSTRAP_MEMINFO": str(self.meminfo),
+               "FAKE_CALLS": str(self.calls), "FAKE_PLASMA": self.plasma, "FAKE_DBUS": "1" if self.dbus else "0",
+               "FAKE_SEARCH": "1" if self.search else "0"}
+        return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True, env=env,
                               stdin=subprocess.DEVNULL, timeout=300)
 
+    def calls_of(self, *names):
+        return [c for c in self.calls.read_text().splitlines() if c.split(" ", 1)[0] in names]
+
     def test_check_diagnoses_without_sudo_make_or_writes(self):
-        result = self.run_check()
+        result = self.run_script("--check")
         calls = self.calls.read_text().splitlines()
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertEqual([c for c in calls if c.startswith(("sudo", "make"))], [])
+        self.assertEqual(self.calls_of("sudo", "make"), [])
         self.assertTrue([c for c in calls if c.startswith("apt-get -s install ")], calls)
         self.assertIn("Kubuntu 26.04 LTS, menedżer pakietów: apt", result.stdout)
         self.assertIn("KDE Plasma 6.6.4", result.stdout)
@@ -157,6 +220,27 @@ class CheckModeTest(unittest.TestCase):
         self.assertIn("Instalacja: bash scripts/bootstrap-machine.sh", result.stdout)
         # --check nie zakłada katalogu projektów ani niczego w katalogu domowym.
         self.assertEqual(sorted(p.name for p in self.home.iterdir()), [])
+
+    def test_plasma_5_is_missing_not_a_warning(self):
+        self.plasma = "5.27.11"
+        result = self.run_script("--check")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("BRAK: KDE Plasma 5.27.11 — Tide wymaga Plasmy 6", result.stdout)
+
+    def test_install_on_plasma_5_changes_nothing(self):
+        self.plasma = "5.27.11"
+        result = self.run_script("--yes")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("nic nie zainstalowano", result.stdout)
+        self.assertEqual(self.calls_of("sudo", "make", "apt-get"), [])
+        self.assertEqual(sorted(p.name for p in self.home.iterdir()), [])
+
+    def test_kubuntu_older_than_26_04_is_refused(self):
+        self.system("ubuntu", "24.04", "Ubuntu 24.04.3 LTS")
+        result = self.run_script("--yes")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("Tide wymaga Kubuntu 26.04 lub nowszego", result.stdout)
+        self.assertEqual(self.calls_of("sudo", "make", "apt-get"), [])
 
     def test_unknown_argument_is_refused(self):
         result = subprocess.run(["bash", str(SCRIPT), "--force"], capture_output=True, text=True)

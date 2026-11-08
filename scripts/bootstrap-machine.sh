@@ -69,13 +69,14 @@ run_sudo() {
 # --- 1. system ------------------------------------------------------------------------------------
 
 step "System"
-os_id="" os_like="" os_name=""
+os_id="" os_like="" os_name="" os_version=""
 os_release="${TIDE_BOOTSTRAP_OS_RELEASE:-/etc/os-release}"   # zmienna tylko dla testów (scripts/tests)
 if [[ -r "$os_release" ]]; then
     # shellcheck disable=SC1090
     os_id="$(. "$os_release" && echo "${ID:-}")"
     os_like="$(. "$os_release" && echo "${ID_LIKE:-}")"
     os_name="$(. "$os_release" && echo "${PRETTY_NAME:-$ID}")"
+    os_version="$(. "$os_release" && echo "${VERSION_ID:-}")"
 fi
 manager=""
 if command -v apt-get >/dev/null && [[ " $os_id $os_like " == *" ubuntu "* || " $os_id $os_like " == *" debian "* ]]; then
@@ -99,10 +100,29 @@ if [[ ! -x $PY ]]; then
     [[ -x $PY ]] || die "brak $PY — zainstaluj python3 z repozytorium dystrybucji i uruchom skrypt ponownie"
 fi
 
+# Wersja systemu: Kubuntu przed 26.04 (24.04 ma Plasmę 5) i Fedora przed 40 nie mają Plasmy 6 — instalacja odmawia.
+unsupported=0
+version_lt() {  # version_lt 24.04 26.04 → prawda, gdy pierwsza wersja jest starsza
+    [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]
+}
+if [[ "$os_id" == ubuntu && -n "$os_version" ]] && version_lt "$os_version" 26.04; then
+    lack "$os_name — Tide wymaga Kubuntu 26.04 lub nowszego (starsze wydania nie mają Plasmy 6 albo ich nie testowano)"
+    unsupported=1
+elif [[ "$os_id" == fedora && -n "$os_version" ]] && version_lt "$os_version" 40; then
+    lack "$os_name — Tide wymaga Fedory 40 lub nowszej (Plasma 6)"
+    unsupported=1
+fi
+
 if command -v plasmashell >/dev/null; then
     plasma="$(plasmashell --version 2>/dev/null | awk '{print $2}')"
-    if [[ "${plasma%%.*}" == 6 ]]; then ok "KDE Plasma $plasma"; else warn "KDE Plasma ${plasma:-?} — Tide wymaga Plasmy 6"; fi
+    if [[ "${plasma%%.*}" =~ ^[0-9]+$ && "${plasma%%.*}" -ge 6 ]]; then
+        ok "KDE Plasma $plasma"
+    else
+        lack "KDE Plasma ${plasma:-?} — Tide wymaga Plasmy 6"
+        unsupported=1
+    fi
 else
+    # Bez pulpitu (serwer, kontener testowy) usługa i okno działają; powiadomienia i KRunner — nie.
     warn "brak plasmashell — to nie jest sesja KDE Plasma 6 (usługa i okno zadziałają, powiadomienia i KRunner zależą od pulpitu)"
 fi
 [[ -n "${XDG_SESSION_TYPE:-}" ]] && ok "sesja: ${XDG_SESSION_TYPE} ${XDG_CURRENT_DESKTOP:-}"
@@ -111,6 +131,13 @@ if systemctl --user show-environment >/dev/null 2>&1; then
     ok "systemd użytkownika działa"
 else
     lack "systemd użytkownika (systemctl --user) — usługa tide-daemon go wymaga; zaloguj się do sesji graficznej"
+fi
+
+if [[ $unsupported -eq 1 && $check -eq 0 ]]; then
+    step "Podsumowanie"
+    echo "  Nieobsługiwany system — nic nie zainstalowano ani nie zmieniono:"
+    printf '    - %s\n' "${missing[@]}"
+    exit 2
 fi
 
 # --- 2. pakiety -----------------------------------------------------------------------------------
@@ -139,6 +166,8 @@ need=()
 if [[ -n "$manager" ]]; then
     mapfile -t required < <($PY "$packages_py" list "$manager" required)
     mapfile -t optional < <($PY "$packages_py" list "$manager" optional)
+    # Pusta lista to błąd skryptu pomocniczego, a nie „wszystko zainstalowane”.
+    [[ ${#required[@]} -gt 0 ]] || die "nie udało się odczytać listy pakietów ($packages_py)"
     for pkg in "${required[@]}" "${optional[@]}"; do
         installed "$pkg" || need+=("$pkg")
     done
@@ -166,10 +195,9 @@ simulate() {
 
 if [[ ${#need[@]} -gt 0 ]]; then
     if [[ $check -eq 1 || $no_packages -eq 1 ]]; then
-        if [[ $manager == apt ]]; then
-            echo "  Symulacja (bez sudo, na obecnych listach pakietów):"
-            simulate || warn "symulacja apt nie przeszła — szczegóły wyżej"
-        fi
+        # apt-get -s i dnf --assumeno działają bez roota.
+        echo "  Symulacja (bez sudo, na obecnych listach pakietów):"
+        simulate || warn "symulacja $manager nie przeszła — szczegóły wyżej"
         for pkg in "${need[@]}"; do
             if [[ " ${required[*]} " == *" $pkg "* ]]; then lack "pakiet $pkg"; else warn "brak pakietu dodatkowego $pkg"; fi
         done
@@ -189,8 +217,8 @@ if [[ ${#need[@]} -gt 0 ]]; then
         fi
         if confirm "Zainstalować: ${need[*]}?"; then
             case "$manager" in
-                apt) run_sudo apt-get install -y "${need[@]}" ;;
-                dnf) run_sudo dnf install -y "${need[@]}" ;;
+                apt) run_sudo apt-get install -y "${need[@]}" || die "instalacja pakietów się nie udała (wyżej)" ;;
+                dnf) run_sudo dnf install -y "${need[@]}" || die "instalacja pakietów się nie udała (wyżej)" ;;
             esac
         else
             for pkg in "${need[@]}"; do
@@ -299,7 +327,7 @@ else
     done
     # install-cli dokłada skille Tide do Codexa tylko wtedy, gdy widzi `codex` w PATH; instalatory agentów kładą
     # programy w ~/.local/bin, którego świeża sesja (katalog powstał po zalogowaniu) jeszcze nie ma w PATH.
-    [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$HOME/.local/bin:$PATH"
+    [[ -d "$HOME/.local/bin" && ":$PATH:" != *":$HOME/.local/bin:"* ]] && export PATH="$PATH:$HOME/.local/bin"
     targets=(install-daemon install-tide-window install-cli)
     [[ $has_look -eq 1 ]] && targets=(pre-install-backup "${targets[@]}")
     [[ $has_look -eq 1 ]] || echo "  Brak plików wyglądu Plasmy — kopia zapasowa niepotrzebna."
@@ -397,14 +425,16 @@ if [[ -f "$window" && $python_ok -eq 1 ]]; then
     echo '{}' >"$tmp/empty.json"
     failed=()
     # Każdy widok z pustymi danymi (--data: bez D-Bus i bez rejestracji okna), zrzut do pliku — ładuje cały QML.
-    for view in board issues sessions worktrees docker reports models; do
-        if ! QT_QPA_PLATFORM=offscreen timeout 60 $PY "$window" --view "$view" --data "$view=$tmp/empty.json" \
+    views=(board issues sessions worktrees docker reports models)
+    probe_timeout=60
+    for view in "${views[@]}"; do
+        if ! QT_QPA_PLATFORM=offscreen timeout "$probe_timeout" $PY "$window" --view "$view" --data "$view=$tmp/empty.json" \
                 --grab "$tmp/$view.png" >"$tmp/$view.log" 2>&1 || [[ ! -s "$tmp/$view.png" ]]; then
             failed+=("$view")
             tail -3 "$tmp/$view.log" | sed 's/^/    /'
         fi
     done
-    if [[ ${#failed[@]} -eq 0 ]]; then ok "QML wszystkich widoków się ładuje"; else lack "okno: widoki z błędem QML: ${failed[*]}"; fi
+    if [[ ${#failed[@]} -eq 0 ]]; then ok "QML się ładuje (widoki: ${views[*]})"; else lack "okno: widoki z błędem QML: ${failed[*]}"; fi
     rm -rf "$tmp"
 elif [[ ! -f "$window" && $check -eq 0 ]]; then
     lack "okno Tide niezainstalowane ($window)"
