@@ -117,9 +117,14 @@ def bwrap_probe() -> dict:
 
 
 def others_restricted(restrict: int | None) -> bool | None:
-    """Czy zwykły program zakładający przestrzeń użytkownika nadal trafia do unprivileged_userns."""
+    """Czy zwykły program zakładający przestrzeń użytkownika nadal trafia do unprivileged_userns.
+
+    None także wtedy, gdy jądro w ogóle nie ma ograniczenia AppArmor (np. Fedora z SELinuksem): reguła
+    „reszta systemu zostaje pod ograniczeniem” dotyczy tylko systemów, które je mają (Ubuntu, KDE neon)."""
     if restrict == 0:
         return False
+    if restrict is None:
+        return None
     program = os.environ.get("TIDE_SANDBOX_UNSHARE") or "unshare"
     works, out = probe([program, "-U", "--", "cat", "/proc/self/attr/current"])
     if works:
@@ -158,7 +163,9 @@ def report(state: dict) -> str:
                      + ("działa" if bwrap["nested"] else f"nie działa — {bwrap['nested_error']}"))
     lines.append({True: "Reszta systemu: nadal pod ograniczeniem (unshare -U → unprivileged_userns)",
                   False: "Reszta systemu: BEZ ograniczenia",
-                  None: "Reszta systemu: nie udało się sprawdzić"}[state["others_restricted"]])
+                  None: "Reszta systemu: nie udało się sprawdzić" if restrict is not None else
+                  "Reszta systemu: nie dotyczy — jądro bez ograniczenia AppArmor (np. Fedora), profil niepotrzebny"}[
+                     state["others_restricted"]])
     for path in state["conflicts"]:
         lines.append(f"Inny profil dla /usr/bin/bwrap: {path}")
     if state["ok"]:

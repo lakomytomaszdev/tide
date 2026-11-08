@@ -175,6 +175,21 @@ class StateTest(FakeSystem):
         self.assertTrue(state["bwrap"]["works"])
         self.assertFalse(state["others_restricted"])
 
+    def test_kernel_without_apparmor_restriction_needs_no_profile(self):
+        # Fedora: brak sysctl apparmor_restrict_unprivileged_userns, bwrap działa bez profilu, unshare -U też
+        (self.root / SYSCTL).unlink()
+        self.bwrap("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023")
+        self.unshare("unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023")
+        code, state = self.state()
+        self.assertEqual(code, 0)
+        self.assertTrue(state["ok"])
+        self.assertIsNone(state["restrict_userns"])
+        self.assertIsNone(state["others_restricted"])
+        report = run_check(env=self.env)
+        self.assertEqual(report.returncode, 0)
+        self.assertIn("nie dotyczy", report.stdout)
+        self.assertIn("Piaskownica może działać.", report.stdout)
+
     def test_report_for_people_names_the_next_step(self):
         self.bwrap(DENIED, rc=1)
         result = run_check(env=self.env)
