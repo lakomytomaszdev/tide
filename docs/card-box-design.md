@@ -81,6 +81,26 @@ repozytorium źródłowego oraz porównania kolejnych faz pozostają obowiązkow
 Migawka nadal jest odczytem wieloetapowym, a nie atomową transakcją Git.
 Plan mountów i uprawnienia PT-263/PT-266 nie są przez to rozszerzane.
 
+**Koszt Git w v1 — decyzja właściciela 08.11.2026.** Przyjmujemy próg
+**1,6 zamiast 1,05** dla ilorazu średnich enabled/BASE. Native40 w kolejności
+B/E/E/B dał `37.12540199293289 / 54.42815118690487 / 54.10217254597228 /
+33.05383698607329` s, po 31 tych samych testów OK bez pominięć. Średnie to
+`35.08961948950309` i `54.265161866438575` s: **1,5464733632313044 (+54,65%)**.
+Enabled był prototypem trwałego workera w jednorazowych archiwach, pozostawionym
+w out kroku 40; nie został włączony do kodu gałęzi. Ten pomiar nie potwierdza
+takiego samego kosztu dostarczonej implementacji. Właściciel odrzucił przebudowę
+w C i polecił pozostawić bezpieczeństwo oraz mechanizmy produktu bez zmian.
+
+Ryzyko resztkowe to dłuższe operacje i podatność na obciążenie; rozrzut BASE
+wyniósł 12,318%, a dwa z czterech surowych ilorazów przekroczyły 1,6. Akceptacja
+średniej nie jest gwarancją opóźnienia każdej operacji. Etap 2 / K-75 ma rozważyć
+zawężenie piaskownicy Gita do repozytoriów zapisywalnych przez pudełko albo rdzeń
+natywny. Pełny pomiar, hash źródła i zakres decyzji:
+[decyzje PT-264](agents/pt-264/decisions.md#asked-akceptacja-narzutu-git-w-v1-bez-przebudowy-w-c).
+Historyczny kod 1 native40 według progu 1,05 i wcześniejsze porażki funkcjonalne
+pozostają zapisane. Wymagane są aktualny `test-changed`, niezależne review,
+nowa zgoda projektu przy zmianie manifestu i dalsze utrzymanie zamkniętej bramki prób.
+
 Alternates/http-alternates i przekierowania commondir są odrzucane przed startem.
 Próba wyścigu na magazynie Git nadal ma ograniczenia jądra przy otwarciu pliku;
 sama wcześniejsza walidacja ścieżki nie jest jedyną granicą. Prywatny widok
