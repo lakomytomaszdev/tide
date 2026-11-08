@@ -813,6 +813,9 @@ class BoardStore:
             doc.body = v["description"]
         writes = []
         if "tests" in v:  # kontrakt testów żyje w profilu `projects/<slug>/box.yaml`, nie we frontmatterze
+            if project is not None and project.box_unreadable:
+                raise BoardError(f"projects/{slug}/{project_tests.PROFILE_FILE}: profilu nie da się odczytać "
+                                 "(zob. błędy Tablicy) — zapis kontraktu odrzucony, plik bez zmian")
             old_text = project.box_text if project is not None else None
             current = dict(project.tests) if project is not None and not project.tests_error else \
                 project_tests.empty()
@@ -981,6 +984,7 @@ class BoardStore:
         """Kontrakt testów z `projects/<slug>/box.yaml`; uszkodzony blok — pusty kontrakt i błąd Tablicy."""
         rel = os.path.join("projects", project.slug, project_tests.PROFILE_FILE)
         project.box_text = self._read_file(rel, errors)
+        project.box_unreadable = project.box_text is None and os.path.lexists(os.path.join(self.root, rel))
         project.tests, project.tests_error = project_tests.load_tests(project.box_text)
         if project.tests_error:
             errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {project.tests_error}"})

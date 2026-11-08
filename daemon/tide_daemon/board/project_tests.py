@@ -140,9 +140,19 @@ def _scalar(text: str) -> str:
             raise ValueError("oczekiwano napisu")
         return value
     if text[:1] == "'":
-        if len(text) < 2 or text[-1] != "'":
-            raise ValueError("niezamknięty apostrof")
-        return text[1:-1].replace("''", "'")
+        out, k = [], 1
+        while k < len(text):
+            if text[k] == "'":
+                if text[k + 1:k + 2] == "'":  # '' to apostrof w napisie
+                    out.append("'")
+                    k += 2
+                    continue
+                if text[k + 1:].strip():
+                    raise ValueError(f"nadmiarowy tekst po napisie: {text[k + 1:].strip()!r}")
+                return "".join(out)
+            out.append(text[k])
+            k += 1
+        raise ValueError("niezamknięty apostrof")
     if not text or text[:1] in "[{&*!|>%@`" or text.startswith("- "):
         raise ValueError("oczekiwano napisu (najlepiej w cudzysłowie)")
     if _NOT_STRING.match(text):

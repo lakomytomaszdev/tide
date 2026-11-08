@@ -141,6 +141,7 @@ class Project:
     box_text: str | None = None   # surowy `projects/<slug>/box.yaml` (None — brak pliku); klucz `tests` czyta project_tests
     tests: dict = field(default_factory=lambda: {"changed": "", "full": ""})
     tests_error: str = ""
+    box_unreadable: bool = False   # `box.yaml` istnieje, ale nie da się go odczytać — zapis kontraktu odrzucony
     doc: Document | None = None
 
 

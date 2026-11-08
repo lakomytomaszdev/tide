@@ -244,6 +244,32 @@ class DamagedFileTest(ProjectTestsCase):
         self.store.upsert_project({"slug": "app", "tests": {"full": "b"}})
         self.assertEqual(read(self.box()), "tide-box: 1\ntests:\n  full: \"b\"\n# po bloku\nverify: [\"true\"]\n")
 
+    def test_single_quoted_scalar_is_parsed_strictly(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for text in ("'make test' 'extra'", "'a' b", "'it's'"):
+            with self.subTest(text=text):
+                self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {text}\n")
+                self.assertEqual(self.project()["tests"], {"changed": "", "full": ""})
+                self.assertTrue(self.project()["testsError"].startswith("tests:"))
+                self.assertTrue(any(e["path"].endswith("projects/app/box.yaml")
+                                    for e in self.store.snapshot()["errors"]))
+        self.write("projects/app/box.yaml", "tide-box: 1\ntests:\n  full: 'it''s ok'  # c\n")
+        self.assertEqual(self.project()["tests"]["full"], "it's ok")
+        self.assertEqual(self.project()["testsError"], "")
+
+    def test_unreadable_profile_rejects_write_and_keeps_bytes(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        raw = b"tide-box: 1\napt: [git]\n# komentarz \xff\n"
+        os.makedirs(os.path.dirname(self.box()), exist_ok=True)
+        with open(self.box(), "wb") as fh:
+            fh.write(raw)
+        head = self.head()
+        with self.assertRaises(BoardError) as ctx:
+            self.store.upsert_project({"slug": "app", "tests": CONTRACT})
+        self.assertIn("nie da się odczytać", str(ctx.exception))
+        self.assertEqual(read_bytes(self.box()), raw)
+        self.assertEqual(self.head(), head)
+
     def test_saving_over_damaged_block_repairs_it(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         self.write("projects/app/box.yaml", "tide-box: 1\ntests: zepsute\nverify: \"true\"\n")
