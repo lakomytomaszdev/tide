@@ -86,9 +86,12 @@ def has_changed_target(worktree: str) -> bool:
     return bool(re.search(r"^test-changed\s*:", text, re.M)) or not re.search(r"^test\s*:", text, re.M)
 
 
-def ticket_tests(base: str = "", worktree: str = "") -> str:
+def ticket_tests(base: str = "", worktree: str = "", *, author: bool = True) -> str:
+    """`author=False` (kartka review): zasada bez instrukcji uruchamiania przebiegu — recenzent sprawdza wynik
+    autora i nie zgłasza własnego pełnego przebiegu (08.11, review Astry)."""
+    sandbox = sandbox_tests if author else (lambda _full, _worktree="": "")
     if not has_changed_target(worktree):
-        return OLD_BRANCH_TESTS + sandbox_tests("pełny `make test`", worktree) + rerun_failed(worktree)
+        return OLD_BRANCH_TESTS + sandbox("pełny `make test`", worktree) + rerun_failed(worktree)
     command = f"make test-changed BASE={shlex.quote(base)}" if base else \
         "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
     return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
@@ -97,7 +100,7 @@ Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania 
 jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
 w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
 Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
-""" + sandbox_tests(f"`{command}`", worktree) + rerun_failed(worktree)
+""" + sandbox(f"`{command}`", worktree) + rerun_failed(worktree)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
@@ -340,7 +343,7 @@ Dla recenzenta:
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
 
-{ticket_tests(test_base, worktree)}
+{ticket_tests(test_base, worktree, author=False)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 

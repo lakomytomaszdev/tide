@@ -114,11 +114,20 @@ class OldCardBranchTest(unittest.TestCase):
                 self.assertIn("Nie przenoś infrastruktury testów z master", text)
 
     def test_old_branch_reports_full_run_outside_without_sandbox_attempt(self):
-        for text in self.cards(self.tree("test:\n\t@true\ntest-daemon:\n\t@true\n")):
+        for text in self.cards(self.tree("test:\n\t@true\ntest-daemon:\n\t@true\n"))[:2]:
             with self.subTest(kind=text.splitlines()[0]):
                 self.assertIn("W piaskownicy kroku uruchamiaj tylko testy celowane", text)
                 self.assertIn("Wymagany pełny `make test` zgłoś od razu jako polecenie poza piaskownicą", text)
                 self.assertIn("bez wcześniejszej próby pełnego przebiegu w piaskownicy", text)
+
+    def test_reviewer_is_not_told_to_start_own_full_run(self):
+        # 08.11, review Astry: kartka review dołączała instrukcję autora „zgłoś od razu … outside” —
+        # recenzent mógłby uruchomić drugi pełny przebieg zamiast sprawdzić wynik autora.
+        for makefile in ("test:\n\t@true\ntest-changed:\n\t@true\n", "test:\n\t@true\n"):
+            review = self.cards(self.tree(makefile))[2]
+            with self.subTest(makefile=makefile.split(":")[0] + ("-changed" if "changed" in makefile else "")):
+                self.assertNotIn("zgłoś od razu jako polecenie poza piaskownicą", review)
+                self.assertNotIn("W piaskownicy kroku uruchamiaj tylko testy celowane", review)
 
     def test_branch_with_target_uses_changed_tests(self):
         for text in self.cards(self.tree("test:\n\t@true\ntest-changed:\n\t@true\n")):
