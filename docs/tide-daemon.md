@@ -1210,7 +1210,10 @@ tests:
   full: "make test"
 ```
 
-- Napisy w cudzysłowach (zapis `json.dumps`), wcięcie dwiema spacjami; czytnik `yamlmini` K-38 czyta ten format.
+- Kanoniczny zapis: napisy w podwójnym cudzysłowie kodowane przez `json.dumps`, wcięcie dwiema spacjami.
+  Odczyt rozpoznaje cały token napisu dekoderem JSON; dopiero po jego końcu dopuszcza odstępy i komentarz
+  `#`. Apostrofy YAML i napisy niecytowane pozostają obsługiwane przy ręcznej edycji profilu. Brzegowe
+  odstępy wejścia normalizuje `validate_tests`; odstępy wewnątrz polecenia pozostają bez zmian.
 - `UpsertProject` przyjmuje `tests: {"changed": "…", "full": "…"}`. Pusty napis czyści pole, brak klucza go nie
   zmienia, brak `tests` w żądaniu nie dotyka `box.yaml`. Gdy oba pola są puste, klucz `tests` znika z pliku
   (plik zostaje, np. z samym `tide-box: 1`). Bez pliku zapis zakłada go z `tide-box: 1`.
@@ -1238,6 +1241,11 @@ do głównej:
 
 - `tests` w zamkniętej liście kluczy profilu projektu i w `NON_HASH_KEYS` (jako `tests.changed`, `tests.full`);
 - walidacja `tests` deleguje do `validate_tests` (jedna reguła);
+- czytnik `yamlmini` rozpoznaje kanoniczne napisy JSON także z końcowymi ukośnikami i komentarzem poza
+  napisem. Wersja K-38 `fa32809ebd0b5839306c94a3b9dd0e67f05b0137` czyta wzorzec, lecz ręczne szukanie
+  zamykającego cudzysłowu odrzuca np. `full: "pytest path\\\\"`. Po stronie K-38 trzeba rozpoznawać cały
+  token dekoderem JSON (łącznie z jego końcem), zamiast ponownie interpretować ucieczki przy usuwaniu
+  komentarza; regresje generowanych poleceń są w `test_board_project_tests.py`;
 - cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona;
 - wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem.
 

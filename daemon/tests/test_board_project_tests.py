@@ -1,4 +1,5 @@
 """Kontrakt testów w profilu projektu (K-69, PT-278): zapis i odczyt `tests` przez BoardStore."""
+import itertools
 import json
 import os
 import unittest
@@ -37,6 +38,46 @@ class ProjectTestsCase(BoardCase):
 
 
 class SaveAndReadTest(ProjectTestsCase):
+    def test_double_quoted_backslash_before_external_comment(self):
+        # Reproduktor recenzenta z rundy 6: odczyt i pominięte full przy częściowym zapisie.
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        full = "pytest path\\"
+        self.write("projects/app/box.yaml", "tide-box: 1\ntests:\n  full: " + json.dumps(full) + "  # komentarz\n")
+        project = self.project()
+        self.store.upsert_project({"slug": "app", "tests": {"changed": "make c {base}"}})
+        after = self.project()
+        self.assertEqual(project["testsError"], "")
+        self.assertEqual(project["tests"]["full"], full)
+        self.assertEqual(after["tests"]["full"], full)
+
+    def test_generated_commands_round_trip_and_survive_partial_update(self):
+        fragments = ('"', "'", "\\", "\\\\", "\\\\\\", "#", "  ", "żółć 日本 🐚")
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for left, right in itertools.product(fragments, repeat=2):
+            for field, other in (("full", "changed"), ("changed", "full")):
+                # Odstępy wewnątrz polecenia są danymi, a brzegi wejścia normalizuje validate_tests.
+                raw = '  pytest -k "  ' + left + right + '  " path' + left + right
+                raw += " {base}" if field == "changed" else ""
+                raw += "  "
+                command = raw.strip()
+                expected = {**project_tests.empty(), field: command}
+                for comment in ("", "  # komentarz poza napisem: \\\" ' #"):
+                    with self.subTest(left=left, right=right, field=field, comment=comment):
+                        self.store.upsert_project({"slug": "app", "tests": {field: raw, other: ""}})
+                        canonical = read(self.box())
+                        self.assertEqual(canonical, "tide-box: 1\ntests:\n"
+                                         f"  {field}: {json.dumps(command, ensure_ascii=False)}\n")
+                        text = canonical.rstrip("\n") + comment + "\n"
+                        self.assertEqual(project_tests.load_tests(text), (expected, ""))
+                        self.assertEqual(project_tests.save_tests(text, expected), canonical)
+                        self.write("projects/app/box.yaml", text)
+                        project = self.project()
+                        self.assertEqual((project["tests"], project["testsError"]), (expected, ""))
+                        self.store.upsert_project({"slug": "app", "tests": {other: CONTRACT[other]}})
+                        project = self.project()
+                        self.assertEqual((project["tests"], project["testsError"]),
+                                         ({**expected, other: CONTRACT[other]}, ""))
+
     def test_double_quoted_backslashes_preserve_omitted_field_with_comment(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         for count in range(1, 5):
@@ -282,6 +323,16 @@ class ValidationTest(ProjectTestsCase):
 
 
 class DamagedFileTest(ProjectTestsCase):
+    def test_quoted_scalar_rejects_extra_tokens_after_string(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for scalar in ('"pytest" "extra"', '"pytest"#bez odstępu', "'pytest'#bez odstępu",
+                       '"pytest" [extra]', '"pytest" trailing'):
+            with self.subTest(scalar=scalar):
+                self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {scalar}\n")
+                project = self.project()
+                self.assertEqual(project["tests"], project_tests.empty())
+                self.assertTrue(project["testsError"].startswith("tests:"))
+
     def test_colon_in_plain_scalar_requires_quotes(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         for value in ("make: test", "make:\ttest", "make:"):

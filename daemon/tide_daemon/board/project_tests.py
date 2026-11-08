@@ -113,60 +113,41 @@ def _blocks(lines: list) -> list:
     return out
 
 
-def _strip_comment(text: str) -> str:
-    out, quote, prev = [], "", " "
-    escaped = False
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            out.append(ch)
-            if quote == "'" and ch == "'" and text[i + 1:i + 2] == "'":
-                # Para '' należy do napisu YAML; ukośnik w nim nie ucieka apostrofu.
+def _plain_without_comment(text: str) -> str:
+    """Tylko tekst niecytowany: komentarz zaczyna się po odstępie albo na początku."""
+    return re.split(r"(?:^|[ \t])#", text, maxsplit=1)[0].rstrip()
+
+
+def _quoted_scalar(text: str) -> tuple:
+    """Jedyne miejsce rozpoznawania napisu i jego końca; zapis kanoniczny jest napisem JSON.
+    Apostrofy YAML obsługujemy dla ręcznie edytowanych profili."""
+    if text[0] == '"':
+        try:
+            return json.JSONDecoder().raw_decode(text)
+        except ValueError:
+            raise ValueError("zły napis w cudzysłowie") from None
+    out, k = [], 1
+    while k < len(text):
+        if text[k] == "'":
+            if text[k + 1:k + 2] == "'":  # '' to apostrof w napisie
                 out.append("'")
-                i += 2
-                prev = ch
+                k += 2
                 continue
-            if ch == quote and (quote == "'" or not escaped):
-                quote = ""
-            # W napisie podwójnie cytowanym każda para ukośników znosi ucieczkę.
-            escaped = quote == '"' and ch == "\\" and not escaped
-        elif ch in "\"'" and prev in " \t":
-            quote = ch
-            out.append(ch)
-        elif ch == "#" and prev in " \t":
-            break
-        else:
-            out.append(ch)
-        prev = ch
-        i += 1
-    return "".join(out).rstrip()
+            return "".join(out), k + 1
+        out.append(text[k])
+        k += 1
+    raise ValueError("niezamknięty apostrof")
 
 
 def _scalar(text: str) -> str:
     text = text.strip()
-    if text[:1] == '"':
-        try:
-            value = json.loads(text)
-        except ValueError:
-            raise ValueError("zły napis w cudzysłowie") from None
-        if not isinstance(value, str):
-            raise ValueError("oczekiwano napisu")
+    if text.startswith(('"', "'")):
+        value, end = _quoted_scalar(text)
+        tail = text[end:]
+        if tail and not (tail[0] in " \t" and (not tail.strip() or tail.lstrip().startswith("#"))):
+            raise ValueError(f"nadmiarowy tekst po napisie: {tail.strip()!r}")
         return value
-    if text[:1] == "'":
-        out, k = [], 1
-        while k < len(text):
-            if text[k] == "'":
-                if text[k + 1:k + 2] == "'":  # '' to apostrof w napisie
-                    out.append("'")
-                    k += 2
-                    continue
-                if text[k + 1:].strip():
-                    raise ValueError(f"nadmiarowy tekst po napisie: {text[k + 1:].strip()!r}")
-                return "".join(out)
-            out.append(text[k])
-            k += 1
-        raise ValueError("niezamknięty apostrof")
+    text = _plain_without_comment(text)
     if not text or text[:1] in "[{&*!|>%@`" or text.startswith("- "):
         raise ValueError("oczekiwano napisu (najlepiej w cudzysłowie)")
     if _NOT_STRING.match(text):
@@ -189,13 +170,13 @@ def load_tests(text) -> tuple:
         return empty(), "klucz tests powtórzony"
     start, end = blocks[0]
     try:
-        if _strip_comment(lines[start].split(":", 1)[1]).strip():
+        if _plain_without_comment(lines[start].split(":", 1)[1]).strip():
             raise ValueError("tests musi być blokiem z kluczami changed i full, nie wartością w jednej linii")
         found = {}
         indent = None
         for number in range(start + 1, end):
-            raw = _strip_comment(lines[number])
-            if not raw.strip():
+            raw = lines[number]
+            if not raw.strip() or raw.lstrip().startswith("#"):
                 continue
             if "\t" in raw[:len(raw) - len(raw.lstrip())]:
                 raise ValueError("tabulator we wcięciu")
