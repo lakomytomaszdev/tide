@@ -1281,7 +1281,11 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
   i po `realpath` (z rozwinięciem dowiązań) — z **każdym obszarem zapisu kroku**, także po `realpath`. Ścieżki
   magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` (także w `XDG_STATE_HOME`) to
   katalog nadrzędny celu dowiązania, jak w systemie plików, więc sprawdza się ten sam plik, który potem jest
-  czytany; każdy przedrostek ścieżki daje wpis katalogu (rzeczywisty katalog + nazwa) i jego cel. Kolizja:
+  czytany. Ścieżka jest rozwijana składnik po składniku jak w jądrze: sprawdza się każdy wpis katalogu na drodze
+  rozwinięcia (rzeczywisty katalog + nazwa), także wpisy z treści napotkanych dowiązań — dowiązanie pośrednie
+  w obszarze zapisu (`/safe/alias → /worktree/pivot → /safe/target`) jest kolizją, bo krok mógłby je przestawić
+  między kontrolą a odczytem — oraz cel każdego przedrostka. Pętla dowiązań albo błąd ich odczytu to
+  niepewność, czyli kolizja. Kolizja:
   plik albo katalog nadrzędny leży w obszarze zapisu, albo obszar zapisu leży w katalogu odcisków. Wtedy
   `approved: false`, powód „magazyn zatwierdzeń leży w obszarze zapisu kroku: …” i ten sam wpis w błędach Tablicy
   (z prefiksem slugu), dopóki kolejne sprawdzenie tego projektu nie przejdzie bez kolizji. Bez kolizji wynik daje

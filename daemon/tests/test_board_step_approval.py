@@ -186,6 +186,68 @@ class ApprovalForStepTest(StepCase):
         self.assertTrue(approval.approved(self.root, "app", CONTRACT, relative))
         self.assertCollision(approval.approval_for_step(self.project(), self.step(), self.root, relative))
 
+    def test_an_intermediate_link_inside_a_write_area_is_a_collision(self):
+        # safe/alias → worktree/pivot → safe/target: `realpath` daje od razu safe/target, ale wpis
+        # worktree/pivot (zapisywalny przez krok) decyduje, skąd czyta się magazyn (review PT-286 r2, BLOCKER 1).
+        safe = os.path.join(self.tmp, "safe")
+        target = os.path.join(safe, "target")
+        os.makedirs(os.path.join(target, "tide"))
+        pivot = os.path.join(self.worktree, "pivot")
+        os.symlink(target, pivot)
+        os.symlink(pivot, os.path.join(safe, "alias"))
+        path = os.path.join(safe, "alias", "tide", approval.FILE_NAME)
+        approval.record(self.root, "app", CONTRACT, path)
+        self.assertTrue(approval.approved(self.root, "app", CONTRACT, path))
+        self.assertTrue(os.path.realpath(path).startswith(target + os.sep))   # cel końcowy poza obszarami
+        result = approval.approval_for_step(self.project(), self.step(), self.root, path)
+        self.assertCollision(result)
+        self.assertIn("leży w obszarze zapisu " + self.worktree, result[1])   # ogniwo na drodze do pivot
+        # Względna treść dowiązania pośredniego (`../pivot2` z katalogu w worktree) — ten sam wynik.
+        os.makedirs(os.path.join(self.worktree, "sub"))
+        os.symlink(target, os.path.join(self.worktree, "pivot2"))
+        os.symlink(os.path.join("..", "pivot2"), os.path.join(self.worktree, "sub", "rel"))
+        os.symlink(os.path.join(self.worktree, "sub", "rel"), os.path.join(safe, "alias2"))
+        self.assertCollision(approval.approval_for_step(
+            self.project(), self.step(), self.root, os.path.join(safe, "alias2", "tide", approval.FILE_NAME)))
+
+    def test_swapping_an_intermediate_link_between_check_and_read_cannot_approve(self):
+        # Przeplot z review: po kontroli kolizji krok przestawia pivot na katalog w worktree z podrobionym
+        # odciskiem innego kontraktu. Kolizja jest wykryta przed odczytem, więc odczyt nie decyduje.
+        safe = os.path.join(self.tmp, "safe")
+        target = os.path.join(safe, "target")
+        os.makedirs(os.path.join(target, "tide"))
+        forged = os.path.join(self.worktree, "forged")
+        os.makedirs(os.path.join(forged, "tide"))
+        pivot = os.path.join(self.worktree, "pivot")
+        os.symlink(target, pivot)
+        os.symlink(pivot, os.path.join(safe, "alias"))
+        path = os.path.join(safe, "alias", "tide", approval.FILE_NAME)
+        approval.record(self.root, "app", CONTRACT, path)
+        other = {"changed": "echo podmiana", "full": "true"}
+        approval.record(self.root, "app", other, os.path.join(forged, "tide", approval.FILE_NAME))
+        project = self.project()
+        project.tests = other
+        original = approval.approved
+
+        def swap_then_read(*args, **kw):
+            os.unlink(pivot)
+            os.symlink(forged, pivot)
+            return original(*args, **kw)
+
+        with mock.patch.object(approval, "approved", side_effect=swap_then_read) as read:
+            self.assertCollision(approval.approval_for_step(project, self.step(), self.root, path))
+        read.assert_not_called()
+
+    def test_a_link_loop_in_the_store_path_is_a_doubt_and_a_collision(self):
+        loop = os.path.join(self.tmp, "loop")
+        os.symlink(loop, loop)
+        reason = approval.store_collision(os.path.join(loop, "tide", approval.FILE_NAME), [self.worktree])
+        self.assertIn("nie da się rozwinąć", reason)
+        approved, reason = approval.approval_for_step(self.project(), self.step(), self.root,
+                                                      os.path.join(loop, "tide", approval.FILE_NAME))
+        self.assertFalse(approved)
+        self.assertTrue(reason.startswith(approval.STORE_IN_WRITE_AREA), reason)
+
     def test_a_write_area_inside_the_store_directory_is_a_collision(self):
         # Katalog odcisków nad worktree kroku: krok pisze w katalogu magazynu.
         path = os.path.join(self.ws, approval.FILE_NAME)

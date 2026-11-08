@@ -139,29 +139,29 @@ def store_collision(path: str, areas) -> str:
 
     Ścieżki magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` w systemie plików to
     katalog nadrzędny celu dowiązania, a `abspath` usunąłby `link/..` i badał inne miejsce niż późniejszy odczyt.
-    Dlatego ścieżka jest przechodzona składnik po składniku tak, jak robi to jądro: dla każdego przedrostka
-    sprawdza się wpis katalogu (rzeczywisty katalog + nazwa — krok mógłby go podmienić albo przenieść) i jego cel
-    (`realpath`). Formy leksykalne zostają jako dodatkowe, zachowawcze kandydatki."""
+    Dlatego ścieżka jest przechodzona składnik po składniku tak, jak robi to jądro (`_resolution_entries`):
+    sprawdza się każdy wpis katalogu na drodze rozwinięcia — także wpisy z treści dowiązań, czyli dowiązania
+    pośrednie (rzeczywisty katalog + nazwa; krok mógłby je podmienić albo przenieść) — oraz cele przedrostków
+    (`realpath`). Nieudane rozwinięcie (pętla, brak dostępu) to niepewność → kolizja. Formy leksykalne zostają
+    jako dodatkowe, zachowawcze kandydatki."""
     if not path:
         return "nieznana ścieżka magazynu odcisków"
     raw = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
-    chain = []
-    current = os.sep
-    for part in raw.split(os.sep):
-        if not part or part == os.curdir:
-            continue
-        if part != os.pardir:
-            chain.append(os.path.join(os.path.realpath(current), part))   # wpis katalogu, bez celu dowiązania
-        current = os.path.join(current, part)
-        chain.append(os.path.realpath(current))                           # cel (z semantyką `link/..`)
+    try:
+        chain, walked = _resolution_entries(raw)
+    except OSError as exc:
+        return f"nie da się rozwinąć ścieżki magazynu odcisków {raw}: {exc.strerror or exc}"
+    parts = raw.split(os.sep)
+    for n in range(2, len(parts) + 1):
+        chain.append(os.path.realpath(os.sep.join(parts[:n])))            # cele przedrostków — zachowawczo
     real = os.path.realpath(raw)
-    current = real
-    while True:                                                           # katalogi nadrzędne pliku rzeczywistego
-        chain.append(current)
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
+    for current in dict.fromkeys((walked, real)):                         # katalogi nadrzędne pliku rzeczywistego
+        while True:
+            chain.append(current)
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
     lexical = os.path.abspath(raw)
     current = lexical
     while True:                                                           # formy leksykalne — tylko zachowawczo
@@ -171,7 +171,7 @@ def store_collision(path: str, areas) -> str:
             break
         current = parent
     chain = list(dict.fromkeys(chain))
-    folders = {os.path.realpath(os.path.dirname(raw)), os.path.dirname(real),
+    folders = {os.path.realpath(os.path.dirname(raw)), os.path.dirname(real), os.path.dirname(walked),
                os.path.dirname(lexical), os.path.realpath(os.path.dirname(lexical))}
     for area in areas:
         if not area or not os.path.isabs(area):
@@ -186,6 +186,54 @@ def store_collision(path: str, areas) -> str:
                 if _inside(form, item):
                     return f"obszar zapisu {area} leży w katalogu odcisków {item}"
     return ""
+
+
+MAX_SYMLINKS = 40   # jak MAXSYMLINKS jądra Linux
+
+
+def _resolution_entries(raw: str) -> tuple[list, str]:
+    """Rozwija bezwzględną ścieżkę tak jak jądro i zwraca `(wpisy, ścieżka rzeczywista)`.
+
+    `wpisy` to każdy wpis katalogu, przez który przechodzi rozwinięcie: składniki podanej ścieżki **oraz
+    składniki treści każdego napotkanego dowiązania** (także dowiązań pośrednich, które pojawiają się dopiero
+    w celu poprzedniego — review PT-286 r2, BLOCKER 1), każdy jako rzeczywisty katalog + nazwa, oraz katalogi
+    osiągnięte przez `..`. Kto może zapisać którykolwiek z tych wpisów (albo jego katalog), ten może przestawić
+    miejsce, z którego czyta się magazyn. `..` działa na katalogu już rozwiniętym (semantyka `link/..`).
+    Brak składnika (ENOENT/ENOTDIR) kończy rozwijanie dowiązań — reszta ścieżki idzie leksykalnie, jak dla
+    nieistniejącego pliku. Inny błąd odczytu dowiązania albo pętla (ELOOP) — OSError (niepewność)."""
+    entries = []
+    pending = list(reversed(raw.split(os.sep)))
+    current = os.sep
+    links = 0
+    missing = False
+    while pending:
+        part = pending.pop()
+        if not part or part == os.curdir:
+            continue
+        if part == os.pardir:
+            current = os.path.dirname(current)
+            entries.append(current)
+            continue
+        entry = os.path.join(current, part)
+        entries.append(entry)
+        current = entry
+        if missing:
+            continue
+        try:
+            target = os.readlink(entry)
+        except OSError as exc:
+            if exc.errno == errno.EINVAL:          # nie dowiązanie
+                continue
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                missing = True
+                continue
+            raise
+        links += 1
+        if links > MAX_SYMLINKS:
+            raise OSError(errno.ELOOP, "za dużo poziomów dowiązań")
+        current = os.sep if os.path.isabs(target) else os.path.dirname(entry)
+        pending.extend(reversed(target.split(os.sep)))
+    return list(dict.fromkeys(entries)), current
 
 
 def _inside(path: str, folder: str) -> bool:
