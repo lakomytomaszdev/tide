@@ -6,6 +6,7 @@ from . import testpolicy
 from .testpolicy import TestPolicy
 
 import os
+import re
 
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
@@ -176,6 +177,31 @@ problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
 poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
 bez nowych zmian.
 """
+
+
+CURRENT_TESTS_OPEN = "<TIDE_CURRENT_TESTS>"
+CURRENT_TESTS_CLOSE = "</TIDE_CURRENT_TESTS>"
+CURRENT_TESTS_HEAD = ("Obowiązujące testy (aktualna polityka testów tego kroku, policzona przy tym wznowieniu; "
+                      "zastępuje zasadę testów zapisaną wyżej w tej kartce):\n")
+_CURRENT_TESTS = re.compile(r"\n*" + re.escape(CURRENT_TESTS_OPEN) + r".*?" + re.escape(CURRENT_TESTS_CLOSE) + r"\n?",
+                            re.DOTALL)
+
+
+def current_tests(policy: TestPolicy, *, kind: str, worktree: str = "") -> str:
+    """Sekcja „Obowiązujące testy” kartki wznowienia (PT-287): ten sam tekst polityki co kartka startu danego
+    rodzaju kroku, z aktualnej polityki. Blok ma znaczniki, więc kolejne wznowienie go zastępuje, a nie dokłada."""
+    if kind == "close":
+        body = close_tests(worktree, policy)
+    elif kind == "review":
+        body = "Dla recenzenta:\n" + review_tests(policy) + "\n" + ticket_tests(policy.base, worktree, policy)
+    else:
+        body = ticket_tests(policy.base, worktree, policy)
+    return f"\n\n{CURRENT_TESTS_OPEN}\n{CURRENT_TESTS_HEAD}{body}{CURRENT_TESTS_CLOSE}\n"
+
+
+def strip_current_tests(prompt: str) -> str:
+    """Kartka bez sekcji „Obowiązujące testy” z poprzedniego wznowienia."""
+    return _CURRENT_TESTS.sub("\n", prompt)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
