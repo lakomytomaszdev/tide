@@ -356,6 +356,7 @@ class TransferFlowTest(FlowInProcess):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: limit")
         self.start_until_limit(card, metric)
         first = self.of(card, "step.started")[0]
+        self.assertEqual(self.of(card, "step.limit")[0]["window"], "session")
         self.assertEqual(self.of(card, "step.decision"), [], "limit nie tworzy decyzji")
         metric.update(remaining=40, readTs=now + 1001)
         self.flow.engine.clock = lambda: now + 1001
