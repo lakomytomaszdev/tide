@@ -643,6 +643,13 @@ DELEGATIONS = {
 # zdarzenia z rodzajem śladu procesu, ale wynik nie dopuszcza skutku objętego barierą tożsamości.
 # Funkcja z surowym odczytem, która nie jest konsumentem bariery ani nie ma tu uzasadnienia, daje porażkę.
 RAW_READS = {
+    ("cardflow/history.py", "build"):
+        "historia do wyświetlenia: grupowanie kroków i wyników; canResume pochodzi z canEnter "
+        "sprawdzonego przez silnik, a wznowienie przechodzi osobną barierę engine",
+    ("cardflow/history.py", "_event_entry"):
+        "formatowanie pojedynczego wpisu historii dla UI; zwraca opis bez uruchamiania procesu",
+    ("reports/plans.py", "_attach_flow"):
+        "raport stanu ticketów z dziennika; składa dane do wyświetlenia, nie wykonuje operacji na procesie",
     ("box/state.py", "running_steps"):
         "zajętość pudełka (box.use bez box.release) — zawsze zachowawcza; jedyne wywołanie przez "
         "Builder.running_steps, które sprawdza też active_steps (bariera box-lifecycle)",

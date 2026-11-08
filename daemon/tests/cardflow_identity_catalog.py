@@ -175,7 +175,7 @@ def overridden(trees: dict):
 
 
 def _clear():
-    for cached in (modules, imports, constants, local_constants, definitions, _graph_cached):
+    for cached in (modules, imports, constants, local_constants, definitions, _graph_cached, _journal_aliases):
         cached.cache_clear()
 
 
@@ -223,9 +223,16 @@ def _resolve_module(path: str, level: int, name: str | None) -> str | None:
 
 @lru_cache(maxsize=None)
 def imports(path: str) -> dict:
-    """alias → (moduł, nazwa albo None) dla importów względnych pakietu."""
+    """alias → (moduł, nazwa albo None) dla importów pakietu."""
     out = {}
     for node in ast.walk(module(path)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(PACKAGE.name + "."):
+                    source = _resolve_module(path, len(Path(path).parts),
+                                             alias.name.removeprefix(PACKAGE.name + "."))
+                    if source:
+                        out.setdefault(alias.asname or alias.name, (source, None))
         if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] == PACKAGE.name:
             # Import bezwzględny pakietu (`from tide_daemon.box.state import record`): jak względny
             # od korzenia pakietu (M6 review 2).
@@ -498,9 +505,21 @@ class Resolver:
             elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
                     and child.func.attr == "update" and isinstance(child.func.value, ast.Name) \
                     and child.func.value.id == node.id:
-                if child.args:
-                    assigned.append(self.keys(path, owner, child.args[0]))
-                assigned.append(frozenset(k.arg for k in child.keywords if k.arg))
+                assigned.extend(self.keys(path, owner, arg) for arg in child.args)
+                assigned.extend(self.keys(path, owner, k.value) if k.arg is None else frozenset({k.arg})
+                                for k in child.keywords)
+            elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
+                    and child.func.attr == "setdefault" and isinstance(child.func.value, ast.Name) \
+                    and child.func.value.id == node.id:
+                key = resolve_constant(path, child.args[0]) if child.args else None
+                if not isinstance(key, str):
+                    raise Unresolved("setdefault z niestałym kluczem: " + ast.unparse(child))
+                assigned.append(frozenset({key}))
+            elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name) \
+                    and child.target.id == node.id:
+                if not isinstance(child.op, ast.BitOr):
+                    raise Unresolved("nieznana aktualizacja słownika: " + ast.unparse(child))
+                assigned.append(self.keys(path, owner, child.value))
             elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) \
                     and child.target.id == node.id and child.value is not None:
                 assigned.append(self.keys(path, owner, child.value))
@@ -539,13 +558,46 @@ class Resolver:
 
 # ------------------------------------------------------------------ katalog zapisów
 
+def _named_journal(node):
+    return (isinstance(node, ast.Name) and node.id == "journal") or \
+        (isinstance(node, ast.Attribute) and node.attr == "journal")
+
+
+@lru_cache(maxsize=None)
+def _journal_aliases(scope):
+    """Jawne aliasy w tym samym zakresie, także łańcuchowe.
+
+    Analiza jest zachowawcza: ponowne przypisanie nie usuwa rozpoznanego pochodzenia.
+    Dzięki temu alias nie może ukryć zapisu przed katalogiem.
+    """
+    if scope is None:
+        return frozenset()
+    bindings = []
+    for child in _function_body_nodes(scope):
+        targets = child.targets if isinstance(child, ast.Assign) else \
+            [child.target] if isinstance(child, ast.AnnAssign) else []
+        if targets and child.value is not None:
+            bindings.extend((ast.unparse(target), child.value) for target in targets)
+    aliases = set()
+    changed = True
+    while changed:
+        before = len(aliases)
+        for name, value in bindings:
+            if _named_journal(value) or ast.unparse(value) in aliases:
+                aliases.add(name)
+        changed = len(aliases) != before
+    return frozenset(aliases)
+
+
+def _journal_reference(node) -> bool:
+    return _named_journal(node) or ast.unparse(node) in _journal_aliases(enclosing_function(node))
+
+
 def _is_card_append(node) -> bool:
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr in ("append", "append_complete")):
         return False
-    receiver = node.func.value
-    return ((isinstance(receiver, ast.Name) and receiver.id == "journal")
-            or (isinstance(receiver, ast.Attribute) and receiver.attr == "journal"))
+    return _journal_reference(node.func.value)
 
 
 BOX_RECORD = ("box/state.py", "record")
@@ -558,8 +610,8 @@ def _record_reference(path: str, node) -> bool:
         if path == BOX_RECORD[0] and node.id == "record":
             return True
         return imports(path).get(node.id) == BOX_RECORD
-    if isinstance(node, ast.Attribute) and node.attr == "record" and isinstance(node.value, ast.Name):
-        return imports(path).get(node.value.id) == (BOX_RECORD[0], None)
+    if isinstance(node, ast.Attribute) and node.attr == "record":
+        return imports(path).get(ast.unparse(node.value)) == (BOX_RECORD[0], None)
     return False
 
 
@@ -844,13 +896,36 @@ def _literals(node) -> set:
 
 
 def raw_reads(function) -> frozenset:
-    """Rodzaje śladów procesu porównywane bezpośrednio z typem zdarzenia w ciele funkcji (M7 review 2)."""
+    """Porównania typu zdarzenia, także przez łańcuch lokalnych przypisań."""
     found, actions = set(), False
-    for node in _function_body_nodes(function):
+    nodes = list(_function_body_nodes(function))
+    aliases = set()
+
+    def is_type(node):
+        return _type_read(node) or isinstance(node, ast.Name) and node.id in aliases
+
+    def bind(target, value):
+        if isinstance(target, ast.Name) and is_type(value):
+            aliases.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            for left, right in zip(target.elts, value.elts):
+                bind(left, right)
+
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            targets = node.targets if isinstance(node, ast.Assign) else \
+                [node.target] if isinstance(node, ast.AnnAssign) else []
+            before = len(aliases)
+            for target in targets:
+                bind(target, node.value)
+            changed |= len(aliases) != before
+    for node in nodes:
         if isinstance(node, ast.Compare):
             operands = [node.left, *node.comparators]
             names = set().union(*(_literals(o) for o in operands))
-            if any(_type_read(o) for o in operands):
+            if any(is_type(o) for o in operands):
                 found |= names & (RAW_PROCESS_TYPES | RAW_ACTION_TYPES)
             actions |= "step-start" in names
     if not actions:

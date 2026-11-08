@@ -279,7 +279,7 @@ def domain_cases():
     - new-attempt: ponowny start tej samej nazwy z inną próbą (przeplot: dowody starszej próby
       przed startem nowej, zdarzenie zależne po nim).
     Zdarzenie dziedziczące z osobnego dowodu (wejście Konsoli, start outside) zapisanego w innej
-    domenie jest unknown. Start kroku innego projektu nie jest poprzednikiem śladu (M2 review 2),
+    domenie jest unknown. Start kroku innego projektu lub zlecenia nie jest poprzednikiem śladu,
     chyba że model dopuszcza historyczne zakończenie dawnego procesu (`Event.start == "process"`,
     regresja PT-277: dawny proces po nowym zleceniu innego projektu, ochrona obu projektów).
     - return-attempt: powrót do starszej, już rozpoczętej próby (M3 review 2) — unknown, a dowody
@@ -297,7 +297,7 @@ def domain_cases():
             yield Case(kind, "domain", "foreign-project", ticket,
                        (*before, {"type": "card.started", "project": OTHER_PROJECT}, event), *foreign, "domain")
             yield Case(kind, "domain", "new-order", ticket,
-                       (*before, {"type": "card.started", "project": "proj"}, event), *dependent, "domain")
+                       (*before, {"type": "card.started", "project": "proj"}, event), *foreign, "domain")
             yield Case(kind, "domain", "new-attempt", ticket, (*before, {**start, "attempt": 2}, event),
                        *dependent, "domain")
             yield Case(kind, "domain", "return-attempt", ticket,

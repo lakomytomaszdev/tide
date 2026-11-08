@@ -67,8 +67,8 @@ class Event:
     dodatkowy ładunek dynamiczny, którego reduktor nie czyta; pola jawne zapisu nadal muszą
     być sklasyfikowane w `fields` (M4 review 1).
 
-    `start` — wymagany poprzednik startu kroku dla śladu procesu (M2 review 2):
-      project — start tego samego procesu w projekcie bieżącego zlecenia (domyślnie),
+    `start` — wymagany poprzednik startu kroku dla śladu procesu:
+      domain — start tego samego procesu w bieżącej domenie (projekt, zlecenie, generacja),
       process — dowolny wcześniejszy start tego procesu (legalne historyczne zakończenie
                 dawnego procesu po zleceniu innego projektu; ochrona obejmuje oba projekty)."""
     role: str
@@ -76,7 +76,7 @@ class Event:
     reason: str = ""
     source: str = "writer"
     dynamic: bool = False
-    start: str = "project"
+    start: str = "domain"
 
 
 def _neutral(*names, note="dane operacyjne bez roli dowodowej", source="writer"):
@@ -482,7 +482,8 @@ class ProcessIdentity:
     # domena nie wraca do zachowanych dowodów starszej próby (M3 review 2).
     generation: int = 0
     attempts: set = field(default_factory=set)         # numery prób już rozpoczętych
-    start_projects: set = field(default_factory=set)   # projekty zleceń, w których proces startował
+    start_domains: set = field(default_factory=set)    # pełne domeny startów kroku
+    current_domain: tuple | None = None               # domena bieżącego śladu
 
     @property
     def outside_unit(self):
@@ -508,14 +509,11 @@ class ProcessIdentity:
 
     @property
     def current_outside(self):
-        """Uruchomienie outside bieżącej generacji procesu: {"started", "finished"} albo None.
+        """Uruchomienie outside bieżącej domeny procesu: {"started", "finished"} albo None.
 
         Konsumenci (gotowość, zajętość, plik wyjścia) czytają wyłącznie ten wynik: start
         i zakończenie innej próby lub domeny nie są uruchomieniem bieżącego procesu (M4 review 2)."""
-        for domain, run in reversed(self.outside_runs.items()):
-            if domain[2] == self.generation:
-                return run
-        return None
+        return self.outside_runs.get(self.current_domain)
 
     @property
     def console(self):
@@ -744,9 +742,10 @@ def process_identities(events):
             identity.attempts.add(identity.attempt)
         # Dziedziczone pola (Konsola, jednostka outside) czytają poprzednika wyłącznie z tej
         # samej domeny: dowód innego projektu, zlecenia lub próby nie jest poprzednikiem (M2 review 1).
-        # Start kroku jest poprzednikiem tylko w projekcie, w którym zapisano start (M2 review 2);
+        # Start kroku jest poprzednikiem tylko w pełnej domenie, w której zapisano start;
         # wyjątkiem jest legalne historyczne zakończenie (`Event.start == "process"`).
         domain = (project, order, identity.generation)
+        identity.current_domain = domain
         unknown, inconsistent = evidence_errors(event, fields or {}, identity, domain)
         if unknown:
             identity.worsen("unknown")
@@ -767,7 +766,7 @@ def process_identities(events):
                 else:
                     identity.data[field_name] = event[field_name]
             identity.has_start = True
-            identity.start_projects.add(project)
+            identity.start_domains.add(domain)
             if not unknown and all(canonical_text(event.get(k), True) for k in CONSOLE_FIELDS):
                 # Start rozmowy opiekuna zapisuje własny komplet Konsoli tego kroku.
                 identity.consoles[domain] = {k: event[k] for k in CONSOLE_FIELDS}
@@ -777,10 +776,10 @@ def process_identities(events):
                     identity.data[field_name] = value
             identity.data["step"] = identity.name
             continue
-        scope = EVENTS[kind].start if kind in EVENTS and kind not in ("intent", "result") else "project"
-        started_here = project in identity.start_projects or scope == "process"
+        scope = EVENTS[kind].start if kind in EVENTS and kind not in ("intent", "result") else "domain"
+        started_here = domain in identity.start_domains or scope == "process"
         if not identity.has_start or not started_here:
-            # Start innego projektu nie jest poprzednikiem śladu procesu w bieżącym zleceniu.
+            # Start innego projektu, zlecenia lub próby nie jest poprzednikiem tego śladu.
             identity.worsen("unknown")
         for field_name in START_FIELDS if result else IDENTITY_FIELDS:
             if field_name not in event:
