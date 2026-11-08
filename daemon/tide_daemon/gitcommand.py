@@ -2,7 +2,9 @@
 
 Granica (`git_sandbox.py`: bwrap + Landlock + przypięta administracja) obejmuje wywołania, które mogą
 dotknąć danych zapisywalnych z pudełka: przy `box.enabled`, dla repozytorium oznaczonego przed pierwszym
-wystawieniem pudełku (`<common-dir>/tide-boundary`, `git_sandbox.initialize_indexes`) oraz na jawne
+wystawieniem pudełku (`<common-dir>/tide-boundary`, `git_sandbox.initialize_indexes`), dla każdej ścieżki
+w korzeniach wystawionych pudełku (`<repo>/.git`, `<repo>-worktrees` oznaczonego repozytorium, home pudełek —
+także nowe lub podmienione repozytoria pod nimi, `_exposed`) oraz na jawne
 żądanie ścieżki pudełkowej (`boundary=True`, `private=True`, migawka `checkout`). Poza nimi argv i otoczenie
 są takie jak przed K-38/PT-264: `[git, *HOST_OPTIONS, *args]` z otoczeniem podanym przez wywołującego.
 Niepewny odczyt stanu (błąd stat, nieczytelny wskaźnik `.git`/`commondir`) wybiera granicę.
@@ -96,6 +98,40 @@ def _marked(gitdir):
     return os.path.lexists(os.path.join(_common_dir(gitdir), MARKER))
 
 
+def _box_data_root():
+    """Wspólny rodzic katalogów home pudełek (`box.runner.host_home_dir`), montowanych rw."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.environ.get("HOME") or os.path.expanduser("~"), ".local", "share")
+    return os.path.join(os.path.abspath(base), "tide", "box")
+
+
+def _exposed(path):
+    """Czy `path` leży w korzeniu wystawionym pudełku, niezależnie od `.git` pod nim.
+
+    Korzenie wynikają z hostowego planu urządzeń (`box.mounts.plan`): dla repozytorium ze
+    znacznikiem `<repo>/.git/tide-boundary` są to `<repo>/.git` (objects/refs/logs rw) oraz cały
+    `<repo>-worktrees` (rw), a także home pudełek. Znacznik leży w części `.git` montowanej ro,
+    więc pudełko nie może go usunąć; utworzone przez pudełko nowe lub podmienione repozytorium
+    pod tymi korzeniami nie wyłącza granicy (PT-264 review 1, B1). Sprawdzamy ścieżkę leksykalną
+    i kanoniczną; dodatkowy znacznik utworzony przez pudełko może tylko włączyć granicę."""
+    boxes = _box_data_root()
+    for candidate in {os.path.abspath(path), os.path.realpath(path)}:
+        if candidate == boxes or candidate.startswith(boxes + os.sep):
+            return True
+        current = candidate
+        while True:
+            name, parent = os.path.basename(current), os.path.dirname(current)
+            if name == ".git" and os.path.lexists(os.path.join(current, MARKER)):
+                return True
+            if (name.endswith("-worktrees") and len(name) > len("-worktrees") and
+                    os.path.lexists(os.path.join(parent, name[:-len("-worktrees")], ".git", MARKER))):
+                return True
+            if parent == current:
+                break
+            current = parent
+    return False
+
+
 def _marked_from(path):
     """Odkrywa repozytorium nad `path` jak Git (katalog `.git` albo wskaźnik) i sprawdza znacznik."""
     current = os.path.abspath(path)
@@ -108,7 +144,8 @@ def _marked_from(path):
                 line = fh.read(8192).strip()
             if not line.startswith("gitdir:"):
                 raise OSError("niepoprawny wskaźnik .git")
-            return _marked(os.path.normpath(os.path.join(current, line[len("gitdir:"):].strip())))
+            gitdir = os.path.normpath(os.path.join(current, line[len("gitdir:"):].strip()))
+            return _exposed(gitdir) or _exposed(_common_dir(gitdir)) or _marked(gitdir)
         if os.path.isfile(os.path.join(current, "HEAD")) and _marked(current):
             return True  # sam katalog administracyjny (np. `config --file <.git>/config`)
         parent = os.path.dirname(current)
@@ -138,7 +175,8 @@ def marked_repository(args) -> bool:
                 i -= 1
             i += 2
         for path in [*candidates, cwd]:
-            if (os.path.isfile(os.path.join(path, "HEAD")) and _marked(path)) or _marked_from(path):
+            if (_exposed(path) or (os.path.isfile(os.path.join(path, "HEAD")) and _marked(path)) or
+                    _marked_from(path)):
                 return True
         return False
     except (OSError, UnicodeDecodeError):

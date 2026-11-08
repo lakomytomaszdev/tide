@@ -115,6 +115,73 @@ class ConditionalBoundaryTest(unittest.TestCase):
         self.assertFalse(FlowGit(git).sha(str(self.repo), oid))
         self.assertIn("alternates", git.run(str(self.repo), "cat-file", "-p", oid).err)
 
+    def filtered_repository(self, path, outside):
+        """Jednorazowe repo z filtrem clean, który przy `status` zostawia ślad poza projektem."""
+        path.mkdir(parents=True)
+        gitrepos.git(str(path), "init", "-q", "-b", "master")
+        (path / ".gitattributes").write_text("data.txt filter=x\n")
+        (path / "data.txt").write_text("aaaa\n")
+        gitrepos.git(str(path), "add", ".")
+        gitrepos.git(str(path), "commit", "-q", "-m", "base")
+        gitrepos.git(str(path), "config", "filter.x.clean", f"touch {outside}; cat")
+        (path / "data.txt").write_text("bbbb\n")  # ten sam rozmiar: status musi przeliczyć treść filtrem
+        info = os.stat(path / "data.txt")
+        os.utime(path / "data.txt", ns=(info.st_atime_ns, info.st_mtime_ns + 5_000_000_000))
+        return path
+
+    def exposed_project(self):
+        self.settings(False)
+        (self.repo / ".git/tide-boundary").write_text("project-git:2\n")
+        gitrepos.git(str(self.repo), "worktree", "add", "-q", "-b", "wt", str(self.base / "project-worktrees/wt"))
+        trap = self.base / "outside"
+        trap.mkdir()
+        return trap / "pwned"
+
+    def test_new_unmarked_repository_in_exposed_worktrees_keeps_the_boundary(self):
+        from tide_daemon.gitcommand import HOST_OPTIONS, git_command
+        from tide_daemon.worktrees.scanner import WorktreeScanner, find_repositories
+        pwned = self.exposed_project()
+        evil = self.filtered_repository(self.base / "project-worktrees/evil", pwned)
+        control = self.filtered_repository(self.base / "control", pwned)
+        # Kontrola dodatnia: host potwierdza, że ten sam układ bez granicy wykonuje filtr.
+        subprocess.run(["git", *HOST_OPTIONS, "-C", str(control), "status", "--porcelain"],
+                       env=gitrepos.ENV, check=True, capture_output=True)
+        self.assertTrue(pwned.exists())
+        pwned.unlink()
+        self.assertTrue((self.repo / ".git/tide-boundary").exists())  # oryginalny znacznik zostaje
+        self.assertFalse((evil / ".git/tide-boundary").exists())
+        git = Git(cancel=KernelTransport())
+        git.env = dict(gitrepos.ENV)
+        for path in (evil, evil / "sub", self.base / "project-worktrees", self.repo / ".git/objects"):
+            argv, _ = git_command("-C", str(path), "status")
+            self.assertTrue(argv[2].endswith("git_sandbox.py"), path)
+        result = git.run(str(evil), "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+        self.assertFalse(result.ok)
+        self.assertFalse(pwned.exists())
+        # Automatyczny odczyt hostowego skanera katalogu projektów.
+        self.assertIn(str(evil), find_repositories(str(self.base)))
+        scanner = WorktreeScanner(str(self.base), git=git)
+        git.cancel = KernelTransport()
+        self.assertEqual(scanner.scan_repo(str(evil)), [])
+        self.assertFalse(pwned.exists())
+
+    def test_replaced_worktree_pointer_to_unmarked_administration_keeps_the_boundary(self):
+        pwned = self.exposed_project()
+        rogue = self.filtered_repository(self.base / "rogue", pwned)
+        wt = self.base / "project-worktrees/wt"
+        (wt / ".git").write_text(f"gitdir: {rogue / '.git'}\n")
+        (wt / ".gitattributes").write_text("data.txt filter=x\n")
+        (wt / "data.txt").write_text("bbbb\n")
+        git = Git(cancel=KernelTransport())
+        git.env = dict(gitrepos.ENV)
+        from tide_daemon.gitcommand import git_argv
+        self.assertTrue(git_argv("-C", str(wt), "status")[2].endswith("git_sandbox.py"))
+        result = git.run(str(wt), "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+        self.assertFalse(result.ok)
+        self.assertFalse(pwned.exists())
+        # Ta sama administracja poza korzeniami pudełka pozostaje zwykłym Gitem hosta.
+        self.assertEqual(git_argv("-C", str(rogue), "status")[0], "git")
+
     def test_disabled_box_checkout_snapshot_matches_plain_git(self):
         (self.repo / "new.txt").write_text("n\n")
         git = Git()
