@@ -3,10 +3,10 @@ import json
 import os
 import stat
 
-from ..box import state as bs, trialgate
+from ..box import trialgate
 from ..tasks import stepstop
 from .state import fold
-from .processidentity import process_identities
+from .processidentity import box_event_error, process_identities
 
 
 def held(step):
@@ -113,13 +113,12 @@ def public_inventory(engine):
 
 
 def _validate_box_event(event):
-    """Tożsamość zdarzenia musi być znana przed pominięciem niechronionej próby."""
-    if (not isinstance(event, dict) or type(event.get("v")) is not int
-            or event["v"] != bs.SCHEMA or event.get("type") not in bs.EVENTS):
-        raise ValueError("nieznany format zdarzenia pudełka")
-    fields = ("ts", "box", "step") if event["type"] in ("box.use", "box.release") else ("ts", "box")
-    if any(not isinstance(event.get(key), str) or not event[key].strip() for key in fields):
-        raise ValueError("niepełna tożsamość zdarzenia pudełka")
+    """Tożsamość zdarzenia musi być znana przed pominięciem niechronionej próby.
+
+    Reguły pól pochodzą ze wspólnego modelu (`processidentity.BOX_EVENTS`)."""
+    error = box_event_error(event)
+    if error:
+        raise ValueError(error)
 
 
 def public_processes(board_root):

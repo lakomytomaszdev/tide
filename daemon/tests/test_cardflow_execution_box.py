@@ -745,6 +745,9 @@ class DeniedTest(BoxFlow):
     def test_recovery_retries_release_and_preserves_other_steps_network_context(self):
         step, log = self.prepared_step("finished")
         other = self.card(title="Inna karta")
+        # PT-288: odtwarzanie sieci korzysta ze ścisłej historii; karta deklaruje projekt przed procesem.
+        self.engine.journal.append(other, "card.started", entry="now", executor="Sonnet", program="claude",
+                                   provider="anthropic", repo=self.repo, project=SLUG)
         bp.save_card(SLUG, other, {"tide-box": 1, "network": {"domains": ["other.example.org"]}})
         placement = boxstep.place(self.engine, other, SLUG, "ticket", "", BOX_STEP_KINDS)
         active_log = boxstep.before_start(self.engine, placement, other, "active")

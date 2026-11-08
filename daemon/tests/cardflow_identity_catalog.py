@@ -1,0 +1,726 @@
+"""PT-288: niezależny katalog zapisów dzienników i konsumentów tożsamości procesów.
+
+Katalog powstaje wyłącznie z kodu źródłowego usługi (AST), bez importu modelu
+`cardflow.processidentity` ani generatorów testów. Stałe, opakowania i dynamiczne
+słowniki rozwiązuje ten moduł: najpierw literalnie (słowniki, przypisania lokalne,
+parametry **kwargs opakowań, zwracane słowniki funkcji), a resztę ręcznie utrzymywana
+tabela z uzasadnieniem. Każdy wpis tabeli ma własną kontrolę w
+`test_cardflow_identity_catalog.py`. Nierozwiązany zapis nie jest pomijany: trafia
+do `unresolved`, a test kompletności kończy się porażką.
+"""
+from __future__ import annotations
+
+import ast
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+
+PACKAGE = Path(__file__).resolve().parents[1] / "tide_daemon"
+CARD_ENVELOPE = frozenset({"v", "seq", "ts", "card", "type"})
+BOX_ENVELOPE = frozenset({"v", "ts", "type", "box"})
+ANY = "*"   # ładunek dynamiczny; dozwolony tylko dla zdarzeń, których reduktor nie czyta
+
+
+@dataclass(frozen=True)
+class Write:
+    store: str          # "card" albo "box"
+    path: str           # ścieżka względem tide_daemon
+    function: str       # funkcja z zapisem albo z wywołaniem opakowania
+    line: int
+    kind: str           # rozwiązany typ zdarzenia
+    discriminator: str  # wartość `action` dla intent/result, inaczej ""
+    fields: object      # frozenset pól ładunku (bez koperty) albo ANY
+    via: str = ""       # opakowanie lub reguła rozwiązania
+
+
+@dataclass(frozen=True)
+class Consumer:
+    path: str
+    function: str
+    line: int
+    reads: frozenset
+
+
+@dataclass(frozen=True)
+class Effect:
+    path: str
+    function: str
+    line: int
+    effect: str
+
+
+@dataclass
+class Catalog:
+    writes: list = field(default_factory=list)
+    unresolved: list = field(default_factory=list)   # (plik, funkcja, linia, opis)
+    used_scopes: set = field(default_factory=set)
+
+
+# ------------------------------------------------------------------ ręczna tabela rozwiązań
+#
+# (plik, funkcja, wyrażenie **) → (reguła, pola). Reguła wskazuje kontrolę w teście.
+# ANY wolno użyć wyłącznie dla zdarzeń/akcji, które model klasyfikuje jako metadane.
+DYNAMIC = {
+    # Placement.entry() w cardflow/boxstep.py (nazwa `entry` jest niejednoznaczna w pakiecie);
+    # kontrola AST zwracanego słownika i przypisań indeksowanych.
+    ("cardflow/engine.py", "FlowEngine._launch", "placement.entry()"):
+        ("placement-entry", frozenset({"runner", "box", "boxSlug", "boxIp", "boxAccess", "boxPortOwner"})),
+    ("cardflow/engine.py", "FlowEngine._launch.launch", "placement.entry()"):
+        ("placement-entry", frozenset({"runner", "box", "boxSlug", "boxIp", "boxAccess", "boxPortOwner"})),
+    # _step_base_context zwraca krotkę (opis, słownik); kontrola AST zwracanego słownika.
+    ("cardflow/engine.py", "FlowEngine._launch", "base_context"):
+        ("step-base-context", frozenset({"baseVersion", "baseRef", "baseCommit"})),
+    ("cardflow/engine.py", "FlowEngine._launch_full_planning", "base_context"):
+        ("step-base-context", frozenset({"baseVersion", "baseRef", "baseCommit"})),
+    # Ładunki metadanych (reduktor ich nie czyta; model musi mieć klasyfikację metadanych).
+    ("cardflow/engine.py", "FlowEngine._guard_baseline", "base"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._guard_rebase", "fresh"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._finish", "guarded"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._finish", "verdict"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._recover_verdicts", "verdict"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._merge_card_to_main_locked", "prepared"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._resume_main_merge.checkpoint", "data"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._resume_main_merge", "result"): ("metadata-payload", ANY),
+    ("cardflow/basegeneration.py", "BaseGeneration.checkpoint", "data"): ("metadata-payload", ANY),
+    ("cardflow/planediting.py", "PlanEditing._record_plan_review", "report"): ("metadata-payload", ANY),
+    ("cardflow/consent.py", "revoke", "request"): ("metadata-payload", ANY),
+    ("cardflow/boxwait.py", "set_box_wait", "extra"): ("metadata-payload", ANY),
+    ("cardflow/tracker.py", "TrackerOutbox.run", "data"): ("metadata-payload", ANY),
+    ("cardflow/boxstep.py", "recover_network", "guarded"): ("metadata-payload", ANY),
+    ("cardflow/caretakerchat.py", "CaretakerChat._poll_caretaker_chat",
+     "{k: v for k, v in run.items() if k not in ('seq', 'ts', 'type', 'step')}"): ("metadata-payload", ANY),
+}
+
+# Wynik pracy (`work`) w opakowaniu zamiar → wynik, gdy funkcja pracy nie zwraca literału.
+# Klucz: wartość dyskryminatora. Kroki procesu muszą mieć wynik rozwiązany literalnie.
+WORK_BY_ACTION = {
+    "plan-commit": "commit planu (metadane Gita)",
+    "merge": "scalenie ticketu do karty (metadane Gita)",
+    "caretaker-action": "akcja opiekuna na stanie planu/kroku (metadane opiekuna)",
+}
+
+# Dyskryminator przepisany z istniejącego zamiaru (replay); nie wprowadza nowej wartości.
+REPLAY_ACTIONS = {
+    ("cardflow/engine.py", "FlowEngine._reconcile", "action"): "intent.get('action')",
+}
+
+# Wywołania zwrotne: definicja z parametrem typu → wywołania atrybutu w module odbiorcy.
+CALLBACKS = {
+    ("cardflow/boxstep.py", "runner_of.<lambda>"): ("box/runner.py", "journal"),
+}
+
+# Nazwy niejednoznaczne w pakiecie: (prefiks ścieżki, końcówka odbiorcy) wywołań opakowania.
+WRAPPER_SCOPE = {"run": ("cardflow/", "tracker"), "_act": ("cardflow/", "self")}
+
+
+# ------------------------------------------------------------------ narzędzia AST
+
+def _rel(path: Path) -> str:
+    return path.relative_to(PACKAGE).as_posix()
+
+
+@lru_cache(maxsize=None)
+def module(path: str):
+    tree = ast.parse((PACKAGE / path).read_text(encoding="utf-8"), filename=path)
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            child._parent = node
+    return tree
+
+
+@lru_cache(maxsize=None)
+def modules():
+    return tuple(sorted(_rel(p) for p in PACKAGE.rglob("*.py")))
+
+
+def qualname(node) -> str:
+    names = []
+    current = node if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+        else getattr(node, "_parent", None)
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(current.name)
+        elif isinstance(current, ast.Lambda):
+            names.append("<lambda>")
+        current = getattr(current, "_parent", None)
+    return ".".join(reversed(names)) or "<module>"
+
+
+def enclosing_function(node):
+    current = getattr(node, "_parent", None)
+    while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        current = getattr(current, "_parent", None)
+    return current
+
+
+def params(function) -> list:
+    args = [a.arg for a in function.args.posonlyargs + function.args.args]
+    if args and args[0] in ("self", "cls"):
+        args = args[1:]
+    return args
+
+
+def all_params(function) -> set:
+    return set(params(function)) | {a.arg for a in function.args.kwonlyargs}
+
+
+def _resolve_module(path: str, level: int, name: str | None) -> str | None:
+    base = Path(path).parent
+    for _ in range(level - 1):
+        base = base.parent
+    target = base / (name.replace(".", "/") if name else "")
+    for candidate in (target.with_suffix(".py"), target / "__init__.py"):
+        if (PACKAGE / candidate).is_file():
+            return candidate.as_posix()
+    return None
+
+
+@lru_cache(maxsize=None)
+def imports(path: str) -> dict:
+    """alias → (moduł, nazwa albo None) dla importów względnych pakietu."""
+    out = {}
+    for node in ast.walk(module(path)):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            for alias in node.names:
+                as_module = _resolve_module(path, node.level, (node.module + "." if node.module else "") + alias.name)
+                if as_module:
+                    out.setdefault(alias.asname or alias.name, (as_module, None))
+                else:
+                    source = _resolve_module(path, node.level, node.module)
+                    if source:
+                        out.setdefault(alias.asname or alias.name, (source, alias.name))
+    return out
+
+
+@lru_cache(maxsize=None)
+def constants(path: str) -> dict:
+    """Stałe modułu i stałe importowane po nazwie (z wykrywaniem cykli importów)."""
+    out = dict(local_constants(path))
+    seen = {path}
+    pending = [(alias, source, name) for alias, (source, name) in imports(path).items() if name]
+    while pending:
+        alias, source, name = pending.pop()
+        if alias in out:
+            continue
+        found = local_constants(source)
+        if name in found:
+            out[alias] = found[name]
+        elif source not in seen:
+            seen.add(source)
+            target = imports(source).get(name)
+            if target and target[1]:
+                pending.append((alias, target[0], target[1]))
+    return out
+
+
+@lru_cache(maxsize=None)
+def local_constants(path: str) -> dict:
+    """Stałe modułu: napisy i krotki napisów (także przypisania wielokrotne)."""
+    out = {}
+
+    def literal(value):
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        if isinstance(value, (ast.Tuple, ast.List, ast.Set)) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts):
+            return tuple(e.value for e in value.elts)
+        return None
+
+    for node in module(path).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target, value = node.targets[0], node.value
+        if isinstance(target, ast.Name) and literal(value) is not None:
+            out[target.id] = literal(value)
+        elif isinstance(target, ast.Tuple) and isinstance(value, ast.Tuple) and len(target.elts) == len(value.elts):
+            for name, item in zip(target.elts, value.elts):
+                if isinstance(name, ast.Name) and literal(item) is not None:
+                    out[name.id] = literal(item)
+    return out
+
+
+def resolve_constant(path: str, node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and all(
+            isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts):
+        return tuple(e.value for e in node.elts)
+    if isinstance(node, ast.Name):
+        function = enclosing_function(node)
+        if function is not None and node.id in all_params(function):
+            return None
+        return constants(path).get(node.id)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        target = imports(path).get(node.value.id)
+        if target and target[1] is None:
+            return constants(target[0]).get(node.attr)
+    return None
+
+
+def resolve_strings(path: str, node):
+    """Zbiór możliwych napisów (stała albo wyrażenie warunkowe stałych)."""
+    if isinstance(node, ast.IfExp):
+        left, right = resolve_strings(path, node.body), resolve_strings(path, node.orelse)
+        return None if left is None or right is None else left | right
+    value = resolve_constant(path, node)
+    return frozenset({value}) if isinstance(value, str) else None
+
+
+def guard_values(node, name: str):
+    """Wartości zmiennej z otaczającego `if name == "x"` albo `if name in (...)`."""
+    child, current = node, getattr(node, "_parent", None)
+    while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(current, ast.If) and child in current.body:
+            test = current.test
+            if (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id == name
+                    and len(test.ops) == 1):
+                right = test.comparators[0]
+                if isinstance(test.ops[0], ast.Eq) and isinstance(right, ast.Constant):
+                    return frozenset({right.value})
+                if isinstance(test.ops[0], ast.In) and isinstance(right, (ast.Tuple, ast.Set, ast.List)) \
+                        and all(isinstance(e, ast.Constant) for e in right.elts):
+                    return frozenset(e.value for e in right.elts)
+        child, current = current, getattr(current, "_parent", None)
+    return None
+
+
+@lru_cache(maxsize=None)
+def definitions() -> dict:
+    out = {}
+    for path in modules():
+        for node in ast.walk(module(path)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.setdefault(node.name, []).append((path, node))
+    return out
+
+
+def call_sites(name: str):
+    prefix, receiver = WRAPPER_SCOPE.get(name, ("", ""))
+    for path in modules():
+        if not path.startswith(prefix):
+            continue
+        for node in ast.walk(module(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == name and not receiver:
+                yield path, node
+            elif isinstance(func, ast.Attribute) and func.attr == name:
+                if receiver and not ast.unparse(func.value).endswith(receiver):
+                    continue
+                yield path, node
+
+
+def call_argument(call, function, parameter: str):
+    names = params(function)
+    if parameter in names:
+        index = names.index(parameter)
+        if index < len(call.args) and not any(isinstance(a, ast.Starred) for a in call.args[:index + 1]):
+            return call.args[index]
+    return next((k.value for k in call.keywords if k.arg == parameter), None)
+
+
+class Unresolved(Exception):
+    pass
+
+
+class Resolver:
+    """Rozwiązywanie kluczy słowników w zapisach; porażka zgłasza Unresolved."""
+
+    def __init__(self, catalog: Catalog):
+        self.catalog = catalog
+        self.depth = 0
+
+    def keys(self, path: str, owner: str, node):
+        self.depth += 1
+        try:
+            if self.depth > 12:
+                raise Unresolved("zbyt głębokie rozwinięcie")
+            return self._keys(path, owner, node)
+        finally:
+            self.depth -= 1
+
+    def _union(self, parts):
+        if any(p == ANY for p in parts):
+            return ANY
+        return frozenset().union(*parts) if parts else frozenset()
+
+    def _keys(self, path, owner, node):
+        text = ast.unparse(node)
+        if (path, owner, text) in DYNAMIC:
+            self.catalog.used_scopes.add((path, owner, text))
+            return DYNAMIC[(path, owner, text)][1]
+        if isinstance(node, ast.Dict):
+            parts = []
+            for key, value in zip(node.keys, node.values):
+                if key is None:
+                    parts.append(self.keys(path, owner, value))
+                elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    parts.append(frozenset({key.value}))
+                else:
+                    raise Unresolved("klucz niestały: " + ast.unparse(key))
+            return self._union(parts)
+        if isinstance(node, ast.IfExp):
+            return self._union([self.keys(path, owner, node.body), self.keys(path, owner, node.orelse)])
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            return self._union([self.keys(path, owner, v) for v in node.values])
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return self._union([self.keys(path, owner, node.left), self.keys(path, owner, node.right)])
+        if isinstance(node, ast.DictComp) and len(node.generators) == 1:
+            generator = node.generators[0]
+            source = resolve_constant(path, generator.iter)
+            if isinstance(source, tuple) and isinstance(generator.target, ast.Name) \
+                    and isinstance(node.key, ast.Name) and node.key.id == generator.target.id:
+                return frozenset(source)
+            if isinstance(generator.iter, ast.Tuple) and isinstance(generator.target, ast.Tuple) \
+                    and isinstance(node.key, ast.Name) and all(
+                        isinstance(e, ast.Tuple) and isinstance(e.elts[0], ast.Constant) for e in generator.iter.elts):
+                return frozenset(e.elts[0].value for e in generator.iter.elts)
+            raise Unresolved("wyrażenie słownikowe: " + text)
+        if isinstance(node, ast.Name):
+            return self._name(path, owner, node)
+        if isinstance(node, ast.Call):
+            return self._returned(path, node)
+        raise Unresolved(text)
+
+    def _name(self, path, owner, node):
+        function = enclosing_function(node)
+        if function is None or isinstance(function, ast.Lambda):
+            raise Unresolved(node.id)
+        if function.args.kwarg and function.args.kwarg.arg == node.id:
+            return self._kwargs(function)
+        assigned = []
+        for child in ast.walk(function):
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    if isinstance(target, ast.Name) and target.id == node.id:
+                        assigned.append(self.keys(path, owner, child.value))
+                    elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) \
+                            and target.value.id == node.id:
+                        key = target.slice
+                        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                            raise Unresolved("indeks niestały: " + ast.unparse(target))
+                        assigned.append(frozenset({key.value}))
+                    elif isinstance(target, ast.Tuple) and any(
+                            isinstance(e, ast.Name) and e.id == node.id for e in target.elts):
+                        raise Unresolved("rozpakowanie krotki: " + node.id)
+            elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
+                    and child.func.attr == "update" and isinstance(child.func.value, ast.Name) \
+                    and child.func.value.id == node.id:
+                if child.args:
+                    assigned.append(self.keys(path, owner, child.args[0]))
+                assigned.append(frozenset(k.arg for k in child.keywords if k.arg))
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) \
+                    and child.target.id == node.id and child.value is not None:
+                assigned.append(self.keys(path, owner, child.value))
+        if not assigned:
+            raise Unresolved("brak przypisania: " + node.id)
+        return self._union(assigned)
+
+    def _kwargs(self, function):
+        named = all_params(function)
+        parts = []
+        for site_path, site in call_sites(function.name):
+            site_owner = qualname(site)
+            keys = set()
+            for keyword in site.keywords:
+                if keyword.arg is None:
+                    resolved = self.keys(site_path, site_owner, keyword.value)
+                    if resolved == ANY:
+                        return ANY
+                    keys |= resolved
+                elif keyword.arg not in named:
+                    keys.add(keyword.arg)
+            parts.append(frozenset(keys))
+        return self._union(parts)
+
+    def _returned(self, path, call):
+        func = call.func
+        name = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+        candidates = definitions().get(name, [])
+        if len(candidates) != 1:
+            raise Unresolved("wywołanie niejednoznaczne: " + ast.unparse(call))
+        source, function = candidates[0]
+        owner = qualname(function)
+        returns = [n for n in ast.walk(function) if isinstance(n, ast.Return) and n.value is not None
+                   and enclosing_function(n) is function]
+        if not returns:
+            raise Unresolved("brak zwracanego słownika: " + name)
+        return self._union([self.keys(source, owner, r.value) for r in returns])
+
+
+# ------------------------------------------------------------------ katalog zapisów
+
+def _is_card_append(node) -> bool:
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("append", "append_complete")):
+        return False
+    receiver = node.func.value
+    return ((isinstance(receiver, ast.Name) and receiver.id == "journal")
+            or (isinstance(receiver, ast.Attribute) and receiver.attr == "journal"))
+
+
+def _is_box_record(path: str, node) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if path == "box/state.py" and isinstance(node.func, ast.Name) and node.func.id == "record":
+        return True
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "record" and isinstance(node.func.value, ast.Name):
+        return imports(path).get(node.func.value.id) == ("box/state.py", None)
+    return False
+
+
+def _payload(resolver, path, owner, call, *, skip_star=()):
+    parts = [frozenset(k.arg for k in call.keywords if k.arg is not None)]
+    for keyword in call.keywords:
+        if keyword.arg is None and ast.unparse(keyword.value) not in skip_star:
+            parts.append(resolver.keys(path, owner, keyword.value))
+    return resolver._union(parts)
+
+
+def _action_values(path, owner, call, node, catalog):
+    """(wartość, reguła) dyskryminatora albo None, gdy pochodzi z parametru opakowania."""
+    values = resolve_strings(path, node)
+    if values is not None:
+        return [(v, "") for v in sorted(values)]
+    if isinstance(node, ast.Name):
+        guarded = guard_values(call, node.id)
+        if guarded:
+            return [(v, "guard") for v in sorted(guarded)]
+        if (path, owner, node.id) in REPLAY_ACTIONS:
+            catalog.used_scopes.add((path, owner, node.id))
+            return [("<replay>", "replay")]
+        function = enclosing_function(call)
+        if function is not None and not isinstance(function, ast.Lambda) and node.id in params(function):
+            return None
+    raise Unresolved("action=" + ast.unparse(node))
+
+
+def _work_star(function) -> str:
+    """Zmienna wyniku pracy w opakowaniu: `data = work()`."""
+    for child in ast.walk(function):
+        if isinstance(child, ast.Assign) and isinstance(child.value, ast.Call) \
+                and isinstance(child.value.func, ast.Name) and child.value.func.id in params(function) \
+                and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+            return child.targets[0].id
+    return ""
+
+
+def _wrapper(resolver, path, owner, call, kind, catalog):
+    """Zapis w opakowaniu z parametrem `action`: rozwinięcie w każdym miejscu wywołania."""
+    function = enclosing_function(call)
+    action_name = next(k.value for k in call.keywords if k.arg == "action").id
+    kwarg = function.args.kwarg.arg if function.args.kwarg else ""
+    work_var = _work_star(function)
+    work_param = next((child.value.func.id for child in ast.walk(function)
+                       if isinstance(child, ast.Assign) and isinstance(child.value, ast.Call)
+                       and isinstance(child.value.func, ast.Name) and child.targets[0].id == work_var), "") \
+        if work_var else ""
+    skip = {kwarg, work_var, f"{work_var} or {{}}", f"({work_var} or {{}})"} - {""}
+    base = _payload(resolver, path, owner, call, skip_star=skip)
+    uses_kwarg = any(k.arg is None and ast.unparse(k.value) == kwarg for k in call.keywords)
+    uses_work = any(k.arg is None and work_var and ast.unparse(k.value).startswith(work_var) for k in call.keywords)
+    named = all_params(function)
+    sites = list(call_sites(function.name))
+    if not sites:
+        raise Unresolved("opakowanie bez wywołań: " + owner)
+    for site_path, site in sites:
+        site_owner = qualname(site)
+        try:
+            argument = call_argument(site, function, action_name)
+            if argument is None:
+                raise Unresolved("brak dyskryminatora w wywołaniu")
+            values = _action_values(site_path, site_owner, site, argument, catalog)
+            if values is None:
+                raise Unresolved("dyskryminator z parametru zewnętrznego: " + ast.unparse(argument))
+            fields = base
+            if uses_kwarg and fields != ANY:
+                extra = [frozenset(k.arg for k in site.keywords if k.arg and k.arg not in named)]
+                extra += [resolver.keys(site_path, site_owner, k.value) for k in site.keywords if k.arg is None]
+                fields = resolver._union([fields, *extra])
+            for value, rule in values:
+                current = fields
+                if uses_work and current != ANY:
+                    work = call_argument(site, function, work_param)
+                    try:
+                        current = resolver._union([current, _work_keys(resolver, site_path, site_owner, work)])
+                    except Unresolved:
+                        if value not in WORK_BY_ACTION:
+                            raise
+                        catalog.used_scopes.add(("work", value))
+                        current = ANY
+                catalog.writes.append(Write("card", site_path, site_owner, site.lineno, kind, value, current,
+                                            via=f"{path}:{owner}" + (f"/{rule}" if rule else "")))
+        except Unresolved as exc:
+            catalog.unresolved.append((site_path, site_owner, site.lineno, f"{owner}: {exc}"))
+
+
+def _work_keys(resolver, path, owner, work):
+    if work is None:
+        return frozenset()
+    if isinstance(work, ast.Lambda):
+        return resolver.keys(path, owner, work.body)
+    if isinstance(work, ast.Name):
+        function = enclosing_function(work)
+        nested = [n for n in ast.walk(function) if isinstance(n, ast.FunctionDef) and n.name == work.id]
+        if len(nested) == 1:
+            inner = qualname(nested[0])
+            returns = [n for n in ast.walk(nested[0]) if isinstance(n, ast.Return) and n.value is not None
+                       and enclosing_function(n) is nested[0]]
+            return resolver._union([resolver.keys(path, inner, r.value) for r in returns])
+    raise Unresolved("work=" + ast.unparse(work))
+
+
+def writes() -> Catalog:
+    catalog = Catalog()
+    resolver = Resolver(catalog)
+    for path in modules():
+        for node in ast.walk(module(path)):
+            try:
+                if _is_card_append(node):
+                    _card_write(resolver, path, node, catalog)
+                elif _is_box_record(path, node):
+                    _box_write(resolver, path, node, catalog)
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and (path, node.func.attr) in CALLBACKS.values() and isinstance(node.func.value, ast.Name)):
+                    _callback_write(resolver, path, node, catalog)
+            except Unresolved as exc:
+                catalog.unresolved.append((path, qualname(node), node.lineno, str(exc)))
+    return catalog
+
+
+def _card_write(resolver, path, call, catalog):
+    owner = qualname(call)
+    if len(call.args) < 2:
+        raise Unresolved("brak typu zdarzenia")
+    kinds = resolve_strings(path, call.args[1])
+    if kinds is None:
+        if (path, owner) in CALLBACKS:
+            catalog.used_scopes.add((path, owner))
+            return   # zapisy rozwinięte w miejscach wywołania zwrotnego
+        raise Unresolved("typ=" + ast.unparse(call.args[1]))
+    action = next((k.value for k in call.keywords if k.arg == "action"), None)
+    for kind in sorted(kinds):
+        if kind in ("intent", "result") and action is not None:
+            values = _action_values(path, owner, call, action, catalog)
+            if values is None:
+                _wrapper(resolver, path, owner, call, kind, catalog)
+                continue
+        else:
+            values = [("", "")]
+        fields = _payload(resolver, path, owner, call)
+        for value, rule in values:
+            catalog.writes.append(Write("card", path, owner, call.lineno, kind, value, fields, via=rule))
+
+
+def _box_write(resolver, path, call, catalog):
+    owner = qualname(call)
+    if path == "box/state.py" and owner == "record":
+        return
+    kinds = resolve_strings(path, call.args[1]) if len(call.args) > 1 else None
+    if kinds is None:
+        raise Unresolved("typ pudełka=" + (ast.unparse(call.args[1]) if len(call.args) > 1 else "?"))
+    fields = _payload(resolver, path, owner, call)
+    for kind in sorted(kinds):
+        catalog.writes.append(Write("box", path, owner, call.lineno, kind, "", fields))
+
+
+def _callback_write(resolver, path, call, catalog):
+    owner = qualname(call)
+    for source, target in CALLBACKS.items():
+        if target != (path, call.func.attr):
+            continue
+        kinds = resolve_strings(path, call.args[0]) if call.args else None
+        if kinds is None or len(call.args) < 2:
+            raise Unresolved("wywołanie zwrotne dziennika")
+        fields = resolver.keys(path, owner, call.args[1])
+        for kind in sorted(kinds):
+            catalog.writes.append(Write("card", path, owner, call.lineno, kind, "", fields, via=":".join(source)))
+
+
+# ------------------------------------------------------------------ katalog konsumentów i skutków
+#
+# Odczyty tożsamości: zamknięty słownik prymitywów wspólnego wyniku redukcji i jego bramek
+# (nie lista metod macierzy). Każda funkcja pakietu, która ich używa, jest konsumentem;
+# bez przypisanej bariery test kompletności kończy się porażką.
+IDENTITY_NAMES = frozenset({
+    "process_identities", "read_process_history", "preserves_project", "_identityHeld",
+    "_process_state", "_process_check", "public_processes", "public_inventory", "active_steps",
+    "box_event_error", "start_error", "_validate_process_identity", "_validate_box_event",
+    "process_history_checked",
+})
+# Atrybuty: (atrybut, wymagany odbiorca albo None).
+IDENTITY_ATTRIBUTES = (("held", None), ("outside_unit", None), ("inventory", "trialhold"),
+                       ("held", "trialhold"))
+# Skutki: (atrybut wywołania, końcówka odbiorcy) → nazwa skutku.
+EFFECTS = {
+    ("Popen", "subprocess"): "Popen",
+    ("open", "terminal"): "Konsola",
+    ("start", "runner"): "start kroku",
+    ("stop", "incus"): "incus.stop",
+    ("start", "incus"): "incus.start",
+    ("delete", "incus"): "incus.delete",
+    ("device_remove", "incus"): "incus.device_remove",
+    ("cleanup", "packs"): "packs.cleanup",
+    ("start", "procedure"): "procedura próby",
+    ("stop_unit", "stepstop"): "zatrzymanie jednostki",
+}
+
+
+def _function_body_nodes(function):
+    stack = list(function.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def identity_reads(function) -> frozenset:
+    found = set()
+    for node in _function_body_nodes(function):
+        if isinstance(node, ast.Name) and node.id in IDENTITY_NAMES:
+            found.add(node.id)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "held":
+            found.add("held")
+        elif isinstance(node, ast.Attribute):
+            if node.attr in IDENTITY_NAMES:
+                found.add(node.attr)
+                continue
+            receiver = ast.unparse(node.value)
+            for attr, wanted in IDENTITY_ATTRIBUTES:
+                if node.attr != attr:
+                    continue
+                if wanted is None and attr == "held" and not receiver.endswith(("identity", "trialhold")):
+                    continue
+                if wanted is not None and receiver != wanted:
+                    continue
+                found.add(attr if wanted is None else f"{wanted}.{attr}")
+    return frozenset(found)
+
+
+def consumers() -> list:
+    out = []
+    for path in modules():
+        if path == "cardflow/processidentity.py":
+            continue
+        for node in ast.walk(module(path)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                reads = identity_reads(node)
+                if reads:
+                    out.append(Consumer(path, qualname(node), node.lineno, reads))
+    return out
+
+
+def effects() -> list:
+    out = []
+    for path in modules():
+        for node in ast.walk(module(path)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            receiver = ast.unparse(node.func.value)
+            for (attr, suffix), effect in EFFECTS.items():
+                if node.func.attr == attr and receiver.split(".")[-1].endswith(suffix):
+                    out.append(Effect(path, qualname(node), node.lineno, effect))
+    return out

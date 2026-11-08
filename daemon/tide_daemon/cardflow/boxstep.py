@@ -512,14 +512,19 @@ def recover_network(engine) -> None:
     proxy = proxy_of(engine)
     active, ended = [], []
     for card in engine.journal.cards():
-        events = engine.journal.read(card)
-        from .trialhold import held
+        from . import trialhold
+        from .processidentity import process_identities
+        try:
+            # PT-288: wspólny ścisły odczyt i model tożsamości zamiast lokalnej reguły zdarzeń.
+            # Nieznana lub niespójna historia karty: bez zwolnień, refguard ani polityk sieci.
+            events = trialhold.read_process_history(engine.journal, card)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
         # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
         # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
-        protected = {s.get("step") or s.get("key") for s in events if held(s)}
-        protected.discard(None)
-        protected.discard("")
-        events = [e for e in events if not held(e) and e.get("step") not in protected
+        protected = {name for name, identity in process_identities(events).items()
+                     if identity.held and isinstance(name, str)}
+        events = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
                   and e.get("key") not in protected]
         st = fold(events)
         # Rezerwacja mogła poprzedzić przerwany start, bez wpisu step-start. Brak kroku i zamiaru
