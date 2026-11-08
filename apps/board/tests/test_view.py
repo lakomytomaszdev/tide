@@ -2159,6 +2159,30 @@ out["err"] = js(find("projectTestsError") + ".text")
 """, data=data)
         self.assertIn("brak zapisu", out["err"])
 
+    def test_approval_rejection_survives_snapshot_refresh(self):
+        data = self.project_data(tests={"changed": "", "full": ""}, testsApproved=True)
+        refreshed = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""},
+                                      testsApproved=False)
+        out = self.probe(FIND_PY + self.OPEN + """
+js(find("projectTestsChanged") + ".text = 'make test-changed BASE={base}'")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(300)   # odpowiedź prawdziwego backendu (bez usługi) przychodzi asynchronicznie — przeczekaj ją
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+js("page.managePage.handleReply('project:plasma-tide', {ok: true, testsApproved: false, approvalError: 'zatwierdzenie kontraktu testów: brak zapisu'})")
+wait(40)
+out["before"] = js(find("projectTestsError") + ".text")
+set_snapshot(REFRESHED)
+wait(200)
+out["open"] = js("page.managePage.openProject")
+out["after"] = js(find("projectTestsError") + ".text")
+out["changed"] = js(find("projectTestsChanged") + ".text")
+""".replace("REFRESHED", "json.loads(%r)" % json.dumps(refreshed)), data=data)
+        self.assertIn("brak zapisu", out["before"])
+        self.assertEqual(out["open"], "plasma-tide")
+        self.assertIn("brak zapisu", out["after"])
+        self.assertEqual(out["changed"], "make test-changed BASE={base}")
+
     def test_profile_error_is_visible_in_section(self):
         data = self.project_data(tests={"changed": "", "full": ""}, testsError="box.yaml: pusty blok tests")
         out = self.probe(FIND_PY + self.OPEN + """

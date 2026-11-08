@@ -885,7 +885,7 @@ Rectangle {
             testsFull = savedTests.full || ""
             testsChangedField.text = testsChanged
             testsFullField.text = testsFull
-            page.testsError = ""
+            // testsError nie jest tu czyszczony: odświeżenie migawki odtwarza delegaty i zgubiłoby odmowę zatwierdzenia.
         }
 
         // Bieżące pola kontraktu; wysyłane tylko z jawnej akcji użytkownika (zapis zmiany albo „Zatwierdź kontrakt”).
@@ -1023,6 +1023,7 @@ Rectangle {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                     page.projectError = ""
+                    page.testsError = ""
                     page.openProject = row.open ? "" : row.project.slug
                 }
             }
@@ -1373,7 +1374,7 @@ Rectangle {
                         pixelSize: 12
                         flat: true
                         text: "Anuluj"
-                        onClicked: page.openProject = ""
+                        onClicked: { page.testsError = ""; page.openProject = "" }
                     }
                     PillButton {
                         objectName: "projectSave"
