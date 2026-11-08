@@ -175,6 +175,17 @@ class StateTest(FakeSystem):
         self.assertTrue(state["bwrap"]["works"])
         self.assertFalse(state["others_restricted"])
 
+    def test_system_profile_without_nesting_names_the_replacement(self):
+        # Ubuntu 25.04+/Kubuntu 26.04: bwrap-userns-restrict z pakietu apparmor, dzieci w unpriv_bwrap
+        (self.root / TARGET).write_text("abi <abi/5.0>,\nprofile bwrap /usr/bin/bwrap flags=(attach_disconnected) {\n}\n")
+        self.bwrap("bwrap//&unpriv_bwrap (enforce)")
+        self.env["FAKE_NESTED_RC"] = "1"
+        result = run_check(env=self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("obcy", result.stdout)
+        self.assertIn("sudo mv /etc/apparmor.d/bwrap-userns-restrict /root/bwrap-userns-restrict.dist", result.stdout)
+        self.assertIn("sudo bash scripts/sandbox/install.sh", result.stdout)
+
     def test_kernel_without_apparmor_restriction_needs_no_profile(self):
         # Fedora: brak sysctl apparmor_restrict_unprivileged_userns, bwrap działa bez profilu, unshare -U też
         (self.root / SYSCTL).unlink()

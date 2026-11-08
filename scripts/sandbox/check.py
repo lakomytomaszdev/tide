@@ -178,6 +178,13 @@ def report(state: dict) -> str:
     elif state["profile"] == "tide" and bwrap["works"]:
         lines.append("Profil Tide jest starszy albo nie pozwala dzieciom bwrap na zagnieżdżoną przestrzeń — "
                      "podmiana: sudo bash scripts/sandbox/install.sh")
+    elif state["profile"] == "obcy" and bwrap["works"] and not bwrap["nested"]:
+        # Ubuntu 25.04 i nowsze (także Kubuntu 26.04) dostarczają ten plik w pakiecie apparmor: dzieci bwrap
+        # w unpriv_bwrap bez uprawnień — jak pierwsza wersja profilu Tide, pod którą Claude Code nie działa.
+        lines.append("Profil z pakietu systemu blokuje zagnieżdżoną przestrzeń, której potrzebuje piaskownica "
+                     "Claude Code. Zamiana na profil Tide (kopia oryginału zostaje): "
+                     "sudo mv /" + TARGET + " /root/bwrap-userns-restrict.dist && "
+                     "sudo bash scripts/sandbox/install.sh — opis: docs/install-new-machine.md")
     elif state["profile"] == "tide":
         lines.append("Profil Tide jest na dysku, ale bwrap nie działa — czy jest wczytany? "
                      "sudo apparmor_parser -r /" + TARGET + "; dziennik: journalctl -k -g apparmor")
