@@ -1,0 +1,23 @@
+NOTE: This is only a simulation!
+      apt-get needs root privileges for real execution.
+      Keep also in mind that locking is deactivated,
+      so don't depend on the relevance to the real current situation!
+Reading package lists...
+Building dependency tree...
+Reading state information...
+python3 is already the newest version (3.14.3-0ubuntu2).
+python3 set to manually installed.
+Solving dependencies...
+1 upgraded, 251 newly installed, 0 to remove and 3 not upgraded.
+Inst libpcre2-8-0 [10.46-1build1] (10.46-1ubuntu0.1 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Inst adduser (3.153ubuntu1 Ubuntu:26.04/resolute [all])
+Inst bubblewrap (0.11.1-1ubuntu0.3 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Inst git (1:2.53.0-1ubuntu1.1 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Inst libqt6core6t64 (6.10.2+dfsg-7 Ubuntu:26.04/resolute [amd64])
+Inst libqt6dbus6 (6.10.2+dfsg-7 Ubuntu:26.04/resolute [amd64])
+Inst python3-pyqt6 (6.10.2-2build5 Ubuntu:26.04/resolute [amd64])
+Inst qml6-module-qtquick-shapes (6.10.2+dfsg-3 Ubuntu:26.04/resolute [amd64])
+Inst socat (1.8.1.1-1ubuntu0.1 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Conf bubblewrap (0.11.1-1ubuntu0.3 Ubuntu:26.04/resolute-updates, Ubuntu:26.04/resolute-security [amd64])
+Conf libqt6core6t64 (6.10.2+dfsg-7 Ubuntu:26.04/resolute [amd64])
+Conf python3-pyqt6 (6.10.2-2build5 Ubuntu:26.04/resolute [amd64])
