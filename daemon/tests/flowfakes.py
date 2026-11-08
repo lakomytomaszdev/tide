@@ -362,7 +362,7 @@ if word == "poza-uwagi":
     word = "poza"
 
 write("start")
-if word == "na-sygnal":
+if word in ("na-sygnal", "blad-local"):
     until = time.monotonic() + 120
     while not os.path.isfile(os.path.join(out, "release-agent")):
         if time.monotonic() >= until:
@@ -545,7 +545,6 @@ elif word == "dane-zostaja":
             fh.write("x\n")
     finish("done")
 elif word == "blad-local":
-    time.sleep(0.5)
     finish("error", reason="awaria testowa")
 else:
     finish("done")
