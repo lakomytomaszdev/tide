@@ -210,6 +210,19 @@ class BoardDBusTest(unittest.TestCase):
             self.assertTrue(reply["message"])
         self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)  # błąd nie zostawia commita
 
+    def test_3b_project_tests_contract_transport(self):
+        # K-69/PT-278: pole `tests` w żądaniu UpsertProject i w JSON projektu (macierz walidacji: test_board_project_tests).
+        tests = {"changed": "make test-changed BASE={base}", "full": "pytest *"}
+        self.assertEqual(self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": tests}))["changed"], True)
+        project = {p["slug"]: p for p in self.snapshot()["projects"]}["mobileapp"]
+        self.assertEqual((project["tests"], project["testsError"]), (tests, ""))
+        self.assertEqual(project["testsGrantNote"]["changed"], "")
+        self.assertIn("`*`", project["testsGrantNote"]["full"])
+        with open(os.path.join(self.board, "projects", "mobileapp", "box.yaml"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("tide-box: 1\ntests:\n"))
+        bad = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": {"changed": "make test"}}))
+        self.assertEqual((bad["ok"], bad["error"]), (False, "bad-request"))
+
     def test_4_card_docs(self):
         # Plan karty w repozytorium projektu (docs/agents/plans) i specyfikacja po nazwie pliku — odczyt
         # w wątku roboczym usługi, odpowiedź opóźniona; repozytorium tablicy bez zmian.

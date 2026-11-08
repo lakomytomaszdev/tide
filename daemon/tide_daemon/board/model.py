@@ -138,6 +138,9 @@ class Project:
     read_dirs: list = field(default_factory=list)
     read_dir_bindings: list = field(default_factory=list)
     read_dirs_error: str = ""
+    box_text: str | None = None   # surowy `projects/<slug>/box.yaml` (None — brak pliku); klucz `tests` czyta project_tests
+    tests: dict = field(default_factory=lambda: {"changed": "", "full": ""})
+    tests_error: str = ""
     doc: Document | None = None
 
 

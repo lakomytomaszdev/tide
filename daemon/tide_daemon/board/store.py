@@ -34,7 +34,7 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows, commands, assignment
+from . import flows, commands, assignment, project_tests
 from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
@@ -79,7 +79,8 @@ CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "n
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
-                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs")
+                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
+                  "tests")
 TAG_FIELDS = ("name", "newName", "color", "description")
 
 
@@ -170,7 +171,8 @@ class BoardStore:
                 continue
             board.tags[tag.name.casefold()] = tag
         for slug, doc, path in self._docs("projects", board.errors):
-            board.projects[slug] = parse_project(doc, path, slug, board.errors)
+            project = board.projects[slug] = parse_project(doc, path, slug, board.errors)
+            self._load_project_tests(project, board.errors)
         self._load_cards(board)
         for card in board.cards.values():
             if card.project and card.project not in board.projects:
@@ -809,12 +811,22 @@ class BoardStore:
             _doc_set(doc, readaccess.BINDINGS_KEY, json.dumps(bindings, ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
+        writes = []
+        if "tests" in v:  # kontrakt testów żyje w profilu `projects/<slug>/box.yaml`, nie we frontmatterze
+            old_text = project.box_text if project is not None else None
+            current = dict(project.tests) if project is not None and not project.tests_error else \
+                project_tests.empty()
+            new_text = project_tests.save_tests(old_text, {**current, **v["tests"]})
+            if new_text != (old_text or ""):
+                writes.append((os.path.join("projects", slug, project_tests.PROFILE_FILE), new_text))
         change.result = {"ok": True, "slug": slug, "changed": False}
-        if not created and doc.text() == before:
+        doc_changed = created or doc.text() != before
+        if not doc_changed and not writes:
             return change
         change.result["changed"] = True
-        change.commits.append((f"project {slug}: {'create' if created else 'update'}",
-                               [(os.path.join("projects", f"{slug}.md"), doc.text())]))
+        if doc_changed:
+            writes.insert(0, (os.path.join("projects", f"{slug}.md"), doc.text()))
+        change.commits.append((f"project {slug}: {'create' if created else 'update'}", writes))
         return change
 
     def _plan_tag(self, board: Board, v: dict) -> Change:
@@ -964,6 +976,14 @@ class BoardStore:
             doc = self._read_doc(os.path.join("cards", name), board.errors)
             if doc is not None:
                 board.cards[num] = parse_card(doc, path, num, board.errors)
+
+    def _load_project_tests(self, project: Project, errors: list) -> None:
+        """Kontrakt testów z `projects/<slug>/box.yaml`; uszkodzony blok — pusty kontrakt i błąd Tablicy."""
+        rel = os.path.join("projects", project.slug, project_tests.PROFILE_FILE)
+        project.box_text = self._read_file(rel, errors)
+        project.tests, project.tests_error = project_tests.load_tests(project.box_text)
+        if project.tests_error:
+            errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {project.tests_error}"})
 
     def _docs(self, folder: str, errors: list):
         try:
@@ -1193,6 +1213,9 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
             "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
             "readDirs": list(project.read_dirs),
+            "tests": dict(project.tests), "testsError": project.tests_error,
+            "testsGrantNote": {name: project_tests.grant_note(project.tests.get(name, ""))
+                               for name in project_tests.FIELDS},
             "assignmentRules": project.assignment_rules}
 
 
@@ -1462,6 +1485,11 @@ def _project_values(data: dict, board_root: str) -> dict:
                 out[field_name] = commands.validate(data[field_name], label)
             except ValueError as exc:
                 raise BoardError(str(exc)) from None
+    if "tests" in data:
+        try:
+            out["tests"] = project_tests.validate_tests(data["tests"])
+        except ValueError as exc:
+            raise BoardError(str(exc)) from None
     if not (out.get("slug") or out.get("name") or out.get("repo")):
         raise BoardError("projekt potrzebuje identyfikatora (slug), nazwy albo repozytorium")
     return out

@@ -961,7 +961,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules}` albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1194,6 +1194,52 @@ mode: full
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
+
+### Kontrakt testów projektu (K-69, PT-278)
+
+Projekt Tablicy ma kontrakt testów: polecenie „testy dobrane do zmian” (`tests.changed`, z parametrem `{base}`)
+i „pełne testy przy domknięciu” (`tests.full`). Leży w profilu projektu `projects/<slug>/box.yaml` jako klucz
+`tests` schematu `tide-box: 1` — w tym samym pliku co profil pudełka K-38, **nie** we frontmatterze
+`projects/<slug>.md`. To tylko format i zapis: odcisk, zatwierdzenie i pochodzenie zapisu to osobna kartka (#8),
+więc żaden kod nie traktuje kontraktu jako zatwierdzonego.
+
+```yaml
+tide-box: 1
+tests:
+  changed: "make test-changed BASE={base}"
+  full: "make test"
+```
+
+- Napisy w cudzysłowach (zapis `json.dumps`), wcięcie dwiema spacjami; czytnik `yamlmini` K-38 czyta ten format.
+- `UpsertProject` przyjmuje `tests: {"changed": "…", "full": "…"}`. Pusty napis czyści pole, brak klucza go nie
+  zmienia, brak `tests` w żądaniu nie dotyka `box.yaml`. Gdy oba pola są puste, klucz `tests` znika z pliku
+  (plik zostaje, np. z samym `tide-box: 1`). Bez pliku zapis zakłada go z `tide-box: 1`.
+- Zapis podmienia albo dodaje (na końcu pliku) wyłącznie blok `tests` na wcięciu 0 wraz z jego wciętymi liniami;
+  reszta pliku (klucze K-38, komentarze, wcięty `tests` pod innym kluczem) zostaje bajt w bajt. Plik `box.yaml`
+  trafia do tego samego commita Tablicy co zmiana `projects/<slug>.md`; sam zapis `tests` nie zmienia pliku `.md`.
+- Reguły (`validate_tests`): jedna linia, bez NUL, najwyżej 300 znaków; `changed` musi zawierać `{base}` i nie
+  przyjmuje innych parametrów w klamrach; `full` nie przyjmuje żadnych. Odrzucenie to błąd `bad-request` bez zmiany
+  plików i commita. Polecenie z `*` albo niebędące pojedynczym poleceniem (`single_command`) jest poprawne, ale
+  `grant_note(polecenie)` zwraca komunikat, że Tide nie nada mu automatycznej zgody.
+- JSON projektu (migawka, lista projektów): `tests` `{changed, full}` (zawsze oba klucze), `testsError` (napis,
+  pusty bez błędu) i `testsGrantNote` `{changed, full}` z `grant_note`. Uszkodzony blok (zły typ, zły YAML, nieznany
+  klucz, naruszenie reguł) daje pusty kontrakt, `testsError` i wpis w błędach Tablicy; reszta listy działa dalej.
+  Zapis `tests` naprawia taki blok.
+- Moduł: `daemon/tide_daemon/board/project_tests.py` (`validate_tests`, `load_tests`, `save_tests`, `grant_note`),
+  poza katalogiem `box/` K-38.
+
+#### Zgodność z profilem pudełka K-38
+
+Wzorcowy plik profilu z kluczami K-38 (`apt`, `network`, `verify`) i blokiem `tests`:
+`daemon/tests/fixtures/box-profile/box.yaml`. Test `daemon/tests/test_board_project_tests.py` czyta go przez
+`load_tests` i porównuje z wynikiem `save_tests`. Szkic zmian po stronie K-38:
+[k38-tests-schema](agents/plans/followups/k38-tests-schema.md). Warunki scalenia drugiej z kart K-38/K-69
+do głównej:
+
+- `tests` w zamkniętej liście kluczy profilu projektu i w `NON_HASH_KEYS` (jako `tests.changed`, `tests.full`);
+- walidacja `tests` deleguje do `validate_tests` (jedna reguła);
+- cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona;
+- wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem.
 
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
