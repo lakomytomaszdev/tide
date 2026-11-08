@@ -405,8 +405,9 @@ print(s.get("exists"), len(s.get("cards") or []), len(s.get("projects") or []))'
         ok "Tablicy jeszcze nie ma — powstanie pusta przy pierwszym zapisie ($board)"
     else
         mkdir_workspace
-        # Zapis taga z zasiewu („Firma”) zakłada pustą Tablicę: board.md, tagi startowe, szablony flows/.
-        reply="$(call /Board org.tide.Daemon.Board UpsertTag s '{"name": "Firma"}' 2>&1 || true)"
+        # Dowolny zapis zakłada Tablicę (store.ensure): board.md, tagi startowe, szablony flows/. Tag „własne” jest
+        # w zasiewie, więc jego zapis niczego poza tym nie dodaje.
+        reply="$(call /Board org.tide.Daemon.Board UpsertTag s '{"name": "własne"}' 2>&1 || true)"
         if $PY -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$reply" 2>/dev/null; then
             ok "założono pustą Tablicę: $board"
         else
