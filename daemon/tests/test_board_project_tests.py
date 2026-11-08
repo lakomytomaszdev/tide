@@ -215,6 +215,35 @@ class DamagedFileTest(ProjectTestsCase):
                 self.assertEqual(projects["other"]["tests"], CONTRACT, "lista projektów działa dalej")
                 self.assertTrue(any(e["path"].endswith("projects/app/box.yaml") for e in snapshot["errors"]))
 
+    def test_non_string_scalars_are_damaged(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for value in ("123", "true", "null", "~", "1.5", "False"):
+            with self.subTest(value=value):
+                self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {value}\n")
+                project = self.project()
+                self.assertEqual(project["tests"], {"changed": "", "full": ""})
+                self.assertTrue(project["testsError"].startswith("tests:"), project["testsError"])
+        self.write("projects/app/box.yaml", "tide-box: 1\ntests:\n  full: make test\n")
+        self.assertEqual(self.project()["tests"]["full"], "make test")
+        self.assertEqual(self.project()["testsError"], "")
+
+    def test_unindented_comment_inside_block_does_not_end_it(self):
+        original = ("tide-box: 1\ntests:\n  changed: \"make c {base}\"\n# komentarz\n  full: \"make old\"\n"
+                    "verify: [\"true\"]\n")
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        self.write("projects/app/box.yaml", original)
+        self.assertEqual(self.project()["tests"], {"changed": "make c {base}", "full": "make old"})
+        self.assertEqual(self.project()["testsError"], "")
+        self.store.upsert_project({"slug": "app", "tests": {"full": "make new"}})
+        self.assertEqual(read(self.box()), "tide-box: 1\ntests:\n  changed: \"make c {base}\"\n  full: \"make new\"\n"
+                                           "verify: [\"true\"]\n")
+        self.write("projects/app/box.yaml", original)
+        self.store.upsert_project({"slug": "app", "tests": {"changed": "", "full": ""}})
+        self.assertEqual(read(self.box()), "tide-box: 1\nverify: [\"true\"]\n")
+        self.write("projects/app/box.yaml", "tide-box: 1\ntests:\n  full: \"a\"\n# po bloku\nverify: [\"true\"]\n")
+        self.store.upsert_project({"slug": "app", "tests": {"full": "b"}})
+        self.assertEqual(read(self.box()), "tide-box: 1\ntests:\n  full: \"b\"\n# po bloku\nverify: [\"true\"]\n")
+
     def test_saving_over_damaged_block_repairs_it(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         self.write("projects/app/box.yaml", "tide-box: 1\ntests: zepsute\nverify: \"true\"\n")

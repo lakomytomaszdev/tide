@@ -24,7 +24,10 @@ GRANT_NOTE = ("polecenie zawiera `*` (albo nie jest pojedynczym poleceniem) — 
 
 _PARAM = re.compile(r"\{[^{}]*\}")
 _TOP_KEY = re.compile(r"^tests[ \t]*:")
-_CHILD = re.compile(r"^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]+(.*)|)$")
+_NOT_STRING = re.compile(
+    r"^(?:[-+]?(?:\d[\d_]*\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|0[xXoObB][0-9a-fA-F_]+|true|false|null|~|[-+]?\.(?:inf|nan))$",
+    re.I)
+_CHILD =re.compile(r"^([A-Za-z0-9_-]+)[ \t]*:(?:[ \t]+(.*)|)$")
 
 
 def empty() -> dict:
@@ -85,7 +88,7 @@ def render_block(tests: dict) -> str:
 
 def _blocks(lines: list) -> list:
     """Przedziały [od, do) bloków `tests` na wcięciu 0: linia klucza i wszystkie wcięte linie po niej
-    (puste linie w środku też; puste na końcu zostają poza blokiem)."""
+    (puste linie i komentarze bez wcięcia w środku też; takie na końcu zostają poza blokiem)."""
     out = []
     i = 0
     while i < len(lines):
@@ -96,7 +99,7 @@ def _blocks(lines: list) -> list:
         k = i + 1
         while k < len(lines):
             line = lines[k]
-            if line.strip() == "":
+            if line.strip() == "" or line[0] == "#":  # pusta linia albo komentarz bez wcięcia nie kończą mapy
                 k += 1
             elif line[0] in " \t":
                 k += 1
@@ -142,6 +145,8 @@ def _scalar(text: str) -> str:
         return text[1:-1].replace("''", "'")
     if not text or text[:1] in "[{&*!|>%@`" or text.startswith("- "):
         raise ValueError("oczekiwano napisu (najlepiej w cudzysłowie)")
+    if _NOT_STRING.match(text):
+        raise ValueError("oczekiwano napisu, a nie liczby, true/false ani null (użyj cudzysłowu)")
     return text
 
 

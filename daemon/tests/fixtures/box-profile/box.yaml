@@ -7,7 +7,7 @@ apt:
 network:
   domains:
     - "pypi.org"
-verify: "make --version"
+verify: ["make --version"]
 # Kontrakt testów projektu (K-69).
 tests:
   changed: "make test-changed BASE={base}"
