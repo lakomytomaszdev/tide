@@ -36,6 +36,23 @@ class ProjectTestsCase(BoardCase):
 
 
 class SaveAndReadTest(ProjectTestsCase):
+    def test_single_quoted_apostrophe_and_hash_are_preserved(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for command in ("it's # ok", 'pytest -k "it\'s # case"', "it's '' # ok", "pytest path\\"):
+            for comment in ("", "  # komentarz poza napisem"):
+                with self.subTest(command=command, comment=comment):
+                    scalar = "'" + command.replace("'", "''") + "'"
+                    self.write("projects/app/box.yaml", f"tide-box: 1\ntests:\n  full: {scalar}{comment}\n")
+                    snapshot = self.store.snapshot()
+                    project = next(p for p in snapshot["projects"] if p["slug"] == "app")
+                    self.assertEqual((project["tests"], project["testsError"]),
+                                     ({"changed": "", "full": command}, ""))
+                    self.assertFalse(any(e["path"].endswith("projects/app/box.yaml")
+                                         for e in snapshot["errors"]))
+                    self.store.upsert_project({"slug": "app", "tests": {"changed": CONTRACT["changed"]}})
+                    self.assertEqual(self.project()["tests"], {"changed": CONTRACT["changed"], "full": command})
+                    self.assertEqual(self.project()["testsError"], "")
+
     def test_create_project_preserves_existing_profile_and_omitted_tests(self):
         self.store.upsert_project({"slug": "other", "name": "Other"})
         for slug, tests in (("app", ""), ("with-tests", 'tests:\n  changed: "make c {base}"\n')):

@@ -115,10 +115,18 @@ def _blocks(lines: list) -> list:
 
 def _strip_comment(text: str) -> str:
     out, quote, prev = [], "", " "
-    for ch in text:
+    i = 0
+    while i < len(text):
+        ch = text[i]
         if quote:
             out.append(ch)
-            if ch == quote and prev != "\\":
+            if quote == "'" and ch == "'" and text[i + 1:i + 2] == "'":
+                # Para '' należy do napisu YAML; ukośnik w nim nie ucieka apostrofu.
+                out.append("'")
+                i += 2
+                prev = ch
+                continue
+            if ch == quote and (quote == "'" or prev != "\\"):
                 quote = ""
         elif ch in "\"'" and prev in " \t":
             quote = ch
@@ -128,6 +136,7 @@ def _strip_comment(text: str) -> str:
         else:
             out.append(ch)
         prev = ch
+        i += 1
     return "".join(out).rstrip()
 
 
