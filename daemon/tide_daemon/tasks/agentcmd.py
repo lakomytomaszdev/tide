@@ -145,8 +145,9 @@ def read_only_git_config(git_dir: str, timeout: float = 20.0) -> list[tuple[str,
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
     try:
-        run = subprocess.run(["git", "--git-dir", git_dir, "config", "--name-only", "--get-regexp",
-                              r"^filter\..*\.(clean|smudge|process)$"],
+        from ..gitcommand import git_argv
+        run = subprocess.run(git_argv("--git-dir", git_dir, "config", "--name-only", "--get-regexp",
+                              r"^filter\..*\.(clean|smudge|process)$"),
                              capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise StepError(f"nie da się odczytać sterowników gita kroku ({type(exc).__name__})") from None

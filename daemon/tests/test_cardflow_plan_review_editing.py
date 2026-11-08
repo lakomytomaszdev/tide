@@ -5,6 +5,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
 from unittest import mock
 from . import flowfakes
 from . import test_cardflow_plan_integration as fixtures
@@ -34,6 +36,27 @@ class PlanReviewEditingTest(FlowInProcess):
     proposal = fixtures.PlanFlowTest.proposal
     submit = fixtures.PlanFlowTest.submit
     approve = fixtures.PlanFlowTest.approve
+
+    @contextmanager
+    def running_ticket(self, card):
+        """Pierwszy ticket kończy pracę dopiero po asercjach edycji planu."""
+        path = self.proposal(card)
+        ticket_path = Path(path).parent / "tickets" / "1.md"
+        ticket_path.write_text(ticket_path.read_text(encoding="utf-8").replace(
+            "ATRAPA: gotowe", "ATRAPA: na-sygnal"), encoding="utf-8")
+        try:
+            self.assertTrue(self.submit(card, path)["ok"])
+            approved = self.approve(card)
+            self.assertTrue(approved["ok"], approved)
+            self.assertTrue(wait_until(lambda: any(s["kind"] == "ticket" for s in self.of(card, "step.started")),
+                                       timeout=30), self.events(card))
+            working = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
+            yield working
+        finally:
+            # Także przy nieudanej asercji lub restarcie: sterowanie poza checkoutem.
+            step = next((s for s in self.of(card, "step.started") if s["kind"] == "ticket"), None)
+            if step is not None:
+                Path(step["stepDir"], "out", "release-agent").touch()
 
     def test_review_precedes_approval_and_survives_restart(self):
         card = self.card()
@@ -164,33 +187,23 @@ class PlanReviewEditingTest(FlowInProcess):
 
     def test_approving_difference_does_not_stop_running_ticket(self):
         card = self.card()
-        path = self.proposal(card)
-        ticket_path = os.path.join(os.path.dirname(path), "tickets", "1.md")
-        with open(ticket_path, encoding="utf-8") as fh:
-            body = fh.read()
-        with open(ticket_path, "w", encoding="utf-8") as fh:
-            fh.write(body.replace("ATRAPA: gotowe", "ATRAPA: powoli 8"))
-        self.assertTrue(self.submit(card, path)["ok"])
-        approved = self.approve(card)
-        self.assertTrue(approved["ok"], approved)
-        self.assertTrue(wait_until(lambda: any(s["kind"] == "ticket" for s in self.of(card, "step.started")), timeout=10))
-        working = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
-        box = []
-        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Doprecyzuj drugi ticket."}), box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=6), self.events(card))
-        # 03.11, K-16: poprawka zatwierdzonego planu dostaje aktualną tabelę z numerami ticketów i listą tych, które
-        # ruszyły — nie pierwotny plan.md z `#1…`.
-        amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
-        with open(os.path.join(amend["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
-            prompt = fh.read()
-        self.assertIn("ZATWIERDZONY plan", prompt)
-        self.assertIn(f"| {working['ticket']} |", prompt)
-        self.assertIn(f"Tickety, które już ruszyły ({working['ticket']}", prompt)
-        self.assertTrue(self.approve(card)["ok"])
-        self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")), self.events(card))
-        self.assertEqual(len(self.of(card, "plan.revision-approved")), 1)
+        with self.running_ticket(card) as working:
+            box = []
+            self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "Doprecyzuj drugi ticket."}), box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=10))
+            self.assertTrue(json.loads(box[0])["ok"], box)
+            self.assertTrue(wait_until(lambda: len(self.of(card, "plan.reviewed")) == 2, timeout=6), self.events(card))
+            # 03.11, K-16: poprawka zatwierdzonego planu dostaje aktualną tabelę z numerami ticketów i listą tych, które
+            # ruszyły — nie pierwotny plan.md z `#1…`.
+            amend = next(s for s in self.of(card, "step.started") if s["kind"] == "plan-amend")
+            with open(os.path.join(amend["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
+                prompt = fh.read()
+            self.assertIn("ZATWIERDZONY plan", prompt)
+            self.assertIn(f"| {working['ticket']} |", prompt)
+            self.assertIn(f"Tickety, które już ruszyły ({working['ticket']}", prompt)
+            self.assertTrue(self.approve(card)["ok"])
+            self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")), self.events(card))
+            self.assertEqual(len(self.of(card, "plan.revision-approved")), 1)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=25), self.events(card))
 
     def test_enter_opens_planner_in_console(self):
@@ -327,28 +340,19 @@ class PlanReviewEditingTest(FlowInProcess):
 
     def test_answer_after_restart_resumes_amendment_without_stopping_ticket(self):
         card = self.card()
-        path = self.proposal(card)
-        ticket_path = os.path.join(os.path.dirname(path), "tickets", "1.md")
-        with open(ticket_path, encoding="utf-8") as fh:
-            body = fh.read()
-        with open(ticket_path, "w", encoding="utf-8") as fh:
-            fh.write(body.replace("ATRAPA: gotowe", "ATRAPA: powoli 8"))
-        self.assertTrue(self.submit(card, path)["ok"])
-        self.assertTrue(self.approve(card)["ok"])
-        self.assertTrue(wait_until(lambda: any(s["kind"] == "ticket" for s in self.of(card, "step.started")), timeout=10))
-        working = next(s for s in self.of(card, "step.started") if s["kind"] == "ticket")
-        box = []
-        self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-question"}), box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=10))
-        self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["decisions"][:1] and self.shown(card)["derived"]["flow"]["decisions"][0]["kind"] == "question", timeout=5), self.events(card))
-        self.restart()
-        self.assertEqual(self.shown(card)["derived"]["flow"]["decisions"][0]["kind"], "question")
-        box = []
-        self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
-        self.assertTrue(wait_until(lambda: box, timeout=5))
-        self.assertTrue(json.loads(box[0])["ok"], box)
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=5), self.events(card))
-        self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")))
+        with self.running_ticket(card) as working:
+            box = []
+            self.flow.edit_plan(card, json.dumps({"action": "return", "feedback": "ATRAPA: amend-question"}), box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=10))
+            self.assertTrue(wait_until(lambda: self.shown(card)["derived"]["flow"]["decisions"][:1] and self.shown(card)["derived"]["flow"]["decisions"][0]["kind"] == "question", timeout=5), self.events(card))
+            self.restart()
+            self.assertEqual(self.shown(card)["derived"]["flow"]["decisions"][0]["kind"], "question")
+            box = []
+            self.flow.resolve_step(card, json.dumps({"choice": "answer", "answer": "Pierwszy"}), box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=5))
+            self.assertTrue(json.loads(box[0])["ok"], box)
+            self.assertTrue(wait_until(lambda: self.of(card, "plan.revision-ready"), timeout=5), self.events(card))
+            self.assertFalse(any(e["step"] == working["step"] for e in self.of(card, "step.finished")))
 
     def test_restart_after_checked_recovers_failed_revision_and_panel_decision(self):
         from unittest import mock

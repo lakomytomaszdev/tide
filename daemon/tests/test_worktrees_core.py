@@ -1,8 +1,8 @@
 """Rdzeń worktrees na prawdziwych, tymczasowych repozytoriach (gitrepos.py).
 
 Sprawdzamy to, co widać przez List() i Remove(): stany, flagi, powody pominięcia, a przy
-sprzątaniu — co naprawdę zniknęło z dysku i z gałęzi. Git jest owinięty skryptem, który
-zapisuje każde wywołanie, żeby potwierdzić brak --force, -D i operacji sieciowych.
+sprzątaniu — co naprawdę zniknęło z dysku i z gałęzi. Logujemy wejście fasady Git,
+żeby potwierdzić brak --force, -D i operacji sieciowych; właściwy proces pozostaje chroniony.
 """
 import json
 import os
@@ -36,11 +36,14 @@ class WorktreeTestCase(unittest.TestCase):
         self.root = os.path.join(self.tmp, "work")
         self.p = gitrepos.build(self.root)
         self.log = os.path.join(self.tmp, "git.log")
-        wrapper = os.path.join(self.tmp, "git-logged")
-        with open(wrapper, "w", encoding="utf-8") as fh:
-            fh.write(LOGGING_GIT.format(log=self.log))
-        os.chmod(wrapper, os.stat(wrapper).st_mode | stat.S_IXUSR)
-        self.scanner = WorktreeScanner(self.root, git=Git(wrapper))
+        log = self.log
+        class LoggedGit(Git):
+            def run(self, cwd, *args, **kwargs):
+                from tide_daemon.gitcommand import HOST_OPTIONS
+                with open(log, "a", encoding="utf-8") as fh:
+                    fh.write(" ".join((*HOST_OPTIONS, "-C", cwd, *args)) + "\n")
+                return super().run(cwd, *args, **kwargs)
+        self.scanner = WorktreeScanner(self.root, git=LoggedGit())
         self.agent = [os.path.join(self.p["agent"], "src")]
 
     def listed(self, cwds=None):

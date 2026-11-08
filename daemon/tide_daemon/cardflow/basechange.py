@@ -71,14 +71,11 @@ def local_snapshot(git, repo, path):
                           for name in sorted(names)})
         return stamp
 
-    snapshot = checkout_snapshot(git.run, path, stamp=metadata_stamp, untracked_files="normal")
+    snapshot = checkout_snapshot(git.run, path, stamp=metadata_stamp, untracked_files="normal", include_ignored=True)
     if not snapshot.get("exists"):
         raise OSError("brak worktree")
     # Git zwija całe ignorowane katalogi. Nigdy nie wyliczamy ani nie hashujemy ich wnętrza.
-    ignored = git.run(path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
-    if not ignored.ok:
-        raise OSError("nie można odczytać ignorowanych ścieżek")
-    paths = sorted(set(ignored.out.split("\0")) - {""})
+    paths = sorted(set(snapshot["ignored"].split("\0")) - {""})
     if len(paths) > remaining:
         raise OSError("przekroczono limit odczytu metadanych lokalnych danych")
     root = os.path.realpath(path)
@@ -89,8 +86,7 @@ def local_snapshot(git, repo, path):
             raise OSError("plik poza worktree")
         return metadata_stamp(full, recursive=False)
 
-    snapshot.update(ignoredMetadata={rel: ignored_stamp(rel) for rel in paths}, ignored=paths,
-                    repository=git.repository_key(path))
+    snapshot.update(ignoredMetadata={rel: ignored_stamp(rel) for rel in paths}, ignored=paths)
     if snapshot["repository"] != git.repository_key(repo):
         raise OSError("worktree należy do innego repozytorium")
     return snapshot

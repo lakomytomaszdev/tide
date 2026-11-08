@@ -478,6 +478,11 @@ class Builder:
     @bs.serialized
     def reset(self, slug: str, card: str | None = None) -> float:
         name = bs.card_box_name(slug, card) if card else bs.box_name(slug)
+        if not card:
+            # Reset projektu nie może unieważnić danych żywej kopii karty.
+            for inst in self.incus.list():
+                if (inst.get("config") or {}).get(bs.COPY_OF_KEY) == name:
+                    self.require_idle(slug, inst["name"])
         self.require_idle(slug, name)
         instance = self.incus.instance(name)
         if instance is None:

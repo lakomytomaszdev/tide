@@ -132,6 +132,43 @@ niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udaneg
 
 ## Wyjątki od testów
 
+### Budżety oczekiwania przy granicy hostowego Git
+
+Granica hostowego Git (PT-264) działa tylko dla danych pudełka: przy `box.enabled`,
+dla repozytorium oznaczonego `tide-boundary` i w modułach ścieżki pudełkowej. Testy
+z wyłączonym pudełkiem uruchamiają więc Git jak przed PT-264 i mają pierwotne budżety
+oczekiwania: 30 s dla callbacku korekty bazy (15 s dla `BaseChangeInProcessTest.call`),
+10 s dla callbacku scalenia i 40/30/25 s dla zakończenia planu fal. Wcześniejsze
+podniesienie do 120/60/120 s kompensowało narzut granicy przy każdym wywołaniu
+(pomiar właściciela 08.11: suma czasów modułów ~4× bazy) i zostało cofnięte razem
+z warunkową granicą (`docs/agents/pt-264/decisions.md`, „Granica Gita warunkowa”).
+Scenariusze granicy sprawdzają moduły z włączonym pudełkiem (`boundary_on`
+w `daemon/tests/test_host_git_invocation.py`); nie mierzą czasu odpowiedzi.
+Krótkie okna sprawdzania współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
+pierwszą atrapę dopiero po potwierdzeniu obecności raportu w kolejce, zamiast polegać
+na dwusekundowym opóźnieniu atrapy.
+
+Test równoległego StartCard i odczytu CLI używa bariery `release-hosting`: rzeczywisty
+proces atrapy CLI musi nadal czekać, gdy nadejdzie poprawna odpowiedź StartCard.
+Budżet odpowiedzi wynosi 60 s, a atrapa i jej deadline 120 s; zwolnienie w `finally`
+kończy CLI kontrolowanym błędem i pozwala sprawdzić ostrzeżenie. To sprawdzenie
+niezależności operacji zastępuje dawny wyścig odpowiedzi z 2-sekundowym oknem przy
+4-sekundowym timeout CLI. Pomiar wykazał 5,66 s lokalnego startu z chronionym Git;
+stos pokazywał pracę rezerwacji, podczas gdy osobny wątek nadal czekał na CLI.
+Test nie potwierdza już dawnego progu 2 s. Testy timeoutu hostingcli pozostają osobne.
+
+Dwie próby edycji pracującego ticketu używają tej samej bariery `release-agent`,
+aby naturalny koniec ośmiosekundowej atrapy nie zastąpił sprawdzanego zatrzymania.
+Po zwolnieniu oczekiwanie końca planu ma pierwotny budżet 25 s. Test poświadczeń kolejnych programów czeka na domknięcie poprzedniej
+karty: koniec jej ticketu nie zwalnia jeszcze blokady jednego repozytorium.
+
+Zmiana budżetu wymaga zmierzonego uzasadnienia i review tak jak kod testu. Nie zastępuje
+naprawy błędnego wyniku, nie wyłącza granic ani kontroli puli/izolacji i nie jest
+odstępstwem od wcześniejszych nieudanych przebiegów. Po zmianie obowiązuje nowy
+`make test-changed`; wcześniejsze porażki pozostają w notkach.
+
+### Rozliczenie nieudanych przebiegów
+
 Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
 pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
 Odstępstwo w notce ticketu, a przy domknięciu również w podsumowaniu karty, zawiera:

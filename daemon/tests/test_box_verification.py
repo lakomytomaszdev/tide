@@ -1,6 +1,7 @@
 """PT-186: verify rzeczywistej rewizji, publiczny restore i usunięcie źródeł przed clean."""
 from contextlib import contextmanager
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -164,10 +165,12 @@ class SourceTest(unittest.TestCase):
             run.side_effect = [mock.Mock(stdout="c" * 40 + "\n"), mock.Mock()]
             self.assertEqual(v.archive_head("/repo", self.folder / "source.tar"), "c" * 40)
         first, second = run.call_args_list
-        self.assertIn("HEAD^{commit}", first.args[0])
-        self.assertEqual(second.args[0][-1], "c" * 40)
-        self.assertIn("archive", second.args[0])
-        self.assertIn("core.hooksPath=/dev/null", second.args[0])
+        first_args = json.loads(first.args[0][-1])["args"]
+        second_args = json.loads(second.args[0][-1])["args"]
+        self.assertIn("HEAD^{commit}", first_args)
+        self.assertEqual(second_args[-1], "c" * 40)
+        self.assertIn("archive", second_args)
+        self.assertIn("core.hooksPath=/dev/null", second_args)
 
 
 class BuildVerifyTest(unittest.TestCase):

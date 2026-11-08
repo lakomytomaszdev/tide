@@ -998,8 +998,21 @@ class StopStepTest(unittest.TestCase):
         self.assertIn("commondir", " ".join(result.notes))
 
     def test_the_service_git_sandbox_hides_the_user_runtime_dir_and_its_sockets(self):
-        # Sonda: filtr w `config.worktree` (konfiguracja agenta, tor ataku) wykonuje się w piaskownicy gita usługi i zapisuje
-        # w worktree, co widzi. Skrypt leży w worktree: /tmp i /run są w piaskownicy puste, a worktree jest do niej podpięty.
+        # Wyłączone pudełko (jak przed PT-264): sonda — filtr w `config.worktree` — wykonuje się w piaskownicy gita
+        # usługi i zapisuje w worktree, co widzi; /tmp i /run są w piaskownicy puste.
+        out = self.run_probe()
+        with open(out, encoding="utf-8") as fh:
+            seen = fh.read().split()
+        self.assertEqual(seen[:1], ["ran"], "sonda nie wykonała się w piaskownicy")
+        self.assertNotIn("VISIBLE", seen, "piaskownica gita usługi widzi /run/user/$UID: " + " ".join(seen))
+
+    def test_host_git_boundary_does_not_run_worktree_filters(self):
+        # Granica (pudełko włączone): filtr w config.worktree nie wykonuje się wcale.
+        from .test_host_git_invocation import boundary_on
+        boundary_on(self)
+        self.assertFalse(os.path.exists(self.run_probe()), "hostowy Git wykonał filtr z konfiguracji projektu")
+
+    def run_probe(self):
         uid = os.getuid()
         # Bez tego katalogu sonda przeszłaby także bez `--tmpfs /run`, więc brak hosta ma kończyć test czerwono.
         self.assertTrue(os.path.isdir(f"/run/user/{uid}"), f"host nie ma /run/user/{uid}, sonda nic by nie dowiodła")
@@ -1022,10 +1035,7 @@ class StopStepTest(unittest.TestCase):
             fh.write("x\n")
         result = self.stop(proc, cmd)
         self.assertTrue(result.committed, result.error)
-        with open(out, encoding="utf-8") as fh:
-            seen = fh.read().split()
-        self.assertEqual(seen[:1], ["ran"], "sonda nie wykonała się w piaskownicy")
-        self.assertNotIn("VISIBLE", seen, "piaskownica gita usługi widzi /run/user/$UID: " + " ".join(seen))
+        return out
 
     def test_repository_hooks_other_than_pre_commit_do_not_run(self):
         proc, cmd, _, _ = self.start()

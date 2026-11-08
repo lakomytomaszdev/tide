@@ -17,6 +17,11 @@ class HomeError(RuntimeError):
 def path(slug, card=""):
     from .runner import host_home_dir
     root = host_home_dir(slug)
+    from . import exposure
+    if slug == exposure.PROJECT:
+        record = exposure.current(slug)
+        if record and record["manifest"].get("mountContract") == 2:
+            return os.path.abspath(root)  # Jawny wspólny home manifestu, również dla kopii karty.
     if card:
         bs.card_box_name(slug, card)  # walidacja identyfikatora
         root = os.path.join(os.path.dirname(root), "cards", str(card).strip().lower(), "home")
