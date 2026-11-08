@@ -117,9 +117,14 @@ def bwrap_probe() -> dict:
 
 
 def others_restricted(restrict: int | None) -> bool | None:
-    """Czy zwykły program zakładający przestrzeń użytkownika nadal trafia do unprivileged_userns."""
+    """Czy zwykły program zakładający przestrzeń użytkownika nadal trafia do unprivileged_userns.
+
+    None także wtedy, gdy jądro w ogóle nie ma ograniczenia AppArmor (np. Fedora z SELinuksem): reguła
+    „reszta systemu zostaje pod ograniczeniem” dotyczy tylko systemów, które je mają (Ubuntu, KDE neon)."""
     if restrict == 0:
         return False
+    if restrict is None:
+        return None
     program = os.environ.get("TIDE_SANDBOX_UNSHARE") or "unshare"
     works, out = probe([program, "-U", "--", "cat", "/proc/self/attr/current"])
     if works:
@@ -158,7 +163,9 @@ def report(state: dict) -> str:
                      + ("działa" if bwrap["nested"] else f"nie działa — {bwrap['nested_error']}"))
     lines.append({True: "Reszta systemu: nadal pod ograniczeniem (unshare -U → unprivileged_userns)",
                   False: "Reszta systemu: BEZ ograniczenia",
-                  None: "Reszta systemu: nie udało się sprawdzić"}[state["others_restricted"]])
+                  None: "Reszta systemu: nie udało się sprawdzić" if restrict is not None else
+                  "Reszta systemu: nie dotyczy — jądro bez ograniczenia AppArmor (np. Fedora), profil niepotrzebny"}[
+                     state["others_restricted"]])
     for path in state["conflicts"]:
         lines.append(f"Inny profil dla /usr/bin/bwrap: {path}")
     if state["ok"]:
@@ -171,6 +178,13 @@ def report(state: dict) -> str:
     elif state["profile"] == "tide" and bwrap["works"]:
         lines.append("Profil Tide jest starszy albo nie pozwala dzieciom bwrap na zagnieżdżoną przestrzeń — "
                      "podmiana: sudo bash scripts/sandbox/install.sh")
+    elif state["profile"] == "obcy" and bwrap["works"] and not bwrap["nested"]:
+        # Ubuntu 25.04 i nowsze (także Kubuntu 26.04) dostarczają ten plik w pakiecie apparmor: dzieci bwrap
+        # w unpriv_bwrap bez uprawnień — jak pierwsza wersja profilu Tide, pod którą Claude Code nie działa.
+        lines.append("Profil z pakietu systemu blokuje zagnieżdżoną przestrzeń, której potrzebuje piaskownica "
+                     "Claude Code. Zamiana na profil Tide (kopia oryginału zostaje): "
+                     "sudo mv /" + TARGET + " /root/bwrap-userns-restrict.dist && "
+                     "sudo bash scripts/sandbox/install.sh — opis: docs/install-new-machine.md")
     elif state["profile"] == "tide":
         lines.append("Profil Tide jest na dysku, ale bwrap nie działa — czy jest wczytany? "
                      "sudo apparmor_parser -r /" + TARGET + "; dziennik: journalctl -k -g apparmor")

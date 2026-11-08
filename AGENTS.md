@@ -10,6 +10,7 @@ Własny motyw KDE Plasma 6 (KDE neon, Wayland, dwa monitory) z widżetami do pra
 - Kolory, promienie i czcionki pochodzą z palety w `theme/palette/`. Generatory czytają paletę, wartości nie są wpisywane na sztywno.
 - Pakiety apt instalujemy tylko po symulacji (`apt-get -s install`), która nie może podnosić Qt ani KDE Frameworks.
 - Ekran blokady i SDDM testujemy w trybach testowych (`kscreenlocker_greet --testing`, `sddm-greeter-qt6 --test-mode`), zanim trafią do systemu.
+- Instalacja Tide na nowej maszynie i pomoc w niej (także dla agenta AI): `docs/install-new-machine.md`, sekcja „Dla agenta AI pomagającego w instalacji”.
 
 ## Testy podczas pracy
 

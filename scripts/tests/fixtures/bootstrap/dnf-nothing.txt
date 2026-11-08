@@ -1,0 +1,6 @@
+Updating and loading repositories:
+Repositories loaded.
+Package "git-2.56.0-1.fc44.x86_64" is already installed.
+Package "make-1:4.4.1-12.fc44.x86_64" is already installed.
+
+Nothing to do.
