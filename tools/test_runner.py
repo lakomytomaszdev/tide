@@ -415,6 +415,9 @@ def main(root=ROOT):
     parent = args.output or root / "build" / "test-results"
     parent.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    # Lista modułów przed startem: przebieg ucięty limitem (bez summary.json) nadal mówi, które moduły się nie
+    # zaczęły, więc Tide ponawia tylko padnięte i niezaczęte (08.11, K-38/PT-264).
+    (output / "modules.json").write_text(json.dumps({"modules": modules}, ensure_ascii=False), encoding="utf-8")
     print(f"Moduły: {len(modules)}, JOBS={args.jobs}, logi: {output}", flush=True)
     started = time.monotonic()
     results = execute(modules, args.jobs, output, root)

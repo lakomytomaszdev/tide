@@ -341,6 +341,23 @@ class ModulesOptionTest(unittest.TestCase):
         self.assertIn(code, (0, None))
         self.assertEqual(out.split(), chosen)
 
+    def test_run_directory_lists_its_modules_before_any_module_runs(self):
+        """08.11, K-38/PT-264: przebieg ucięty limitem nie zostawiał listy modułów, więc Tide nie mogło ponowić
+        tylko padniętych i niezaczętych — każde ucięcie kończyło się kolejnym pełnym przebiegiem."""
+        known = runner.modules_for([(d, "test*.py") for d in sorted({d for p in SUITES.values() for d, _ in p})])
+        chosen = sorted(known)[:2]
+        seen = {}
+
+        def execute(modules, jobs, output, root=runner.ROOT, slots=None):
+            seen["plan"] = json.loads((output / "modules.json").read_text(encoding="utf-8"))
+            return [dict(module=m, returncode=0, tests=1, seconds=0, skipped=0, failures=[], errors=[],
+                         unexpected_successes=[]) for m in modules]
+
+        with tempfile.TemporaryDirectory() as out, patch.object(runner, "execute", side_effect=execute):
+            code, _ = self.run_main("--modules", *chosen, "--output", out)
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["plan"], {"modules": chosen})
+
     def test_unknown_module_and_mixed_selection_are_rejected(self):
         self.assertEqual(self.run_main("--modules", "daemon/tests/test_nie_ma.py", "--list")[0], 2)
         self.assertEqual(self.run_main("--modules", "x.py", "--changed")[0], 2)

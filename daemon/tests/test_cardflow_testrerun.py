@@ -157,6 +157,95 @@ class SubstituteTest(unittest.TestCase):
     def run_dir(self):
         return os.path.join(self.repo, "build", "test-results", "run-x")
 
+    # 08.11, K-38/PT-264: 8 pełnych `make test-changed … TEST_OUTPUT=<katalog kroku>` uciętych po godzinie —
+    # ponowienie nie włączyło się ani razu: TEST_OUTPUT wyłączał rozpoznanie, każdy krok miał inny katalog,
+    # a ucięty przebieg nie ma summary.json.
+    def test_test_output_is_a_full_run_and_differs_between_steps(self):
+        self.assertTrue(testrerun.is_full_test("make test-changed BASE=abc JOBS=8 TEST_OUTPUT=/s/K-1-44/out"))
+        events = self.failed_run()
+        events[0]["command"] = "make test-changed BASE=abc JOBS=8 TEST_OUTPUT=/s/K-1-44/out"
+        command, _, rerun_of = testrerun.substitute(
+            events, self.repo, "make test-changed BASE=abc JOBS=8 TEST_OUTPUT=/s/K-1-45/out")
+        self.assertEqual(rerun_of, "K-1-PT-1-3")
+        self.assertIn("tools/test_runner.py --jobs 8 --output /s/K-1-45/out --modules pkg/tests/test_bad.py",
+                      command)
+        # Inna baza albo inny zakres nadal idą w całości, także z TEST_OUTPUT.
+        for other in ("make test-changed BASE=def JOBS=8 TEST_OUTPUT=/s/K-1-45/out",
+                      "make test JOBS=8 TEST_OUTPUT=/s/K-1-45/out"):
+            self.assertEqual(testrerun.substitute(events, self.repo, other)[0], other, other)
+
+    def interrupted_run(self, plan=True, started=("good", "bad", "slow"), finished=("good", "bad"),
+                        exit_code="przekroczony czas", count=3):
+        if not os.path.exists(os.path.join(self.repo, "pkg/tests/test_slow.py")):
+            self.write("pkg/tests/test_slow.py", "import unittest\nclass T(unittest.TestCase):\n"
+                                                  "    def test_ok(self):\n        pass\n")
+            subprocess.run(self.git + ["add", "-A"], check=True)
+            subprocess.run(self.git + ["commit", "-qm", "slow"], check=True)
+        run = self.run_dir()
+        import shutil
+        shutil.rmtree(run, ignore_errors=True)
+        os.makedirs(run, exist_ok=True)
+        modules = [f"pkg/tests/test_{name}.py" for name in ("bad", "good", "slow")]
+        if plan:
+            with open(os.path.join(run, "modules.json"), "w", encoding="utf-8") as fh:
+                json.dump({"modules": modules}, fh)
+        for name in started:
+            stem = f"pkg__tests__test_{name}"
+            open(os.path.join(run, stem + ".log"), "w").close()
+            if name in finished:
+                report = {"tests": 1, "ids": [], "skipped": 0, "failures": [], "errors": [],
+                          "unexpected_successes": []}
+                if name == "bad":
+                    report["failures"] = [f"pkg.tests.test_{name}.T.test_ok"]
+                with open(os.path.join(run, stem + ".json"), "w", encoding="utf-8") as fh:
+                    json.dump(report, fh)
+        log = os.path.join(self.root, "cut.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(f"Moduły: {count}, JOBS=2, logi: {run}\n[OK] pkg/tests/test_good.py: 1 testów, 1.00 s\n")
+        sha = testrerun.head(self.repo)
+        return [{"type": "outside.started", "step": "K-1-PT-1-5", "command": "make test-changed BASE=abc",
+                 "worktree": self.repo, "head": sha, "log": log},
+                {"type": "outside.finished", "step": "K-1-PT-1-5", "exit": exit_code}]
+
+    def test_interrupted_run_reruns_failed_and_unfinished_modules_only(self):
+        for exit_code in ("przekroczony czas", 143):
+            command, _, rerun_of = testrerun.substitute(self.interrupted_run(exit_code=exit_code), self.repo,
+                                                        "make test-changed BASE=abc")
+            self.assertEqual(rerun_of, "K-1-PT-1-5", exit_code)
+            self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command)
+            self.assertNotIn("test_good.py", command)
+
+    def test_interrupted_run_without_plan_uses_started_modules_when_all_are_accounted(self):
+        events = self.interrupted_run(plan=False)
+        command = testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0]
+        self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command)
+
+    def test_interrupted_run_with_unknown_unstarted_modules_runs_in_full(self):
+        """Bez listy modułów nie wiadomo, które się nie zaczęły — nie wolno ich pominąć."""
+        events = self.interrupted_run(plan=False, started=("good", "bad"), count=3)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc")
+        events = self.interrupted_run(plan=True, started=("good", "bad"), count=3)
+        command = testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0]
+        self.assertIn("--modules pkg/tests/test_bad.py pkg/tests/test_slow.py", command, "plan zna niezaczęty")
+
+    def test_failed_run_with_exit_code_still_requires_complete_summary(self):
+        """Zwykła porażka (kod wyjścia) bez summary.json nie jest ucięciem — pełny przebieg jak dotąd."""
+        events = self.interrupted_run(exit_code=2)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc")
+
+    def test_interrupted_run_rejects_plan_outside_the_worktree_or_mismatched(self):
+        events = self.interrupted_run()
+        with open(os.path.join(self.run_dir(), "modules.json"), "w", encoding="utf-8") as fh:
+            json.dump({"modules": ["../x.py", "pkg/tests/test_good.py", "pkg/tests/test_bad.py"]}, fh)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc")
+        with open(os.path.join(self.run_dir(), "modules.json"), "w", encoding="utf-8") as fh:
+            json.dump({"modules": ["pkg/tests/test_good.py"]}, fh)
+        self.assertEqual(testrerun.substitute(events, self.repo, "make test-changed BASE=abc")[0],
+                         "make test-changed BASE=abc", "plan niezgodny z nagłówkiem")
+
     def test_full_test_recognition(self):
         for command in ("make test", "make test-changed BASE=abc", "JOBS=2 make test-changed BASE=abc JOBS=4"):
             self.assertTrue(testrerun.is_full_test(command), command)
