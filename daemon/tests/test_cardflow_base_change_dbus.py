@@ -129,5 +129,7 @@ class BaseChangeInProcessTest(BaseChangeScenario, FlowInProcess):
                    "ResolveCardStep": self.board.resolve_card_step}
         replies = []
         methods[member](*args, replies.append)
-        self.assertTrue(wait_until(lambda: replies, timeout=15), member)
+        # Potwierdzenie korekty wykonuje chronione operacje Git; obowiązuje budżet z docs/testing.md.
+        changes_base = member == "ResolveCardStep" and json.loads(args[-1]).get("choice") == "change-base"
+        self.assertTrue(wait_until(lambda: replies, timeout=120 if changes_base else 15), member)
         return json.loads(replies[0])

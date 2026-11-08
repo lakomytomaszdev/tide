@@ -135,6 +135,10 @@ gotowości nie wykonał dalszych asercji tych przerwanych scenariuszy. Szczegó�
 
 Te trzy rodzaje testów funkcjonalnych mają jawne, nadal ograniczone budżety: 120 s dla
 callbacku korekty bazy, 60 s dla callbacku scalenia i 120 s dla zakończenia planu fal.
+Budżet korekty obejmuje także `BaseChangeInProcessTest.call` dla `ResolveCardStep`
+z `choice: change-base`. Pomiar tego scenariusza na `fc41f42b` wykazał odpowiedź po
+19,30 s przy limicie 15 s (obciążenie 1-minutowe 8,33); kod usługi i tego modułu
+pozostał identyczny na `d8c73621`. Oczekiwania zwykłych podglądów i żądań pozostają 15 s.
 To czas na otrzymanie wyniku, nie obietnica czasu odpowiedzi produktu. Asercje wyniku,
 zachowania plików, zdarzeń i kolejności nadal muszą przejść. Krótkie okna sprawdzania
 współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
