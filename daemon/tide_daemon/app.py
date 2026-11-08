@@ -233,6 +233,9 @@ def main(argv=None) -> int:
 
     app = QCoreApplication(sys.argv[:1])
     app.setApplicationName("tide-daemon")
+    # Próbnik stosów na żądanie (plik $XDG_RUNTIME_DIR/tide-daemon-profile) — diagnoza zużycia CPU bez ptrace.
+    from . import sampler
+    sampler.start()
     monitor = AgentMonitor(scanner, use_processes=not args.no_processes, clock=clock)
     monitor.start()
     # Osobny, mały indeks sesji dla worktrees (KRunner ma własny, pełniejszy — krunner/index.py).
