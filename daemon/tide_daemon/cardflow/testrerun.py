@@ -16,7 +16,14 @@ import subprocess
 VALUE = r"[A-Za-z0-9_./:@+-]+"
 # Po `make` tylko parametry doboru, które ponowienie odtwarza (BASE, JOBS); inne zmienne Make (np. LC_ALL=C)
 # zmieniałyby recepturę, więc taki przebieg idzie w całości (review Astry 06.11, runda 2).
-FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS)={VALUE})*$")
+# TEST_OUTPUT wskazuje tylko katalog raportu (08.11, K-38/PT-264: agenci dopisują katalog kroku), więc nie zmienia
+# receptury; przy porównaniu przebiegów jest pomijany, a ponowienie pisze raport tam, gdzie wskazuje bieżące polecenie.
+FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS|TEST_OUTPUT)={VALUE})*$")
+OUTPUT_TOKEN = re.compile(rf"(?:^| )TEST_OUTPUT={VALUE}(?= |$)")
+# Ucięcie przez Tide (limit czasu, zatrzymanie jednostki): wtedy raport końcowy nie powstaje. Opis wyniku zamiast
+# kodu wpisuje silnik wyłącznie przy limicie czasu (engine.py, OUTSIDE_TIMEOUT); inne opisy nie są ucięciem.
+INTERRUPTED = {130, 137, 143}
+INTERRUPTED_TEXT = {"przekroczony czas"}
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
 JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?= |$)")
 OUTPUT = re.compile(rf"(?:^| )TEST_OUTPUT=({VALUE})(?= |$)")
@@ -57,15 +64,73 @@ def head(worktree: str) -> str:
     return sha.strip() if status == "" and sha else ""
 
 
-def failed_modules(log: str) -> list[str]:
+def scope(command: str) -> str:
+    """Polecenie bez TEST_OUTPUT — dwa przebiegi o tym samym zakresie różnią się tylko katalogiem raportu."""
+    return " ".join(OUTPUT_TOKEN.sub(" ", (command or "").strip()).split())
+
+
+def interrupted(exit_code) -> bool:
+    """Wynik ucięty przez Tide: opis zamiast kodu (\"przekroczony czas\") albo kod sygnału zatrzymania."""
+    if isinstance(exit_code, bool):
+        return False
+    if isinstance(exit_code, str):
+        text = exit_code.strip()
+        if not text.lstrip("-").isdigit():
+            return text in INTERRUPTED_TEXT
+        exit_code = int(text)
+    return isinstance(exit_code, int) and exit_code in INTERRUPTED
+
+
+def _stem(module: str) -> str:
+    return module.replace("/", "__").removesuffix(".py")
+
+
+def unfinished_modules(directory: str, count: int, root: str) -> list[str]:
+    """Przebieg ucięty bez summary.json: moduły padnięte albo bez wyniku. Lista modułów z `modules.json` uruchamiacza
+    (niezaczętego modułu nie wolno pominąć), zaliczony tylko moduł z raportem z kodem wyjścia procesu 0. Starszy
+    uruchamiacz nie zapisuje ani listy, ani kodu wyjścia w raporcie modułu — wtedy pełny przebieg. Pusta lista =
+    nie podmieniaj."""
+    try:
+        with open(os.path.join(directory, "modules.json"), encoding="utf-8") as fh:
+            planned = json.load(fh)["modules"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(planned, list) or len(planned) != count or len(set(planned)) != count or not all(
+            isinstance(m, str) and MODULE.match(m) and ".." not in m and os.path.isfile(os.path.join(root, m))
+            for m in planned):
+        return []
+    rerun = []
+    for module in planned:
+        try:
+            with open(os.path.join(directory, _stem(module) + ".json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+            code = report.get("returncode") if isinstance(report, dict) else None
+            ok = type(code) is int and code == 0 and all(
+                isinstance(report.get(k), list) and not report[k]
+                for k in ("failures", "errors", "unexpected_successes"))
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            rerun.append(module)
+    return rerun
+
+
+def failed_modules(log: str, cut: bool = False, root: str = "") -> list[str]:
     """Moduły z returncode różnym od 0 w raporcie przebiegu wskazanym nagłówkiem dziennika polecenia. Pusta lista
-    (brak nagłówka lub raportu, raport niekompletny albo o innym schemacie, brak porażek) = nie podmieniaj."""
+    (brak nagłówka lub raportu, raport niekompletny albo o innym schemacie, brak porażek) = nie podmieniaj.
+    Przebieg ucięty przez Tide (`cut`) bez raportu: moduły padnięte i bez wyniku (`unfinished_modules`)."""
     try:
         with open(log, encoding="utf-8", errors="replace") as fh:
             header = HEADER.search(fh.read())
-        with open(os.path.join(header.group(2), "summary.json"), encoding="utf-8") as fh:
+        directory = header.group(2)
+    except (OSError, AttributeError):
+        return []
+    try:
+        with open(os.path.join(directory, "summary.json"), encoding="utf-8") as fh:
             results = json.load(fh)["results"]
-    except (OSError, AttributeError, ValueError, KeyError, TypeError):
+    except FileNotFoundError:
+        return unfinished_modules(directory, int(header.group(1)), root) if cut and root else []
+    except (OSError, ValueError, KeyError, TypeError):
         return []
     if not isinstance(results, list) or len(results) != int(header.group(1)) or not all(
             isinstance(r, dict) and isinstance(r.get("module"), str) and isinstance(r.get("returncode"), int)
@@ -108,9 +173,9 @@ def substitute(events: list[dict], worktree: str, command: str) -> tuple[str, st
         done = finished.get(event.get("step"))
         # Ten sam cel, baza i parametry doboru: inny zakres (np. `make test` po `test-changed`) to pełny przebieg.
         if event.get("head") != sha or not done or not done.get("exit") or \
-                (event.get("command") or "").strip() != command.strip():
+                scope(event.get("command") or "") != scope(command):
             return command, sha, ""
-        modules = failed_modules(event.get("log") or "")
+        modules = failed_modules(event.get("log") or "", cut=interrupted(done.get("exit")), root=worktree)
         if not modules:
             return command, sha, ""
         return rerun_command(modules, sha, event.get("step") or "", command), sha, event.get("step") or ""
