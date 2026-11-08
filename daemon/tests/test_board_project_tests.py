@@ -1,4 +1,5 @@
 """Kontrakt testów w profilu projektu (K-69, PT-278): zapis i odczyt `tests` przez BoardStore."""
+import json
 import os
 import unittest
 
@@ -36,6 +37,26 @@ class ProjectTestsCase(BoardCase):
 
 
 class SaveAndReadTest(ProjectTestsCase):
+    def test_double_quoted_backslashes_preserve_omitted_field_with_comment(self):
+        self.store.upsert_project({"slug": "app", "name": "App"})
+        for count in range(1, 5):
+            for suffix in ("", '" # wewnątrz napisu'):
+                command = "pytest path" + "\\" * count + suffix
+                with self.subTest(count=count, suffix=suffix):
+                    scalar = json.dumps(command)
+                    self.write("projects/app/box.yaml",
+                               f"tide-box: 1\ntests:\n  full: {scalar}  # komentarz poza napisem\n")
+                    snapshot = self.store.snapshot()
+                    project = next(p for p in snapshot["projects"] if p["slug"] == "app")
+                    self.assertEqual((project["tests"], project["testsError"]),
+                                     ({"changed": "", "full": command}, ""))
+                    self.assertFalse(any(e["path"].endswith("projects/app/box.yaml")
+                                         for e in snapshot["errors"]))
+                    self.store.upsert_project({"slug": "app", "tests": {"changed": CONTRACT["changed"]}})
+                    project = self.project()
+                    self.assertEqual((project["tests"], project["testsError"]),
+                                     ({"changed": CONTRACT["changed"], "full": command}, ""))
+
     def test_single_quoted_apostrophe_and_hash_are_preserved(self):
         self.store.upsert_project({"slug": "app", "name": "App"})
         for command in ("it's # ok", 'pytest -k "it\'s # case"', "it's '' # ok", "pytest path\\"):

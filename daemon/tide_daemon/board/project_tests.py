@@ -115,6 +115,7 @@ def _blocks(lines: list) -> list:
 
 def _strip_comment(text: str) -> str:
     out, quote, prev = [], "", " "
+    escaped = False
     i = 0
     while i < len(text):
         ch = text[i]
@@ -126,8 +127,10 @@ def _strip_comment(text: str) -> str:
                 i += 2
                 prev = ch
                 continue
-            if ch == quote and (quote == "'" or prev != "\\"):
+            if ch == quote and (quote == "'" or not escaped):
                 quote = ""
+            # W napisie podwójnie cytowanym każda para ukośników znosi ucieczkę.
+            escaped = quote == '"' and ch == "\\" and not escaped
         elif ch in "\"'" and prev in " \t":
             quote = ch
             out.append(ch)
