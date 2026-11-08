@@ -84,6 +84,26 @@ class TrialsTest(unittest.TestCase):
         with mock.patch.object(trials.os.path, "isfile", lambda p: False):
             self.assertEqual(trials.binary("codex", "", which=lambda n: snap), snap)
 
+    def test_codex_retries_with_the_broken_mcp_server_skipped_like_the_service(self):
+        from unittest import mock
+        broken = "Error loading config.toml: invalid transport\nin `mcp_servers.codex_app`\n"
+        seen = []
+
+        def once(tool, exe, model, repo, wt, cfg, timeout, skip, attempt):
+            seen.append(tuple(skip))
+            return {"unit": f"u{attempt}", "exitCode": 1, "logTail": broken} if "codex_app" not in skip else \
+                {"unit": f"u{attempt}", "exitCode": 0, "probe": {"results": []}}
+
+        with mock.patch.object(trials, "_run_step_once", once):
+            entry = trials.run_step("codex", "/c", "", None, None, None, {}, 1, skip=("x",))
+        self.assertEqual(seen, [("x",), ("x", "codex_app")])
+        self.assertEqual((entry["unit"], entry["codexMcpSkip"]), ("u1", ["x", "codex_app"]))
+        self.assertEqual(entry["earlierAttempts"][0]["unit"], "u0")
+        seen.clear()
+        with mock.patch.object(trials, "_run_step_once", once):
+            trials.run_step("claude", "/c", "", None, None, None, {}, 1)   # Claude: bez ponowienia
+        self.assertEqual(seen, [()])
+
     def test_refuses_to_run_inside_a_step(self):
         with tempfile.TemporaryDirectory() as out:
             run = subprocess.run(["/usr/bin/python3", str(SANDBOX / "approval_trials.py"), out, "--skip-tests"],

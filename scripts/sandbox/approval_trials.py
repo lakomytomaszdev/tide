@@ -164,9 +164,38 @@ def binary(name: str, given: str, which=shutil.which) -> str:
     return found
 
 
+def flow_mcp_skip() -> tuple:
+    """`codexMcpSkip` z ustawień przepływu kart (`cardflow/engine.settings_path`) — te same pomijane serwery MCP
+    Codexa co w prawdziwych krokach."""
+    try:
+        from tide_daemon.cardflow.engine import settings_path
+        with open(settings_path(), encoding="utf-8") as fh:
+            names = json.load(fh).get("codexMcpSkip") or []
+        return tuple(n for n in names if isinstance(n, str))
+    except (OSError, ValueError, AttributeError, ImportError):
+        return ()
+
+
 def run_step(tool: str, exe: str, model: str, run: Path, code_repo: Path, worktree: Path, cfg: dict,
-             timeout: int) -> dict:
-    step_dir = Path(str(worktree) + f".{tool}.step")
+             timeout: int, skip: tuple = ()) -> dict:
+    """Krok próbny; dla Codexa — jak usługa (`engine` przy CODEX_BROKEN_MCP): serwer MCP, którego wyłączenie
+    przez `-c` psuje konfigurację Codexa, trafia do pomijanych i krok startuje jeszcze raz (najwyżej 3 razy)."""
+    attempts = []
+    for _ in range(3):
+        entry = _run_step_once(tool, exe, model, code_repo, worktree, cfg, timeout, skip, len(attempts))
+        attempts.append(entry)
+        found = agentcmd.CODEX_BROKEN_MCP.search(entry.get("logTail") or "") if tool == "codex" else None
+        if entry.get("probe") or not found or found.group(1) in skip:
+            break
+        skip = (*skip, found.group(1))
+    final = dict(attempts[-1], codexMcpSkip=list(skip))
+    if len(attempts) > 1:
+        final["earlierAttempts"] = [{k: a.get(k) for k in ("unit", "exitCode", "logTail")} for a in attempts[:-1]]
+    return final
+
+
+def _run_step_once(tool, exe, model, code_repo, worktree, cfg, timeout, skip, attempt) -> dict:
+    step_dir = Path(str(worktree) + f".{tool}{'-' + str(attempt) if attempt else ''}.step")
     step_id = f"pt286-{tool}-{uuid.uuid4().hex[:8]}"
     probe = step_dir / "in" / "approval_probe.py"
     config = step_dir / "in" / "trial.json"
@@ -180,7 +209,7 @@ def run_step(tool: str, exe: str, model: str, run: Path, code_repo: Path, worktr
                          step_dir=str(step_dir), step_id=step_id,
                          session_id=str(uuid.uuid4()) if tool == "claude" else "", model=model,
                          permission_mode="acceptEdits" if tool == "claude" else "",
-                         tmp_root=tempfile.gettempdir())
+                         tmp_root=tempfile.gettempdir(), codex_mcp_skip=tuple(skip))
     started = time.time()
     entry = {"tool": tool, "binary": exe, "model": model or "(domyślny)", "unit": "tide-step-" + step_id,
              "stepDir": str(step_dir)}
@@ -277,7 +306,8 @@ def main(argv=None) -> int:
                 report["steps"].append({"tool": tool, "error": f"brak programu {tool}"})
                 ok = False
                 continue
-            entry = run_step(tool, exe, getattr(args, f"{tool}_model"), run, code_repo, worktree, cfg, args.timeout)
+            entry = run_step(tool, exe, getattr(args, f"{tool}_model"), run, code_repo, worktree, cfg, args.timeout,
+                             skip=flow_mcp_skip() if tool == "codex" else ())
             report["steps"].append(entry)
             ok &= attempts_ok((entry.get("probe") or {}).get("results") or [])
         time.sleep(3)   # usługa: ewentualny „sync external changes” po zmianie z zewnątrz
@@ -332,6 +362,11 @@ def markdown(report: dict) -> str:
             lines.append(f"- BŁĄD kroku: {step['error']}")
         probe = step.get("probe")
         lines.append(f"- program: `{step.get('binary', '')}`")
+        if step.get("codexMcpSkip"):
+            lines.append(f"- pomijane serwery MCP Codexa (jak `codexMcpSkip` usługi): `{step['codexMcpSkip']}`")
+        for earlier in step.get("earlierAttempts") or []:
+            lines.append(f"- wcześniejsza próba startu `{earlier.get('unit')}` (kod {earlier.get('exitCode')}): "
+                         f"`{(earlier.get('logTail') or '').strip()[-200:]}`")
         if not probe:
             lines.append(f"- {step.get('probeError', 'brak wyniku prób')}")
             if step.get("logTail"):
