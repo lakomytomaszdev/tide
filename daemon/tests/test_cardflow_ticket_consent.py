@@ -133,6 +133,18 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
         self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1"])
 
+    def test_outside_command_runs_without_qml_disk_cache(self):
+        """08.11: testy qml6 poza piaskownicą zapełniały ~/.cache/QtProject (100 GB) — polecenie outside dostaje
+        QML_DISABLE_DISK_CACHE=1 niezależnie od uruchamiacza testów na gałęzi."""
+        from tide_daemon.cardflow.state import fold
+        card, eng, steps, _ = self.seeded()
+        self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"choice": "run", "step": "s1"}))["ok"])
+        st = fold(eng.journal.read(card))
+        with mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
+            eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(popen.call_args.kwargs["env"].get("QML_DISABLE_DISK_CACHE"), "1")
+
     def test_running_command_finishes_and_separate_manual_once_still_starts(self):
         from tide_daemon.cardflow.state import fold
         card, eng, steps, request = self.seeded()

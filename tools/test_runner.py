@@ -295,7 +295,9 @@ def _run_module(module, output, root=ROOT):
     # Każdy moduł dostaje własny katalog stanu: test bez izolacji nie czyta ani nie nadpisuje stanu działającej
     # usługi użytkownika (05.11: test tablicy zapisał atrapę K-1 do ~/.local/state/tide/board-derived.json).
     state = tempfile.mkdtemp(prefix="tide-test-state-")
-    env = {**state_environment(state), SLOT_HELD: "1"}
+    # Bez pamięci dyskowej QML: qml6 na plikach z ciągle nowych ścieżek tymczasowych zapełniał
+    # ~/.cache/QtProject (08.11: 100 GB, ~10 GB na dobę).
+    env = {**state_environment(state), SLOT_HELD: "1", "QML_DISABLE_DISK_CACHE": "1"}
     with log.open("w", encoding="utf-8") as stream:
         try:
             proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,
