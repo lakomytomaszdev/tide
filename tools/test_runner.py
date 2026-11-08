@@ -316,6 +316,9 @@ def _run_module(module, output, root=ROOT):
         returncode = returncode or 1
     data.update(module=module, returncode=returncode, seconds=time.monotonic() - started,
                 log=str(log))
+    # Raport modułu z kodem wyjścia procesu: worker pisze wynik przed zakończeniem, a moduł może jeszcze paść
+    # (np. przy zwijaniu Qt). Ponowienie po uciętym przebiegu uznaje moduł tylko z returncode 0 (review 08.11).
+    report.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return data
 
 

@@ -358,6 +358,24 @@ class ModulesOptionTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(seen["plan"], {"modules": chosen})
 
+    def test_module_report_records_the_process_exit_code(self):
+        """Review 08.11: raport modułu na dysku ma kod wyjścia procesu, także gdy proces padł po zapisie wyniku."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "__init__.py").write_text("")
+            (root / "pkg" / "test_exit.py").write_text(
+                "import atexit, os, unittest\n"
+                "atexit.register(lambda: os._exit(3))\n"
+                "class T(unittest.TestCase):\n    def test_ok(self): pass\n")
+            output = root / "out"
+            output.mkdir()
+            result = runner._run_module("pkg/test_exit.py", output, root)
+            report = json.loads((output / "pkg__test_exit.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["returncode"], 3)
+        self.assertEqual(report["returncode"], 3)
+        self.assertEqual(report["failures"], [])
+
     def test_unknown_module_and_mixed_selection_are_rejected(self):
         self.assertEqual(self.run_main("--modules", "daemon/tests/test_nie_ma.py", "--list")[0], 2)
         self.assertEqual(self.run_main("--modules", "x.py", "--changed")[0], 2)
