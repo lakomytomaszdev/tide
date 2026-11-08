@@ -1,7 +1,7 @@
 # Tide na nowej maszynie — minimalna instalacja
 
-Instrukcja dla osoby, która nie zna Tide, a ma na nowym komputerze pracować z kartami na Tablicy
-(projekty Firma). Instalujemy tylko to, czego potrzebuje przepływ kart:
+Instrukcja dla osoby, która nie zna Tide, a chce na nowym komputerze pracować z kartami na Tablicy.
+Instalujemy tylko to, czego potrzebuje przepływ kart:
 
 - usługę `tide-daemon` (usługa użytkownika systemd, mówi przez D-Bus),
 - okno **Tide** z Tablicą (menu aplikacji → Tide),
@@ -16,8 +16,9 @@ sprawdza i niczego nie zmienia.
 
 ## 1. Przygotowanie systemu
 
-1. System: **Kubuntu 26.04 LTS** (albo nowszy) lub **Fedora KDE Plasma Desktop 43/44**. Potrzebna jest
-   **Plasma 6** — Kubuntu 24.04 ma jeszcze Plasmę 5 i się nie nadaje.
+1. System: **Kubuntu 26.04 LTS** (albo nowszy) lub **Fedora KDE Plasma Desktop 40+** (sprawdzone na 44).
+   Potrzebna jest **Plasma 6** — Kubuntu 24.04 ma jeszcze Plasmę 5; skrypt odmawia instalacji na Plasmie 5,
+   Kubuntu starszym niż 26.04 i Fedorze starszej niż 40, niczego nie zmieniając.
 2. Zwykłe konto użytkownika z prawem `sudo` (przy instalacji systemu: „administrator”). Skryptu nie uruchamiamy
    jako root.
 3. Sieć (pakiety, logowanie do Claude i Codexa, klonowanie repozytoriów).
@@ -27,8 +28,7 @@ sprawdza i niczego nie zmienia.
    - Fedora: `sudo dnf upgrade --refresh`, potem restart.
 5. Zaloguj się do sesji **Plasma (Wayland)**. Usługa Tide startuje razem z sesją graficzną.
 6. Narzędzia do pobrania repozytoriów: `sudo apt install git curl` albo `sudo dnf install git curl`.
-   Dostęp do repozytoriów (Tide na GitHubie, projekty Firma w GitLabie) — klucz SSH albo token, który
-   da właściciel.
+   Dostęp do repozytoriów: klucz SSH albo token do serwera Git, na którym są Tide i Twoje projekty.
 
 ## 2. Repozytorium Tide
 
@@ -37,6 +37,8 @@ mkdir -p ~/DevWorkspace
 git clone git@github.com:lakomytomaszdev/plasma-tide.git ~/DevWorkspace/plasma-tide
 cd ~/DevWorkspace/plasma-tide
 ```
+
+Repozytorium jest prywatne — potrzebny jest dostęp do niego (albo kopia z innego źródła).
 
 Projekty muszą leżeć w `~/DevWorkspace` (Tide szuka tam repozytoriów). Tablica tej maszyny powstanie
 w `~/DevWorkspace/tide-board` — **nie kopiuj** Tablicy z innego komputera, ta maszyna ma własną, pustą.
@@ -59,18 +61,19 @@ sudo apt install nodejs npm        # Fedora: sudo dnf install nodejs npm
 npm install -g --prefix ~/.local @openai/codex
 ```
 
-Zamknij i otwórz terminal (żeby `~/.local/bin` było w `PATH`), potem zaloguj się **na konta właściciela**:
+Zamknij i otwórz terminal (żeby `~/.local/bin` było w `PATH`), potem zaloguj się na swoje konta
+(albo konta wskazane przez osobę, która opiekuje się tą maszyną):
 
 ```bash
-claude          # w programie: /login → konto Claude właściciela; potem /exit
-codex login     # otworzy przeglądarkę → konto ChatGPT właściciela
+claude          # w programie: /login → Twoje konto Claude; potem /exit
+codex login     # otworzy przeglądarkę → Twoje konto ChatGPT
 ```
 
-Ustaw tożsamość gita (commity w projektach). Imię i adres uzgodnij z właścicielem:
+Ustaw tożsamość gita (commity w projektach):
 
 ```bash
 git config --global user.name "Imię Nazwisko"
-git config --global user.email "adres@firma.com"
+git config --global user.email "adres@example.com"
 ```
 
 ## 4. Skrypt instalacji
@@ -90,7 +93,8 @@ bash scripts/bootstrap-machine.sh
 
 Co robi, po kolei (przed każdym poleceniem z `sudo` pokazuje je i pyta „[t/N]”):
 
-1. Sprawdza system: Plasma 6, systemd użytkownika.
+1. Sprawdza system: wersja (Kubuntu ≥ 26.04, Fedora ≥ 40), Plasma 6, systemd użytkownika, ilość pamięci.
+   Na nieobsługiwanym systemie kończy się kodem 2, niczego nie zmieniając.
 2. Pakiety (tabela niżej). Na Kubuntu: `sudo apt-get update`, potem **symulacja** `apt-get -s install …`;
    jeśli symulacja podnosi, obniża albo usuwa pakiety Qt 6 lub KDE Frameworks 6, skrypt przerywa i nic nie
    instaluje (wtedy: pełna aktualizacja systemu z punktu 1.4 i jeszcze raz). Na Fedorze to samo przez
@@ -99,14 +103,17 @@ Co robi, po kolei (przed każdym poleceniem z `sudo` pokazuje je i pyta „[t/N]
 4. Piaskownica kroków (bwrap) — niżej, punkt 5.
 5. `make pre-install-backup install-daemon install-tide-window install-cli` — kopia zapasowa wyglądu Plasmy
    (na wszelki wypadek; nic w wyglądzie się nie zmienia), usługa, okno, CLI i zasoby.
-6. Sprawdza, że usługa działa i odpowiada na D-Bus (`tide info --json`).
+6. Sprawdza, że usługa działa i odpowiada na D-Bus (`tide info --json`). Na słabszej maszynie wyłącza
+   wyszukiwanie po znaczeniu (punkt 6).
 7. Zakłada **pustą Tablicę** `~/DevWorkspace/tide-board` (lokalne repozytorium git, bez zdalnego).
-8. Ładuje okno bez ekranu (wszystkie widoki) — sprawdza, że QML i PyQt6 są kompletne.
+8. Ładuje okno bez ekranu (wszystkie widoki, na słabszej maszynie tylko Tablicę) — sprawdza, że QML i PyQt6
+   są kompletne.
 
 Na końcu wypisuje „Uwagi” (nie blokują) i „Brakuje” (do zrobienia). Kod wyjścia: 0 — gotowe, 2 — czegoś
 brakuje, 1 — błąd. Po pierwszej udanej instalacji **wyloguj się i zaloguj ponownie**.
 
-Opcje: `--yes` (bez pytań), `--no-packages` (pakiety tylko sprawdza), `--no-board` (nie zakłada Tablicy).
+Opcje: `--yes` (bez pytań), `--no-packages` (pakiety tylko sprawdza), `--no-board` (nie zakłada Tablicy),
+`--low-power` (słabsza maszyna — punkt 6; przy mniej niż 20 GB RAM włącza się sama).
 
 ## 5. Piaskownica (bwrap) na Kubuntu
 
@@ -132,27 +139,47 @@ Skrypt pokazuje stan (`python3 scripts/sandbox/check.py`). Możliwe są trzy syt
   Przy aktualizacji pakietu `apparmor` system może zapytać o ten plik — wybierz zachowanie obecnej wersji.
   **Tego wariantu nie dało się sprawdzić na prawdziwym Kubuntu 26.04** (testy były w kontenerach, które
   dziedziczą AppArmor komputera-gospodarza) — jeśli po zamianie `check.py` dalej mówi „nie działa”, zgłoś
-  wynik właścicielowi i do tego czasu używaj wykonawców Codex.
+  wynik (punkt 10) i do tego czasu używaj wykonawców Codex.
 
 Na Fedorze nic nie trzeba (brak ograniczenia AppArmor; `check.py` pisze „nie dotyczy”).
 
-## 6. Projekt Firma na Tablicy
+## 6. Słabsza maszyna
+
+Komputer z 8–16 GB RAM albo słabym procesorem i kartą graficzną udźwignie Tide, jeśli nie uruchamia na nim
+rzeczy, które Tide potrafi, ale które nie są potrzebne do pracy z kartami:
+
+- **Wyszukiwanie po znaczeniu wyłączone.** Indeks sesji agentów dla KRunnera co 5 minut przegląda sesje
+  z 30 dni i liczy wektory modelem lokalnym. Skrypt przy mniej niż 20 GB RAM (albo z `--low-power`) wyłącza
+  go sam; ręcznie: `busctl --user call org.tide.Daemon /Models org.tide.Daemon.Models SetSemanticSearch s off`
+  albo okno Tide → Modele → Wyszukiwanie. KRunner dalej szuka po słowach.
+- **Bez Ollamy i modeli lokalnych.** Minimalna instalacja ich nie zakłada. W oknie Tide → Modele serwer
+  „nie odpowiada” — to normalne. Nie przełączaj opisu raportu porannego na model lokalny.
+- **Pudełek (Incus) nie włączaj**, jeśli Twoja wersja Tide je ma — ustawienie `box.enabled` przepływu kart
+  zostaje domyślne. To funkcja dla stacji z zapasem pamięci i procesora.
+- **Jedno okno Tide.** Kolejne uruchomienie tylko pokazuje działające okno; nie zostawiaj otwartych widoków,
+  których nie używasz (Docker, Sesje). Duża Tablica (setki kart) odświeża się wolniej — przy zacięciach zgłoś
+  to razem z `tide info --json`.
+- **Testy repozytorium** (jeśli rozwijasz Tide na tej maszynie): domyślnie biegną w liczbie procesów równej
+  liczbie rdzeni minus dwa, a każdy proces ładuje Qt. Przy ≤ 16 GB RAM: `make test-changed BASE=<baza> JOBS=2`,
+  przy 8 GB: `JOBS=1`. Pełny `make test` tylko wtedy, gdy jest naprawdę potrzebny.
+
+## 7. Pierwszy projekt na Tablicy
 
 1. Sklonuj repozytorium projektu do `~/DevWorkspace`, np.:
-   `git clone git@<gitlab-firma>:<grupa>/<projekt>.git ~/DevWorkspace/<projekt>`.
+   `git clone git@<twój-serwer-git>:<grupa>/<projekt>.git ~/DevWorkspace/<projekt>`.
 2. Otwórz okno: menu aplikacji → **Tide** (widok **Tablica**).
 3. Lewy dolny róg: **Projekty i tagi**. Sklonowane repozytorium jest w sekcji „REPOZYTORIA BEZ PROJEKTU” →
-   **＋ Dodaj jako projekt** (albo **Dodaj projekt** i wskaż katalog). Nadaj nazwę, dodaj tag **Firma**,
-   **Zapisz projekt**.
+   **＋ Dodaj jako projekt** (albo **Dodaj projekt** i wskaż katalog). Nadaj nazwę, dodaj tag (np. startowy
+   **własne** albo własny), **Zapisz projekt**.
 
 To samo bez okna (np. przez SSH):
 
 ```bash
 busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board UpsertProject s \
-  '{"slug": "projekt", "name": "Projekt", "repo": "/home/<użytkownik>/DevWorkspace/projekt", "tags": ["Firma"]}'
+  '{"slug": "projekt", "name": "Projekt", "repo": "/home/<użytkownik>/DevWorkspace/projekt", "tags": ["własne"]}'
 ```
 
-## 7. Pierwsza karta
+## 8. Pierwsza karta
 
 1. Tablica → **＋ Karta**: tytuł („co zrobić”), projekt, krótki opis. Nowa karta ląduje w Backlogu.
 2. Przeciągnij kartę do **Do zrobienia** (otworzy się okno „Co ma zrobić agent?”) albo kliknij na niej
@@ -161,16 +188,17 @@ busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board UpsertProject s 
    - **Od razu** — jeden ticket w tle, bez planowania; wybierasz wykonawcę (np. Sonnet) i recenzenta,
    - **Planowanie → Lekki** — lekki plan w tle, który zatwierdzasz w panelu karty, potem tickety w tle,
    - **Planowanie → Pełny** i **Tylko specyfikacja** — rozmowa w Konsoli (pytania do Ciebie); korzystają
-     ze skilli `grilling` i `tdd` w `~/.claude/skills` — poproś właściciela o ich kopię, zanim ich użyjesz,
+     ze skilli `grilling` i `tdd` w `~/.claude/skills`. Skille metodologii nie są częścią Tide — zainstaluj
+     je osobno, zanim użyjesz tych wejść (zob. [przenośność zasobów](tide-resources.md)),
    - **Mam plan** — przejęcie istniejącego planu z repozytorium projektu.
 4. **Uruchom agenta (Ctrl+Enter)**. Karta przechodzi do „W toku”; pytania i zgody agenta pojawiają się
    w panelu karty, wynik ląduje na gałęzi karty `card/k-…` w repozytorium projektu.
-5. Scalenia gałęzi karty do gałęzi głównej i `push` **nie rób** bez decyzji właściciela.
+5. Scalenia gałęzi karty do gałęzi głównej i `push` **nie rób** bez decyzji osoby odpowiedzialnej za projekt.
 
 Pierwszą kartę daj prostą (np. poprawka w README), żeby sprawdzić cały obieg: krok → review → gałąź karty
 → „Do sprawdzenia”.
 
-## 8. Co sprawdzić
+## 9. Co sprawdzić
 
 ```bash
 bash scripts/bootstrap-machine.sh --check   # wszystko „ok”, kod 0
@@ -182,9 +210,10 @@ python3 scripts/sandbox/check.py            # „Piaskownica może działać.”
 W oknie Tide: Tablica pokazuje projekt; karta po „Od razu” przechodzi przez W toku do Do sprawdzenia.
 Krok kończący się „login” znaczy, że program agenta nie jest zalogowany (`claude` → `/login`, `codex login`).
 
-## 9. Co zgłosić przy błędzie
+## 10. Co zgłosić przy błędzie
 
-Zbierz i wyślij właścicielowi (zawierają nazwy projektów i fragmenty pracy — tylko jemu):
+Zbierz pliki i zgłoś problem w Issues repozytorium Tide (albo osobie, która opiekuje się instalacją).
+Pliki zawierają nazwy projektów i fragmenty pracy — nie publikuj ich, dołącz tylko tam, gdzie to bezpieczne:
 
 ```bash
 cd ~/DevWorkspace/plasma-tide
@@ -199,7 +228,7 @@ i napisz, co kliknięto i co się pokazało w panelu karty.
 
 Przycisk „Opisz problem i ponów” w panelu karty zapisuje zgłoszenie w projekcie `plasma-tide` na Tablicy.
 Działa tylko wtedy, gdy taki projekt istnieje — dodaj `~/DevWorkspace/plasma-tide` jako projekt
-(punkt 6), jeśli chcesz z niego korzystać.
+(punkt 7), jeśli chcesz z niego korzystać.
 
 ## Zależności
 
@@ -275,3 +304,44 @@ make restore NAME=przed-tide   # powrót do poprzedniego wyglądu
 Ekran logowania i ekran startowy są osobno i wymagają sudo: `make install-sddm`, `make install-plymouth`
 (tylko Kubuntu). Motyw był rozwijany na KDE neon (Plasma 6.8, dwa monitory); na Kubuntu i Fedorze
 nie był testowany. Opis składników: `README.md`.
+
+## Dla agenta AI pomagającego w instalacji
+
+Ta sekcja jest dla agenta (Claude Code, Codex), który na nowej maszynie pomaga użytkownikowi zainstalować
+Tide albo zdiagnozować problem.
+
+**Kolejność sprawdzeń** (wszystko tylko odczyt):
+
+1. `bash scripts/bootstrap-machine.sh --check` — kod 0: gotowe, 2: czegoś brakuje (lista „Brakuje” na końcu),
+   1: błąd skryptu. Zacznij od listy „Brakuje”, potem „Uwagi”.
+2. `systemctl --user status tide-daemon` i `journalctl --user -u tide-daemon -n 100` — czy usługa działa
+   i co zgłasza przy starcie.
+3. `tide info --json` (albo `busctl --user call org.tide.Daemon /Issues org.tide.Daemon.Issues Info`) —
+   odpowiedź usługi i dostępność zasobów.
+4. `python3 scripts/sandbox/check.py` — stan piaskownicy bwrap.
+5. Przy problemie z kartą: dziennik `~/DevWorkspace/tide-board/flow/K-<numer>/journal.jsonl` (ostatnie
+   wpisy `step.finished`: `result`, `reason`, `fault`) i
+   `busctl --user call org.tide.Daemon /Board org.tide.Daemon.Board Snapshot` (tylko odczyt).
+
+**Typowe przyczyny:**
+
+- Krok kończy się `reason: login` — program agenta nie jest zalogowany: `claude` → `/login`, `codex login`.
+- „nie znaleziono programu claude/codex” — brak programu w `PATH` i w `~/.local/bin` (punkt 3); po instalacji
+  uruchom skrypt ponownie, żeby `install-cli` dołożył skille Tide dla Codexa.
+- Piaskownica: na Kubuntu 25.04+ profil AppArmor „obcy” bez zagnieżdżonej przestrzeni (punkt 5) — zamiana
+  profilu wymaga sudo i decyzji użytkownika; na starszym Ubuntu brak profilu (`scripts/sandbox/install.sh`).
+- „KDE Plasma 5…” albo „Tide wymaga Kubuntu 26.04” — system się nie nadaje; nie obchodź tej kontroli.
+- Strażnik pakietów odmawia (Qt 6 / KDE Frameworks 6 w symulacji) — zaproponuj pełną aktualizację systemu
+  i restart, a nie instalację z pominięciem strażnika.
+- Tablica ze zdalnym repozytorium (`remote`) — prawdopodobnie kopia Tablicy z innej maszyny.
+- Słaba maszyna (zacięcia, swap) — punkt 6; testy z `JOBS=2` albo `JOBS=1`.
+
+**Czego nie robić bez wyraźnej zgody użytkownika:**
+
+- `sudo` w jakiejkolwiek formie (pakiety, profil AppArmor, `apt`/`dnf`) — pokaż polecenie i poczekaj na decyzję,
+- `make install` ani innych celów motywu (wygląd, panele, SDDM, Plymouth) — minimalny zestaw ich nie potrzebuje,
+- ręczne edycje `~/.config` i `~/.local/share` (instalacja idzie wyłącznie przez skrypt i `make install-*`),
+- usuwanie, nadpisywanie albo kopiowanie Tablicy (`~/DevWorkspace/tide-board`) i zmiana jej repozytorium,
+- scalanie gałęzi kart do gałęzi głównej i `git push`.
+
+Do zgłoszenia problemu zbierz pliki z punktu 10 i powiedz użytkownikowi, co zawierają.
