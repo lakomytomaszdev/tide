@@ -122,6 +122,8 @@ def parse_args(argv):
     parser.add_argument("--print-board", action="store_true")
     parser.add_argument("--print-card-docs", metavar="ID")
     parser.add_argument("--board-dir")
+    # Tylko testy: atrapa /proc dla sprawdzenia nadawcy zatwierdzenia kontraktu testów (call_origin, PT-286).
+    parser.add_argument("--proc-root", default="/proc", help=argparse.SUPPRESS)
     parser.add_argument("--no-board", action="store_true")
     parser.add_argument("--print-docker", action="store_true")
     parser.add_argument("--no-docker", action="store_true")
@@ -720,7 +722,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                                        parent=app)
     board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
-                         youtrack=youtrack, parent=app)
+                         youtrack=youtrack, proc_root=args.proc_root, parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     board.flow = start_card_flow(app, args, board, monitor, limits)
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.

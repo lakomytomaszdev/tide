@@ -20,8 +20,12 @@ kontraktu zapisany poza tablicą, w `$XDG_STATE_HOME/tide/test-contracts.json`:
   (ponowne zatwierdzenie naprawia utracony albo uszkodzony magazyn). Błąd — ApprovalError.
 
 Moduł nie wie, kto woła zapis. Odcisk tworzy wyłącznie `BoardStore.approve_project_tests`, wywoływane przez
-D-Bus `UpsertProject` z polem `tests` (okno projektu); sprawdzenie nadawcy i kolizje ścieżek z obszarami zapisu
-kroków to PT-286.
+D-Bus `UpsertProject` z polem `tests` (okno projektu) po sprawdzeniu nadawcy (`call_origin`, PT-286).
+
+Wejście dla kroku (PT-286): `approval_for_step(project, step, board)` → `(approved, reason)`. Zanim dopuści
+kontrakt dla kroku, porównuje rzeczywiste ścieżki magazynu (plik i każdy katalog nadrzędny, przed i po
+`realpath`) z obszarami zapisu kroku (`agentcmd.step_write_areas` — ta sama funkcja, z której powstają argumenty
+piaskownicy) i z repozytorium Tablicy. Kolizja albo niepewność → `(False, powód)`; bez kolizji wynik daje `approved`.
 """
 import errno
 import fcntl
@@ -99,6 +103,68 @@ def approved(board: str, slug: str, contract: dict, path: str | None = None) -> 
         return isinstance(stored, str) and hmac.compare_digest(stored, wanted)
     except Exception:  # odczyt zatwierdzenia nie może dać True z błędu ani zepsuć listy projektów
         return False
+
+
+STORE_IN_WRITE_AREA = "magazyn zatwierdzeń leży w obszarze zapisu kroku"
+
+
+def approval_for_step(project, step, board: str, path: str | None = None) -> tuple[bool, str]:
+    """Czy kontrakt testów projektu (`board.model.Project`) jest zatwierdzony dla kroku `step`
+    (`tasks.agentcmd.Step`, ten sam, z którego powstają argumenty kroku). Zwraca `(approved, reason)`;
+    `reason` pusty tylko przy `True`. Każda niepewność → False."""
+    try:
+        from ..tasks import agentcmd
+        path = path or state_path()
+        areas = [*agentcmd.step_write_areas(step).writable(), board]
+        hit = store_collision(path, areas)
+        if hit:
+            return False, f"{STORE_IN_WRITE_AREA}: {hit}"
+        if getattr(project, "tests_error", ""):
+            return False, f"kontrakt testów projektu jest uszkodzony: {project.tests_error}"
+        if is_empty(project.tests):
+            return False, "projekt nie ma kontraktu testów"
+        if not approved(board, project.slug, project.tests, path):
+            return False, "kontrakt testów nie jest zatwierdzony (odcisk różny albo brak odcisku)"
+        return True, ""
+    except Exception as exc:  # niepewność nigdy nie daje zatwierdzenia
+        return False, f"nie da się sprawdzić zatwierdzenia dla kroku: {type(exc).__name__}: {exc}"
+
+
+def store_collision(path: str, areas) -> str:
+    """Opis pierwszej kolizji magazynu odcisków z obszarami zapisu albo pusty napis.
+
+    Kolizja: plik odcisków albo którykolwiek jego katalog nadrzędny (ścieżka podana i po `realpath`) leży
+    w obszarze zapisu (podanym i po `realpath`) — krok mógłby zapisać, podmienić albo przenieść plik lub katalog —
+    albo obszar zapisu leży w katalogu odcisków. Pusta lub względna ścieżka obszaru to niepewność → kolizja."""
+    store = os.path.abspath(path)
+    folder = os.path.dirname(store)
+    chain = []
+    current = store
+    while True:
+        chain += [current, os.path.realpath(current)]
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    folders = {folder, os.path.realpath(folder)}
+    for area in areas:
+        if not area or not os.path.isabs(area):
+            return f"nieznany obszar zapisu {area!r}"
+        for form in dict.fromkeys((os.path.normpath(area), os.path.realpath(area))):
+            if form == os.sep:
+                return f"obszar zapisu {area} obejmuje cały system plików"
+            for item in chain:
+                if _inside(item, form):
+                    return f"{item} leży w obszarze zapisu {area}"
+            for item in folders:
+                if _inside(form, item):
+                    return f"obszar zapisu {area} leży w katalogu odcisków {item}"
+    return ""
+
+
+def _inside(path: str, folder: str) -> bool:
+    path, folder = os.path.normpath(path), os.path.normpath(folder)
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
 
 
 def record(board: str, slug: str, contract: dict, path: str | None = None) -> None:

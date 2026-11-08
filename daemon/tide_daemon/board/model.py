@@ -98,7 +98,8 @@ class BoardError(ValueError):
 
     Kody: bad-request (złe dane), not-found (nie ma karty, projektu, tagu), exists (już jest),
     broken-file (pliku nie da się przeczytać — popraw ręcznie), git-busy (w repozytorium tablicy
-    trwa revert, merge, cherry-pick albo rebase), not-a-board (cudzy katalog)."""
+    trwa revert, merge, cherry-pick albo rebase), not-a-board (cudzy katalog), forbidden (nadawca bez prawa
+    do operacji — zatwierdzenie kontraktu testów z kroku agenta, PT-286)."""
 
     def __init__(self, message: str, code: str = "bad-request"):
         super().__init__(message)

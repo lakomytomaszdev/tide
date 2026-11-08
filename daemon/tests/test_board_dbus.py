@@ -21,10 +21,19 @@ except ImportError:  # pragma: no cover
 
 PATH, IFACE = "/Board", "org.tide.Daemon.Board"
 NOW_TEXT = "2026-10-27T12:00:00Z"
+APP_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tide-board-test.scope\n"
+STEP_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tide-step-K-1-PT-1-1.scope\n"
 
 
 def git_out(cwd, *args) -> str:
     return subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True, text=True).stdout
+
+
+def read_or_none(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def git_config(tmp) -> dict:
@@ -112,11 +121,22 @@ class BoardDBusTest(unittest.TestCase):
         env = git_config(cls.tmp)
         subprocess.run(["git", "-C", cls.repo, "init", "-q"], check=True, env=dict(os.environ, **env))
         cls.board = os.path.join(cls.ws, "tide-board")
+        # PT-286: atrapa /proc z cgroup procesu testu (nadawcy wywołań) — wynik nie zależy od tego, czy testy
+        # biegną w jednostce kroku `tide-step-*`; test_3c podmienia ją na jednostkę kroku.
+        cls.proc = os.path.join(cls.tmp, "proc")
+        cls.set_sender_cgroup(APP_CGROUP)
         cls.service = PrivateBus("tide-board-test")
         cls.daemon = cls.service.spawn_daemon(
             "--claude-dir", os.path.join(cls.tmp, "claude"), "--codex-dir", os.path.join(cls.tmp, "codex"),
             "--no-processes", "--no-notifications", "--now", NOW_TEXT, "--workspace", cls.ws,
-            "--board-dir", cls.board, extra_env=env)
+            "--board-dir", cls.board, "--proc-root", cls.proc, extra_env=env)
+
+    @classmethod
+    def set_sender_cgroup(cls, text):
+        folder = os.path.join(cls.proc, str(os.getpid()))
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "cgroup"), "w", encoding="utf-8") as fh:
+            fh.write(text)
 
     @classmethod
     def tearDownClass(cls):
@@ -225,6 +245,25 @@ class BoardDBusTest(unittest.TestCase):
             self.assertTrue(fh.read().startswith("tide-box: 1\ntests:\n"))
         bad = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": {"changed": "make test"}}))
         self.assertEqual((bad["ok"], bad["error"]), (False, "bad-request"))
+
+    def test_3c_approval_from_a_step_unit_is_refused(self):
+        # PT-286: PID nadawcy z magistrali, cgroup z atrapy /proc. Nadawca w jednostce kroku → odrzucenie bez zmiany
+        # box.yaml, odcisku i commita; bez `tests` UpsertProject działa jak dotąd.
+        box = os.path.join(self.board, "projects", "mobileapp", "box.yaml")
+        store = os.path.join(self.service.tmp, "state", "tide", "test-contracts.json")
+        before = [read_or_none(p) for p in (box, store)]
+        head = git_out(self.board, "rev-parse", "HEAD")
+        self.set_sender_cgroup(STEP_CGROUP)
+        try:
+            reply = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": {"changed": "make x {base}"}}))
+            self.assertEqual((reply["ok"], reply["error"]), (False, "forbidden"), reply)
+            self.assertIn("kroku agenta", reply["message"])
+            self.assertEqual([read_or_none(p) for p in (box, store)], before)
+            self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
+            plain = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "description": "Opis PT-286"}))
+            self.assertEqual((plain["ok"], plain["changed"]), (True, True), plain)
+        finally:
+            self.set_sender_cgroup(APP_CGROUP)
 
     def test_4_card_docs(self):
         # Plan karty w repozytorium projektu (docs/agents/plans) i specyfikacja po nazwie pliku — odczyt
