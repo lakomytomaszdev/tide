@@ -343,7 +343,7 @@ class _CaretakerPort:
         i `caretaker`); bez decyzji — wewnętrzna ścieżka automatycznego ponowienia: `step.retry` z `caretaker`
         i instrukcją, a wznowienie z `parentStep` robi `_advance`. Krok spoza problemu → `not-problem-step`."""
         engine, run = self.engine, self.run
-        st = fold(engine.journal.read(self.card))
+        st = engine.journal.state(self.card)
         name, ident = params.get("step") or "", run.get("problem") or problem.get("id") or ""
         # Zapis sprzed restartu (`step.retry` albo `step.decision` z `caretakerStep` tego kroku opiekuna) — przed
         # walidacją problemu i `resolve_step`: decyzja już jest, więc krok „nie czeka” (np. inna decyzja karty
@@ -379,7 +379,7 @@ class _CaretakerPort:
 
     def resolve_step(self, problem: dict, request: dict, *, step_kinds=()) -> dict:
         """Wspólna decyzja kroku z rejestru: zakres problemu, ograniczenie rodzajów i idempotencja skutku."""
-        st = fold(self.engine.journal.read(self.card))
+        st = self.engine.journal.state(self.card)
         name, own = request["step"], self.run.get("step") or ""
         previous = st.step_decisions.get(name) or {}
         if own and previous.get("caretakerStep") == own and previous.get("choice") == request["choice"]:
@@ -402,7 +402,7 @@ class _CaretakerPort:
         drugiego `plan.returned` (rozpoznaje własny zapis po `caretakerStep`). Numery `findings` (od 1) to uwagi
         ostatniego review (`caretaker.review_items`); numer spoza listy to nieudane działanie z powodem."""
         engine, run = self.engine, self.run
-        st = fold(engine.journal.read(self.card))
+        st = engine.journal.state(self.card)
         own, ident = run.get("step") or "", run.get("problem") or problem.get("id") or ""
         target = problem.get("step") or run.get("target") or ""
         if own and any(e.get("caretakerStep") == own for e in st.plan_returns):
@@ -658,7 +658,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def card_base(self, card_id: str) -> dict:
         """Baza migawki niezależna od tego, czy karta ma wyliczany stan przepływu."""
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         if not st.started:
             return {}
         base = base_of(st)
@@ -666,7 +666,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "baseVersion": st.base_version}
 
     def derived(self, card: dict) -> dict | None:
-        st = fold(self.journal.read(card.get("id") or ""))
+        st = self.journal.state(card.get("id") or "")
         if st.started is not None:
             st.caretaker_setup = self._caretaker_setup(st)
         out = derived(st, card)
@@ -696,7 +696,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return out
 
     def tracker_tickets(self, card):
-        st = fold(self.journal.read(card.get('id') or ''))
+        st = self.journal.state(card.get('id') or '')
         if not st.started:
             return None
         events = self.journal.read(card['id'])
@@ -728,7 +728,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         usuwania). Sesja kroku nie jest wierszem agenta, więc bez tego worktree kroku wyglądałby na wolny."""
         busy = set()
         for card in self.journal.cards():
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             for intent in st.intents.values():
                 if intent.get("action") == "change-base":
                     busy.update(r[p] for r in intent["generation"] for p in ("worktree", "oldWorktree"))
@@ -823,7 +823,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if baseproposal.blocked(fold(self.journal.read(card_id))):
+        if baseproposal.blocked(self.journal.state(card_id)):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         unknown = [k for k in request if k not in REQUEST_FIELDS]
         if unknown:
@@ -909,7 +909,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
         images = self._images(request.get("images"))
         source_evidence = None if _prepare is not None else self._issue_evidence(card)
-        st = fold(self.journal.read(card.id))
+        st = self.journal.state(card.id)
         if st.active() and not _resume:
             raise FlowError("flow-active", f"{card.id}: {st.busy_reason()}")
         slug = slug_from_prompt(card.title, words=4, length=32)
@@ -995,7 +995,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         item, project = self._start_project(card_id, _prepare)
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", "karta jest zakończona")
-        busy = fold(self.journal.read(card_id)).busy_reason()
+        busy = self.journal.state(card_id).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
         if not project.repo or project.repo_missing:
@@ -1052,7 +1052,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         complete = (not proposal.errors and b"| Blokery |" in source_bytes and
                     not loose_text and all(row.agent and row.work_class and row.reviewer and row.note for row in source.rows))
         with lock_for(project.repo):
-            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
+            base = self._start_base(item, project, request, self.journal.state(card_id))
         if _prepare is not None:
             return {**request, "baseRef": base["baseRef"], "baseCommit": base["baseCommit"],
                     "cardBranch": base["cardBranch"], "executor": selected.name, "check": check}
@@ -1073,12 +1073,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             prefix=prefix, trackerProject=project.youtrack,
                             trackerUrl=yt.load_config()["url"] if project.youtrack else "", **base)
         self._project_base(card_id)
-        st = self._recover_import(card_id, fold(self.journal.read(card_id)))
+        st = self._recover_import(card_id, self.journal.state(card_id))
         if complete:
             result = self.propose_plan(card_id, st.imported.get("snapshotPath") or path, import_source=True)
             return {**result, "imported": True, "needsCompletion": False}
-        self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
-        st = fold(self.journal.read(card_id))
+        self._planning_launch(card_id, self.journal.state(card_id), selected, catalog, images=images)
+        st = self.journal.state(card_id)
         return {"ok": True, "id": card_id, "imported": True, "needsCompletion": True,
                 "step": st.last_step, "executor": selected.name}
 
@@ -1120,7 +1120,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return st
         self.journal.append(card, "plan.imported", path=prepared["path"], rows=prepared["rows"],
                             needsCompletion=prepared["needsCompletion"], **snapshot)
-        return fold(self.journal.read(card))
+        return self.journal.state(card)
 
     def _start_project(self, card_id, prepared):
         if prepared is None:
@@ -1139,7 +1139,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("no-project", "karta potrzebuje projektu z repozytorium")
         if project.repo_missing or not os.path.isdir(project.repo):
             raise FlowError("no-repo", "repozytorium projektu jest niedostępne")
-        busy = fold(self.journal.read(card_id)).busy_reason()
+        busy = self.journal.state(card_id).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
         prepared_board = None
@@ -1176,7 +1176,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if mode == "full":
             self._require_safe_evidence_console(selected.tool, source_evidence)
         with lock_for(project.repo):
-            base = self._start_base(item, project, request, fold(self.journal.read(card_id)))
+            base = self._start_base(item, project, request, self.journal.state(card_id))
         if project.youtrack:
             prefix = project.youtrack
         else:
@@ -1205,12 +1205,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             projects=order, **base)
         self._project_base(card_id)
         try:
-            self._planning_launch(card_id, fold(self.journal.read(card_id)), selected, catalog, images=images)
+            self._planning_launch(card_id, self.journal.state(card_id), selected, catalog, images=images)
         except FlowDeferred:
             # Brak wolnego miejsca u dostawcy: karta już ruszyła, planowanie wystartuje z kolejnym tickiem
             # (_advance_planning). Wcześniej StartCard zgłaszał wtedy „błąd usługi” mimo zapisanego startu (05.11).
             pass
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         low = self._low_limit(selected.provider)
         return {"ok": True, "id": card_id, "step": st.last_step, "executor": selected.name,
                 "interactive": mode == "full",
@@ -1348,7 +1348,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
                               ticket="", round_no=0, review_tip="", prepare=None):
         """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
-        context_state = fold(self.journal.read(item.id))
+        context_state = self.journal.state(item.id)
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         self._require_safe_evidence_console(selected.tool, source_evidence)
@@ -1387,7 +1387,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 remaining = max(0, 96 * 1024 - len((prompt + header).encode("utf-8")))
                 context = self._project_context(extra.repo, min(32 * 1024, remaining))
                 prompt += header + context + "\n"
-        order = (fold(self.journal.read(item.id)).started or {}).get("projects") or [] if kind == "planning" else []
+        order = (self.journal.state(item.id).started or {}).get("projects") or [] if kind == "planning" else []
         project_reads = self._configured_reads(item, project, worktree, step_dir, order=order,
                                                 route=selected.route)
         # Przygotowany profil opiekuna musi dostać te same katalogi odczytu, zachowując własne granice zapisu.
@@ -1474,7 +1474,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     self.journal.append(item.id, "step.console_closed", step=step_id)
                 else:
                     close_console(self.journal, item.id, step_id, cancelled=True)
-                current = fold(self.journal.read(item.id))
+                current = self.journal.state(item.id)
                 self._finish(item.id, (current.steps.get(step_id) or current.caretakers[step_id]),
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
@@ -1574,7 +1574,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if step["step"] not in st.step_retries:
                     self.journal.append(card, "step.retry", step=step["step"], ticket="",
                                         reason=done.get("reason") or "")
-                self._resume_step(card, fold(self.journal.read(card)), step, {"choice": "auto"}, attempt=1)
+                self._resume_step(card, self.journal.state(card), step, {"choice": "auto"}, attempt=1)
         elif result == "done":
             self._planning_result(card, st, step)
         return True
@@ -1588,7 +1588,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         path = os.path.join(frozen or os.path.join(step["stepDir"], "out"), "plan.md")
         if (st.plan_checked or {}).get("step") != step["step"] or (st.plan_checked or {}).get("valid"):
             self.propose_plan(card, path, continuation=True, step=step["step"])
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
         if st.plan_proposed is not None or int(step.get("round") or 0) >= 2:
             return
         selected = self._resume_executor(card, st, step, step["executor"])
@@ -1604,7 +1604,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               round_no=int(step.get("round") or 0) + 1)
     def _tracker_reserve(self, card, key, number, title, description):
         item, project = self._project(card)
-        started = fold(self.journal.read(card)).started or {}
+        started = self.journal.state(card).started or {}
         payload = {'op': 'issue', 'url': started.get('trackerUrl') or yt.load_config()['url'],
                    'project': started.get('trackerProject') or project.youtrack,
                    'number': number, 'title': title, 'description': description}
@@ -1616,7 +1616,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return result
 
     def _tracker_notes(self, card):
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if not st.started:
             return
         _, project = self._project(card)
@@ -1657,7 +1657,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 not all(isinstance(value, str) and value for value in request.values()) or
                 not re.fullmatch(r"PT-[1-9][0-9]*", request["ticket"])):
             raise FlowError("bad-request", "Podaj ticket, krok i znacznik aktualności z Snapshot.")
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         projected = ticketentry.view(st)
 
         def refusal(code, message):
@@ -1676,7 +1676,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         try:
             return self._enter_step(card_id, request["step"])
         except FlowError as exc:
-            projected = ticketentry.view(fold(self.journal.read(card_id)))
+            projected = ticketentry.view(self.journal.state(card_id))
             return refusal(exc.code, str(exc))
 
     def _enter_step(self, card_id: str, step_id: str) -> dict:
@@ -1686,7 +1686,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
         card_id = f"K-{num}"
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         source_step = st.steps.get(step_id)
@@ -1756,7 +1756,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             result_path = os.path.join(source_step.get("stepDir") or "", "out", handoff.RESULT_FILE)
             if os.path.isfile(result_path):
                 self._finish(card_id, source_step, exit_code=0)
-                st = fold(self.journal.read(card_id))
+                st = self.journal.state(card_id)
         current = st.steps.get(step_id) or source_step
         new_id = step_id
         if step_id in st.finished:
@@ -1847,7 +1847,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if not mode:
             if self.task_files.cancel(task_file):
                 close_console(self.journal, card_id, new_id, cancelled=True)
-                self._finish(card_id, fold(self.journal.read(card_id)).steps[new_id],
+                self._finish(card_id, self.journal.state(card_id).steps[new_id],
                              forced={"result": "stopped", "reason": "interactive-closed",
                                      "question": "Nie udało się otworzyć Konsoli. Wznowić czy porzucić?"})
             raise FlowError("no-terminal", "nie udało się otworzyć karty Konsoli")
@@ -1856,7 +1856,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def abandon(self, card_id: str, step_id: str) -> dict:
         """Rozstrzygnięcie pytania po zamknięciu Konsoli bez wyniku."""
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         done = st.finished.get(step_id) or {}
         if done.get("reason") != "interactive-closed" or done.get("result") != "stopped":
             raise FlowError("not-waiting", "ten krok nie czeka na wybór „wznów / porzuć”")
@@ -1921,7 +1921,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("no-project", f"{card_id}: karta potrzebuje projektu z repozytorium")
         if item.column in ("done", "archived"):
             raise FlowError("card-finished", f"{card_id}: karta jest zakończona")
-        busy = "" if continuation or import_source else fold(self.journal.read(card_id)).busy_reason()
+        busy = "" if continuation or import_source else self.journal.state(card_id).busy_reason()
         if busy:
             raise FlowError("flow-active", f"{card_id}: {busy}")
         cfg = self.models_config() if self.models_config else None
@@ -1929,16 +1929,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if catalog is None:
             raise FlowError("unknown-executor", "katalog wykonawców jest niedostępny")
         step_roots = [os.path.join(s.get("stepDir") or "", "out") for s in
-                      fold(self.journal.read(card_id)).steps.values() if s.get("stepDir")]
-        finished = fold(self.journal.read(card_id)).finished.get(step) or {}
+                      self.journal.state(card_id).steps.values() if s.get("stepDir")]
+        finished = self.journal.state(card_id).finished.get(step) or {}
         roots = ((project.repo, os.path.join(self.store.root, "docs"), *step_roots) if not continuation else
-                 (finished.get("snapshotDir") or os.path.join(fold(self.journal.read(card_id)).steps[step]["stepDir"], "out"),))
-        imported = fold(self.journal.read(card_id)).imported
+                 (finished.get("snapshotDir") or os.path.join(self.journal.state(card_id).steps[step]["stepDir"], "out"),))
+        imported = self.journal.state(card_id).imported
         if import_source and (imported or {}).get("snapshotPath") == os.path.realpath(path):
             roots = (*roots, os.path.dirname(imported["snapshotPath"]))
         source_states = {row["id"]: row["state"] for row in (imported or {}).get("rows", [])}
         # Projekty zlecenia z card.started (Planowanie); inne wejścia i dawne dzienniki — tylko projekt karty.
-        order = ((fold(self.journal.read(card_id)).started or {}).get("projects") or []
+        order = ((self.journal.state(card_id).started or {}).get("projects") or []
                  if continuation else [])
         order = order or [{"slug": project.slug, "name": project.name, "prefix": "", "configured": True,
                            "tracker": "youtrack" if project.youtrack else "local",
@@ -1946,7 +1946,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=roots,
                                    tracker='youtrack' if project.youtrack else 'local',
                                    existing_ids=[*source_states,
-                                                 *[r["id"] for r in ((fold(self.journal.read(card_id)).plan_approved or {}).get("rows") or [])]],
+                                                 *[r["id"] for r in ((self.journal.state(card_id).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported),
                                    other_plans=self._other_plan_todos(project.repo, card_id),
                                    projects=self._proposal_projects(order))
@@ -1973,13 +1973,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 proposal.errors.append(str(exc))
         if not continuation and not import_source:
             with lock_for(project.repo):
-                base = self._start_base(item, project, request or {}, fold(self.journal.read(card_id)))
+                base = self._start_base(item, project, request or {}, self.journal.state(card_id))
             self.journal.append(card_id, "card.started", entry="plan", repo=project.repo, project=project.slug,
                                 check=item.check or "auto", column=item.column, moveId=item.move_id,
                                 trackerProject=project.youtrack,
                                 trackerUrl=yt.load_config()['url'] if project.youtrack else '', **base)
             self._project_base(card_id)
-        checked = fold(self.journal.read(card_id)).plan_checked or {}
+        checked = self.journal.state(card_id).plan_checked or {}
         if not continuation or checked.get("step") != step or checked.get("errors") != proposal.errors:
             self.journal.append(card_id, "plan.checked", valid=not proposal.errors, errors=proposal.errors, step=step)
         if proposal.errors:
@@ -1999,13 +1999,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.journal.append(card_id, "plan.proposed", title=proposal.plan.title,
                             prefix=project.youtrack or proposal.plan.prefix, coordinator=proposal.plan.coordinator,
                             session=proposal.plan.session, rows=rows,
-                            planner=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("executor") or
-                                    (fold(self.journal.read(card_id)).started or {}).get("executor") or proposal.rows[0]["executor"],
+                            planner=(self.journal.state(card_id).steps.get(step) or {}).get("executor") or
+                                    (self.journal.state(card_id).started or {}).get("executor") or proposal.rows[0]["executor"],
                             **({"projects": [{k: p.get(k) for k in ("slug", "name", "prefix", "tracker",
                                                                      "trackerProject", "source", "main")}
                                              for p in order]} if len(order) > 1 else {}),
-                            sourceStep=step, sourceKind=(fold(self.journal.read(card_id)).steps.get(step) or {}).get("kind") or "",
-                            specification=self._plan_spec(path) or (fold(self.journal.read(card_id)).plan_proposed or {}).get("specification") or item.description, planPath=os.path.join(artifact_path, os.path.basename(path)), artifactPath=artifact_path)
+                            sourceStep=step, sourceKind=(self.journal.state(card_id).steps.get(step) or {}).get("kind") or "",
+                            specification=self._plan_spec(path) or (self.journal.state(card_id).plan_proposed or {}).get("specification") or item.description, planPath=os.path.join(artifact_path, os.path.basename(path)), artifactPath=artifact_path)
         return {"ok": True, "id": card_id, "rows": proposal.rows, "waves": proposal.waves}
 
     def approve_plan(self, card_id: str) -> dict:
@@ -2014,7 +2014,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         self._require_base_context(card_id)
         if st.plan_revision and st.plan_revision.get("pending"):
             return self._approve_revision(card_id, st)
@@ -2149,7 +2149,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if quota:
             return flow_limits.wait_reason(quota)
         running = [step for card in self.journal.cards()
-                   for step in fold(self.journal.read(card)).running()]
+                   for step in self.journal.state(card).running()]
         provider = selected.provider
         limit = 1 if selected.local else DEFAULT_PROVIDER_SLOTS
         if not selected.local:
@@ -2207,7 +2207,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         for other in self.journal.cards():
             if other == card:
                 continue
-            ost = fold(self.journal.read(other))
+            ost = self.journal.state(other)
             if ost.card_finished or ost.paused or ost.moved_to in ("done", "archived", "backlog"):
                 continue
             running = {(s.get("ticket"), s.get("kind")) for s in ost.running()}
@@ -2221,7 +2221,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return count
 
     def _admit(self, card: str, selected, ticket: str, kind: str, step_id: str) -> None:
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if baseproposal.blocked(st):
             raise FlowDeferred("decyzja o bazie karty")
         reserved = self._caretaker_reserved(card, st, selected, kind)
@@ -2245,7 +2245,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _ancestor_outs(self, card_id: str, parent_step: str, limit: int = 6) -> list[str]:
         """Katalogi `out` kroku-rodzica i jego przodków (najbliższe pierwsze), tylko istniejące."""
-        steps = fold(self.journal.read(card_id)).steps
+        steps = self.journal.state(card_id).steps
         found, name = [], parent_step
         while name and name in steps and len(found) < limit:
             step = steps[name]
@@ -2292,7 +2292,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _used_read_profile(self, card, worktree):
         return any(s.get("readDirsProfile") and s.get("worktree") == worktree
-                   for s in fold(self.journal.read(card)).steps.values())
+                   for s in self.journal.state(card).steps.values())
 
     def _project_tooling(self, project, worktree, tool, kind):
         """Składniki profilu i środowiska wspólne dla tła i Konsoli, bez instalowania zależności."""
@@ -2330,7 +2330,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 attempt=0, resume_session="", make_prompt=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
-        evidence_state = fold(self.journal.read(card.id))
+        evidence_state = self.journal.state(card.id)
         source_evidence = self._issue_evidence(card, started=evidence_state.started)
         if source_evidence and parent_step:
             # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
@@ -2351,10 +2351,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                                      images=[*shots, *issue_shots], test_base=made_ticket.get("base") or "")
         if source_evidence:
             prompt += source_evidence.prompt(step_dir)
-        context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
+        context_prompt, base_context = self._step_base_context(self.journal.state(card.id))
         prompt += context_prompt
         read_dirs, context_dirs = [], []
-        order = ((fold(self.journal.read(card.id)).started or {}).get("projects") or []
+        order = ((self.journal.state(card.id).started or {}).get("projects") or []
                  if kind in ("planning", "plan-fix") else [])
         if order:
             # Projekty zlecenia (K-33 #4): lista z repozytoriami jest w poleceniu planowania; tu tylko odczyt.
@@ -2397,7 +2397,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         from .stepnotes import prepare as prepare_notes
-        prompt, note_ids = prepare_notes(fold(self.journal.read(card.id)), parent_step, prompt)
+        prompt, note_ids = prepare_notes(self.journal.state(card.id), parent_step, prompt)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
@@ -2501,7 +2501,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _act(self, card: str, action: str, key: str, work, *, retry_failed: bool = False, **intent) -> dict:
         """Para „zamiar → wynik”: wynik już jest — zwracamy go (powtórka nic nie robi); błąd — wynik ok: false i wyjątek."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if baseproposal.blocked(st):
             raise FlowDeferred("decyzja o bazie karty")
         done = st.results.get((action, key))
@@ -2594,7 +2594,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if not names:
             return
         try:
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             for name in names:
                 base = st.caretaker_guards.get(name)
                 if base is None or name in st.finished:
@@ -2607,12 +2607,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     + "; ".join(guard.changes(base, fresh))]
                 self.journal.append(card, guard.EVENT, step=name, cause=action, wrote=wrote, **fresh)
         finally:
-            self._guard_thaw(fold(self.journal.read(card)), frozen)
+            self._guard_thaw(self.journal.state(card), frozen)
 
     def _guard_verdict(self, card: str, name: str) -> str:
         """Powód odrzucenia wyniku kroku opiekuna (pusty — strażnik przepuszcza). Bez stanu bazowego wynik też jest
         odrzucony: nie da się wykazać, że krok nie pisał."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         base = st.caretaker_guards.get(name)
         if base is None:
             return "brak stanu worktree sprzed kroku opiekuna — nie da się sprawdzić, czy krok nie pisał"
@@ -2626,7 +2626,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card_id = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         if st.started is None or st.card_finished or st.plan_finished:
             raise FlowError("no-flow", "karta nie ma trwającego przepływu")
         if st.paused != paused:
@@ -2645,7 +2645,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         i Archiwum kończą (krok zatrzymany z zapisem zmian, niescalony ticket odrzucony). Karta bez dziennika — nic."""
         if not self.journal.has(card_id):
             return
-        st = fold(self.journal.read(card_id))
+        st = self.journal.state(card_id)
         if st.started is None or st.card_finished:
             return
         if (move_id and st.store_move_id == move_id) or (not move_id and st.store_column == column):
@@ -2659,7 +2659,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _complete_manual_finish(self, card: str, column: str) -> bool:
         """Gotowe/Archiwum zapisujemy dopiero po zatrzymaniu wszystkich kroków; tick ponawia po błędzie."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if baseproposal.generation_blocked(st):
             return False
         if st.card_finished:
@@ -2667,7 +2667,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         for step in st.running():
             if not self._stop(card, step, "stopped", ""):
                 return False
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if st.running():
             return False
         tickets = dict.fromkeys([
@@ -2693,7 +2693,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _project_base(self, card: str) -> None:
         """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if st.started:
             try:
                 with self.journal.lock:
@@ -2720,12 +2720,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except Exception as exc:
                 print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
             self._project_base(card)
-            current = fold(self.journal.read(card))
+            current = self.journal.state(card)
             if not baseproposal.blocked(current):
                 self._recover_started_steps(card, current)
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
-                         for s in fold(self.journal.read(card)).running() if s.get("local")}
+                         for s in self.journal.state(card).running() if s.get("local")}
         for name in set(self._local_claims) - set(running_local):
             self._release_local(name)
         for name, step in running_local.items():
@@ -2742,7 +2742,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if warning:
                 self._warnings[card] = warning
                 print(f"tide-daemon: przepływ karty: {warning}", flush=True)
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             for step in [*st.steps.values(), *st.caretakers.values()]:
                 hidden_ids.add(str(step.get("session") or ""))
                 if step.get("worktree"):
@@ -2764,7 +2764,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 self._queue_notices(card)
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             busy |= {s["worktree"] for s in st.running() if s.get("worktree")}
             busy |= {s["worktree"] for s in st.steps.values() if s.get("worktree") and
                      s.get("mode") == "interactive" and not s.get("consoleClosed")}
@@ -2780,24 +2780,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._queue_notices(card)
             return
         self._recover_transfer_requests(card, st)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         self._recover_console_openings(card, st)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         self._sync_plan_cards(card, st)
         self._recover_started_steps(card, st)
         self._recover_verdicts(card)
         self._recover_review_rejections(card)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if st.started is not None and not st.card_finished and st.store_column:
             stored = self.store.load().cards.get(card_num(card))
             if stored is not None and (stored.column != st.store_column or
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
-                st = fold(self.journal.read(card))
+                st = self.journal.state(card)
         # Ruch użytkownika wygrywa z recovery. Oczekiwanie scalenia nie zatrzymuje reszty karty.
         # Tylko zapisany zamiar jest zgodą na recovery; tick nigdy nie zaczyna nowego scalenia.
         self._recover_main_merge(card)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         blocking_tracker_error = any(e.get('action') != 'youtrack-note' for e in st.tracker_failures())
         try:
             if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
@@ -2812,18 +2812,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._tracker_notes(card)
         except yt.YouTrackError:
             pass
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         for intent in st.open_intents(include_background=True):
             if baseproposal.blocked(st):
                 break
             self._reconcile(card, intent)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         for item in st.steps.values():
             if item.get("step") in st.transfer_requests and item.get("step") not in st.step_decisions:
                 continue
             if item.get("mode") == "interactive" and not item.get("consoleClosed") and self._console_ended(item):
                 close_console(self.journal, card, item.get("step"))
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if st.moved_to in ("done", "archived") and not st.card_finished:
             self._complete_manual_finish(card, st.moved_to)
             return
@@ -2832,10 +2832,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 continue
             self._poll(card, step)
         # Zbieramy wyniki procesów, ale nie oceniamy ani nie integrujemy ich w czasie decyzji.
-        if baseproposal.blocked(fold(self.journal.read(card))):
+        if baseproposal.blocked(self.journal.state(card)):
             return
-        self._advance_user_revision(card, fold(self.journal.read(card)))
-        current = fold(self.journal.read(card))
+        self._advance_user_revision(card, self.journal.state(card))
+        current = self.journal.state(card)
         if (current.plan_revision or {}).get("pending"):
             self._advance_plan_review(card, current)
         self._queue_notices(card)
@@ -2843,7 +2843,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._flow_error(card, found)
         # Opiekun karty (PT-143) po istniejących automatach (ponowienie, mocniejszy wykonawca, odpowiedź
         # o środowisko, auto-odmowa) i przed powiadomieniami (`_queue_notices` w `tick`).
-        self._caretake(card, fold(self.journal.read(card)))
+        self._caretake(card, self.journal.state(card))
 
     def _advance_card(self, card: str, *, own: tuple | None = None) -> list[dict]:
         """Przebieg etapów karty: ostatnie kroki ticketów, commit planu i kolejne tickety, domknięcie karty.
@@ -2854,7 +2854,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         found: list[dict] = []
 
         def fresh() -> FlowState:
-            current = fold(self.journal.read(card))
+            current = self.journal.state(card)
             if own is not None:
                 current.intents.pop(own, None)
             return current
@@ -2932,7 +2932,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """Zapis błędu Tide: `flow.error` raz dla tego samego etapu i tekstu (z chwilą `at` z zegara silnika); ten sam
         tekst w kolejnym przebiegu co najmniej `FLOW_ERROR_PERSIST` s po pierwszym — jeden `flow.error-persisted`
         (wyzwalacz opiekuna, PT-147). Błąd, który w następnym przebiegu już nie wystąpił, zostaje jednorazowy."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         error = found["error"]
         stage = found.get("stage") or "advance"
         item = st.flow_errors.get(stage) or {}
@@ -2951,7 +2951,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _clear_flow_error(self, card: str, stage: str, *, own: tuple | None = None) -> None:
         """Etap wykonał się bez błędu, także bez startu kroku. Rozwiązanie dotyczy tylko tego etapu."""
-        item = fold(self.journal.read(card)).flow_errors.get(stage)
+        item = self.journal.state(card).flow_errors.get(stage)
         if item:
             fields = {"caretakerStep": own[1], "caretaker": "retry-stage"} if own else {}
             self.journal.append(card, "flow.error-cleared", stage=stage, error=item["event"].get("error") or "",
@@ -3152,7 +3152,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if st.last_step not in st.step_retries:
                     self.journal.append(card, "step.retry", step=st.last_step, ticket=step.get("ticket") or "",
                                         reason=done.get("reason") or "")
-                    st = fold(self.journal.read(card))
+                    st = self.journal.state(card)
                 self._resume_step(card, st, step, {"choice": "auto"}, attempt=1)
             else:
                 stronger = self._stronger_executor(step, done)
@@ -3196,7 +3196,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     # Pytanie zadane przy dawnym progu (3 rundy) — Tide sam wybiera „Ponów poprawki”.
                     self.journal.append(card, "review.decision", ticket=ticket, round=round_no, choice="retry",
                                         auto=True)
-                    st = fold(self.journal.read(card))
+                    st = self.journal.state(card)
                 self._fix(card, st, step)
             elif (ticket, round_no) not in st.review_questions:
                 self.journal.append(card, "review.question", ticket=ticket, round=round_no,
@@ -3219,14 +3219,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                            s.get("kind") == "ticket"), None)
             if source is not None:
                 self._merge(card, st, source, retry=retry_merge)
-        merged = fold(self.journal.read(card)).results.get(("merge", ticket))
+        merged = self.journal.state(card).results.get(("merge", ticket))
         if merged and not merged.get("ok") and "konflikt" in (merged.get("error") or "").lower():
-            current = fold(self.journal.read(card))
+            current = self.journal.state(card)
             if not any(s.get("kind") == "conflict" and s.get("ticket") == ticket for s in current.steps.values()):
                 self._start_conflict(card, current, step, merged)
             return
         if merged and merged.get("ok"):
-            self._cleanup(card, fold(self.journal.read(card)), ticket, int(step.get("round") or 1))
+            self._cleanup(card, self.journal.state(card), ticket, int(step.get("round") or 1))
 
     def _plan_next(self, card: str, st: FlowState) -> None:
         """Zapisuje aktualny plan i uruchamia gotowe tickety w granicach slotów, po scaleniu ich blokerów.
@@ -3247,7 +3247,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
         if not card_work:
-            self._plan_commit(card, fold(self.journal.read(card)), project.repo, card_branch, card_worktree)
+            self._plan_commit(card, self.journal.state(card), project.repo, card_branch, card_worktree)
         if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
             return
         for row in rows:
@@ -3304,7 +3304,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
             except FlowDeferred:
                 continue
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
         # Odrzucony ticket nie blokuje niezależnych gałęzi grafu.
 
     def _plan_commit(self, card: str, st: FlowState, repo: str, branch: str, worktree: str) -> None:
@@ -3487,7 +3487,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     raise FlowError("no-base", "nie można ustalić commita przed przekazaniem")
                 self.journal.append(card, "step.transfer_requested", step=focus,
                                     ticket=step.get("ticket") or "", executor=executor, baseTip=base_tip)
-                st = fold(self.journal.read(card))
+                st = self.journal.state(card)
         if not done:
             if choice != "transfer" or any(other.get("ticket") == step.get("ticket") and
                                             other.get("step") != focus for other in st.running()):
@@ -3496,7 +3496,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                        self._stop(card, step, "stopped", "transfer", handoff=True))
             if not stopped:
                 raise FlowError("stop-failed", "nie udało się zatrzymać kroku; przekazanie czeka")
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
         wip = self._wip_for(st, focus)
         if not self._wip_safe(wip):
             wip = self._repair_wip(card, st, step)
@@ -3543,7 +3543,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _recover_transfer_requests(self, card: str, st: FlowState) -> None:
         """Po restarcie dokańcza stop, WIP i decyzję przed zwykłym odpytywaniem Konsoli."""
         for name, intent in st.transfer_requests.items():
-            current = fold(self.journal.read(card))
+            current = self.journal.state(card)
             if current.card_finished or name in current.step_decisions:
                 continue
             try:
@@ -3599,7 +3599,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("bad-choice", "wybierz retry-stage, dismiss albo report")
         if choice == "report":
             self._caretaker_description(request)
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
         wanted = request.get("problem")
         decision = next((d for d in waiting if not wanted or d["technical"]["problem"] == wanted), None)
@@ -3635,7 +3635,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "instead" in request and request.get("choice") != "deny":
             raise FlowError("bad-request", "`allow` idzie tylko z choice=allow, `instead` tylko z choice=deny")
         choice = str(request.get("choice") or "")
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if choice == "change-base":
             from .basegeneration import BaseGeneration
             return BaseGeneration(self).resolve(card, request)
@@ -3806,7 +3806,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 card = f"K-{card_num(card_id)}"
             except BoardError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             waiting = [d for d in decisions.build_decisions(st) if d["kind"] == "caretaker"]
             if not any(d["technical"]["problem"] == request["problem"] for d in waiting):
                 raise FlowError("not-waiting", "karta nie czeka na decyzję opiekuna")
@@ -3851,7 +3851,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if not isinstance(description, str) or not description.strip() or \
                 len(description.strip()) > faults.DESCRIPTION_LIMIT:
             raise FlowError("bad-description", f"opis problemu musi mieć od 1 do {faults.DESCRIPTION_LIMIT} znaków")
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         name = str(request.get("step") or "") or decision_step(st)
         step, done = st.steps.get(name) or {}, st.finished.get(name) or {}
         busy = any((s.get("worktree") == step.get("worktree") if step.get("kind") in
@@ -3955,7 +3955,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _card_merged(self, card_id: str) -> bool:
         """Karta scalona do zapisanego celu, także w historycznym formacie."""
         try:
-            return self.journal.has(card_id) and bool(fold(self.journal.read(card_id)).merged)
+            return self.journal.has(card_id) and bool(self.journal.state(card_id).merged)
         except Exception:
             return False
 
@@ -4188,7 +4188,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _save_transfer_reviewer(self, card: str, step: dict, candidate) -> None:
         if candidate is None:
             return
-        prior = fold(self.journal.read(card)).reviewer_overrides.get(step.get("ticket") or "") or {}
+        prior = self.journal.state(card).reviewer_overrides.get(step.get("ticket") or "") or {}
         if prior.get("sourceStep") == step.get("step") and prior.get("reviewer") == candidate.name:
             return
         route = candidate.route
@@ -4230,7 +4230,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             decision = self._outside_ready(card, step, done, decision)
             if decision is None:
                 return          # polecenie poza piaskownicą jeszcze trwa
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
         item, project = self._project(card)
         info = ticket_of(st, step.get("ticket") or "")
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
@@ -4341,7 +4341,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if choice not in ("retry", "reject", "accept"):
             raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         self._require_base_context(card)
         st.last_step = attention_step(st) or st.last_step
         step = st.steps.get(st.last_step) or {}
@@ -4451,7 +4451,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 tip = self.git.clean_tip(project.repo, info["branch"], path, untracked=False)
             else:
                 self.journal.append(card, "step.cleanup", step=source["step"], ticket=ticket)
-                self._resume_step(card, fold(self.journal.read(card)), source, {"choice": "cleanup"})
+                self._resume_step(card, self.journal.state(card), source, {"choice": "cleanup"})
                 return
         diff = self.git.review_diff(project.repo, info["cardBranch"], info["branch"])
         step_id = self._next_step_id(card, ticket, st)
@@ -4527,7 +4527,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                   retry_failed=True, repo=repo, branch=info["branch"], worktree=info["worktree"])
 
     def _recover_verdicts(self, card: str) -> None:
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         for name, finished in st.finished.items():
             step = st.steps.get(name) or {}
             if name in st.superseded or step.get("kind") != "review" or finished.get("result") != "done" or \
@@ -4548,7 +4548,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _recover_review_rejections(self, card: str) -> None:
         """Decyzja reject i zdarzenie odrzucenia mogą zostać rozdzielone restartem usługi."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         for (ticket, _round), decision in st.review_decisions.items():
             if decision.get("choice") == "reject" and ticket not in st.rejected:
                 self.journal.append(card, "ticket.rejected", ticket=ticket)
@@ -4572,7 +4572,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                             intent.get("prefix") or "", int(intent.get("minimumNumber") or 0)))
             return
         if action == "plan-commit":
-            self._plan_commit(card, fold(self.journal.read(card)), intent["repo"],
+            self._plan_commit(card, self.journal.state(card), intent["repo"],
                               intent["branch"], intent["worktree"])
             return
         if action in ("card-branch", "ticket-branch", "review-branch", "step-reopen"):
@@ -4588,7 +4588,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                       retry_failed=True)
             return
         if action == "merge":
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             step = next((s for s in st.steps.values() if s.get("ticket") == key), None)
             if step is not None:
                 self._merge(card, st, step)
@@ -4596,7 +4596,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if action == "caretaker-action":
             # Akcja opiekuna przerwana restartem między zamiarem a wynikiem (PT-150): dokończenie tą samą ścieżką;
             # `apply` sprawdza, co już zapisał ten krok opiekuna, więc skutek powstaje dokładnie raz.
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             run = st.caretaker_runs.get(key) or st.caretaker_chat_actions.get(key)
             done = st.finished.get(key) or {}
             if run and run.get("mode") == "chat":
@@ -4619,7 +4619,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 except agentcmd.StepError:
                     pass
                 self.journal.append(card, "result", action=action, key=key, ok=True, unit=unit, gitDir=git_dir)
-                self._recover_started_steps(card, fold(self.journal.read(card)))
+                self._recover_started_steps(card, self.journal.state(card))
                 return
             if code not in (None, 0):
                 self.journal.append(card, "result", action=action, key=key, ok=False,
@@ -4659,7 +4659,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""))
 
     def _repo(self, card: str) -> str:
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         return (st.started or {}).get("repo") or ""
 
     def _poll(self, card: str, step: dict) -> None:
@@ -4668,9 +4668,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         name = step.get("step") or ""
         log = os.path.join(step.get("stepDir") or "", "out", "step.log")
-        base_wait = bool(baseproposal.pending(fold(self.journal.read(card))))
+        base_wait = bool(baseproposal.pending(self.journal.state(card)))
         if not base_wait and flow_limits.exhausted_log(log, step.get("program") or ""):
-            if name not in fold(self.journal.read(card)).limits:
+            if name not in self.journal.state(card).limits:
                 low = self._low_limit(step.get("provider") or "") or {}
                 base_tip = self.git.sha(step.get("repo") or self._repo(card),
                                         f"refs/heads/{step.get('branch') or ''}")
@@ -4769,7 +4769,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         if seen[0] != mark:
             self.watch[name] = (mark, now, now)
-            activity = (fold(self.journal.read(card)).activity.get(name) or step).get("ts")
+            activity = (self.journal.state(card).activity.get(name) or step).get("ts")
             if self.clock() - _epoch(activity) >= 60:
                 self.journal.append(card, "step.activity", step=name, ticket=step.get("ticket") or "")
             return
@@ -4782,14 +4782,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _guard_card(self, card: str) -> None:
         """Po trzech minutach bez pracy i bez nazwanego powodu czekania zapisuje pojedynczy alarm."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if guard_reason(st) != "" or st.stalled_since or not st.last_activity_ts:
             return
         item = self.store.load().cards.get(card_num(card))
         if item is None or item.column in ("done", "archived") or self.clock() - st.last_activity_ts < 180:
             return
         event = self.journal.append(card, "card.stalled", reason=st.flow_error or "brak kroku i powodu czekania")
-        if caretaker.unavailable(fold(self.journal.read(card)), item.column):
+        if caretaker.unavailable(self.journal.state(card), item.column):
             self._notices.append({"card": card, "step": f"stalled:{event['seq']}", "ticket": "", "result": "stalled",
                                   "detail": event["reason"]})
 
@@ -4842,7 +4842,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _recovered_wip_snapshot(self, card: str, step: dict) -> stepstop.Snapshot | None:
         """Odtwarza commit WIP zapisany przed awarią, lecz jeszcze nieutrwalony w dzienniku."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         name = step.get("step") or ""
         signal_event = st.transfer_requests.get(name) or st.limits.get(name) or {}
         base = signal_event.get("baseTip") or ""
@@ -4904,7 +4904,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _finish(self, card: str, step: dict, forced: dict | None = None, wip: dict | None = None,
                 messages=None, exit_code=None) -> None:
         name = step.get("step") or ""
-        if name in fold(self.journal.read(card)).finished:
+        if name in self.journal.state(card).finished:
             return
         if step.get("kind") == "caretaker-chat":
             self._finish_caretaker_chat(card, step, (forced or {}).get("reason") or "")
@@ -4940,12 +4940,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     data = {"result": "error", "reason": "review-changed-ticket"}
         merged_tip = ""
         if step.get("kind") == "conflict" and data.get("result") == "done":
-            info = ticket_of(fold(self.journal.read(card)), step.get("ticket") or "")
+            info = ticket_of(self.journal.state(card), step.get("ticket") or "")
             try:
                 merged_tip = self.git.merged_tip(step.get("repo") or self._repo(card),
                                                  info["cardBranch"], info["branch"], info["cardWorktree"],
                                                  step.get("reviewTip") or "",
-                                                 (fold(self.journal.read(card)).intents.get(
+                                                 (self.journal.state(card).intents.get(
                                                      ("merge", step.get("ticket") or "")) or {}).get("cardTip") or "")
             except FlowGitError as exc:
                 data = {"result": "error", "reason": f"konflikt nierozwiązany: {exc}"}
@@ -4956,7 +4956,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 with open(summary, encoding="utf-8") as fh:
                     text = fh.read(OUTPUT_MAX)
                 valid = valid and bool(text.strip()) and (
-                    (fold(self.journal.read(card)).started or {}).get("check") != "manual" or
+                    (self.journal.state(card).started or {}).get("check") != "manual" or
                     "Co przetestować ręcznie i jak" in text)
             except (OSError, UnicodeError):
                 valid = False
@@ -5068,7 +5068,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _queue_notices(self, card: str) -> None:
         """Zdarzenie przed wysłaniem: po restarcie pytanie nie daje drugiego powiadomienia."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if st.card_finished:
             return
         withheld = self._caretaker_withheld(card, st)
@@ -5089,7 +5089,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             st.step_notices.add(name)
             self._notices.append({"card": card, "step": name, "ticket": step.get("ticket") or "",
                                   "result": result, "detail": detail or ""})
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
 
         def once(key: str, result: str, detail: str = "") -> None:
             if key in st.flow_notices:
@@ -5151,14 +5151,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if st.started is None or st.card_finished:
             return
         for name, run in list(st.caretaker_runs.items()):
-            current = fold(self.journal.read(card))
+            current = self.journal.state(card)
             if name in current.caretaker_outcomes:
                 continue
             if name in current.finished:
                 self._caretaker_apply(card, current, run, current.finished[name])
             elif name not in current.caretakers:
                 self._caretaker_launch(card, current, run)
-        st = self._caretaker_state(fold(self.journal.read(card)))
+        st = self._caretaker_state(self.journal.state(card))
         conf = self._caretaker_setup(st)
         if caretaker.unavailable(st, self._card_column(card), conf):
             return
@@ -5177,7 +5177,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                     recommendation="Sprawdź podsumowanie prób i wybierz dalsze działanie w decyzji.",
                                     optionId="", failed=True, limit=True, count=own["count"],
                                     error=f"wyczerpany limit działań opiekuna ({limit})", code=caretaker.LIMIT)
-                st = self._caretaker_state(fold(self.journal.read(card)))
+                st = self._caretaker_state(self.journal.state(card))
                 continue
             step_id = f"{card}-care-{len(st.caretaker_runs) + 1}"
             run = self.journal.append(card, caretaker.STARTED, problem=problem["id"],
@@ -5185,8 +5185,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                       target=problem["step"], root=problem["root"], ticket=problem["ticket"],
                                       trigger=problem["trigger"], triggers=problem["triggers"],
                                       decision=problem.get("decision") or "", watermark=st.last_seq)
-            self._caretaker_launch(card, fold(self.journal.read(card)), run)
-            st = self._caretaker_state(fold(self.journal.read(card)))
+            self._caretaker_launch(card, self.journal.state(card), run)
+            st = self._caretaker_state(self.journal.state(card))
 
     def _caretaker_state(self, st: FlowState) -> FlowState:
         """Migawka ustawień i zegara także dla wyzwalaczy i sprawdzania aktualności, nie tylko widoków."""
@@ -5442,7 +5442,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         zostaje `step.finished` z `outcome`; akcję wykonuje `_caretake`."""
         name = step.get("step") or ""
         out = os.path.join(step.get("stepDir") or "", "out")
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         problem = self._caretaker_problem(st, st.caretaker_runs.get(name) or {})
         # Strażnik (PT-158) przed wszystkim innym, także przed `parse_result`: z kroku, który pisał poza `out`,
         # żadna akcja nie przechodzi, nawet z poprawnym plikiem wyniku.
@@ -5630,7 +5630,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if not st.closed or st.card_finished:
             raise FlowError("not-closed", "karta nie jest jeszcze do sprawdzenia")
         info = ticket_of(st)
@@ -5677,7 +5677,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
         started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
-            if fold(self.journal.read(card)).paused:
+            if self.journal.state(card).paused:
                 # Wstrzymana karta nie uruchamia nowych poleceń poza piaskownicą i nie trzyma miejsca w kolejce
                 # (07.11, K-38/PT-264: automatyczna zgoda 3 min po wstrzymaniu puściła pełne testy w trakcie gry).
                 # Po wznowieniu zgoda wraca do kolejki; polecenie już uruchomione kończy się normalnie.
@@ -5769,7 +5769,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """Pytanie kroku o środowisko (piaskownica, Docker, porty, instalacje, testy) dostaje odpowiedź Tide zamiast
         trafić do użytkownika (03.11: „to serio tak ma działać, że muszę odpalać sesję ratunkową?”). Raz na ticket
         z rzędu: gdy agent zapyta ponownie zaraz po odpowiedzi Tide, pytanie idzie do użytkownika."""
-        if done.get("baseProposal") is not None or baseproposal.pending(fold(self.journal.read(card))):
+        if done.get("baseProposal") is not None or baseproposal.pending(self.journal.state(card)):
             return
         question = str(done.get("question") or "")
         name = step.get("step") or ""
@@ -5857,7 +5857,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         wanted = " ".join(str(command).split())
         return bool(wanted) and any(
             d.get("choice") == "deny" and d.get("ticket") == ticket and " ".join(str(d.get("command") or "").split()) == wanted
-            for d in fold(self.journal.read(card)).step_decisions.values())
+            for d in self.journal.state(card).step_decisions.values())
 
     def _git_identity(self, repo: str) -> dict:
         """Autor commitów kroku = tożsamość gita użytkownika dla tego repozytorium (lokalna, inaczej globalna).
@@ -5926,12 +5926,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         """Odczyt grafu, kontrola i zapis są jedną sekcją dla wyników kroków i decyzji ręcznych."""
         from . import waiting
         with self.journal.lock:
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             if baseproposal.blocked(st):
                 raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
             if name in st.step_decisions or name in st.superseded or st.card_finished:
                 raise FlowError("already-decided", "krok nie czeka już na decyzję")
-            states = {ident: fold(self.journal.read(ident)) for ident in self.journal.cards()}
+            states = {ident: self.journal.state(ident) for ident in self.journal.cards()}
             states[card] = st
             if choice == "wait-card":
                 other = str(target or "").strip().upper()
@@ -5952,7 +5952,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _card_done(self, card: str) -> bool:
         """Karta domknięta (krok domknięcia przeszedł albo karta skończona) — koniec czekania „czeka na kartę”."""
         try:
-            other = fold(self.journal.read(card))
+            other = self.journal.state(card)
         except Exception:
             return False
         return bool(other.card_finished or other.closed)
@@ -6012,7 +6012,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return better[0].name if better else ""
 
     def _ticket_consent(self, card: str, ticket: str) -> bool:
-        return (fold(self.journal.read(card)).ticket_consents.get(ticket) or {}).get("type") == consent.GRANTED
+        return (self.journal.state(card).ticket_consents.get(ticket) or {}).get("type") == consent.GRANTED
 
     def _outside_busy(self, card: str) -> bool:
         """Jedno polecenie poza piaskownicą naraz w projekcie i OUTSIDE_TOTAL łącznie (03.11, K-31: pięć przebiegów
@@ -6137,7 +6137,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         (albo kroku planu) decyzja wraca do użytkownika, żeby nie kręcić się w kółko."""
         ticket = step.get("ticket") or ""
         kind = step.get("kind") or ""
-        if self._caretaker_takes_over(card, fold(self.journal.read(card)), name):
+        if self._caretaker_takes_over(card, self.journal.state(card), name):
             return      # ta sama odmowa drugi raz (PT-148): opiekun przed kolejną ślepą próbą i przed AUTO_DENY_LIMIT
         used = sum(1 for e in self.journal.read(card) if e.get("type") == "step.decision" and e.get("auto")
                    and e.get("choice") == "deny"
@@ -6205,7 +6205,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         text, limit = request.get("text", ""), request.get("limit", 50)
         if not isinstance(text, str) or type(limit) is not int or not 1 <= limit <= 100:
             raise FlowError("bad-request", "tekst musi być napisem, limit liczbą od 1 do 100")
-        st = fold(self.journal.read(card_id)) if request["purpose"] == "merge" else None
+        st = self.journal.state(card_id) if request["purpose"] == "merge" else None
         if st is not None and st.started:
             # Zmiana projektu karty nie zmienia repozytorium rozpoczętego zlecenia.
             # Lista i kwalifikacja celu muszą używać tego samego repo co podgląd i zgoda.
@@ -6269,7 +6269,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         for other_id in self.journal.cards():
             if other_id == card:
                 continue
-            other = fold(self.journal.read(other_id))
+            other = self.journal.state(other_id)
             other_repo = (other.started or {}).get("repo")
             if not other_repo:
                 try:
@@ -6424,7 +6424,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         self._require_base_context(card)
         if not st.started or st.card_finished:
             raise FlowError("no-order", "karta nie ma otwartego zlecenia")
@@ -6459,7 +6459,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return processes
 
     def _require_base_context(self, card):
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if baseproposal.generation_blocked(st):
             raise FlowError("base-validation", "Generacja czeka na odzyskanie lub walidację kontekstu.")
 
@@ -6510,7 +6510,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         branch = ticket_of(st)["cardBranch"]
         if not branch:
             raise FlowError("no-base", "brak gałęzi karty")
@@ -6598,7 +6598,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         repo = self._repo(card)
         with lock_for(repo), self.journal.lock:
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             self._require_base_context(card)
             intent = self._main_merge_intent(st)
             if (intent and intent.get("previewToken") == request["previewToken"] and
@@ -6623,7 +6623,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if intent or st.merged:
                 raise FlowError("stale-preview", "Zlecenie ma już operację scalenia. Użyj jej ID albo nowego zlecenia.")
             self._merge_card_to_main_locked(card, repo, preview=preview)
-            intent = self._main_merge_intent(fold(self.journal.read(card)))
+            intent = self._main_merge_intent(self.journal.state(card))
             return {"ok": True, "id": card, **MergeWorktree.result(intent)}
 
     def merge_card_to_main(self, card_id: str) -> dict:
@@ -6632,7 +6632,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        intent = self._main_merge_intent(fold(self.journal.read(card)))
+        intent = self._main_merge_intent(self.journal.state(card))
         repo = intent["repo"] if intent else self._repo(card)
         with lock_for(repo):
             return self._merge_card_to_main_locked(card, repo)
@@ -6678,7 +6678,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         planu, nowe domknięcie albo ręczne Gotowe/Archiwum kończy oczekiwanie. Zapisujemy tylko porzucenie —
         bez dotykania plików, indeksu i refu. Ewentualna materializacja zostaje w checkoutcie; nowy zamiar
         odziedziczy ją wyłącznie przy niezmienionym refie (MergeWorktree.prepare)."""
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         returned = any(e["seq"] > intent["seq"] and (e["type"] in ("plan.returned", "card.closed") or
                        (e["type"] == "card.moved" and e.get("to") in ("todo", "done", "archived")))
                        for e in self.journal.read(card))
@@ -6694,12 +6694,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _merge_card_to_main_locked(self, card: str, repo: str, *, preview: dict | None = None) -> dict:
         legacy = preview is None
-        st = fold(self.journal.read(card))
+        st = self.journal.state(card)
         if baseproposal.blocked(st):
             raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
         intent = self._main_merge_intent(st)
         if intent and self._abandon_main_merge(card, intent):
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             intent = None
         if intent:
             already = bool(st.merged)
@@ -6775,7 +6775,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 stages.add(stage)
 
         try:
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             if st.card_finished and st.merged and st.merged.get("operationId") == key:
                 checkpoint("projected")
                 return
@@ -6834,14 +6834,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 self.journal.append(card, "result", action="main-merge", key=key, ok=True,
                                     commit=result["resultCommit"], **result)
             checkpoint("result-saved")
-            st = fold(self.journal.read(card))
+            st = self.journal.state(card)
             if not st.merged:
                 self.journal.append(card, "card.merged", branch=branch,
                                     commit=result["resultCommit"], **result)
-            self._project_main_merge(card, fold(self.journal.read(card)), operation_id=key)
+            self._project_main_merge(card, self.journal.state(card), operation_id=key)
             checkpoint("projected")
         except (FlowGitError, BoardError, OSError, FlowError) as exc:
-            waiting = fold(self.journal.read(card)).merge_waiting or {}
+            waiting = self.journal.state(card).merge_waiting or {}
             if waiting.get("key") != key or waiting.get("reason") != str(exc):
                 self.journal.append(card, "main-merge.waiting", key=key, reason=str(exc))
             raise FlowError("main-merge", str(exc)) from None

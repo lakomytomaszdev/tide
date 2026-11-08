@@ -21,6 +21,7 @@ class IntegrationTest(unittest.TestCase):
     def engine(self, journal):
         engine = FlowEngine.__new__(FlowEngine)
         engine.journal = SimpleNamespace(read=lambda card: journal.events,
+                                         state=lambda card: fold(journal.events),
                                          append=lambda card, kind, **data: journal.add(kind, **data))
         return engine
 

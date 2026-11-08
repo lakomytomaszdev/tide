@@ -3,6 +3,7 @@ import types
 import unittest
 
 from tide_daemon.cardflow import engine as flow_engine
+from tide_daemon.cardflow.state import fold
 
 
 def stub(projects, busy=()):
@@ -46,7 +47,8 @@ class OutsideQueueTest(unittest.TestCase):
         }
         eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
         eng._outside_seeded = False
-        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card])
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card],
+                                          state=lambda card: fold(journals[card]))
         # K-37 jest sprawdzana pierwsza po restarcie, ale starsza zgoda K-38 z dziennika idzie przed nią
         self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
         self.assertFalse(eng._outside_behind("K-38", "K-38-PT-1-4", {"ts": ts(70)}))
@@ -64,7 +66,8 @@ class OutsideQueueTest(unittest.TestCase):
         }
         eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
         eng._outside_seeded = False
-        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card])
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card],
+                                          state=lambda card: fold(journals[card]))
         self.assertFalse(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
         self.assertNotIn("K-38-PT-1-4", eng._outside_waiting)
 
@@ -73,7 +76,7 @@ class OutsideQueueTest(unittest.TestCase):
         eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"}, busy={"K-37", "K-38"})
         eng._outside_active = {"K-37-PT-9-1": ("K-37", "unit")}
         eng._start_outside = lambda *a: self.fail("miejsce zajęte")
-        eng.journal = types.SimpleNamespace(read=lambda card: [])
+        eng.journal = types.SimpleNamespace(read=lambda card: [], state=lambda card: fold([]))
         step, done = {"step": "K-38-PT-1-4"}, {"command": "echo trial"}
         self.assertIsNone(eng._outside_ready("K-38", step, done, {"choice": "run", "ts": "2026-11-05T17:18:00+01:00"}))
         self.assertIn("K-38-PT-1-4", eng._outside_waiting)

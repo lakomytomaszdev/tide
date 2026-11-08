@@ -16,7 +16,10 @@ import json
 import os
 import re
 import threading
+from copy import copy
 from datetime import datetime, timezone
+
+from .state import FlowState, fold
 
 SCHEMA = 1
 FLOW_DIR = "flow"
@@ -39,6 +42,7 @@ class Journal:
         self.lock = threading.RLock()
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
+        self._states: dict[str, tuple] = {}    # karta → (wersja dziennika, projekcja)
 
     # --- ścieżki ---------------------------------------------------------------------------------
 
@@ -75,26 +79,52 @@ class Journal:
 
     def read(self, card: str) -> list[dict]:
         """Zdarzenia karty z kopii usługi (albo z tablicy, gdy kopii nie ma). Pamięć po rozmiarze i mtime."""
+        with self.lock:
+            return list(self._read_version(card)[1])
+
+    def state(self, card: str) -> FlowState:
+        """Projekcja z własnymi kontenerami pól. Zagnieżdżone wartości służą tylko do odczytu."""
+        with self.lock:
+            key, events = self._read_version(card)
+            hit = self._states.get(card)
+            if hit is None or hit[0] != key:
+                hit = (key, fold(events))
+                self._states[card] = hit
+            state = copy(hit[1])
+            # Silnik lokalnie zmienia pola i kontenery projekcji. Wartości zagnieżdżone
+            # (także wytworzone przez fold) tylko czyta; deepcopy jest droższy od fold.
+            for name, value in vars(state).items():
+                if isinstance(value, (dict, list, set)):
+                    setattr(state, name, value.copy())
+            return state
+
+    def _read_version(self, card: str) -> tuple:
         source = self.mirror_path(card) if os.path.isfile(self.mirror_path(card)) else self.path(card)
         try:
             st = os.stat(source)
         except OSError:
-            return []
+            self._cache.pop(card, None)
+            return (source, None, None), []
         key = (source, st.st_size, st.st_mtime_ns)
         hit = self._cache.get(card)
         if hit is not None and hit[0] == key:
-            return list(hit[1])
+            return hit
         events = _parse(_read(source))
         self._cache[card] = (key, events)
-        return list(events)
+        return key, events
 
     # --- zapis -----------------------------------------------------------------------------------
+
+    def _invalidate(self, card: str) -> None:
+        self._cache.pop(card, None)
+        self._states.pop(card, None)
 
     def append(self, card: str, kind: str, /, **data) -> dict:
         with self.lock:
             events = self.read(card)
             event = {"v": SCHEMA, "seq": len(events) + 1, "ts": self._now(), "card": card, "type": kind, **data}
             line = json.dumps(event, ensure_ascii=False) + "\n"
+            self._invalidate(card)
             _mkdir(self.mirror)
             if not os.path.isfile(self.mirror_path(card)) and events:
                 _write(self.mirror_path(card), "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
@@ -113,6 +143,8 @@ class Journal:
             if not os.path.realpath(target).startswith(os.path.realpath(os.path.join(self.root, FLOW_DIR)) + os.sep):
                 raise ValueError(f"ścieżka poza katalogiem karty: {rel}")
             os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.abspath(target) == self.path(card):
+                self._invalidate(card)
             with open(target, "wb") as fh:
                 fh.write(data)
             rel_path = os.path.relpath(target, self.root)
@@ -126,6 +158,8 @@ class Journal:
             if not os.path.realpath(target).startswith(os.path.realpath(os.path.join(self.root, FLOW_DIR)) + os.sep):
                 raise ValueError(f"ścieżka poza katalogiem karty: {rel}")
             if os.path.isfile(target):
+                if os.path.abspath(target) == self.path(card):
+                    self._invalidate(card)
                 os.unlink(target)
                 self._dirty.add(os.path.relpath(target, self.root))
 
@@ -134,6 +168,7 @@ class Journal:
         with self.lock:
             if not os.path.isfile(self.mirror_path(card)):
                 if os.path.isfile(self.path(card)):
+                    self._invalidate(card)
                     os.makedirs(self.mirror, mode=0o700, exist_ok=True)
                     _write(self.mirror_path(card), _read(self.path(card)))
                 return ""
@@ -149,6 +184,7 @@ class Journal:
             return paths
 
     def _restore(self, card: str) -> None:
+        self._invalidate(card)
         text = _read(self.mirror_path(card))
         _mkdir(os.path.dirname(self.path(card)))
         _write(self.path(card), text)
