@@ -175,7 +175,8 @@ def overridden(trees: dict):
 
 
 def _clear():
-    for cached in (modules, imports, constants, local_constants, definitions, _graph_cached, _journal_aliases):
+    for cached in (modules, imports, constants, local_constants, definitions, _graph_cached,
+                   _journal_aliases, _value_bindings):
         cached.cache_clear()
 
 
@@ -216,7 +217,7 @@ def _resolve_module(path: str, level: int, name: str | None) -> str | None:
         base = base.parent
     target = base / (name.replace(".", "/") if name else "")
     for candidate in (target.with_suffix(".py"), target / "__init__.py"):
-        if (PACKAGE / candidate).is_file():
+        if candidate.as_posix() in _OVERRIDES or (PACKAGE / candidate).is_file():
             return candidate.as_posix()
     return None
 
@@ -382,26 +383,71 @@ class Unresolved(Exception):
     pass
 
 
-def literal_keys(node) -> frozenset:
+def _name_aliases(node) -> frozenset:
+    """Zachowawcza grupa aliasów słownika w funkcji (bez usuwania po ponownym przypisaniu).
+
+    Relacja jest symetryczna: mutacja aliasu zmienia również źródłowy słownik.
+    Rozpakowanie i przypisania wielokrotne zachowują tę samą relację.
+    """
+    function = enclosing_function(node)
+    if not isinstance(node, ast.Name) or function is None or isinstance(function, ast.Lambda):
+        return frozenset()
+    edges = []
+
+    def bind(target, value):
+        if isinstance(target, ast.Name) and isinstance(value, ast.Name):
+            edges.append({target.id, value.id})
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            for left, right in zip(target.elts, value.elts):
+                bind(left, right)
+
+    for child in _function_body_nodes(function):
+        targets = child.targets if isinstance(child, ast.Assign) else \
+            [child.target] if isinstance(child, ast.AnnAssign) else []
+        for target in targets:
+            bind(target, child.value)
+    aliases = {node.id}
+    while True:
+        before = len(aliases)
+        for edge in edges:
+            if aliases & edge:
+                aliases |= edge
+        if len(aliases) == before:
+            return frozenset(aliases)
+
+
+def literal_keys(node, seen=frozenset()) -> frozenset:
     """Znane klucze zmiennej `node` w jej funkcji: `x["k"] = …`, `x["k"] += …`, `x.update(k=…)`,
     `x.update({"k": …})`, `x.setdefault("k", …)`, `x |= {"k": …}` i słownik w przypisaniu `x = {…}`.
     Klucze niestałe pozostają częścią zakresu dynamicznego (osobna kontrola w teście)."""
     if not isinstance(node, ast.Name):
         return frozenset()
     function = enclosing_function(node)
-    if function is None:
+    if function is None or isinstance(function, ast.Lambda):
         return frozenset()
+    aliases = _name_aliases(node)
+    if aliases & seen:
+        return frozenset()
+    seen = seen | aliases
 
     def dict_keys(value):
         if isinstance(value, ast.Dict):
-            return {k.value for k in value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            keys = {k.value for k in value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            for key, item in zip(value.keys, value.values):
+                if key is None:
+                    keys |= dict_keys(item)
+            return keys
+        if isinstance(value, ast.Name):
+            return set(literal_keys(value, seen))
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
+            return dict_keys(value.left) | dict_keys(value.right)
         return set()
 
     def same(target):
-        return isinstance(target, ast.Name) and target.id == node.id
+        return isinstance(target, ast.Name) and target.id in aliases
 
     keys = set()
-    for child in ast.walk(function):
+    for child in _function_body_nodes(function):
         targets = child.targets if isinstance(child, ast.Assign) else \
             [child.target] if isinstance(child, (ast.AugAssign, ast.AnnAssign)) else []
         for target in targets:
@@ -413,7 +459,7 @@ def literal_keys(node) -> frozenset:
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and same(child.func.value):
             if child.func.attr == "update":
                 keys |= {k.arg for k in child.keywords if k.arg}
-                for arg in child.args:
+                for arg in [*child.args, *(k.value for k in child.keywords if k.arg is None)]:
                     keys |= dict_keys(arg)
             elif child.func.attr == "setdefault" and child.args and isinstance(child.args[0], ast.Constant) \
                     and isinstance(child.args[0].value, str):
@@ -485,43 +531,65 @@ class Resolver:
         function = enclosing_function(node)
         if function is None or isinstance(function, ast.Lambda):
             raise Unresolved(node.id)
-        if function.args.kwarg and function.args.kwarg.arg == node.id:
-            return self._kwargs(function)
+        aliases = _name_aliases(node)
         assigned = []
-        for child in ast.walk(function):
-            if isinstance(child, ast.Assign):
-                for target in child.targets:
-                    if isinstance(target, ast.Name) and target.id == node.id:
-                        assigned.append(self.keys(path, owner, child.value))
+        nodes = list(_function_body_nodes(function))
+        defined = set()
+        for child in nodes:
+            targets = child.targets if isinstance(child, ast.Assign) else \
+                [child.target] if isinstance(child, ast.AnnAssign) else []
+            for target in targets:
+                defined.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name)
+                               and isinstance(n.ctx, ast.Store))
+        if function.args.kwarg and function.args.kwarg.arg in aliases:
+            assigned.append(self._kwargs(function))
+            defined.add(function.args.kwarg.arg)
+        # Znane mutacje nie dowodzą pełnego zakresu słownika przyjętego z zewnątrz.
+        if aliases - defined or aliases & all_params(function):
+            raise Unresolved("nierozstrzygnięte źródło aliasu: " + node.id)
+
+        def add_assignment(target, value):
+            if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+                for left, right in zip(target.elts, value.elts):
+                    add_assignment(left, right)
+            elif isinstance(target, ast.Name) and target.id in aliases and value is not None:
+                # Połączenie aliasów jest już w grupie; rozwijanie go ponownie tworzyłoby cykl.
+                if not (isinstance(value, ast.Name) and value.id in aliases):
+                    assigned.append(self.keys(path, owner, value))
+            elif isinstance(target, (ast.Tuple, ast.List)) and any(
+                    isinstance(e, ast.Name) and e.id in aliases for e in target.elts):
+                raise Unresolved("rozpakowanie krotki: " + node.id)
+
+        for child in nodes:
+            if isinstance(child, (ast.Assign, ast.AnnAssign)) or (
+                    isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Subscript)):
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                for target in targets:
+                    if isinstance(target, (ast.Name, ast.Tuple, ast.List)):
+                        add_assignment(target, child.value)
                     elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) \
-                            and target.value.id == node.id:
+                            and target.value.id in aliases:
                         key = target.slice
                         if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
                             raise Unresolved("indeks niestały: " + ast.unparse(target))
                         assigned.append(frozenset({key.value}))
-                    elif isinstance(target, ast.Tuple) and any(
-                            isinstance(e, ast.Name) and e.id == node.id for e in target.elts):
-                        raise Unresolved("rozpakowanie krotki: " + node.id)
             elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
                     and child.func.attr == "update" and isinstance(child.func.value, ast.Name) \
-                    and child.func.value.id == node.id:
+                    and child.func.value.id in aliases:
                 assigned.extend(self.keys(path, owner, arg) for arg in child.args)
                 assigned.extend(self.keys(path, owner, k.value) if k.arg is None else frozenset({k.arg})
                                 for k in child.keywords)
             elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) \
                     and child.func.attr == "setdefault" and isinstance(child.func.value, ast.Name) \
-                    and child.func.value.id == node.id:
+                    and child.func.value.id in aliases:
                 key = resolve_constant(path, child.args[0]) if child.args else None
                 if not isinstance(key, str):
                     raise Unresolved("setdefault z niestałym kluczem: " + ast.unparse(child))
                 assigned.append(frozenset({key}))
             elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name) \
-                    and child.target.id == node.id:
+                    and child.target.id in aliases:
                 if not isinstance(child.op, ast.BitOr):
                     raise Unresolved("nieznana aktualizacja słownika: " + ast.unparse(child))
-                assigned.append(self.keys(path, owner, child.value))
-            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) \
-                    and child.target.id == node.id and child.value is not None:
                 assigned.append(self.keys(path, owner, child.value))
         if not assigned:
             raise Unresolved("brak przypisania: " + node.id)
@@ -598,6 +666,19 @@ def _is_card_append(node) -> bool:
             and node.func.attr in ("append", "append_complete")):
         return False
     return _journal_reference(node.func.value)
+
+
+def _card_append_escapes(node) -> bool:
+    """Metoda zapisująca jako wartość wymaga rozstrzygnięcia, tak samo jak box/state.record.
+
+    Dotyczy przypisania aliasu, przekazania callbacka i dalszych atrybutów metody.
+    Samo pochodzenie odniesienia wystarcza do odmowy; nie zgadujemy jego późniejszych wywołań.
+    """
+    if not (isinstance(node, ast.Attribute) and node.attr in ("append", "append_complete")
+            and _journal_reference(node.value)):
+        return False
+    parent = getattr(node, "_parent", None)
+    return not (isinstance(parent, ast.Call) and parent.func is node)
 
 
 BOX_RECORD = ("box/state.py", "record")
@@ -745,6 +826,8 @@ def writes() -> Catalog:
             try:
                 if _is_card_append(node):
                     _card_write(resolver, path, node, catalog)
+                elif _card_append_escapes(node):
+                    raise Unresolved("odniesienie do metody dziennika poza wywołaniem: " + ast.unparse(node))
                 elif _is_box_record(path, node):
                     _box_write(resolver, path, node, catalog)
                 elif _record_escapes(path, node):
@@ -887,16 +970,54 @@ def _type_read(node) -> bool:
     return isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value == "type"
 
 
-def _literals(node) -> set:
+@lru_cache(maxsize=None)
+def _value_bindings(scope):
+    """Przypisania wartości w jednym zakresie; wiele porównań korzysta z tego samego indeksu."""
+    bindings = {}
+
+    def bind(target, value):
+        if isinstance(target, ast.Name) and value is not None:
+            bindings.setdefault(target.id, []).append(value)
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            for left, right in zip(target.elts, value.elts):
+                bind(left, right)
+
+    if scope is not None and not isinstance(scope, ast.Lambda):
+        for child in _function_body_nodes(scope):
+            targets = child.targets if isinstance(child, ast.Assign) else \
+                [child.target] if isinstance(child, ast.AnnAssign) else []
+            for target in targets:
+                bind(target, child.value)
+    return bindings
+
+
+def _literals(node, path=None, seen=frozenset()) -> set:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return {node.value}
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        return {e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+        return set().union(*(_literals(e, path, seen) for e in node.elts))
+    if isinstance(node, ast.Name):
+        if node.id in seen:
+            return set()
+        function = enclosing_function(node)
+        assigned = _value_bindings(function).get(node.id, [])
+        if not assigned and function is not None and node.id in all_params(function):
+            return set()
+        if not assigned and path is not None:
+            assigned = _value_bindings(module(path)).get(node.id, [])
+        if assigned:
+            return set().union(*(_literals(v, path, seen | {node.id}) for v in assigned))
+    if path is not None:
+        value = resolve_constant(path, node)
+        if isinstance(value, str):
+            return {value}
+        if isinstance(value, tuple):
+            return set(value)
     return set()
 
 
-def raw_reads(function) -> frozenset:
-    """Porównania typu zdarzenia, także przez łańcuch lokalnych przypisań."""
+def raw_reads(function, path=None) -> frozenset:
+    """Porównania typu zdarzenia, także przez lokalne aliasy i stałe rodzaju zdarzenia."""
     found, actions = set(), False
     nodes = list(_function_body_nodes(function))
     aliases = set()
@@ -924,7 +1045,7 @@ def raw_reads(function) -> frozenset:
     for node in nodes:
         if isinstance(node, ast.Compare):
             operands = [node.left, *node.comparators]
-            names = set().union(*(_literals(o) for o in operands))
+            names = set().union(*(_literals(o, path) for o in operands))
             if any(is_type(o) for o in operands):
                 found |= names & (RAW_PROCESS_TYPES | RAW_ACTION_TYPES)
             actions |= "step-start" in names
@@ -940,7 +1061,7 @@ def raw_readers() -> list:
             continue
         for node in ast.walk(module(path)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                reads = raw_reads(node)
+                reads = raw_reads(node, path)
                 if reads:
                     out.append(Consumer(path, qualname(node), node.lineno, reads))
     return out

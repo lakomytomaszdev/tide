@@ -643,6 +643,17 @@ DELEGATIONS = {
 # zdarzenia z rodzajem śladu procesu, ale wynik nie dopuszcza skutku objętego barierą tożsamości.
 # Funkcja z surowym odczytem, która nie jest konsumentem bariery ani nie ma tu uzasadnienia, daje porażkę.
 RAW_READS = {
+    ("cardflow/caretaker.py", "stale"):
+        "aktualność problemu opiekuna; wynik może zatrzymać akcję, a start i wznowienie przechodzą "
+        "własne bariery _launch/resolve_step w silniku",
+    ("cardflow/consent.py", "automatic"):
+        "sprawdzenie zgody na polecenie, bez uruchomienia; skutek zawsze przez _start_outside "
+        "z _outside_history pod journal.lock (bariera outside)",
+    ("cardflow/consent.py", "view"):
+        "projekcja zgód ticketu dla fullcard/UI; zwraca dane active/canRevoke bez skutku procesu",
+    ("cardflow/engine.py", "FlowEngine._ticket_consent"):
+        "odczyt flagi zgody ticketu, obecnie bez wywołań w produkcie; nie uruchamia procesu "
+        "ani nie zastępuje _outside_history",
     ("cardflow/history.py", "build"):
         "historia do wyświetlenia: grupowanie kroków i wyników; canResume pochodzi z canEnter "
         "sprawdzonego przez silnik, a wznowienie przechodzi osobną barierę engine",
