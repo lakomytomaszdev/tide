@@ -553,10 +553,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                  and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, **caretaker.settings_of(data)}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(),
+                **caretaker.settings_of(data)}
 
     def set_flow_settings(self, request: dict) -> dict:
-        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", *caretaker.SETTINGS_DEFAULTS}
+        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion",
+                   *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -585,9 +587,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 not isinstance(k, str) or not k or len(k) > 40 or isinstance(v, bool) or not isinstance(v, int)
                 or not 1 <= v <= MAX_PROVIDER_SLOTS for k, v in slots.items()):
             raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
+        # Rundy review przed pytaniem użytkownika (08.11: decyzja o progu 4 bez ręcznej edycji ~/.config).
+        rounds = request.get("reviewRoundsBeforeQuestion", current["reviewRoundsBeforeQuestion"])
+        if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 20:
+            raise FlowError("bad-settings", "liczba rund review przed pytaniem musi być od 1 do 20")
         data = self._settings_data()
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
+        if "reviewRoundsBeforeQuestion" in request:
+            data["reviewRoundsBeforeQuestion"] = rounds
         self._write_settings(data)
         return self.get_flow_settings()
 
