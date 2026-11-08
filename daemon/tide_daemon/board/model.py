@@ -158,6 +158,11 @@ class Card:
     column_moved: str = ""    # ostatnia prawdziwa zmiana kolumny (PT-7); pusta — nigdy (albo sprzed PT-7)
     youtrack: str = ""
     spec: str = ""
+    source_issue: str = ""
+    source_issue_version: int = 0
+    source_issue_hash: str = ""
+    source_issue_report: str = ""
+    source_issue_manifest: str = ""
     plan: str = ""          # wskazany plan przekazania; zapis po stronie karty
     session: str = ""
     branch: str = ""
@@ -254,6 +259,11 @@ def parse_card(doc: Document, path: str, num: int, errors: list) -> Card:
         errors.append(_err(path, f"{name}: brak tytułu"))
         card.title = card.id
     card.project = doc.get("project").strip()
+    card.source_issue = doc.get("source-issue").strip()
+    version = doc.get("source-issue-version").strip()
+    card.source_issue_version = int(version) if version.isdecimal() else 0
+    for key in ("source-issue-hash", "source-issue-report", "source-issue-manifest"):
+        setattr(card, key.replace("-", "_"), doc.get(key).strip())
     card.tags = split_tags(doc.get("tags"))
     column = doc.get("column").strip().lower() or DEFAULT_COLUMN
     if column not in MANUAL_COLUMNS:

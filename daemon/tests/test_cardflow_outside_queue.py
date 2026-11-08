@@ -3,6 +3,7 @@ import types
 import unittest
 
 from tide_daemon.cardflow import engine as flow_engine
+from tide_daemon.cardflow.state import fold
 
 
 def stub(projects, busy=()):
@@ -46,10 +47,29 @@ class OutsideQueueTest(unittest.TestCase):
         }
         eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
         eng._outside_seeded = False
-        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card])
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card],
+                                          state=lambda card: fold(journals[card]))
         # K-37 jest sprawdzana pierwsza po restarcie, ale starsza zgoda K-38 z dziennika idzie przed nią
         self.assertTrue(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
         self.assertFalse(eng._outside_behind("K-38", "K-38-PT-1-4", {"ts": ts(70)}))
+
+    def test_paused_card_does_not_hold_the_queue_after_restart(self):
+        # 07.11 (K-38/PT-264): zgoda wstrzymanej karty nie blokuje po restarcie zgód innych kart.
+        from datetime import datetime, timedelta
+        ts = lambda minutes: (datetime.now().astimezone() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+        journals = {
+            "K-38": [{"type": "step.finished", "step": "K-38-PT-1-4", "outside": True, "ts": ts(70)},
+                     {"type": "step.decision", "step": "K-38-PT-1-4", "choice": "run", "ts": ts(70)},
+                     {"type": "card.paused", "ts": ts(60)}],
+            "K-37": [{"type": "step.finished", "step": "K-37-PT-2-1", "outside": True, "ts": ts(5)},
+                     {"type": "step.decision", "step": "K-37-PT-2-1", "choice": "run", "ts": ts(5)}],
+        }
+        eng = stub({"K-37": "plasma-tide", "K-38": "plasma-tide"})
+        eng._outside_seeded = False
+        eng.journal = types.SimpleNamespace(cards=lambda: list(journals), read=lambda card: journals[card],
+                                          state=lambda card: fold(journals[card]))
+        self.assertFalse(eng._outside_behind("K-37", "K-37-PT-2-1", {"ts": ts(5)}))
+        self.assertNotIn("K-38-PT-1-4", eng._outside_waiting)
 
     def test_consent_waiting_for_a_busy_slot_keeps_its_place(self):
         # 05.11: przy zajętym miejscu zgody nie trafiały do kolejki, więc po zwolnieniu wskakiwała nowsza.
@@ -59,7 +79,8 @@ class OutsideQueueTest(unittest.TestCase):
         step = {"step": "K-38-PT-1-4", "ticket": "PT-1", "kind": "ticket"}
         history = [{"type": "card.started", "project": "plasma-tide"},
                    {"type": "step.started", **step}]
-        eng.journal = types.SimpleNamespace(read=lambda card: history, read_complete=lambda card: history)
+        eng.journal = types.SimpleNamespace(read=lambda card: history, read_complete=lambda card: history,
+                                            state=lambda card: fold(history))
         step, done = step, {"command": "echo trial"}
         self.assertIsNone(eng._outside_ready("K-38", step, done, {"choice": "run", "ts": "2026-11-05T17:18:00+01:00"}))
         self.assertIn("K-38-PT-1-4", eng._outside_waiting)

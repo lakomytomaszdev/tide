@@ -496,6 +496,10 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
         # Co-Authored-By, którą Claude Code dopisuje domyślnie).
         "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}
+    if step.read_dirs:
+        # --add-dir udostępnia także katalog sesji; zakaz Edit nie obejmuje poleceń Bash.
+        # Jawny denyWrite utrzymuje granicę dla materiałów wejścia i pozostałych katalogów tylko do odczytu.
+        settings["sandbox"]["filesystem"]["denyWrite"] = list(step.read_dirs)
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
         token = step.local.token_file
@@ -522,7 +526,7 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         skill_dirs = skills_mod.read_dirs(skills)
         settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
                                    "deny": read_only_rules(skill_dirs)}
-        settings["sandbox"]["filesystem"]["denyWrite"] = skill_dirs
+        settings["sandbox"]["filesystem"].setdefault("denyWrite", []).extend(skill_dirs)
     # --add-dir rozszerza również domyślny zapis Bash. Edit nie jest granicą dla powłoki:
     # jawny denyWrite ma pierwszeństwo także wobec zapisu domyślnego i ścieżek przez dowiązania.
     readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))

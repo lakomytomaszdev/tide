@@ -60,7 +60,7 @@ class DaemonInstallTest(unittest.TestCase):
 
         with open(os.path.join(self.config, "systemd/user/tide-daemon.service"), encoding="utf-8") as fh:
             unit = fh.read()
-        self.assertIn(f"ExecStart=/usr/bin/python3 -s {installed}/tide-daemon.py", unit)
+        self.assertIn(f'ExecStart=/usr/bin/python3 -s "{installed}/tide-daemon.py"', unit)
         self.assertIn("BusName=org.tide.Daemon", unit)
         self.assertTrue(os.path.exists(os.path.join(self.data, "dbus-1/services/org.tide.Daemon.service")))
         self.assertEqual(calls(self.env), [

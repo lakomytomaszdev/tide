@@ -200,7 +200,9 @@ monitors.py; układ ekranów w KWin bez zmian):
                              układ, przełączenie już trwa), koniec — sygnałem Changed i w Status().result,
 - sygnał Changed()           przełączenie w toku albo jego wynik się zmienił.
 """
-from PyQt6.QtCore import QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
+import json
+
+from PyQt6.QtCore import QByteArray, QObject, pyqtClassInfo, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import QDBusAbstractAdaptor, QDBusConnection, QDBusMessage
 
 SERVICE = "org.tide.Daemon"
@@ -222,6 +224,8 @@ MODELS_PATH = "/Models"
 MODELS_IFACE = "org.tide.Daemon.Models"
 BOARD_PATH = "/Board"
 BOARD_IFACE = "org.tide.Daemon.Board"
+ISSUES_PATH = "/Issues"
+ISSUES_IFACE = "org.tide.Daemon.Issues"
 DOCKER_PATH = "/Docker"
 DOCKER_IFACE = "org.tide.Daemon.Docker"
 ACTIVITY_LOOK_PATH = "/ActivityLook"
@@ -426,6 +430,32 @@ DOCKER_XML = f"""<interface name="{DOCKER_IFACE}">
   </signal>
 </interface>"""
 
+
+ISSUES_XML = f"""<interface name="{ISSUES_IFACE}">
+  <method name="Info"><arg name="json" type="s" direction="out"/></method>
+  <method name="Create">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="List"><arg name="json" type="s" direction="out"/></method>
+  <method name="Show">
+    <arg name="id" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  {''.join('<method name="' + method + '"><arg name="id" type="s" direction="in"/>'
+           '<arg name="request" type="s" direction="in"/>'
+           '<arg name="json" type="s" direction="out"/></method>'
+           for method in ('Update', 'Submit', 'Reject', 'Reopen', 'Detach', 'AcceptIssue',
+                          'RetryIssueStart', 'PreviewIssueLaunch'))}
+  <method name="Attach">
+    <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
+    <arg name="data" type="ay" direction="in"/><arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="ReadAttachment">
+    <arg name="id" type="s" direction="in"/><arg name="request" type="s" direction="in"/>
+    <arg name="result" type="s" direction="out"/><arg name="data" type="ay" direction="out"/>
+  </method>
+</interface>"""
 
 BOARD_XML = f"""<interface name="{BOARD_IFACE}">
   <method name="Snapshot"><arg name="json" type="s" direction="out"/></method>
@@ -981,6 +1011,93 @@ class CoordinationAdaptor(QDBusAbstractAdaptor):
         self.monitor.refresh(force_tracker=bool(force))
 
 
+@pyqtClassInfo("D-Bus Interface", ISSUES_IFACE)
+@pyqtClassInfo("D-Bus Introspection", ISSUES_XML)
+class IssuesAdaptor(QDBusAbstractAdaptor):
+    def __init__(self, parent, board=None, bus=None):
+        super().__init__(parent)
+        from .issues import IssueService
+        self.board = board
+        self.bus = bus
+        flow = getattr(board, "flow", None)
+        self.service = IssueService(board.store if board is not None else None,
+                                    flow.engine if flow is not None else None)
+
+    def _flow_call(self, method, ident, request, message):
+        if message is None or self.bus is None or self.board is None or self.board.flow is None:
+            args = (ident,) if request is None else (ident, request)
+            result = self.service.call(method, *args)
+            if method in ("AcceptIssue", "RetryIssueStart") and self.board is not None and json.loads(result).get("ok"):
+                self.board.publish()
+            return result
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)
+        args = (ident,) if request is None else (ident, request)
+        self.board.flow.issue_call(self.service, method, args,
+                                  lambda text: self.bus.send(pending.createReply([text])))
+        return ""
+
+    @pyqtSlot(result=str)
+    def Info(self):
+        return self.service.call("Info")
+
+    @pyqtSlot(str, result=str)
+    def Create(self, request):
+        return self.service.call("Create", request)
+
+    @pyqtSlot(result=str)
+    def List(self):
+        return self.service.call("List")
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Show(self, ident, message=None):
+        return self._flow_call("Show", ident, None, message)
+
+    @pyqtSlot(str, str, result=str)
+    def Update(self, ident, request):
+        return self.service.call("Update", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def Submit(self, ident, request):
+        return self.service.call("Submit", ident, request)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def AcceptIssue(self, ident, request, message=None):
+        return self._flow_call("AcceptIssue", ident, request, message)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def RetryIssueStart(self, ident, request, message=None):
+        return self._flow_call("RetryIssueStart", ident, request, message)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def PreviewIssueLaunch(self, ident, request, message=None):
+        return self._flow_call("PreviewIssueLaunch", ident, request, message)
+
+    @pyqtSlot(str, str, result=str)
+    def Reject(self, ident, request):
+        return self.service.call("Reject", ident, request)
+
+    @pyqtSlot(str, str, result=str)
+    def Reopen(self, ident, request):
+        return self.service.call("Reopen", ident, request)
+
+    @pyqtSlot(str, str, QByteArray, result=str)
+    def Attach(self, ident, request, data):
+        return self.service.call("Attach", ident, request, bytes(data))
+
+    @pyqtSlot(str, str, result=str)
+    def Detach(self, ident, request):
+        return self.service.call("Detach", ident, request)
+
+    @pyqtSlot(str, str, QDBusMessage, result=str)
+    def ReadAttachment(self, ident, request, message):
+        # Qt/Python nie eksportuje wielu wartości wyjściowych przez result=tuple.
+        message.setDelayedReply(True)
+        result, data = self.service.call("ReadAttachment", ident, request)
+        QDBusConnection.sessionBus().send(message.createReply([result, QByteArray(data)]))
+        return ""
+
+
 @pyqtClassInfo("D-Bus Interface", BOARD_IFACE)
 @pyqtClassInfo("D-Bus Introspection", BOARD_XML)
 class BoardAdaptor(QDBusAbstractAdaptor):
@@ -1501,6 +1618,10 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
     if not bus.isConnected():
         raise RuntimeError("brak połączenia z magistralą sesji D-Bus")
     holder = QObject()
+    holder.issues = QObject(holder)
+    holder.issues.adaptor = IssuesAdaptor(holder.issues, board, bus)
+    if not bus.registerObject(ISSUES_PATH, holder.issues):
+        raise RuntimeError(f"nie udało się zarejestrować obiektu {ISSUES_PATH}")
     holder.agents = QObject(holder)
     holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor)
     if not bus.registerObject(AGENTS_PATH, holder.agents):

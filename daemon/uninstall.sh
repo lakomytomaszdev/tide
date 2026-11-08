@@ -12,6 +12,7 @@ if [[ -e "$unit" ]]; then
 fi
 rm -f "$unit" "$data/dbus-1/services/org.tide.Daemon.service" "$data/dbus-1/services/org.tide.Daemon.KRunner.service"
 rm -rf "$data/tide/daemon"
+rm -rf "$data/tide/resources"
 # Zatrzymana usługa sama przywraca karty Konsole; plik zostaje tylko po twardym zabiciu procesu.
 rm -f "$state/tide/konsole-tabs.json"
 # Historia odczytów Limitów AI i pamięć wysłanych powiadomień (limits/history.py, limits/alerts.py).

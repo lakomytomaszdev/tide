@@ -1,0 +1,9 @@
+[
+  {"id":1,"criterion":"Obraz potwierdza pustą listę i Alfę. Dwa wystąpienia po restarcie oraz S-12 w Becie to relacje użytkownika, nie wyniki testów ani zawartość obrazu."},
+  {"id":2,"criterion":"Zachowanie projektu po restarcie razem z tekstem i stanem jest oczekiwaniem, nie już działającą funkcją."},
+  {"id":3,"criterion":"Zły plik zapisu to hipoteza. Brak logów i pewnej przyczyny pozostaje niewiadomą. Brak fikcyjnych ścieżek, stosu błędu, testów i diagnozy."},
+  {"id":4,"criterion":"Zachowano zakres po restarcie, warunek bez restartu działa oraz odrzucony reset wszystkich filtrów z powodem utraty wyborów."},
+  {"id":5,"criterion":"Mierzalne kroki Beta → zamknięcie → start → Beta i S-12, przy zachowanych tekście wyszukiwania i stanie."},
+  {"id":6,"criterion":"Usunięty projekt: Wszystkie projekty i komunikat o niedostępnym dawnym wyborze; brak automatycznej karty."},
+  {"id":7,"criterion":"filtr.png i opis.txt wskazane i potwierdzone kopiami CLI. Drugi obraz bez bajtów, bez fikcyjnego załączenia; stan draft."}
+]

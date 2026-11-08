@@ -15,6 +15,7 @@ import "board.js" as Logic
 
 Rectangle {
     id: page
+    signal navigateRequested(string viewId, string item)
 
     property var snapshot: null
     property bool available: true
@@ -1741,6 +1742,7 @@ Rectangle {
         onWheel: wheel => wheel.accepted = false
     }
     CardPanel {
+        onNavigateRequested: (viewId, item) => page.navigateRequested(viewId, item)
         id: cardPanel
         objectName: "cardPanel"
         z: page.descriptionDrawer ? 37 : 0
@@ -1918,6 +1920,7 @@ Rectangle {
 
     // --- pełna karta (PT-128) --------------------------------------------------------------------
     CardUi.CardFullView {
+        onNavigateRequested: (viewId, item) => page.navigateRequested(viewId, item)
         id: cardFullView
         onCaretakerTalkRequested: page.caretakerTalkRequested(page.nextTag("caretaker-talk:" + page.fullCardId),
                                                              page.fullCardId, "{}")

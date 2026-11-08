@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import uuid
 from dataclasses import dataclass
 
@@ -54,6 +55,21 @@ class Execution:
     effort: str = ""
     route: LocalAgent | None = None
     local: bool = False
+
+
+def agent_which(name: str, home: str | None = None) -> str | None:
+    """Program z PATH usługi, zapasowo `~/.local/bin` (tam kładzie `claude` instalator Claude Code).
+
+    Menedżer systemd użytkownika ma zwykle krótki PATH bez `~/.local/bin`. Punkt wejścia `tide-daemon.py`
+    dokleja go na koniec PATH, ale usługa uruchomiona inaczej (testy, `python -m`) tego nie ma — zapas
+    trzyma tę samą kolejność niezależnie od punktu wejścia. Tak samo szukają programu okno nowego zadania
+    (tasks/core.py) i launchery (worktrees/launchers.py). Silnik woła tę funkcję także dla `systemctl`;
+    zapas w `~/.local/bin` jest wtedy nieszkodliwy (pierwszy wygrywa PATH)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    local = os.path.join(home or os.path.expanduser("~"), ".local", "bin", name)
+    return local if os.path.isfile(local) and os.access(local, os.X_OK) else None
 
 
 def resolve(name: str, catalog: executors.Catalog, *, config=None, probe=None, which=None) -> Execution:

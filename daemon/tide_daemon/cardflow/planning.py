@@ -1,5 +1,6 @@
 """Wejście planującego: pełne szablony specyfikacji i pionowych ticketów, bez publikacji."""
 import json
+from .. import resources
 
 HEADER = "| Ticket | Tytuł | Stan | Gałąź | Agent | Uwagi | Klasa | Review | Blokery |"
 HEADER_PROJECTS = HEADER + " Projekt |"
@@ -35,6 +36,7 @@ def import_prompt(*, card, project, catalog, prefix, source, source_rows, out_di
     executors = [{"name": e.name, "provider": e.provider, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
     return f"""Uzupełnij istniejący plan dla karty {card.id}. To przekazanie, nie nowe planowanie.
+{resources.instructions()}
 Pracuj w tle bez pytań, bez implementacji, rezerwacji numerów, push i zmian w repozytorium projektu.
 Wszystkie pliki wyjściowe zapisz wyłącznie w {out_dir}. Oryginalny plan pozostaw bez zmian.
 Zachowaj dokładnie istniejące ID ticketów, ich tytuły i stany gotowe/odrzucone. Nowe robocze ID #n też zachowaj.
@@ -69,6 +71,7 @@ def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_d
               if multi else "| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | |")
     environment = f"{environment}\n\n" if environment else ""   # PT-190: sekcja środowiska, gdy jest co pokazać
     return f"""Krok planowania Lekkiego karty {card.id}.
+{resources.instructions()}
 Pracuj bez pytań. Rozsądne założenia zapisz w specyfikacji. Tylko przygotuj propozycję, nie wykonuj ticketów.
 Nie publikuj do GitHub Issues ani do trackera. To nadpisuje kroki publikacji skilli to-spec i to-tickets,
 także lokalne .scratch: wszystkie wyniki zapisz wyłącznie do katalogu wyjściowego {out_dir}.
@@ -169,6 +172,7 @@ def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, 
                  "uzasadnienia decyzji projektu, zapisując je w artefaktach katalogu wyjściowego. "
                  "Nie zmieniaj repozytorium projektu.")
     return f"""Pełne planowanie karty {card.id} w jednej rozmowie w Konsoli.
+{resources.instructions()}
 Jesteś planującym. Rozmawiaj z użytkownikiem i pokaż mu podział przed zapisem propozycji. Nie implementuj ticketów.
 Karta: {card.id} — {card.title}
 Projekt: {project.name}

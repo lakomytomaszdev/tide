@@ -126,6 +126,19 @@ class Example(unittest.TestCase):
                                      1, self.root / "logs", self.root)
         self.assertTrue(all(r["returncode"] == 0 for r in results))
 
+    def test_modules_do_not_write_the_qml_disk_cache_to_the_user_home(self):
+        # 08.11: ~/.cache/QtProject/Qml Runtime/qmlcache urósł do 100 GB (3 mln plików, ~10 GB na dobę) —
+        # każdy przebieg qml6 na plikach z nowych ścieżek tymczasowych dopisywał własny wpis pamięci QML.
+        self.write("test_qml.py", '''import os, unittest
+class Example(unittest.TestCase):
+    def test_cache_off(self): self.assertEqual(os.environ.get("QML_DISABLE_DISK_CACHE"), "1")
+''')
+        # Rodzic z inną wartością: uruchamiacz ma ją wymusić, nie dziedziczyć.
+        with redirect_stdout(io.StringIO()), patch.dict("os.environ", {"QML_DISABLE_DISK_CACHE": "0"}):
+            results = runner.execute(runner.modules_for([("example", "test*.py")], self.root),
+                                     1, self.root / "logs", self.root)
+        self.assertTrue(all(r["returncode"] == 0 for r in results), results)
+
     def test_serial_modules_run_after_parallel_work_and_one_at_a_time(self):
         modules = ["a", "serial1", "b", "serial2"]
         calls = []

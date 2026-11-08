@@ -1,0 +1,514 @@
+#!/usr/bin/python3
+"""CLI Tide: wyłącznie klient publicznego D-Bus, bez zależności od checkoutu."""
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import uuid
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+SERVICE = "org.tide.Daemon"
+PATH = "/Issues"
+IFACE = "org.tide.Daemon.Issues"
+FILE_MAX = 20 * 1024 * 1024
+EXIT_CODES = {"bad-request": 2, "unavailable": 3, "api-incompatible": 3,
+              "conflict": 4, "version-conflict": 4, "start-conflict": 4, "not-found": 5,
+              "git-busy": 6, "io-error": 7, "broken-file": 7,
+              "console-open": 4, "no-step": 5, "no-terminal": 3,
+              "stale-context": 4, "worktree-busy": 6, "already-entered": 4,
+              "base-decision": 4, "not-stopped": 6, "no-session": 5,
+              "no-session-source": 5, "no-worktree": 5, "no-branch": 5,
+              "interactive-evidence-unsafe": 4, "broken-evidence": 4}
+
+
+class CliError(Exception):
+    def __init__(self, code, message):
+        self.reply = {"ok": False, "apiVersion": 1, "error": code, "message": message}
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise CliError("bad-request", "Niepoprawne argumenty polecenia: " + message)
+
+
+def parser():
+    root = Parser(description="Tide — sprawy i karty przez publiczną usługę.")
+    root.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
+    commands = root.add_subparsers(dest="command", required=True, parser_class=Parser)
+    info = commands.add_parser("info", help="wersja i możliwości API")
+    card = commands.add_parser("card", help="karty")
+    card_actions = card.add_subparsers(dest="action", required=True, parser_class=Parser)
+    card_opening = card_actions.add_parser("open", help="otwórz rozmowę opiekuna przez PT-149")
+    card_opening.add_argument("id", help="K-N")
+    target = card_opening.add_mutually_exclusive_group()
+    target.add_argument("--problem", help="identyfikator problemu opiekuna")
+    target.add_argument("--ticket", help="przejmij bieżącą próbę PT-N w Konsoli")
+    backlog = commands.add_parser("backlog", help="przyjmij przeczytaną wersję sprawy do Backlogu")
+    backlog.add_argument("id", help="S-N")
+    backlog.add_argument("--expected-version", required=True, type=int)
+    backlog.add_argument("--request-id", help="klucz identycznych ponowień; domyślnie nowy UUID")
+    backlog.set_defaults(action="accept")
+    go = commands.add_parser("go", help="przyjmij przeczytaną wersję i zleć tę samą kartę")
+    go.add_argument("id", help="S-N")
+    go.add_argument("--expected-version", required=True, type=int)
+    go.add_argument("--launch", help="plik JSON z ustawieniami StartCard; domyślnie Planowanie Lekkie")
+    go.add_argument("--request-id", help="klucz odtworzenia odpowiedzi; domyślnie nowy UUID")
+    go.set_defaults(action="go")
+    next_id = commands.add_parser("next-id", help="rezerwacja numeru ticketu przez zainstalowane narzędzie Tide")
+    next_id.add_argument("repo")
+    next_id.add_argument("--prefix", default="")
+    next_id.add_argument("--count", type=int, default=1)
+    next_id.add_argument("--title", default="")
+    next_id.add_argument("--dry-run", action="store_true")
+    check = commands.add_parser("check-plans", help="kontrola planów przez zainstalowane narzędzie Tide")
+    check.add_argument("workspace", nargs="?", default=os.path.expanduser("~/DevWorkspace"))
+    check.add_argument("--no-youtrack", action="store_true")
+    check.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    issue = commands.add_parser("issue", help="sprawy")
+    actions = issue.add_subparsers(dest="action", required=True, parser_class=Parser)
+    retry = actions.add_parser("retry-start", help="jawnie ponów nieudane przekazanie zaakceptowanej karty")
+    retry.add_argument("id", help="S-N")
+    retry.add_argument("--intent", required=True)
+    retry.add_argument("--expected-start-version", required=True, type=int)
+    retry.add_argument("--request-id", required=True, help="nowy klucz decyzji retry")
+    create = actions.add_parser("create", help="zapisz szkic")
+    create.add_argument("--report", required=True, help="plik UTF-8 Markdown bez frontmatteru")
+    create.add_argument("--title", required=True, help="tytuł sprawy")
+    create.add_argument("--project", help="slug projektu Tablicy")
+    create.add_argument("--request-id", help="trwały klucz ponowienia")
+    listing = actions.add_parser("list", help="lista spraw")
+    show = actions.add_parser("show", help="treść i metadane sprawy")
+    show.add_argument("id", help="S-N")
+    opening = actions.add_parser("open", help="otwórz sprawę w oknie Tide")
+    opening.add_argument("id", help="S-N")
+    update = actions.add_parser("update", help="popraw szkic; zmiana ready wraca do draft")
+    update.add_argument("id", help="S-N")
+    update.add_argument("--expected-version", required=True, type=int)
+    update.add_argument("--report", help="plik UTF-8 Markdown bez frontmatteru")
+    update.add_argument("--title", help="tytuł sprawy")
+    project = update.add_mutually_exclusive_group()
+    project.add_argument("--project", help="slug projektu Tablicy")
+    project.add_argument("--clear-project", action="store_true", help="usuń przypisanie projektu")
+    transitions = []
+    for action, help_text in (("submit", "przygotuj sprawę do przyjęcia"),
+                              ("reject", "odrzuć sprawę"), ("reopen", "otwórz odrzuconą sprawę jako szkic")):
+        command = actions.add_parser(action, help=help_text)
+        command.add_argument("id", help="S-N")
+        command.add_argument("--expected-version", required=True, type=int)
+        transitions.append(command)
+    attach = actions.add_parser("attach", help="dołącz trwałą kopię jawnie wskazanego pliku")
+    attach.add_argument("id", help="S-N")
+    attach.add_argument("--file", required=True)
+    attach.add_argument("--expected-version", required=True, type=int)
+    detach = actions.add_parser("detach", help="odłącz załącznik od sprawy")
+    detach.add_argument("id", help="S-N")
+    detach.add_argument("--attachment", required=True)
+    detach.add_argument("--expected-version", required=True, type=int)
+    attachment = actions.add_parser("attachment", help="zapisz bajty załącznika w nowym pliku")
+    attachment.add_argument("id", help="S-N")
+    attachment.add_argument("--attachment", required=True)
+    attachment.add_argument("--output", required=True)
+    attachment.add_argument("--expected-version", type=int, help="domyślnie wersja pobrana przez Show")
+    for command in (info, card, card_opening, backlog, go, retry, issue, create, listing, show, opening,
+                    update, attach, detach, attachment, *transitions):
+        command.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="wynik JSON")
+    return root
+
+
+class PublicApi:
+    def __init__(self):
+        try:
+            from PyQt6.QtCore import QCoreApplication
+            from PyQt6.QtDBus import QDBus, QDBusConnection, QDBusMessage
+        except ImportError:
+            raise CliError("unavailable", "CLI wymaga pakietu python3-pyqt6.qtdbus.") from None
+        self.app = QCoreApplication.instance() or QCoreApplication([])
+        self.bus = QDBusConnection.sessionBus()
+        self.QDBus, self.QDBusMessage = QDBus, QDBusMessage
+        if not self.bus.isConnected():
+            raise CliError("unavailable", "Brak połączenia z magistralą sesji D-Bus.")
+
+    def request(self, path, iface, method, *args):
+        message = self.QDBusMessage.createMethodCall(SERVICE, path, iface, method)
+        message.setArguments(list(args))
+        reply = self.bus.call(message, self.QDBus.CallMode.Block, 30000)
+        if reply.type() == self.QDBusMessage.MessageType.ErrorMessage:
+            incompatible = reply.errorName().endswith(("UnknownMethod", "UnknownInterface", "UnknownObject"))
+            raise CliError("api-incompatible" if incompatible else "unavailable",
+                           "Usługa nie udostępnia wymaganego publicznego API." if incompatible else
+                           "Usługa Tide jest niedostępna albo nie odpowiedziała.")
+        return reply.arguments()
+
+    def call(self, method, *args):
+        values = self.request(PATH, IFACE, method, *args)
+        try:
+            read = method == "ReadAttachment"
+            result = json.loads(values[0]) if len(values) == (2 if read else 1) and isinstance(values[0], str) else None
+            if (not isinstance(result, dict) or type(result.get("apiVersion")) is not int or
+                    result["apiVersion"] != 1 or type(result.get("ok")) is not bool):
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise CliError("api-incompatible", "Nieprawidłowa odpowiedź API spraw v1.") from None
+        if read:
+            from PyQt6.QtCore import QByteArray
+            if not isinstance(values[1], QByteArray) or len(values[1]) > FILE_MAX or (not result["ok"] and values[1]):
+                raise CliError("api-incompatible", "Nieprawidłowe bajty odpowiedzi ReadAttachment.")
+            return result, bytes(values[1])
+        return result
+
+    def open_window(self, ident):
+        message = self.QDBusMessage.createMethodCall("org.tide.Window", "/Window", "org.tide.Window", "Show")
+        message.setArguments(["issues", ident])
+        reply = self.bus.call(message, self.QDBus.CallMode.Block, 5000)
+        if reply.type() == self.QDBusMessage.MessageType.ReplyMessage and reply.arguments() == [True]:
+            return
+        # Ten sam zainstalowany launcher co pozostałe wejścia do jednego okna Tide.
+        path = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "tide/tide-window/tide.py"
+        if not path.is_file():
+            raise CliError("unavailable", "Okno Tide nie jest zainstalowane.")
+        try:
+            subprocess.Popen(["/usr/bin/python3", "-s", str(path), "--view", "issues", "--select", ident],
+                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            raise CliError("unavailable", "Nie można uruchomić okna Tide.") from None
+
+
+class BoardApi(PublicApi):
+    path, iface = "/Board", "org.tide.Daemon.Board"
+
+    def available(self, name="TalkToCaretaker"):
+        try:
+            values = self.request(self.path, "org.freedesktop.DBus.Introspectable", "Introspect")
+        except CliError as exc:
+            if exc.reply["error"] == "api-incompatible":
+                return False
+            raise
+        try:
+            if len(values) != 1 or not isinstance(values[0], str):
+                raise ValueError()
+            node = ET.fromstring(values[0])
+        except (ValueError, ET.ParseError):
+            raise CliError("api-incompatible", "Nieprawidłowy opis publicznego API Tablicy.") from None
+        for method in node.findall(f"interface[@name='{self.iface}']/method[@name='{name}']"):
+            inputs = [a.get("type") for a in method.findall("arg") if a.get("direction", "in") == "in"]
+            outputs = [a.get("type") for a in method.findall("arg") if a.get("direction") == "out"]
+            if inputs == ["s", "s"] and outputs == ["s"]:
+                return True
+        return False
+
+    def enter_ticket(self, card_id, ticket):
+        if not re.fullmatch(r"K-[1-9][0-9]*", card_id) or not re.fullmatch(r"PT-[1-9][0-9]*", ticket):
+            raise CliError("bad-request", "Podaj kartę K-N i ticket PT-N.")
+        if not self.available("EnterStep"):
+            raise CliError("api-incompatible", "Brak publicznego EnterStep(s, s) → s.")
+        values = self.request(self.path, self.iface, "Snapshot")
+        try:
+            snapshot = json.loads(values[0]) if len(values) == 1 else None
+            cards = snapshot["cards"]
+            if not isinstance(cards, list):
+                raise ValueError()
+            cards = [card for card in cards if card["id"] == card_id]
+            if not cards:
+                return {"ok": False, "error": "not-found", "message": "Nie znaleziono karty.", "attempts": []}
+            if len(cards) != 1:
+                raise ValueError()
+            flow = (cards[0].get("derived") or {}).get("flow", {})
+            if not flow:
+                return {"ok": False, "error": "no-step", "message": "Karta nie ma prób.", "attempts": []}
+            if (type(flow.get("ticketEntryVersion")) is not int or flow["ticketEntryVersion"] != 1
+                    or not isinstance(flow.get("entryRevision"), str) or not flow["entryRevision"]):
+                raise ValueError()
+            attempts = [{key: step[key] for key in ("id", "ticket", "kind", "attempt", "round",
+                                                    "currentAttempt", "available", "error")}
+                        for step in flow["steps"]]
+            if any(type(item["available"]) is not bool or type(item["currentAttempt"]) is not bool
+                   for item in attempts):
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise CliError("api-incompatible", "Brak projekcji aktualnych prób ticketów v1 w Snapshot.") from None
+        candidates = [item for item in attempts if item["ticket"] == ticket and
+                      item["currentAttempt"] and item["available"]]
+        if len(candidates) != 1:
+            current = [item for item in attempts if item["ticket"] == ticket and item["currentAttempt"]]
+            error = current[0]["error"] if len(current) == 1 and current[0]["error"] else "no-step"
+            return {"ok": False, "error": error,
+                    "message": "Brak jednej jednoznacznej dostępnej próby ticketu. Wybierz z aktualnych możliwości.",
+                    "attempts": attempts}
+        request = {"ticket": ticket, "step": candidates[0]["id"], "revision": flow["entryRevision"]}
+        values = self.request(self.path, self.iface, "EnterStep", card_id, json.dumps(request, ensure_ascii=False))
+        result = self.open_reply(values, "EnterStep")
+        if not result["ok"] and "attempts" not in result:
+            # Aktualna usługa dodaje listę także przy odmowach; starszej nie obchodzimy.
+            raise CliError("api-incompatible", "EnterStep nie udostępnia warunkowego przejęcia próby v1.")
+        return result
+
+    def open(self, card_id, problem=None):
+        if not re.fullmatch(r"K-[1-9][0-9]*", card_id) or (problem is not None and not problem.strip()):
+            raise CliError("bad-request", "Podaj K-N i niepusty identyfikator problemu, jeśli jest wskazany.")
+        if not self.available():
+            raise CliError("api-incompatible", "Brak publicznego TalkToCaretaker(s, s) → s z PT-149.")
+        data = {} if problem is None else {"problem": problem}
+        values = self.request(self.path, self.iface, "TalkToCaretaker", card_id, json.dumps(data, ensure_ascii=False))
+        return self.open_reply(values, "TalkToCaretaker")
+
+    @staticmethod
+    def open_reply(values, method):
+        try:
+            result = json.loads(values[0]) if len(values) == 1 and isinstance(values[0], str) else None
+            if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+                raise ValueError()
+            if result["ok"]:
+                if not isinstance(result.get("step"), str) or not result["step"]:
+                    raise ValueError()
+            elif not isinstance(result.get("error"), str) or not result["error"]:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise CliError("api-incompatible", f"Nieprawidłowa odpowiedź {method}.") from None
+        return result
+
+
+def card_info():
+    # Introspekcja potwierdza wyłącznie wejście; nie uruchamia rozmowy ani testu kontraktu.
+    try:
+        available = BoardApi().available()
+        error = ""
+    except CliError as exc:
+        available, error = False, exc.reply["error"]
+    return {"available": available, "contract": "PT-149", "contractVerified": False,
+            "verification": "Wymaga testu daemona na prywatnym D-Bus z atrapą Konsoli.",
+            **({"error": error} if error else {})}
+
+
+def read_attachment_source(path):
+    # Każdy komponent otwieramy bez dowiązań; FIFO i urządzenia nigdy nie są czytane.
+    if not path or "://" in path or "\x00" in path or ".." in Path(path).parts:
+        raise CliError("bad-request", "Podaj lokalny plik bez URL i przejść '..'.")
+    target = Path(path).absolute()
+    fd = None
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        for part in target.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        source = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        with os.fdopen(source, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > FILE_MAX:
+                raise CliError("bad-request", "Załącznik musi być zwykłym plikiem do 20 MiB.")
+            data = stream.read(FILE_MAX + 1)
+            stream.seek(0)
+            digest = hashlib.sha256(stream.read(FILE_MAX + 1)).digest()
+            after = os.fstat(stream.fileno())
+            current = os.stat(target.name, dir_fd=fd, follow_symlinks=False)
+            signature = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+            if (len(data) > FILE_MAX or signature(before) != signature(after) or
+                    signature(before) != signature(current) or hashlib.sha256(data).digest() != digest):
+                raise CliError("bad-request", "Źródło zmieniło się podczas kopiowania; ponów import.")
+        return target.name, data
+    except OSError as exc:
+        raise CliError("bad-request", f"Nie można importować pliku: {exc.strerror}.") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def write_attachment(path, result, data):
+    entry = result.get("attachment", {})
+    if len(data) != entry.get("size") or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        raise CliError("api-incompatible", "Bajty odpowiedzi są niezgodne z metadanymi.")
+    if not path or "\x00" in path:
+        raise CliError("bad-request", "Podaj poprawną ścieżkę nowego pliku wyjściowego.")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            os.unlink(path)
+            raise
+    except OSError as exc:
+        raise CliError("io-error", f"Nie można utworzyć nowego pliku wyjściowego: {exc.strerror}.") from None
+
+
+def read_report(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise CliError("bad-request", "Raport musi być zwykłym plikiem.")
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            raise CliError("bad-request", "Raport przekracza 64 KiB.")
+        return raw.decode("utf-8")
+    except UnicodeError:
+        raise CliError("bad-request", "Raport nie jest poprawnym UTF-8.") from None
+    except OSError as exc:
+        raise CliError("io-error", f"Nie można odczytać raportu: {exc.strerror}.") from None
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    as_json = "--json" in argv
+    try:
+        args = parser().parse_args(argv)
+        if args.command == "card":
+            api = BoardApi()
+            result = api.enter_ticket(args.id, args.ticket) if args.ticket is not None else api.open(args.id, args.problem)
+        else:
+            api = PublicApi()
+            result = api.call("Info")
+        if result["ok"] and args.command == "info":
+            result["operations"] = {"card.open": card_info()}
+            if result["operations"]["card.open"]["available"]:
+                result["capabilities"] = [*result.get("capabilities", []), "card.open"]
+        if result["ok"] and args.command in ("next-id", "check-plans"):
+            asset = result.get("resources", {}).get(args.command, {})
+            if not asset.get("available") or not os.path.isfile(asset.get("path", "")):
+                raise CliError("unavailable", "Brak zainstalowanego narzędzia Tide; sprawdź tide info --json "
+                               "i instalację zasobów (TIDE_RESOURCES_DIR w środowisku usługi).")
+            module_path = asset.get("pythonPath", "")
+            if not module_path or not os.path.isdir(os.path.join(module_path, "tide_daemon")):
+                raise CliError("unavailable", "Brak modułów narzędzia Tide; sprawdź instalację usługi "
+                               "i pythonPath w tide info --json.")
+            if args.command == "next-id":
+                forwarded = [args.repo, "--prefix", args.prefix, "--count", str(args.count), "--title", args.title]
+                if args.dry_run:
+                    forwarded.append("--dry-run")
+            else:
+                forwarded = [args.workspace]
+                if args.no_youtrack:
+                    forwarded.append("--no-youtrack")
+                if as_json:
+                    forwarded.append("--json")
+            try:
+                env = {**os.environ, "PYTHONPATH": module_path}
+                return subprocess.run([sys.executable, asset["path"], *forwarded],
+                                      env=env, check=False).returncode
+            except OSError:
+                raise CliError("unavailable", "Nie można uruchomić narzędzia ze zainstalowanych zasobów Tide.") from None
+        if result["ok"] and args.command in ("issue", "backlog", "go"):
+            capability = "show" if args.action == "open" else args.action
+            if f"issue.{capability}" not in result.get("capabilities", []):
+                raise CliError("api-incompatible", "Usługa nie udostępnia wymaganego polecenia API v1.")
+            if args.action == "go":
+                data = {"expectedVersion": args.expected_version, "destination": "go",
+                        "requestId": args.request_id or str(uuid.uuid4())}
+                if args.launch is not None:
+                    try:
+                        data["launch"] = json.loads(read_report(args.launch))
+                    except ValueError:
+                        raise CliError("bad-request", "Ustawienia zlecenia muszą być poprawnym JSON.") from None
+                    if not isinstance(data["launch"], dict):
+                        raise CliError("bad-request", "Ustawienia zlecenia muszą być obiektem JSON.")
+                result = api.call("AcceptIssue", args.id, json.dumps(data, ensure_ascii=False))
+            elif args.action == "retry-start":
+                result = api.call("RetryIssueStart", args.id, json.dumps({"intentId": args.intent,
+                    "expectedStartVersion": args.expected_start_version, "requestId": args.request_id}))
+            elif args.action == "accept":
+                result = api.call("AcceptIssue", args.id, json.dumps({"expectedVersion": args.expected_version,
+                    "destination": "backlog", "requestId": args.request_id or str(uuid.uuid4())}))
+            elif args.action == "open":
+                if not re.fullmatch(r"S-[1-9][0-9]{0,8}", args.id):
+                    raise CliError("bad-request", "Podaj numer sprawy S-N.")
+                result = api.call("Show", args.id)
+                if result["ok"]:
+                    api.open_window(args.id)
+            elif args.action == "create":
+                data = {"report": read_report(args.report), "title": args.title}
+                if args.project is not None:
+                    data["project"] = args.project
+                if args.request_id is not None:
+                    data["requestId"] = args.request_id
+                result = api.call("Create", json.dumps(data, ensure_ascii=False))
+            elif args.action == "list":
+                result = api.call("List")
+            elif args.action == "attach":
+                from PyQt6.QtCore import QByteArray
+                name, raw = read_attachment_source(args.file)
+                result = api.call("Attach", args.id, json.dumps({"name": name, "expectedVersion": args.expected_version}),
+                                  QByteArray(raw))
+            elif args.action == "detach":
+                result = api.call("Detach", args.id, json.dumps({"attachmentId": args.attachment,
+                                                                 "expectedVersion": args.expected_version}))
+            elif args.action == "attachment":
+                version = args.expected_version
+                if version is None:
+                    result = api.call("Show", args.id)
+                    if result["ok"]:
+                        version = result["issue"]["version"]
+                if result["ok"]:
+                    result, raw = api.call("ReadAttachment", args.id, json.dumps({"attachmentId": args.attachment,
+                                                                                "expectedVersion": version}))
+                    if result["ok"]:
+                        write_attachment(args.output, result, raw)
+            elif args.action in ("update", "submit", "reject", "reopen"):
+                data = {"expectedVersion": args.expected_version}
+                if args.action == "update":
+                    if args.report is not None:
+                        data["report"] = read_report(args.report)
+                    if args.title is not None:
+                        data["title"] = args.title
+                    if args.project is not None or args.clear_project:
+                        data["project"] = None if args.clear_project else args.project
+                result = api.call(args.action.capitalize(), args.id, json.dumps(data, ensure_ascii=False))
+            else:
+                result = api.call("Show", args.id)
+            if args.action in ("go", "retry-start") and result.get("accepted"):
+                # To osobny odczyt: historyczny startError pozostaje w wyniku
+                # operacji, nawet gdy nowe, jawne retry już naprawiło start.
+                current = api.call("Show", args.id)
+                result["currentStart"] = current.get("start") if current.get("ok") else None
+    except CliError as exc:
+        result = exc.reply
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False))
+    elif not result["ok"]:
+        print(result.get("message", result.get("error", "Błąd usługi Tide.")), file=sys.stderr)
+        for attempt in result.get("attempts", []):
+            print(f"{attempt['id']} · {attempt['ticket']} · {attempt['kind']} / {attempt['attempt']} · "
+                  + ("dostępna" if attempt["available"] else attempt.get("error") or "niedostępna"),
+                  file=sys.stderr)
+    elif "issue" in result:
+        issue = result["issue"]
+        print(f"{issue['id']}: {issue['title']} (wersja {issue['version']})")
+        if result.get("card"):
+            if "start" in result:
+                print(f"{result['card']}: wynik zapisanej operacji: {result['start']['state']}")
+                current = result.get("currentStart")
+                print("Bieżący stan startu: " + (current["state"] if current else "nie udało się odczytać"))
+                if current and current.get("retryable"):
+                    print("Ponów start osobnym poleceniem tide issue retry-start z intencją "
+                          + current["intentId"] + " i wersją " + str(current["startVersion"]))
+            else:
+                print(f"{result['card']}: przyjęto wersję {result['acceptedVersion']} do Backlogu")
+        if args.action == "show":
+            print(issue["report"], end="")
+    elif "issues" in result:
+        for issue in result["issues"]:
+            print(f"{issue['id']}: {issue['title']}")
+        for error in result.get("errors", []):
+            print(error["message"], file=sys.stderr)
+    elif "attachment" in result:
+        print(f"{result['id']}: zapisano {result['attachment']['name']} do {args.output}")
+    elif "step" in result:
+        if getattr(args, "ticket", None):
+            print(f"Przejęto próbę {result['step']} w Konsoli. Dopisz instrukcję w otwartej sesji.")
+        else:
+            print(f"Rozmowa opiekuna: {result['step']}")
+    else:
+        print(f"Tide API v{result['apiVersion']}")
+    if result.get("commitError") and not as_json:
+        print("Zapisano sprawę; commit czeka w kolejce: " + result["commitError"], file=sys.stderr)
+    return 5 if result.get("startError") else 0 if result["ok"] else EXIT_CODES.get(result.get("error"), 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

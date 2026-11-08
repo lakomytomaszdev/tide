@@ -17,6 +17,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .cardflow.engine import FlowError
+from .resources import ResourceError
 
 POLL_MS = 5_000
 
@@ -76,6 +77,17 @@ class CardFlowMonitor(QObject):
 
     # --- akcje -----------------------------------------------------------------------------------
 
+    def issue_call(self, service, method, args, reply):
+        # Go i retry biegną w tym samym wątku co StartCard i tick, poza Qt.
+        def answer(future):
+            text = future.result()
+            if method in ("AcceptIssue", "RetryIssueStart") and self.board is not None:
+                self.board.publish()
+            reply(text)
+        if not self._submit(lambda: service.call(method, *args), answer):
+            reply(json.dumps({"ok": False, "apiVersion": 1, "error": "unavailable",
+                              "message": "Usługa się zamyka."}, ensure_ascii=False))
+
     def start_card(self, card_id: str, request: str, reply) -> None:
         """StartCard(id, json): reply(json) po zleceniu (w wątku roboczym) — {ok, ticket, …} albo {ok: false, error, message}."""
         try:
@@ -89,7 +101,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:  # błąd w kodzie nie może położyć usługi
                 print(f"tide-daemon: przepływ karty: StartCard: {exc!r}", flush=True)
@@ -113,7 +125,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty: {name}: {exc!r}", flush=True)
@@ -146,7 +158,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty: ResolveCardReview: {exc!r}", flush=True)
@@ -169,7 +181,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty: ResolveCardStep: {exc!r}", flush=True)
@@ -224,7 +236,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:
                 print(f"tide-daemon: EditCardPlan: {exc!r}", flush=True)
@@ -239,7 +251,7 @@ class CardFlowMonitor(QObject):
         def answer(future):
             try:
                 result = future.result()
-            except FlowError as exc:
+            except (FlowError, ResourceError) as exc:
                 result = _failure(exc.code, str(exc))
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty: ApproveCardPlan: {exc!r}", flush=True)

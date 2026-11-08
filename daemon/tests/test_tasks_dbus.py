@@ -94,12 +94,24 @@ class TasksContractTest(unittest.TestCase):
         return reply.arguments()[0]
 
     def start(self, **request):
+        before = len(self.agent_calls())
+        result = self.start_response(**request)
+        if result.get("ok"):
+            # Zwykłe scenariusze oddają sterowanie dopiero po pełnym wpisie agenta.
+            self.assertTrue(wait_until(lambda: len(self.agent_calls()) >= before + 1, timeout=5),
+                            "Przejęte zadanie nie zapisało wywołania agenta w ciągu 5 s.")
+        return result
+
+    def start_response(self, **request):
+        # Scenariusz z bramką musi najpierw dostać odpowiedź Start, zwolnić agenta,
+        # a potem jawnie sprawdzić pełny zapis przez wait_for_agent_call.
         return json.loads(self.call("Start", json.dumps(request, ensure_ascii=False)))
 
     def agent_calls(self):
         try:
-            with open(self.agent_log, encoding="utf-8") as fh:
-                return [json.loads(line) for line in fh if line.endswith("\n")]
+            with open(self.agent_log, "rb") as fh:
+                # Dekodujemy dopiero pełne wpisy: fragment może urywać znak UTF-8.
+                return [json.loads(line) for line in fh.read().split(b"\n")[:-1]]
         except OSError:
             return []
 

@@ -172,6 +172,23 @@ class FlowQuotaContractTest(FlowInProcess):
             with self.assertRaises(FlowError, msg=repr(bad)):
                 engine.set_flow_settings({"providerSlots": bad})
 
+    def test_review_rounds_before_question_are_set_through_flow_settings(self):
+        # 08.11: użytkownik zdecydował o pytaniu po 4 rundach review — bez ręcznej edycji ~/.config.
+        engine = self.flow.engine
+        self.assertEqual(engine.get_flow_settings()["reviewRoundsBeforeQuestion"], engine._review_rounds())
+        reply = engine.set_flow_settings({"reviewRoundsBeforeQuestion": 4})
+        self.assertEqual(reply["reviewRoundsBeforeQuestion"], 4)
+        self.assertEqual(engine._review_rounds(), 4)
+        with open(self.settings, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        self.assertEqual(stored["reviewRoundsBeforeQuestion"], 4)
+        self.assertEqual(stored["stepGuardMinutes"], self.guard_minutes)
+        for bad in (0, 21, True, "4", 4.5):
+            with self.assertRaises(FlowError, msg=repr(bad)):
+                engine.set_flow_settings({"reviewRoundsBeforeQuestion": bad})
+        engine.set_flow_settings({"limitThresholdPercent": 5})
+        self.assertEqual(engine.get_flow_settings()["reviewRoundsBeforeQuestion"], 4, "inne ustawienia go nie kasują")
+
     def test_low_limit_queues_card_then_starts_when_reading_recovers(self):
         now = self.flow.engine.clock()
         metric = {"remaining": 7, "readTs": now, "resetTs": now + 1000}
@@ -234,6 +251,20 @@ class LimitProjectionTest(unittest.TestCase):
 
 
 class TransferFlowTest(FlowInProcess):
+    def start_until_limit(self, card, metric):
+        poll = self.flow.engine._poll
+
+        def exhausted(card_id, step):
+            # Start dopuszcza 25%; pierwszy odczyt logu musi już widzieć wyczerpany limit.
+            # Odpowiedź StartCard może dotrzeć do testu dopiero po tym odczycie.
+            metric["remaining"] = 0
+            return poll(card_id, step)
+
+        with mock.patch.object(self.flow.engine, "_poll", side_effect=exhausted):
+            self.assertTrue(self.start(card)["ok"])
+            self.assertTrue(wait_until(lambda: any(e.get("reason") == "limit" for e in
+                                            self.of(card, "step.finished")), timeout=30), self.events(card))
+
     def resolve(self, card, request):
         replies = []
         self.board.resolve_card_step(card, json.dumps(request), replies.append)

@@ -90,6 +90,13 @@ class CaretakerChatTest(EngineOnJournal):
         self.assertTrue(shown["flow"]["canTalkToCaretaker"])
         self.assertEqual(shown["flow"]["running"][0]["kindLabel"], "rozmowa z opiekunem")
 
+    def test_prepared_chat_uses_its_own_context_without_loading_issue_evidence(self):
+        self.engine._finish_caretaker_chat("K-1", self.step)
+        with mock.patch.object(self.engine, "_issue_evidence", side_effect=AssertionError("obcy kontekst")) as load:
+            reply = self.engine.talk_to_caretaker("K-1", {"problem": PROBLEM})
+        self.assertTrue(reply["ok"], reply)
+        load.assert_not_called()
+
     def test_duplicate_finished_card_and_no_terminal(self):
         with self.assertRaises(FlowError) as err:
             self.engine.talk_to_caretaker("K-1", {})

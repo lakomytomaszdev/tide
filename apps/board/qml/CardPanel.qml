@@ -71,6 +71,7 @@ Rectangle {
     signal saveRequested(var request)               // CreateCard albo UpdateCard (pola zmienione)
     signal moveRequested(string column)
     signal closeRequested()
+    signal navigateRequested(string viewId, string item)
     signal docsRequested(string cardId)            // /Board CardDocs
     signal openFileRequested(string path)          // „Otwórz plik”
     signal showInFolderRequested(string path)      // „Pokaż w katalogu”
@@ -288,6 +289,12 @@ Rectangle {
         }
 
         // Zakładki: Opis zawsze, Plan i Specyfikacja — gdy są.
+        PillButton {
+            objectName: "cardSourceIssue"
+            visible: !!panel.card && !!panel.card.sourceIssue && !panel.descriptionOnly
+            text: panel.card ? "Raport i dowody " + (panel.card.sourceIssue || "") + " · wersja " + (panel.card.sourceIssueVersion || 0) : ""
+            onClicked: panel.navigateRequested("issues", panel.card.sourceIssue)
+        }
         Segmented {
             objectName: "cardTabs"
             visible: panel.editing && !panel.descriptionOnly && panel.docTabs.length > 1

@@ -560,11 +560,12 @@ class RenderLaunchTest(unittest.TestCase):
         self.assertIn(f"- mobileapp: {w.repos['mobileapp']}", text)
 
     def test_previous_seed_templates_migrate(self):
+        from .test_board_launch import old_seed
         for mode, text in flows.SEED_FLOWS.items():
             self.assertIn("{projects}", text)
-            previous = text.replace("{projects}", "").replace("tide-flow: 3\n", "tide-flow: 2\n") \
-                .replace("tide-flow: 4\n", "tide-flow: 2\n").replace("entry: spec", "mode: spec")
-            self.assertTrue(flows.outdated(mode, previous), f"{mode}: szablon sprzed PT-28 zostanie podmieniony")
+            self.assertTrue(flows.outdated(mode, old_seed(mode)), f"{mode}: znany dawny zaczyn będzie podmieniony")
+            similar = text.replace("{projects}", "").replace("tide-flow: 5\n", "tide-flow: 2\n")
+            self.assertFalse(flows.outdated(mode, similar), "podobieństwo do dawnego zaczynu nie wystarcza")
             self.assertFalse(flows.outdated(mode, text))
 
 

@@ -30,7 +30,7 @@ class CaretakerDecisionTest(unittest.TestCase):
             events.append(event)
             return event
 
-        engine.journal = SimpleNamespace(read=lambda card: events, append=append)
+        engine.journal = SimpleNamespace(read=lambda card: events, state=lambda card: fold(events), append=append)
         engine._notices = []
         engine._caretaker_withheld = mock.Mock(return_value=set())
         engine._limit_view = mock.Mock()
