@@ -189,19 +189,8 @@ class ExposureService:
         requested = [p["name"] if isinstance(p, dict) else p for p in profile.get("packs", [])]
         if set(requested) != set(names):
             raise ExposureError("manifest: czeka na dokładne PackSnapshot dla każdej paczki; nie montuje oryginałów")
-        mounts = []
-        for repo in self.repositories:
-            mounts.extend({"source": repo + suffix, "target": repo + suffix, "mode": mode, "kind": kind}
-                          for suffix, mode, kind in (("/.git", "rw", "git"),
-                                                     ("/.git/config", "ro", "git-config"),
-                                                     ("/.git/hooks", "ro", "git-hooks"),
-                                                     ("/.git/info", "ro", "git-info"),
-                                                     ("-worktrees", "rw", "workspaces")))
-        # PT-264 musi porównać rzeczywiste urządzenia z tym dokładnym planem; wolumen zamiast
-        # katalogu home albo dodatkowe config.worktree wymagają nowego opisu i zgody.
-        from .runner import host_home_dir
-        mounts.append({"source": host_home_dir(self.project, self.env), "target": "/home/agent",
-                       "mode": "rw", "kind": "home"})
+        from . import mounts as project_mounts
+        mounts = project_mounts.plan(self.repositories, self.project, self.env)
         inputs = []
         for copy in copies:
             mount = {"source": copy["directory"], "target": "/packs/" + copy["name"],
@@ -221,7 +210,8 @@ class ExposureService:
                 raise ExposureError("manifest: montowanie odsłoniłoby chroniony manifest")
             if mount["mode"] == "rw" and any(_within(p, source) for p in originals):
                 raise ExposureError("manifest: oryginały wejść znalazłyby się w zapisie pudełka")
-        return json.loads(_json({"contract": VERSION, "consentVersion": VERSION, "project": self.project,
+        return json.loads(_json({"contract": VERSION, "consentVersion": VERSION,
+                                "mountContract": project_mounts.CONTRACT, "project": self.project,
                                 "repositories": self.repositories, "mounts": mounts, "inputs": inputs,
                                 "profile": profile, "scope": SCOPE,
                                 "credentials": {p: k3.credential_mode(p) for p in ("claude", "codex")}}))
@@ -295,3 +285,25 @@ def revoke(project, version, env=None):
             state["generation"] += 1
             _write(fd, "state.json", state, replace=True)
     return "Wycofano przyszłe udostępnienia; kopie już poznane w projekcie mogą pozostać."
+
+
+@contextmanager
+def snapshot_mount_access(project, ident, env=None):
+    """Mount z opublikowanej historii; callback trzyma już blokadę paczek."""
+    with _store(project, env) as fd:
+        state = _state(fd)
+        entries = []
+        for name in os.listdir(fd):
+            if not (name.startswith("manifest-") and name.endswith(".json")):
+                continue
+            record = _read(fd, name)
+            manifest = record.get("manifest")
+            if (not isinstance(manifest, dict) or manifest.get("project") != project or
+                    record.get("digest") != _hash(manifest)):
+                raise ExposureError("niezgodna historia urządzeń projektu")
+            if record.get("generation", state["generation"] + 1) > state["generation"]:
+                continue  # Sam audyt niedokończonego approve nie upoważnia do urządzeń.
+            entries += [i for i in manifest["inputs"] if i["snapshot"]["id"] == ident]
+        if not entries or any(entry != entries[0] for entry in entries):
+            raise ExposureError("brak jednoznacznego historycznego urządzenia kopii")
+        yield entries[0]["mount"]

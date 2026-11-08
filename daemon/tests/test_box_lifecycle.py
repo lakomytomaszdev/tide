@@ -27,6 +27,14 @@ class LifecycleTest(BoxCase):
         self.b.build("plasma-tide")
         self.life = lc.Lifecycle(self.b)
 
+    def test_project_reset_refuses_a_live_card_copy_without_resetting_either_box(self):
+        name = self.b.copy_for_card("plasma-tide", "K-38")
+        bs.mark_in_use("plasma-tide", name, "live-copy-step")
+        with mock.patch.object(self.b.incus, "snapshot_restore") as restore:
+            with self.assertRaises(bb.BoxBusy):
+                self.b.reset("plasma-tide")
+            restore.assert_not_called()
+
     def test_destructive_operations_exclude_a_concurrent_reservation(self):
         for operation in ("stop", "reset", "close"):
             with self.subTest(operation=operation):

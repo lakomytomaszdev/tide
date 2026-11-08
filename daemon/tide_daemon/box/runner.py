@@ -48,7 +48,7 @@ import stat
 import subprocess
 import sys
 import time
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -133,7 +133,7 @@ def worktree_config_enabled(git_dir: str) -> bool:
     nic nie chronią, a każda nowa (plik) wymaga zatrzymania pudełka. `git config --file` czyta wyłącznie ten plik
     (bez `include`, bez konfiguracji systemowej i użytkownika). Błąd odczytu → StepError (nie „wyłączone”)."""
     path = os.path.join(git_dir, "config")
-    run = subprocess.run(git_argv("config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig"),
+    run = subprocess.run(git_argv("config", "--file", path, "--type=bool", "--get", "extensions.worktreeConfig", boundary=True),
                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
                          env={"PATH": os.environ.get("PATH") or "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1",
                               "LC_ALL": "C"})
@@ -364,7 +364,7 @@ class BoxRunner:
                  step_env: Callable[[agentcmd.Step], dict] | None = None,
                  journal: Callable[[str, dict], None] | None = None, env: dict | None = None,
                  systemd_run: str = SYSTEMD_RUN, systemctl: str = SYSTEMCTL, tide_step=None,
-                 popen=subprocess.Popen, sleep=time.sleep, extra_devices=()):
+                 popen=subprocess.Popen, sleep=time.sleep, extra_devices=(), mount_steps=None):
         self.settings = settings
         self.slug = slug
         self.card = card
@@ -380,6 +380,7 @@ class BoxRunner:
         self._popen, self._sleep = popen, sleep
         self._risk_logged = False
         self.extra_devices = tuple(extra_devices)
+        self.mount_steps = mount_steps
 
     # --- środowisko ------------------------------------------------------------------------------
 
@@ -420,6 +421,13 @@ class BoxRunner:
         bg.env["TIDE_CWD"] = bg.cwd
         bg.env["TIDE_STEP"] = bg.step_dir
         bg.env["PATH"] = os.path.join(bg.step_dir, "in", "bin") + os.pathsep + bg.env["PATH"]
+        if step.exposure_inputs is not None and step.tool == "codex":
+            for i, arg in enumerate(bg.argv):
+                prefix = "sandbox_workspace_write.writable_roots="
+                if arg.startswith(prefix):
+                    roots = json.loads(arg[len(prefix):])
+                    roots.append(BOX_HOME + "/.local/state/tide-git")
+                    bg.argv[i] = prefix + json.dumps(list(dict.fromkeys(roots)), ensure_ascii=False)
         # Katalog tymczasowy Claude Code leży w /tmp pudełka (zakłada go tide-step), nie na hoście.
         tmp = bg.env.get("CLAUDE_CODE_TMPDIR")
         if tmp:
@@ -436,7 +444,7 @@ class BoxRunner:
         path = os.path.join(inp, "settings.json")
         host = json.loads(bg.files[path])
         deny = list(BOX_DENY_READ) + [os.path.join(inp, ENV_FILE)]
-        if self._pack_specs():
+        if self._pack_specs() or (step.exposure_inputs is not None and step.exposure_inputs.snapshot_ids):
             deny.remove("/packs")  # zatwierdzone kopie mają być czytelne; zapis blokuje Incus
         settings = {k: v for k, v in host.items() if k != "sandbox"}
         if step.local is not None and step.local.token_file:
@@ -447,6 +455,8 @@ class BoxRunner:
             deny.append(token)
         filesystem = dict(host.get("sandbox", {}).get("filesystem", {}))
         filesystem.update(denyRead=deny, allowWrite=[out, os.path.join(step.repo, ".git")])
+        if step.exposure_inputs is not None:
+            filesystem["allowWrite"].append(BOX_HOME + "/.local/state/tide-git")
         settings["sandbox"] = {
             "enabled": self.sandbox, "failIfUnavailable": self.sandbox, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
@@ -483,7 +493,10 @@ class BoxRunner:
     def devices_for(self, step: agentcmd.Step) -> list:
         """Urządzenia dyskowe kroku. Kolejność listy nie decyduje o montowaniu (Incus sortuje po `path`) — nakładki ro
         są nad `.git`, bo ich ścieżki leżą pod `.git/`."""
-        self._require_mount_adapter(step)
+        from . import exposure
+        if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
+            from .mounts import ProjectMounts
+            return ProjectMounts(self).devices(step)
         repo = os.path.realpath(step.repo)
         git = os.path.join(repo, ".git")
         if not os.path.isdir(git):
@@ -605,6 +618,10 @@ class BoxRunner:
 
     def ensure_devices(self, step: agentcmd.Step, *, check_only: bool = False) -> list:
         """Dodaje urządzenia i `raw.idmap`; check_only sprawdza dostępność bez zmiany montowań."""
+        from . import exposure
+        if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
+            from .mounts import ProjectMounts
+            return ProjectMounts(self).ensure(step, check_only)
         wanted = self.devices_for(step)
         path = lock_path(self.slug, self.host_env)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -758,6 +775,10 @@ class BoxRunner:
         # Nie instalujemy nic jako root pudełka; zapis podlega tym samym kontrolom dowiązań co reszta kroku.
         with open(TIDE_STEP_SCRIPT, encoding="utf-8") as source:
             fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-step"), source.read(), mode=0o700)
+        if step.exposure_inputs is not None:
+            from . import gitview
+            with open(gitview.__file__, encoding="utf-8") as source:
+                fs.write(os.path.join(bg.step_dir, "in", "bin", "git"), source.read(), mode=0o755)
         from . import test_artifacts
         with open(test_artifacts.__file__, encoding="utf-8") as source:
             fs.write(os.path.join(bg.step_dir, "in", "bin", "tide-test"), source.read(), mode=0o755)
@@ -784,7 +805,8 @@ class BoxRunner:
         with fs.open_append(os.path.join(bg.step_dir, "out", EXEC_LOG)) as log:
             from . import refguard
             refguard.begin(step.repo, self.card, step.step_id, bg.git_dir,
-                           branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree)
+                           branch=step.branch, prepare=lambda: self.ensure_devices(step), worktree=step.worktree,
+                           box_view_home=host_home_dir(self.slug, self.host_env) if step.exposure_inputs is not None else "")
             try:
                 trialgate.require_step(step)
                 proc = self._popen(self.argv(bg), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -797,8 +819,9 @@ class BoxRunner:
     def _require_mount_adapter(self, step):
         from . import exposure
         if self.slug == exposure.PROJECT or step.exposure_inputs is not None:
-            raise agentcmd.StepError("manifest projektu: czeka na odebrany adapter montowań PT-264; "
-                                     "brak powrotu do historycznych urządzeń per karta")
+            from .mounts import ProjectMounts
+            with ProjectMounts(self).access(step):
+                pass
 
     def _client_env(self) -> dict:
         """Środowisko klienta `incus` na hoście — bez zmiennych kroku (nic z `in/env`)."""
@@ -933,8 +956,9 @@ def _demo(argv: list) -> int:
     args, command = demo_args(argv)
     from . import settings as bsettings
     worktree = os.path.realpath(args.worktree)
-    common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"),
-                            capture_output=True, text=True, check=True).stdout.strip()
+    common = subprocess.run(git_argv("-C", worktree, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                                     boundary=True),
+                            capture_output=True, text=True, check=True, env=git_launch_env()).stdout.strip()
     repo = os.path.dirname(common)
     stamp = time.strftime("%Y%m%d%H%M%S")
     step_id = args.finish_guard or f"demo-{stamp}-{secrets.token_hex(4)}"

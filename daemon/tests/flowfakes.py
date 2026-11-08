@@ -362,6 +362,13 @@ if word == "poza-uwagi":
     word = "poza"
 
 write("start")
+if word in ("na-sygnal", "blad-local"):
+    until = time.monotonic() + 120
+    while not os.path.isfile(os.path.join(out, "release-agent")):
+        if time.monotonic() >= until:
+            finish("error", reason="Test nie zwolnił atrapy sygnałem release-agent")
+            sys.exit(1)
+        time.sleep(0.05)
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)
 elif word == "limit" and "Wznowienie tego samego kroku" not in prompt:
@@ -538,7 +545,6 @@ elif word == "dane-zostaja":
             fh.write("x\n")
     finish("done")
 elif word == "blad-local":
-    time.sleep(0.5)
     finish("error", reason="awaria testowa")
 else:
     finish("done")

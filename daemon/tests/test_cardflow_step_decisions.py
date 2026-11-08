@@ -654,9 +654,20 @@ class StepDecisionTest(FlowInProcess):
             "models": [{"name": "qwen3-coder:30b"}, {"name": "qwen2.5-coder:7b"}]}
         card_id = self.card(description="Test.\n\nATRAPA: blad-local")
         self.assertTrue(self.start(card_id, executor="Lokalny", preferredProvider="local")["ok"])
-        self.started(card_id)
-        self.flow.engine.model_probe = lambda endpoint: {"online": False, "error": "offline", "models": []}
+        first = self.started(card_id)
+        self.assertEqual(self.of(card_id, "step.finished"), [], "Awaria nastąpiła przed odłączeniem modelu")
+        offline_probes = []
+
+        def offline(endpoint):
+            offline_probes.append(endpoint)
+            return {"online": False, "error": "offline", "models": []}
+
+        # Dopiero teraz pierwsza awaria może uruchomić ponowienie z nową sondą.
+        self.flow.engine.model_probe = offline
+        with open(os.path.join(first["stepDir"], "out", "release-agent"), "w", encoding="utf-8"):
+            pass
         card = self.wait_column(card_id, "waiting", timeout=30)
+        self.assertTrue(offline_probes, "Ponowienie nie sprawdziło dostępności modelu")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertEqual([s["provider"] for s in self.of(card_id, "step.started")], ["local", "local"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],

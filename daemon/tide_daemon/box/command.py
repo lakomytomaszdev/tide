@@ -9,7 +9,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_launch_env
 from ..tasks import agentcmd
 from ..board.store import BoardStore
 from ..cardflow import boxaccess
@@ -19,8 +19,8 @@ from .ports import PortPool, DEMO_OWNER
 
 
 def _git(cwd, *args):
-    result = subprocess.run(git_argv("-C", cwd, *args), capture_output=True, text=True, timeout=60,
-                            stdin=subprocess.DEVNULL)
+    result = subprocess.run(git_argv("-C", cwd, *args, boundary=True), capture_output=True, text=True, timeout=60,
+                            stdin=subprocess.DEVNULL, env=git_launch_env())
     if result.returncode:
         raise bb.BuildError("git: " + result.stderr.strip())
     return result.stdout.strip()

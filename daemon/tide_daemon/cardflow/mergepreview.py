@@ -56,28 +56,34 @@ def file_stamp(path: str):
         return None
 
 
-def checkout_snapshot(run, path: str, *, stamp=None, untracked_files="all") -> dict:
+def checkout_snapshot(run, path: str, *, stamp=None, untracked_files="all", include_ignored=False) -> dict:
     # Podgląd korekty używa ograniczonego odczytu metadanych; scalenie zachowuje odcisk treści.
     stamp = stamp or file_stamp
     if not path:
         return {"exists": False}
 
-    def read(*args):
-        result = run(path, *args)
+    reader = getattr(getattr(run, "__self__", None), "read_checkout", None)
+    grouped = reader(path, untracked_files=untracked_files, include_ignored=include_ignored) if reader else None
+
+    def result_for(name, *args):
+        return grouped[name] if grouped is not None else run(path, *args)
+
+    def read(name, *args):
+        result = result_for(name, *args)
         if not result.ok:
             raise OSError("nie można odczytać checkoutu: " + " ".join(args[:2]))
         return result.out
 
-    head = read("rev-parse", "--verify", "HEAD").strip()
+    head = read("head", "rev-parse", "--verify", "HEAD").strip()
     # symboliczny HEAD albo jawnie odłączony — oba stany mają własny odcisk.
-    symbolic = run(path, "symbolic-ref", "--quiet", "HEAD")
+    symbolic = result_for("symbolic", "symbolic-ref", "--quiet", "HEAD")
     if symbolic.code not in (0, 1):
         raise OSError("nie można odczytać gałęzi checkoutu")
-    changes = status_entries(read("status", "--porcelain=v1", "-z", "--untracked-files=" + untracked_files,
+    changes = status_entries(read("status", "status", "--porcelain=v1", "-z", "--untracked-files=" + untracked_files,
                                   "--ignore-submodules=none"))
-    index = read("rev-parse", "--path-format=absolute", "--git-path", "index").strip()
-    gitdir = read("rev-parse", "--absolute-git-dir").strip()
-    index_entries = read("ls-files", "--stage", "-v", "-z")
+    index = read("index", "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
+    gitdir = read("gitdir", "rev-parse", "--absolute-git-dir").strip()
+    index_entries = read("index_entries", "ls-files", "--stage", "-v", "-z")
     gitlinks = {entry.partition("\t")[2] for entry in index_entries.split("\0")
                 if entry[2:].startswith("160000 ")}
     paths = sorted({p for entries in changes.values() for entry in entries for p in entry["paths"]})
@@ -92,7 +98,12 @@ def checkout_snapshot(run, path: str, *, stamp=None, untracked_files="all") -> d
             return checkout_snapshot(run, full, stamp=stamp, untracked_files=untracked_files)
         return stamp(full)
 
-    return {"exists": True, "path": os.path.realpath(path), "head": head,
+    extra = {}
+    if include_ignored:
+        extra = {"ignored": read("ignored", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"),
+                 "repository": os.path.realpath(read("repository", "rev-parse", "--path-format=absolute",
+                                                       "--git-common-dir").strip())}
+    return {"exists": True, "path": os.path.realpath(path), "head": head, **extra,
             "branch": symbolic.out.strip(), "index": stamp(index),
             # Zawartość logiczna obejmuje też sharedindex oraz flagi skip-worktree/assume-unchanged.
             "indexEntries": index_entries, "changes": changes,

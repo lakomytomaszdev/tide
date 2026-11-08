@@ -1,6 +1,8 @@
 """PT-62: fale, współbieżność i wstrzymanie przez publiczny interfejs przepływu."""
 import json
 import os
+from pathlib import Path
+import subprocess
 
 from .privatebus import wait_until
 from . import test_cardflow_plan_integration as plan_tests
@@ -114,26 +116,37 @@ class WaveFlowTest(FlowInProcess):
         isolated = queue.Queue()
         with mock.patch.object(queue, "shared", return_value=isolated):
             self.local_config()
-            first = self.card(description="ATRAPA: powoli 2")
+            first = self.card(description="ATRAPA: na-sygnal")
             second = self.card(description="ATRAPA: powoli 2")
             self.assertTrue(self.start(first, executor="Lokalny", preferredProvider="local")["ok"])
-            self.assertTrue(self.start(second, executor="Lokalny", preferredProvider="local")["ok"])
-            self.assertEqual(len(self.of(second, "step.started")), 0)
+            signal = Path(self.of(first, "step.started")[0]["stepDir"], "out", "release-agent")
             begun, release = threading.Event(), threading.Event()
             def report():
                 begun.set()
-                release.wait(15)
-            worker = threading.Thread(target=lambda: isolated.run(report, endpoint="local", role="summary",
-                                      lane=queue.lane_of("http://127.0.0.1:11434/v1")), daemon=True)
-            worker.start()
+                release.wait(120)
+            lane = queue.lane_of("http://127.0.0.1:11434/v1")
+            worker = None
             try:
-                self.assertTrue(wait_until(begun.is_set, timeout=8))
+                self.assertTrue(self.start(second, executor="Lokalny", preferredProvider="local")["ok"])
+                self.assertEqual(len(self.of(second, "step.started")), 0)
+                worker = threading.Thread(target=lambda: isolated.run(report, endpoint="local", role="summary",
+                                          lane=lane), daemon=True)
+                worker.start()
+                # Raport musi naprawdę czekać, zanim pierwszy krok zwolni slot.
+                self.assertTrue(wait_until(lambda: any(item["role"] == "summary" for item in
+                    isolated.snapshot().get(lane, {}).get("waiting", [])), timeout=5))
+                self.assertFalse(begun.is_set())
+                self.assertFalse(self.of(first, "step.finished"))
+                signal.touch()
+                self.assertTrue(wait_until(begun.is_set, timeout=60))
                 self.assertEqual(len(self.of(first, "step.started")), 1)
                 self.assertEqual(self.of(second, "step.started"), [])
                 self.assertTrue(self.of(first, "step.waiting") or self.of(second, "step.waiting"))
             finally:
+                signal.touch()
                 release.set()
-                worker.join(5)
+                if worker is not None:
+                    worker.join(5)
             self.wait_column(first, "review", timeout=20)
             self.wait_column(second, "review", timeout=20)
             # Review jest widoczne jeszcze przed końcem lokalnego kroku domknięcia.
@@ -215,23 +228,57 @@ class WaveFlowTest(FlowInProcess):
     def test_queued_direct_step_preserves_screenshot_after_dialog_removes_source(self):
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"providerSlots": {"anthropic": 1}}, fh)
-        first = self.card(description="ATRAPA: powoli 2")
-        second = self.card()
-        self.assertTrue(self.start(first)["ok"])
-        image = os.path.join(self.base, "shot.png")
-        with open(image, "wb") as fh:
-            fh.write(b"screenshot-data")
-        self.assertTrue(self.start(second, images=[image])["ok"])
-        os.unlink(image)
-        self.wait_column(second, "review", timeout=15)
-        started = self.of(second, "step.started")[0]
-        with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
-            self.assertEqual(fh.read(), b"screenshot-data")
-        # 04.11, K-49: narzędzie Read odrzucało zrzut spoza katalogów sesji — katalog zrzutów jest do odczytu.
-        with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
-            argv = json.load(fh)["argv"]
-        images = os.path.join(started["stepDir"], "in", "images")
-        self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+        first = self.card(description="ATRAPA: na-sygnal")
+        second = self.card(description="ATRAPA: na-sygnal")
+        try:
+            self.assertTrue(self.start(first)["ok"])
+            signal = Path(self.started(first)["stepDir"], "out", "release-agent")
+            image = os.path.join(self.base, "shot.png")
+            with open(image, "wb") as fh:
+                fh.write(b"screenshot-data")
+            self.assertTrue(self.start(second, images=[image])["ok"])
+            self.assertTrue(wait_until(lambda: any(e.get("cause") == "slots" for e in
+                                                  self.of(second, "step.waiting")), timeout=5))
+            self.assertEqual(self.of(second, "step.started"), [], "Zrzut ma czekać w kolejce")
+            self.assertFalse(self.of(first, "step.finished"))
+            os.unlink(image)
+            signal.touch()
+
+            def received_image():
+                starts = self.of(second, "step.started")
+                return starts and Path(starts[0]["stepDir"], "out", "fake-call.json").is_file()
+
+            # Czytamy wejście rzeczywistego procesu; kolumna review jest przejściowa
+            # i mogła już zniknąć, zanim callback startu zwrócił sterowanie testowi.
+            self.assertTrue(wait_until(received_image, timeout=60), self.events(second))
+            started = self.of(second, "step.started")[0]
+            self.assertFalse(self.of(second, "step.finished"), "Druga atrapa nadal czeka na kontrolę wejść")
+            self.assertFalse(os.path.exists(image))
+            with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
+                self.assertEqual(fh.read(), b"screenshot-data")
+            # 04.11, K-49: Read musi móc odczytać zrzut z katalogu wejść kroku.
+            with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+                argv = json.load(fh)["argv"]
+            images = os.path.join(started["stepDir"], "in", "images")
+            self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+        finally:
+            # Start w bieżącym ticku musi się zakończyć przed odczytem listy,
+            # także gdy asercja zawiedzie przed zapisem step.started.
+            self.stop_flow()
+            owned = []
+            for card in (first, second):
+                for started in self.of(card, "step.started"):
+                    proc = self.flow.engine.procs.get(started["step"])
+                    if proc is not None:
+                        if started["kind"] == "ticket":
+                            Path(started["stepDir"], "out", "release-agent").touch()
+                        owned.append((started, proc))
+            for started, proc in owned:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.flow.engine._runner_for(started).kill(started, proc=proc)
+                    proc.wait(timeout=5)
 
     def test_retry_uses_own_worktree_while_another_ticket_is_running(self):
         card = self.card()
@@ -262,18 +309,47 @@ class WaveFlowTest(FlowInProcess):
     def test_manual_finish_keeps_merged_ticket_and_rejects_remaining_plan(self):
         card = self.card()
         path = self.wave_plan(card)
-        for number, mode in ((1, "gotowe"), (2, "powoli 15")):
+        for number, mode in ((1, "gotowe"), (2, "na-sygnal")):
             ticket_path = os.path.join(os.path.dirname(path), "tickets", f"{number}.md")
             with open(ticket_path, encoding="utf-8") as fh:
                 source = fh.read()
             with open(ticket_path, "w", encoding="utf-8") as fh:
                 fh.write(source.replace("powoli 2", mode))
-        self.assertTrue(self.submit(card, path)["ok"])
-        mapping = self.approve(card)["map"]
-        self.assertTrue(wait_until(lambda: any(event.get("key") == mapping["#1"] and event.get("ok")
-                        for event in self.results(card, "merge")), timeout=10))
-        self.assertTrue(json.loads(self.board.move_card(card, "archived", 0))["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
-        self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")},
-                         {mapping["#2"], mapping["#3"]})
-        self.assertTrue(next(event for event in self.results(card, "merge") if event["key"] == mapping["#1"])["ok"])
+        try:
+            self.assertTrue(self.submit(card, path)["ok"])
+            mapping = self.approve(card)["map"]
+
+            def prepared():
+                approved = any(event.get("ticket") == mapping["#1"] and event.get("verdict") == "APPROVE"
+                               for event in self.of(card, "review.verdict"))
+                running = [event for event in self.ticket_starts(card)
+                           if event["ticket"] == mapping["#2"] and event["kind"] == "ticket"]
+                return approved and running and Path(running[0]["stepDir"], "out", "fake-call.json").is_file()
+
+            # Start obu ticketów i review przygotowują scenariusz. Okno merge
+            # zaczyna się po APPROVE, a druga atrapa nie kończy się samoczynnie.
+            self.assertTrue(wait_until(prepared, timeout=40), self.events(card))
+            self.assertTrue(wait_until(lambda: any(event.get("key") == mapping["#1"] and event.get("ok")
+                            for event in self.results(card, "merge")), timeout=10), self.events(card))
+            second = next(event for event in self.ticket_starts(card)
+                          if event["ticket"] == mapping["#2"] and event["kind"] == "ticket")
+            self.assertFalse(any(event["step"] == second["step"] for event in self.of(card, "step.finished")))
+            self.assertFalse(any(event["ticket"] == mapping["#3"] for event in self.ticket_starts(card)))
+            self.assertTrue(json.loads(self.board.move_card(card, "archived", 0))["ok"])
+            self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
+            self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")},
+                             {mapping["#2"], mapping["#3"]})
+            self.assertTrue(next(event for event in self.results(card, "merge") if event["key"] == mapping["#1"])["ok"])
+        finally:
+            # Stabilizujemy listę procesów również po błędzie przygotowania.
+            self.stop_flow()
+            for started in self.of(card, "step.started"):
+                proc = self.flow.engine.procs.get(started["step"])
+                if proc is not None:
+                    if started["kind"] == "ticket":
+                        Path(started["stepDir"], "out", "release-agent").touch()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.flow.engine._runner_for(started).kill(started, proc=proc)
+                        proc.wait(timeout=5)

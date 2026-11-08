@@ -15,7 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
-from ..gitcommand import git_argv
+from ..gitcommand import git_argv, git_command
 
 CACHE_VERSION = 1
 GIT_ENV = {"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1"}
@@ -180,8 +180,9 @@ def _branch_exists(repo: str, branch: str, git=None) -> bool:
     if branch.startswith("-") or not repo or not os.path.isdir(repo):
         return False
     try:
-        result = subprocess.run(git_argv("-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"),
-                                capture_output=True, timeout=5, env=dict(os.environ, **GIT_ENV))
+        argv, env = git_command("-C", repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}",
+                                env=dict(os.environ, **GIT_ENV))
+        result = subprocess.run(argv, capture_output=True, timeout=5, env=env)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0

@@ -59,7 +59,7 @@ class LinkConcurrencyTest(FlowInProcess):
     def test_hanging_cli_allows_parallel_local_start(self):
         git(self.repo, "remote", "add", "origin", "git@github.com:team/proj.git")
         folder = os.path.join(self.base, "fakebin")
-        hostingfakes.install(folder, {"mode": "timeout"})
+        hostingfakes.install(folder, {"mode": "blocked"})
         card = self.card(description="https://github.com/team/proj/pull/17\nATRAPA: pytanie")
         suggestions, started = [], []
 
@@ -67,7 +67,9 @@ class LinkConcurrencyTest(FlowInProcess):
         def gateway(*args):
             yield SimpleNamespace(failure=""), "/unused-proxy"
 
-        with patch.object(cli, "host_gateway", gateway), patch.object(cli, "TIMEOUT", 4):
+        # Bariera rozdziela zależność od CLI od kosztu lokalnego, chronionego Git.
+        # Osobne testy hostingcli nadal sprawdzają jego limit czasu.
+        with patch.object(cli, "host_gateway", gateway), patch.object(cli, "TIMEOUT", 120):
             self.board.suggest_card_base(card, json.dumps({"text": "", "revision": 1, "scope": "links"}),
                                          suggestions.append)
             try:
@@ -75,12 +77,14 @@ class LinkConcurrencyTest(FlowInProcess):
                 self.board.start_card(card, json.dumps({"entry": "now", "executor": "Sonnet",
                                                        "baseRef": "refs/heads/master", "baseCommit": self.master}),
                                       started.append)
-                self.assertTrue(wait_until(lambda: started, timeout=2), "StartCard czeka na zawieszony CLI")
+                self.assertTrue(wait_until(lambda: started, timeout=60), "StartCard czeka na zawieszony CLI")
                 self.assertTrue(json.loads(started[0])["ok"], started)
                 self.assertEqual(suggestions, [], "StartCard powinien odpowiedzieć w trakcie odczytu CLI")
                 self.assertEqual(self.of(card, "card.started")[0]["baseCommit"], self.master)
             finally:
-                self.assertTrue(wait_until(lambda: suggestions, timeout=6))
+                with open(os.path.join(folder, "release-hosting"), "w", encoding="utf-8"):
+                    pass
+                self.assertTrue(wait_until(lambda: suggestions, timeout=10))
             result = json.loads(suggestions[0])
             self.assertTrue(result["ok"], result)
             self.assertEqual(result["candidates"], [])
