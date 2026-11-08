@@ -34,7 +34,7 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows, commands, assignment, project_tests
+from . import flows, commands, assignment, contract_approval, project_tests
 from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
@@ -82,6 +82,8 @@ PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "ent
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
                   "tests")
 TAG_FIELDS = ("name", "newName", "color", "description")
+_CONTRACT_KEY = "_testsContract"   # wewnętrzny klucz wyniku planu projektu: kontrakt po zapisie (nie trafia do D-Bus)
+TESTS_UNAPPROVED = "kontrakt testów zmieniony poza oknem projektu — sprawdź i zatwierdź"
 
 
 class Board:
@@ -118,8 +120,11 @@ class Change:
 
 
 class BoardStore:
-    def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None):
+    def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None,
+                 approvals_path: str | None = None):
         self.root = os.path.abspath(os.path.expanduser(root))
+        # Magazyn odcisków zatwierdzonych kontraktów testów (contract_approval); None — $XDG_STATE_HOME w chwili wywołania.
+        self.approvals_path = approvals_path
         self.repo = BoardRepo(self.root, git)
         self.git = self.repo.git
         self.clock = clock
@@ -514,8 +519,43 @@ class BoardStore:
         return self._execute(lambda board: self._plan_move(board, num, column, int(index), shown))
 
     def upsert_project(self, data: dict) -> dict:
+        """Zapis projektu. Pole `tests` zapisuje kontrakt w `box.yaml`, ale go nie zatwierdza (PT-285):
+        odcisk tworzy wyłącznie approve_project_tests."""
+        result = self._upsert_project(data)
+        result.pop(_CONTRACT_KEY, None)
+        return result
+
+    def _upsert_project(self, data: dict) -> dict:
         values = _project_values(_fields(data, PROJECT_FIELDS), self.root)
         return self._execute(lambda board: self._plan_project(board, values))
+
+    def approve_project_tests(self, data: dict) -> dict:
+        """UpsertProject z polem `tests` z okna projektu (D-Bus, board_monitor): zapis jak upsert_project,
+        a potem zatwierdzenie — odcisk zapisanego kontraktu w stanie usługi (pusty kontrakt usuwa odcisk).
+        Zatwierdzamy tylko wtedy, gdy plik po zapisie ma dokładnie ten kontrakt. Ponowne zatwierdzenie
+        identycznych wartości zapisuje odcisk bez zmiany plików Tablicy i bez commita.
+        Odpowiedź: to co upsert_project oraz `testsApproved` i `approvalError` (pusty bez błędu).
+        Sprawdzenie nadawcy wywołania i kolizje ścieżek z obszarami zapisu kroków — PT-286."""
+        if "tests" not in data:
+            return self.upsert_project(data)
+        with self.transaction():
+            result = self._upsert_project(data)
+            contract = result.pop(_CONTRACT_KEY)
+            slug = result["slug"]
+            project = self._load().projects.get(slug)
+            result["testsApproved"], result["approvalError"] = False, ""
+            if (project is None or project.tests_error or
+                    contract_approval.canonical(project.tests) != contract_approval.canonical(contract)):
+                result["approvalError"] = ("kontrakt testów w pliku różni się od zapisanego — nie zatwierdzam; "
+                                           "sprawdź box.yaml i zapisz ponownie")
+                return result
+            try:
+                contract_approval.record(self.root, slug, contract, self.approvals_path)
+            except contract_approval.ApprovalError as exc:
+                result["approvalError"] = f"zatwierdzenie kontraktu testów: {exc}"
+                return result
+            result["testsApproved"] = contract_approval.approved(self.root, slug, contract, self.approvals_path)
+            return result
 
     def upsert_tag(self, data: dict) -> dict:
         values = _tag_values(_fields(data, TAG_FIELDS), self.colors)
@@ -812,6 +852,7 @@ class BoardStore:
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
         writes = []
+        contract = None
         if "tests" in v:  # kontrakt testów żyje w profilu `projects/<slug>/box.yaml`, nie we frontmatterze
             profile = project
             if profile is None:  # profil środowiska może istnieć jeszcze przed plikiem projektu
@@ -822,10 +863,13 @@ class BoardStore:
                                  "(zob. błędy Tablicy) — zapis kontraktu odrzucony, plik bez zmian")
             old_text = profile.box_text
             current = dict(profile.tests) if not profile.tests_error else project_tests.empty()
-            new_text = project_tests.save_tests(old_text, {**current, **v["tests"]})
+            contract = {**project_tests.empty(), **current, **v["tests"]}
+            new_text = project_tests.save_tests(old_text, contract)
             if new_text != (old_text or ""):
                 writes.append((os.path.join("projects", slug, project_tests.PROFILE_FILE), new_text))
         change.result = {"ok": True, "slug": slug, "changed": False}
+        if contract is not None:  # dla approve_project_tests; upsert_project usuwa ten klucz z odpowiedzi
+            change.result[_CONTRACT_KEY] = contract
         doc_changed = created or doc.text() != before
         if not doc_changed and not writes:
             return change
@@ -989,8 +1033,15 @@ class BoardStore:
         project.box_text = self._read_file(rel, errors)
         project.box_unreadable = project.box_text is None and os.path.lexists(os.path.join(self.root, rel))
         project.tests, project.tests_error = project_tests.load_tests(project.box_text)
+        project.tests_approved = False
         if project.tests_error:
             errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {project.tests_error}"})
+        elif not contract_approval.is_empty(project.tests):
+            # Tylko odczyt magazynu: odcisk tworzy wyłącznie approve_project_tests (PT-285).
+            project.tests_approved = contract_approval.approved(self.root, project.slug, project.tests,
+                                                                self.approvals_path)
+            if not project.tests_approved:
+                errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {TESTS_UNAPPROVED}"})
 
     def _docs(self, folder: str, errors: list):
         try:
@@ -1221,6 +1272,7 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
             "readDirs": list(project.read_dirs),
             "tests": dict(project.tests), "testsError": project.tests_error,
+            "testsApproved": project.tests_approved,
             "testsGrantNote": {name: project_tests.grant_note(project.tests.get(name, ""))
                                for name in project_tests.FIELDS},
             "assignmentRules": project.assignment_rules}

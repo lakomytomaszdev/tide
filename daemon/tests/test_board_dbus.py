@@ -212,10 +212,13 @@ class BoardDBusTest(unittest.TestCase):
 
     def test_3b_project_tests_contract_transport(self):
         # K-69/PT-278: pole `tests` w żądaniu UpsertProject i w JSON projektu (macierz walidacji: test_board_project_tests).
+        # PT-285: UpsertProject z `tests` to zatwierdzenie — `testsApproved` w odpowiedzi i w JSON projektu
+        # (macierz magazynu odcisków: test_board_contract_approval).
         tests = {"changed": "make test-changed BASE={base}", "full": "pytest *"}
-        self.assertEqual(self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": tests}))["changed"], True)
+        reply = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": tests}))
+        self.assertEqual((reply["changed"], reply["testsApproved"], reply["approvalError"]), (True, True, ""))
         project = {p["slug"]: p for p in self.snapshot()["projects"]}["mobileapp"]
-        self.assertEqual((project["tests"], project["testsError"]), (tests, ""))
+        self.assertEqual((project["tests"], project["testsError"], project["testsApproved"]), (tests, "", True))
         self.assertEqual(project["testsGrantNote"]["changed"], "")
         self.assertIn("`*`", project["testsGrantNote"]["full"])
         with open(os.path.join(self.board, "projects", "mobileapp", "box.yaml"), encoding="utf-8") as fh:

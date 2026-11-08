@@ -413,7 +413,12 @@ class BoardMonitor(QObject):
         return next((str(c.get("boardColumn") or "") for c in cards if isinstance(c, dict) and c.get("id") == wanted), "")
 
     def upsert_project(self, request: str) -> str:
-        return self._mutate(lambda: self.store.upsert_project(_object(request)))
+        """UpsertProject z okna projektu. Z polem `tests` to także zatwierdzenie kontraktu testów (PT-285):
+        odcisk w stanie usługi tworzy wyłącznie ta ścieżka (store.approve_project_tests)."""
+        def work():
+            data = _object(request)
+            return self.store.approve_project_tests(data) if "tests" in data else self.store.upsert_project(data)
+        return self._mutate(work)
 
     def upsert_tag(self, request: str) -> str:
         return self._mutate(lambda: self.store.upsert_tag(_object(request)))

@@ -961,7 +961,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1200,8 +1200,8 @@ mode: full
 Projekt Tablicy ma kontrakt testów: polecenie „testy dobrane do zmian” (`tests.changed`, z parametrem `{base}`)
 i „pełne testy przy domknięciu” (`tests.full`). Leży w profilu projektu `projects/<slug>/box.yaml` jako klucz
 `tests` schematu `tide-box: 1` — w tym samym pliku co profil pudełka K-38, **nie** we frontmatterze
-`projects/<slug>.md`. To tylko format i zapis: odcisk, zatwierdzenie i pochodzenie zapisu to osobna kartka (#8),
-więc żaden kod nie traktuje kontraktu jako zatwierdzonego.
+`projects/<slug>.md`. Zatwierdzenie przez użytkownika opisuje „Zatwierdzenie kontraktu testów” niżej (PT-285);
+ochrona przed krokiem agenta (pochodzenie wywołania) to PT-286.
 
 ```yaml
 tide-box: 1
@@ -1225,11 +1225,51 @@ tests:
   plików i commita. Polecenie z `*` albo niebędące pojedynczym poleceniem (`single_command`) jest poprawne, ale
   `grant_note(polecenie)` zwraca komunikat, że Tide nie nada mu automatycznej zgody.
 - JSON projektu (migawka, lista projektów): `tests` `{changed, full}` (zawsze oba klucze), `testsError` (napis,
-  pusty bez błędu) i `testsGrantNote` `{changed, full}` z `grant_note`. Uszkodzony blok (zły typ, zły YAML, nieznany
+  pusty bez błędu), `testsApproved` (niżej) i `testsGrantNote` `{changed, full}` z `grant_note`. Uszkodzony blok (zły typ, zły YAML, nieznany
   klucz, naruszenie reguł) daje pusty kontrakt, `testsError` i wpis w błędach Tablicy; reszta listy działa dalej.
   Zapis `tests` naprawia taki blok.
 - Moduł: `daemon/tide_daemon/board/project_tests.py` (`validate_tests`, `load_tests`, `save_tests`, `grant_note`),
   poza katalogiem `box/` K-38.
+
+#### Zatwierdzenie kontraktu testów (PT-285)
+
+Kontrakt leży w plikach Tablicy, więc może go zmienić krok agenta, ręczna edycja albo cofnięcie commita.
+Zatwierdzenie to **odcisk** kontraktu zapisany poza Tablicą, w stanie usługi:
+`$XDG_STATE_HOME/tide/test-contracts.json` (domyślnie `~/.local/state/tide/`).
+
+```json
+{"boards": {"/home/…/tide-board": {"mobileapp": "<sha256 hex>"}}, "version": 1}
+```
+
+- **Odcisk** = SHA-256 reprezentacji kanonicznej `{"changed":"…","full":"…"}` (stała kolejność pól, JSON bez
+  odstępów, UTF-8). Brak pola ≡ pusty napis; usuwane są wyłącznie białe znaki na brzegach każdego polecenia —
+  odstępy wewnątrz (także w cytowanym argumencie) są znaczące. Klucz: ścieżka Tablicy po `realpath` i slug.
+- **Zasada zatwierdzenia.** Odcisk tworzy wyłącznie `UpsertProject` z polem `tests` (okno projektu):
+  `board_monitor` woła `BoardStore.approve_project_tests`, które zapisuje kontrakt jak `upsert_project`,
+  sprawdza pod tą samą blokadą Tablicy, że plik ma dokładnie ten kontrakt, i zapisuje odcisk całego kontraktu
+  po zapisie (zapis częściowy, np. samo `full`, zatwierdza oba pola). Pusty kontrakt usuwa odcisk. Samo
+  `BoardStore.upsert_project` (np. dopisanie dozwolonych poleceń przez silnik kart), odczyt listy, migawka
+  i polecenia dla karty (`RenderFlow`, `RenderLaunch`) odcisku nie tworzą ani nie zmieniają. Ponowne
+  zatwierdzenie identycznych wartości (po utracie odcisku albo przywróceniu treści) zapisuje odcisk bez zmiany
+  plików Tablicy i bez commita (`changed: false`, `testsApproved: true`).
+- **`testsApproved`** w JSON projektu: `true` tylko wtedy, gdy kontrakt jest niepusty, blok poprawny, a jego odcisk
+  równy zapisanemu. Kontrakt różny od odcisku (albo bez odcisku) ma `false` i wpis w błędach Tablicy
+  „`projects/<slug>/box.yaml`: kontrakt testów zmieniony poza oknem projektu — sprawdź i zatwierdź”; zapis
+  w oknie projektu go zatwierdza. Pusty kontrakt i uszkodzony blok mają `false` bez tego wpisu (blok ma własny błąd).
+  Odpowiedź `UpsertProject` z `tests` ma `testsApproved` i `approvalError` (pusty bez błędu); błąd zapisu
+  odcisku nie cofa zapisanego kontraktu — zostaje niezatwierdzony.
+- **Plik odcisków.** Katalog `tide` 0700, plik 0600, właściciel = użytkownik usługi. Odczyt otwiera katalog
+  i plik z `O_NOFOLLOW` (plik także z `O_NONBLOCK`), sprawdza `fstat` i limit 1 MiB. Brak pliku albo katalogu,
+  dowiązanie, zły właściciel, złe prawa, nie zwykły plik, uszkodzony JSON albo zły kształt dają `false`,
+  nigdy `true` i nigdy błąd listy projektów. Zapis: plik tymczasowy w tym samym katalogu (`O_EXCL|O_NOFOLLOW`,
+  0600), `fsync`, `rename` względem uchwytu katalogu, `fsync` katalogu; przerwanie w połowie zostawia stary
+  plik i usuwa tymczasowy. Zapisy szereguje `flock` na uchwycie katalogu. Zapis poprawia prawa katalogu `tide`
+  na 0700, a nieczytelny plik zastępuje nowym.
+- Moduł: `daemon/tide_daemon/board/contract_approval.py` — jedno wejście odczytu `approved(board, slug, contract)`
+  i jedno zapisu `record(board, slug, contract)`; z nich korzysta PT-286.
+- **Granica.** Do PT-286 żaden krok nie korzysta z zatwierdzenia, więc `testsApproved` jest tylko informacją
+  w oknie. PT-286 dodaje ochronę przed krokiem agenta: sprawdzenie nadawcy `UpsertProject` (odrzucanie wywołań
+  z jednostek `tide-step-*`) i kolizje ścieżek z obszarami zapisu kroku (`approval_for_step`).
 
 #### Zgodność z profilem pudełka K-38
 

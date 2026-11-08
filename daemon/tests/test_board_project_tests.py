@@ -6,6 +6,7 @@ import unittest
 
 from tide_daemon.board import project_tests
 from tide_daemon.board.model import BoardError
+from tide_daemon.board.store import TESTS_UNAPPROVED
 
 from .test_board_core import BoardCase, git_out
 
@@ -21,6 +22,11 @@ def read(path):
 def read_bytes(path):
     with open(path, "rb") as fh:
         return fh.read()
+
+
+def parse_errors(snapshot, rel="projects/app/box.yaml"):
+    """Błędy odczytu profilu; wpis o niezatwierdzonym kontrakcie (PT-285) to nie błąd formatu."""
+    return [e for e in snapshot["errors"] if e["path"].endswith(rel) and TESTS_UNAPPROVED not in e["message"]]
 
 
 class ProjectTestsCase(BoardCase):
@@ -91,8 +97,7 @@ class SaveAndReadTest(ProjectTestsCase):
                     project = next(p for p in snapshot["projects"] if p["slug"] == "app")
                     self.assertEqual((project["tests"], project["testsError"]),
                                      ({"changed": "", "full": command}, ""))
-                    self.assertFalse(any(e["path"].endswith("projects/app/box.yaml")
-                                         for e in snapshot["errors"]))
+                    self.assertEqual(parse_errors(snapshot), [])
                     self.store.upsert_project({"slug": "app", "tests": {"changed": CONTRACT["changed"]}})
                     project = self.project()
                     self.assertEqual((project["tests"], project["testsError"]),
@@ -109,8 +114,7 @@ class SaveAndReadTest(ProjectTestsCase):
                     project = next(p for p in snapshot["projects"] if p["slug"] == "app")
                     self.assertEqual((project["tests"], project["testsError"]),
                                      ({"changed": "", "full": command}, ""))
-                    self.assertFalse(any(e["path"].endswith("projects/app/box.yaml")
-                                         for e in snapshot["errors"]))
+                    self.assertEqual(parse_errors(snapshot), [])
                     self.store.upsert_project({"slug": "app", "tests": {"changed": CONTRACT["changed"]}})
                     self.assertEqual(self.project()["tests"], {"changed": CONTRACT["changed"], "full": command})
                     self.assertEqual(self.project()["testsError"], "")
