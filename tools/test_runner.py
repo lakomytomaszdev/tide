@@ -318,7 +318,11 @@ def _run_module(module, output, root=ROOT):
                 log=str(log))
     # Raport modułu z kodem wyjścia procesu: worker pisze wynik przed zakończeniem, a moduł może jeszcze paść
     # (np. przy zwijaniu Qt). Ponowienie po uciętym przebiegu uznaje moduł tylko z returncode 0 (review 08.11).
-    report.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    try:
+        report.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        # Błąd zapisu raportu oznacza ten moduł, nie przerywa całego przebiegu.
+        data.update(returncode=data["returncode"] or 1, crash=f"Nie można zapisać raportu modułu: {exc}")
     return data
 
 
