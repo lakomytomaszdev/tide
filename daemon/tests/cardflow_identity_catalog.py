@@ -175,7 +175,7 @@ def overridden(trees: dict):
 
 
 def _clear():
-    for cached in (modules, imports, constants, local_constants, definitions):
+    for cached in (modules, imports, constants, local_constants, definitions, _graph_cached):
         cached.cache_clear()
 
 
@@ -226,6 +226,11 @@ def imports(path: str) -> dict:
     """alias → (moduł, nazwa albo None) dla importów względnych pakietu."""
     out = {}
     for node in ast.walk(module(path)):
+        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] == PACKAGE.name:
+            # Import bezwzględny pakietu (`from tide_daemon.box.state import record`): jak względny
+            # od korzenia pakietu (M6 review 2).
+            node = ast.ImportFrom(module=".".join(node.module.split(".")[1:]) or None, names=node.names,
+                                  level=len(Path(path).parts))
         if isinstance(node, ast.ImportFrom) and node.level:
             for alias in node.names:
                 as_module = _resolve_module(path, node.level, (node.module + "." if node.module else "") + alias.name)
@@ -370,6 +375,45 @@ class Unresolved(Exception):
     pass
 
 
+def literal_keys(node) -> frozenset:
+    """Znane klucze zmiennej `node` w jej funkcji: `x["k"] = …`, `x["k"] += …`, `x.update(k=…)`,
+    `x.update({"k": …})`, `x.setdefault("k", …)`, `x |= {"k": …}` i słownik w przypisaniu `x = {…}`.
+    Klucze niestałe pozostają częścią zakresu dynamicznego (osobna kontrola w teście)."""
+    if not isinstance(node, ast.Name):
+        return frozenset()
+    function = enclosing_function(node)
+    if function is None:
+        return frozenset()
+
+    def dict_keys(value):
+        if isinstance(value, ast.Dict):
+            return {k.value for k in value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        return set()
+
+    def same(target):
+        return isinstance(target, ast.Name) and target.id == node.id
+
+    keys = set()
+    for child in ast.walk(function):
+        targets = child.targets if isinstance(child, ast.Assign) else \
+            [child.target] if isinstance(child, (ast.AugAssign, ast.AnnAssign)) else []
+        for target in targets:
+            if isinstance(target, ast.Subscript) and same(target.value) and isinstance(target.slice, ast.Constant) \
+                    and isinstance(target.slice.value, str):
+                keys.add(target.slice.value)
+            elif same(target) and getattr(child, "value", None) is not None:
+                keys |= dict_keys(child.value)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and same(child.func.value):
+            if child.func.attr == "update":
+                keys |= {k.arg for k in child.keywords if k.arg}
+                for arg in child.args:
+                    keys |= dict_keys(arg)
+            elif child.func.attr == "setdefault" and child.args and isinstance(child.args[0], ast.Constant) \
+                    and isinstance(child.args[0].value, str):
+                keys.add(child.args[0].value)
+    return frozenset(keys)
+
+
 class Resolver:
     """Rozwiązywanie kluczy słowników w zapisach; porażka zgłasza Unresolved."""
 
@@ -394,7 +438,9 @@ class Resolver:
         text = ast.unparse(node)
         if (path, owner, text) in DYNAMIC:
             self.catalog.used_scopes.add((path, owner, text))
-            return DYNAMIC[(path, owner, text)][1]
+            # Zakres dynamiczny nie zastępuje analizy zmiennej: znane klucze przypisań
+            # i aktualizacji w tej funkcji zostają obok niego (M5 review 2).
+            return self._union([DYNAMIC[(path, owner, text)][1], literal_keys(node)])
         if isinstance(node, ast.Dict):
             parts = []
             for key, value in zip(node.keys, node.values):
@@ -502,14 +548,40 @@ def _is_card_append(node) -> bool:
             or (isinstance(receiver, ast.Attribute) and receiver.attr == "journal"))
 
 
-def _is_box_record(path: str, node) -> bool:
-    if not isinstance(node, ast.Call):
-        return False
-    if path == "box/state.py" and isinstance(node.func, ast.Name) and node.func.id == "record":
-        return True
-    if isinstance(node.func, ast.Attribute) and node.func.attr == "record" and isinstance(node.func.value, ast.Name):
-        return imports(path).get(node.func.value.id) == ("box/state.py", None)
+BOX_RECORD = ("box/state.py", "record")
+
+
+def _record_reference(path: str, node) -> bool:
+    """Odniesienie do zapisującego API `box/state.record`: nazwa w module, import po nazwie
+    (także z aliasem lub bezwzględny) albo atrybut aliasu modułu (M6 review 2)."""
+    if isinstance(node, ast.Name):
+        if path == BOX_RECORD[0] and node.id == "record":
+            return True
+        return imports(path).get(node.id) == BOX_RECORD
+    if isinstance(node, ast.Attribute) and node.attr == "record" and isinstance(node.value, ast.Name):
+        return imports(path).get(node.value.id) == (BOX_RECORD[0], None)
     return False
+
+
+def _is_box_record(path: str, node) -> bool:
+    return isinstance(node, ast.Call) and _record_reference(path, node.func)
+
+
+def _record_escapes(path: str, node) -> bool:
+    """Odniesienie do `record` poza bezpośrednim wywołaniem (np. `save = bs.record`, przekazanie
+    jako argument): zapis przez takie odniesienie nie jest rozwiązywany — zgłaszamy go zachowawczo."""
+    if not isinstance(node, (ast.Name, ast.Attribute)) or not _record_reference(path, node):
+        return False
+    parent = getattr(node, "_parent", None)
+    if isinstance(parent, ast.Call) and parent.func is node:
+        return False
+    if isinstance(parent, ast.Attribute):
+        return False    # `record` jako odbiorca dalszego atrybutu nie jest tu wywołaniem zapisu
+    if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+        return False    # definicja/przypisanie nazwy, nie odniesienie
+    if path == BOX_RECORD[0] and isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    return True
 
 
 def _payload(resolver, path, owner, call, *, skip_star=()):
@@ -623,6 +695,8 @@ def writes() -> Catalog:
                     _card_write(resolver, path, node, catalog)
                 elif _is_box_record(path, node):
                     _box_write(resolver, path, node, catalog)
+                elif _record_escapes(path, node):
+                    raise Unresolved("odniesienie do box/state.record poza wywołaniem: " + ast.unparse(node))
                 elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                       and (path, node.func.attr) in CALLBACKS.values() and isinstance(node.func.value, ast.Name)):
                     _callback_write(resolver, path, node, catalog)
@@ -690,7 +764,19 @@ IDENTITY_NAMES = frozenset({
     "_process_state", "_process_check", "public_processes", "public_inventory", "active_steps",
     "box_event_error", "start_error", "_validate_process_identity", "_validate_box_event",
     "process_history_checked",
+    # Bieżące uruchomienie outside ze wspólnego wyniku (M4/M7 review 2).
+    "outside_run", "outside_runs", "current_outside", "has_outside_start", "has_outside_finish",
+    "has_outside_request",
 })
+
+# Surowe odczyty dowodów: porównanie typu zdarzenia (`e.get("type")`/`e["type"]`) z rodzajem śladu
+# procesu. Lista utrzymywana niezależnie od modelu (rodzaje zapisywane przez proces kroku, Konsolę,
+# outside i pudełko); `intent`/`result` liczą się, gdy funkcja porównuje też akcję `step-start`.
+RAW_PROCESS_TYPES = frozenset({
+    "step.started", "step.entered", "step.console_opened", "step.console_closed", "step.decision",
+    "step.finished", "outside.started", "outside.finished", "outside.ticket-consent", "box.use", "box.release",
+})
+RAW_ACTION_TYPES = frozenset({"intent", "result"})
 # Atrybuty: (atrybut, wymagany odbiorca albo None).
 IDENTITY_ATTRIBUTES = (("held", None), ("outside_unit", None), ("inventory", "trialhold"),
                        ("held", "trialhold"))
@@ -740,6 +826,49 @@ def identity_reads(function) -> frozenset:
                     continue
                 found.add(attr if wanted is None else f"{wanted}.{attr}")
     return frozenset(found)
+
+
+def _type_read(node) -> bool:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+            and node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "type":
+        return True
+    return isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value == "type"
+
+
+def _literals(node) -> set:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {node.value}
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return {e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    return set()
+
+
+def raw_reads(function) -> frozenset:
+    """Rodzaje śladów procesu porównywane bezpośrednio z typem zdarzenia w ciele funkcji (M7 review 2)."""
+    found, actions = set(), False
+    for node in _function_body_nodes(function):
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            names = set().union(*(_literals(o) for o in operands))
+            if any(_type_read(o) for o in operands):
+                found |= names & (RAW_PROCESS_TYPES | RAW_ACTION_TYPES)
+            actions |= "step-start" in names
+    if not actions:
+        found -= RAW_ACTION_TYPES
+    return frozenset(found)
+
+
+def raw_readers() -> list:
+    out = []
+    for path in modules():
+        if path == "cardflow/processidentity.py":
+            continue
+        for node in ast.walk(module(path)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                reads = raw_reads(node)
+                if reads:
+                    out.append(Consumer(path, qualname(node), node.lineno, reads))
+    return out
 
 
 def consumers() -> list:
@@ -795,6 +924,20 @@ def _class_of(path, function, receiver):
         return ""
     if isinstance(receiver, ast.Call):
         return called_class(receiver)
+    if isinstance(receiver, ast.Name) and not isinstance(function, ast.Lambda):
+        # Adnotacja typu parametru (`lc: lifecycle.Lifecycle`, `lc: "Lifecycle"`) — M7 review 2.
+        arguments = function.args
+        for arg in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            if arg.arg == receiver.id and arg.annotation is not None:
+                note = arg.annotation
+                if isinstance(note, ast.Constant) and isinstance(note.value, str):
+                    return note.value.split(".")[-1].split("|")[0].strip()
+                if isinstance(note, ast.BinOp):     # `Klasa | None`
+                    note = note.left
+                if isinstance(note, ast.Name):
+                    return note.id
+                if isinstance(note, ast.Attribute):
+                    return note.attr
     if isinstance(receiver, ast.Name):
         for child in _function_body_nodes(function):
             if isinstance(child, ast.Assign) and any(isinstance(t, ast.Name) and t.id == receiver.id
@@ -805,7 +948,7 @@ def _class_of(path, function, receiver):
     return ""
 
 
-def call_targets(path, function, by_name) -> set:
+def call_targets(path, function, by_name, ambiguous=None) -> set:
     """Rozwiązane cele wywołań funkcji: nazwy modułu/importów, self/cls, alias modułu,
     `Klasa(...).metoda`, a dla pozostałych odbiorców — nazwa jednoznaczna w pakiecie.
     Wywołania niejednoznacznych metod (np. `stop`) nie są rozwiązywane; skutek w wywoływanej
@@ -834,28 +977,75 @@ def call_targets(path, function, by_name) -> set:
             targets |= {k for k in candidates if k[0] == imports(path)[receiver.id][0]}
             continue
         owner = _class_of(path, function, receiver)
-        if owner:
-            targets |= {k for k in candidates if k[1] == f"{owner}.{func.attr}"}
+        typed = {k for k in candidates if k[1] == f"{owner}.{func.attr}"} if owner else set()
+        if typed:
+            targets |= typed
+        elif owner and owner[:1].isupper():
+            continue    # znana klasa odbiorcy bez takiej metody w pakiecie (np. Thread.start)
         elif len(candidates) == 1:
             targets |= set(candidates)
         else:
             # Wskazówka z nazwy odbiorcy: `self.engine.x` → FlowEngine.x, `builder.reset` → Builder.reset.
             hint = ast.unparse(receiver).split(".")[-1].strip("_").lower()
-            if len(hint) >= 4:
-                targets |= {k for k in candidates if "." in k[1] and hint in k[1].split(".")[-2].lower()}
+            hinted = {k for k in candidates if "." in k[1] and hint in k[1].split(".")[-2].lower()} \
+                if len(hint) >= 4 else set()
+            targets |= hinted
+            if not hinted and candidates and ambiguous is not None:
+                # Nierozstrzygnięte wywołanie metody o nazwie funkcji pakietu: rozliczane zachowawczo
+                # przez `ambiguous_calls` (M7 review 2), nie pomijane milcząco.
+                ambiguous.append((call, frozenset(candidates)))
     return targets
+
+
+@dataclass(frozen=True)
+class Ambiguous:
+    path: str
+    function: str
+    line: int
+    call: str           # tekst wywołania (odbiorca.metoda)
+    candidates: frozenset
+
+
+@lru_cache(maxsize=None)
+def _graph_cached():
+    functions = _functions()
+    by_name = {}
+    for key, node in functions.items():
+        by_name.setdefault(node.name, []).append(key)
+    ambiguous = {}
+    targets = {}
+    for key, node in functions.items():
+        if key[0] == "cardflow/processidentity.py":
+            continue
+        found = []
+        targets[key] = call_targets(key[0], node, by_name, found)
+        ambiguous[key] = found
+    return functions, targets, ambiguous
+
+
+_graph = _graph_cached
+
+
+def ambiguous_calls() -> list:
+    """Wywołania bez rozstrzygniętego celu, których możliwy cel jest konsumentem albo delegacją
+    (M7 review 2). Każde musi mieć jawną regułę odbiorcy w teście; nowa niejednoznaczna ścieżka
+    do konsumenta bez reguły daje porażkę zamiast milczącego pominięcia."""
+    _, _, ambiguous = _graph()
+    reached = {(c.path, c.function) for c in consumers()} | {(d.path, d.function) for d in delegations()}
+    out = []
+    for (path, function), found in sorted(ambiguous.items()):
+        for call, candidates in found:
+            hit = candidates & reached
+            if hit:
+                out.append(Ambiguous(path, function, call.lineno, ast.unparse(call.func), frozenset(hit)))
+    return out
 
 
 def delegations() -> list:
     """Funkcje, które (pośrednio) wywołują konsumenta tożsamości: builder/require_idle, CLI/D-Bus,
     bramka diagnostyki. Domknięcie grafu wywołań od konsumentów z `consumers()` bez producentów."""
-    functions = _functions()
-    by_name = {}
-    for key, node in functions.items():
-        by_name.setdefault(node.name, []).append(key)
+    functions, targets, _ = _graph()
     reached = {(c.path, c.function) for c in consumers()} - PRODUCERS
-    targets = {key: call_targets(key[0], node, by_name) for key, node in functions.items()
-               if key[0] != "cardflow/processidentity.py"}
     found = {}
     changed = True
     while changed:

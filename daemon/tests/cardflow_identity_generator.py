@@ -276,23 +276,33 @@ def domain_cases():
 
     - foreign-project: nowe zlecenie innego projektu przed zdarzeniem zależnym;
     - new-order: nowe zlecenie tego samego projektu;
-    - new-attempt: ponowny start tej samej nazwy z inną próbą.
+    - new-attempt: ponowny start tej samej nazwy z inną próbą (przeplot: dowody starszej próby
+      przed startem nowej, zdarzenie zależne po nim).
     Zdarzenie dziedziczące z osobnego dowodu (wejście Konsoli, start outside) zapisanego w innej
-    domenie jest unknown; ślad bez dziedziczenia (np. zakończenie kroku) pozostaje legalny
-    (regresja PT-277: dawny proces po nowym zleceniu innego projektu, ochrona obu projektów).
+    domenie jest unknown. Start kroku innego projektu nie jest poprzednikiem śladu (M2 review 2),
+    chyba że model dopuszcza historyczne zakończenie dawnego procesu (`Event.start == "process"`,
+    regresja PT-277: dawny proces po nowym zleceniu innego projektu, ochrona obu projektów).
+    - return-attempt: powrót do starszej, już rozpoczętej próby (M3 review 2) — unknown, a dowody
+      starszej próby nie stają się poprzednikiem.
     """
     for kind, required in PREDECESSORS.items():
         evidence = any(name in EVIDENCE_PREDECESSORS for name in required)
         dependent = (BAD, "unknown") if evidence else (LEGAL, "")
+        source = kind.split(":")[0]
+        portable = source in pi.EVENTS and pi.EVENTS[source].role != "action" and pi.EVENTS[source].start == "process"
+        foreign = dependent if portable or evidence else (BAD, "unknown")
         for ticket in TICKETS:
             before, event = base(kind, ticket)
             start = next(e for e in reversed(before) if e["type"] in ("step.started", "intent"))
             yield Case(kind, "domain", "foreign-project", ticket,
-                       (*before, {"type": "card.started", "project": OTHER_PROJECT}, event), *dependent, "domain")
+                       (*before, {"type": "card.started", "project": OTHER_PROJECT}, event), *foreign, "domain")
             yield Case(kind, "domain", "new-order", ticket,
                        (*before, {"type": "card.started", "project": "proj"}, event), *dependent, "domain")
             yield Case(kind, "domain", "new-attempt", ticket, (*before, {**start, "attempt": 2}, event),
                        *dependent, "domain")
+            yield Case(kind, "domain", "return-attempt", ticket,
+                       (*[{**e, "attempt": 1} if e is start else e for e in before],
+                        {**start, "attempt": 2}, {**start, "attempt": 1}, event), BAD, "unknown", "domain")
 
 
 BOX_STEPS = {"PT-999": "K-38-PT-999-1", "PT-176": "K-38-PT-176-1"}

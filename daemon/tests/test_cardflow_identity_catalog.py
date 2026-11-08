@@ -56,7 +56,9 @@ def mismatches(catalog, model):
         if spec.role == "action":
             if write.discriminator == "<replay>":
                 # Replay przepisuje akcję istniejącego zamiaru; dozwolony tylko bez nowych pól procesu.
-                if explicit - {"action", "key", "ok", "error", "payload", "youtrack", "permanent", "retryWriteSafe"}:
+                # map/ticket/title: znane klucze wyniku YouTracka (TrackerOutbox.run, M5 review 2).
+                if explicit - {"action", "key", "ok", "error", "payload", "youtrack", "permanent", "retryWriteSafe",
+                               "map", "ticket", "title"}:
                     problems.append(f"{where}: replay z polami {sorted(explicit)}")
                 continue
             action = actions.get(write.discriminator)
@@ -226,6 +228,51 @@ class WriterCatalog(unittest.TestCase):
         # Bez sondy katalog jest zgodny (kontrola, że porażka pochodzi z nowego pola).
         self.assertEqual(mismatches(cat.writes(), model_view()), [])
 
+    def test_new_literal_payload_field_is_not_hidden_by_dynamic_scope(self):
+        """Sonda M5 review 2: `base["pid"] = 123` (oraz update/setdefault) przed `journal.append(..., **base)`
+        w FlowEngine._guard_baseline trafia do katalogu obok zakresu dynamicznego i daje porażkę porównania."""
+        statements = ('base["pid"] = 123', 'base.update(pid=123)', 'base.update({"pid": 123})',
+                      'base.setdefault("pid", 123)', 'base["pid"] += 1')
+        for statement in statements:
+            with self.subTest(statement=statement):
+                tree = ast.parse((cat.PACKAGE / "cardflow/engine.py").read_text(encoding="utf-8"))
+                owner = next(n for n in ast.walk(tree)
+                             if isinstance(n, ast.FunctionDef) and n.name == "_guard_baseline")
+                owner.body.insert(len(owner.body) - 1, ast.parse(statement).body[0])
+                with cat.overridden({"cardflow/engine.py": tree}):
+                    catalog = cat.writes()
+                self.assertEqual(catalog.unresolved, [])
+                probed = [w for w in catalog.writes if w.function == "FlowEngine._guard_baseline"]
+                self.assertTrue(probed and all("pid" in w.fields and cat.dynamic(w.fields) for w in probed))
+                problems = mismatches(catalog, model_view())
+                self.assertTrue(any(".pid bez klasyfikacji" in p for p in problems), problems)
+        self.assertEqual(mismatches(cat.writes(), model_view()), [])
+
+    def test_alias_of_record_is_catalogued(self):
+        """Sonda M6 review 2: zapis przez alias/import po nazwie `box/state.record` jest w katalogu;
+        odniesienie bez wywołania jest nierozstrzygnięte (zachowawczo), nie pomijane."""
+        sources = ("from .state import record as save\ndef foo():\n    save('proj', 'box.use', 'proj', step='x', pid=123)\n",
+                   "from .state import record\ndef foo():\n    record('proj', 'box.use', 'proj', step='x', pid=123)\n",
+                   "from tide_daemon.box.state import record as save\n"
+                   "def foo():\n    save('proj', 'box.use', 'proj', step='x', pid=123)\n",
+                   "from tide_daemon.box import state as st\n"
+                   "def foo():\n    st.record('proj', 'box.use', 'proj', step='x', pid=123)\n")
+        for source in sources:
+            with self.subTest(source=source):
+                with cat.overridden({"box/new_probe.py": ast.parse(source)}):
+                    catalog = cat.writes()
+                found = [w for w in catalog.writes if w.path == "box/new_probe.py"]
+                self.assertEqual([(w.store, w.kind, w.fields) for w in found],
+                                 [("box", "box.use", frozenset({"step", "pid"}))])
+                problems = mismatches(catalog, model_view())
+                self.assertTrue(any("box.use.pid bez klasyfikacji" in p for p in problems), problems)
+        for source in ("from . import state as bs\nsave = bs.record\n",
+                       "from .state import record\ndef foo(run):\n    run(record)\n"):
+            with self.subTest(source=source):
+                with cat.overridden({"box/new_probe.py": ast.parse(source)}):
+                    catalog = cat.writes()
+                self.assertTrue([u for u in catalog.unresolved if u[0] == "box/new_probe.py"])
+
     def test_box_model_matches_box_journal_vocabulary(self):
         self.assertEqual(set(pi.BOX_EVENTS), set(bs.EVENTS))
 
@@ -355,13 +402,21 @@ BARRIERS = {
     "outside": dict(
         consumers=[("cardflow/engine.py", "FlowEngine._outside_history"),
                    ("cardflow/engine.py", "FlowEngine._outside_recheck"),
-                   ("cardflow/engine.py", "FlowEngine._consent_recheck")],
-        denial="_outside_history pod journal.lock przed Popen; _outside_ready FlowError",
-        effect="Popen niezależnego outside; zaakceptowanie zakończenia",
+                   ("cardflow/engine.py", "FlowEngine._consent_recheck"),
+                   # Bieżące uruchomienie outside ze wspólnego wyniku (M4/M7 review 2).
+                   ("cardflow/engine.py", "FlowEngine._outside_ready"),
+                   ("cardflow/engine.py", "FlowEngine._outside_busy"),
+                   ("cardflow/engine.py", "FlowEngine._outside_exit"),
+                   ("cardflow/engine.py", "FlowEngine._seed_outside_waiting")],
+        denial="_outside_history pod journal.lock przed Popen; _outside_ready: stan outside_run ≠ ok → FlowError",
+        effect="Popen niezależnego outside; zaakceptowanie zakończenia bieżącej próby; zajętość i kolejka miejsc",
         negative=NEG + [f"{M}:Review10OutsideCompletionUnit.test_explicit_wrong_completion_unit_denies_every_barrier_across_restart",
-                        f"{M}:Review9And8Probes.test_round9_completion_without_separate_start_denies_across_restart"],
+                        f"{M}:Review9And8Probes.test_round9_completion_without_separate_start_denies_across_restart",
+                        f"{M}:Review2DomainProbes.test_m2_step_start_of_another_project_is_not_a_predecessor_across_restart",
+                        f"{M}:Review2DomainProbes.test_m3_return_to_an_older_attempt_does_not_restore_its_outside_across_restart"],
         positive=[f"{M}:BarrierMatrixPositive.test_independent_outside_starts_one_process",
                   f"{M}:BarrierMatrixPositive.test_outside_ready_accepts_completion_of_the_inherited_unit",
+                  f"{M}:Review2DomainProbes.test_m4_outside_ready_consumes_only_the_current_attempt_across_restart",
                   f"{M}:Review10OutsideCompletionUnit.test_omitted_or_matching_completion_unit_accepts_completion_across_restart",
                   f"{INV}:InventoryTest.test_valid_outside_with_omitted_ticket_runs_after_restart"]),
     "advance-resume": dict(
@@ -540,7 +595,7 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._cleanup"): "process-check",
     ("cardflow/engine.py", "FlowEngine._finish"): "console",
     ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
-    ("cardflow/engine.py", "FlowEngine._outside_ready"): "outside",
+    ("cardflow/engine.py", "FlowEngine._outside_behind"): "outside",
     ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_launch"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._planning_result"): "step-launch",
@@ -582,6 +637,52 @@ DELEGATIONS = {
     ("dbus_service.py", "BoardAdaptor.StartCard"): "step-launch",
     ("dbus_service.py", "BoardAdaptor.StopBox"): "box-lifecycle",
 }
+
+
+# Surowe odczyty śladów procesu (M7 review 2) poza konsumentami barier: funkcja porównuje typ
+# zdarzenia z rodzajem śladu procesu, ale wynik nie dopuszcza skutku objętego barierą tożsamości.
+# Funkcja z surowym odczytem, która nie jest konsumentem bariery ani nie ma tu uzasadnienia, daje porażkę.
+RAW_READS = {
+    ("box/state.py", "running_steps"):
+        "zajętość pudełka (box.use bez box.release) — zawsze zachowawcza; jedyne wywołanie przez "
+        "Builder.running_steps, które sprawdza też active_steps (bariera box-lifecycle)",
+    ("box/lifecycle.py", "Lifecycle.idle"):
+        "czas bezczynności z ostatniego znacznika ts; zatrzymanie idzie przez Lifecycle.stop → require_idle "
+        "(bariera box-lifecycle), a wcześniej Builder.running_steps",
+    ("cardflow/engine.py", "FlowEngine._env_question"):
+        "czy krok ma już decyzję (odpowiedź Tide na pytanie o środowisko) — zapis step.decision bez skutku procesu",
+    ("cardflow/engine.py", "FlowEngine._auto_deny"):
+        "licznik automatycznych odmów ticketu — zapis odmowy, która nigdy nie uruchamia procesu",
+    ("cardflow/testrerun.py", "substitute"):
+        "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
+        "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
+}
+
+# Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja
+# (M7 review 2): reguła tekstu wywołania (odbiorca.metoda) → uzasadnienie, że to nie jest ta funkcja
+# albo że ścieżka jest już objęta barierą. Nowe takie wywołanie bez reguły daje porażkę.
+AMBIGUOUS_RULES = (
+    (r"^self\._(debounce|import_timer|live_timer|login|note_timer|poll|rederive|rescan|retry|retry_timer|soon|start"
+     r"|thread|throttle|tick|timer|work_later)\.(start|stop)$", "QTimer/wątek monitora usługi"),
+    (r"^(match|mark|cut|section|headers\[index \+ 1\])\.start$", "re.Match.start — pozycja dopasowania"),
+    (r"^self\._procedure\.(start|snapshot)$",
+     "procedura bramki prób PT-273; skutek ma własną barierę (EFFECT_SCOPE TrialGate.start_registered)"),
+    (r"^bb\.admission\.start$", "admission.start obrazu bazowego Tide (box/base.py, bez kroków kart)"),
+    (r"^bg\.start$", "Background.start kroku w HostRunner (skutek: EFFECT_SCOPE tasks/agentcmd.py Background.start)"),
+    (r"^factory\(.*\)\.start$", "serwer proxy pudełek (box/proxy.py)"),
+    (r"^loop\.stop$", "pętla asyncio proxy pudełek"),
+    (r"^tasks\.stop$", "TaskMonitor przy wyjściu usługi (app.main)"),
+    (r"^self\.branches\.stop$", "CardDeriver gałęzi Tablicy"),
+    (r"^source\.build$", "źródło kontekstu opiekuna (caretakerctx), nie Builder.build"),
+    (r"^b\.running_steps$", "b = self.builder → Builder.running_steps; Lifecycle.idle jest delegacją box-lifecycle"),
+    (r"^boxstep\.lifecycle\.tick$",
+     "box/lifecycle.tick przez moduł boxstep; FlowEngine.tick (recovery) i lifecycle.tick (idle-tick) są konsumentami"),
+)
+
+
+def ambiguous_rule(call):
+    import re
+    return next((reason for pattern, reason in AMBIGUOUS_RULES if re.match(pattern, call.call)), None)
 
 
 def delegation_barriers(delegations):
@@ -717,6 +818,55 @@ class ConsumerCatalog(unittest.TestCase):
         # Bez sondy katalog delegacji jest zgodny z tabelą.
         self.assertEqual({(d.path, d.function) for d in cat.delegations()}, set(DELEGATIONS))
 
+    def test_every_raw_evidence_read_is_a_consumer_or_justified(self):
+        """M7 review 2: surowe odczyty startów/zakończeń i śladów procesu wyznacza AST."""
+        assigned = {e for b in BARRIERS.values() for e in b["consumers"]}
+        found = {(r.path, r.function) for r in cat.raw_readers()}
+        self.assertEqual(found - assigned - set(RAW_READS), set(), "surowy odczyt tożsamości bez bariery")
+        self.assertEqual(set(RAW_READS) - found, set(), "nieaktualny wpis surowego odczytu")
+        self.assertEqual(set(RAW_READS) & assigned, set())
+        for key in ("_outside_busy", "_seed_outside_waiting", "_outside_exit", "_outside_ready"):
+            self.assertIn(("cardflow/engine.py", f"FlowEngine.{key}"), assigned)
+
+    def test_new_raw_reader_fails_completeness(self):
+        source = ("def busy(events, name):\n"
+                  "    return any(e.get('type') == 'outside.started' and e.get('step') == name for e in events)\n")
+        tree = ast.parse(source)
+        with cat.overridden({"cardflow/new_probe.py": tree}):
+            found = {(r.path, r.function) for r in cat.raw_readers()}
+        self.assertIn(("cardflow/new_probe.py", "busy"), found)
+        assigned = {e for b in BARRIERS.values() for e in b["consumers"]}
+        self.assertNotIn(("cardflow/new_probe.py", "busy"), assigned | set(RAW_READS))
+
+    def test_every_ambiguous_call_to_a_consumer_has_a_receiver_rule(self):
+        """M7 review 2: wywołanie bez rozstrzygniętego celu, który może być konsumentem/delegacją,
+        nie jest milcząco pomijane — każde ma jawną regułę, a każda reguła jest użyta."""
+        calls = cat.ambiguous_calls()
+        self.assertEqual([c for c in calls if ambiguous_rule(c) is None], [])
+        import re
+        for pattern, _ in AMBIGUOUS_RULES:
+            with self.subTest(rule=pattern):
+                self.assertTrue(any(re.match(pattern, c.call) for c in calls), "nieużyta reguła")
+
+    def test_reviewer_annotated_and_unannotated_delegations_fail_completeness(self):
+        """Sonda M7: `lc: lifecycle.Lifecycle` → `lc.stop(slug)` jest delegacją bez bariery;
+        bez adnotacji to samo wywołanie jest nierozstrzygnięte i nie ma reguły."""
+        assigned = {e for b in BARRIERS.values() for e in b["consumers"]} | set(DELEGATIONS)
+        for source, kind in (("def new_stop(lc: lifecycle.Lifecycle, slug):\n    return lc.stop(slug)\n", "typed"),
+                             ("def new_stop(lc: 'Lifecycle', slug):\n    return lc.stop(slug)\n", "typed"),
+                             ("def new_stop(lc, slug):\n    return lc.stop(slug)\n", "ambiguous")):
+            with self.subTest(source=source):
+                tree = ast.parse("from . import lifecycle\n\n" + source)
+                with cat.overridden({"box/new_probe.py": tree}):
+                    delegations = {(d.path, d.function) for d in cat.delegations()}
+                    calls = [c for c in cat.ambiguous_calls() if c.path == "box/new_probe.py"]
+                if kind == "typed":
+                    self.assertIn(("box/new_probe.py", "new_stop"), delegations - assigned)
+                else:
+                    self.assertTrue(calls)
+                    self.assertTrue(all(ambiguous_rule(c) is None for c in calls))
+        self.assertEqual({(d.path, d.function) for d in cat.delegations()}, set(DELEGATIONS))
+
     def test_matrix_executes_every_barrier_and_box_journal_scope(self):
         """M5 review 1: macierz ujemna wykonuje każdą barierę katalogu; bariery spoza zakresu
         dziennika pudełka nie czytają go (nieosiągalność sprawdzona na AST konsumentów)."""
@@ -808,6 +958,18 @@ def render_report():
     for d in cat.delegations():
         lines.append(f"| {d.path}:{d.function} | {', '.join(sorted(q for _, q in d.calls))} | "
                      f"{DELEGATIONS.get((d.path, d.function), '—')} |")
+    lines += ["", "## Surowe odczyty śladów procesu (AST)", "",
+              "| Funkcja | Rodzaje | Bariera / uzasadnienie |", "| --- | --- | --- |"]
+    owner = {entry: name for name, barrier in BARRIERS.items() for entry in barrier["consumers"]}
+    for r in cat.raw_readers():
+        key = (r.path, r.function)
+        how = owner[key] if key in owner else "poza barierą: " + RAW_READS.get(key, "—")
+        lines.append(f"| {r.path}:{r.function} | {', '.join(sorted(r.reads))} | {how} |")
+    lines += ["", "## Nierozstrzygnięte wywołania o nazwie konsumenta/delegacji", "",
+              "| Miejsce | Wywołanie | Możliwy cel | Uzasadnienie |", "| --- | --- | --- | --- |"]
+    for a in cat.ambiguous_calls():
+        lines.append(f"| {a.path}:{a.function} | `{a.call}` | {', '.join(sorted(q for _, q in a.candidates))} | "
+                     f"{ambiguous_rule(a) or '—'} |")
     matrix = importlib.import_module(M)
     gen = importlib.import_module("daemon.tests.cardflow_identity_generator")
     lines += ["", "## Macierz ujemna: historie × bariery × restart", "",

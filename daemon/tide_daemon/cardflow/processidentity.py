@@ -65,12 +65,18 @@ class Event:
     outside-start, outside-finish, outside-trace, action (zamiar/wynik według ACTIONS),
     box-trace albo metadata. Zdarzenie metadanych ma uzasadnienie. `dynamic=True` oznacza
     dodatkowy ładunek dynamiczny, którego reduktor nie czyta; pola jawne zapisu nadal muszą
-    być sklasyfikowane w `fields` (M4 review 1)."""
+    być sklasyfikowane w `fields` (M4 review 1).
+
+    `start` — wymagany poprzednik startu kroku dla śladu procesu (M2 review 2):
+      project — start tego samego procesu w projekcie bieżącego zlecenia (domyślnie),
+      process — dowolny wcześniejszy start tego procesu (legalne historyczne zakończenie
+                dawnego procesu po zleceniu innego projektu; ochrona obejmuje oba projekty)."""
     role: str
     fields: object = None
     reason: str = ""
     source: str = "writer"
     dynamic: bool = False
+    start: str = "project"
 
 
 def _neutral(*names, note="dane operacyjne bez roli dowodowej", source="writer"):
@@ -194,7 +200,8 @@ EVENTS = MappingProxyType({
                  "messages", "mode", "network", "notes", "options", "outcome", "pattern", "question", "reason",
                  "result", "snapshotDir", "stalledSince", "waitFor", "wip"),
         extra={"outside": Field("discriminator", "bool", domain="outside",
-                                note="prośba o polecenie outside tego kroku")})),
+                                note="prośba o polecenie outside tego kroku")}),
+        start="process"),
     "outside.started": Event("outside-start", _trace(
         writer=("ticket", "worktree"), neutral=("command", "exitFile", "head", "log", "rerunOf"),
         extra={"unit": OUTSIDE_UNIT_OWN})),
@@ -351,13 +358,15 @@ def _meta_action(reason, intent=(), result=(), dynamic=(), source="writer"):
 
 
 GIT_RESULT = ("base", "branch", "error", "existing", "ok", "ticket", "worktree")
-TRACKER_RESULT = ("error", "ok", "permanent", "retryWriteSafe")
+# Wynik YouTracka: pola stałe i znane klucze ładunku `data` (zgłoszenie, tytuł, mapa numerów) obok zakresu
+# dynamicznego odpowiedzi API (M5 review 2: klucze przypisań zapisywane obok zakresu dynamicznego).
+TRACKER_RESULT = ("error", "map", "ok", "permanent", "retryWriteSafe", "ticket", "title")
 
 ACTIONS = MappingProxyType({
     "step-start": Action("step-start", ACTION_START, ACTION_RESULT, "zamiar i wynik startu procesu kroku"),
     "reserve": _meta_action("rezerwacja numeru ticketu", ("minimumNumber", "payload", "prefix", "repo", "title",
                                                          "youtrack"),
-                            (*TRACKER_RESULT, "ticket", "title"), ("result",)),
+                            TRACKER_RESULT, ("result",)),
     "card-branch": _meta_action("gałąź karty (Git)", ("base", "baseBranch", "baseRef", "branch", "repo", "worktree"),
                                 GIT_RESULT),
     "ticket-branch": _meta_action("gałąź ticketu (Git)", ("base", "branch", "repo", "ticket", "worktree"), GIT_RESULT),
@@ -466,13 +475,47 @@ class ProcessIdentity:
     # Dowody poprzedników są związane z domeną (projekt, zlecenie, próba), w której powstały:
     # dziedziczy wyłącznie zdarzenie z tej samej domeny (M2 review 1).
     outside_units: dict = field(default_factory=dict)   # domena → jednostka outside.started
+    outside_runs: dict = field(default_factory=dict)    # domena → {"started": zdarzenie, "finished": …}
     consoles: dict = field(default_factory=dict)        # domena → komplet Konsoli tego kroku
-    attempt: object = 0                                # bieżąca generacja (numer próby)
+    attempt: object = 0                                # numer bieżącej próby
+    # Generacja rośnie przy każdej zmianie próby, także przy powrocie do starego numeru:
+    # domena nie wraca do zachowanych dowodów starszej próby (M3 review 2).
+    generation: int = 0
+    attempts: set = field(default_factory=set)         # numery prób już rozpoczętych
+    start_projects: set = field(default_factory=set)   # projekty zleceń, w których proces startował
 
     @property
     def outside_unit(self):
         """Jednostka outside ostatniej domeny (diagnostyka; reduktor czyta outside_units)."""
         return next(reversed(self.outside_units.values()), None)
+
+    def _outside_roles(self):
+        return [EVENTS[e["type"]].role if e.get("type") in EVENTS else "" for e in self.outside]
+
+    @property
+    def has_outside_start(self):
+        """Jakikolwiek ślad startu outside tego procesu (także bez kompletu dowodu)."""
+        return "outside-start" in self._outside_roles()
+
+    @property
+    def has_outside_finish(self):
+        return "outside-finish" in self._outside_roles()
+
+    @property
+    def has_outside_request(self):
+        """Prośba kroku o polecenie outside (`step.finished.outside`)."""
+        return any(e.get("type") == "step.finished" and e.get("outside") for e in self.outside)
+
+    @property
+    def current_outside(self):
+        """Uruchomienie outside bieżącej generacji procesu: {"started", "finished"} albo None.
+
+        Konsumenci (gotowość, zajętość, plik wyjścia) czytają wyłącznie ten wynik: start
+        i zakończenie innej próby lub domeny nie są uruchomieniem bieżącego procesu (M4 review 2)."""
+        for domain, run in reversed(self.outside_runs.items()):
+            if domain[2] == self.generation:
+                return run
+        return None
 
     @property
     def console(self):
@@ -687,15 +730,23 @@ def process_identities(events):
             identity.worsen("unknown")
         # Role pól z modelu: własne, dziedziczone, kanoniczne pola tożsamości i dyskryminatory.
         # Nieznany typ/akcja ma fields=None i pozostaje unknown bez dalszego rozstrzygania.
-        if start and type(event.get("attempt")) is int and event["attempt"] >= 0:
-            # Inna próba tej samej nazwy to nowa generacja: dowody poprzedników starszej
-            # generacji zostają w śladzie (ochrona, stan), ale nie są dziedziczone.
-            identity.attempt = event["attempt"]
+        if start:
+            attempt = event.get("attempt", identity.attempt)
+            if type(attempt) is int and attempt >= 0 and attempt != identity.attempt:
+                # Inna próba tej samej nazwy to nowa generacja: dowody poprzedników starszej
+                # generacji zostają w śladzie (ochrona, stan), ale nie są dziedziczone.
+                # Powrót do już rozpoczętej próby nie przywraca jej dowodów: dostaje nową
+                # generację, a sam powrót jest nieznanym dowodem (M3 review 2).
+                if attempt in identity.attempts:
+                    identity.worsen("unknown")
+                identity.attempt = attempt
+                identity.generation += 1
+            identity.attempts.add(identity.attempt)
         # Dziedziczone pola (Konsola, jednostka outside) czytają poprzednika wyłącznie z tej
         # samej domeny: dowód innego projektu, zlecenia lub próby nie jest poprzednikiem (M2 review 1).
-        # Sam ślad bez dziedziczenia (np. zakończenie kroku po nowym zleceniu) pozostaje legalny,
-        # a ochrona obejmuje oba projekty (`projects`).
-        domain = (project, order, identity.attempt)
+        # Start kroku jest poprzednikiem tylko w projekcie, w którym zapisano start (M2 review 2);
+        # wyjątkiem jest legalne historyczne zakończenie (`Event.start == "process"`).
+        domain = (project, order, identity.generation)
         unknown, inconsistent = evidence_errors(event, fields or {}, identity, domain)
         if unknown:
             identity.worsen("unknown")
@@ -716,6 +767,7 @@ def process_identities(events):
                 else:
                     identity.data[field_name] = event[field_name]
             identity.has_start = True
+            identity.start_projects.add(project)
             if not unknown and all(canonical_text(event.get(k), True) for k in CONSOLE_FIELDS):
                 # Start rozmowy opiekuna zapisuje własny komplet Konsoli tego kroku.
                 identity.consoles[domain] = {k: event[k] for k in CONSOLE_FIELDS}
@@ -725,7 +777,10 @@ def process_identities(events):
                     identity.data[field_name] = value
             identity.data["step"] = identity.name
             continue
-        if not identity.has_start:
+        scope = EVENTS[kind].start if kind in EVENTS and kind not in ("intent", "result") else "project"
+        started_here = project in identity.start_projects or scope == "process"
+        if not identity.has_start or not started_here:
+            # Start innego projektu nie jest poprzednikiem śladu procesu w bieżącym zleceniu.
             identity.worsen("unknown")
         for field_name in START_FIELDS if result else IDENTITY_FIELDS:
             if field_name not in event:
@@ -739,7 +794,7 @@ def process_identities(events):
                 identity.worsen("inconsistent")
             else:
                 identity.data[field_name] = value
-        if role == "console-enter" and not unknown and identity.has_start:
+        if role == "console-enter" and not unknown and identity.has_start and started_here:
             # Tylko kompletne wejście tego kroku jest poprzednikiem otwarcia/zamknięcia.
             identity.consoles[domain] = {k: event[k] for k in CONSOLE_FIELDS}
         if outside:
@@ -753,8 +808,47 @@ def process_identities(events):
                         identity.worsen("inconsistent")
                     else:
                         identity.outside_units[domain] = unit
+                        identity.outside_runs.setdefault(domain, {"started": dict(event), "finished": None})
+            elif role == "outside-finish":
+                # Zakończenie należy do uruchomienia tej samej domeny; pierwsze zakończenie wygrywa.
+                run = identity.outside_runs.get(domain)
+                if run is not None and run["finished"] is None:
+                    run["finished"] = dict(event)
             identity.outside.append(dict(event))
     return identities
+
+
+def outside_run(events, name):
+    """Wspólny wynik redukcji dla konsumentów outside: (stan procesu, start, zakończenie)
+    bieżącego uruchomienia outside procesu `name`. Brak procesu albo uruchomienia: (stan, None, None).
+    Stan `ok` nie dowodzi zakończenia; o skutku decyduje konsument po własnej barierze."""
+    identity = process_identities(events).get(name) if isinstance(name, str) and name else None
+    if identity is None:
+        return "unknown", None, None
+    run = identity.current_outside or {}
+    # Ochronę (PT-261) rozstrzyga istniejąca bariera konsumenta (`_trial_check`); tu tylko stan dowodu.
+    return identity.state, run.get("started"), run.get("finished")
+
+
+def outside_runs(events):
+    """Procesy z rozpoczętym, niezakończonym outside (zajętość miejsca po restarcie).
+
+    Zachowawczo: niezakończone uruchomienie dowolnej generacji (najpierw bieżącej) zajmuje miejsce,
+    a proces wstrzymany (unknown/inconsistent/ochrona) z jakimkolwiek startem outside — także bez
+    kompletu dowodu — zajmuje je do potwierdzenia kodu wyjścia."""
+    out = {}
+    for key, identity in process_identities(events).items():
+        if not isinstance(key, str):
+            continue
+        current = identity.current_outside
+        runs = [current, *identity.outside_runs.values()] if current is not None else \
+            list(identity.outside_runs.values())
+        open_run = next((run for run in runs if run["finished"] is None), None)
+        if open_run is not None:
+            out[key] = open_run["started"]
+        elif identity.held and identity.has_outside_start and not identity.has_outside_finish:
+            out[key] = next(e for e in identity.outside if e.get("type") == "outside.started")
+    return out
 
 
 _CARD_COPY = re.compile(r"-(k-[1-9][0-9]{0,8})$")

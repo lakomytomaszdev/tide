@@ -75,9 +75,10 @@ class GeneratedModelHistories(unittest.TestCase):
         for kind, required in gen.PREDECESSORS.items():
             for name in required:
                 self.assertEqual({v for v, _ in seen[(kind, name)]}, {"removed", "moved", "foreign"})
-            # Poprzednik z innego projektu, zlecenia i próby (M2 review 1).
+            # Poprzednik z innego projektu, zlecenia i próby (M2 review 1) oraz powrót do starszej próby
+            # (M3 review 2).
             self.assertEqual(seen[(kind, "domain")], set(itertools.product(
-                ("foreign-project", "new-order", "new-attempt"), gen.TICKETS)))
+                ("foreign-project", "new-order", "new-attempt", "return-attempt"), gen.TICKETS)))
         # Rozróżnienie legalnych i wadliwych mutacji: obie klasy są niepuste dla każdego zdarzenia.
         outcomes = collections.defaultdict(set)
         for case in gen.cases():
@@ -328,6 +329,130 @@ class Review9And8Probes(Harness):
                 with f.outside_environment() as spawn:
                     f.engine._start_outside("K-38", step, "echo ordinary-test")
                     spawn.assert_called_once()
+
+
+def _host(events):
+    return [{k: v for k, v in e.items() if k not in ("runner", "box", "boxSlug", "card")} for e in events]
+
+
+class Review2DomainProbes(Harness):
+    """Porty sond review 2 PT-288: start kroku innego projektu (M2), powrót do starszej próby (M3)
+    i konsumpcja zakończenia bieżącej próby w `_outside_ready` (M4), przed i po restarcie."""
+
+    def deny_effects(self, ticket, step):
+        """Brak skutku: zakończenie nieprzyjęte, niezależny outside bez Popen, pudełko bez incus.stop."""
+        f = self.f
+        with f.outside_environment() as spawn:
+            with self.assertRaises(FlowError):
+                f.engine._outside_ready("K-38", step, {"command": "echo legacy"}, {"choice": "run"})
+            spawn.assert_not_called()
+        independent = f.outside_history()
+        with f.outside_environment() as spawn:
+            with self.assertRaises(FlowError):
+                f.engine._start_outside("K-38", independent, "echo ordinary-test")
+            self.assertEqual(spawn.call_count, 0)
+        incus = _running_until_stopped()
+        builder, _ = _builder(f, incus)
+        with self.assertRaises(fixtures.BoxBusy):
+            fixtures.lifecycle.Lifecycle(builder).stop("proj")
+        self.assertEqual(incus.stop.call_count, 0)
+        f.assert_lifecycle_preserved()
+
+    def test_m2_step_start_of_another_project_is_not_a_predecessor_across_restart(self):
+        failed = []
+        foreign = {"type": "card.started", "project": gen.OTHER_PROJECT}
+        for ticket, kind, restarted in itertools.product(gen.TICKETS, ("outside", "entered", "opened"),
+                                                         (False, True)):
+            start = gen._start(ticket, unit="") if kind != "outside" else gen._start(ticket)
+            if kind == "outside":
+                history = [gen._card(), start, gen._request(ticket), gen._decision(ticket), foreign,
+                           gen._outside_start(ticket), gen._outside_finish(ticket)]
+            elif kind == "entered":
+                history = [gen._card(), start, foreign, gen._entered()]
+            else:
+                history = [gen._card(), start, foreign, gen._entered(), {"type": "step.console_opened",
+                                                                          "step": gen.STEP}]
+            history = _host(history)
+            content = self.write(history)
+            if restarted:
+                self.f.restart()
+            with self.subTest(ticket=ticket, kind=kind, restarted=restarted):
+                identity = process_identities(self.f.journal.read_complete("K-38"))[gen.STEP]
+                self.assertEqual(identity.state, "unknown")
+                self.assertEqual(identity.protected, ticket == "PT-176")
+                self.deny_effects(ticket, {"step": gen.STEP, "ticket": ticket})
+                if identity.state == "ok":
+                    failed.append((ticket, kind, restarted))
+            self.assertTrue(content)
+        self.assertEqual(failed, [])
+
+    def test_m2_historical_finish_of_the_old_process_stays_legal_and_protects_both_projects(self):
+        for ticket in gen.TICKETS:
+            history = _host([gen._card(), gen._start(ticket), {"type": "card.started", "project": gen.OTHER_PROJECT},
+                             {"type": "step.finished", "step": gen.STEP, "ticket": ticket, "result": "done"}])
+            identity = process_identities(history)[gen.STEP]
+            self.assertEqual(identity.state, "ok")
+            self.assertEqual(identity.projects, {"proj", gen.OTHER_PROJECT})
+            self.assertEqual(identity.protected, ticket == "PT-176")
+
+    def test_m3_return_to_an_older_attempt_does_not_restore_its_outside_across_restart(self):
+        for ticket, restarted in itertools.product(gen.TICKETS, (False, True)):
+            first = gen._start(ticket, attempt=1)
+            history = _host([gen._card(), first, gen._request(ticket), gen._decision(ticket),
+                             gen._outside_start(ticket), gen._start(ticket, attempt=2), gen._start(ticket, attempt=1),
+                             gen._outside_finish(ticket)])
+            self.write(history)
+            if restarted:
+                self.f.restart()
+            with self.subTest(ticket=ticket, restarted=restarted):
+                identity = process_identities(self.f.journal.read_complete("K-38"))[gen.STEP]
+                self.assertEqual(identity.state, "unknown")
+                self.assertIsNone(identity.current_outside)
+                self.deny_effects(ticket, {"step": gen.STEP, "ticket": ticket})
+
+    def attempts(self, finished_new):
+        """Próba 1: old.scope zakończona `exit=7, tail=OLD`; próba 2: własny new.scope."""
+        old = {**gen._outside_start("PT-999"), "unit": "old.scope", "exitFile": "/missing/old/in/exit"}
+        new = {**gen._outside_start("PT-999"), "unit": "new.scope", "exitFile": "/missing/new/in/exit",
+               "log": "/missing/new.log"}
+        history = [gen._card(), gen._start("PT-999", attempt=1), gen._request("PT-999"), gen._decision("PT-999"),
+                   old, {**gen._outside_finish("PT-999"), "exit": 7, "tail": "OLD"},
+                   gen._start("PT-999", attempt=2), gen._request("PT-999"), gen._decision("PT-999"), new]
+        if finished_new:
+            history.append({**gen._outside_finish("PT-999"), "exit": 0, "tail": "NEW"})
+        return _host(history)
+
+    def test_m4_outside_ready_consumes_only_the_current_attempt_across_restart(self):
+        for finished_new, restarted in itertools.product((False, True), (False, True)):
+            self.append(self.attempts(finished_new))
+            if restarted:
+                self.f.restart()
+            with self.subTest(finished_new=finished_new, restarted=restarted):
+                st = fold(trialhold.read_process_history(self.f.journal, "K-38"))
+                identity = st.process_identities[gen.STEP]
+                self.assertEqual(identity.state, "ok")
+                self.assertEqual(identity.current_outside["started"]["unit"], "new.scope")
+                self.f.engine._outside_active = None
+                with self.f.outside_environment() as spawn:
+                    decision = self.f.engine._outside_ready("K-38", st.steps[gen.STEP], st.finished[gen.STEP],
+                                                            st.step_decisions[gen.STEP])
+                    spawn.assert_not_called()
+                if finished_new:
+                    # Zaakceptowane zakończenie bieżącej próby; wznowienie dostaje jej wynik.
+                    self.assertIn("Kod wyjścia: 0", decision["answer"])
+                    self.assertIn("NEW", decision["answer"])
+                    self.assertNotIn("OLD", decision["answer"])
+                    self.assertEqual(decision["choice"], "run")
+                else:
+                    # Bieżący proces trwa: brak odpowiedzi (wynik starej próby nie wznawia kroku),
+                    # a zajętość miejsca wskazuje jednostkę i plik wyjścia bieżącej próby.
+                    self.assertIsNone(decision)
+                    self.assertEqual(self.f.engine._outside_active[gen.STEP], ("K-38", "new.scope"))
+                    self.assertEqual(self.f.engine._outside_exit("K-38", gen.STEP), "/missing/new/in/exit")
+                    self.f.engine._outside_active = None
+                    with mock.patch.object(self.f.engine, "_project", return_value=(None, SimpleNamespace(slug="proj"))):
+                        self.f.engine._outside_busy("K-38")
+                    self.assertEqual(self.f.engine._outside_active, {gen.STEP: ("K-38", "new.scope")})
 
 
 # ------------------------------------------------------------------ macierz barier

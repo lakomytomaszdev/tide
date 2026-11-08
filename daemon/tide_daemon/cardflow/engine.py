@@ -57,6 +57,7 @@ from . import caretakerctx
 from . import handoff
 from . import boxstep
 from . import trialhold
+from . import processidentity
 from ..box import trialgate
 from . import consent
 from .decisions import clean_options
@@ -5943,12 +5944,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         decyzję z wynikiem do wznowienia kroku, albo None, gdy polecenie jeszcze trwa."""
         self._trial_check(step)
         name = step.get("step") or ""
-        events = [e for e in self._outside_history(card, step) if e.get("step") == name and
-                  e.get("type") in ("outside.started", "outside.finished")]
-        finished = next((e for e in events if e["type"] == "outside.finished"), None)
+        # Start i zakończenie bieżącego uruchomienia outside tego procesu ze wspólnego wyniku redukcji:
+        # zakończenie innej próby tej samej nazwy nie jest odpowiedzią bieżącej (PT-288 review 2, M4).
+        state, started, finished = processidentity.outside_run(self._outside_history(card, step), name)
+        if state != "ok":
+            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
         if finished:
             return {**decision, "answer": f"Kod wyjścia: {finished.get('exit')}\nKoniec wyniku:\n{finished.get('tail') or ''}"}
-        started = next((e for e in events if e["type"] == "outside.started"), None)
         if started is None:
             if not consent.before_start(self, card, step, done, decision):
                 return None
@@ -6299,13 +6301,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         e2e naraz na jednym porcie kończyło się kodem 1 i agenci prosili o kolejne)."""
         if self._outside_active is None:
             # Po restarcie usługi: polecenia rozpoczęte (bez zakończenia) we wszystkich kartach.
+            # Wspólny wynik redukcji (PT-288 review 2, M7): bieżące uruchomienie każdego procesu;
+            # proces wstrzymany z jakimkolwiek startem zajmuje miejsce zachowawczo.
             self._outside_active = {}
             for other in self.journal.cards():
-                events = self.journal.read(other)
-                done = {e.get("step") for e in events if e.get("type") == "outside.finished"}
-                for e in events:
-                    if e.get("type") == "outside.started" and e.get("step") not in done:
-                        self._outside_active[e["step"]] = (other, e.get("unit") or "")
+                for name, started in processidentity.outside_runs(self.journal.read(other)).items():
+                    unit = started.get("unit")
+                    self._outside_active[name] = (other, unit if isinstance(unit, str) else "")
         alive = {}
         for name, (other, unit) in self._outside_active.items():
             if stepstop.read_exit_code(os.path.dirname(os.path.dirname(self._outside_exit(other, name)))) is None:
@@ -6354,10 +6356,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 slug = self._project(other)[1].slug
             except Exception:
                 continue
-            started = {e.get("step") for e in events if e.get("type") == "outside.started"}
-            resumed = {e.get("parentStep") for e in events if e.get("type") == "step.started" and e.get("parentStep")}
-            outside = {e.get("step") for e in events if e.get("type") == "step.finished" and e.get("outside")}
+            # Starty outside, wznowienia i prośby ze wspólnego wyniku redukcji i stanu karty (PT-288 review 2, M7):
+            # proces z jakimkolwiek śladem startu outside (także wstrzymany) nie wraca do kolejki.
+            identities = processidentity.process_identities(events)
+            started = {name for name, identity in identities.items() if isinstance(name, str)
+                       and identity.has_outside_start}
             current = fold(events)
+            resumed = {s.get("parentStep") for s in current.steps.values() if s.get("parentStep")}
+            outside = {name for name, identity in identities.items() if isinstance(name, str)
+                       and identity.has_outside_request}
             for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now
@@ -6368,8 +6375,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     self._outside_waiting.setdefault(name, (other, slug, queued, now))
 
     def _outside_exit(self, card: str, name: str) -> str:
-        found = next((e for e in self.journal.read(card) if e.get("type") == "outside.started" and e.get("step") == name), {})
-        return found.get("exitFile") or "/nonexistent/in/exit-code"
+        """Plik kodu wyjścia uruchomienia outside procesu ze wspólnego wyniku redukcji (PT-288 review 2, M7):
+        niezakończone uruchomienie, które zajmuje miejsce (najpierw bieżącej próby), inaczej bieżące."""
+        events = self.journal.read(card)
+        found = processidentity.outside_runs(events).get(name)
+        if found is None:
+            found = processidentity.outside_run(events, name)[1] or {}
+        value = found.get("exitFile")
+        return value if isinstance(value, str) and value else "/nonexistent/in/exit-code"
 
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         self._trial_check(step)
