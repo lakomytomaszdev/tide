@@ -8,6 +8,7 @@ czasu własnego i łącznego (w próbkach). Wątki czekające (sleep, select, wa
 pracy procesora. Plik żądania jest usuwany na starcie pomiaru — kolejne żądanie to nowy plik.
 """
 import os
+import stat
 import sys
 import threading
 import time
@@ -72,36 +73,61 @@ def write_report(result: dict, seconds: float, folder: str | None = None) -> str
     folder = folder or report_dir()
     os.makedirs(folder, mode=0o700, exist_ok=True)
     path = os.path.join(folder, time.strftime("profile-%Y%m%d-%H%M%S.txt"))
+    # Nowy plik od razu z prawami 0600, bez podążania za podstawionym dowiązaniem.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     busy = sum(result["own"].values())
-    lines = [f"Próbki: {result['samples']} w {seconds:.0f} s (co {INTERVAL * 1000:.0f} ms); "
-             f"próbek pracy (poza czekaniem): {busy}", "", "## Funkcje — czas własny (próbki)"]
+    lines = [f"Próbki stosów: {result['samples']} w {seconds:.0f} s (co {INTERVAL * 1000:.0f} ms, czas ścienny — "
+             f"nie czas CPU; oczekiwanie wewnątrz kodu C może wyglądać jak praca)",
+             f"Próbek poza ramkami rozpoznanymi jako czekanie: {busy}", "", "## Funkcje — czas własny (próbki)"]
     lines += [f"{n:7d}  {name}" for name, n in result["own"].most_common(40)]
     lines += ["", "## Funkcje — czas łączny (próbki)"]
     lines += [f"{n:7d}  {name}" for name, n in result["total"].most_common(60)]
     lines += ["", "## Najczęstsze stosy (wątek: ostatnie 12 ramek)"]
     for (thread, stack), n in result["stacks"].most_common(25):
         lines += [f"{n:7d}  [{thread}] {stack}"]
-    lines += ["", "## Czekanie (wątek, ramka)"]
+    lines += ["", "## Ramki rozpoznane jako czekanie — heurystyka po nazwie (wątek, ramka)"]
     lines += [f"{n:7d}  [{thread}] {frame}" for (thread, frame), n in result["idle"].most_common(15)]
-    with open(path, "w", encoding="utf-8") as fh:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
-    os.chmod(path, 0o600)
     return path
 
 
 def _requested_seconds(path: str) -> float | None:
+    """Liczba sekund z żądania albo None (brak żądania albo żądanie odrzucone — wtedy bez pomiaru).
+    Tylko zwykły plik, bez podążania za dowiązaniami, odczyt najwyżej 64 bajtów (review 08.11: /dev/zero, FIFO
+    i katalog nie mogą zablokować ani zapętlić próbnika)."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read().strip()
-        os.unlink(path)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError:
-        return DEFAULT_SECONDS
+        _discard(path)
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        text = os.read(fd, 64).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+        _discard(path)
     try:
         return max(1.0, min(float(text), MAX_SECONDS)) if text else DEFAULT_SECONDS
     except ValueError:
         return DEFAULT_SECONDS
+
+
+def _discard(path: str) -> None:
+    try:
+        os.unlink(path)
+    except IsADirectoryError:
+        try:
+            os.rmdir(path)
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 def watch(check_every: float = 3.0, stop: threading.Event | None = None, folder: str | None = None) -> None:

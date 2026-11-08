@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from tide_daemon import sampler
 
@@ -67,6 +68,29 @@ class SamplerTest(unittest.TestCase):
                 self.assertFalse(os.path.exists(path))
             self.assertIsNone(sampler._requested_seconds(path))
 
+
+    def test_non_regular_request_is_discarded_without_measurement(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            path = os.path.join(runtime, "req")
+            os.symlink("/dev/zero", path)
+            self.assertIsNone(sampler._requested_seconds(path))
+            self.assertFalse(os.path.lexists(path))
+            os.mkfifo(path)
+            self.assertIsNone(sampler._requested_seconds(path))
+            self.assertFalse(os.path.exists(path))
+            os.mkdir(path)
+            self.assertIsNone(sampler._requested_seconds(path))
+            self.assertFalse(os.path.exists(path), "katalog żądania usunięty — bez pętli pomiarów")
+
+    def test_report_is_created_new_and_does_not_follow_a_planted_link(self):
+        with tempfile.TemporaryDirectory() as out, tempfile.TemporaryDirectory() as other:
+            result = sampler.sample(0.05, interval=0.01)
+            name = "profile-20261108-120000.txt"
+            target = os.path.join(other, "victim")
+            os.symlink(target, os.path.join(out, name))
+            with mock.patch.object(sampler.time, "strftime", return_value=name), self.assertRaises(OSError):
+                sampler.write_report(result, 0.05, out)
+            self.assertFalse(os.path.exists(target))
 
 if __name__ == "__main__":
     unittest.main()
