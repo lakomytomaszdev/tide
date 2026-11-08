@@ -722,7 +722,7 @@ def start_board(app, args, trees, monitor=None, coordination=None, clock=time.ti
                                        parent=app)
     board = BoardMonitor(board_store(args), repos_source=repos, derive=deriver, launchers=trees.launchers,
                          coordinators=(lambda: coordination.boards) if coordination is not None else None,
-                         youtrack=youtrack, proc_root=args.proc_root, parent=app)
+                         youtrack=youtrack, proc_root=getattr(args, "proc_root", None) or "/proc", parent=app)
     trees.changed.connect(board.publish)  # nowe repozytorium w katalogu projektów
     board.flow = start_card_flow(app, args, board, monitor, limits)
     # Git (czy gałąź scalona) idzie w wątku roboczym; nowy wynik przelicza karty w wątku głównym.
