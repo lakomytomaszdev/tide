@@ -84,4 +84,3 @@ class Domains(unittest.TestCase):
                 self.assertIn('NEW', answer['answer'])
                 self.assertNotIn('OLD', answer['answer'])
                 spawn.assert_not_called()
-

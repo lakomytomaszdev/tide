@@ -102,4 +102,3 @@ class CompletenessProbes(unittest.TestCase):
             function = ast.parse(source).body[0]
             with self.subTest(binding=binding):
                 self.assertEqual(cat.raw_reads(function), {'outside.started'})
-
