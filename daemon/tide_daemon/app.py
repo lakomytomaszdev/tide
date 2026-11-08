@@ -739,6 +739,7 @@ def start_card_flow(app, args, board, monitor=None, limits=None):
     """Przepływ karty (PT-58, cardflow/, cardflow_monitor.py): StartCard, kroki w tle, dziennik kart. Sesje kroków
     znikają z /Agents (monitor.hidden). $TIDE_SYSTEMD_RUN i $TIDE_FLOW_POLL_MS — tylko testy usługi (atrapa
     systemd-run, krótszy zegar)."""
+    from .cardflow import execution as flow_execution
     from .cardflow.engine import FlowEngine
     from .cardflow_monitor import POLL_MS, CardFlowMonitor
     from .models import config as models_config
@@ -756,6 +757,7 @@ def start_card_flow(app, args, board, monitor=None, limits=None):
     terminal = TaskTerminal(board.launchers, KonsoleWindows(), probe=probe, activate=activate)
     engine = FlowEngine(board.store, claude_projects=os.path.join(claude_dir, "projects"),
                         systemd_run=os.environ.get("TIDE_SYSTEMD_RUN", ""),
+                        which=flow_execution.agent_which,
                         catalog=lambda: models_config.load().catalog,
                         models_config=models_config.load, model_probe=models_status.endpoint_status,
                         codex_roots=getattr(args, "codex_dir", None), terminal=terminal,
