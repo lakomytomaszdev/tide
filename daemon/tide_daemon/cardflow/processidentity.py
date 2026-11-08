@@ -10,6 +10,7 @@ tożsamości i regułę zgodności każdego pola. Reduktor i walidatory (dzienni
 dziennik pudełka) czytają wyłącznie tę tabelę; konsumenci nie mają własnych reguł pól.
 """
 from dataclasses import dataclass, field
+import re
 from types import MappingProxyType
 
 from .. import trialpolicy
@@ -39,9 +40,13 @@ class Field:
       inherited      — wymagany dowód, którego brak dziedziczy wyłącznie kompletny wcześniejszy
                        `predecessor` tego samego procesu; jawna wartość musi być z nim zgodna,
       context        — kontekst karty (projekt),
+      generation     — numer próby procesu (`attempt`); inna wartość w kolejnym starcie tej samej
+                       nazwy rozpoczyna nową generację: dowody poprzedników starszej generacji
+                       nie są dziedziczone (PT-288 review 1, M2),
       neutral        — dane operacyjne/metadane bez roli dowodowej (uzasadnienie w `note`).
-    type: str | bool | any.  nonempty: wymagany tekst niepusty po strip() i bez otaczających znaków białych.
-    domain: step | console | outside | resource | card.  rule: match | ticket | kind | resource | slug.
+    type: str | bool | int | any.  nonempty: wymagany tekst niepusty po strip() i bez otaczających znaków białych.
+    domain: step | console | outside | resource | card.
+    rule: match | ticket | kind | resource | slug | box (nazwa pudełka projektu dziennika pudełka).
     source: writer (zapis w kodzie usługi) albo historical (starszy format, sonda lub ślad jawnie wstrzyknięty).
     """
     role: str
@@ -58,12 +63,14 @@ class Field:
 class Event:
     """Rola zdarzenia: context, step-start, step-result, step-trace, console-enter, console-ack,
     outside-start, outside-finish, outside-trace, action (zamiar/wynik według ACTIONS),
-    box-trace albo metadata. Zdarzenie metadanych ma uzasadnienie; `fields=None` oznacza
-    ładunek dynamiczny, którego reduktor nie czyta."""
+    box-trace albo metadata. Zdarzenie metadanych ma uzasadnienie. `dynamic=True` oznacza
+    dodatkowy ładunek dynamiczny, którego reduktor nie czyta; pola jawne zapisu nadal muszą
+    być sklasyfikowane w `fields` (M4 review 1)."""
     role: str
     fields: object = None
     reason: str = ""
     source: str = "writer"
+    dynamic: bool = False
 
 
 def _neutral(*names, note="dane operacyjne bez roli dowodowej", source="writer"):
@@ -74,8 +81,9 @@ def _metadata(reason, *names, source="writer"):
     return Event("metadata", MappingProxyType(_neutral(*names, note=reason, source=source)), reason, source)
 
 
-def _dynamic(reason, source="writer"):
-    return Event("metadata", None, reason, source)
+def _dynamic(reason, *names, source="writer"):
+    """Metadane z ładunkiem dynamicznym; `names` — pola jawne zapisane obok niego."""
+    return Event("metadata", MappingProxyType(_neutral(*names, note=reason, source=source)), reason, source, True)
 
 
 NAME_STEP = Field("name", "str", True, domain="step", note="nazwa procesu kroku; źródło ochrony")
@@ -123,10 +131,13 @@ def _trace(own=None, writer=(), neutral=(), extra=None):
     return MappingProxyType(fields)
 
 
+ATTEMPT = Field("generation", "int", domain="step",
+                note="numer próby; inna wartość tej samej nazwy to nowa generacja procesu bez dziedziczenia "
+                     "poprzedników; brak nie zmienia generacji")
 START_IDENTITY = {"ticket": TICKET_START, "kind": KIND, "branch": BRANCH, "worktree": WORKTREE,
                   "stepDir": STEP_DIR, "runner": RUNNER, "box": BOX, "boxSlug": BOX_SLUG,
                   "unit": STEP_UNIT}
-START_NEUTRAL = ("attempt", "baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "boxPortOwner",
+START_NEUTRAL = ("baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "boxPortOwner",
                  "closeFile", "consoleClosed", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
                  "executor", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
                  "readDirsProfile", "repo", "reviewTip", "round", "routeKind", "routeTokenFile", "routeUrl",
@@ -157,7 +168,7 @@ EVENTS = MappingProxyType({
     }), "początek zlecenia karty; ustala kontekst projektu"),
     "step.started": Event("step-start", MappingProxyType({
         "step": NAME_STEP, **START_IDENTITY, "consoleUnit": CONSOLE_UNIT, "processFile": PROCESS_FILE,
-        **_neutral(*START_NEUTRAL),
+        "attempt": ATTEMPT, **_neutral(*START_NEUTRAL),
     })),
     "step.entered": Event("console-enter", _trace(
         writer=(), neutral=("closeFile", "deliveredNoteIds", "enteredAt", "readDirsProfile", "session", "source",
@@ -205,7 +216,7 @@ EVENTS = MappingProxyType({
     "card.base-kept": _metadata("zachowanie bazy karty", "decision"),
     "card.base-changed": _metadata("aktywacja nowej bazy karty", "base", "baseVersion", "decisionStep",
                                    "generation", "operationId", "previousBaseVersion", "validationRequired"),
-    "card.merged": _dynamic("wynik scalenia karty do głównej (metadane Gita)"),
+    "card.merged": _dynamic("wynik scalenia karty do głównej (metadane Gita)", "branch", "commit"),
     "plan.checked": _metadata("walidacja propozycji planu", "errors", "step", "valid"),
     "plan.imported": _metadata("import planu", "needsCompletion", "path", "rows"),
     "plan.proposed": _metadata("propozycja planu", "appendRequest", "appendRevision", "artifactPath", "box",
@@ -219,7 +230,7 @@ EVENTS = MappingProxyType({
     "plan.revision-failed": _metadata("błąd poprawki planu", "baseline", "errors", "failed", "feedback", "pending"),
     "plan.revision-ready": _metadata("poprawka planu gotowa", "baseline", "difference", "feedback", "pending"),
     "plan.revision-approved": _metadata("zatwierdzenie poprawki planu", "difference", "plan"),
-    "plan.reviewed": _dynamic("raport review planu"),
+    "plan.reviewed": _dynamic("raport review planu", "corrected", "findings", "reviewer", "verdict"),
     "plan.ticket-edited": _metadata("edycja kartki", "changes", "ticket"),
     "plan.approved": _metadata("zatwierdzenie planu", "map", "planFile", "rows"),
     "plan.finished": _metadata("statystyka planu", "merged", "rejected"),
@@ -234,7 +245,8 @@ EVENTS = MappingProxyType({
                                      "reviewerProgram", "reviewerProvider", "reviewerRouteKind",
                                      "reviewerRouteTokenFile", "reviewerRouteUrl", "sourceStep", "ticket"),
     "author.reassigned": _metadata("zmiana autora", "executor", "ticket"),
-    "review.verdict": _dynamic("werdykt review (ładunek wyniku recenzenta)"),
+    "review.verdict": _dynamic("werdykt review (ładunek wyniku recenzenta)", "baseVersion", "reviewTip", "reviewer",
+                               "round", "step", "ticket"),
     "review.question": _metadata("pytanie po review", "question", "round", "ticket"),
     "review.decision": _metadata("decyzja po review", "auto", "choice", "round", "ticket"),
     "review.reviewer-note": _metadata("notka recenzenta", "author", "reviewer", "round", "ticket"),
@@ -258,8 +270,8 @@ EVENTS = MappingProxyType({
     "flow.error-persisted": _metadata("utrwalony błąd przepływu", "error", "since", "stage", "step", "ticket"),
     "flow.error-cleared": _metadata("wyczyszczony błąd przepływu", "caretaker", "caretakerStep", "error", "stage"),
     "permission.rechecked": _metadata("ponowna kontrola uprawnień", "canAllow", "step", "ticket"),
-    "refs.guard": _dynamic("kontrola refów po kroku (migawka Gita)"),
-    "box.wait": _dynamic("stan oczekiwania na pudełko"),
+    "refs.guard": _dynamic("kontrola refów po kroku (migawka Gita)", "step", "ticket"),
+    "box.wait": _dynamic("stan oczekiwania na pudełko", "value"),
     "box.rebuild-requested": _metadata("prośba o przebudowę pudełka", "domain", "project", "step"),
     "box.ports": _metadata("rezerwacja portów przed zamiarem startu; proces zapisuje step-start",
                            "box", "boxSlug", "owner", "step"),
@@ -273,10 +285,11 @@ EVENTS = MappingProxyType({
     "k38.diagnostic-consumed": _metadata("konsumpcja zgody diagnostyki", "step"),
     "youtrack.reset": _metadata("reset błędu YouTracka", "action", "allowWrite", "key", "rejectedResult"),
     "youtrack.retry": _metadata("ponowienie YouTracka", "action", "after", "error", "key"),
-    "base-change.checkpoint": _dynamic("punkt kontrolny korekty bazy"),
+    "base-change.checkpoint": _dynamic("punkt kontrolny korekty bazy", "baseVersion", "generation", "key", "newBase",
+                                       "oldBase", "previousBaseVersion", "stage"),
     "base-change.waiting": _metadata("oczekiwanie korekty bazy", "generation", "key", "newBase", "oldBase",
                                      "reason"),
-    "main-merge.checkpoint": _dynamic("punkt kontrolny scalenia do głównej"),
+    "main-merge.checkpoint": _dynamic("punkt kontrolny scalenia do głównej", "key", "stage"),
     "main-merge.waiting": _metadata("oczekiwanie scalenia do głównej", "key", "reason"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),
     "main-merge.abandoned": _metadata("porzucenie scalenia do głównej", "key", "reason"),
@@ -288,7 +301,8 @@ EVENTS = MappingProxyType({
     "caretaker.started": _metadata("problem opiekuna; proces opiekuna zapisuje step.started", "decision", "key",
                                    "n", "problem", "root", "step", "target", "ticket", "trigger", "triggers",
                                    "watermark"),
-    "caretaker.guard": _dynamic("migawka strażnika opiekuna"),
+    "caretaker.guard": _dynamic("migawka strażnika opiekuna", "branches", "cause", "refs", "repo", "step",
+                                "worktrees", "wrote"),
     "caretaker.escalated": _metadata("eskalacja opiekuna", "action", "code", "count", "error", "failed", "limit",
                                      "mode", "optionId", "problem", "recommendation", "step", "summary", "target",
                                      "ticket"),
@@ -299,13 +313,14 @@ EVENTS = MappingProxyType({
                                     "signature", "step", "target"),
     "caretaker.chat": _metadata("rozmowa z opiekunem; proces zapisuje step.started", "decision", "mode",
                                 "problem", "root", "step", "target", "ticket", "trigger", "watermark"),
-    "caretaker.chat-action": _dynamic("akcja z rozmowy opiekuna (kopia przebiegu)"),
+    "caretaker.chat-action": _dynamic("akcja z rozmowy opiekuna (kopia przebiegu)", "chat", "file", "outcome",
+                                      "step"),
     "caretaker.chat-file": _metadata("plik rozmowy opiekuna", "chat", "signature", "step"),
 })
 
 ACTION_START = MappingProxyType({
     "key": NAME_KEY, "action": Field("discriminator", "str", note="step-start"), **START_IDENTITY,
-    **_neutral(*(n for n in START_NEUTRAL if n not in ("gitDir", "readDirsProfile", "repo", "toolingKind",
+    "attempt": ATTEMPT, **_neutral(*(n for n in START_NEUTRAL if n not in ("gitDir", "readDirsProfile", "repo", "toolingKind",
                                                        "closeFile", "consoleClosed", "consoleOpened", "enteredAt",
                                                        "mode", "taskFile"))),
 })
@@ -325,41 +340,62 @@ class Action:
     result: object = None
     reason: str = ""
     source: str = "writer"
+    dynamic: frozenset = frozenset()   # strony (intent/result) z dodatkowym ładunkiem dynamicznym
 
 
-def _meta_action(reason, source="writer"):
-    return Action("metadata", reason=reason, source=source)
+def _meta_action(reason, intent=(), result=(), dynamic=(), source="writer"):
+    """Akcja metadanych: reduktor jej nie czyta, ale pola jawne zamiaru/wyniku są sklasyfikowane."""
+    def table(names):
+        return MappingProxyType(_neutral("action", "key", *names, note=reason, source=source))
+    return Action("metadata", table(intent), table(result), reason, source, frozenset(dynamic))
 
+
+GIT_RESULT = ("base", "branch", "error", "existing", "ok", "ticket", "worktree")
+TRACKER_RESULT = ("error", "ok", "permanent", "retryWriteSafe")
 
 ACTIONS = MappingProxyType({
     "step-start": Action("step-start", ACTION_START, ACTION_RESULT, "zamiar i wynik startu procesu kroku"),
-    "reserve": _meta_action("rezerwacja numeru ticketu"),
-    "card-branch": _meta_action("gałąź karty (Git)"),
-    "ticket-branch": _meta_action("gałąź ticketu (Git)"),
-    "review-branch": _meta_action("gałąź review (Git)"),
-    "step-reopen": _meta_action("ponowne otwarcie worktree kroku (Git)"),
-    "plan-commit": _meta_action("commit planu (Git)"),
-    "cleanup": _meta_action("usunięcie worktree (Git)"),
-    "merge": _meta_action("scalenie ticketu do karty (Git)"),
-    "main-merge": _meta_action("scalenie karty do głównej (Git)"),
-    "change-base": _meta_action("korekta bazy karty"),
-    "caretaker-action": _meta_action("akcja opiekuna na planie/kroku; proces opiekuna ma step.started"),
+    "reserve": _meta_action("rezerwacja numeru ticketu", ("minimumNumber", "payload", "prefix", "repo", "title",
+                                                         "youtrack"),
+                            (*TRACKER_RESULT, "ticket", "title"), ("result",)),
+    "card-branch": _meta_action("gałąź karty (Git)", ("base", "baseBranch", "baseRef", "branch", "repo", "worktree"),
+                                GIT_RESULT),
+    "ticket-branch": _meta_action("gałąź ticketu (Git)", ("base", "branch", "repo", "ticket", "worktree"), GIT_RESULT),
+    "review-branch": _meta_action("gałąź review (Git)", (), GIT_RESULT),
+    "step-reopen": _meta_action("ponowne otwarcie worktree kroku (Git)", ("base", "branch", "repo", "worktree"),
+                                GIT_RESULT),
+    "plan-commit": _meta_action("commit planu (Git)", ("branch", "repo", "worktree"), ("error", "ok"), ("result",)),
+    "cleanup": _meta_action("usunięcie worktree (Git)", ("branch", "repo", "worktree"),
+                            ("already", "error", "ok", "preserved", "reason", "removed")),
+    "merge": _meta_action("scalenie ticketu do karty (Git)", ("branch", "cardTip", "expectedTip", "into"),
+                          ("commit", "error", "ok", "resolved"), ("result",)),
+    "main-merge": _meta_action("scalenie karty do głównej (Git)", ("baseVersion", "operationId", "previewToken", "repo",
+                                                                  "requestSeq", "sourceWorktree"),
+                               ("commit", "ok"), ("intent", "result")),
+    "change-base": _meta_action("korekta bazy karty", ("baseVersion", "beforeSeq", "decisionStep", "generation",
+                                                      "lockReason", "newBase", "oldBase", "operationId", "previewId",
+                                                      "previousBaseVersion", "repo", "requestSeq"),
+                                ("baseVersion", "generation", "ok", "operationId")),
+    "caretaker-action": _meta_action("akcja opiekuna na planie/kroku; proces opiekuna ma step.started",
+                                     ("caretakerAction", "params", "problem"), ("error", "ok"), ("result",)),
     "youtrack-create": _meta_action("dawne założenie zgłoszenia YouTracka", source="historical"),
-    "youtrack-link": _meta_action("powiązanie zgłoszeń YouTracka"),
-    "youtrack-note": _meta_action("komentarz YouTracka"),
+    "youtrack-link": _meta_action("powiązanie zgłoszeń YouTracka", ("payload", "youtrack"), TRACKER_RESULT,
+                                  ("result",)),
+    "youtrack-note": _meta_action("komentarz YouTracka", ("payload", "youtrack"), TRACKER_RESULT, ("result",)),
 })
 
+# Koperta każdego zdarzenia dziennika pudełka: pola kanoniczne, bez przycinania (M1 review 1).
+BOX_TS = Field("identity", "str", True, note="znacznik koperty; kanoniczny niepusty tekst")
+BOX_INSTANCE = Field("identity", "str", True, domain="resource", rule="box",
+                     note="instancja pudełka projektu dziennika: box_name(slug) albo card_box_name(slug, karta)")
+BOX_STEP = Field("name", "str", True, domain="step",
+                 note="krok w pudełku; źródło ochrony; niekanoniczna nazwa nie jest przycinana ani pomijana")
+BOX_TRACE = MappingProxyType({"step": BOX_STEP, "box": BOX_INSTANCE, "ts": BOX_TS})
+BOX_ENVELOPE_FIELDS = MappingProxyType({"box": BOX_INSTANCE, "ts": BOX_TS})
+
 BOX_EVENTS = MappingProxyType({
-    "box.use": Event("box-trace", MappingProxyType({
-        "step": Field("name", "str", True, domain="step", note="krok w pudełku; źródło ochrony"),
-        "box": Field("identity", "str", True, domain="resource", note="instancja pudełka"),
-        "ts": Field("identity", "str", True, note="znacznik koperty"),
-    }), "wejście kroku do pudełka"),
-    "box.release": Event("box-trace", MappingProxyType({
-        "step": Field("name", "str", True, domain="step", note="krok w pudełku; źródło ochrony"),
-        "box": Field("identity", "str", True, domain="resource", note="instancja pudełka"),
-        "ts": Field("identity", "str", True, note="znacznik koperty"),
-    }), "wyjście kroku z pudełka"),
+    "box.use": Event("box-trace", BOX_TRACE, "wejście kroku do pudełka"),
+    "box.release": Event("box-trace", BOX_TRACE, "wyjście kroku z pudełka"),
     "box.build": _metadata("budowa pudełka", "duration", "error", "hash", "phase", "result", "steps"),
     "box.ready": _metadata("pudełko gotowe", "card", "copy_of", "duration", "failed_images", "hash", "reason",
                            "warning"),
@@ -427,8 +463,20 @@ class ProcessIdentity:
     outside: list = field(default_factory=list)
     has_start: bool = False
     projects: set = field(default_factory=set)
-    outside_unit: str | None = None
-    console: dict | None = None   # komplet ostatniego poprawnego step.entered tego kroku
+    # Dowody poprzedników są związane z domeną (projekt, zlecenie, próba), w której powstały:
+    # dziedziczy wyłącznie zdarzenie z tej samej domeny (M2 review 1).
+    outside_units: dict = field(default_factory=dict)   # domena → jednostka outside.started
+    consoles: dict = field(default_factory=dict)        # domena → komplet Konsoli tego kroku
+    attempt: object = 0                                # bieżąca generacja (numer próby)
+
+    @property
+    def outside_unit(self):
+        """Jednostka outside ostatniej domeny (diagnostyka; reduktor czyta outside_units)."""
+        return next(reversed(self.outside_units.values()), None)
+
+    @property
+    def console(self):
+        return next(reversed(self.consoles.values()), None)
 
     @property
     def held(self):
@@ -508,8 +556,10 @@ def outside_evidence(event):
     return isinstance(kind, str) and kind.startswith("outside.") and kind not in EVENTS
 
 
-def evidence_errors(event, fields, identity):
-    """Błędy dowodu według ról pól; (unknown?, inconsistent?) bez modyfikacji stanu."""
+def evidence_errors(event, fields, identity, domain=None):
+    """Błędy dowodu według ról pól; (unknown?, inconsistent?) bez modyfikacji stanu.
+
+    `domain` — (projekt, zlecenie, próba) zdarzenia; poprzednik musi pochodzić z tej samej domeny."""
     unknown = inconsistent = False
     for name, spec in fields.items():
         present = name in event
@@ -524,8 +574,12 @@ def evidence_errors(event, fields, identity):
             if not canonical_text(value, True):
                 unknown = True
             continue
+        if spec.role == "generation":
+            if present and (type(value) is not int or value < 0):
+                unknown = True
+            continue
         if spec.role == "inherited":
-            previous = _predecessor_value(identity, spec, name)
+            previous = _predecessor_value(identity, spec, name, domain)
             if present:
                 if not canonical_text(value, True):
                     unknown = True
@@ -547,11 +601,11 @@ def evidence_errors(event, fields, identity):
     return unknown, inconsistent
 
 
-def _predecessor_value(identity, spec, name):
+def _predecessor_value(identity, spec, name, domain):
     if spec.predecessor == "step.entered|step.started":
-        return (identity.console or {}).get(name)
+        return (identity.consoles.get(domain) or {}).get(name)
     if spec.predecessor == "outside.started":
-        return identity.outside_unit
+        return identity.outside_units.get(domain)
     return None
 
 
@@ -567,6 +621,7 @@ def process_identities(events):
     identities = {}
     project = ""
     card = ""
+    order = 0   # numer zlecenia (kolejne card.started)
     for index, event in enumerate(events):
         if not isinstance(event, dict):
             identities[None, index] = ProcessIdentity("", state="unknown")
@@ -576,6 +631,7 @@ def process_identities(events):
             value = event.get("project")
             project = value if valid_project(value) else ""
             card = event.get("card", "")
+            order += 1
         uncertain_type = not isinstance(kind, str) or kind not in EVENTS
         action = event.get("action")
         uncertain_action = kind in ("intent", "result") and (
@@ -631,7 +687,16 @@ def process_identities(events):
             identity.worsen("unknown")
         # Role pól z modelu: własne, dziedziczone, kanoniczne pola tożsamości i dyskryminatory.
         # Nieznany typ/akcja ma fields=None i pozostaje unknown bez dalszego rozstrzygania.
-        unknown, inconsistent = evidence_errors(event, fields or {}, identity)
+        if start and type(event.get("attempt")) is int and event["attempt"] >= 0:
+            # Inna próba tej samej nazwy to nowa generacja: dowody poprzedników starszej
+            # generacji zostają w śladzie (ochrona, stan), ale nie są dziedziczone.
+            identity.attempt = event["attempt"]
+        # Dziedziczone pola (Konsola, jednostka outside) czytają poprzednika wyłącznie z tej
+        # samej domeny: dowód innego projektu, zlecenia lub próby nie jest poprzednikiem (M2 review 1).
+        # Sam ślad bez dziedziczenia (np. zakończenie kroku po nowym zleceniu) pozostaje legalny,
+        # a ochrona obejmuje oba projekty (`projects`).
+        domain = (project, order, identity.attempt)
+        unknown, inconsistent = evidence_errors(event, fields or {}, identity, domain)
         if unknown:
             identity.worsen("unknown")
         if inconsistent:
@@ -653,7 +718,7 @@ def process_identities(events):
             identity.has_start = True
             if not unknown and all(canonical_text(event.get(k), True) for k in CONSOLE_FIELDS):
                 # Start rozmowy opiekuna zapisuje własny komplet Konsoli tego kroku.
-                identity.console = {k: event[k] for k in CONSOLE_FIELDS}
+                identity.consoles[domain] = {k: event[k] for k in CONSOLE_FIELDS}
             # Dane operacyjne nie są źródłem klasyfikacji ochrony.
             for field_name, value in event.items():
                 if field_name not in START_FIELDS:
@@ -676,29 +741,56 @@ def process_identities(events):
                 identity.data[field_name] = value
         if role == "console-enter" and not unknown and identity.has_start:
             # Tylko kompletne wejście tego kroku jest poprzednikiem otwarcia/zamknięcia.
-            identity.console = {k: event[k] for k in CONSOLE_FIELDS}
+            identity.consoles[domain] = {k: event[k] for k in CONSOLE_FIELDS}
         if outside:
             if role == "outside-start":
                 # Outside uruchamia osobny proces: jego jednostka musi być
                 # zapisana w tym starcie, nie odziedziczona z kroku.
                 unit = event.get("unit")
                 if canonical_text(unit, True):
-                    if identity.outside_unit is not None and identity.outside_unit != unit:
+                    previous = identity.outside_units.get(domain)
+                    if previous is not None and previous != unit:
                         identity.worsen("inconsistent")
                     else:
-                        identity.outside_unit = unit
+                        identity.outside_units[domain] = unit
             identity.outside.append(dict(event))
     return identities
 
 
-def box_event_error(event):
-    """Walidacja zdarzenia dziennika pudełka według BOX_EVENTS (koperta i pola śladu)."""
+_CARD_COPY = re.compile(r"-(k-[1-9][0-9]{0,8})$")
+_BOX_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+
+
+def box_of_project(box, slug):
+    """Instancja należy do projektu dziennika: pudełko projektu albo kopia karty (bez naprawiania nazwy)."""
+    if not isinstance(box, str) or not _BOX_NAME.match(box):
+        return False
+    if slug is None:
+        return True
+    try:
+        if box == bs.box_name(slug):
+            return True
+        copy = _CARD_COPY.search(box)
+        return bool(copy) and box == bs.card_box_name(slug, copy.group(1))
+    except (ValueError, TypeError):
+        return False
+
+
+def box_event_error(event, slug=None):
+    """Walidacja zdarzenia dziennika pudełka według BOX_EVENTS (koperta i pola śladu).
+
+    Pola wymagane muszą być kanoniczne (bez przycinania); instancja musi należeć do projektu
+    `slug` dziennika. Wadliwe pole nie jest pomijane przy filtrowaniu nazw prób (M1 review 1)."""
     if (not isinstance(event, dict) or type(event.get("v")) is not int
             or event["v"] != bs.SCHEMA or not isinstance(event.get("type"), str)
             or event["type"] not in BOX_EVENTS):
         return "nieznany format zdarzenia pudełka"
-    spec = BOX_EVENTS[event["type"]]
-    required = ["ts", "box"] + [k for k, f in (spec.fields or {}).items() if f.nonempty and k not in ("ts", "box")]
-    if any(not isinstance(event.get(key), str) or not event[key].strip() for key in required):
-        return "niepełna tożsamość zdarzenia pudełka"
+    fields = {**BOX_ENVELOPE_FIELDS, **(BOX_EVENTS[event["type"]].fields or {})}
+    for name, spec in fields.items():
+        if spec.role == "neutral":
+            continue
+        if not canonical_text(event.get(name), spec.nonempty):
+            return "niepełna tożsamość zdarzenia pudełka"
+        if spec.rule == "box" and not box_of_project(event[name], slug):
+            return "nieznana instancja w dzienniku pudełka"
     return ""

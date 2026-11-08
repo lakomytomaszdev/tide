@@ -11,6 +11,7 @@ do `unresolved`, a test kompletności kończy się porażką.
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -18,7 +19,19 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parents[1] / "tide_daemon"
 CARD_ENVELOPE = frozenset({"v", "seq", "ts", "card", "type"})
 BOX_ENVELOPE = frozenset({"v", "ts", "type", "box"})
-ANY = "*"   # ładunek dynamiczny; dozwolony tylko dla zdarzeń, których reduktor nie czyta
+# Znacznik zakresu dynamicznego w zbiorze pól. Zakres dynamiczny NIE ukrywa pól jawnych:
+# zbiór zachowuje każde znane pole obok znacznika (M4 review 1), a model musi je sklasyfikować.
+# Sam znacznik dozwolony tylko dla zdarzeń/akcji metadanych z jawnym `dynamic` w modelu.
+ANY = "*"
+DYN = frozenset({ANY})
+
+
+def dynamic(fields) -> bool:
+    return ANY in fields
+
+
+def explicit(fields) -> frozenset:
+    return frozenset(fields) - DYN
 
 
 @dataclass(frozen=True)
@@ -29,7 +42,7 @@ class Write:
     line: int
     kind: str           # rozwiązany typ zdarzenia
     discriminator: str  # wartość `action` dla intent/result, inaczej ""
-    fields: object      # frozenset pól ładunku (bez koperty) albo ANY
+    fields: frozenset   # pola ładunku (bez koperty); ANY w zbiorze = dodatkowy zakres dynamiczny
     via: str = ""       # opakowanie lub reguła rozwiązania
 
 
@@ -73,22 +86,22 @@ DYNAMIC = {
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "base_context"):
         ("step-base-context", frozenset({"baseVersion", "baseRef", "baseCommit"})),
     # Ładunki metadanych (reduktor ich nie czyta; model musi mieć klasyfikację metadanych).
-    ("cardflow/engine.py", "FlowEngine._guard_baseline", "base"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._guard_rebase", "fresh"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._finish", "guarded"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._finish", "verdict"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._recover_verdicts", "verdict"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._merge_card_to_main_locked", "prepared"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._resume_main_merge.checkpoint", "data"): ("metadata-payload", ANY),
-    ("cardflow/engine.py", "FlowEngine._resume_main_merge", "result"): ("metadata-payload", ANY),
-    ("cardflow/basegeneration.py", "BaseGeneration.checkpoint", "data"): ("metadata-payload", ANY),
-    ("cardflow/planediting.py", "PlanEditing._record_plan_review", "report"): ("metadata-payload", ANY),
-    ("cardflow/consent.py", "revoke", "request"): ("metadata-payload", ANY),
-    ("cardflow/boxwait.py", "set_box_wait", "extra"): ("metadata-payload", ANY),
-    ("cardflow/tracker.py", "TrackerOutbox.run", "data"): ("metadata-payload", ANY),
-    ("cardflow/boxstep.py", "recover_network", "guarded"): ("metadata-payload", ANY),
+    ("cardflow/engine.py", "FlowEngine._guard_baseline", "base"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._guard_rebase", "fresh"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._finish", "guarded"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._finish", "verdict"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._recover_verdicts", "verdict"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._merge_card_to_main_locked", "prepared"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._resume_main_merge.checkpoint", "data"): ("metadata-payload", DYN),
+    ("cardflow/engine.py", "FlowEngine._resume_main_merge", "result"): ("metadata-payload", DYN),
+    ("cardflow/basegeneration.py", "BaseGeneration.checkpoint", "data"): ("metadata-payload", DYN),
+    ("cardflow/planediting.py", "PlanEditing._record_plan_review", "report"): ("metadata-payload", DYN),
+    ("cardflow/consent.py", "revoke", "request"): ("metadata-payload", DYN),
+    ("cardflow/boxwait.py", "set_box_wait", "extra"): ("metadata-payload", DYN),
+    ("cardflow/tracker.py", "TrackerOutbox.run", "data"): ("metadata-payload", DYN),
+    ("cardflow/boxstep.py", "recover_network", "guarded"): ("metadata-payload", DYN),
     ("cardflow/caretakerchat.py", "CaretakerChat._poll_caretaker_chat",
-     "{k: v for k, v in run.items() if k not in ('seq', 'ts', 'type', 'step')}"): ("metadata-payload", ANY),
+     "{k: v for k, v in run.items() if k not in ('seq', 'ts', 'type', 'step')}"): ("metadata-payload", DYN),
 }
 
 # Wynik pracy (`work`) w opakowaniu zamiar → wynik, gdy funkcja pracy nie zwraca literału.
@@ -119,9 +132,8 @@ def _rel(path: Path) -> str:
     return path.relative_to(PACKAGE).as_posix()
 
 
-@lru_cache(maxsize=None)
-def module(path: str):
-    tree = ast.parse((PACKAGE / path).read_text(encoding="utf-8"), filename=path)
+def link(tree):
+    """Drzewo AST z odnośnikami `_parent` (także dla drzew zmienionych w kontrolach mutacyjnych)."""
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
             child._parent = node
@@ -129,8 +141,42 @@ def module(path: str):
 
 
 @lru_cache(maxsize=None)
+def _parsed(path: str):
+    return link(ast.parse((PACKAGE / path).read_text(encoding="utf-8"), filename=path))
+
+
+# Kontrole mutacyjne podmieniają drzewo modułu (albo dodają nowy moduł) bez zmiany plików.
+_OVERRIDES: dict = {}
+
+
+def module(path: str):
+    if path in _OVERRIDES:
+        return _OVERRIDES[path]
+    return _parsed(path)
+
+
+@lru_cache(maxsize=None)
 def modules():
-    return tuple(sorted(_rel(p) for p in PACKAGE.rglob("*.py")))
+    return tuple(sorted({_rel(p) for p in PACKAGE.rglob("*.py")} | set(_OVERRIDES)))
+
+
+@contextmanager
+def overridden(trees: dict):
+    """Katalog liczony z podmienionych drzew AST `{ścieżka: drzewo}` (kontrole mutacyjne)."""
+    previous = dict(_OVERRIDES)
+    _OVERRIDES.update({path: link(tree) for path, tree in trees.items()})
+    _clear()
+    try:
+        yield
+    finally:
+        _OVERRIDES.clear()
+        _OVERRIDES.update(previous)
+        _clear()
+
+
+def _clear():
+    for cached in (modules, imports, constants, local_constants, definitions):
+        cached.cache_clear()
 
 
 def qualname(node) -> str:
@@ -341,8 +387,7 @@ class Resolver:
             self.depth -= 1
 
     def _union(self, parts):
-        if any(p == ANY for p in parts):
-            return ANY
+        # Suma zachowuje pola jawne także obok zakresu dynamicznego (ANY jest zwykłym elementem).
         return frozenset().union(*parts) if parts else frozenset()
 
     def _keys(self, path, owner, node):
@@ -425,10 +470,7 @@ class Resolver:
             keys = set()
             for keyword in site.keywords:
                 if keyword.arg is None:
-                    resolved = self.keys(site_path, site_owner, keyword.value)
-                    if resolved == ANY:
-                        return ANY
-                    keys |= resolved
+                    keys |= self.keys(site_path, site_owner, keyword.value)
                 elif keyword.arg not in named:
                     keys.add(keyword.arg)
             parts.append(frozenset(keys))
@@ -534,13 +576,13 @@ def _wrapper(resolver, path, owner, call, kind, catalog):
             if values is None:
                 raise Unresolved("dyskryminator z parametru zewnętrznego: " + ast.unparse(argument))
             fields = base
-            if uses_kwarg and fields != ANY:
+            if uses_kwarg:
                 extra = [frozenset(k.arg for k in site.keywords if k.arg and k.arg not in named)]
                 extra += [resolver.keys(site_path, site_owner, k.value) for k in site.keywords if k.arg is None]
                 fields = resolver._union([fields, *extra])
             for value, rule in values:
                 current = fields
-                if uses_work and current != ANY:
+                if uses_work:
                     work = call_argument(site, function, work_param)
                     try:
                         current = resolver._union([current, _work_keys(resolver, site_path, site_owner, work)])
@@ -548,7 +590,7 @@ def _wrapper(resolver, path, owner, call, kind, catalog):
                         if value not in WORK_BY_ACTION:
                             raise
                         catalog.used_scopes.add(("work", value))
-                        current = ANY
+                        current = current | DYN
                 catalog.writes.append(Write("card", site_path, site_owner, site.lineno, kind, value, current,
                                             via=f"{path}:{owner}" + (f"/{rule}" if rule else "")))
         except Unresolved as exc:
@@ -711,6 +753,122 @@ def consumers() -> list:
                 if reads:
                     out.append(Consumer(path, qualname(node), node.lineno, reads))
     return out
+
+
+# Producenci wspólnego wyniku: liczą lub ściśle walidują historię, ale nie decydują o skutku.
+# Ich wywołanie nie jest delegacją (odczyt wyniku wykrywa `identity_reads` u wywołującego).
+PRODUCERS = frozenset({("cardflow/state.py", "fold"), ("cardflow/journal.py", "Journal.read_complete"),
+                       ("cardflow/journal.py", "_validate_process_identity")})
+
+
+@dataclass(frozen=True)
+class Delegation:
+    path: str
+    function: str
+    line: int
+    calls: frozenset    # (ścieżka, funkcja) wywołanych konsumentów/delegacji
+
+
+def _functions():
+    out = {}
+    for path in modules():
+        for node in ast.walk(module(path)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out[(path, qualname(node))] = node
+    return out
+
+
+def _enclosing_class(node):
+    current = getattr(node, "_parent", None)
+    while current is not None and not isinstance(current, ast.ClassDef):
+        current = getattr(current, "_parent", None)
+    return current
+
+
+def _class_of(path, function, receiver):
+    """Nazwa klasy, gdy odbiorca to `Klasa(...)` albo zmienna lokalna przypisana z `Klasa(...)`."""
+    def called_class(node):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            return name if name[:1].isupper() else ""
+        return ""
+    if isinstance(receiver, ast.Call):
+        return called_class(receiver)
+    if isinstance(receiver, ast.Name):
+        for child in _function_body_nodes(function):
+            if isinstance(child, ast.Assign) and any(isinstance(t, ast.Name) and t.id == receiver.id
+                                                     for t in child.targets):
+                name = called_class(child.value)
+                if name:
+                    return name
+    return ""
+
+
+def call_targets(path, function, by_name) -> set:
+    """Rozwiązane cele wywołań funkcji: nazwy modułu/importów, self/cls, alias modułu,
+    `Klasa(...).metoda`, a dla pozostałych odbiorców — nazwa jednoznaczna w pakiecie.
+    Wywołania niejednoznacznych metod (np. `stop`) nie są rozwiązywane; skutek w wywoływanej
+    funkcji ma wtedy własną bezpośrednią kontrolę (katalog skutków, EFFECT_SCOPE)."""
+    targets = set()
+    for call in _function_body_nodes(function):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if isinstance(func, ast.Name):
+            target = imports(path).get(func.id)
+            if target and target[1]:
+                targets |= {k for k in by_name.get(target[1], []) if k[0] == target[0]}
+            else:
+                targets |= {k for k in by_name.get(func.id, []) if k[0] == path and "." not in k[1]}
+            continue
+        if not isinstance(func, ast.Attribute):
+            continue
+        receiver, candidates = func.value, by_name.get(func.attr, [])
+        if isinstance(receiver, ast.Name) and receiver.id in ("self", "cls"):
+            owner = _enclosing_class(call)
+            if owner is not None:
+                targets |= {k for k in candidates if k[0] == path and k[1] == f"{owner.name}.{func.attr}"}
+            continue
+        if isinstance(receiver, ast.Name) and receiver.id in imports(path) and imports(path)[receiver.id][1] is None:
+            targets |= {k for k in candidates if k[0] == imports(path)[receiver.id][0]}
+            continue
+        owner = _class_of(path, function, receiver)
+        if owner:
+            targets |= {k for k in candidates if k[1] == f"{owner}.{func.attr}"}
+        elif len(candidates) == 1:
+            targets |= set(candidates)
+        else:
+            # Wskazówka z nazwy odbiorcy: `self.engine.x` → FlowEngine.x, `builder.reset` → Builder.reset.
+            hint = ast.unparse(receiver).split(".")[-1].strip("_").lower()
+            if len(hint) >= 4:
+                targets |= {k for k in candidates if "." in k[1] and hint in k[1].split(".")[-2].lower()}
+    return targets
+
+
+def delegations() -> list:
+    """Funkcje, które (pośrednio) wywołują konsumenta tożsamości: builder/require_idle, CLI/D-Bus,
+    bramka diagnostyki. Domknięcie grafu wywołań od konsumentów z `consumers()` bez producentów."""
+    functions = _functions()
+    by_name = {}
+    for key, node in functions.items():
+        by_name.setdefault(node.name, []).append(key)
+    reached = {(c.path, c.function) for c in consumers()} - PRODUCERS
+    targets = {key: call_targets(key[0], node, by_name) for key, node in functions.items()
+               if key[0] != "cardflow/processidentity.py"}
+    found = {}
+    changed = True
+    while changed:
+        changed = False
+        for key, called in targets.items():
+            if key in reached:
+                continue
+            hit = called & reached
+            if hit:
+                reached.add(key)
+                found[key] = frozenset(hit)
+                changed = True
+    return [Delegation(path, name, functions[(path, name)].lineno, calls) for (path, name), calls in sorted(found.items())]
 
 
 def effects() -> list:

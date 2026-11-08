@@ -75,12 +75,65 @@ class GeneratedModelHistories(unittest.TestCase):
         for kind, required in gen.PREDECESSORS.items():
             for name in required:
                 self.assertEqual({v for v, _ in seen[(kind, name)]}, {"removed", "moved", "foreign"})
+            # Poprzednik z innego projektu, zlecenia i próby (M2 review 1).
+            self.assertEqual(seen[(kind, "domain")], set(itertools.product(
+                ("foreign-project", "new-order", "new-attempt"), gen.TICKETS)))
         # Rozróżnienie legalnych i wadliwych mutacji: obie klasy są niepuste dla każdego zdarzenia.
         outcomes = collections.defaultdict(set)
         for case in gen.cases():
             outcomes[case.kind].add(case.expected)
         for kind in gen.model_kinds():
             self.assertEqual(outcomes[kind], {gen.LEGAL, gen.BAD}, kind)
+
+    def test_generator_accounts_for_every_box_event_field_and_variant(self):
+        """M1 review 1: BOX_EVENTS (koperta i ślad kroku) mają pełną macierz mutacji."""
+        seen = collections.defaultdict(set)
+        outcomes = collections.defaultdict(set)
+        for case in gen.box_cases():
+            seen[(case.kind, case.field)].add((case.variant, case.ticket))
+            outcomes[case.kind].add(case.expected)
+        for kind in gen.pi.BOX_EVENTS:
+            for field in gen.box_fields(kind):
+                with self.subTest(kind=kind, field=field):
+                    self.assertEqual(seen[(f"box:{kind}", field)], set(itertools.product(gen.VARIANTS, gen.TICKETS)))
+            self.assertEqual(outcomes[f"box:{kind}"], {gen.LEGAL, gen.BAD}, kind)
+
+    def test_every_box_field_mutation_follows_its_role(self):
+        for case in gen.box_cases():
+            with self.subTest(kind=case.kind, field=case.field, variant=case.variant, ticket=case.ticket,
+                              group=case.group):
+                errors = [gen.pi.box_event_error(e, "proj") for e in case.box]
+                if case.expected == gen.LEGAL:
+                    self.assertEqual(errors, [""] * len(case.box))
+                else:
+                    self.assertTrue(any(errors))
+
+    def test_reviewer_noncanonical_box_trace_is_rejected(self):
+        """Sonda M1: `box=" proj"`, `step=" demo-old"` nie są przycinane ani pomijane."""
+        for event in ({**gen.box_event("box.use", "demo-old"), "box": " proj"},
+                      gen.box_event("box.use", " demo-old"),
+                      {**gen.box_event("box.use", " demo-old"), "box": " proj"},
+                      {**gen.box_event("box.use", "demo-old"), "box": "other-box"},
+                      {**gen.box_event("box.use", "demo-old"), "box": "proj-k-x"}):
+            with self.subTest(event=event):
+                self.assertTrue(gen.pi.box_event_error(event, "proj"))
+        for box in ("proj", "proj-k-38"):
+            self.assertEqual(gen.pi.box_event_error({**gen.box_event("box.use", "demo-old"), "box": box}, "proj"), "")
+
+    def test_reviewer_foreign_project_and_attempt_predecessors_are_not_inherited(self):
+        """Sonda M2: outside.finished po zmianie projektu albo próby bez nowego startu outside."""
+        before, finish = gen.base("outside.finished", "PT-999")
+        start = next(e for e in before if e["type"] == "step.started")
+        for history in ([*before, {"type": "card.started", "project": gen.OTHER_PROJECT}, finish],
+                        [*before, {**start, "attempt": 2}, finish],
+                        [*[{**e, "attempt": 1} if e is start else e for e in before], {**start, "attempt": 2},
+                         finish]):
+            with self.subTest(history=history):
+                self.assertEqual(process_identities(history)[gen.STEP].state, "unknown")
+        # Nowa próba z własnym startem outside jest legalna; stara generacja nie psuje nowej.
+        outside = next(e for e in before if e["type"] == "outside.started")
+        history = [*before, {**start, "attempt": 2}, outside, finish]
+        self.assertEqual(process_identities(history)[gen.STEP].state, "ok")
 
     def test_legal_omissions_from_round_8_and_inherited_units_stay_ok(self):
         for name, history in gen.legal_histories():
@@ -306,72 +359,145 @@ def _builder(f, incus, idle_hours=0):
     return builder, settings
 
 
-def deny_everywhere(test, f, content, *, full=True):
-    """Ujemna kontrola wszystkich barier; brak skutku potwierdzają liczniki i bajty dzienników."""
+# Bariery katalogu (`test_cardflow_identity_catalog.BARRIERS`) wykonywane przez macierz ujemną.
+# Katalog sprawdza, że to dokładnie wszystkie bariery z kodu.
+MATRIX_BARRIERS = ("outside", "process-check", "console", "advance-resume", "model", "inventory", "recovery",
+                   "poll-stop", "step-launch", "diagnostic", "box-lifecycle", "packs", "idle-tick", "box-network")
+# Dziennik pudełka czytają wyłącznie te bariery (public_processes/active_steps); pozostałe czytają
+# tylko dziennik karty. Nieosiągalność sprawdza `test_cardflow_identity_catalog` (AST konsumentów).
+BOX_JOURNAL_BARRIERS = ("inventory", "diagnostic", "box-lifecycle", "idle-tick")
+
+# Zakończony krok pudełka i osierocona rezerwacja portów: przy znanej historii recover_network
+# zwolniłby je (kontrola dodatnia BoxNetworkRecovery), więc brak zwolnień dowodzi odmowy.
+COMPANION = ({"type": "step.started", "step": "box-step", "ticket": "PT-999", "kind": "ticket", "runner": "box",
+              "box": "proj", "boxSlug": "proj", "unit": "box.scope"},
+             {"type": "step.finished", "step": "box-step", "ticket": "PT-999", "result": "done"},
+             {"type": "box.ports", "step": "never-started", "box": "proj", "boxSlug": "proj",
+              "owner": "K-38/never-started"})
+
+
+def _deny_box(test, f, ran):
+    """Bariery czytające dziennik pudełka (public_processes/active_steps)."""
+    test.assertFalse(trialhold.public_inventory(f.engine))
+    test.assertFalse(trialhold.inventory(f.engine, "K-38", fold([])))
+    ran.add("inventory")
+    gate_, procedure = f.procedure()
+    with test.assertRaises(gate.TrialDenied):
+        gate_.start_registered("new", consent=True, bootstrap=True,
+                               inventory=lambda: trialhold.inventory(f.engine, "K-38", fold([])))
+    test.assertFalse(procedure.start.called)
+    ran.add("diagnostic")
+    incus = _incus()
+    builder, _ = _builder(f, incus)
+    with mock.patch("tide_daemon.box.admission.read_memory", return_value=(64 * 1024 ** 3, 60 * 1024 ** 3)):
+        for operation in (lambda: fixtures.lifecycle.Lifecycle(builder).start("proj"),
+                          lambda: builder.reset("proj"), lambda: fixtures.lifecycle.Lifecycle(builder).stop("proj")):
+            with test.assertRaises(fixtures.BoxBusy):
+                operation()
+    incus.list.return_value = [{"name": "proj"}]   # destroy rozważa wyłącznie istniejące instancje
+    with test.assertRaises(fixtures.BoxBusy):
+        builder.destroy("proj")
+    incus.instance.return_value = {"status": "Running", "config": {
+        fixtures.bs.COPY_OF_KEY: "proj", fixtures.bs.CARD_KEY: "K-38"}}
+    fixtures.lifecycle.Lifecycle(builder).close_card("proj", "K-38")
+    for name in ("stop", "start", "delete", "snapshot_restore"):
+        test.assertFalse(getattr(incus, name).called, name)
+    ran.add("box-lifecycle")
+    f.assert_lifecycle_preserved()
+    ran.add("idle-tick")
+
+
+def deny_everywhere(test, f, content):
+    """Ujemna kontrola wszystkich barier; brak skutku potwierdzają liczniki i bajty dzienników.
+
+    Zwraca zbiór wykonanych barier (raport pokrycia: historia × bariera × restart)."""
+    ran = set()
     stale = dict(step=gen.STEP, ticket="PT-999", kind="ticket")
     with f.outside_environment() as spawn:
-        for call in (
-                lambda: f.engine._start_outside("K-38", {"step": "K-38-PT-999-9", "ticket": "PT-999"}, "echo x"),
-                lambda: f.engine._outside_ready("K-38", stale, {"command": "echo x"}, {"choice": "run"}),
-                lambda: f.engine._process_check("K-38", stale),
-                lambda: f.engine.enter("K-38", gen.STEP)):
+        for barrier, call in (
+                ("outside", lambda: f.engine._start_outside("K-38", {"step": "K-38-PT-999-9", "ticket": "PT-999"},
+                                                            "echo x")),
+                ("outside", lambda: f.engine._outside_ready("K-38", stale, {"command": "echo x"}, {"choice": "run"})),
+                ("process-check", lambda: f.engine._process_check("K-38", stale)),
+                ("console", lambda: f.engine.enter("K-38", gen.STEP))):
             with test.assertRaises(FlowError):
                 call()
+            ran.add(barrier)
         f.engine._advance("K-38", fold([]))
+        ran.add("advance-resume")
         test.assertFalse(spawn.called, "niepełna historia dotarła do Popen")
     # Stan wywołującego jest celowo pusty: inwentaryzacja sama ściśle czyta pełną historię.
     test.assertFalse(trialhold.inventory(f.engine, "K-38", fold([])))
+    ran.add("inventory")
     with test.assertRaises(ValueError):
         trialhold.read_process_history(f.journal, "K-38")
-    if full:
-        with f.outside_environment() as spawn:
-            f.engine.tick()
-            f.engine._recover_started_steps("K-38", fold([]))
-            f.engine._recover_console_openings("K-38", fold([]))
-            test.assertFalse(f.engine._stop("K-38", stale, "stopped", ""))
-            test.assertFalse(f.engine._stop_for_enter("K-38", stale))
-            test.assertFalse(f.engine._stop_interactive_transfer("K-38", stale))
-            f.engine._poll("K-38", stale)
-            f.engine._guard("K-38", stale)
-            for call in (lambda: f.engine._resume_step("K-38", fold([]), stale, {"choice": "retry"}),
-                         lambda: f.engine._launch(SimpleNamespace(id="K-38"), None, None, "PT-999", None, None,
-                                                  "new-step", []),
-                         lambda: f.engine._launch_full_planning(SimpleNamespace(id="K-38"), None, None, None,
-                                                                "new-step", [], [], "")):
-                with test.assertRaises(FlowError):
-                    call()
-            test.assertFalse(spawn.called)
-        gate_, procedure = f.procedure()
-        f.engine.trial_gate = gate_
-        with test.assertRaises(FlowError):
-            f.engine.register_trial_diagnostic()
-        with test.assertRaises(gate.TrialDenied):
-            gate_.start_registered("new", consent=True, bootstrap=True,
-                                   inventory=lambda: trialhold.inventory(f.engine, "K-38", fold([])))
-        test.assertFalse(procedure.start.called)
-        incus = _incus()
-        incus.device_show.return_value = ["tide-pack-k-38-logs"]
-        builder, _ = _builder(f, incus)
-        with mock.patch("tide_daemon.box.admission.read_memory", return_value=(64 * 1024 ** 3, 60 * 1024 ** 3)):
-            for operation in (lambda: fixtures.lifecycle.Lifecycle(builder).start("proj"),
-                              lambda: builder.reset("proj"), lambda: fixtures.lifecycle.Lifecycle(builder).stop("proj")):
-                with test.assertRaises(fixtures.BoxBusy):
-                    operation()
-        with test.assertRaises(packs.PackError):
-            packs.cleanup("proj", "K-38", incus, f.journal)
-        incus.instance.return_value = {"status": "Running", "config": {
-            fixtures.bs.COPY_OF_KEY: "proj", fixtures.bs.CARD_KEY: "K-38"}}
-        fixtures.lifecycle.Lifecycle(builder).close_card("proj", "K-38")
-        for name in ("stop", "start", "delete", "device_remove", "snapshot_restore"):
-            test.assertFalse(getattr(incus, name).called, name)
+    ran.add("model")
+    with f.outside_environment() as spawn:
+        f.engine.tick()
+        f.engine._recover_started_steps("K-38", fold([]))
+        ran.add("recovery")
+        f.engine._recover_console_openings("K-38", fold([]))
+        test.assertFalse(f.engine._stop_for_enter("K-38", stale))
+        test.assertFalse(f.engine._stop_interactive_transfer("K-38", stale))
+        test.assertFalse(f.engine._stop("K-38", stale, "stopped", ""))
+        f.engine._poll("K-38", stale)
+        f.engine._guard("K-38", stale)
+        ran.add("poll-stop")
+        for barrier, call in (
+                ("advance-resume", lambda: f.engine._resume_step("K-38", fold([]), stale, {"choice": "retry"})),
+                ("step-launch", lambda: f.engine._launch(SimpleNamespace(id="K-38"), None, None, "PT-999", None,
+                                                         None, "new-step", [])),
+                ("step-launch", lambda: f.engine._launch_full_planning(SimpleNamespace(id="K-38"), None, None, None,
+                                                                       "new-step", [], [], ""))):
+            with test.assertRaises(FlowError):
+                call()
+            ran.add(barrier)
+        test.assertFalse(spawn.called)
+    gate_, procedure = f.procedure()
+    f.engine.trial_gate = gate_
+    with test.assertRaises(FlowError):
+        f.engine.register_trial_diagnostic()
+    with test.assertRaises(gate.TrialDenied):
+        gate_.start_registered("new", consent=True, bootstrap=True,
+                               inventory=lambda: trialhold.inventory(f.engine, "K-38", fold([])))
+    test.assertFalse(procedure.start.called)
+    ran.add("diagnostic")
+    incus = _incus()
+    incus.device_show.return_value = ["tide-pack-k-38-logs"]
+    builder, _ = _builder(f, incus)
+    with mock.patch("tide_daemon.box.admission.read_memory", return_value=(64 * 1024 ** 3, 60 * 1024 ** 3)):
+        for operation in (lambda: fixtures.lifecycle.Lifecycle(builder).start("proj"),
+                          lambda: builder.reset("proj"), lambda: fixtures.lifecycle.Lifecycle(builder).stop("proj")):
+            with test.assertRaises(fixtures.BoxBusy):
+                operation()
+    incus.instance.return_value = {"status": "Running", "config": {
+        fixtures.bs.COPY_OF_KEY: "proj", fixtures.bs.CARD_KEY: "K-38"}}
+    fixtures.lifecycle.Lifecycle(builder).close_card("proj", "K-38")
+    ran.add("box-lifecycle")
+    with test.assertRaises(packs.PackError):
+        packs.cleanup("proj", "K-38", incus, f.journal)
+    ran.add("packs")
+    for name in ("stop", "start", "delete", "device_remove", "snapshot_restore"):
+        test.assertFalse(getattr(incus, name).called, name)
+    f.engine.box_proxy = mock.Mock(listen="", port=0)
+    with mock.patch.object(boxstep, "release_ports") as ports, \
+            mock.patch.object(boxstep, "_release_resources") as resources, \
+            mock.patch("tide_daemon.box.refguard.finish", return_value={}) as guard:
+        boxstep.recover_network(f.engine)
+    for effect in (ports, resources, guard):
+        effect.assert_not_called()
+    ran.add("box-network")
     f.assert_lifecycle_preserved()
+    ran.add("idle-tick")
     for path in (Path(f.journal.path("K-38")), Path(f.journal.mirror_path("K-38"))):
         test.assertEqual(path.read_bytes(), content)
+    return ran
 
 
 class BarrierMatrixNegative(Harness):
     def run_cases(self, ticket):
         seen = set()
+        executed = collections.Counter()
         for case in gen.cases():
             if case.expected != gen.BAD or case.ticket != ticket:
                 continue
@@ -379,21 +505,106 @@ class BarrierMatrixNegative(Harness):
             if key in seen:
                 continue
             seen.add(key)
-            content = self.write(list(case.history))
+            content = self.write([*case.history, *COMPANION])
             for restarted in (False, True):
                 if restarted:
                     self.f.restart()
                 with self.subTest(kind=case.kind, field=case.field, variant=case.variant, group=case.group,
                                   restarted=restarted):
-                    # Pełny zestaw barier dla historii wadliwych pól i poprzedników; poprawki
-                    # po błędzie (repair) przechodzą przez bariery procesu, inwentaryzacji i cyklu życia.
-                    deny_everywhere(self, self.f, content, full=case.group != "repair" and not restarted)
+                    # Każda wadliwa historia (pola, poprzedniki, domeny, poprawki po błędzie)
+                    # przechodzi przez wszystkie bariery przed i po restarcie.
+                    ran = deny_everywhere(self, self.f, content)
+                    self.assertEqual(ran, set(MATRIX_BARRIERS))
+                    executed.update((case.group, restarted, barrier) for barrier in ran)
+        # Raport wykonanych kombinacji: każda grupa × restart × bariera ma tyle przebiegów, ile historii.
+        groups = collections.Counter(c.group for c in gen.cases() if c.expected == gen.BAD and c.ticket == ticket)
+        for group in groups:
+            for restarted, barrier in itertools.product((False, True), MATRIX_BARRIERS):
+                self.assertGreater(executed[(group, restarted, barrier)], 0, (group, restarted, barrier))
+        return executed
 
     def test_every_generated_bad_history_of_ordinary_ticket_denies_all_barriers(self):
         self.run_cases("PT-999")
 
     def test_every_generated_bad_history_of_protected_ticket_denies_all_barriers(self):
         self.run_cases("PT-176")
+
+
+class BoxJournalMatrix(Harness):
+    """M1 review 1: wadliwy dziennik pudełka odmawia w barierach, które go czytają; poprawny przepuszcza."""
+
+    def write_box(self, journal):
+        path = self.f.projects / "proj/box/journal.jsonl"
+        content = "".join(json.dumps(e) + "\n" for e in journal).encode()
+        path.write_bytes(content)
+        return path, content
+
+    def test_every_generated_bad_box_journal_denies_box_barriers_across_restart(self):
+        card = self.write([])
+        for case in gen.box_cases():
+            if case.expected != gen.BAD:
+                continue
+            path, content = self.write_box(case.box)
+            for restarted in (False, True):
+                if restarted:
+                    self.f.restart()
+                with self.subTest(kind=case.kind, field=case.field, variant=case.variant, ticket=case.ticket,
+                                  group=case.group, restarted=restarted):
+                    self.assertEqual(trialhold.public_processes(str(self.f.board)),
+                                     [{"state": "unknown", "path": str(path)}])
+                    ran = set()
+                    _deny_box(self, self.f, ran)
+                    self.assertEqual(ran, set(BOX_JOURNAL_BARRIERS))
+                    self.assertEqual(path.read_bytes(), content)
+                    # Dziennik karty dostaje wyłącznie zapis inwentaryzacji publicznych prób (metadane).
+                    for journal in (Path(self.f.journal.path("K-38")), Path(self.f.journal.mirror_path("K-38"))):
+                        data = journal.read_bytes()
+                        self.assertTrue(data.startswith(card))
+                        added = [json.loads(line)["type"] for line in data[len(card):].splitlines()]
+                        self.assertLessEqual(set(added), {"k38.public-inventory"})
+
+    def test_reviewer_noncanonical_demo_trace_denies_stop_and_procedure_across_restart(self):
+        """Sonda M1: `box=" proj"`, `step=" demo-old"` — wcześniej incus.stop=1 i procedure.start=1."""
+        self.write([])
+        event = {**gen.box_event("box.use", " demo-old"), "box": " proj"}
+        self.write_box([gen.box_event("box.ready"), event])
+        for restarted in (False, True):
+            if restarted:
+                self.f.restart()
+            with self.subTest(restarted=restarted):
+                self.assertNotEqual(trialhold.public_processes(str(self.f.board)), [])
+                incus = _running_until_stopped()
+                builder, _ = _builder(self.f, incus)
+                with self.assertRaises(fixtures.BoxBusy):
+                    fixtures.lifecycle.Lifecycle(builder).stop("proj")
+                self.assertEqual(incus.stop.call_count, 0)
+                trial_gate, procedure = self.f.procedure()
+                with self.assertRaises(gate.TrialDenied):
+                    trial_gate.start_registered("new", consent=True, inventory=self.f.inventory)
+                self.assertEqual(procedure.start.call_count, 0)
+
+    def test_valid_box_journals_allow_stop_and_procedure_across_restart(self):
+        """Kontrola dodatnia: legalne mutacje (inny krok, inny znacznik, kopia karty) przepuszczają skutki."""
+        self.write([])
+        legal = [c for c in gen.box_cases() if c.expected == gen.LEGAL and c.ticket == "PT-999"]
+        self.assertTrue(legal)
+        for case in legal:
+            # Inny krok w legalnej mutacji naprawdę zajmuje pudełko: zwalniamy oba, aby skutek
+            # zależał wyłącznie od tożsamości dziennika, nie od zwykłego zajęcia (osobna kontrola hostowa).
+            self.write_box([*case.box, *(gen.box_event("box.release", s) for s in (gen.OTHER_STEP, gen.BOX_STEPS["PT-999"]))])
+            for restarted in (False, True):
+                if restarted:
+                    self.f.restart()
+                with self.subTest(kind=case.kind, field=case.field, variant=case.variant, restarted=restarted):
+                    self.assertEqual(trialhold.public_processes(str(self.f.board)), [])
+                    incus = _running_until_stopped()
+                    builder, _ = _builder(self.f, incus)
+                    with mock.patch("tide_daemon.box.admission.snapshot"):
+                        fixtures.lifecycle.Lifecycle(builder).stop("proj")
+                    incus.stop.assert_called_once_with("proj")
+                    trial_gate, procedure = self.f.procedure()
+                    trial_gate.start_registered("new", consent=True, inventory=self.f.inventory)
+                    procedure.start.assert_called_once()
 
 
 class BoxNetworkRecovery(Harness):

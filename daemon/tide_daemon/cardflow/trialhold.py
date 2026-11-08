@@ -112,11 +112,12 @@ def public_inventory(engine):
     return not items
 
 
-def _validate_box_event(event):
+def _validate_box_event(event, slug):
     """Tożsamość zdarzenia musi być znana przed pominięciem niechronionej próby.
 
-    Reguły pól pochodzą ze wspólnego modelu (`processidentity.BOX_EVENTS`)."""
-    error = box_event_error(event)
+    Reguły pól pochodzą ze wspólnego modelu (`processidentity.BOX_EVENTS`): kanoniczne pola
+    i instancja pudełka projektu `slug` dziennika."""
+    error = box_event_error(event, slug)
     if error:
         raise ValueError(error)
 
@@ -171,7 +172,7 @@ def public_processes(board_root):
             active = {}
             for line in content.splitlines():
                 event = json.loads(line)
-                _validate_box_event(event)
+                _validate_box_event(event, slug)
                 if event["type"] not in ("box.use", "box.release"):
                     continue
                 name = event["step"]

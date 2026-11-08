@@ -51,31 +51,31 @@ def mismatches(catalog, model):
         seen_events.add(("card", write.kind))
         fields = spec.fields
         label = write.kind
+        allows_dynamic = spec.role == "metadata" and spec.dynamic
+        explicit = cat.explicit(write.fields)
         if spec.role == "action":
             if write.discriminator == "<replay>":
                 # Replay przepisuje akcję istniejącego zamiaru; dozwolony tylko bez nowych pól procesu.
-                if write.fields != cat.ANY and write.fields - {"action", "key", "ok", "error", "payload",
-                                                               "youtrack", "permanent", "retryWriteSafe"}:
-                    problems.append(f"{where}: replay z polami {sorted(write.fields)}")
+                if explicit - {"action", "key", "ok", "error", "payload", "youtrack", "permanent", "retryWriteSafe"}:
+                    problems.append(f"{where}: replay z polami {sorted(explicit)}")
                 continue
             action = actions.get(write.discriminator)
             if action is None:
                 problems.append(f"{where}: dyskryminator {write.kind}.action={write.discriminator!r} bez klasyfikacji")
                 continue
             seen_actions.add(write.discriminator)
-            if action.role == "metadata":
-                continue   # ładunek akcji metadanych nie jest czytany (osobny test)
             fields = action.intent if write.kind == "intent" else action.result
             label = f"{write.kind}:{write.discriminator}"
-        if write.fields == cat.ANY:
-            if fields is not None:
-                problems.append(f"{where}: dynamiczny ładunek {label} dla zdarzenia z rolą {spec.role}")
-            continue
+            allows_dynamic = action.role == "metadata" and write.kind in action.dynamic
+        # Zakres dynamiczny nie zwalnia z klasyfikacji pól jawnych (M4 review 1).
+        if cat.dynamic(write.fields) and not allows_dynamic:
+            problems.append(f"{where}: dynamiczny ładunek {label} bez jawnej zgody modelu (rola {spec.role})")
         if fields is None:
+            problems.append(f"{where}: zdarzenie {label} bez tabeli pól")
             continue
-        for name in sorted(set(write.fields) - set(fields) - set(pi.CARD_ENVELOPE)):
+        for name in sorted(explicit - set(fields) - set(pi.CARD_ENVELOPE)):
             problems.append(f"{where}: pole {label}.{name} bez klasyfikacji")
-        seen_fields.update(("card", label, name) for name in write.fields)
+        seen_fields.update(("card", label, name) for name in explicit)
     # Odwrotnie: klasyfikacja „writer” musi mieć zapis w kodzie, inaczej jest historyczna.
     for kind, spec in events.items():
         if spec.source == "writer" and ("card", kind) not in seen_events:
@@ -106,8 +106,9 @@ def mismatches(catalog, model):
 def _field_tables(kind, spec, actions):
     if spec.role == "action":
         for name, action in actions.items():
-            if action.role == "step-start":
-                yield f"{kind}:{name}", (action.intent if kind == "intent" else action.result)
+            fields = action.intent if kind == "intent" else action.result
+            if fields is not None:
+                yield f"{kind}:{name}", fields
     elif spec.fields is not None:
         yield kind, spec.fields
 
@@ -192,12 +193,38 @@ class WriterCatalog(unittest.TestCase):
                                 frozenset({"action", "key"})),
                       cat.Write("card", "cardflow/engine.py", "X.new", 1, "outside.finished", "",
                                 frozenset({"step", "pid"})),
-                      cat.Write("card", "cardflow/engine.py", "X.new", 1, "step.decision", "", cat.ANY),
+                      cat.Write("card", "cardflow/engine.py", "X.new", 1, "step.decision", "", cat.DYN),
+                      cat.Write("card", "cardflow/engine.py", "X.new", 1, "refs.guard", "",
+                                frozenset({cat.ANY, "step", "pid"})),
+                      cat.Write("card", "cardflow/engine.py", "X.new", 1, "result", "merge",
+                                frozenset({cat.ANY, "action", "key", "pid"})),
+                      cat.Write("card", "cardflow/engine.py", "X.new", 1, "intent", "cleanup",
+                                frozenset({cat.ANY, "action", "key"})),
                       cat.Write("box", "box/state.py", "X.new", 1, "box.use", "", frozenset({"step", "pid"}))):
             with self.subTest(write=extra):
                 catalog = cat.Catalog(writes=[*self.catalog.writes, extra])
                 self.assertTrue(mismatches(catalog, model_view()))
         self.assertTrue(base)
+
+    def test_new_explicit_field_beside_dynamic_payload_fails_from_code(self):
+        """Sonda M4: `pid=123` obok `**base` w FlowEngine._guard_baseline musi trafić do katalogu
+        i dać porażkę porównania bez zmiany modelu, generatora ani raportu."""
+        tree = ast.parse((cat.PACKAGE / "cardflow/engine.py").read_text(encoding="utf-8"))
+        owner = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_guard_baseline")
+        calls = [n for n in ast.walk(owner) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "append" and ast.unparse(n.func.value).endswith("journal")
+                 and any(k.arg is None and ast.unparse(k.value) == "base" for k in n.keywords)]
+        self.assertEqual(len(calls), 1)
+        calls[0].keywords.append(ast.keyword(arg="pid", value=ast.Constant(123)))
+        with cat.overridden({"cardflow/engine.py": tree}):
+            catalog = cat.writes()
+        self.assertEqual(catalog.unresolved, [])
+        probed = [w for w in catalog.writes if w.function == "FlowEngine._guard_baseline"]
+        self.assertTrue(probed and all("pid" in w.fields and cat.dynamic(w.fields) for w in probed))
+        problems = mismatches(catalog, model_view())
+        self.assertTrue(any(".pid bez klasyfikacji" in p for p in problems), problems)
+        # Bez sondy katalog jest zgodny (kontrola, że porażka pochodzi z nowego pola).
+        self.assertEqual(mismatches(cat.writes(), model_view()), [])
 
     def test_box_model_matches_box_journal_vocabulary(self):
         self.assertEqual(set(pi.BOX_EVENTS), set(bs.EVENTS))
@@ -239,15 +266,21 @@ class DynamicScopes(unittest.TestCase):
     def test_metadata_payload_scopes_belong_to_unread_events(self):
         catalog = cat.writes()
         for write in catalog.writes:
-            if write.fields != cat.ANY:
+            if not cat.dynamic(write.fields):
                 continue
             with self.subTest(write=write):
                 spec = pi.EVENTS[write.kind]
                 if spec.role == "action":
+                    action = pi.ACTIONS.get(write.discriminator)
                     self.assertTrue(write.discriminator == "<replay>"
-                                    or pi.ACTIONS[write.discriminator].role == "metadata")
+                                    or (action.role == "metadata" and write.kind in action.dynamic))
                 else:
-                    self.assertEqual((spec.role, spec.fields), ("metadata", None))
+                    self.assertEqual((spec.role, spec.dynamic), ("metadata", True))
+        # Zgoda modelu na zakres dynamiczny dotyczy wyłącznie metadanych (reduktor ich nie czyta).
+        for kind, spec in pi.EVENTS.items():
+            self.assertTrue(not spec.dynamic or spec.role == "metadata", kind)
+        for name, action in pi.ACTIONS.items():
+            self.assertTrue(not action.dynamic or action.role == "metadata", name)
 
     def test_reducer_ignores_any_payload_of_metadata_events_and_actions(self):
         payload = {"step": "legacy", "key": "legacy", "ticket": "PT-176", "unit": "x", "branch": "ticket/pt-176",
@@ -454,6 +487,119 @@ OUT_OF_SCOPE = {
 }
 
 
+# Delegacje (M3 review 1): funkcje, które wywołują konsumenta lub inną delegację; wyznacza je
+# graf wywołań z AST (`cat.delegations`), nie ta tabela. Każda ma przypisaną barierę, przez
+# którą przechodzi (punkt odmowy i skutek w BARRIERS); test sprawdza, że bariera leży na ścieżce.
+DELEGATIONS = {
+    ("app.py", "main"): "step-launch",
+    ("board_monitor.py", "BoardMonitor.enter_step"): "console",
+    ("board_monitor.py", "BoardMonitor.move_card"): "advance-resume",
+    ("board_monitor.py", "BoardMonitor.report_step_fault"): "console",
+    ("board_monitor.py", "BoardMonitor.resolve_card_caretaker"): "advance-resume",
+    ("board_monitor.py", "BoardMonitor.resolve_card_step"): "console",
+    ("board_monitor.py", "BoardMonitor.set_card_paused"): "advance-resume",
+    ("board_monitor.py", "BoardMonitor.start_card"): "step-launch",
+    ("board_monitor.py", "BoardMonitor.stop_box"): "box-lifecycle",
+    ("box/admission.py", "_tick"): "box-lifecycle",
+    ("box/builder.py", "Builder._attach_home"): "box-lifecycle",
+    ("box/builder.py", "Builder._build"): "box-lifecycle",
+    ("box/builder.py", "Builder._execute_build"): "box-lifecycle",
+    ("box/builder.py", "Builder._reset_stopped"): "box-lifecycle",
+    ("box/builder.py", "Builder.build"): "box-lifecycle",
+    ("box/builder.py", "Builder.copy_for_card"): "box-lifecycle",
+    ("box/builder.py", "Builder.destroy"): "box-lifecycle",
+    ("box/builder.py", "Builder.ensure_home"): "box-lifecycle",
+    ("box/builder.py", "Builder.require_idle"): "box-lifecycle",
+    ("box/builder.py", "Builder.reset"): "box-lifecycle",
+    ("box/command.py", "_ready"): "box-lifecycle",
+    ("box/command.py", "run_command"): "box-lifecycle",
+    ("box/home.py", "_attach"): "box-lifecycle",
+    ("box/home.py", "attach"): "box-lifecycle",
+    ("box/lifecycle.py", "Lifecycle.idle"): "box-lifecycle",
+    ("box/lifecycle.py", "Lifecycle.start"): "box-lifecycle",
+    ("box/lifecycle.py", "Lifecycle.stop"): "box-lifecycle",
+    ("cardflow/boxcontrol.py", "stop"): "box-lifecycle",
+    ("cardflow/boxstep.py", "_ready"): "box-lifecycle",
+    ("cardflow/boxstep.py", "_reserve_start"): "box-lifecycle",
+    ("cardflow/boxstep.py", "before_start"): "box-lifecycle",
+    ("cardflow/boxstep.py", "place"): "box-lifecycle",
+    ("cardflow/boxstep.py", "prepare_runner"): "box-lifecycle",
+    ("cardflow/caretaker.py", "_answer"): "console",
+    ("cardflow/caretaker.py", "_change_executor"): "console",
+    ("cardflow/caretaker.py", "_resolve_action"): "console",
+    ("cardflow/caretaker.py", "_retry"): "console",
+    ("cardflow/caretaker.py", "_retry_stage"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine._advance_card"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine._advance_close"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._advance_limit"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine._advance_planning"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._box_place"): "box-lifecycle",
+    ("cardflow/engine.py", "FlowEngine._caretake"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._caretaker_launch"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._caretaker_resume"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine._cleanup"): "process-check",
+    ("cardflow/engine.py", "FlowEngine._finish"): "console",
+    ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._outside_ready"): "outside",
+    ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._planning_launch"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._planning_result"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._poll_interactive"): "poll-stop",
+    ("cardflow/engine.py", "FlowEngine._recover_transfer_requests"): "console",
+    ("cardflow/engine.py", "FlowEngine._repair_wip"): "process-check",
+    ("cardflow/engine.py", "FlowEngine._repair_wip_due"): "process-check",
+    ("cardflow/engine.py", "FlowEngine._retry_stage"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine._review"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
+    ("cardflow/engine.py", "FlowEngine.moved"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine.report_step_fault"): "console",
+    ("cardflow/engine.py", "FlowEngine.resolve_caretaker"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine.resolve_step"): "console",
+    ("cardflow/engine.py", "FlowEngine.set_paused"): "advance-resume",
+    ("cardflow/engine.py", "FlowEngine.start"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine.start_import"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine.start_planning"): "step-launch",
+    ("cardflow/engine.py", "FlowEngine.stop_box"): "box-lifecycle",
+    ("cardflow/engine.py", "_CaretakerPort.resolve_step"): "console",
+    ("cardflow/engine.py", "_CaretakerPort.retry"): "console",
+    ("cardflow/engine.py", "_CaretakerPort.retry_stage"): "advance-resume",
+    ("cardflow/envconsent.py", "_thread_launcher.work"): "box-lifecycle",
+    ("cardflow_monitor.py", "CardFlowMonitor.enter_step"): "console",
+    ("cardflow_monitor.py", "CardFlowMonitor.moved"): "advance-resume",
+    ("cardflow_monitor.py", "CardFlowMonitor.report_step_fault"): "console",
+    ("cardflow_monitor.py", "CardFlowMonitor.resolve_caretaker"): "advance-resume",
+    ("cardflow_monitor.py", "CardFlowMonitor.resolve_step"): "console",
+    ("cardflow_monitor.py", "CardFlowMonitor.set_paused"): "advance-resume",
+    ("cardflow_monitor.py", "CardFlowMonitor.start_card"): "step-launch",
+    ("cardflow_monitor.py", "CardFlowMonitor.stop_box"): "box-lifecycle",
+    ("dbus_service.py", "BoardAdaptor.EnterStep"): "console",
+    ("dbus_service.py", "BoardAdaptor.MoveCard"): "advance-resume",
+    ("dbus_service.py", "BoardAdaptor.ReportStepFault"): "console",
+    ("dbus_service.py", "BoardAdaptor.ResolveCardCaretaker"): "advance-resume",
+    ("dbus_service.py", "BoardAdaptor.ResolveCardStep"): "console",
+    ("dbus_service.py", "BoardAdaptor.SetCardPaused"): "advance-resume",
+    ("dbus_service.py", "BoardAdaptor.StartCard"): "step-launch",
+    ("dbus_service.py", "BoardAdaptor.StopBox"): "box-lifecycle",
+}
+
+
+def delegation_barriers(delegations):
+    """Bariery osiągalne z każdej delegacji przez wywołanych konsumentów (z AST)."""
+    owner = {entry: name for name, barrier in BARRIERS.items() for entry in barrier["consumers"]}
+    calls = {(d.path, d.function): d.calls for d in delegations}
+
+    def reach(key, seen):
+        if key in owner:
+            return {owner[key]}
+        out = set()
+        for call in calls.get(key, ()):
+            if call not in seen:
+                out |= reach(call, seen | {key})
+        return out
+    return {key: reach(key, frozenset()) for key in calls}
+
+
 def _function(path, qualname):
     for node in ast.walk(cat.module(path)):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and cat.qualname(node) == qualname:
@@ -524,6 +670,77 @@ class ConsumerCatalog(unittest.TestCase):
                         self.assertIsNotNone(function, (path, qualname))
                         self.assertTrue(_calls(function, guard_names), (path, qualname, guard_names))
 
+    def test_every_delegation_from_code_has_a_barrier_on_its_path(self):
+        """M3 review 1: delegacje (builder/require_idle, polecenia CLI, D-Bus, bramka diagnostyki)
+        wyznacza graf wywołań z kodu; każda ma barierę leżącą na jej ścieżce do konsumenta."""
+        delegations = cat.delegations()
+        found = {(d.path, d.function) for d in delegations}
+        self.assertEqual(found - set(DELEGATIONS), set(), "delegacja bez przypisanej bariery")
+        self.assertEqual(set(DELEGATIONS) - found, set(), "nieaktualny wpis delegacji")
+        reached = delegation_barriers(delegations)
+        for key, barrier in DELEGATIONS.items():
+            with self.subTest(delegation=key):
+                self.assertIn(barrier, BARRIERS)
+                self.assertIn(barrier, reached[key])
+
+    def probe_delegations(self, path, source, base=None):
+        """Katalog delegacji z dopisaną w pamięci funkcją (bez zmiany pliku)."""
+        text = (cat.PACKAGE / path).read_text(encoding="utf-8") if base is None else base
+        tree = ast.parse(text + "\n\n" + source)
+        with cat.overridden({path: tree}):
+            return cat.delegations(), {(c.path, c.function) for c in cat.consumers()}
+
+    def test_new_delegation_without_barrier_fails_completeness(self):
+        """Sonda M3: nowa funkcja `new_reset` (require_idle → reset) musi zostać wykryta jako
+        delegacja bez przypisanej kontroli — w istniejącym module i w nowym module pakietu."""
+        probes = [
+            ("box/builder.py", None, "def new_reset(builder, slug):\n"
+                                     "    builder.require_idle(slug)\n    builder.reset(slug)\n", "new_reset"),
+            ("box/new_probe.py", "", "def new_reset(builder, slug):\n"
+                                     "    builder.require_idle(slug)\n    builder.reset(slug)\n", "new_reset"),
+            ("box/new_probe.py", "from . import lifecycle\n",
+             "def stop_all(builder, slug):\n    lifecycle.Lifecycle(builder).stop(slug)\n", "stop_all"),
+            ("cardflow/new_probe.py", "", "def outside_cli(engine, card, step, command):\n"
+                                          "    return engine._start_outside(card, step, command)\n", "outside_cli"),
+            ("cardflow/new_probe.py", "", "class Bus:\n    def resolve(self, card, request):\n"
+                                          "        return self.engine.resolve_step(card, request)\n", "Bus.resolve"),
+            ("cardflow/new_probe.py", "from .trialhold import inventory\n",
+             "def scan(engine, card, st):\n    return inventory(engine, card, st)\n", "scan")]
+        for path, base, source, name in probes:
+            with self.subTest(path=path, function=name):
+                delegations, consumers = self.probe_delegations(path, source, base)
+                found = {(d.path, d.function) for d in delegations} | consumers
+                self.assertIn((path, name), found)
+                # Kontrola kompletności (konsumenci i delegacje) zawodzi bez nowego wpisu.
+                assigned = {e for b in BARRIERS.values() for e in b["consumers"]} | set(DELEGATIONS)
+                self.assertIn((path, name), found - assigned)
+        # Bez sondy katalog delegacji jest zgodny z tabelą.
+        self.assertEqual({(d.path, d.function) for d in cat.delegations()}, set(DELEGATIONS))
+
+    def test_matrix_executes_every_barrier_and_box_journal_scope(self):
+        """M5 review 1: macierz ujemna wykonuje każdą barierę katalogu; bariery spoza zakresu
+        dziennika pudełka nie czytają go (nieosiągalność sprawdzona na AST konsumentów)."""
+        matrix = importlib.import_module(M)
+        self.assertEqual(set(matrix.MATRIX_BARRIERS), set(BARRIERS))
+        self.assertLessEqual(set(matrix.BOX_JOURNAL_BARRIERS), set(BARRIERS))
+        box_reads = {"public_processes", "public_inventory", "active_steps", "_validate_box_event", "box_event_error",
+                     "trialhold.inventory", "inventory"}
+        reads = {(c.path, c.function): c.reads for c in cat.consumers()}
+        box_journal = {c for c, r in reads.items() if r & box_reads}
+        # Konsumenci czytający dziennik pudełka i delegacje do nich.
+        calls = {(d.path, d.function): d.calls for d in cat.delegations()}
+        changed = True
+        while changed:
+            changed = False
+            for key, called in calls.items():
+                if key not in box_journal and called & box_journal:
+                    box_journal.add(key)
+                    changed = True
+        for name, barrier in BARRIERS.items():
+            with self.subTest(barrier=name):
+                touches = any(entry in box_journal for entry in barrier["consumers"])
+                self.assertEqual(touches, name in matrix.BOX_JOURNAL_BARRIERS)
+
     def test_delegated_box_operations_reach_the_shared_consumer(self):
         # builder.steps_source → lifecycle.active_steps; require_idle → running_steps.
         builder_of = _function("cardflow/boxstep.py", "builder_of")
@@ -549,7 +766,7 @@ def render_report():
     for w in catalog.writes:
         key = (w.store, w.kind, w.discriminator)
         entry = rows.setdefault(key, [set(), set()])
-        entry[0] |= {"*"} if w.fields == cat.ANY else set(w.fields)
+        entry[0] |= set(w.fields)
         entry[1].add(f"{w.path}:{w.function}")
     for (store, kind, disc), (fields, places) in sorted(rows.items()):
         if store == "box":
@@ -572,6 +789,12 @@ def render_report():
                     continue
                 lines.append(f"| `{label}` | {name} | {f.role} | {f.type} | {'tak' if f.nonempty else '—'} | "
                              f"{f.predecessor or '—'} | {f.domain or '—'} | {f.rule or '—'} | {f.source} |")
+    for kind, spec in pi.BOX_EVENTS.items():
+        for name, f in {**pi.BOX_ENVELOPE_FIELDS, **(spec.fields or {})}.items():
+            if f.role == "neutral":
+                continue
+            lines.append(f"| `box:{kind}` | {name} | {f.role} | {f.type} | {'tak' if f.nonempty else '—'} | "
+                         f"{f.predecessor or '—'} | {f.domain or '—'} | {f.rule or '—'} | {f.source} |")
     lines += ["", "Pozostałe pola zdarzeń procesu mają rolę `neutral` (dane operacyjne); pełna lista w modelu.", "",
               "## Konsumenci i bariery", "",
               "| Bariera | Konsumenci | Punkt odmowy | Skutek | Testy ujemne | Testy dodatnie |",
@@ -580,6 +803,27 @@ def render_report():
         lines.append(f"| {name} | {'<br>'.join(f'{p}:{q}' for p, q in b['consumers'])} | {b['denial']} | "
                      f"{b['effect']} | {'<br>'.join(r.split(':')[1] for r in b['negative'])} | "
                      f"{'<br>'.join(r.split(':')[1] for r in b['positive'])} |")
+    lines += ["", "## Delegacje (graf wywołań z AST)", "",
+              "| Delegacja | Wywołuje | Bariera |", "| --- | --- | --- |"]
+    for d in cat.delegations():
+        lines.append(f"| {d.path}:{d.function} | {', '.join(sorted(q for _, q in d.calls))} | "
+                     f"{DELEGATIONS.get((d.path, d.function), '—')} |")
+    matrix = importlib.import_module(M)
+    gen = importlib.import_module("daemon.tests.cardflow_identity_generator")
+    lines += ["", "## Macierz ujemna: historie × bariery × restart", "",
+              "Każda wadliwa historia dziennika karty przechodzi przez wszystkie bariery "
+              f"({', '.join(matrix.MATRIX_BARRIERS)}) przed restartem i po nim; dziennik pudełka — przez "
+              f"bariery, które go czytają ({', '.join(matrix.BOX_JOURNAL_BARRIERS)}). "
+              "Liczby to wadliwe historie (zwykły / chroniony ticket); każda ma 2 warianty restartu.", "",
+              "| Grupa | Rodzaj | Historie PT-999 | Historie PT-176 | Bariery |", "| --- | --- | --- | --- | --- |"]
+    counts = {}
+    for case in gen.all_cases():
+        if case.expected == gen.BAD:
+            entry = counts.setdefault((case.group, case.kind), {"PT-999": 0, "PT-176": 0})
+            entry[case.ticket] += 1
+    for (group, kind), entry in sorted(counts.items()):
+        barriers = matrix.BOX_JOURNAL_BARRIERS if group.startswith("box") else matrix.MATRIX_BARRIERS
+        lines.append(f"| {group} | `{kind}` | {entry['PT-999']} | {entry['PT-176']} | {len(barriers)} |")
     lines += ["", "## Skutki", "", "| Skutek | Funkcja | Bariera / uzasadnienie |", "| --- | --- | --- |"]
     for (path, function, effect), (barrier, guard, names, locked) in sorted(EFFECT_SCOPE.items()):
         how = ("pod journal.lock " if locked else "") + (
