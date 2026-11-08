@@ -1278,7 +1278,10 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
 - **Kolizja ścieżek — `approval_for_step(project, step, board)` → `(approved, reason)`**
   (`contract_approval.py`; w usłudze `BoardStore.approval_for_step(project, step)`). Zanim kontrakt zostanie
   dopuszczony dla kroku, funkcja porównuje plik odcisków i każdy jego katalog nadrzędny — w postaci podanej
-  i po `realpath` (z rozwinięciem dowiązań) — z **każdym obszarem zapisu kroku**, także po `realpath`. Kolizja:
+  i po `realpath` (z rozwinięciem dowiązań) — z **każdym obszarem zapisu kroku**, także po `realpath`. Ścieżki
+  magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` (także w `XDG_STATE_HOME`) to
+  katalog nadrzędny celu dowiązania, jak w systemie plików, więc sprawdza się ten sam plik, który potem jest
+  czytany; każdy przedrostek ścieżki daje wpis katalogu (rzeczywisty katalog + nazwa) i jego cel. Kolizja:
   plik albo katalog nadrzędny leży w obszarze zapisu, albo obszar zapisu leży w katalogu odcisków. Wtedy
   `approved: false`, powód „magazyn zatwierdzeń leży w obszarze zapisu kroku: …” i ten sam wpis w błędach Tablicy
   (z prefiksem slugu), dopóki kolejne sprawdzenie tego projektu nie przejdzie bez kolizji. Bez kolizji wynik daje

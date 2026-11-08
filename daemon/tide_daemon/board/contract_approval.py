@@ -135,18 +135,44 @@ def store_collision(path: str, areas) -> str:
 
     Kolizja: plik odcisków albo którykolwiek jego katalog nadrzędny (ścieżka podana i po `realpath`) leży
     w obszarze zapisu (podanym i po `realpath`) — krok mógłby zapisać, podmienić albo przenieść plik lub katalog —
-    albo obszar zapisu leży w katalogu odcisków. Pusta lub względna ścieżka obszaru to niepewność → kolizja."""
-    store = os.path.abspath(path)
-    folder = os.path.dirname(store)
+    albo obszar zapisu leży w katalogu odcisków. Pusta lub względna ścieżka obszaru to niepewność → kolizja.
+
+    Ścieżki magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` w systemie plików to
+    katalog nadrzędny celu dowiązania, a `abspath` usunąłby `link/..` i badał inne miejsce niż późniejszy odczyt.
+    Dlatego ścieżka jest przechodzona składnik po składniku tak, jak robi to jądro: dla każdego przedrostka
+    sprawdza się wpis katalogu (rzeczywisty katalog + nazwa — krok mógłby go podmienić albo przenieść) i jego cel
+    (`realpath`). Formy leksykalne zostają jako dodatkowe, zachowawcze kandydatki."""
+    if not path:
+        return "nieznana ścieżka magazynu odcisków"
+    raw = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
     chain = []
-    current = store
-    while True:
+    current = os.sep
+    for part in raw.split(os.sep):
+        if not part or part == os.curdir:
+            continue
+        if part != os.pardir:
+            chain.append(os.path.join(os.path.realpath(current), part))   # wpis katalogu, bez celu dowiązania
+        current = os.path.join(current, part)
+        chain.append(os.path.realpath(current))                           # cel (z semantyką `link/..`)
+    real = os.path.realpath(raw)
+    current = real
+    while True:                                                           # katalogi nadrzędne pliku rzeczywistego
+        chain.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    lexical = os.path.abspath(raw)
+    current = lexical
+    while True:                                                           # formy leksykalne — tylko zachowawczo
         chain += [current, os.path.realpath(current)]
         parent = os.path.dirname(current)
         if parent == current:
             break
         current = parent
-    folders = {folder, os.path.realpath(folder)}
+    chain = list(dict.fromkeys(chain))
+    folders = {os.path.realpath(os.path.dirname(raw)), os.path.dirname(real),
+               os.path.dirname(lexical), os.path.realpath(os.path.dirname(lexical))}
     for area in areas:
         if not area or not os.path.isabs(area):
             return f"nieznany obszar zapisu {area!r}"

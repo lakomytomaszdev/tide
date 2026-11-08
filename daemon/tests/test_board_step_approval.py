@@ -159,6 +159,33 @@ class ApprovalForStepTest(StepCase):
         self.assertCollision(approval.approval_for_step(
             self.project(), self.step(), self.root, os.path.join(self.tmp, "base2", "tide", approval.FILE_NAME)))
 
+    def test_link_then_dotdot_in_the_store_path_follows_the_link_like_the_file_system(self):
+        # `safe/link/..` to w systemie plików katalog nadrzędny celu dowiązania (worktree), nie `safe`;
+        # leksykalne `abspath` gubiło dowiązanie i badało `safe/tide/...` (review PT-286, BLOCKER 1).
+        os.makedirs(os.path.join(self.worktree, "child"))
+        safe = os.path.join(self.tmp, "safe")
+        os.makedirs(os.path.join(safe, "tide"))                 # leksykalny cel istnieje i leży poza obszarami
+        os.symlink(os.path.join(self.worktree, "child"), os.path.join(safe, "link"))
+        dotted = os.path.join(safe, "link", "..")
+        path = os.path.join(dotted, "tide", approval.FILE_NAME)
+        os.makedirs(os.path.join(self.worktree, "tide"))
+        approval.record(self.root, "app", CONTRACT, path)
+        self.assertTrue(os.path.isfile(os.path.join(self.worktree, "tide", approval.FILE_NAME)))
+        self.assertFalse(os.path.exists(os.path.join(safe, "tide", approval.FILE_NAME)))
+        self.assertTrue(approval.approved(self.root, "app", CONTRACT, path))   # odczyt trafia do worktree
+        self.assertCollision(approval.approval_for_step(self.project(), self.step(), self.root, path))
+        # Domyślna ścieżka magazynu z `XDG_STATE_HOME=safe/link/..`.
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": dotted}):
+            self.assertEqual(approval.state_path(), path)
+            self.assertCollision(approval.approval_for_step(self.project(), self.step(), self.root))
+        # Względna ścieżka z `..` za dowiązaniem — ta sama semantyka co w systemie plików.
+        cwd = os.getcwd()
+        os.chdir(safe)
+        self.addCleanup(os.chdir, cwd)
+        relative = os.path.join("link", "..", "tide", approval.FILE_NAME)
+        self.assertTrue(approval.approved(self.root, "app", CONTRACT, relative))
+        self.assertCollision(approval.approval_for_step(self.project(), self.step(), self.root, relative))
+
     def test_a_write_area_inside_the_store_directory_is_a_collision(self):
         # Katalog odcisków nad worktree kroku: krok pisze w katalogu magazynu.
         path = os.path.join(self.ws, approval.FILE_NAME)
