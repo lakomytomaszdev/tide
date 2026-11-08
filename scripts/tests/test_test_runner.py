@@ -341,6 +341,41 @@ class ModulesOptionTest(unittest.TestCase):
         self.assertIn(code, (0, None))
         self.assertEqual(out.split(), chosen)
 
+    def test_run_directory_lists_its_modules_before_any_module_runs(self):
+        """08.11, K-38/PT-264: przebieg ucięty limitem nie zostawiał listy modułów, więc Tide nie mogło ponowić
+        tylko padniętych i niezaczętych — każde ucięcie kończyło się kolejnym pełnym przebiegiem."""
+        known = runner.modules_for([(d, "test*.py") for d in sorted({d for p in SUITES.values() for d, _ in p})])
+        chosen = sorted(known)[:2]
+        seen = {}
+
+        def execute(modules, jobs, output, root=runner.ROOT, slots=None):
+            seen["plan"] = json.loads((output / "modules.json").read_text(encoding="utf-8"))
+            return [dict(module=m, returncode=0, tests=1, seconds=0, skipped=0, failures=[], errors=[],
+                         unexpected_successes=[]) for m in modules]
+
+        with tempfile.TemporaryDirectory() as out, patch.object(runner, "execute", side_effect=execute):
+            code, _ = self.run_main("--modules", *chosen, "--output", out)
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["plan"], {"modules": chosen})
+
+    def test_module_report_records_the_process_exit_code(self):
+        """Review 08.11: raport modułu na dysku ma kod wyjścia procesu, także gdy proces padł po zapisie wyniku."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "__init__.py").write_text("")
+            (root / "pkg" / "test_exit.py").write_text(
+                "import atexit, os, unittest\n"
+                "atexit.register(lambda: os._exit(3))\n"
+                "class T(unittest.TestCase):\n    def test_ok(self): pass\n")
+            output = root / "out"
+            output.mkdir()
+            result = runner._run_module("pkg/test_exit.py", output, root)
+            report = json.loads((output / "pkg__test_exit.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["returncode"], 3)
+        self.assertEqual(report["returncode"], 3)
+        self.assertEqual(report["failures"], [])
+
     def test_unknown_module_and_mixed_selection_are_rejected(self):
         self.assertEqual(self.run_main("--modules", "daemon/tests/test_nie_ma.py", "--list")[0], 2)
         self.assertEqual(self.run_main("--modules", "x.py", "--changed")[0], 2)

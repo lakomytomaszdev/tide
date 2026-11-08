@@ -351,6 +351,16 @@ HEAD przy czystym drzewie i takim samym poleceniu (cel, BASE, JOBS), Tide urucha
 w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
 oznaczają zwykły pełny przebieg. Dotyczy gałęzi, których uruchamiacz ma opcję `--modules`.
 
+`TEST_OUTPUT=<katalog>` wskazuje tylko miejsce raportu: polecenie z nim nadal jest pełnym przebiegiem, przy porównaniu
+przebiegów katalog się pomija, a ponowienie zapisuje raport w katalogu z bieżącego polecenia (08.11: przez
+`TEST_OUTPUT` katalogu kroku ponowienie nie włączyło się w żadnym z 8 uciętych przebiegów PT-264).
+
+Przebieg ucięty przez Tide (limit czasu polecenia poza piaskownicą albo zatrzymanie jednostki) nie ma `summary.json`.
+Uruchamiacz zapisuje na starcie `modules.json` z listą modułów przebiegu, a każdy moduł zostawia raport z kodem
+wyjścia procesu, więc ponowienie obejmuje moduły padnięte i te bez wyniku (w toku albo niezaczęte), a pomija tylko
+zakończone kodem 0 bez porażek. Starszy uruchamiacz (bez `modules.json`): pełny przebieg, bo niezaczętych modułów
+nie da się ustalić. Zwykła porażka z kodem wyjścia nadal wymaga kompletnego `summary.json`.
+
 ## Starsze gałęzie bez celu test-changed
 
 Wyjątek dotyczy wyłącznie gałęzi, której Makefile (wraz z `mk/*.mk`) nie udostępnia jeszcze
