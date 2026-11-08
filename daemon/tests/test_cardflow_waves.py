@@ -268,20 +268,20 @@ class WaveFlowTest(FlowInProcess):
             # Start w bieżącym ticku musi się zakończyć przed odczytem listy,
             # także gdy asercja zawiedzie przed zapisem step.started.
             self.stop_flow()
-            released = []
+            owned = []
             for card in (first, second):
                 for started in self.of(card, "step.started"):
-                    if started["kind"] == "ticket":
-                        Path(started["stepDir"], "out", "release-agent").touch()
-                        released.append(started)
-            for started in released:
-                proc = self.flow.engine.procs.get(started["step"])
-                if proc is not None:
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        self.flow.engine._runner_for(started).kill(started, proc=proc)
-                        proc.wait(timeout=5)
+                    proc = self.flow.engine.procs.get(started["step"])
+                    if proc is not None:
+                        if started["kind"] == "ticket":
+                            Path(started["stepDir"], "out", "release-agent").touch()
+                        owned.append((started, proc))
+            for started, proc in owned:
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.flow.engine._runner_for(started).kill(started, proc=proc)
+                    proc.wait(timeout=5)
 
     def test_retry_uses_own_worktree_while_another_ticket_is_running(self):
         card = self.card()
@@ -312,18 +312,47 @@ class WaveFlowTest(FlowInProcess):
     def test_manual_finish_keeps_merged_ticket_and_rejects_remaining_plan(self):
         card = self.card()
         path = self.wave_plan(card)
-        for number, mode in ((1, "gotowe"), (2, "powoli 15")):
+        for number, mode in ((1, "gotowe"), (2, "na-sygnal")):
             ticket_path = os.path.join(os.path.dirname(path), "tickets", f"{number}.md")
             with open(ticket_path, encoding="utf-8") as fh:
                 source = fh.read()
             with open(ticket_path, "w", encoding="utf-8") as fh:
                 fh.write(source.replace("powoli 2", mode))
-        self.assertTrue(self.submit(card, path)["ok"])
-        mapping = self.approve(card)["map"]
-        self.assertTrue(wait_until(lambda: any(event.get("key") == mapping["#1"] and event.get("ok")
-                        for event in self.results(card, "merge")), timeout=10))
-        self.assertTrue(json.loads(self.board.move_card(card, "archived", 0))["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
-        self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")},
-                         {mapping["#2"], mapping["#3"]})
-        self.assertTrue(next(event for event in self.results(card, "merge") if event["key"] == mapping["#1"])["ok"])
+        try:
+            self.assertTrue(self.submit(card, path)["ok"])
+            mapping = self.approve(card)["map"]
+
+            def prepared():
+                approved = any(event.get("ticket") == mapping["#1"] and event.get("verdict") == "APPROVE"
+                               for event in self.of(card, "review.verdict"))
+                running = [event for event in self.ticket_starts(card)
+                           if event["ticket"] == mapping["#2"] and event["kind"] == "ticket"]
+                return approved and running and Path(running[0]["stepDir"], "out", "fake-call.json").is_file()
+
+            # Start obu ticketów i review przygotowują scenariusz. Okno merge
+            # zaczyna się po APPROVE, a druga atrapa nie kończy się samoczynnie.
+            self.assertTrue(wait_until(prepared, timeout=PLAN_RESULT_TIMEOUT), self.events(card))
+            self.assertTrue(wait_until(lambda: any(event.get("key") == mapping["#1"] and event.get("ok")
+                            for event in self.results(card, "merge")), timeout=10), self.events(card))
+            second = next(event for event in self.ticket_starts(card)
+                          if event["ticket"] == mapping["#2"] and event["kind"] == "ticket")
+            self.assertFalse(any(event["step"] == second["step"] for event in self.of(card, "step.finished")))
+            self.assertFalse(any(event["ticket"] == mapping["#3"] for event in self.ticket_starts(card)))
+            self.assertTrue(json.loads(self.board.move_card(card, "archived", 0))["ok"])
+            self.assertTrue(wait_until(lambda: self.of(card, "card.finished"), timeout=10))
+            self.assertEqual({event["ticket"] for event in self.of(card, "ticket.rejected")},
+                             {mapping["#2"], mapping["#3"]})
+            self.assertTrue(next(event for event in self.results(card, "merge") if event["key"] == mapping["#1"])["ok"])
+        finally:
+            # Stabilizujemy listę procesów również po błędzie przygotowania.
+            self.stop_flow()
+            for started in self.of(card, "step.started"):
+                proc = self.flow.engine.procs.get(started["step"])
+                if proc is not None:
+                    if started["kind"] == "ticket":
+                        Path(started["stepDir"], "out", "release-agent").touch()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.flow.engine._runner_for(started).kill(started, proc=proc)
+                        proc.wait(timeout=5)
