@@ -1276,7 +1276,7 @@ i `make test-changed`; inne (np. `dotnet test …`) — ogólną zasadę ponowie
 uruchamiania programów, z pominięciem plików i katalogu `mk` wychodzących dowiązaniem poza katalog. Do czasu
 integracji z silnikiem (#10) silnik woła kartki bez polityki, a kartki liczą ją `master_policy(worktree, base)`
 — regułą sprzed K-69 (bez `Makefile` nadal `make test-changed` i `make test`, bez linii źródła). Wzorcowe
-fragmenty kartek z master: `daemon/tests/fixtures/test-policy/master-fragments.json`.
+fragmenty kartek z master: `MASTER_FRAGMENTS` w `daemon/tests/test_cardflow_effective_tests.py`.
 
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
