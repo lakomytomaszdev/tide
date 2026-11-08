@@ -120,11 +120,13 @@ out["activeAfter"] = js("page.cardFullView.flow.ticketConsents[0].active")
     def test_talk_button_and_escalated_decision_call_the_service(self):
         from unittest import mock
         from tide_daemon.cardflow.engine import FlowEngine
+        from tide_daemon.cardflow.state import fold
         from tide_daemon.cardflow import caretaker
         events = self.caretaker_events(escalated=True)
         engine = FlowEngine.__new__(FlowEngine)
         engine.journal = mock.Mock()
         engine.journal.read.return_value = events
+        engine.journal.state.side_effect = lambda card: fold(events)
         engine._caretaker_setup = lambda st: caretaker.setup(st)
         engine._limit_view = lambda *args: None
         computed = engine.derived({"id": "K-8", "column": "todo"})
