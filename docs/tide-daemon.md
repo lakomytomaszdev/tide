@@ -1318,7 +1318,15 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
   (poza piaskownicą; usługa z kodu repozytorium na osobnej magistrali, magazyn próbny w
   `~/.local/state/tide-pt286-trials`, raport `report.md`), próby w kroku: `scripts/sandbox/approval_probe.py`.
   Każda zmiana `tasks/agentcmd.py` dotycząca zapisu, sieci albo środowiska kroku wymaga ponownego przebiegu.
-  Wynik przebiegu dla PT-286 jest w notce ticketu (Claude i Codex, każda próba osobno).
+  Skrypt wybiera program i pomijane serwery MCP Codexa tak jak usługa: Codex z aplikacji ChatGPT zamiast snapa,
+  bo snap nie działa w jednostce `tide-step-*`, oraz `codexMcpSkip` z ponowieniem.
+  **Wynik dla PT-286 (8.11.2026, HEAD `b2b79238`):** w Claude i w Codexie (`workspace-write`) wszystkie próby
+  skończyły się odmową. Claude: katalog domowy jest niewidoczny w piaskownicy, a tworzenia gniazd AF_UNIX zabrania
+  seccomp, więc padają magistrala usługi, magistrala pulpitu i `systemd-run --user`. Codex: system plików poza
+  obszarami zapisu jest tylko do odczytu (`Read-only file system`), a połączenie z każdym gniazdem magistrali kończy
+  się „Operation not permitted”, więc `systemd-run --user` też nie działa. Odcisk, `box.yaml` i HEAD Tablicy zostały
+  bez zmian. Sprawdzenie pochodzenia nie miało czego odrzucać, bo żaden krok nie połączył się z magistralą; chroni
+  ono na wypadek przyszłego poluzowania piaskownicy. Szczegóły każdej próby są w notce ticketu.
 
 #### Zgodność z profilem pudełka K-38
 
