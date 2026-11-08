@@ -45,6 +45,10 @@ class CatalogRound4(unittest.TestCase):
         for method in ('append', 'append_complete'):
             for binding in ('append = journal.METHOD',
                             'log = journal; append: object = log.METHOD; save = append',
+                            'log, unused = journal, None; append = log.METHOD',
+                            '[unused, [log]] = [None, [journal]]; append = log.METHOD',
+                            'self.log = journal; append = self.log.METHOD',
+                            'self.log, unused = journal, None; append = self.log.METHOD',
                             'forward(journal.METHOD)'):
                 path = f'cardflow/escape_{len(sources)}.py'
                 sources[path] = ast.parse('def write(journal):\n    '
@@ -102,6 +106,41 @@ def current_unit(event):
                 with self.assertRaises(cat.Unresolved):
                     cat.Resolver(cat.Catalog()).keys('cardflow/probe.py', 'save', tree.body[0].body[-1].value)
 
+    def test_dynamic_constructors_and_branches_preserve_explicit_fields(self):
+        for expression in ('dict(pid=123)', 'dict(**{"pid": 123})', '[("pid", 123)]',
+                           '(("pid", 123),)', '{"pid": 123} if flag else {}',
+                           '{} or {"pid": 123}', '{} and {"pid": 123}',
+                           'dict({"pid": 123})', 'dict([("pid", 123)])',
+                           'dict(**({"pid": 123} if flag else {}))'):
+            mutations = [f'base.update({expression})', f'patch = {expression}; base.update(patch)']
+            if not expression.startswith(('[', '((')):
+                mutations.append(f'base.update(**{expression})')
+            for mutation in mutations:
+                with self.subTest(mutation=mutation):
+                    tree = cat.link(ast.parse('def save():\n    base = {}\n    '
+                                             + mutation + '\n    return base\n'))
+                    catalog = cat.Catalog()
+                    fields = cat.Resolver(catalog).keys('cardflow/engine.py',
+                                                        'FlowEngine._guard_baseline',
+                                                        tree.body[0].body[-1].value)
+                    self.assertIn('pid', fields)
+                    self.assertIn(('cardflow/engine.py', 'FlowEngine._guard_baseline', 'base'),
+                                  catalog.used_scopes)
+
+    def test_dynamic_unresolved_mutations_are_refused(self):
+        for mutation in ('base.update({"pid": 123 for _ in [0]})',
+                         'base.update(custom(pid=123))', 'base.update(payload)',
+                         'patch = custom(); base.update(patch)', 'base.update([(key, 123)])',
+                         'base.update({key: 123})', 'base[key] = 123',
+                         'base.setdefault(key, 123)', 'base |= custom()',
+                         'base.update(payload or {"pid": 123})'):
+            with self.subTest(mutation=mutation):
+                tree = cat.link(ast.parse('def save(payload, key):\n    base = snapshot()\n    '
+                                         + mutation + '\n    return base\n'))
+                with self.assertRaises(cat.Unresolved):
+                    cat.Resolver(cat.Catalog()).keys('cardflow/engine.py', 'FlowEngine._guard_baseline',
+                                                    tree.body[0].body[-1].value)
+
     def test_non_journal_bound_append_is_not_an_escape(self):
         tree = cat.link(ast.parse('def save():\n    items = []\n    append = items.append\n'))
         self.assertFalse(any(cat._card_append_escapes(n) for n in ast.walk(tree)))
@@ -122,3 +161,26 @@ KINDS = ('outside.started', 'outside.finished')
                 with cat.overridden({path: tree, 'cardflow/kinds_probe.py': ast.parse("START = 'outside.started'")}):
                     reads = cat.raw_reads(tree.body[-1], path)
                 self.assertIn('outside.started', reads)
+
+    def test_imported_annotated_chained_and_reexported_kinds(self):
+        for definition in ("START: str = 'outside.started'", "FIRST = 'outside.started'; START = FIRST",
+                           "START = 'outside.started' if flag else 'outside.finished'",
+                           "START = unknown or 'outside.started'",
+                           "from .origin_probe import START"):
+            for expression in ('IMPORTED', 'kinds.START'):
+                with self.subTest(definition=definition, expression=expression):
+                    path = 'cardflow/reader_probe.py'
+                    tree = ast.parse('from .kinds_probe import START as IMPORTED\n'
+                                     'from . import kinds_probe as kinds\n'
+                                     'def read(event):\n'
+                                     f'    if event["type"] == {expression}:\n'
+                                     '        return event["unit"]\n')
+                    with cat.overridden({path: tree, 'cardflow/kinds_probe.py': ast.parse(definition),
+                                         'cardflow/origin_probe.py': ast.parse("START = 'outside.started'")}):
+                        self.assertIn('outside.started', cat.raw_reads(tree.body[-1], path))
+
+    def test_import_cycle_terminates(self):
+        with cat.overridden({
+                'cardflow/first_probe.py': ast.parse('from .second_probe import START'),
+                'cardflow/second_probe.py': ast.parse('from .first_probe import START')}):
+            self.assertEqual(cat._literals(ast.Name(id='START'), 'cardflow/first_probe.py'), set())

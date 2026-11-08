@@ -416,54 +416,91 @@ def _name_aliases(node) -> frozenset:
             return frozenset(aliases)
 
 
-def literal_keys(node, seen=frozenset()) -> frozenset:
+def literal_keys(node, seen=frozenset(), strict=False) -> frozenset:
     """Znane klucze zmiennej `node` w jej funkcji: `x["k"] = …`, `x["k"] += …`, `x.update(k=…)`,
     `x.update({"k": …})`, `x.setdefault("k", …)`, `x |= {"k": …}` i słownik w przypisaniu `x = {…}`.
-    Klucze niestałe pozostają częścią zakresu dynamicznego (osobna kontrola w teście)."""
+    Pierwotne źródło ma jawny zakres DYNAMIC; nierozwiązane rozszerzenie tego źródła odmawia."""
     if not isinstance(node, ast.Name):
         return frozenset()
     function = enclosing_function(node)
     if function is None or isinstance(function, ast.Lambda):
+        if strict:
+            raise Unresolved("źródło rozszerzenia poza funkcją: " + node.id)
         return frozenset()
     aliases = _name_aliases(node)
     if aliases & seen:
+        if strict:
+            raise Unresolved("cykliczne źródło rozszerzenia: " + node.id)
         return frozenset()
     seen = seen | aliases
+    if strict and aliases & all_params(function):
+        raise Unresolved("zewnętrzne źródło rozszerzenia: " + node.id)
 
-    def dict_keys(value):
+    def dict_keys(value, required=False):
         if isinstance(value, ast.Dict):
             keys = {k.value for k in value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
             for key, item in zip(value.keys, value.values):
                 if key is None:
-                    keys |= dict_keys(item)
+                    keys |= dict_keys(item, required)
+                elif required and not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                    raise Unresolved("niestały klucz rozszerzenia: " + ast.unparse(key))
             return keys
         if isinstance(value, ast.Name):
-            return set(literal_keys(value, seen))
+            return set(literal_keys(value, seen, strict=required))
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
-            return dict_keys(value.left) | dict_keys(value.right)
+            return dict_keys(value.left, required) | dict_keys(value.right, required)
+        if isinstance(value, ast.IfExp):
+            return dict_keys(value.body, required) | dict_keys(value.orelse, required)
+        if isinstance(value, ast.BoolOp):
+            return set().union(*(dict_keys(item, required) for item in value.values))
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "dict":
+            keys = {keyword.arg for keyword in value.keywords if keyword.arg is not None}
+            for item in [*value.args, *(keyword.value for keyword in value.keywords if keyword.arg is None)]:
+                keys |= dict_keys(item, required)
+            return keys
+        if isinstance(value, (ast.List, ast.Tuple)):
+            # update/dict przyjmują także sekwencje par klucz–wartość.
+            keys = set()
+            for item in value.elts:
+                if isinstance(item, (ast.List, ast.Tuple)) and len(item.elts) == 2 \
+                        and isinstance(item.elts[0], ast.Constant) and isinstance(item.elts[0].value, str):
+                    keys.add(item.elts[0].value)
+                elif required:
+                    raise Unresolved("nierozwiązana para rozszerzenia: " + ast.unparse(item))
+            return keys
+        if required:
+            raise Unresolved("nierozwiązane rozszerzenie: " + ast.unparse(value))
         return set()
 
     def same(target):
         return isinstance(target, ast.Name) and target.id in aliases
 
     keys = set()
+    assigned = False
     for child in _function_body_nodes(function):
         targets = child.targets if isinstance(child, ast.Assign) else \
             [child.target] if isinstance(child, (ast.AugAssign, ast.AnnAssign)) else []
         for target in targets:
-            if isinstance(target, ast.Subscript) and same(target.value) and isinstance(target.slice, ast.Constant) \
-                    and isinstance(target.slice.value, str):
+            if isinstance(target, ast.Subscript) and same(target.value):
+                if not (isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str)):
+                    raise Unresolved("niestały indeks rozszerzenia: " + ast.unparse(target))
                 keys.add(target.slice.value)
             elif same(target) and getattr(child, "value", None) is not None:
-                keys |= dict_keys(child.value)
+                if not (isinstance(child.value, ast.Name) and same(child.value)):
+                    assigned = True
+                    keys |= dict_keys(child.value, strict or isinstance(child, ast.AugAssign))
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute) and same(child.func.value):
             if child.func.attr == "update":
                 keys |= {k.arg for k in child.keywords if k.arg}
                 for arg in [*child.args, *(k.value for k in child.keywords if k.arg is None)]:
-                    keys |= dict_keys(arg)
-            elif child.func.attr == "setdefault" and child.args and isinstance(child.args[0], ast.Constant) \
-                    and isinstance(child.args[0].value, str):
+                    keys |= dict_keys(arg, True)
+            elif child.func.attr == "setdefault":
+                if not (child.args and isinstance(child.args[0], ast.Constant)
+                        and isinstance(child.args[0].value, str)):
+                    raise Unresolved("niestały setdefault rozszerzenia: " + ast.unparse(child))
                 keys.add(child.args[0].value)
+    if strict and not assigned:
+        raise Unresolved("brak źródła rozszerzenia: " + node.id)
     return frozenset(keys)
 
 
@@ -640,12 +677,7 @@ def _journal_aliases(scope):
     """
     if scope is None:
         return frozenset()
-    bindings = []
-    for child in _function_body_nodes(scope):
-        targets = child.targets if isinstance(child, ast.Assign) else \
-            [child.target] if isinstance(child, ast.AnnAssign) else []
-        if targets and child.value is not None:
-            bindings.extend((ast.unparse(target), child.value) for target in targets)
+    bindings = [(name, value) for name, values in _value_bindings(scope).items() for value in values]
     aliases = set()
     changed = True
     while changed:
@@ -978,6 +1010,8 @@ def _value_bindings(scope):
     def bind(target, value):
         if isinstance(target, ast.Name) and value is not None:
             bindings.setdefault(target.id, []).append(value)
+        elif isinstance(target, ast.Attribute) and value is not None:
+            bindings.setdefault(ast.unparse(target), []).append(value)
         elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
             for left, right in zip(target.elts, value.elts):
                 bind(left, right)
@@ -996,8 +1030,13 @@ def _literals(node, path=None, seen=frozenset()) -> set:
         return {node.value}
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return set().union(*(_literals(e, path, seen) for e in node.elts))
+    if isinstance(node, ast.IfExp):
+        return _literals(node.body, path, seen) | _literals(node.orelse, path, seen)
+    if isinstance(node, ast.BoolOp):
+        return set().union(*(_literals(value, path, seen) for value in node.values))
     if isinstance(node, ast.Name):
-        if node.id in seen:
+        marker = (path, node.id)
+        if marker in seen:
             return set()
         function = enclosing_function(node)
         assigned = _value_bindings(function).get(node.id, [])
@@ -1006,7 +1045,15 @@ def _literals(node, path=None, seen=frozenset()) -> set:
         if not assigned and path is not None:
             assigned = _value_bindings(module(path)).get(node.id, [])
         if assigned:
-            return set().union(*(_literals(v, path, seen | {node.id}) for v in assigned))
+            return set().union(*(_literals(v, path, seen | {marker}) for v in assigned))
+        if path is not None:
+            target = imports(path).get(node.id)
+            if target and target[1]:
+                return _literals(ast.Name(id=target[1]), target[0], seen | {marker})
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and path is not None:
+        target = imports(path).get(node.value.id)
+        if target and target[1] is None:
+            return _literals(ast.Name(id=node.attr), target[0], seen)
     if path is not None:
         value = resolve_constant(path, node)
         if isinstance(value, str):
