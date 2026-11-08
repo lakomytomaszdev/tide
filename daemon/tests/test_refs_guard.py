@@ -936,8 +936,10 @@ class GuardTest(unittest.TestCase):
         engine = self.restarting_engine()
         step_dir = self.root / "step"
         (step_dir / "in").mkdir(parents=True)
-        engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", repo=self.repo,
-                              ticket="PT-1", branch="ticket/one", stepDir=str(step_dir))
+        # PT-288: zamiar startu w pudełku zapisuje komplet zasobu (Placement.entry), jak w _launch.
+        engine.journal.append("K-38", "intent", action="step-start", key="one", runner="box", box="proj",
+                              boxSlug="proj", repo=self.repo, ticket="PT-1", branch="ticket/one",
+                              stepDir=str(step_dir))
         engine.journal.append("K-38", "result", action="step-start", key="one", ok=False)
         with mock.patch.object(boxstep, "proxy_of", return_value=None):
             boxstep.recover_network(engine)
