@@ -60,9 +60,11 @@ class Execution:
 def agent_which(name: str, home: str | None = None) -> str | None:
     """Program z PATH usługi, zapasowo `~/.local/bin` (tam kładzie `claude` instalator Claude Code).
 
-    Menedżer systemd użytkownika ma zwykle krótki PATH bez `~/.local/bin` — zwłaszcza na świeżej maszynie,
-    gdzie katalog powstał dopiero po zalogowaniu (instalacja agenta), więc sesja Plasmy go nie przekazała.
-    Tak samo szukają programu okno nowego zadania (tasks/core.py) i launchery (worktrees/launchers.py)."""
+    Menedżer systemd użytkownika ma zwykle krótki PATH bez `~/.local/bin`. Punkt wejścia `tide-daemon.py`
+    dokleja go na koniec PATH, ale usługa uruchomiona inaczej (testy, `python -m`) tego nie ma — zapas
+    trzyma tę samą kolejność niezależnie od punktu wejścia. Tak samo szukają programu okno nowego zadania
+    (tasks/core.py) i launchery (worktrees/launchers.py). Silnik woła tę funkcję także dla `systemctl`;
+    zapas w `~/.local/bin` jest wtedy nieszkodliwy (pierwszy wygrywa PATH)."""
     found = shutil.which(name)
     if found:
         return found
