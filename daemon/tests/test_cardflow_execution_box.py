@@ -146,8 +146,7 @@ class PlacementTest(BoxFlow):
         with self.assertRaises(boxstep.BoxWaiting):
             self.place()
         self.box_enabled = False
-        with self.assertRaises(boxstep.BoxWaiting):
-            self.place()
+        self.assertIsNone(self.place())  # PT-289: wyłącznik pudełka wybiera hosta przed `boxWait`.
 
     def test_failed_first_build_without_wait_does_not_fall_back_to_host(self):
         self.approve()
@@ -165,12 +164,13 @@ class PlacementTest(BoxFlow):
             with self.subTest(kind=kind), self.assertRaises(FlowDeferred):
                 self.box_place(kind)
 
-    def test_environment_wait_blocks_when_boxes_are_disabled(self):
+    def test_disabled_boxes_run_on_host_despite_environment_wait(self):
+        # PT-289 (następczo wobec PT-181): wyłącznik pudełka działa przed zgodą środowiska.
         self.build_box()
         self.box_enabled = False
         boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT)
-        with self.assertRaises(FlowDeferred):
-            self.box_place()
+        self.assertIsNone(self.box_place())
+        self.assertEqual(self.waits(), [])
 
     def test_environment_wait_blocks_resume_of_a_host_execution_step(self):
         self.engine.journal.append(self.card_id, "step.started", step="host", kind="ticket", ticket="PT-1")

@@ -460,8 +460,11 @@ BARRIERS = {
                                 f"{M}:BarrierMatrixPositive.test_trial_gate_procedure_starts_with_clean_inventory"]),
     "box-lifecycle": dict(
         consumers=[("box/lifecycle.py", "active_steps"), ("box/builder.py", "Builder.running_steps"),
-                   ("cardflow/boxstep.py", "builder_of"), ("box/lifecycle.py", "Lifecycle.close_card")],
-        denial="require_idle → BoxBusy", effect="incus.stop/start/delete/snapshot_restore",
+                   ("cardflow/boxstep.py", "builder_of"), ("box/lifecycle.py", "Lifecycle.close_card"),
+                   # PT-264: zajętość pudełka przed zmianą lub odłączeniem montowań (active_steps).
+                   ("box/mounts.py", "ProjectMounts._busy")],
+        denial="require_idle → BoxBusy; ProjectMounts._busy → MountsBusy / bez odłączenia",
+        effect="incus.stop/start/delete/snapshot_restore, zmiana i odłączenie montowań projektu",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_lifecycle_stop_stops_the_project_box",
                                 f"{M}:BarrierMatrixPositive.test_reset_restores_the_stopped_project_box",
                                 f"{M}:BarrierMatrixPositive.test_box_start_reaches_admission_for_the_project_box",
@@ -524,6 +527,12 @@ EFFECT_SCOPE = {
         ("box-lifecycle", [("box/command.py", "run_command", {"require_public", "require_idle"})], None, False),
     ("box/runner.py", "_demo_guarded", "start kroku"):
         ("box-lifecycle", [("box/runner.py", "_demo", {"require_public"})], None, False),
+    # PT-264: zatrzymanie przed zmianą montowań tylko bez żywego kroku innego niż startowany
+    # (_busy → active_steps pod lifecycle_lock); dotyczy kroku silnika, run i --demo.
+    ("box/mounts.py", "ProjectMounts._ensure", "incus.stop"): ("box-lifecycle", "direct", {"_busy"}, False),
+    # Odłączenie kopii wejścia (callback packs.delete_snapshot) tylko z niezajętego pudełka.
+    ("box/mounts.py", "ProjectMounts._detach_snapshot", "incus.device_remove"):
+        ("box-lifecycle", "direct", {"_busy"}, False),
 }
 # Skutki bez związku z tożsamością procesów kart (uzasadnienie zamiast bariery).
 OUT_OF_SCOPE = {
@@ -566,6 +575,7 @@ DELEGATIONS = {
     ("box/builder.py", "Builder.ensure_home"): "box-lifecycle",
     ("box/builder.py", "Builder.require_idle"): "box-lifecycle",
     ("box/builder.py", "Builder.reset"): "box-lifecycle",
+    ("box/command.py", "_execute"): "box-lifecycle",
     ("box/command.py", "_ready"): "box-lifecycle",
     ("box/command.py", "run_command"): "box-lifecycle",
     ("box/home.py", "_attach"): "box-lifecycle",
@@ -573,10 +583,21 @@ DELEGATIONS = {
     ("box/lifecycle.py", "Lifecycle.idle"): "box-lifecycle",
     ("box/lifecycle.py", "Lifecycle.start"): "box-lifecycle",
     ("box/lifecycle.py", "Lifecycle.stop"): "box-lifecycle",
+    # PT-264: start kroku (silnik, run, --demo) przygotowuje montowania przez ProjectMounts.ensure → _busy.
+    ("box/mounts.py", "ProjectMounts._detach_snapshot"): "box-lifecycle",
+    ("box/mounts.py", "ProjectMounts._ensure"): "box-lifecycle",
+    ("box/mounts.py", "ProjectMounts.detach_snapshot"): "box-lifecycle",
+    ("box/mounts.py", "ProjectMounts.ensure"): "box-lifecycle",
+    ("box/runner.py", "BoxRunner.ensure_devices"): "box-lifecycle",
+    ("box/runner.py", "BoxRunner.start"): "box-lifecycle",
+    ("box/runner.py", "_demo"): "box-lifecycle",
+    ("box/runner.py", "_demo_guarded"): "box-lifecycle",
+    ("box/runner.py", "_demo_run"): "box-lifecycle",
     ("cardflow/boxcontrol.py", "stop"): "box-lifecycle",
     ("cardflow/boxstep.py", "_ready"): "box-lifecycle",
     ("cardflow/boxstep.py", "_reserve_start"): "box-lifecycle",
     ("cardflow/boxstep.py", "before_start"): "box-lifecycle",
+    ("cardflow/boxstep.py", "check_mounts"): "box-lifecycle",
     ("cardflow/boxstep.py", "place"): "box-lifecycle",
     ("cardflow/boxstep.py", "prepare_runner"): "box-lifecycle",
     ("cardflow/caretaker.py", "_answer"): "console",

@@ -4675,8 +4675,10 @@ powrocie wykonawcy pozostaje w tym samym pudełku.
 
 | Stan | Wynik |
 |---|---|
-| `boxWait: environment` | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu, przy wyłączonych pudełkach lub hostowym rodzicu; planowanie pozostaje dostępne |
-| `box.enabled: false` albo projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38), chyba że karta już czeka na `rebuild` — wtedy nadal czeka |
+| `box.enabled: false` (PT-289) | `HostRunner` (jak przed K-38) przed wszystkimi niżej wymienionymi kontrolami: bez odczytu `boxWait` (także `environment` i `rebuild`), ekspozycji projektu PT-264, profili, rezerwacji repozytorium, admission i Incusa. Wznowienie kroku z pudełka (`runner: box`) nie przechodzi na hosta: `BoxError`, nic nie jest uruchamiane |
+| `boxWait: environment` | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu lub przy hostowym rodzicu; planowanie pozostaje dostępne |
+| projekt `plasma-tide` (ekspozycja v1, PT-264) | krok wykonawczy czeka na manifest projektu i odebrane montowania |
+| projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38), chyba że karta już czeka na `rebuild` — wtedy nadal czeka |
 | budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
 | pudełka nie ma (Incus), bez `boxWait: rebuild` i bez nieudanej budowy w dzienniku pudełka | `HostRunner` |
 | pudełka nie ma po błędzie budowy albo przy `boxWait: rebuild` | nadal `boxWait: rebuild`; brak instancji po nieudanej przebudowie nie przenosi kroku na hosta |

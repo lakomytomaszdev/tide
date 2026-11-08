@@ -8,7 +8,8 @@ Silnik (`engine.py`) woła stąd operacje kroku, reszta to szczegóły:
   Do pudełka idzie rodzaj kroku z `BOX_STEP_KINDS` (stała w `engine.py`), gdy `box.enabled`, projekt ma
   zatwierdzony profil i pudełko istnieje; wznowienie (`parent_step`) bierze runner z wpisu wznawianego kroku
   i niczego nie wybiera na nowo.
-  Kolejno: `boxWait: environment` → czeka; budowa/reset → czeka; brak pudełka → host; brak filtrowania NIC albo
+  Kolejno: `box.enabled: false` → host (wznowienie kroku z pudełka → `BoxError`), przed wszystkimi dalszymi
+  kontrolami (PT-289); `boxWait: environment` → czeka; projekt z ekspozycją v1 (PT-264) → czeka; budowa/reset → czeka; brak pudełka → host; brak filtrowania NIC albo
   hash migawki różny od hasha profilu → `boxWait: rebuild` i czeka; `box: per-card` → `copy_for_card` (raz na
   kartę); pudełko zatrzymane → `boxWait: start`, `incus start`, `incus exec … true`, menedżer usług `agent`,
   adres IP, a potem `boxWait` czyszczone.
@@ -181,7 +182,16 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         if not parent:
             raise BoxError("brak wpisu wznawianego kroku")
         forced = parent.get("runner") == RUNNER
-    # Zgoda na środowisko blokuje wykonanie także bez profilu, przy wyłączonych pudełkach i na hoście.
+    # PT-289: wyłącznik pudełka działa przed zgodą środowiska, ekspozycją projektu, profilem, admission
+    # i Incusem — przy `box.enabled: false` nowy krok i wznowienie kroku hostowego idą na hosta (HostRunner),
+    # także przy zapisanym `boxWait` (environment/rebuild) i niezatwierdzonej ekspozycji. Wznowienie kroku
+    # z pudełka nigdy nie przechodzi na hosta: odmowa, zanim cokolwiek zostanie uruchomione.
+    settings = settings_of(engine)
+    if not settings.enabled:
+        if forced:
+            raise BoxError("wznawiany krok biegł w pudełku, a pudełko jest wyłączone (box.enabled)")
+        return None
+    # Zgoda na środowisko blokuje wykonanie przy włączonych pudełkach także bez profilu i na hoście.
     # Planowanie nadal może przygotować profil do zatwierdzenia.
     if (kind in kinds or forced) and boxwait.card_box_wait(st) == boxwait.ENVIRONMENT:
         raise BoxWaiting(WAIT_ENVIRONMENT)
@@ -190,20 +200,13 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
             return None
     elif kind not in kinds:
         return None          # planowanie i inne rodzaje zostają na hoście (bwrap)
-    # V1 wymaga projektu i odebranych urządzeń PT-264. Ani dawny profil karty,
-    # ani wyłączenie pudełek, ani restart nie przywracają tu HostRunnera.
+    # V1 wymaga projektu i odebranych urządzeń PT-264. Przy włączonych pudełkach ani dawny profil
+    # karty, ani restart nie przywracają tu HostRunnera (wyłącznik pudełka: wyżej, PT-289).
     from ..box import exposure
     if slug == exposure.PROJECT:
         raise BoxWaiting("czeka na manifest projektu i odebrane montowania PT-264; "
                          "dawne zgody kart nie aktywują wariantu v1")
     rebuilding = boxwait.card_box_wait(st) == boxwait.REBUILD
-    settings = settings_of(engine)
-    if not settings.enabled:
-        if forced:
-            raise BoxError("wznawiany krok biegł w pudełku, a pudełko jest wyłączone (box.enabled)")
-        if rebuilding:
-            raise BoxWaiting(WAIT_REBUILD)
-        return None
     try:
         profile = bp.load_project(slug)
     except bp.ProfileError as exc:

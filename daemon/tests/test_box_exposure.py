@@ -389,8 +389,12 @@ class ServiceTests(ExposureCase):
             self.assertEqual(model["approvedVersion"], approved["consentVersion"])
             self.assertTrue(model["exposure"]["approved"])
             self.assertIn(self.copy.directory, model["exposure"]["details"])
+        # Bariera v1 obowiązuje przy włączonych pudełkach; wyłącznik (PT-289) wybiera hosta przed nią.
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=True)
         with self.assertRaisesRegex(boxstep.BoxWaiting, "PT-264"):
             boxstep.place(self.engine, "K-39", ex.PROJECT, "ticket", "", ("ticket",))
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=False)
+        self.assertIsNone(boxstep.place(self.engine, "K-39", ex.PROJECT, "ticket", "", ("ticket",)))
         # Ta sama zgoda projektu działa dla kolejnej karty bez kolejnego zaznaczenia.
         preview = self.call(self.request(), "K-39")
         reused = self.call(self.request("approve", **{projectconsent.EXPECTED: preview["exposure"]["expected"]}), "K-39")
