@@ -6109,6 +6109,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if prefix:
             env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + env.get("PATH", "")
         chrome = node_mod.chrome_bin(os.path.expanduser("~"))
+        # Bez pamięci dyskowej QML (08.11: ~/.cache/QtProject urósł do 100 GB od testów qml6 na ścieżkach tymczasowych);
+        # obejmuje też gałęzie kart, których uruchamiacz testów jeszcze tego nie ustawia.
+        env.setdefault("QML_DISABLE_DISK_CACHE", "1")
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
         if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
