@@ -73,6 +73,17 @@ class TrialsTest(unittest.TestCase):
         self.assertIn("| a1 nadpisanie | denied | PermissionError \\| x |", text)
         self.assertIn("brak wyniku prób", text)
 
+    def test_codex_program_is_chosen_like_the_service_does(self):
+        from unittest import mock
+        snap, desktop = trials.codex_homes.SNAP_CODEX, trials.codex_homes.DESKTOP_CODEX
+        self.assertEqual(trials.binary("codex", "/x/codex"), "/x/codex")
+        with mock.patch.object(trials.os.path, "isfile", lambda p: p == desktop), \
+                mock.patch.object(trials.os, "access", lambda p, m: p == desktop):
+            self.assertEqual(trials.binary("codex", "", which=lambda n: snap), desktop)
+            self.assertEqual(trials.binary("codex", "", which=lambda n: "/usr/local/bin/codex"), "/usr/local/bin/codex")
+        with mock.patch.object(trials.os.path, "isfile", lambda p: False):
+            self.assertEqual(trials.binary("codex", "", which=lambda n: snap), snap)
+
     def test_refuses_to_run_inside_a_step(self):
         with tempfile.TemporaryDirectory() as out:
             run = subprocess.run(["/usr/bin/python3", str(SANDBOX / "approval_trials.py"), out, "--skip-tests"],

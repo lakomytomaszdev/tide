@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parents[2]
 DAEMON = REPO / "daemon"
 sys.path.insert(0, str(DAEMON))
 
+from tide_daemon import codex_homes  # noqa: E402
 from tide_daemon.board import contract_approval  # noqa: E402
 from tide_daemon.tasks import agentcmd  # noqa: E402
 
@@ -148,11 +149,18 @@ class Service:
         shutil.rmtree(self.bus_dir, ignore_errors=True)
 
 
-def binary(name: str, given: str) -> str:
-    found = given or shutil.which(name) or ""
+def binary(name: str, given: str, which=shutil.which) -> str:
+    """Program kroku wybrany tak jak w usłudze (`cardflow/execution.py`): Codex ze snapa odmawia startu w jednostce
+    `tide-step-*` („is not a snap cgroup”), więc kroki kart biorą wtedy Codex z aplikacji ChatGPT."""
+    if given:
+        return given
+    found = which(name) or ""
     if not found and name == "claude":
         candidate = Path.home() / ".local" / "bin" / "claude"
         found = str(candidate) if candidate.exists() else ""
+    if name == "codex" and found == codex_homes.SNAP_CODEX and os.path.isfile(codex_homes.DESKTOP_CODEX) and \
+            os.access(codex_homes.DESKTOP_CODEX, os.X_OK):
+        found = codex_homes.DESKTOP_CODEX
     return found
 
 
@@ -323,8 +331,11 @@ def markdown(report: dict) -> str:
         if step.get("error"):
             lines.append(f"- BŁĄD kroku: {step['error']}")
         probe = step.get("probe")
+        lines.append(f"- program: `{step.get('binary', '')}`")
         if not probe:
             lines.append(f"- {step.get('probeError', 'brak wyniku prób')}")
+            if step.get("logTail"):
+                lines += ["", "```", step["logTail"].strip()[-1500:], "```"]
             continue
         lines.append(f"- cgroup procesu prób: `{probe.get('cgroup', '')}`")
         lines += ["", "| Próba | Wynik | Szczegóły |", "| --- | --- | --- |"]
