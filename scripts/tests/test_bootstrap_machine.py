@@ -242,6 +242,45 @@ class ScriptTest(unittest.TestCase):
         self.assertIn("Tide wymaga Kubuntu 26.04 lub nowszego", result.stdout)
         self.assertEqual(self.calls_of("sudo", "make", "apt-get"), [])
 
+    def test_low_memory_turns_low_power_on_and_check_only_reports_search(self):
+        self.memory(16)
+        self.dbus = True
+        self.install_window()
+        result = self.run_script("--check")
+        self.assertIn("pamięć: 16 GB — tryb słabszej maszyny", result.stdout)
+        self.assertIn("SetSemanticSearch s off", result.stdout)        # podpowiedź, nie wywołanie
+        self.assertEqual([c for c in self.calls_of("busctl") if "SetSemanticSearch" in c], [])
+        windows = self.calls_of("tide.py")
+        self.assertEqual(len(windows), 1, windows)
+        self.assertIn("--view board", windows[0])
+        self.assertIn("QML się ładuje (widoki: board)", result.stdout)
+
+    def test_enough_memory_checks_every_view(self):
+        self.dbus = True
+        self.install_window()
+        result = self.run_script("--check")
+        self.assertIn("pamięć: 32 GB", result.stdout)
+        self.assertNotIn("tryb słabszej maszyny", result.stdout)
+        self.assertEqual(len(self.calls_of("tide.py")), 7)
+
+    def test_low_power_install_turns_semantic_search_off(self):
+        self.dbus = True
+        self.install_window()
+        result = self.run_script("--low-power", "--yes", "--no-packages", "--no-board")
+        calls = [c for c in self.calls_of("busctl") if "SetSemanticSearch" in c]
+        self.assertEqual(len(calls), 1, result.stdout + result.stderr)
+        self.assertTrue(calls[0].endswith("/Models org.tide.Daemon.Models SetSemanticSearch s off"), calls)
+        self.assertIn("wyłączono wyszukiwanie po znaczeniu", result.stdout)
+        self.assertEqual(len(self.calls_of("tide.py")), 1)
+
+    def test_low_power_with_search_already_off_changes_nothing(self):
+        self.dbus = True
+        self.install_window()
+        self.search = False
+        result = self.run_script("--low-power", "--yes", "--no-packages", "--no-board")
+        self.assertEqual([c for c in self.calls_of("busctl") if "SetSemanticSearch" in c], [])
+        self.assertIn("wyszukiwanie po znaczeniu wyłączone", result.stdout)
+
     def test_unknown_argument_is_refused(self):
         result = subprocess.run(["bash", str(SCRIPT), "--force"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)

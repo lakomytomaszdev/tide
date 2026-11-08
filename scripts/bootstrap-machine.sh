@@ -3,11 +3,13 @@
 # usługa tide-daemon, okno Tide z Tablicą, CLI `tide` i zasoby przepływu kart. Motyw Tide (SDDM, Plymouth,
 # panele, dock, tapety, kolory, Konsola, Vivaldi) nie jest instalowany.
 #
-# Użycie: bash scripts/bootstrap-machine.sh [--check] [--yes] [--no-packages] [--no-board]
+# Użycie: bash scripts/bootstrap-machine.sh [--check] [--yes] [--no-packages] [--no-board] [--low-power]
 #   --check        tylko diagnoza: niczego nie instaluje, nie woła sudo, nie zakłada Tablicy
 #   --yes          bez pytań przed poleceniami sudo (instalacja pakietów, profil AppArmor dla bwrap)
 #   --no-packages  pomija instalację pakietów systemowych (tylko je sprawdza)
 #   --no-board     nie zakłada Tablicy (powstanie przy pierwszym zapisie z okna)
+#   --low-power    słabsza maszyna (włącza się sama przy mniej niż 20 GB RAM): wyłącza wyszukiwanie po znaczeniu
+#                  (indeks sesji z modelem bge-m3) i sprawdza bez ekranu tylko widok Tablicy, z limitem 120 s
 #
 # Kolejność: system → pakiety (apt: najpierw `apt-get -s install`, odmowa, gdy symulacja zmienia Qt 6
 # albo KDE Frameworks 6) → claude i codex → piaskownica bwrap → make pre-install-backup install-daemon
@@ -25,13 +27,15 @@ check=0
 yes=0
 no_packages=0
 no_board=0
+low_power=0
 for arg in "$@"; do
     case "$arg" in
         --check) check=1 ;;
         --yes) yes=1 ;;
         --no-packages) no_packages=1 ;;
         --no-board) no_board=1 ;;
-        -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --low-power) low_power=1 ;;
+        -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Nieznany argument: $arg (--help)" >&2; exit 1 ;;
     esac
 done
@@ -132,6 +136,20 @@ if systemctl --user show-environment >/dev/null 2>&1; then
 else
     lack "systemd użytkownika (systemctl --user) — usługa tide-daemon go wymaga; zaloguj się do sesji graficznej"
 fi
+
+# Słabsza maszyna: mniej niż 20 GB RAM (8–16 GB) — te same ustawienia co --low-power.
+meminfo="${TIDE_BOOTSTRAP_MEMINFO:-/proc/meminfo}"   # zmienna tylko dla testów (scripts/tests)
+mem_kb="$(awk '/^MemTotal:/{print $2}' "$meminfo" 2>/dev/null || true)"
+if [[ -n "$mem_kb" ]]; then
+    mem_gb=$(( (mem_kb + 524288) / 1048576 ))
+    if [[ $low_power -eq 0 && $mem_kb -lt $((20 * 1048576)) ]]; then
+        low_power=1
+        ok "pamięć: ${mem_gb} GB — tryb słabszej maszyny (jak --low-power)"
+    else
+        ok "pamięć: ${mem_gb} GB"
+    fi
+fi
+[[ $low_power -eq 1 ]] && ok "tryb słabszej maszyny: bez wyszukiwania po znaczeniu, próba okna tylko na widoku Tablicy"
 
 if [[ $unsupported -eq 1 && $check -eq 0 ]]; then
     step "Podsumowanie"
@@ -374,6 +392,27 @@ if [[ -x "$HOME/.local/bin/tide" ]]; then
     if "$HOME/.local/bin/tide" info --json >/dev/null 2>&1; then ok "CLI: tide info --json odpowiada"; else lack "CLI tide info --json zwraca błąd"; fi
 fi
 
+# Słabsza maszyna: indeks wyszukiwania po znaczeniu co 5 min skanuje sesje agentów i ładuje model bge-m3
+# (z Ollamą ok. 1,2 GB) — wyłączamy go; KRunner dalej szuka po słowach. W --check tylko stan.
+if [[ $low_power -eq 1 && $dbus_ok -eq 1 ]]; then
+    search="$(call /Models org.tide.Daemon.Models Status 2>/dev/null | $PY -c '
+import json, sys
+try:
+    print("on" if (json.loads(sys.stdin.read()).get("search") or {}).get("enabled") else "off")
+except ValueError:
+    print("?")' || echo "?")"
+    if [[ "$search" == off ]]; then
+        ok "wyszukiwanie po znaczeniu wyłączone"
+    elif [[ $check -eq 1 ]]; then
+        warn "wyszukiwanie po znaczeniu włączone — na słabszej maszynie wyłącz: busctl --user call org.tide.Daemon /Models org.tide.Daemon.Models SetSemanticSearch s off"
+    elif reply="$(call /Models org.tide.Daemon.Models SetSemanticSearch s off 2>&1)" && \
+            $PY -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$reply" 2>/dev/null; then
+        ok "wyłączono wyszukiwanie po znaczeniu (SetSemanticSearch off)"
+    else
+        warn "nie udało się wyłączyć wyszukiwania po znaczeniu: $reply"
+    fi
+fi
+
 # --- 7. Tablica -----------------------------------------------------------------------------------
 
 step "Tablica"
@@ -428,6 +467,8 @@ if [[ -f "$window" && $python_ok -eq 1 ]]; then
     # Każdy widok z pustymi danymi (--data: bez D-Bus i bez rejestracji okna), zrzut do pliku — ładuje cały QML.
     views=(board issues sessions worktrees docker reports models)
     probe_timeout=60
+    # Słabszy procesor: jeden widok z dłuższym limitem zamiast siedmiu.
+    [[ $low_power -eq 1 ]] && { views=(board); probe_timeout=120; }
     for view in "${views[@]}"; do
         if ! QT_QPA_PLATFORM=offscreen timeout "$probe_timeout" $PY "$window" --view "$view" --data "$view=$tmp/empty.json" \
                 --grab "$tmp/$view.png" >"$tmp/$view.log" 2>&1 || [[ ! -s "$tmp/$view.png" ]]; then
