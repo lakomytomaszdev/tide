@@ -127,6 +127,25 @@ class SwitchPlacementTest(BoxFlow):
         self.assertEqual(self.runner_calls, [])
         self.assertEqual(self.incus_calls(), incus_before)          # żadnego wywołania Incusa
 
+    def test_disabled_project_exposure_does_not_hold_host_step(self):
+        # Bez atrap: sam brak zatwierdzonej ekspozycji v1 (PT-264) nie blokuje hosta przy wyłączonym pudełku.
+        self.box_enabled = False
+        for kind in BOX_STEP_KINDS:
+            with self.subTest(kind=kind):
+                self.assertIsNone(self.place(kind, slug=exposure.PROJECT))
+                self.assertIsNone(self.box_place(kind, slug=exposure.PROJECT))
+        self.assertEqual(self.waits(), [])
+
+    def test_disabled_environment_wait_does_not_hold_host_step(self):
+        # Bez atrap: zapisany `boxWait: environment` nie blokuje hosta przy wyłączonym pudełku.
+        boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.ENVIRONMENT, source="ui")
+        self.box_enabled = False
+        for slug in (SLUG, BARE):
+            for kind in BOX_STEP_KINDS:
+                with self.subTest(slug=slug, kind=kind):
+                    self.assertIsNone(self.box_place(kind, slug=slug))
+        self.assertEqual(self.waits(), [])
+
     def test_disabled_rebuild_wait_does_not_hold_host_step(self):
         self.approve()
         boxwait.set_box_wait(self.engine.journal, self.card_id, boxwait.REBUILD)
