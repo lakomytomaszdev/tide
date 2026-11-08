@@ -172,6 +172,23 @@ class FlowQuotaContractTest(FlowInProcess):
             with self.assertRaises(FlowError, msg=repr(bad)):
                 engine.set_flow_settings({"providerSlots": bad})
 
+    def test_review_rounds_before_question_are_set_through_flow_settings(self):
+        # 08.11: użytkownik zdecydował o pytaniu po 4 rundach review — bez ręcznej edycji ~/.config.
+        engine = self.flow.engine
+        self.assertEqual(engine.get_flow_settings()["reviewRoundsBeforeQuestion"], engine._review_rounds())
+        reply = engine.set_flow_settings({"reviewRoundsBeforeQuestion": 4})
+        self.assertEqual(reply["reviewRoundsBeforeQuestion"], 4)
+        self.assertEqual(engine._review_rounds(), 4)
+        with open(self.settings, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        self.assertEqual(stored["reviewRoundsBeforeQuestion"], 4)
+        self.assertEqual(stored["stepGuardMinutes"], self.guard_minutes)
+        for bad in (0, 21, True, "4", 4.5):
+            with self.assertRaises(FlowError, msg=repr(bad)):
+                engine.set_flow_settings({"reviewRoundsBeforeQuestion": bad})
+        engine.set_flow_settings({"limitThresholdPercent": 5})
+        self.assertEqual(engine.get_flow_settings()["reviewRoundsBeforeQuestion"], 4, "inne ustawienia go nie kasują")
+
     def test_low_limit_queues_card_then_starts_when_reading_recovers(self):
         now = self.flow.engine.clock()
         metric = {"remaining": 7, "readTs": now, "resetTs": now + 1000}
