@@ -36,6 +36,8 @@ Rectangle {
     property string openProject: ""     // slug projektu z otwartym formularzem
     property string openTag: ""         // nazwa tagu z otwartym formularzem ("+" — nowy)
     property string projectError: ""
+    property string testsError: ""      // błąd zapisu albo zatwierdzenia kontraktu testów (sekcja „Testy projektu”)
+    property bool testsInRequest: false // ostatni zapis projektu niósł pole tests
     property string tagError: ""
     property string repoError: ""
     property string busyTag: ""         // tag żądania w toku
@@ -123,8 +125,12 @@ Rectangle {
         if (tag.indexOf("rules:") === 0) {
             assignmentError = error
         } else if (tag.indexOf("project:") === 0) {
-            projectError = error
-            if (!error) openProject = ""
+            const approval = !error && reply.approvalError ? String(reply.approvalError) : ""
+            projectError = error || approval
+            testsError = testsInRequest ? projectError : ""
+            if (!projectError) openProject = ""
+        } else if (tag.indexOf("tests:") === 0) {
+            testsError = error || (reply.approvalError ? String(reply.approvalError) : "")
         } else if (tag.indexOf("tag:") === 0) {
             tagError = error
             if (!error) openTag = ""
@@ -170,6 +176,8 @@ Rectangle {
 
     function send(kind, key, request) {
         busyTag = kind + ":" + key
+        if (kind === "project") { testsInRequest = !!(request && request.tests); testsError = "" }
+        if (kind === "tests") testsError = ""
         if (kind === "tag") tagRequested(busyTag, request)
         else projectRequested(busyTag, request)
     }
@@ -847,6 +855,10 @@ Rectangle {
         property string allowedCommands: ""
         property string deniedCommands: ""
         property string readDirs: ""
+        property string testsChanged: ""
+        property string testsFull: ""
+        readonly property var savedTests: (project.tests || {})
+        readonly property bool testsPending: project.testsApproved === false && !project.testsError
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -869,6 +881,20 @@ Rectangle {
             readDirs = (project.readDirs || []).join("\n")
             readDirsArea.text = readDirs
             assignmentRulesArea.text = project.assignmentRules || ""
+            testsChanged = savedTests.changed || ""
+            testsFull = savedTests.full || ""
+            testsChangedField.text = testsChanged
+            testsFullField.text = testsFull
+            page.testsError = ""
+        }
+
+        // Bieżące pola kontraktu; wysyłane tylko z jawnej akcji użytkownika (zapis zmiany albo „Zatwierdź kontrakt”).
+        function testsValue() {
+            return { changed: testsChanged.trim(), full: testsFull.trim() }
+        }
+
+        function approveTests() {
+            page.send("tests", project.slug, { slug: project.slug, tests: testsValue() })
         }
 
         function commandLines(value) {
@@ -896,6 +922,8 @@ Rectangle {
             const dirs = commandLines(readDirs)
             if (JSON.stringify(dirs) !== JSON.stringify(project.readDirs || [])) request.readDirs = dirs
             if (assignmentRulesArea.text.trim() !== (project.assignmentRules || "")) request.assignmentRules = assignmentRulesArea.text.trim()
+            const tests = testsValue()
+            if (tests.changed !== (savedTests.changed || "") || tests.full !== (savedTests.full || "")) request.tests = tests
             page.send("project", project.slug, request)
         }
 
@@ -1194,6 +1222,137 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 11
                     wrapMode: Text.Wrap
+                }
+                FieldLabel { text: "Testy projektu"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                ColumnLayout {
+                    objectName: "projectTests"
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Testy dobrane do zmian"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                    }
+                    LineInput {
+                        id: testsChangedField
+                        objectName: "projectTestsChanged"
+                        Layout.fillWidth: true
+                        mono: true
+                        placeholder: "np. make test-changed BASE={base}"
+                        accessibleName: "Testy dobrane do zmian"
+                        onTextChanged: row.testsChanged = text
+                        onAccepted: row.save()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "{base} to przypięty punkt startu ticketu na gałęzi karty; Tide podstawia go przy uruchomieniu."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsChangedNote"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: (row.project.testsGrantNote || {}).changed || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        text: "Pełne testy przy domknięciu"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                    }
+                    LineInput {
+                        id: testsFullField
+                        objectName: "projectTestsFull"
+                        Layout.fillWidth: true
+                        mono: true
+                        placeholder: "np. make test"
+                        accessibleName: "Pełne testy przy domknięciu"
+                        onTextChanged: row.testsFull = text
+                        onAccepted: row.save()
+                    }
+                    Text {
+                        objectName: "projectTestsFullNote"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: (row.project.testsGrantNote || {}).full || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsEmptyHint"
+                        Layout.fillWidth: true
+                        visible: row.testsChanged.trim() === "" && row.testsFull.trim() === ""
+                        text: "Bez kontraktu kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md) albo użyją celów wykrytych z Makefile."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsProfileError"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: row.project.testsError || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "projectTestsPending"
+                        Layout.fillWidth: true
+                        visible: row.testsPending
+                        spacing: 8
+                        Text {
+                            objectName: "projectTestsWarning"
+                            Layout.fillWidth: true
+                            text: "kontrakt zmieniony poza oknem projektu — sprawdź i zatwierdź"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.butter
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
+                        PillButton {
+                            objectName: "projectTestsApprove"
+                            implicitHeight: 30
+                            pixelSize: 12
+                            enabled: page.busyTag === ""
+                            text: "Zatwierdź kontrakt"
+                            onClicked: row.approveTests()
+                        }
+                    }
+                    Text {
+                        objectName: "projectTestsError"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: row.open ? page.testsError : ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
                 }
                 Item { implicitWidth: 1 }
                 RowLayout {
