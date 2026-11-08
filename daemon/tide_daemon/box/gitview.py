@@ -18,25 +18,35 @@ def relative_admin(admin):
 
 
 def run(args):
+    identity = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in identity}
     cwd = Path.cwd()
     i = 0
     while i < len(args):
         if args[i] == "-C" and i + 1 < len(args):
             cwd = (cwd / args[i + 1]).absolute()
             i += 2
-        elif args[i] == "-c" and i + 1 < len(args):
+        elif args[i] in ("-c", "--config-env", "--git-dir", "--work-tree") and i + 1 < len(args):
             i += 2
+        elif args[i] == "--":
+            i += 1
+            break
         elif args[i].startswith("-"):
             i += 1
         else:
             break
+    # Inicjalizacja tworzy osobne repozytorium. Widok istniejącego checkoutu
+    # (zwłaszcza GIT_COMMON_DIR) nie może zostać jej administracją.
+    if args[i:i + 1] in (["init"], ["init-db"], ["clone"]):
+        return subprocess.call(["/usr/bin/git", *args], env=env)
     root = cwd
     while not (root / ".git").exists() and root.parent != root:
         root = root.parent
     pointer = root / ".git"
     # Inne repozytoria utworzone w rootfs pudełka korzystają ze zwykłego Git.
     if not pointer.is_file() or pointer.is_symlink():
-        return subprocess.call(["/usr/bin/git", *args])
+        return subprocess.call(["/usr/bin/git", *args], env=env)
     text = pointer.read_text().strip()
     if not text.startswith("gitdir: "):
         raise ValueError("niepoprawny wskaźnik .git")
@@ -48,9 +58,6 @@ def run(args):
         raise ValueError("wskaźnik nie odpowiada administracji hosta")
     view = Path.home() / relative_admin(admin)
     view.mkdir(parents=True, exist_ok=True)
-    identity = {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME",
-                "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"}
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in identity}
     env.update(GIT_DIR=str(view), GIT_COMMON_DIR=str(common), GIT_WORK_TREE=str(root))
     opts = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "gc.auto=0",
             "-c", "maintenance.auto=false", "-c", "core.worktree=" + str(root)]

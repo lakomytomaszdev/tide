@@ -43,6 +43,16 @@ z rejestrem pod bazowym montowaniem ro i przypina własne `--git-dir`/`--work-tr
 Podmiana nie wybiera obcego projektu. Nie polegamy na nakładce pojedynczego pliku
 w zapisywalnym źródle ani na maskowaniu tego pliku przed zwykłym użytkownikiem.
 
+Inicjalizacja `init`/`init-db`/`clone` w pudełku nie korzysta z widoku istniejącego checkoutu.
+Wrapper usuwa odziedziczone zmienne `GIT_*` poza tożsamością także na ścieżce
+zwykłego repozytorium i uruchamia te polecenia bez własnego `GIT_DIR`,
+`GIT_COMMON_DIR` i `GIT_WORK_TREE`. Prywatny hostowy widok strażnika dopuszcza tylko
+`config`, `for-each-ref`, `check-ref-format` i `update-ref`. Odmawia pozostałych
+poleceń, także inicjalizacji i aliasów, przed wykonaniem Git: służy istniejącemu
+magazynowi, a inicjalizacja mogłaby przez `commondir` przepisać wspólny config. Zwykła hostowa inicjalizacja
+oddzielnego repozytorium zachowuje zamknięte środowisko i granicę procesu.
+To poprawka wykonania kontraktu v2, bez zmiany manifestu i uprawnień montowań.
+
 Przed ekspozycją host zapisuje w chronionej administracji `tide-boundary` i punkty
 `tide-index-tip`. Po przesunięciu refu przez prywatny widok host odtwarza swój
 indeks z nowego HEAD przed operacją wymagającą indeksu. Nie kopiuje indeksu z domu

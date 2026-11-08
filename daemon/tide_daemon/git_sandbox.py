@@ -276,6 +276,11 @@ def execute(payload):
     private = payload.get("private", False)
     file_config = command[:1] == ["config"] and any(x in command for x in ("--file", "-f"))
     initializing = command[:1] == ["init"]
+    # Tylko operacje guardgit/refguard na istniejącym magazynie. Lista zamknięta
+    # odcina też init-db i aliasy, które mogłyby przez commondir przepisać config.
+    if private and (not command or command[0] not in
+                    {"config", "for-each-ref", "check-ref-format", "update-ref"}):
+        raise BoundaryError("Git: polecenie poza kontraktem prywatnej administracji")
     if file_config:
         command = list(command)
         for i, item in enumerate(command[:-1]):
