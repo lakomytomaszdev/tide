@@ -125,6 +125,8 @@ class BoardStore:
         self.root = os.path.abspath(os.path.expanduser(root))
         # Magazyn odcisków zatwierdzonych kontraktów testów (contract_approval); None — $XDG_STATE_HOME w chwili wywołania.
         self.approvals_path = approvals_path
+        # Błędy Tablicy z ostatniego `approval_for_step` (PT-286): slug → wpis; kolizja magazynu z obszarem zapisu kroku.
+        self._step_approval_errors: dict[str, dict] = {}
         self.repo = BoardRepo(self.root, git)
         self.git = self.repo.git
         self.clock = clock
@@ -179,6 +181,7 @@ class BoardStore:
             project = board.projects[slug] = parse_project(doc, path, slug, board.errors)
             self._load_project_tests(project, board.errors)
         self._load_cards(board)
+        board.errors.extend(dict(entry) for entry in list(self._step_approval_errors.values()))
         for card in board.cards.values():
             if card.project and card.project not in board.projects:
                 board.errors.append({"path": card.path, "message": f"{card.id}: nieznany projekt „{card.project}”"})
@@ -556,6 +559,18 @@ class BoardStore:
                 return result
             result["testsApproved"] = contract_approval.approved(self.root, slug, contract, self.approvals_path)
             return result
+
+    def approval_for_step(self, project: Project, step) -> tuple[bool, str]:
+        """Zatwierdzenie kontraktu testów projektu dla kroku (`contract_approval.approval_for_step`, PT-286).
+        Kolizja magazynu odcisków z obszarem zapisu kroku zostaje błędem Tablicy do kolejnego sprawdzenia
+        tego projektu bez kolizji."""
+        approved, reason = contract_approval.approval_for_step(project, step, self.root, self.approvals_path)
+        if reason.startswith(contract_approval.STORE_IN_WRITE_AREA):
+            self._step_approval_errors[project.slug] = {
+                "path": self.approvals_path or contract_approval.state_path(), "message": f"{project.slug}: {reason}"}
+        else:
+            self._step_approval_errors.pop(project.slug, None)
+        return approved, reason
 
     def upsert_tag(self, data: dict) -> dict:
         values = _tag_values(_fields(data, TAG_FIELDS), self.colors)

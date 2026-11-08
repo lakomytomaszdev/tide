@@ -124,7 +124,8 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - UpdateCard(s id, s json) -> s  zmiana pól karty (bez kolumny i kolejności) → {ok, id, changed, commitError},
 - MoveCard(s id, s column, i order) -> s  ręczna kolumna i pozycja w niej (od 0, -1 = koniec),
 - UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError}; z polem `tests`
-                             także zatwierdzenie kontraktu testów → dodatkowo {testsApproved, approvalError},
+                             także zatwierdzenie kontraktu testów → dodatkowo {testsApproved, approvalError};
+                             nadawca z jednostki kroku tide-step-* albo nieustalony → error "forbidden" (PT-286),
 - UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
 - RenderFlow(s id, s mode) -> s  polecenie dla karty: {ok, text, entry, mode, tool, branch, docsDir, …},
 - RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {entry, mode, tool, branch},
@@ -1395,9 +1396,11 @@ class BoardAdaptor(QDBusAbstractAdaptor):
     def MoveCard(self, card_id: str, column: str, order: int) -> str:
         return self.monitor.move_card(card_id, column, order)
 
-    @pyqtSlot(str, result=str)
-    def UpsertProject(self, request: str) -> str:
-        return self.monitor.upsert_project(request)
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def UpsertProject(self, request: str, message: QDBusMessage) -> str:
+        # PT-286: PID nadawcy z magistrali (GetConnectionUnixProcessID) — zatwierdzenie kontraktu testów
+        # odrzuca kroki agenta i nadawcę, którego nie da się ustalić (board_monitor.upsert_project).
+        return self.monitor.upsert_project(request, sender_pid=_sender_pid(self.bus, message))
 
     @pyqtSlot(str, result=str)
     def UpsertTag(self, request: str) -> str:
@@ -1551,6 +1554,21 @@ class MonitorsAdaptor(QDBusAbstractAdaptor):
     @pyqtSlot(str, result=str)
     def SetLayout(self, layout: str) -> str:
         return self.service.set_layout(layout)
+
+
+def _sender_pid(bus: QDBusConnection, message: QDBusMessage) -> int | None:
+    """PID procesu nadawcy wywołania według magistrali (`GetConnectionUnixProcessID`); None — nie da się ustalić."""
+    try:
+        sender = message.service()
+        if not sender:
+            return None
+        reply = bus.interface().servicePid(sender)
+        if not reply.isValid():
+            return None
+        pid = int(reply.value())
+        return pid if pid > 0 else None
+    except Exception:  # niepewność → brak PID → odrzucenie zatwierdzenia
+        return None
 
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,

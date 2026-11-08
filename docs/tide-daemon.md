@@ -961,7 +961,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1200,8 +1200,8 @@ mode: full
 Projekt Tablicy ma kontrakt testów: polecenie „testy dobrane do zmian” (`tests.changed`, z parametrem `{base}`)
 i „pełne testy przy domknięciu” (`tests.full`). Leży w profilu projektu `projects/<slug>/box.yaml` jako klucz
 `tests` schematu `tide-box: 1` — w tym samym pliku co profil pudełka K-38, **nie** we frontmatterze
-`projects/<slug>.md`. Zatwierdzenie przez użytkownika opisuje „Zatwierdzenie kontraktu testów” niżej (PT-285);
-ochrona przed krokiem agenta (pochodzenie wywołania) to PT-286.
+`projects/<slug>.md`. Zatwierdzenie przez użytkownika opisuje „Zatwierdzenie kontraktu testów” niżej (PT-285),
+a ochronę przed krokiem agenta — „Ochrona zatwierdzenia przed krokiem agenta” (PT-286).
 
 ```yaml
 tide-box: 1
@@ -1267,9 +1267,73 @@ Zatwierdzenie to **odcisk** kontraktu zapisany poza Tablicą, w stanie usługi:
   na 0700, a nieczytelny plik zastępuje nowym.
 - Moduł: `daemon/tide_daemon/board/contract_approval.py` — jedno wejście odczytu `approved(board, slug, contract)`
   i jedno zapisu `record(board, slug, contract)`; z nich korzysta PT-286.
-- **Granica.** Do PT-286 żaden krok nie korzysta z zatwierdzenia, więc `testsApproved` jest tylko informacją
-  w oknie. PT-286 dodaje ochronę przed krokiem agenta: sprawdzenie nadawcy `UpsertProject` (odrzucanie wywołań
-  z jednostek `tide-step-*`) i kolizje ścieżek z obszarami zapisu kroku (`approval_for_step`).
+- **Granica.** Krok korzysta z zatwierdzenia wyłącznie przez `approval_for_step` (niżej, PT-286); integracja
+  z silnikiem kart to PT-287. Do tego czasu `testsApproved` jest tylko informacją w oknie.
+
+#### Ochrona zatwierdzenia przed krokiem agenta (PT-286)
+
+Prawa 0600 nie odróżniają usługi od kroku agenta tego samego użytkownika, a martwy `DBUS_SESSION_BUS_ADDRESS`
+ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa warunki i próby rzeczywistej piaskownicy.
+
+- **Kolizja ścieżek — `approval_for_step(project, step, board)` → `(approved, reason)`**
+  (`contract_approval.py`; w usłudze `BoardStore.approval_for_step(project, step)`). Zanim kontrakt zostanie
+  dopuszczony dla kroku, funkcja porównuje plik odcisków i każdy jego katalog nadrzędny — w postaci podanej
+  i po `realpath` (z rozwinięciem dowiązań) — z **każdym obszarem zapisu kroku**, także po `realpath`. Ścieżki
+  magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` (także w `XDG_STATE_HOME`) to
+  katalog nadrzędny celu dowiązania, jak w systemie plików, więc sprawdza się ten sam plik, który potem jest
+  czytany. Ścieżka jest rozwijana składnik po składniku jak w jądrze: sprawdza się każdy wpis katalogu na drodze
+  rozwinięcia (rzeczywisty katalog + nazwa), także wpisy z treści napotkanych dowiązań — dowiązanie pośrednie
+  w obszarze zapisu (`/safe/alias → /worktree/pivot → /safe/target`) jest kolizją, bo krok mógłby je przestawić
+  między kontrolą a odczytem — oraz cel każdego przedrostka. Pętla dowiązań albo błąd ich odczytu to
+  niepewność, czyli kolizja. Kolizja:
+  plik albo katalog nadrzędny leży w obszarze zapisu, albo obszar zapisu leży w katalogu odcisków. Wtedy
+  `approved: false`, powód „magazyn zatwierdzeń leży w obszarze zapisu kroku: …” i ten sam wpis w błędach Tablicy
+  (z prefiksem slugu), dopóki kolejne sprawdzenie tego projektu nie przejdzie bez kolizji. Bez kolizji wynik daje
+  odczyt magazynu (`approved`). Każda niepewność — błędne ustawienia kroku (`StepError`), worktree nieznany
+  repozytorium, pusta lub względna ścieżka obszaru, obszar `/`, dowolny wyjątek — to `approved: false`.
+- **Obszary zapisu** daje jedna funkcja `tasks/agentcmd.py`: `write_areas(step, env, git_dir, skills)` →
+  `WriteAreas`; z niej `_claude` składa `allowWrite`, `--add-dir` i `denyWrite`, a `_codex` — `--cd`,
+  `writable_roots` i wykluczenia `/tmp`. `step_write_areas(step)` ustala jej wejścia tak samo jak `background()`
+  (bez zakładania plików), więc sprawdzenie i argumenty kroku nie mają dwóch kopii. `WriteAreas.writable()`:
+  - Claude: katalog roboczy sesji (worktree albo `out` kroku opiekuna), `allowWrite` (`out`), każdy `--add-dir`
+    nieobjęty `denyWrite` (dziś `out`; katalogi tylko do odczytu, wyniki poprzednich kroków i skille mają
+    `denyWrite`), `CLAUDE_CODE_TMPDIR` oraz zapis dawany przez program sam: `/tmp/claude`, `/private/tmp/claude`,
+    `/tmp/claude-<uid>` i wspólny `.git` repozytorium,
+  - Codex: `--cd`, `writable_roots` (katalog worktree w `.git/worktrees`, `.git/objects|refs|logs`, `out`) oraz
+    `/tmp` i `$TMPDIR` programu — tylko gdy krok ich nie wyklucza (`exclude_slash_tmp`, `exclude_tmpdir_env_var`:
+    krok opiekuna, katalogi tylko do odczytu, profil odczytu); kolizja liczy się z faktycznych ustawień kroku,
+  - zawsze repozytorium Tablicy (dokumenty AI i Konsola piszą w nim; dokłada je `approval_for_step`).
+- **Pochodzenie wywołania.** `UpsertProject` z polem `tests` ustala PID nadawcy z magistrali
+  (`GetConnectionUnixProcessID`, `QDBusConnectionInterface.servicePid`) i czyta `/proc/<pid>/cgroup`
+  (`daemon/tide_daemon/call_origin.py`). Proces w jednostce kroku (segment `tide-step-*`, także podgrupa jednostki
+  i wpisy hybrydowe cgroup v1), brak PID, PID 0, brak procesu, pusty, nieczytelny albo niezrozumiały plik →
+  odrzucenie `{ok: false, error: "forbidden", message}` bez zmiany `box.yaml`, odcisku i commita (także przy
+  ponownym zatwierdzeniu identycznych wartości). Bez pola `tests` `UpsertProject` działa jak dotąd i nie sprawdza
+  nadawcy. Zapis kontraktu w pliku przez krok nie zmienia `testsApproved` (PT-285). Polecenia poza piaskownicą
+  (`tide-outside-*`) i okno projektu to nadawcy spoza kroku. Opcja usługi `--proc-root` (ukryta) służy wyłącznie
+  testom (atrapa `/proc`). Ograniczenie: proces przeniesiony poza jednostkę kroku (np. `systemd-run --user`
+  z wnętrza kroku) nie byłby rozpoznany — tę drogę musi zamykać piaskownica, co sprawdzają próby niżej.
+- **Próby rzeczywistej piaskownicy (warunek).** Ochrona obowiązuje tylko wtedy, gdy w prawdziwych piaskownicach
+  Claude i Codexa (`workspace-write`) z ustawieniami z `tasks/agentcmd.py` każda z prób kończy się odmową
+  piaskownicy albo odrzuceniem przez sprawdzenie pochodzenia, a odcisk i `box.yaml` zostają bez zmian:
+  (a) zapis, podmiana (`rename`), usunięcie pliku odcisków, przeniesienie jego katalogu, dowiązanie w katalogu
+  stanu, zapis w prawdziwym katalogu magazynu, zapis `box.yaml`; (b) `UpsertProject` z `tests` przy martwym
+  adresie magistrali, przy podanym prawdziwym adresie magistrali usługi i przy nadpisanym
+  `DBUS_SESSION_BUS_ADDRESS`; (c) proces poza jednostką kroku przez `systemd-run --user` (także z
+  `XDG_RUNTIME_DIR` i prawdziwą magistralą) i `UpsertProject` z takiego procesu. Udana próba oznacza, że
+  zatwierdzenia nie wolno dopuścić do kroków. Skrypt: `scripts/sandbox/approval_trials.py <katalog wyniku>`
+  (poza piaskownicą; usługa z kodu repozytorium na osobnej magistrali, magazyn próbny w
+  `~/.local/state/tide-pt286-trials`, raport `report.md`), próby w kroku: `scripts/sandbox/approval_probe.py`.
+  Każda zmiana `tasks/agentcmd.py` dotycząca zapisu, sieci albo środowiska kroku wymaga ponownego przebiegu.
+  Skrypt wybiera program i pomijane serwery MCP Codexa tak jak usługa: Codex z aplikacji ChatGPT zamiast snapa,
+  bo snap nie działa w jednostce `tide-step-*`, oraz `codexMcpSkip` z ponowieniem.
+  **Wynik dla PT-286 (8.11.2026, HEAD `b2b79238`):** w Claude i w Codexie (`workspace-write`) wszystkie próby
+  skończyły się odmową. Claude: katalog domowy jest niewidoczny w piaskownicy, a tworzenia gniazd AF_UNIX zabrania
+  seccomp, więc padają magistrala usługi, magistrala pulpitu i `systemd-run --user`. Codex: system plików poza
+  obszarami zapisu jest tylko do odczytu (`Read-only file system`), a połączenie z każdym gniazdem magistrali kończy
+  się „Operation not permitted”, więc `systemd-run --user` też nie działa. Odcisk, `box.yaml` i HEAD Tablicy zostały
+  bez zmian. Sprawdzenie pochodzenia nie miało czego odrzucać, bo żaden krok nie połączył się z magistralą; chroni
+  ono na wypadek przyszłego poluzowania piaskownicy. Szczegóły każdej próby są w notce ticketu.
 
 #### Zgodność z profilem pudełka K-38
 
