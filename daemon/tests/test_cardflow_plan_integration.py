@@ -56,10 +56,18 @@ class PlanFlowTest(FlowInProcess):
         self.assertTrue(self.approve(card, environment=False)["ok"])
         st = fold(self.flow.engine.journal.read(card))
         self.assertEqual(boxwait.card_box_wait(st), boxwait.ENVIRONMENT)
-        self.restart()
-        self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5), self.events(card))
-        self.assertFalse(any(s.get("kind") == "ticket" for s in self.of(card, "step.started")))
-        self.assertEqual(boxwait.card_box_wait(fold(self.flow.engine.journal.read(card))), boxwait.ENVIRONMENT)
+        # Bariera zgody obowiązuje przy włączonych pudełkach; przy `box.enabled: false` wyłącznik (PT-289)
+        # wybiera hosta przed nią (test_cardflow_box_switch). Projekt bez profilu nie dochodzi tu do Incusa.
+        from tide_daemon.box.settings import BoxSettings
+        from tide_daemon.cardflow import boxstep
+        with mock.patch.object(boxstep, "settings_of", return_value=BoxSettings(enabled=True)):
+            self.restart()
+            self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5), self.events(card))
+            self.assertFalse(any(s.get("kind") == "ticket" for s in self.of(card, "step.started")))
+            self.assertEqual(boxwait.card_box_wait(fold(self.flow.engine.journal.read(card))), boxwait.ENVIRONMENT)
+            self.assertEqual(self.of(card, "step.waiting")[-1]["reason"], boxstep.WAIT_ENVIRONMENT)
+            self.stop_flow_worker()
+        self.flow.start()
         self.approve_environment(card)
         self.assertTrue(wait_until(lambda: any(s.get("kind") == "ticket" for s in self.of(card, "step.started")),
                                    timeout=10), self.events(card))
