@@ -129,7 +129,8 @@ def parse_dnf(text: str) -> dict:
                 section = ""
             continue
         parts = line.split()
-        if not parts or parts[0] in ("replacing", "replaced"):
+        # dnf4 powtarza nagłówek tabeli („ Package  Arch  Version …”) — to nie pakiet.
+        if not parts or parts[0] in ("replacing", "replaced", "Package"):
             continue
         name = parts[0]
         version = parts[2] if len(parts) > 2 else ""
