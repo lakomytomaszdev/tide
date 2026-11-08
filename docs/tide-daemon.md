@@ -1289,6 +1289,39 @@ do głównej:
 - cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona;
 - wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem.
 
+#### Efektywny kontrakt testów w kartkach kroków (PT-279)
+
+Kartki ticketu, poprawek, review i domknięcia (`cardflow/handoff.py`) biorą polecenia testów z `TestPolicy`
+(`cardflow/testpolicy.py`). Decyzja `effective_tests(contract, worktree, approved, base, error=…)`:
+
+1. zatwierdzony kontrakt (`approved` — wartość logiczna z zewnątrz; decyzja nie liczy odcisku) → źródło `profile`;
+   brakujące pole uzupełnia zasada ogólna, nie wykrycie;
+2. bez zastosowanego kontraktu (brak, niezatwierdzony, uszkodzony profil `testsError`) — wykrycie
+   `make_targets(worktree)`: cel `test-changed` → `make test-changed BASE={base}`, cel `test` → `make test`
+   (cele badane niezależnie) → źródło `detected`;
+3. reszta → zasada ogólna (`rules`): „testy dobrane do zmian według zasad projektu (CLAUDE.md/AGENTS.md)”, przy
+   domknięciu — pełne testy według zasad projektu.
+
+`legacy` — gałąź z `test` bez `test-changed`: pełny `make test` w tickecie, poprawkach i review, a recenzent
+sprawdza w notce udany pełny `make test` (jedyny wyjątek od zakazu żądania pełnego przebiegu). Zatwierdzone
+`make test-changed …` na gałęzi z samym `test` też daje `legacy`; na gałęzi bez obu celów `changed` przechodzi na
+zasadę ogólną z linią o brakującym celu (tak samo zatwierdzone `make test` bez celu `test` przy domknięciu).
+Sprawdzenie celu dotyczy tylko zwykłego `make <cel> [ZMIENNA=…]`: polecenie z opcją `make` (`-C tests`,
+`-f tests/Makefile`, `-j4`) zostaje zatwierdzonym poleceniem bez sprawdzania, bo cele głównego `Makefile`
+i `mk/*.mk` nie rozstrzygają o nim. Linia źródła zasady ogólnej przy zastosowanym kontrakcie podaje rzeczywistą
+przyczynę: kontrakt nie podaje tego polecenia albo gałąź nie ma celu z kontraktu.
+`{base}` zastępuje przypięty punkt startu ticketu (`shlex.quote`); bez bazy zostaje nierozwinięte
+(`base_pending`), a kartka opisuje je jako przypięty punkt startu ticketu. Kartka ma linię źródła polecenia
+(„wykryte z Makefile”, „zatwierdzony kontrakt…”, „zasady projektu…”) i linię o niezatwierdzonym kontrakcie,
+który nie jest stosowany. Przepis ponowienia przez `tools/test_runner.py` dostają tylko polecenia `make test`
+i `make test-changed`; inne (np. `dotnet test …`) — ogólną zasadę ponowienia.
+
+`make_targets(katalog)` to jedyne miejsce przepływu karty czytające `Makefile` i `mk/*.mk`: tylko odczyt, bez
+uruchamiania programów, z pominięciem plików i katalogu `mk` wychodzących dowiązaniem poza katalog. Do czasu
+integracji z silnikiem (#10) silnik woła kartki bez polityki, a kartki liczą ją `master_policy(worktree, base)`
+— regułą sprzed K-69 (bez `Makefile` nadal `make test-changed` i `make test`, bez linii źródła). Wzorcowe
+fragmenty kartek z master: `MASTER_FRAGMENTS` w `daemon/tests/test_cardflow_effective_tests.py`.
+
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
 W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,
