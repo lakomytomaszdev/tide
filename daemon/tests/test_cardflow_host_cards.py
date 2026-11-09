@@ -146,7 +146,7 @@ class NormalizerSensitivityTest(CardsCase):
         noisy = "\r\n".join(line + " \t" for line in raw.split("\n")) + "\n\n"
         self.assertEqual(hostcards.mismatch(name, hostcards.read_fixture(name),
                                             hostcards.normalize(noisy, self.root)), "")
-        self.assertEqual([n for n, _ in hostcards.VARIABLES], ["tmp-root"])
+        self.assertEqual([n for n, _ in hostcards.VARIABLES], ["tmp-root", "tide-resources"])
         # Inny katalog niż katalog tymczasowy przebiegu nie jest zmienną daną.
         self.fails(name, raw.replace(self.root, "/home/inny"))
 

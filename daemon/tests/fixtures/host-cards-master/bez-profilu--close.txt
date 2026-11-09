@@ -4,6 +4,8 @@ Opis karty: Dodaj eksport raportu do CSV.
 Kryteria: plik ma nagłówek.
 Wyniki ticketów: [{'ticket': 'PT-901', 'result': 'done'}]
 Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
+Pełny `make test` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy kroku.
 Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
 `make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
 outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych

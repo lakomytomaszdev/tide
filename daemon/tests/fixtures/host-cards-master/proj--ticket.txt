@@ -3,6 +3,10 @@ Krok ticketu PT-901 karty K-90 w przepływie karty Tide (wejście „Od razu”,
 Karta K-90: Eksport raportu
 Projekt: proj
 Ticket: PT-901
+
+Standard planu Tide: <RESOURCES>/docs/agent-plan-standard.md (wersja 1.3). Przeczytaj go.
+Metodologie zewnętrzne czytaj z pełnych SKILL.md i ich zasobów według katalogu skilli tego kroku. Jeśli wymaganej instrukcji brakuje, zakończ result=error z jej nazwą; zainstaluj ją w katalogu skilli swojego programu i ponów krok. Tide nie dystrybuuje tych metodologii ani prywatnych ustawień użytkownika.
+
 Twój katalog roboczy: <TMP>/wt/proj (gałąź ticket/pt-901-eksport, odgałęziona od gałęzi karty card/k-90-eksport)
 
 Opis karty:
@@ -15,6 +19,10 @@ Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania 
 jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
 w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
 Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
+W piaskownicy kroku uruchamiaj tylko testy celowane (narzędziem testów projektu z filtrem na zmieniony obszar).
+Wymagany `make test-changed BASE=0123456789abcdef0123456789abcdef01234567` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy: część modułów (D-Bus, zapis do /tmp, zagnieżdżona
+piaskownica) i tak tam pada, a drugi przebieg poza piaskownicą tylko dociąża maszynę.
 Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
 niestabilności lub obciążenia), nie powtarzaj całego zestawu. Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem
 na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.

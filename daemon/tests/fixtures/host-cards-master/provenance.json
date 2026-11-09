@@ -1,10 +1,11 @@
 {
  "source": "git show <sha>:<ścieżka> (bez checkoutu), render() z daemon/tests/hostcards.py",
- "masterSha": "292fb204168597f1080ec745b2cf16d1952c9b5a",
- "why": "merge-base gałęzi karty K-38 i master; master scalony do K-38 w f4bc6151",
+ "masterSha": "321590c4901108cecbc1014ffe23a61f9341e270",
+ "why": "merge-base gałęzi integracji K-38 i master; master scalony do integracji K-38 w 047c79b2",
  "blobs": {
-  "daemon/tide_daemon/cardflow/handoff.py": "dac81c847528a76986c7d9c3a4bc66c48bc1b49f",
-  "daemon/tide_daemon/cardflow/testrerun.py": "c4defd71a4a20c14de85bf0573b8475c95e5b01f"
+  "daemon/tide_daemon/cardflow/handoff.py": "d85660fe8cb6a0cc9ab2b13622cb562f94059cf7",
+  "daemon/tide_daemon/cardflow/testrerun.py": "c4defd71a4a20c14de85bf0573b8475c95e5b01f",
+  "daemon/tide_daemon/resources.py": "b6f869194c2ec7cf2a1fa10b3522ac415543f8c7"
  },
  "cards": [
   "bez-profilu/close",
@@ -22,6 +23,7 @@
  ],
  "normalization": [
   "tmp-root",
+  "tide-resources",
   "line-endings",
   "trailing-whitespace"
  ],

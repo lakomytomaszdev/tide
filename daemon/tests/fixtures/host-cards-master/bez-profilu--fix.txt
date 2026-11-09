@@ -9,6 +9,10 @@ Twój katalog: <TMP>/wt/bez-profilu, gałąź ticket/pt-901-eksport. Popraw BLOC
 Testy ticketu (także po poprawkach): ta gałąź karty powstała przed celem `make test-changed`
 i go nie ma. Obowiązuje dla niej dotychczasowa zasada: przed oddaniem uruchom raz pełny `make test` i zapisz
 polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie twórz zamiennika celu.
+W piaskownicy kroku uruchamiaj tylko testy celowane (narzędziem testów projektu z filtrem na zmieniony obszar).
+Wymagany pełny `make test` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy: część modułów (D-Bus, zapis do /tmp, zagnieżdżona
+piaskownica) i tak tam pada, a drugi przebieg poza piaskownicą tylko dociąża maszynę.
 Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
 niestabilności lub obciążenia), nie powtarzaj całego zestawu. Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem
 na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.

@@ -1,14 +1,15 @@
 """PT-291 (K-38 F3): porównanie kartek hosta (HostRunner) z kartkami wygenerowanymi przez przypięty master.
 
-- `MASTER_SHA` to commit master zintegrowany z gałęzią K-38 (`git merge-base` gałęzi karty i master; scalony
-  w f4bc6151 „Merge branch 'master' into integrate/k-38-master”). Ten sam commit jest wzorcem i bazą porównania.
+- `MASTER_SHA` to commit master zintegrowany z gałęzią K-38 (`git merge-base` gałęzi integracji i master; scalony
+  w 047c79b2). Ten sam commit jest wzorcem i bazą porównania; po kolejnej integracji przypnij go na nowo
+  (`write_fixtures`).
 - `load_master()` czyta moduły `cardflow/handoff.py` i `cardflow/testrerun.py` wprost z obiektów gita
   (`git show <sha>:<ścieżka>`) do osobnego pakietu w katalogu tymczasowym — bez checkoutu, worktree ani zmiany
   gałęzi użytkownika — i importuje je pod własną nazwą obok bieżącego `tide_daemon`.
 - `render(module, root)` składa kartki ticket/fix/review/close (kartka + lista poleceń hosta, tak jak silnik
   dla HostRunnera) dla trzech klas projektów z F1 na tych samych syntetycznych worktree i tych samych danych.
 - `normalize()` jest jawny i wąski: zakończenia linii, końcowe białe znaki linii i pliku oraz wyłącznie nazwane
-  zmienne dane (`VARIABLES`: katalog tymczasowy testu). Niczego więcej nie usuwa.
+  zmienne dane (`VARIABLES`: katalog tymczasowy testu, katalog zasobów Tide). Niczego więcej nie usuwa.
 - `APPROVED` to zamknięta lista zatwierdzonych różnic K-38 niezależnych od runnera, z ticketem i commitem:
   każda jest dokładną zamianą fragmentu master na fragment K-38, wymaganą dokładnie raz.
 """
@@ -23,8 +24,10 @@ import tempfile
 from dataclasses import dataclass
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MASTER_SHA = "292fb204168597f1080ec745b2cf16d1952c9b5a"
-MASTER_MODULES = ("daemon/tide_daemon/cardflow/handoff.py", "daemon/tide_daemon/cardflow/testrerun.py")
+MASTER_SHA = "321590c4901108cecbc1014ffe23a61f9341e270"
+# `resources.py` (poziom pakietu): handoff master od 321590c4 importuje `from .. import resources`.
+MASTER_MODULES = ("daemon/tide_daemon/cardflow/handoff.py", "daemon/tide_daemon/cardflow/testrerun.py",
+                  "daemon/tide_daemon/resources.py")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "host-cards-master")
 PROVENANCE = os.path.join(FIXTURES, "provenance.json")
 
@@ -118,20 +121,25 @@ def render(handoff, root: str) -> dict[str, str]:
 # --- normalizacja -----------------------------------------------------------------------------------------
 
 ROOT_TOKEN = "<TMP>"
+RESOURCES_TOKEN = "<RESOURCES>"
 VARIABLES = (
     # (nazwa, opis) — jedyne zmienne dane podmieniane w treści kartki.
     ("tmp-root", "katalog tymczasowy przebiegu testu (worktree, katalogi kroków) → <TMP>"),
+    # Od 321590c4 kartka ticketu odsyła do standardu planu ścieżką bezwzględną (`resources.instructions`);
+    # obie wersje biorą zasoby z tego checkoutu (`REPO`), więc wzorzec nie może zależeć od jego położenia.
+    ("tide-resources", "katalog zasobów Tide = checkout repozytorium (docs/, tools/) → <RESOURCES>"),
 )
 
 
 def normalize(text: str, root: str) -> str:
     """Zakończenia linii (CRLF/CR → LF), końcowe spacje i tabulatory linii, końcowe puste linie, a z danych
-    tylko ścieżka katalogu tymczasowego. Nie usuwa linii, akapitów, poleceń, zasad testów, outside ani uprawnień."""
+    tylko ścieżka katalogu tymczasowego i katalogu zasobów Tide. Nie usuwa linii, akapitów, poleceń, zasad testów,
+    outside ani uprawnień."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip(" \t") for line in text.split("\n")).rstrip("\n") + "\n"
     if root:
         text = text.replace(os.path.realpath(root), ROOT_TOKEN).replace(root, ROOT_TOKEN)
-    return text
+    return text.replace(os.path.realpath(REPO) + os.sep, RESOURCES_TOKEN + os.sep)
 
 
 # --- zatwierdzone różnice K-38 niezależne od runnera -----------------------------------------------------
@@ -202,9 +210,10 @@ def load_master(target: str, sha: str = MASTER_SHA):
     for path in (os.path.join(package, "__init__.py"), os.path.join(package, "cardflow", "__init__.py")):
         open(path, "w").close()
     for path in MASTER_MODULES:
-        with open(os.path.join(package, "cardflow", os.path.basename(path)), "w", encoding="utf-8") as fh:
+        relative = path.removeprefix("daemon/tide_daemon/")
+        with open(os.path.join(package, relative), "w", encoding="utf-8") as fh:
             fh.write(git("show", f"{sha}:{path}"))
-    for module in (name, f"{name}.cardflow"):
+    for module in (name, f"{name}.cardflow", f"{name}.resources"):
         sys.modules.pop(module, None)
     sys.modules.pop(f"{name}.cardflow.handoff", None)
     sys.modules.pop(f"{name}.cardflow.testrerun", None)
@@ -223,9 +232,19 @@ def load_master(target: str, sha: str = MASTER_SHA):
 
 def master_cards(root: str) -> dict[str, str]:
     """Świeżo wygenerowane i znormalizowane kartki master dla danych z `inputs` (bez plików wzorca)."""
-    with tempfile.TemporaryDirectory(prefix="pt291-master-") as target:
-        module = load_master(target)
-        return {name: normalize(text, root) for name, text in render(module, root).items()}
+    # Master od 321590c4 czyta zasoby Tide (docs/, tools/) obok modułu; wczytany z obiektów gita leży w katalogu
+    # tymczasowym, więc wskazujemy mu to samo repozytorium, z którego czyta bieżący kod.
+    previous = os.environ.get("TIDE_RESOURCES_DIR")
+    os.environ["TIDE_RESOURCES_DIR"] = REPO
+    try:
+        with tempfile.TemporaryDirectory(prefix="pt291-master-") as target:
+            module = load_master(target)
+            return {name: normalize(text, root) for name, text in render(module, root).items()}
+    finally:
+        if previous is None:
+            os.environ.pop("TIDE_RESOURCES_DIR", None)
+        else:
+            os.environ["TIDE_RESOURCES_DIR"] = previous
 
 
 def fixture_path(name: str) -> str:
@@ -235,6 +254,7 @@ def fixture_path(name: str) -> str:
 def write_fixtures(root: str) -> None:
     """Zapis wzorców z master (tylko wywołanie jawne, np. z build/; testy nigdy nie zapisują wzorców)."""
     os.makedirs(FIXTURES, exist_ok=True)
+    make_worktrees(root)          # te same syntetyczne worktree co w testach (klasa projektu wybiera zasady testów)
     cards = master_cards(root)
     for name, text in cards.items():
         with open(fixture_path(name), "w", encoding="utf-8", newline="\n") as fh:
@@ -242,7 +262,7 @@ def write_fixtures(root: str) -> None:
     provenance = {
         "source": "git show <sha>:<ścieżka> (bez checkoutu), render() z daemon/tests/hostcards.py",
         "masterSha": MASTER_SHA,
-        "why": "merge-base gałęzi karty K-38 i master; master scalony do K-38 w f4bc6151",
+        "why": "merge-base gałęzi integracji K-38 i master; master scalony do integracji K-38 w 047c79b2",
         "blobs": blob_ids(),
         "cards": sorted(cards),
         "normalization": [name for name, _ in VARIABLES] + ["line-endings", "trailing-whitespace"],
