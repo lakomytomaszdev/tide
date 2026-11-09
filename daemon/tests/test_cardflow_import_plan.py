@@ -9,6 +9,12 @@ from .test_cardflow import FlowInProcess
 
 
 class PlanImportTest(FlowInProcess):
+    def setUp(self):
+        super().setUp()
+        # Kopia planu na gałęzi karty dotyczy projektów `ai-docs: repo` (09.11, K-89).
+        self.assertTrue(json.loads(self.board.upsert_project(json.dumps(
+            {"slug": "proj", "repo": self.repo, "aiDocs": "repo"})))["ok"])
+
     def source(self, card, *, old=False, bound=True, name="2026-10-29-import.md"):
         folder = os.path.join(self.repo, "docs", "agents", "plans")
         os.makedirs(os.path.join(folder, "tickets"), exist_ok=True)

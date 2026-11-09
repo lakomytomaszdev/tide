@@ -24,7 +24,7 @@ class YouTrackFlowTest(FlowInProcess):
         with open(os.path.join(self.base, 'config/tide/youtrack.json'), 'w') as fh:
             json.dump({'url': self.fake.url, 'tokenFile': token}, fh)
         reply = json.loads(self.board.upsert_project(json.dumps({'repo': self.repo, 'youtrack': 'LOG',
-                                                               'youtrackSync': True})))
+                                                               'youtrackSync': True, 'aiDocs': 'repo'})))
         self.assertTrue(reply['ok'], reply)
 
     def test_approved_plan_creates_issues_and_durable_map(self):
