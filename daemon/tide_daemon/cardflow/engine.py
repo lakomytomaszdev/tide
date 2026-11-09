@@ -2435,6 +2435,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if source_evidence:
             read_dirs.append(os.path.join(step_dir, "in", "evidence"))
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
+        from .. import resources
+        standard = resources.resolve("plan-standard")
+        # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji. Dopisane przed krokiem
+        # próbnym polityki testów: jego obszary zapisu muszą być obszarami kroku, który startuje (review PT-287 M1).
+        read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
         # Polityka testów (PT-287): przy każdym starcie i wznowieniu ticketu, poprawek, review i domknięcia — z tego
         # samego kroku, który niżej startuje (te same katalogi; `reads` przechodzi do `launch`).
         policy, reads, policy_fields = None, None, {}
@@ -2474,12 +2479,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         prompt = head + prompt
         if policy is not None:
             policy_fields = {"testPolicy": policy.as_dict(), "testPolicyCard": policy_card}
-        from .. import resources
-        standard = resources.resolve("plan-standard")
         if str(standard) not in prompt:
             prompt += resources.instructions()
-        # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji.
-        read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir)
         from .stepnotes import prepare as prepare_notes

@@ -4,6 +4,7 @@ Przepływ przez publiczne wejście silnika (StartCard, ResolveCardStep) z atrap�
 w procesie testu (fixture `FlowInProcess`). Przypadki decyzji `effective_tests` i treści kartek zostają w testach
 jednostkowych #2 (test_cardflow_effective_tests.py); tu tylko kilka scenariuszy integracji z silnikiem.
 """
+import dataclasses
 import json
 import os
 from unittest import mock
@@ -45,6 +46,17 @@ class StepTestPolicyFlowTest(FlowInProcess):
         patcher = mock.patch.object(engine.store, "approval_for_step", side_effect=counted)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Kroki, z których naprawdę startuje piaskownica: krok próbny polityki ma mieć te same obszary zapisu.
+        self.launched = []
+        real_background = agentcmd.background
+
+        def spied(step):
+            self.launched.append(step)
+            return real_background(step)
+
+        patcher = mock.patch.object(agentcmd, "background", side_effect=spied)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # --- pomocnicze -------------------------------------------------------------------------------
 
@@ -62,10 +74,10 @@ class StepTestPolicyFlowTest(FlowInProcess):
         with open(os.path.join(step["stepDir"], "in", "prompt.txt"), encoding="utf-8") as fh:
             return fh.read()
 
-    def asked(self):
+    def asked(self, **start):
         """Karta z pytaniem kroku ticketu: (id karty, zdarzenie startu, odpowiedź StartCard)."""
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: pytanie")
-        reply = self.start(card_id)
+        reply = self.start(card_id, **start)
         self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "waiting")
         return card_id, self.of(card_id, "step.started")[0], reply
@@ -82,7 +94,8 @@ class StepTestPolicyFlowTest(FlowInProcess):
 
     def approval_for(self, step):
         """Jedyne wywołanie `approval_for_step` dla kroku: (krok z obszarami zapisu, wynik). Sprawdza, że to obszary
-        zapisu dokładnie tego kroku (worktree i `out` z jego zdarzenia)."""
+        zapisu dokładnie tego kroku (worktree i `out` z jego zdarzenia) i tego samego `agentcmd.Step`, z którego
+        startuje piaskownica (`agentcmd.background`) — poza samą kartką."""
         calls = [(slug, probe, result) for slug, probe, result in self.approvals if probe.step_dir == step["stepDir"]]
         self.assertEqual(len(calls), 1, [p.step_dir for _, p, _ in self.approvals])
         slug, probe, result = calls[0]
@@ -90,6 +103,9 @@ class StepTestPolicyFlowTest(FlowInProcess):
         areas = agentcmd.step_write_areas(probe).writable()
         self.assertIn(step["worktree"], areas)
         self.assertIn(os.path.join(step["stepDir"], "out"), areas)
+        [real] = [s for s in self.launched if s.step_dir == step["stepDir"]]
+        self.assertEqual(dataclasses.replace(probe, prompt=""), dataclasses.replace(real, prompt=""))
+        self.assertEqual(areas, agentcmd.step_write_areas(real).writable())
         return probe, result
 
     # --- scenariusze ------------------------------------------------------------------------------
@@ -135,9 +151,13 @@ class StepTestPolicyFlowTest(FlowInProcess):
         self.assertIn("`{base}` to przypięty punkt startu", handoff.current_tests(bare, kind="ticket"))
 
     def test_revoked_approval_gives_policy_without_profile_on_resume(self):
+        # Codex (review PT-287 M1): `/tmp` i `$TMPDIR` są w jego obszarach zapisu tylko bez katalogów odczytu, więc
+        # krok próbny musi mieć te same `read_dirs` co krok, który startuje (sprawdza `approval_for`).
         self.approve(FIRST)
-        card_id, first, _reply = self.asked()
+        card_id, first, _reply = self.asked(executor="Codex mocny", preferredProvider="openai")
+        self.assertEqual(first["program"], "codex")
         self.assertEqual(first["testPolicy"]["source"], "profile")
+        self.assertEqual(self.approval_for(first)[1], (True, ""))
         contract_approval.record(self.root, "proj", {})       # cofnięcie zatwierdzenia: odcisk usunięty
 
         resumed = self.resume(card_id, first)
