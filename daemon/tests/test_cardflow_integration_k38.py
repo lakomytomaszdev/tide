@@ -715,8 +715,8 @@ class RestartHistoricalHostStepTest(ServiceCase):
             if event.get("type") == "step.started" and event.get("step") in steps:
                 return {k: event[k] for k in fields if k in event}
             if event.get("action") == "step-start" and event.get("key") in steps:
-                fields = PT58_INTENT_FIELDS if event["type"] == "intent" else PT58_RESULT_FIELDS
-                return {k: event[k] for k in fields if k in event}
+                kept = PT58_INTENT_FIELDS if event["type"] == "intent" else PT58_RESULT_FIELDS
+                return {k: event[k] for k in kept if k in event}
             return event
         return change
 
@@ -880,6 +880,27 @@ class EvidenceClassificationTest(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             record = json.loads(fh.read())
         self.assertEqual((record["kind"], record["stepKind"]), ("blocked", "ticket"))
+
+    def test_old_formats_drop_later_fields_and_keep_identity(self):
+        started = {"v": 1, "seq": 5, "ts": "t", "card": "K-1", "type": "step.started", "step": "K-1-PT-1-1",
+                   "kind": "ticket", "ticket": "PT-1", "provider": "anthropic", "deliveredNoteIds": [],
+                   "readDirsProfile": False, "baseVersion": 0, "unit": "u", "session": "s"}
+        intent = {"v": 1, "seq": 3, "ts": "t", "card": "K-1", "type": "intent", "action": "step-start",
+                  "key": "K-1-PT-1-1", "ticket": "PT-1", "kind": "ticket", "provider": "anthropic", "unit": "u"}
+        result = {"v": 1, "seq": 4, "ts": "t", "card": "K-1", "type": "result", "action": "step-start",
+                  "key": "K-1-PT-1-1", "ok": True, "unit": "u", "gitDir": "g", "readDirsProfile": False}
+        other = {"v": 1, "seq": 6, "type": "step.started", "step": "K-1-PT-1-2", "provider": "anthropic"}
+        for fields, provider in ((PT58_STEP_FIELDS, False), (DECISION_STEP_FIELDS, True)):
+            change = RestartHistoricalHostStepTest.old_format({"K-1-PT-1-1"}, fields)
+            new_started, new_intent, new_result, new_other = map(change, (dict(started), dict(intent),
+                                                                          dict(result), dict(other)))
+            self.assertEqual("provider" in new_started, provider)
+            self.assertFalse({"deliveredNoteIds", "readDirsProfile", "baseVersion"} & set(new_started))
+            self.assertEqual((new_started["seq"], new_started["step"], new_started["ticket"]), (5, "K-1-PT-1-1", "PT-1"))
+            self.assertEqual((new_intent["key"], new_intent["ticket"], new_intent["kind"]), ("K-1-PT-1-1", "PT-1", "ticket"))
+            self.assertNotIn("provider", new_intent)
+            self.assertEqual(new_result, {k: result[k] for k in PT58_RESULT_FIELDS if k in result})
+            self.assertEqual(new_other, other, "inne kroki bez zmian")
 
     def test_unittest_summary_lines(self):
         self.assertEqual(_outcome("...\nFAILED (failures=1)\n"), "FAIL")
