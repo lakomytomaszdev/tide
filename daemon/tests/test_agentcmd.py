@@ -467,6 +467,13 @@ class BackgroundCodexTest(BackgroundBase):
         allowed, _ = agentcmd.read_only_tools(wt)
         self.assertFalse([r for r in allowed if r in (f"Bash(git -C {wt} diff)", f"Bash(git -C {wt} diff *)")])
 
+    def test_caretaker_reads_its_own_input_with_the_read_tool(self):
+        """09.11: opiekun nie mógł przeczytać swojego `in/context` (history.md, attempts.md, plan) — Read poza
+        katalogami sesji był odrzucany w każdym przebiegu od co najmniej 08.11, więc oceniał problem na ślepo."""
+        allowed, _ = agentcmd.read_only_tools(self.worktree, self.step_dir)
+        self.assertIn(f"Read(/{self.step_dir}/in/**)", allowed)
+        self.assertNotIn(f"Read(/{self.step_dir}/**)", allowed)
+
     def test_caretaker_git_never_inspects_submodule_with_its_own_filter(self):
         """PT-158, review runda 4/M1: filtr nazwany wyłącznie w submodule nie może uruchomić programu nawet
         z zapisem tylko do `out`. Sprawdzamy prawdziwy git i dopasowanie do faktycznie wygenerowanych reguł."""

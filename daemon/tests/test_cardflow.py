@@ -534,7 +534,8 @@ class NowInProcessTest(FlowInProcess):
 
         self.assertEqual(git(self.repo, "rev-parse", "master").strip(), self.master)
         self.assertIn("ATRAPA.md", git(self.repo, "ls-tree", "-r", "--name-only", reply["cardBranch"]).split())
-        self.assertIn(f"Merge ticket PT-1 into card {card_id}", git(self.repo, "log", "--format=%s", reply["cardBranch"]))
+        # Projekt bez docs/agents ma domyślnie `ai-docs: tide`: tytuł scalenia bez numerów kart i ticketów (K-89).
+        self.assertIn("Merge: feat: atrapa robi ticket", git(self.repo, "log", "--format=%s", reply["cardBranch"]))
         self.assertTrue(os.path.isfile(os.path.join(reply["cardWorktree"], "ATRAPA.md")), "worktree karty po scaleniu")
         self.assertEqual(git(reply["cardWorktree"], "status", "--porcelain"), "")
 
