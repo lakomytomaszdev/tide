@@ -2348,9 +2348,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
-                attempt=0, resume_session="", make_prompt=None) -> dict:
+                attempt=0, resume_session="", make_prompt=None, evidence=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
-        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
+        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153).
+        `evidence` — wpis kroku autora dla review: spis jego artefaktów dostaje tylko review w pudełku (PT-291)."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
         self._admit(card.id, selected, ticket, kind, step_id)
@@ -2370,6 +2371,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                                      project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                                      card_branch=made["branch"], worktree=worktree, out_dir=out,
                                                      images=shots, test_base=made_ticket.get("base") or "")
+        # PT-291: dodatki pudełka zależą od zapisanego runnera tego kroku (placement), nie od profilu ani autora.
+        step_runner = handoff.BOX_RUNNER if placement is not None else handoff.HOST_RUNNER
+        if evidence is not None:
+            prompt += handoff.review_evidence(step_runner, evidence)
         context_prompt, base_context = self._step_base_context(fold(self.journal.read(card.id)))
         prompt += context_prompt
         read_dirs, context_dirs = [], []
@@ -2406,9 +2411,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         read_dirs = list(read_dirs) + [d for d in dict.fromkeys(image_dirs)
                                        if (shots and d == os.path.join(step_dir, "in", "images")) or os.path.isdir(d)]
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
-            prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir, box=placement is not None)
-        if placement is not None:
-            prompt += handoff.box_tests(placement.profile)
+            prompt += handoff.runner_policy(step_runner, project.allowed_commands, project.denied_commands,
+                                            step_dir=step_dir,
+                                            profile=placement.profile if placement is not None else None)
         from .stepnotes import prepare as prepare_notes
         prompt, note_ids = prepare_notes(fold(self.journal.read(card.id)), parent_step, prompt)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
@@ -4625,11 +4630,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                      ticket_branch=info["branch"], worktree=path, out_dir=out,
                                      diff=diff, note=self._note(card, source), rules=self._rules(project.repo),
                                      test_base=info["base"])
-        prompt += handoff.test_evidence(source)
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": path}, step_id, [],
-                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip)
+                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip, evidence=source)
 
     def _fix(self, card: str, st: FlowState, review_step: dict) -> None:
         item, project = self._project(card)
