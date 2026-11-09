@@ -792,6 +792,19 @@ class ClaudeSettingsTest(BoxRunnerCase):
         # Plik ustawień jest w katalogu kroku (pudełko), nie w ustawieniach hosta.
         self.assertTrue(os.path.isfile(os.path.join(self.step_dir, "in", "settings.json")))
 
+    def test_read_tool_never_reaches_secrets_in_the_step_input(self):
+        """PT-314: krok opiekuna czyta własny `in/**` narzędziem Read; w pudełku leżą tam `env` i kopia tokenu
+        punktu — zakaz Read wygrywa ze zgodą (także z ogólnym `Read` zwykłego kroku)."""
+        mac = local.LocalAgent("mac", "http://mac.lan:11434", "openai", "qwen3-coder:30b", 65536, self.token_file)
+        inp = os.path.join(self.step_dir, "in")
+        for step in (self.step(write_out_only=True), self.step(local=mac, step_id="s2"),
+                     self.step(allowed_tools=("Read",), step_id="s3")):
+            with self.subTest(step=step.step_id):
+                bg = self.runner()._background(step)
+                deny = self.settings_of(bg)["permissions"]["deny"]
+                for name in (br.ENV_FILE, br.LOCAL_TOKEN_FILE):
+                    self.assertIn(f"Read(/{os.path.join(inp, name)})", deny)
+
     def test_sandbox_disabled_variant_writes_k1_risk_to_card_journal_once(self):
         events = []
         runner = self.runner(sandbox=False, journal=lambda kind, fields: events.append((kind, fields)))

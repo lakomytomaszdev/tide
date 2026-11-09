@@ -169,7 +169,11 @@ def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...],
     `READ_ONLY_COMMANDS` (też z wzorcami nazwanymi worktree — Claude CLI pyta o polecenia ze ścieżką spoza katalogów
     sesji mimo `cat *`, por. `board.commands.step_reads`), `git -C <worktree>` z `READ_ONLY_GIT`, odczyt worktree
     narzędziami Read/Grep/Glob i odczyt własnych katalogów kroku; zakazy `READ_ONLY_BANS` (zakaz wygrywa z zgodą,
-    łańcuch poleceń Claude CLI sprawdza po kawałku). Bez listy poleceń projektu."""
+    łańcuch poleceń Claude CLI sprawdza po kawałku). Bez listy poleceń projektu.
+
+    Własny `<krok>/in/**` (PT-314) narzędziem Read: kontekst opiekuna (`in/context/**`: historia, próby, plan) leży
+    poza katalogami sesji, a Read poza nimi pyta o zgodę, której krok w tle nie dostanie. Bez `--add-dir`: ten
+    rozszerzyłby też domyślny zapis poleceń. Zapis w `in` blokuje piaskownica (`allowWrite` tylko `out`)."""
     from ..board.commands import step_reads
     worktree = os.path.normpath(worktree)
     allowed = []
@@ -179,7 +183,10 @@ def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...],
     for sub in READ_ONLY_GIT:
         allowed += [f"Bash(git -C {worktree} {sub})", f"Bash(git -C {worktree} {sub} *)"]
     # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`; reguła Read obejmuje też Grep i Glob.
-    allowed += [f"Read(/{worktree}/**)", *step_reads(step_dir)]
+    allowed.append(f"Read(/{worktree}/**)")
+    if step_dir and os.path.isabs(step_dir):
+        allowed.append(f"Read(/{os.path.join(os.path.normpath(step_dir), 'in')}/**)")
+    allowed += step_reads(step_dir)
     return tuple(dict.fromkeys(allowed)), tuple(f"Bash({rule})" for rule in READ_ONLY_BANS)
 
 
@@ -675,8 +682,8 @@ def caretaker_interactive(step: Step) -> Background:
     if step.tool == "claude":
         out = os.path.normpath(os.path.join(step.step_dir, "out"))
         at = argv.index("--disallowedTools")
-        argv[at:at] = [f"Read(/{step.step_dir}/in/**)", f"Read(/{out}/**)",
-                       f"Write(/{out}/**)", f"Edit(/{out}/**)"]
+        # Odczyt własnego `in/**` daje już lista kroku w tle (`read_only_tools`, PT-314); rozmowa dokłada `out`.
+        argv[at:at] = [f"Read(/{out}/**)", f"Write(/{out}/**)", f"Edit(/{out}/**)"]
         argv.remove("-p")
         at = argv.index("--output-format")
         del argv[at:at + 2]

@@ -3075,8 +3075,11 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   --no-ext-diff --no-textconv --ignore-submodules=all …` (opcje obowiązkowe: wyłączają `diff.external`,
   `diff.<d>.command`, `textconv` i inspekcję submodułów) i `git -C <worktree> status --ignore-submodules=all`
   (`READ_ONLY_GIT`),
-  `Read(//<worktree>/**)` dla Read/Grep/Glob i odczyt własnych `in`/`out`
-  (`board.commands.step_reads`). Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
+  `Read(//<worktree>/**)` i `Read(//<krok>/in/**)` dla Read/Grep/Glob (PT-314: cały własny `in`, także kontekst
+  `in/context/**` — historia, próby, plan; bez `--add-dir`, który poszerzyłby zapis poleceń) i odczyt własnych
+  `in`/`out` poleceniami (`board.commands.step_reads`). Rozmowa z opiekunem dokłada tylko `Read`/`Write`/`Edit` dla
+  `out`. W pudełku `in/env` i kopia tokenu `in/local-token` mają zakaz `Read` w `permissions.deny` (obok `denyRead`
+  piaskownicy, który dotyczy tylko poleceń). Codex: `workspace-write` czyta dysk, zapis tylko `out`. Lista jest w Tide, niezależna od ustawień projektu: silnik nie podaje kroku
   opiekuna listy projektu (`claude_tools`), a `agentcmd` i tak ją pomija. `--disallowedTools` (zakaz wygrywa ze
   zgodą): `READ_ONLY_BANS` — `find` z `-delete`, `-exec`/`-execdir`, `-ok`/`-okdir`, `-fprint*`, `-fls`; `rg`
   z `--pre`, `--hostname-bin`, `--search-zip`/`-z` (także połączonym, np. `-az`, `-iz`); `git` z `--output`,
