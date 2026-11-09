@@ -79,6 +79,15 @@ class PlanApprovalSwitchTest(Counters):
     proposal = fixtures.PlanFlowTest.proposal
     submit = fixtures.PlanFlowTest.submit
 
+    def setUp(self):
+        super().setUp()
+        # Każdy wariant trzyma ticket na hoście do końca testu; trzy warianty i krok poprawki planu nie mogą
+        # wyczerpać domyślnych 3 slotów dostawcy (EditCardPlan → FlowDeferred „limit kroków dostawcy”).
+        with open(self.settings, encoding="utf-8") as fh:
+            settings = json.load(fh)
+        with open(self.settings, "w", encoding="utf-8") as fh:
+            json.dump({**settings, "providerSlots": {"anthropic": 12}}, fh)
+
     def call(self, method, *args):
         box = []
         getattr(self.flow, method)(*args, box.append)
