@@ -30,9 +30,12 @@ Dziewięć reguł doboru i zgód (numeracja K-69, do której odsyła [standard p
    ([zgoda](tide-daemon.md#zgoda-na-polecenia-kontraktu-pt-280)).
 6. **Pierwszeństwo zakazów.** Zakazy projektu (`denied-commands`) i Tide (np. `make install`) mają pierwszeństwo
    przed poleceniem kontraktu: zakazane polecenie nie dostaje zgody.
-7. **Warunek `legacy`.** Tryb `legacy` zachodzi dokładnie wtedy, gdy gałąź ma cel `test` bez `test-changed`, także
-   gdy zatwierdzone `changed` zaczyna się od `make test-changed`; w `legacy` pełny `make test` jest testem ticketu
-   i poprawek, a recenzent sprawdza jego wynik w notce (zob. [starsze gałęzie](#starsze-gałęzie-bez-celu-test-changed)).
+7. **Warunek `legacy`.** Bez zastosowanego (zatwierdzonego) kontraktu tryb `legacy` zachodzi, gdy gałąź ma cel `test`
+   bez `test-changed`. Z zatwierdzonym kontraktem zachodzi tylko wtedy, gdy zatwierdzone `changed` jest zwykłym
+   `make test-changed …` (bez opcji `make`, np. `-C`) i gałąź ma cel `test` bez `test-changed`; inne zatwierdzone
+   `changed` (np. `dotnet test …`, `make -C … test-changed` albo puste) nie dają `legacy` i obowiązuje polecenie
+   kontraktu albo zasada ogólna. W `legacy` pełny `make test` jest testem ticketu i poprawek, a recenzent sprawdza jego
+   wynik w notce (zob. [starsze gałęzie](#starsze-gałęzie-bez-celu-test-changed)).
 8. **Domknięcie.** Krok `close` raz uruchamia pełne testy (`tests.full` zatwierdzonego kontraktu, wykryte `make test`
    albo pełne testy według zasad projektu), a ich porażka kończy krok wynikiem `error`, nie `done`.
 9. **Ponowienie.** Ponowienie padniętych modułów ogranicza tylko to, co się uruchamia: nie zamienia wcześniejszej

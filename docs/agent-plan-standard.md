@@ -236,8 +236,10 @@ review. Zasada zastępuje
 wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
 planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
 
-Wyjątek `legacy` (reguła 7): gałąź z celem `test` bez `test-changed` — autor i recenzent uruchamiają pełny `make test`
-zamiast niedostępnego celu i zapisują wynik. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+Wyjątek `legacy` (reguła 7, rozstrzygająca w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)):
+bez zastosowanego kontraktu — cel `test` bez `test-changed`; z zatwierdzonym kontraktem — tylko gdy `changed` to zwykłe
+`make test-changed …`, a gałąź ma `test` bez `test-changed`. W `legacy` pełny `make test` jest testem ticketu,
+a recenzent sprawdza jego wynik w notce. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
 
 Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
 [dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
