@@ -112,13 +112,16 @@ polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie
 """
 
 
-def sandbox_tests(full: str, worktree: str = "") -> str:
+def sandbox_tests(full: str, worktree: str = "", command: str | None = None) -> str:
     """08.11: kroki uruchamiały pełny przebieg w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp
     i zagnieżdżonego bwrap), a potem drugi raz poza nią — obciążenie maszyny 40–58 na 16 rdzeniach.
-    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”)."""
+    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”).
+    `command` — obowiązujące polecenie z polityki testów (K-69), jak w `rerun_failed`: zestawy celowane Tide
+    tylko przy `make test`/`make test-changed`; inne polecenie albo zasada ogólna (`""`) — zasada ogólna."""
     from .testrerun import runner_reruns
     known = not worktree or not os.path.isdir(worktree)
-    if known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py")):
+    tide = command is None or testpolicy.make_target(command) in (testpolicy.FULL_TARGET, testpolicy.CHANGED_TARGET)
+    if tide and (known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))):
         targeted = "`make test-cardflow`, `make test-daemon`, `make test-board`"
         targeted += (" albo `/usr/bin/python3 tools/test_runner.py --modules <moduły>`"
                      if known or runner_reruns(worktree) else " albo inny zestaw `make test-<zestaw>`")
@@ -201,10 +204,10 @@ def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None =
     `author=False` (kartka review): zasada bez instrukcji uruchamiania przebiegu — recenzent sprawdza wynik
     autora i nie zgłasza własnego pełnego przebiegu (08.11, review Astry)."""
     policy = _tests_policy(policy, worktree, base)
-    sandbox = sandbox_tests if author else (lambda _full, _worktree="": "")
+    sandbox = sandbox_tests if author else (lambda _full, _worktree="", _command=None: "")
     head = _notes(policy)
     if policy.legacy:
-        return head + OLD_BRANCH_TESTS + sandbox(f"pełny `{policy.changed}`", worktree) + \
+        return head + OLD_BRANCH_TESTS + sandbox(f"pełny `{policy.changed}`", worktree, policy.changed) + \
             rerun_failed(worktree, policy.changed)
     full_nom, full_gen, full_short = _full_phrases(policy)
     make = testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET
@@ -225,7 +228,7 @@ def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None =
     if make:
         text += f"Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego {full_short}.\n"
     required = f"`{policy.changed}`" if policy.changed else RULES_SANDBOX
-    return head + text + sandbox(required, worktree) + rerun_failed(worktree, policy.changed)
+    return head + text + sandbox(required, worktree, policy.changed) + rerun_failed(worktree, policy.changed)
 
 
 def review_tests(policy: TestPolicy) -> str:
