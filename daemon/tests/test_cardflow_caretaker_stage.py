@@ -559,6 +559,29 @@ class StageObservationTest(unittest.TestCase):
             self.engine._caretaker_launch.assert_not_called()
             self.assertTrue(caretaker.owned(self.j.st, "flow-error:close")["handed"])
 
+    def test_close_runs_again_after_an_appended_ticket_is_approved(self):
+        """09.11, K-69: domknięcie poprosiło o dopisanie ticketu (wynik error), ticket dopisano, zatwierdzono i scalono —
+        a karta stała „bez kroku”: `_advance_close` widział stary krok domknięcia, bo liczył tylko zwrot planu i zmianę bazy."""
+        done_step(self.j)
+        self.j.add("result", action="merge", key="PT-7", ok=True)
+        self.j.add("result", action="cleanup", key="PT-7", ok=True)
+        self.j.add("result", action="card-branch", key="K-1", ok=True, branch="card/k-1", worktree="/w")
+        self.j.add("step.started", step="K-1-plan-4", kind="close", ticket="", executor="Opus")
+        self.j.add("step.finished", step="K-1-plan-4", ticket="", result="error", reason="potrzebny nowy ticket")
+        self.engine._advance_close = FlowEngine._advance_close.__get__(self.engine)
+        self.engine._project = mock.Mock(return_value=(SimpleNamespace(), SimpleNamespace()))
+        self.engine.models_config = None
+        self.engine.catalog = mock.Mock(return_value={"Opus": {}})
+        self.engine.model_probe = self.engine.which = None
+        with mock.patch.object(execution, "resolve", side_effect=execution.ExecutionError(
+                "unknown-executor", "zatrzymanie testu przed startem kroku")) as resolve:
+            self.assertFalse(self.engine._advance_close("K-1", self.j.st))
+            resolve.assert_not_called()          # stary błąd domknięcia bez zmian w planie: bez nowej próby
+            self.j.add("plan.revision-approved", plan={})
+            with self.assertRaises(Exception):
+                self.engine._advance_close("K-1", self.j.st)
+            resolve.assert_called_once()         # po zatwierdzonej zmianie planu — nowe domknięcie
+
     def test_real_plan_next_has_one_commit_attempt_and_one_problem_until_limit(self):
         # Zakończone planowanie też przechodzi przez rzeczywiste `_advance`; dawniej wołało `_plan_next`
         # przed jego wywołaniem w `_advance_card` i przed końcowym, trzecim miejscem commita planu.
