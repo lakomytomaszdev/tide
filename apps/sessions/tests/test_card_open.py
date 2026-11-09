@@ -142,6 +142,17 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual(json.loads(out["calls"][1][2]), {"step": "s1", "option": 1})
         self.assertTrue(out["state"]["decisionOpen"], "podgląd z pliku odrzuca zapis — decyzja wraca do okna")
 
+    def test_review_answer_sends_ticket_and_round_of_the_shown_question(self):
+        # PT-316: okno odpowiada na pytanie, które pokazuje; bez ticketu (stare dane) idzie goły napis.
+        out = self.probe(self.waiting, "click_entry(0)\n"
+                         "js(\"decisionDialog.answered('d1', 'ResolveCardReview', "
+                         "{choice: 'accept', ticket: 'PT-8', round: 3})\")\n"
+                         "js(\"decisionDialog.answered('d2', 'ResolveCardReview', {choice: 'retry'})\")\n"
+                         "QTest.qWait(200)\nresult['calls'] = calls()")
+        self.assertEqual(out["calls"][0][:2], ["ResolveCardReview", CARD])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"choice": "accept", "ticket": "PT-8", "round": 3})
+        self.assertEqual(out["calls"][1], ["ResolveCardReview", CARD, "retry"])
+
     def test_dialog_setting_reaches_the_backend(self):
         out = self.probe(self.waiting, "click_entry(0)\njs(\"decisionDialog.cardOpenRequested('full')\")\n"
                                        "QTest.qWait(100)\nresult['cardOpen'] = backend.cardOpen\n"

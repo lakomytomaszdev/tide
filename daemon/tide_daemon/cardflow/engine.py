@@ -326,9 +326,10 @@ def review_question(ticket: str, round_no: int, review_md: str) -> str:
             "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
 
 class FlowError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, data: dict | None = None):
         super().__init__(message)
         self.code = code
+        self.data = data or {}     # dodatkowe pola odpowiedzi (np. `reviews` przy `ambiguous-review`)
 
 
 class _CaretakerPort:
@@ -4772,29 +4773,79 @@ class FlowEngine(CaretakerChat, PlanEditing):
                      prompt_text=prompt, review_tip=step.get("reviewTip") or "",
                      parent_step=step.get("step") or "", attempt=attempt, resume_session=session)
 
+    @staticmethod
+    def _review_request(choice) -> tuple[str, str, int | None]:
+        """`choice` to dawny napis (`retry` | `reject` | `accept`) albo JSON `{"choice", "ticket", "round"?}`."""
+        text = choice.strip() if isinstance(choice, str) else ""
+        ticket, round_no = "", None
+        if text.startswith(("{", "[")):
+            try:
+                data = json.loads(text)
+            except ValueError:
+                raise FlowError("bad-choice", "decyzja o review nie jest poprawnym JSON-em") from None
+            if not isinstance(data, dict):
+                raise FlowError("bad-choice", "decyzja o review w JSON-ie musi być obiektem {choice, ticket, round}")
+            text, ticket, round_no = data.get("choice"), data.get("ticket") or "", data.get("round")
+            if not isinstance(text, str) or not isinstance(ticket, str) or \
+                    (round_no is not None and (isinstance(round_no, bool) or not isinstance(round_no, int))):
+                raise FlowError("bad-choice", "decyzja o review: choice i ticket to napisy, round to liczba")
+        if text not in ("retry", "reject", "accept"):
+            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
+        return text, ticket.strip(), round_no
+
+    @staticmethod
+    def _open_reviews(st) -> list[tuple[str, int]]:
+        """Otwarte pytania o review (ticket, runda), które da się rozstrzygnąć, w kolejności zapisu pytań."""
+        if st.card_finished:
+            return []
+        latest = {}
+        for item in st.steps.values():
+            latest[item.get("ticket")] = item
+        running = {s.get("ticket") for s in st.running() if s.get("kind") != "caretaker"}
+        found = []
+        for (ticket, round_no) in st.review_questions:
+            step = latest.get(ticket) or {}
+            if (ticket, round_no) in st.review_decisions or ticket in st.rejected or ticket in running or \
+                    step.get("kind") != "review" or int(step.get("round") or 0) != round_no or round_no < 3 or \
+                    (st.verdicts.get((ticket, round_no)) or {}).get("verdict") != "REQUEST_CHANGES":
+                continue
+            found.append((ticket, round_no))
+        return found
+
     def resolve_review(self, card_id: str, choice: str) -> dict:
-        """Jawna decyzja po trzecim i każdym następnym nieudanym review."""
+        """Jawna decyzja po trzecim i każdym następnym nieudanym review. `choice`: napis albo JSON z ticketem (PT-316)."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if choice not in ("retry", "reject", "accept"):
-            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
+        choice, want_ticket, want_round = self._review_request(choice)
         st = self.journal.state(card)
         self._require_base_context(card)
-        st.last_step = attention_step(st) or st.last_step
-        step = st.steps.get(st.last_step) or {}
+        if want_ticket:
+            step = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == want_ticket), {})
+        else:
+            opened = self._open_reviews(st)
+            if len(opened) > 1:
+                raise FlowError("ambiguous-review",
+                                f"{card}: kilka pytań o review czeka na decyzję — wskaż ticket",
+                                {"reviews": [{"ticket": t, "round": r} for t, r in opened]})
+            st.last_step = attention_step(st) or st.last_step
+            step = st.steps.get(st.last_step) or {}
         if step.get("kind") != "review" and choice == "reject":
             # Po odrzuceniu karta może już mieć nowszy krok domknięcia. Zachowaj
             # idempotencję decyzji, gdy nie ma kolejnego pytania o review.
             rejected = next((decision for decision in reversed(list(st.review_decisions.values()))
                              if decision.get("choice") == "reject" and
-                             decision.get("ticket") in st.rejected), None)
-            if rejected and not attention_step(st):
+                             decision.get("ticket") in st.rejected and
+                             (not want_ticket or decision.get("ticket") == want_ticket)), None)
+            if rejected and (want_ticket or not attention_step(st)):
                 step = next((candidate for candidate in reversed(list(st.steps.values()))
                              if candidate.get("kind") == "review" and
                              candidate.get("ticket") == rejected.get("ticket") and
                              candidate.get("round") == rejected.get("round")), step)
+        if want_round is not None and int(step.get("round") or 0) != want_round:
+            raise FlowError("no-review-question", f"{card}: nieaktualna runda review {want_round} ticketu "
+                                                   f"{want_ticket or step.get('ticket') or '?'}")
         ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
         verdict = st.verdicts.get((ticket, round_no)) or {}
         previous = st.review_decisions.get((ticket, round_no)) or {}
