@@ -147,7 +147,7 @@ START_NEUTRAL = ("baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "
                  "closeFile", "consoleClosed", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
                  "executor", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
                  "readDirsProfile", "repo", "reviewTip", "round", "routeKind", "routeTokenFile", "routeUrl",
-                 "session", "taskFile", "toolingKind")
+                 "session", "taskFile", "testPolicy", "testPolicyCard", "toolingKind")
 CONSOLE_INHERITED = Field(
     "inherited", "str", True, predecessor="step.entered|step.started", domain="console", rule="match",
     source="historical",

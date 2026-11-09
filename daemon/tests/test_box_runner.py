@@ -682,7 +682,7 @@ class DevicesTest(BoxRunnerCase):
 
 class ResumeMountWaitingTest(BoxRunnerCase):
     def test_resume_waits_for_read_mounts_without_failed_start_and_retries_after_release(self):
-        from tide_daemon.cardflow import boxstep
+        from tide_daemon.cardflow import boxstep, testpolicy
         from tide_daemon.cardflow.engine import FlowEngine, FlowDeferred
         from tide_daemon.cardflow.journal import Journal
         from tide_daemon.cardflow.state import fold
@@ -701,6 +701,8 @@ class ResumeMountWaitingTest(BoxRunnerCase):
         engine._release_local = mock.Mock()
         engine._settings_data = lambda: {}
         engine._git_identity = lambda repo: {}
+        # Atrapa Tablicy bez kart i kontraktu testów: polityka testów kroku (PT-287) z reguły master.
+        engine.step_test_policy = lambda card_id, step, *, base: testpolicy.master_policy(step.worktree, base)
         engine.box_settings_source = lambda: self.settings
         engine.box_builder = lambda: SimpleNamespace(incus=self.incus, load_profile=lambda slug: {})
         placement = boxstep.Placement("proj", "proj", "10.0.0.2", False, {}, runner)

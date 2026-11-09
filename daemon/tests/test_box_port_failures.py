@@ -12,7 +12,7 @@ from unittest import mock
 
 from tide_daemon.box import runner as br
 from tide_daemon.box.ports import PortPool, PoolExhausted
-from tide_daemon.cardflow import boxstep
+from tide_daemon.cardflow import boxstep, testpolicy
 from tide_daemon.cardflow.engine import FlowEngine, FlowError
 from tide_daemon.cardflow.journal import Journal
 from tide_daemon.cardflow.state import fold
@@ -57,6 +57,8 @@ class PortFailureTest(unittest.TestCase):
                 engine._box_place = mock.Mock(return_value=placement)
                 engine._settings_data = lambda: {}
                 engine._git_identity = lambda repo: {}
+                # Atrapa Tablicy bez kart i kontraktu testów: polityka testów kroku (PT-287) z reguły master.
+                engine.step_test_policy = lambda card_id, step, *, base: testpolicy.master_policy(step.worktree, base)
                 engine._hidden = (set(), ())
                 engine.procs, engine._box_runners = {}, {}
                 engine.tmp_root = self.tmp.name
