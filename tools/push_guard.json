@@ -2,7 +2,9 @@
   "projects": {
     "logviewer": {
       "prefixes": ["DLE"],
-      "allow": []
+      "allow": [
+        {"rule": "ai", "path": "*"}
+      ]
     }
   }
 }

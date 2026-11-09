@@ -47,7 +47,7 @@ class PushGuardTest(unittest.TestCase):
         commit(self.repo, "c.cs", "class C {}\n",
                "add c\n\nbody line\nCo-Authored-By: Someone <x@y.z>\nGenerated with a tool")
         commit(self.repo, "d.cs", "// refs DLE-9\n// Claude wrote this\n", "add d")
-        code, out, _ = guard(self.repo, "--prefix", "DLE", "--json")
+        code, out, _ = guard(self.repo, "--project", "atrapa", "--prefix", "DLE", "--json")
         self.assertEqual(code, 1)
         hits = json.loads(out)["hits"]
         found = {(h["where"], h["file"], h["line"], h["rule"]) for h in hits}
@@ -125,7 +125,7 @@ class PushGuardTest(unittest.TestCase):
             fh.write("resolved\n// K-89 conflict fixed by Claude\n")
         git(self.repo, "add", "base.txt")
         git(self.repo, "commit", "-q", "--no-edit")
-        code, out, _ = guard(self.repo, "--json")
+        code, out, _ = guard(self.repo, "--project", "atrapa", "--json")
         self.assertEqual(code, 1)
         hits = [h for h in json.loads(out)["hits"] if h["where"] == "diff"]
         self.assertEqual({(h["file"], h["line"], h["rule"], h["merge"]) for h in hits},
@@ -215,6 +215,20 @@ class PushGuardTest(unittest.TestCase):
         self.assertEqual(code, 1)
         hits = json.loads(out)["hits"]
         self.assertEqual([(h["file"], h["rule"]) for h in hits], [("notes.txt", "tide")])
+
+    def test_default_config_allows_ai_names_in_logviewer_code_only(self):
+        # K-89: asystent AI klienta — „Anthropic”, „openai/…”, „LogTool AI” to nazwy domenowe w kodzie.
+        self.branch()
+        commit(self.repo, "Assistant.cs", 'var m = "openai/gpt-5-mini"; // Anthropic, LogTool AI\n', "add assistant")
+        self.assertEqual(guard(self.repo)[0], 0)
+        commit(self.repo, "b.cs", "class B {}\n", "add b\n\nWritten with Claude")
+        code, out, _ = guard(self.repo, "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual([(h["where"], h["rule"]) for h in json.loads(out)["hits"]], [("treść", "ai")])
+        # inny projekt nie dostaje wyjątku
+        code, out, _ = guard(self.repo, "--project", "inny", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn(("diff", "ai"), {(h["where"], h["rule"]) for h in json.loads(out)["hits"]})
 
     def test_no_false_hits_on_lookalikes(self):
         self.branch()
