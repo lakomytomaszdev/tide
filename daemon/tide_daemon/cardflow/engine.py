@@ -820,10 +820,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _environment_view(self, card: str, st: FlowState, out: dict) -> None:
         """PT-172: `flow.boxWait` i sekcja „Środowisko karty” w planie do zatwierdzenia (albo zatwierdzonym z „Tylko plan”).
         Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji."""
-        from . import boxwait, envconsent
+        from . import boxstep, boxwait, envconsent
         wait = boxwait.card_box_wait(st)
         flow = out.get("flow") or {}
         flow["boxWait"], flow["boxWaitLabel"] = wait, boxwait.label(wait)
+        # 09.11: przy wyłączonym pudełku zgoda środowiska nie obowiązuje (PT-290), więc sekcji nie liczymy — chyba
+        # że karta już czeka na środowisko (dawna historia). Bez tego każde odświeżenie kart wczytywało całą
+        # Tablicę po kilka razy na kartę (pomiar: 107 wczytań na odświeżenie, odpowiedzi D-Bus 14–46 s).
+        if wait != boxwait.ENVIRONMENT and not boxstep.settings_of(self).enabled:
+            return
         plan = flow.get("plan")
         try:
             slug, _repo = envconsent._project_state(self, card)

@@ -138,7 +138,17 @@ class CardFlowMonitor(QObject):
         self._action("SetCardPaused", lambda: self.engine.set_paused(card_id, paused), reply)
 
     def get_settings(self, reply) -> None:
-        self._action("GetCardFlowSettings", self.engine.get_flow_settings, reply)
+        # Odczyt pliku ustawień (zapis jest atomowy) od razu na wątku głównym — nie w kolejce za `engine.tick`,
+        # który po K-38 trwał dziesiątki sekund (09.11: GetCardFlowSettings 14–46 s, Tablica startowała długo).
+        def immediate(work, then) -> bool:
+            future = Future()
+            try:
+                future.set_result(work())
+            except Exception as exc:
+                future.set_exception(exc)
+            then(future)
+            return True
+        self._action("GetCardFlowSettings", self.engine.get_flow_settings, reply, submit=immediate)
 
     def set_settings(self, request: str, reply) -> None:
         try:
