@@ -23,7 +23,7 @@ OUTPUT_TOKEN = re.compile(rf"(?:^| )TEST_OUTPUT={VALUE}(?= |$)")
 # Ucięcie przez Tide (limit czasu, zatrzymanie jednostki): wtedy raport końcowy nie powstaje. Opis wyniku zamiast
 # kodu wpisuje silnik wyłącznie przy limicie czasu (engine.py, OUTSIDE_TIMEOUT); inne opisy nie są ucięciem.
 INTERRUPTED = {130, 137, 143}
-INTERRUPTED_TEXT = {"przekroczony czas"}
+INTERRUPTED_TEXT = {"przekroczony czas", "zatrzymane"}     # drugi: zatrzymana jednostka (engine.py, OUTSIDE_STOPPED)
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
 JOBS = re.compile(rf"(?:^| )JOBS=({VALUE})(?= |$)")
 OUTPUT = re.compile(rf"(?:^| )TEST_OUTPUT=({VALUE})(?= |$)")
