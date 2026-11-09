@@ -4775,6 +4775,18 @@ Kartka recenzenta wymienia ścieżki i rozmiary artefaktów ostatniego kroku aut
 „świeży artefakt = dowód; nie proś o ponowny przebieg”; bez testów mówi „krok bez testów”.
 Recenzent ocenia aktualność polecenia i czasu względem zmiany. Kroki HostRunner zachowują dotychczasowe prompty.
 
+**Kartka według runnera kroku (PT-291, K-38 F3).** O dodatkach pudełka decyduje wyłącznie zapisany runner
+tego kroku (`placement` w `_launch`), nie profil projektu ani runner autora: `handoff.runner_policy(runner, …)`
+i `handoff.review_evidence(runner, autor)`. Krok `box` dostaje owijkę `tide-test`, polecenia `verify`, spis
+artefaktów autora (tylko review w pudełku po autorze z pudełka) i ograniczenie pudełka: brak wyniku `outside`,
+bo silnik i tak go odrzuca (`box-outside`). Krok hostowy — także przy `box.enabled: true` i po autorze
+z pudełka, np. review po wyłączeniu pudełek — dostaje tekst master: kontrakt `outside` hosta, `test-changed`
+i zasady pełnych testów bez zmian. Zgodność pilnuje `daemon/tests/test_cardflow_host_cards.py`: kartki
+ticket/fix/review/close dla trzech klas projektów z F1 porównywane po wąskiej normalizacji (zakończenia linii,
+końcowe białe znaki, katalog tymczasowy) z kartkami generowanymi przez moduły master `292fb204` wczytane
+z obiektów gita; wzorce i pochodzenie: `daemon/tests/fixtures/host-cards-master/`. Jedyne dopuszczone różnice
+to zamknięta lista `hostcards.APPROVED` (dokładne fragmenty, obecnie PT-183: wskazówka „Do sprawdzenia na pulpicie”).
+
 **Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
 odmów kroku (wiersze `CONNECT` i `HTTP`):
 

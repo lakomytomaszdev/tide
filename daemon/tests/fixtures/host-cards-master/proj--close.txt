@@ -1,0 +1,55 @@
+Domknij kartę K-90: Eksport raportu. Pracuj w worktree karty <TMP>/wt/proj.
+Opis karty: Dodaj eksport raportu do CSV.
+
+Kryteria: plik ma nagłówek.
+Wyniki ticketów: [{'ticket': 'PT-901', 'result': 'done'}]
+Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
+`make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
+outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
+problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
+Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
+niestabilności lub obciążenia), nie powtarzaj całego zestawu. Uruchom tylko testy (albo projekty testowe), które padły, narzędziem testów projektu z filtrem
+na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.
+W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie
+(ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
+pełne polecenie z akapitu wyżej. Ponowienie zmienia tylko to, co uruchamiasz, nie ocenę: porażka pierwszego
+przebiegu zostaje wynikiem, a udane ponowienie jej nie zastępuje. Rozlicz ją jak każde odstępstwo
+według zasad wyjątków od testów projektu (w Tide: `docs/testing.md`, „Wyjątki od testów”): ten sam test na bazie
+ticketu i na głównej gałęzi projektu, obciążenie, zakres, właściciel.
+ Gdy polecenie wymaga zgody lub wykonania
+poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
+bez nowych zmian.
+Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w <TMP>/wt/card.close-K-90-1.step/out/summary.md.
+Dodaj sekcję „Co przetestować ręcznie i jak” z konkretnymi krokami i oczekiwanym wynikiem. Nie scalaj do gałęzi głównej, nie rób push i nie usuwaj worktree.
+Jako ostatnią czynność zapisz plik:
+Plik wyniku: <TMP>/wt/card.close-K-90-1.step/out/result.json
+{"result":"done","notes":["summary.md"]} albo
+{"result":"question","question":"…"} albo {"result":"error","reason":"…"}.
+Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — 1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.
+
+
+Polecenia projektu w tym kroku (najnowsza lista):
+Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
+- npm test
+- npx playwright test *
+Zabronione polecenia:
+- npm publish
+Odczyt własnych katalogów kroku <TMP>/wt/card.close-K-90-1.step/in i <TMP>/wt/card.close-K-90-1.step/out (ls, cat) jest zawsze dozwolony —
+nie proś o zgodę na niego.
+Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
+na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
+Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
+NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
+i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
+Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
+Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
+jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
+np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
+worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
