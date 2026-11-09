@@ -311,6 +311,27 @@ class InstallDryRunTest(FakeHost):
     def test_rejects_unknown_mode_and_bad_port(self):
         self.assertEqual(self.run_script("install.sh", "--project-mode", "root").returncode, 2)
         self.assertEqual(self.run_script("install.sh", "--proxy-port", "x").returncode, 2)
+        # PT-292: zakres wspólny z box.proxy-port usługi (box/settings.py PORT_MIN/PORT_MAX).
+        for port in ("80", "1023", "65536"):
+            with self.subTest(port=port):
+                result = self.run_script("install.sh", "--proxy-port", port)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("1024–65535", result.stderr)
+        self.assertIn("PORT_MIN, PORT_MAX = 1024, 65535", (ROOT / "daemon" / "tide_daemon" / "box" /
+                                                            "settings.py").read_text(encoding="utf-8"))
+
+    def test_installed_rules_confirm_the_service_port_contract(self):
+        # PT-292: plik zapisany przez instalację (files.sh rules) jest kontraktem, który czyta usługa.
+        import sys
+        sys.path.insert(0, str(ROOT / "daemon"))
+        try:
+            from tide_daemon.box import nftcontract
+        finally:
+            sys.path.remove(str(ROOT / "daemon"))
+        text = files_sh("rules", ADDRESS, "18081").stdout
+        self.assertEqual(nftcontract.proxy_rules(text), [("incusbr0", ADDRESS, 18081)])
+        self.assertIsNone(nftcontract.problem(text, port=18081, bridge="incusbr0", address=ADDRESS))
+        self.assertIn("BOX_PROXY_PORT=18080", nftcontract.problem(text, port=18080, bridge="incusbr0"))
 
 
 class UninstallDryRunTest(FakeHost):

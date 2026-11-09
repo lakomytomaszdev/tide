@@ -62,8 +62,10 @@ if [[ $mode != restricted && $mode != admin ]]; then
     echo "--project-mode: restricted albo admin (podano: '$mode')" >&2
     exit 2
 fi
-if ! [[ $port =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
-    echo "--proxy-port: liczba 1–65535 (podano: '$port')" >&2
+# Ten sam zakres co box.proxy-port usługi (daemon/tide_daemon/box/settings.py PORT_MIN/PORT_MAX): proxy słucha
+# bez roota, a usługa sprawdza ten port w zapisanych tu regułach (box/nftcontract.py, PT-292).
+if ! [[ $port =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1024 || 10#$port > 65535 )); then
+    echo "--proxy-port: liczba 1024–65535, ta sama co box.proxy-port usługi (podano: '$port')" >&2
     exit 2
 fi
 

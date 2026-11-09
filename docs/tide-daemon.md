@@ -4243,6 +4243,10 @@ czy `incus-user` je widzi. Słucha **wyłącznie** na tym
 adresie: `0.0.0.0`, `::`, pętla zwrotna i adres inny niż mostka → odmowa startu. Każda przeszkoda (brak Incusa,
 brak mostka, zły adres, zajęty port) to wpis w dzienniku usługi, a usługa działa dalej jak bez pudełka.
 `--no-box` wyłącza proxy niezależnie od ustawień. `proxy-port` musi być równy `BOX_PROXY_PORT` z `make box-install`.
+PT-292: przed nasłuchem `start_service` czyta zainstalowane reguły `/etc/tide-box/tide-box.nft`
+(`box/nftcontract.py`, tylko odczyt; w testach `TIDE_BOX_NFT_FILE`) i odmawia startu, gdy reguła „proxy Tide”
+tabeli `inet tide-box` nie wpuszcza dokładnie `box.bridge` → `<adres mostka>:<box.proxy-port>` albo pliku nie ma.
+Sekcję `box` zapisuje też `SetCardFlowSettings` (ścisła walidacja, zgodność portu z regułami) — docs/box-cli-v1.md.
 
 **Polityka per pudełko, kluczowana adresem IP.** `set_box_policy(ip, domains, ollama, denied_log_path, *,
 full=False, box="")` ustawia (albo zastępuje) politykę pudełka o adresie `ip`; działa od następnego połączenia,

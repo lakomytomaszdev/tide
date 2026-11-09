@@ -59,6 +59,8 @@ from . import boxstep
 from . import trialhold
 from . import processidentity
 from ..box import trialgate
+from ..box import nftcontract
+from ..box import settings as bsettings
 from . import consent
 from .decisions import clean_options
 from . import environment as flow_environment
@@ -507,6 +509,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.codex_roots = codex_homes.default_homes() if codex_roots is None else codex_roots
         self.tmp_root = tmp_root or tempfile.gettempdir()
         self.settings = settings or settings_path()
+        self.box_rules = None   # plik reguł inet tide-box (None — nftcontract.rules_file(): /etc/tide-box/…)
         self.git = flow_git or FlowGit()
         self.clock = clock
         self.tracker = TrackerOutbox(self.journal, clock)
@@ -672,12 +675,37 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slots = data.get("providerSlots") if isinstance(data.get("providerSlots"), dict) else {}
         slots = {k: v for k, v in slots.items() if isinstance(k, str) and isinstance(v, int)
                  and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
+        box = bsettings.from_dict(data)
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, **caretaker.settings_of(data)}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, **caretaker.settings_of(data),
+                "box": bsettings.view(box), "boxWarnings": list(box.warnings)}
+
+    def _box_patch(self, request: dict, data: dict) -> dict | None:
+        """PT-292: sekcja `box` po częściowym zapisie (`None` — żądanie bez `box`). Ścisła walidacja kluczy
+        z `box/settings.py`, a zmiana portu albo włączenie pudełka wymaga zgodności z zainstalowanymi regułami
+        nftables (`box/nftcontract.py`, tylko odczyt). Zapis nie przełącza działającego proxy ani runnerów:
+        proxy czyta port przy starcie usługi."""
+        if "box" not in request:
+            return None
+        patch = request["box"]
+        problem = bsettings.problem(patch)
+        if problem:
+            raise FlowError("bad-settings", problem)
+        stored = data.get("box") if isinstance(data.get("box"), dict) else {}
+        merged = {**stored, **patch}
+        before, after = bsettings.from_dict({"box": stored}), bsettings.from_dict({"box": merged})
+        port_changed = after.proxy_port != before.proxy_port
+        activated = after.enabled and (not before.enabled or port_changed or after.bridge != before.bridge)
+        if port_changed or activated:
+            path = self.box_rules or nftcontract.rules_file()
+            problem = nftcontract.check_file(path, port=after.proxy_port, bridge=after.bridge)
+            if problem:
+                raise FlowError("box-install-mismatch", problem)
+        return merged
 
     def set_flow_settings(self, request: dict) -> dict:
-        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", *caretaker.SETTINGS_DEFAULTS}
+        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "box", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -707,8 +735,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 or not 1 <= v <= MAX_PROVIDER_SLOTS for k, v in slots.items()):
             raise FlowError("bad-settings", f"liczba kroków naraz na dostawcę musi być od 1 do {MAX_PROVIDER_SLOTS}")
         data = self._settings_data()
+        box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
+        if box is not None:
+            data["box"] = box
         self._write_settings(data)
         return self.get_flow_settings()
 

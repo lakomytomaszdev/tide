@@ -27,15 +27,19 @@ Builder (PT-167):
 Adresu proxy nie ma w ustawieniach: builder bierze adres i port z uruchomionego proxy (`proxy.running()`, nasłuch
 na adresie mostka), więc oba moduły mają jedno źródło. Brak uruchomionego proxy = budowa odmawia.
 
-Zła wartość → ostrzeżenie i wartość domyślna (zły `enabled` → wyłączone: granica sieciowa nie włącza się sama).
-Opis: docs/tide-daemon.md (Proxy wyjściowe, Budowa pudełka).
+Odczyt pliku (`from_dict`, `load`): zła wartość → ostrzeżenie i wartość domyślna (zły `enabled` → wyłączone:
+granica sieciowa nie włącza się sama). Zapis przez `SetCardFlowSettings` (PT-292) jest ścisły: `problem(patch)`
+sprawdza te same reguły z katalogu `KEYS` i odmawia zamiast podstawiać wartość domyślną.
+Opis: docs/tide-daemon.md (Proxy wyjściowe, Budowa pudełka), docs/box-cli-v1.md.
 """
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
 
 DEFAULT_PORT = 18080
+PORT_MIN, PORT_MAX = 1024, 65535   # wspólny zakres z `scripts/box/install.sh --proxy-port`
 DEFAULT_BRIDGE = "incusbr0"
 DEFAULT_AGENT_ID = 1000
 _BRIDGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$")   # nazwa interfejsu Linuksa (≤ 15 znaków)
@@ -44,6 +48,73 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")   # projekt, obraz, 
 
 def _default_project() -> str:
     return f"user-{os.getuid()}"
+
+
+def _is_bool(value) -> bool:
+    return isinstance(value, bool)
+
+
+def _is_int(low, high):
+    return lambda value: not isinstance(value, bool) and isinstance(value, int) and low <= value <= high
+
+
+def _is_number(check):
+    return lambda value: (not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+                          and check(value))
+
+
+def _is_name(required: bool):
+    return lambda value: isinstance(value, str) and (bool(_NAME.match(value)) if value else not required)
+
+
+@dataclass(frozen=True)
+class Key:
+    """Klucz sekcji `box`: atrybut `BoxSettings`, reguła poprawności, opis oczekiwanej wartości i opis wartości
+    domyślnej w ostrzeżeniu odczytu."""
+    attr: str
+    valid: object
+    expect: str
+    fallback: str
+
+
+# Jawny katalog obsługiwanych kluczy `box` — jedno źródło dla odczytu (`from_dict`) i zapisu (`problem`).
+KEYS = {
+    "enabled": Key("enabled", _is_bool, "oczekiwano true/false", "pudełko wyłączone"),
+    "proxy-port": Key("proxy_port", _is_int(PORT_MIN, PORT_MAX),
+                      f"oczekiwano portu {PORT_MIN}–{PORT_MAX}", str(DEFAULT_PORT)),
+    "bridge": Key("bridge", lambda v: isinstance(v, str) and bool(_BRIDGE.match(v)), "niepoprawna nazwa mostka",
+                  DEFAULT_BRIDGE),
+    "project": Key("project", _is_name(True), "niepoprawna wartość", "user-<uid>"),
+    "base-image": Key("base_image", _is_name(True), "niepoprawna wartość", "tide-base"),
+    "pool": Key("pool", _is_name(True), "niepoprawna wartość", "tide"),
+    "nic": Key("nic", _is_name(True), "niepoprawna wartość", "eth0"),
+    "agents-version": Key("agents_version", _is_name(False), "niepoprawna wartość", "pusta"),
+    "ipv6-filtering": Key("ipv6_filtering", _is_bool, "oczekiwano true/false", "false"),
+    "ip-wait-seconds": Key("ip_wait_seconds", _is_number(lambda v: 0 <= v <= 600), "oczekiwano liczby 0–600", "30"),
+    "idle-hours": Key("idle_hours", _is_number(lambda v: 0 < v <= 8760), "oczekiwano liczby > 0 i ≤ 8760", "4"),
+    "agent-uid": Key("agent_uid", _is_int(1, 65535), "oczekiwano liczby 1–65535", str(DEFAULT_AGENT_ID)),
+    "agent-gid": Key("agent_gid", _is_int(1, 65535), "oczekiwano liczby 1–65535", str(DEFAULT_AGENT_ID)),
+}
+_FLOATS = ("ip-wait-seconds", "idle-hours")
+
+
+def problem(patch) -> str | None:
+    """Ścisła walidacja obiektu `box` z żądania zapisu: obiekt, wyłącznie klucze z `KEYS`, poprawny typ i zakres
+    (bool nie jest liczbą). `None` — poprawny; inaczej czytelny opis pierwszego błędu. Nic nie podstawia."""
+    if not isinstance(patch, dict):
+        return "box: oczekiwano obiektu JSON"
+    unknown = sorted(str(k) for k in patch if k not in KEYS)
+    if unknown:
+        return f"box: nieznany klucz {', '.join(unknown)} (obsługiwane: {', '.join(KEYS)})"
+    for key, value in patch.items():
+        if not KEYS[key].valid(value):
+            return f"box.{key}: {KEYS[key].expect}"
+    return None
+
+
+def view(settings: "BoxSettings") -> dict:
+    """Skuteczne wartości w kluczach pliku (`GetCardFlowSettings`), tak jak je widzą proxy, builder i runner."""
+    return {key: getattr(settings, spec.attr) for key, spec in KEYS.items()}
 
 
 @dataclass(frozen=True)
@@ -64,58 +135,23 @@ class BoxSettings:
     idle_hours: float = 4.0
 
 
-_TEXT = (("project", "project", None), ("base-image", "base_image", "tide-base"), ("pool", "pool", "tide"),
-         ("nic", "nic", "eth0"), ("agents-version", "agents_version", ""))
-
-
 def from_dict(data) -> BoxSettings:
+    """Odczyt łagodny: brak klucza albo zła wartość → wartość domyślna `BoxSettings` (zła — z ostrzeżeniem)."""
     box = data.get("box") if isinstance(data, dict) else None
     if box is None:
         return BoxSettings()
     if not isinstance(box, dict):
         return BoxSettings(warnings=("box: oczekiwano obiektu — pudełko wyłączone",))
-    warnings = []
-    enabled = box.get("enabled", False)
-    if not isinstance(enabled, bool):
-        warnings.append("box.enabled: oczekiwano true/false — pudełko wyłączone")
-        enabled = False
-    port = box.get("proxy-port", DEFAULT_PORT)
-    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
-        warnings.append(f"box.proxy-port: oczekiwano portu 1024–65535 — {DEFAULT_PORT}")
-        port = DEFAULT_PORT
-    bridge = box.get("bridge", DEFAULT_BRIDGE)
-    if not isinstance(bridge, str) or not _BRIDGE.match(bridge):
-        warnings.append(f"box.bridge: niepoprawna nazwa mostka — {DEFAULT_BRIDGE}")
-        bridge = DEFAULT_BRIDGE
-    extra = {}
-    for key, attr, default in _TEXT:
-        default = _default_project() if default is None else default
-        value = box.get(key, default)
-        if not isinstance(value, str) or (value and not _NAME.match(value)) or (not value and default):
-            warnings.append(f"box.{key}: niepoprawna wartość — {default or 'pusta'}")
-            value = default
-        extra[attr] = value
-    ipv6 = box.get("ipv6-filtering", False)
-    if not isinstance(ipv6, bool):
-        warnings.append("box.ipv6-filtering: oczekiwano true/false — false")
-        ipv6 = False
-    wait = box.get("ip-wait-seconds", 30)
-    if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not 0 <= wait <= 600:
-        warnings.append("box.ip-wait-seconds: oczekiwano liczby 0–600 — 30")
-        wait = 30
-    ids = {}
-    idle = box.get("idle-hours", 4)
-    if isinstance(idle, bool) or not isinstance(idle, (int, float)) or not 0 < idle <= 8760:
-        warnings.append("box.idle-hours: oczekiwano liczby > 0 i ≤ 8760 — 4")
-        idle = 4
-    for key in ("agent-uid", "agent-gid"):
-        value = box.get(key, DEFAULT_AGENT_ID)
-        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
-            warnings.append(f"box.{key}: oczekiwano liczby 1–65535 — {DEFAULT_AGENT_ID}")
-            value = DEFAULT_AGENT_ID
-        ids[key.replace("-", "_")] = value
-    return BoxSettings(enabled=enabled, proxy_port=port, bridge=bridge, warnings=tuple(warnings),
-                       ipv6_filtering=ipv6, ip_wait_seconds=float(wait), idle_hours=float(idle), **extra, **ids)
+    warnings, values = [], {}
+    for key, spec in KEYS.items():
+        if key not in box:
+            continue
+        value = box[key]
+        if not spec.valid(value):
+            warnings.append(f"box.{key}: {spec.expect} — {spec.fallback}")
+            continue
+        values[spec.attr] = float(value) if key in _FLOATS else value
+    return BoxSettings(warnings=tuple(warnings), **values)
 
 
 def settings_path(env=None) -> str:
