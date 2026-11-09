@@ -384,7 +384,9 @@ BARRIERS = {
         consumers=[("cardflow/state.py", "fold"), ("cardflow/trialhold.py", "preserves_project"),
                    ("cardflow/trialhold.py", "read_process_history"),
                    ("cardflow/journal.py", "_validate_process_identity"),
-                   ("cardflow/journal.py", "Journal.read_complete")],
+                   ("cardflow/journal.py", "Journal.read_complete"),
+                   # PT-295: audyt historii (osobny proces, tylko odczyt); odmowa modelu to błąd read-rejected.
+                   ("cardflow/historyaudit_driver.py", "read_cards")],
         denial="read_process_history: ValueError; fold: _identityHeld", effect="wspólny wynik redukcji",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_model_and_strict_read"]),
     "inventory": dict(
@@ -645,6 +647,7 @@ DELEGATIONS = {
     ("cardflow/engine.py", "_CaretakerPort.retry"): "console",
     ("cardflow/engine.py", "_CaretakerPort.retry_stage"): "advance-resume",
     ("cardflow/envconsent.py", "_thread_launcher.work"): "box-lifecycle",
+    ("cardflow/historyaudit_driver.py", "main"): "model",
     ("cardflow_monitor.py", "CardFlowMonitor.enter_step"): "console",
     ("cardflow_monitor.py", "CardFlowMonitor.moved"): "advance-resume",
     ("cardflow_monitor.py", "CardFlowMonitor.report_step_fault"): "console",
@@ -708,6 +711,9 @@ RAW_READS = {
         "czy krok ma już decyzję (odpowiedź Tide na pytanie o środowisko) — zapis step.decision bez skutku procesu",
     ("cardflow/engine.py", "FlowEngine._auto_deny"):
         "licznik automatycznych odmów ticketu — zapis odmowy, która nigdy nie uruchamia procesu",
+    ("cardflow/historyaudit.py", "moved_to_trace"):
+        "PT-295: przebieg samej kolumny moved_to do wyjaśnienia różnicy pola w raporcie audytu; "
+        "proces tylko do odczytu, bez skutku procesu ani zapisu dziennika",
     ("cardflow/testrerun.py", "substitute"):
         "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
         "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
