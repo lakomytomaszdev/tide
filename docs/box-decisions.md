@@ -135,3 +135,37 @@ bo po odwróceniu integracji modułu `rollback.py` nie ma w zainstalowanym kodzi
   Bezpiecznego wznowienia takich kart na starym kodzie nie da się dowieść. **Blokada wydania**: każda partia
   z `box.enabled: true` (pierwsze `box.wait` albo krok w pudełku) nie ma dowodu bezpiecznego wycofania. Do decyzji
   właściciela bez fikcyjnego APPROVE i automatycznej migracji dziennika.
+
+## PT-295: odczyt wszystkich historii i zgodność mirrora (2026-11-09)
+
+### AUTO: Bramka partii 1 czyta każdą historię kodem dokładnych SHA i porównuje obie kopie
+
+- **Narzędzie**: `tide_daemon/cardflow/historyaudit.py` (sterownik `historyaudit_driver.py`), wyłącznie odczyt.
+  Uruchomienie z katalogu repozytorium:
+  `env PYTHONPATH=<repo>/daemon /usr/bin/python3 -m tide_daemon.cardflow.historyaudit --board <Tablica>
+  --out <nowy katalog poza źródłami> --candidate <SHA kandydata> --reference <SHA odniesienia>`
+  (`--mirror` domyślnie jak `journal.mirror_root`). Kod wyjścia 0 tylko przy zaliczonej bramce, raport
+  `report.json` i `report.md` w katalogu wyjściowym.
+- **Mianownik**: suma rejestrów mirrora (`*.jsonl`) i `flow/K-*` Tablicy, bez listy kart i bez stałej liczby.
+  Karta tylko w jednej kopii, katalog karty bez dziennika, nieznany wpis rejestru, błąd listowania lub odczytu,
+  ucięta linia, nieznany format, duplikat i luka seq to osobne błędy, a karta zostaje w mianowniku (`N/N`).
+- **Kopie**: dla każdej karty i źródła liczba i zakres seq, typy zdarzeń, SHA-256 pełnej treści. Tablica jest
+  porównana z mirrorem zdarzenie po zdarzeniu i pole po polu; mirror jest autorytatywny (z niego czyta usługa),
+  ale rozjazd jest błędem — narzędzie nie wybiera kopii i niczego nie naprawia.
+- **Kod**: `git archive` kandydata i odniesienia do katalogu wyjściowego; osobny `python3 -I -B` na wersję.
+  Kandydat: `trialhold.read_process_history` na dzienniku tylko do odczytu i `fold`; odniesienie: ścisły odczyt
+  i `fold`. Strażnik (audit hook) odrzuca zapis pliku, zmianę systemu plików, proces potomny, gniazdo
+  i import D-Bus/Qt; metody zapisu `Journal` są atrapami odmowy. Próba to błąd `forbidden-operation`.
+- **Pola stanu**: `FIELD_SPEC` przypisuje każde pole `FlowState` obu wersji do kategorii (plan/mapa ticketów,
+  stany, pauza/domknięcie, kroki/runner/tożsamość, wyniki/werdykty, decyzje/zgody, outside, konsole, box.wait,
+  powiązania projektu) i reguły. Pole bez klasyfikacji jest błędem. Nowe pola kandydata względem
+  `a6efe28c` mają regułę oczekiwania z historii: `box_wait`/`box_env_deferred` z ostatniego `box.wait` po
+  ostatnim `card.started`, `process_identities` — każda tożsamość `ok` i nazwana krokiem historii; nakładka
+  tożsamości na wpisy kroków i zamiarów (`_identityHeld`, pola startu) jest odejmowana według danych tożsamości.
+  Zmiana `moved_to`/`closed` przy domknięciu po odesłaniu do poprawy jest wyjaśniona tylko przebiegiem kolumny.
+  Widoki metod (`running`, `open_consoles`, `open_intents`, `merge_pending`, `busy_reason`) też są porównane.
+- **Stabilność**: odcisk (treść i metadane rejestrów i dzienników) przed i po; zmiana unieważnia przebieg
+  (`unstable`). Każda zmiana kandydata wymaga ponownego przebiegu; niezaliczona bramka zatrzymuje wydanie.
+- **Testy**: `daemon/tests/test_cardflow_history_audit.py` — syntetyczne historie publicznym zapisem dziennika;
+  czerwone przypadki (karta/pole/zdarzenie, runner, zgoda, ucięta linia, listowanie, zmiana w trakcie, próby
+  zapisu, różnica i niesklasyfikowane pole stanu) oraz pełna zgodna kopia z nowymi polami jako zielony.
