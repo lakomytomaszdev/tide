@@ -53,10 +53,11 @@ class MasterProvenanceTest(CardsCase):
             with self.subTest(name=name):
                 self.assertEqual(hostcards.read_fixture(name), fresh[name])
         k38 = self.k38()
-        # Co najmniej kartki z zatwierdzonymi różnicami są inne niż wynik K-38 — wzorzec nie jest jego kopią.
+        # Co najmniej kartki z zatwierdzonymi różnicami są inne niż wynik gałęzi — wzorzec nie jest jego kopią;
+        # różnią się wyłącznie kartki objęte zatwierdzoną różnicą (K-38: ticket/review, K-69: linia źródła).
         differing = [n for n in hostcards.card_names() if k38[n] != fresh[n]]
         self.assertTrue(differing)
-        self.assertTrue(all(n.rsplit("/", 1)[1] in ("ticket", "review") for n in differing), differing)
+        self.assertTrue(all(hostcards.approved_for(n) for n in differing), differing)
 
     def test_master_module_is_read_from_git_objects(self):
         with tempfile.TemporaryDirectory() as target:

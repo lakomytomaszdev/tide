@@ -2,12 +2,12 @@
 kroku (gdzie pisać, czego nie robić, plik wyniku). Idzie do programu jako polecenie na stdin (agentcmd.Background)."""
 from __future__ import annotations
 from .. import resources
+from . import testpolicy
+from .testpolicy import TestPolicy
 
-import glob
 import json
 import os
 import re
-import shlex
 
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
@@ -85,11 +85,16 @@ RERUN_GENERIC = ("Uruchom tylko testy (albo projekty testowe), które padły, na
                  "na ich nazwy — tym samym poleceniem i środowiskiem co pełny przebieg.")
 
 
-def rerun_failed(worktree: str = "") -> str:
+def rerun_failed(worktree: str = "", command: str | None = None) -> str:
     """Etap A (06.11: 31% czasu testów to powtórki całego zestawu na tym samym kodzie). Przepis zależy od
-    projektu: repozytorium z `tools/test_runner.py` dostaje dokładne polecenie, inne technologie — zasadę."""
+    projektu: repozytorium z `tools/test_runner.py` dostaje dokładne polecenie, inne technologie — zasadę.
+    `command` — obowiązujące polecenie kartki (PT-279): przepis uruchamiacza Tide tylko dla `make test`
+    i `make test-changed`; inne polecenie (np. `dotnet test …`) albo zasada ogólna (`""`) — zasada ponowienia."""
     from .testrerun import runner_reruns
     runner = not worktree or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))
+    if command is not None and testpolicy.make_target(command) not in (testpolicy.FULL_TARGET,
+                                                                       testpolicy.CHANGED_TARGET):
+        runner = False
     how = (RERUN_MODULES if runner_reruns(worktree) else RERUN_RUNNER) if runner else RERUN_GENERIC
     return f"""Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
 niestabilności lub obciążenia), nie powtarzaj całego zestawu. {how}
@@ -108,13 +113,16 @@ polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie
 """
 
 
-def sandbox_tests(full: str, worktree: str = "") -> str:
+def sandbox_tests(full: str, worktree: str = "", command: str | None = None) -> str:
     """08.11: kroki uruchamiały pełny przebieg w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp
     i zagnieżdżonego bwrap), a potem drugi raz poza nią — obciążenie maszyny 40–58 na 16 rdzeniach.
-    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”)."""
+    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”).
+    `command` — obowiązujące polecenie z polityki testów (K-69), jak w `rerun_failed`: zestawy celowane Tide
+    tylko przy `make test`/`make test-changed`; inne polecenie albo zasada ogólna (`""`) — zasada ogólna."""
     from .testrerun import runner_reruns
     known = not worktree or not os.path.isdir(worktree)
-    if known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py")):
+    tide = command is None or testpolicy.make_target(command) in (testpolicy.FULL_TARGET, testpolicy.CHANGED_TARGET)
+    if tide and (known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py"))):
         targeted = "`make test-cardflow`, `make test-daemon`, `make test-board`"
         targeted += (" albo `/usr/bin/python3 tools/test_runner.py --modules <moduły>`"
                      if known or runner_reruns(worktree) else " albo inny zestaw `make test-<zestaw>`")
@@ -127,41 +135,240 @@ piaskownica) i tak tam pada, a drugi przebieg poza piaskownicą tylko dociąża 
 """
 
 
-def has_changed_target(worktree: str) -> bool:
-    """Czy obowiązuje `make test-changed` (06.11: gałęzie K-37/K-38 sprzed K-54 go nie mają, a kartka po K-62
-    kazała go uruchomić — agent pytał, czy przenieść infrastrukturę testów z master). Brak katalogu — nowa zasada."""
-    if not worktree or not os.path.isdir(worktree):
-        return True
-    text = ""
-    for path in [os.path.join(worktree, "Makefile"), *glob.glob(os.path.join(worktree, "mk", "*.mk"))]:
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                text += fh.read() + "\n"
-        except OSError:
-            continue
-    # Dawna zasada tylko dla gałęzi z celem `test`, ale bez `test-changed`; projekt bez make zostaje przy nowej.
-    return bool(re.search(r"^test-changed\s*:", text, re.M)) or not re.search(r"^test\s*:", text, re.M)
+SOURCE_LABELS = {
+    testpolicy.PROFILE: "zatwierdzony kontrakt testów projektu (profil projektu na Tablicy)",
+    testpolicy.DETECTED: "wykryte z Makefile",
+    testpolicy.RULES: "zasady projektu (CLAUDE.md/AGENTS.md) — brak zatwierdzonego kontraktu i celu make",
+}
+# Zasada ogólna przy zastosowanym kontrakcie: przyczyna zależy od pola (review PT-279, runda 1, NIT 1).
+RULES_NO_FIELD = "zasady projektu (CLAUDE.md/AGENTS.md) — zatwierdzony kontrakt nie podaje tego polecenia"
+RULES_MISSING_TARGET = ("zasady projektu (CLAUDE.md/AGENTS.md) — ta gałąź nie ma celu make "
+                        "z zatwierdzonego kontraktu")
+UNAPPROVED_LINE = ("Kontrakt testów w profilu projektu nie jest zatwierdzony i nie jest stosowany: jego polecenia "
+                   "nie są wymogiem tego kroku.\n")
+RULES_CHANGED = ("Testy ticketu (także po poprawkach): projekt nie podaje polecenia testów zmian. Przed oddaniem "
+                 "uruchom testy dobrane do zmian\nwedług zasad projektu (CLAUDE.md/AGENTS.md); ")
+RULES_FULL = "pełne testy według zasad projektu (CLAUDE.md/AGENTS.md)"
+# Wymagany przebieg zasady ogólnej w zdaniu `sandbox_tests` („Wymagany … zgłoś od razu …”).
+RULES_SANDBOX = "przebieg testów dobranych do zmian według zasad projektu (CLAUDE.md/AGENTS.md)"
 
 
-def ticket_tests(base: str = "", worktree: str = "", *, author: bool = True) -> str:
-    """`author=False` (kartka review): zasada bez instrukcji uruchamiania przebiegu — recenzent sprawdza wynik
+def _tests_policy(policy: TestPolicy | None, worktree: str, base: str) -> TestPolicy:
+    """Do czasu #10 silnik nie podaje polityki: kartka liczy ją regułą zgodności z master."""
+    return policy if policy is not None else testpolicy.master_policy(worktree, base)
+
+
+def source_line(source: str, *, close: bool = False, label: str = "") -> str:
+    """Jawna linia źródła polecenia (PT-279). Źródło `compat` (zgodność z master bez potwierdzenia celem) — bez linii.
+    `label` zastępuje domyślny opis źródła (rzeczywista przyczyna zasady ogólnej)."""
+    label = label or SOURCE_LABELS.get(source)
+    if not label:
+        return ""
+    return f"Źródło polecenia {'pełnych testów' if close else 'testów ticketu'}: {label}.\n"
+
+
+def _source_label(policy: TestPolicy, *, close: bool) -> str:
+    """Przyczyna zasady ogólnej dla danego pola, gdy kontrakt jest zastosowany; inaczej opis domyślny."""
+    source = policy.full_source if close else policy.changed_source
+    if source != testpolicy.RULES or not (policy.declared_changed or policy.declared_full):
+        return ""
+    return RULES_MISSING_TARGET if ("full" if close else "changed") in policy.missing else RULES_NO_FIELD
+
+
+def _notes(policy: TestPolicy, *, close: bool = False) -> str:
+    out = source_line(policy.full_source if close else policy.changed_source, close=close,
+                      label=_source_label(policy, close=close))
+    if policy.unapproved:
+        out += UNAPPROVED_LINE
+    if close and "full" in policy.missing:
+        out += (f"Zatwierdzony kontrakt podaje `{policy.declared_full}`, ale ta gałąź nie ma celu "
+                f"`{testpolicy.FULL_TARGET}` — obowiązuje zasada projektu.\n")
+    if not close and "changed" in policy.missing:
+        out += (f"Zatwierdzony kontrakt podaje `{policy.declared_changed}`, ale ta gałąź nie ma celu "
+                f"`{testpolicy.CHANGED_TARGET}` ani `{testpolicy.FULL_TARGET}` — obowiązuje zasada projektu.\n")
+    if not close and policy.legacy and policy.declared_changed:
+        out += (f"Zatwierdzony kontrakt podaje `{policy.declared_changed}`, ale ta gałąź nie ma celu "
+                f"`{testpolicy.CHANGED_TARGET}` — obowiązuje dotychczasowa zasada pełnego `make test`.\n")
+    return out
+
+
+def _full_phrases(policy: TestPolicy) -> tuple[str, str, str]:
+    """(mianownik, dopełniacz, krótka nazwa) pełnego przebiegu do zdań kartki."""
+    if policy.full:
+        return f"pełny `{policy.full}`", f"pełnego `{policy.full}`", f"`{policy.full}`"
+    return "pełny przebieg testów", "pełnego przebiegu testów", "pełnego przebiegu testów"
+
+
+def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None = None, *,
+                 author: bool = True) -> str:
+    """Zasada testów ticketu, poprawek i review z polityki testów (bez polityki — reguła zgodności z master).
+    `author=False` (kartka review): zasada bez instrukcji uruchamiania przebiegu — recenzent sprawdza wynik
     autora i nie zgłasza własnego pełnego przebiegu (08.11, review Astry)."""
-    sandbox = sandbox_tests if author else (lambda _full, _worktree="": "")
-    if not has_changed_target(worktree):
-        return OLD_BRANCH_TESTS + sandbox("pełny `make test`", worktree) + rerun_failed(worktree)
-    command = f"make test-changed BASE={shlex.quote(base)}" if base else \
-        "make test-changed BASE=<punkt startu ticketu na gałęzi karty>"
-    return f"""Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{command}`.
-BASE to przypięty punkt startu ticketu na gałęzi karty, a nie bieżący wierzchołek karty ani master.
-Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania ticketu ani jego review;
-jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
-w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
-Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
-""" + sandbox(f"`{command}`", worktree) + rerun_failed(worktree)
+    policy = _tests_policy(policy, worktree, base)
+    sandbox = sandbox_tests if author else (lambda _full, _worktree="", _command=None: "")
+    head = _notes(policy)
+    if policy.legacy:
+        return head + OLD_BRANCH_TESTS + sandbox(f"pełny `{policy.changed}`", worktree, policy.changed) + \
+            rerun_failed(worktree, policy.changed)
+    full_nom, full_gen, full_short = _full_phrases(policy)
+    make = testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET
+    if policy.changed:
+        text = f"Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `{policy.changed}`.\n"
+        param = "BASE" if make else "Baza w poleceniu"
+        if policy.base_pending:
+            text += (f"`{testpolicy.BASE_PARAM}` to przypięty punkt startu ticketu na gałęzi karty (nie bieżący "
+                     "wierzchołek karty ani master);\npodstaw jego SHA przed uruchomieniem.\n")
+        elif policy.base:
+            text += f"{param} to przypięty punkt startu ticketu na gałęzi karty, a nie bieżący wierzchołek karty ani master.\n"
+        text += "Zapisz polecenie i wynik w notce. "
+    else:
+        text = RULES_CHANGED + "zapisz polecenie i wynik w notce. "
+    text += (f"{full_nom[0].upper() + full_nom[1:]} nie jest kryterium oddania ticketu ani jego review;\n"
+             f"jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg {full_gen} zapisany\n"
+             "w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.\n")
+    if make:
+        text += f"Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego {full_short}.\n"
+    required = f"`{policy.changed}`" if policy.changed else RULES_SANDBOX
+    return head + text + sandbox(required, worktree, policy.changed) + rerun_failed(worktree, policy.changed)
+
+
+def review_tests(policy: TestPolicy) -> str:
+    """Punkty recenzenta o testach: w `legacy` wymóg pełnego `make test` w notce (jedyny wyjątek), w każdym innym
+    wariancie — polecenie do sprawdzenia w notce i zakaz żądania pełnego przebiegu."""
+    if policy.legacy:
+        return ("- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);\n"
+                "  nie uruchamiaj go ponownie na potrzeby review,\n")
+    _, full_gen, _ = _full_phrases(policy)
+    if testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET:
+        check = "że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian"
+    elif policy.changed:
+        check = f"że polecenie z zasady testów niżej (`{policy.changed}`) przeszło dla oddawanych zmian"
+    else:
+        check = ("polecenie testów dobranych do zmian według zasad projektu i jego udany wynik dla oddawanych "
+                 "zmian")
+    return (f"- sprawdź w notce, {check};\n"
+            f"  nie żądaj osobnego {full_gen} i nie uruchamiaj go ponownie na potrzeby review,\n")
+
+
+def close_tests(worktree: str, policy: TestPolicy | None = None) -> str:
+    """Pełne testy domknięcia (K-62: raz, porażka → error) z polityki testów."""
+    policy = _tests_policy(policy, worktree, "")
+    run = f"pełny `{policy.full}`" if policy.full else RULES_FULL
+    again = f"`{policy.full}`" if policy.full else "przebiegu"
+    return _notes(policy, close=True) + f"""Przed napisaniem podsumowania uruchom raz {run} w worktree gałęzi karty, po scaleniu ticketów.
+{run[0].upper() + run[1:]} zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy kroku.
+Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
+{again} na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
+outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
+problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
+{rerun_failed(worktree, policy.full)} Gdy polecenie wymaga zgody lub wykonania
+poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
+bez nowych zmian.
+"""
+
+
+CURRENT_TESTS_OPEN = "<TIDE_CURRENT_TESTS>"
+CURRENT_TESTS_CLOSE = "</TIDE_CURRENT_TESTS>"
+CURRENT_TESTS_HEAD = ("Obowiązujące testy (aktualna polityka testów tego kroku, policzona przy tym wznowieniu; "
+                      "zastępuje zasadę testów zapisaną wyżej w tej kartce):\n")
+_CURRENT_TESTS = re.compile(r"\n*" + re.escape(CURRENT_TESTS_OPEN) + r".*?" + re.escape(CURRENT_TESTS_CLOSE) + r"\n?",
+                            re.DOTALL)
+
+
+def current_tests(policy: TestPolicy, *, kind: str, worktree: str = "") -> str:
+    """Sekcja „Obowiązujące testy” kartki wznowienia (PT-287): ten sam tekst polityki co kartka startu danego
+    rodzaju kroku, z aktualnej polityki. Blok ma znaczniki, więc kolejne wznowienie go zastępuje, a nie dokłada."""
+    if kind == "close":
+        body = close_tests(worktree, policy)
+    elif kind == "conflict":
+        body = conflict_tests(policy, worktree)
+    elif kind == "review":
+        body = ("Dla recenzenta:\n" + review_tests(policy) + "\n" +
+                ticket_tests(policy.base, worktree, policy, author=False))
+    else:
+        body = ticket_tests(policy.base, worktree, policy)
+    return f"\n\n{CURRENT_TESTS_OPEN}\n{CURRENT_TESTS_HEAD}{body}{CURRENT_TESTS_CLOSE}\n"
+
+
+def strip_current_tests(prompt: str) -> str:
+    """Kartka bez sekcji „Obowiązujące testy” z poprzedniego wznowienia."""
+    return _CURRENT_TESTS.sub("\n", prompt)
+
+
+CONFLICT_DONE = ("Nie zapisuj wyniku done bez udanego przebiegu tych testów. Poprawki po testach zacommituj na gałęzi "
+                 "karty\n(worktree karty ma zostać czyste); gdy testy padają, a nie umiesz ich bezpiecznie naprawić, "
+                 "zapisz pytanie\nalbo error z opisem niepowodzeń.\n")
+
+
+def conflict_tests(policy: TestPolicy, worktree: str = "") -> str:
+    """Testy po rozwiązaniu konfliktu scalenia (K-69, PT-284) — nowe zachowanie: wcześniej kartka mówiła tylko
+    „uruchom potrzebne testy”. Polecenie z polityki kroku konfliktu (`step_test_policy`), z bazą = przypięty punkt
+    startu scalanego ticketu, więc `test-changed` obejmuje zmiany ticketu i karty od tego punktu. Każdy wariant
+    wymaga przebiegu i zapisu w notce; zasada ogólna nie podaje polecenia, którego projekt nie ma."""
+    head = _notes(policy)
+    if policy.legacy:
+        text = ("Testy po scaleniu: ta gałąź karty nie ma celu `make test-changed`. Po zapisaniu commita scalenia "
+                f"uruchom raz\npełny `{policy.changed}` w worktree karty i zapisz polecenie oraz wynik w notce.\n")
+        required = f"pełny `{policy.changed}`"
+    elif policy.changed:
+        text = (f"Testy po scaleniu: po zapisaniu commita scalenia uruchom w worktree karty `{policy.changed}`\n"
+                "i zapisz polecenie oraz wynik w notce.\n")
+        param = "BASE" if testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET else "Baza w poleceniu"
+        if policy.base_pending:
+            text += (f"`{testpolicy.BASE_PARAM}` to przypięty punkt startu scalanego ticketu na gałęzi karty (nie "
+                     "bieżący wierzchołek karty ani master);\npodstaw jego SHA przed uruchomieniem.\n")
+        elif policy.base:
+            text += (f"{param} to przypięty punkt startu scalanego ticketu na gałęzi karty (z utworzenia jego gałęzi), "
+                     "a nie bieżący\nwierzchołek karty ani master.\n")
+        required = f"`{policy.changed}`"
+    else:
+        text = ("Testy po scaleniu: projekt nie podaje polecenia testów zmian. Po zapisaniu commita scalenia uruchom "
+                "testy\ndobrane do zmian ticketu i karty według zasad projektu (CLAUDE.md/AGENTS.md) i zapisz "
+                "polecenie oraz wynik w notce.\n")
+        required = RULES_SANDBOX
+    return head + text + CONFLICT_DONE + sandbox_tests(required, worktree, policy.changed) + \
+        rerun_failed(worktree, policy.changed)
+
+
+PLAN_TESTS_PREFIX = "Kontrakt testów projektu (informacja dla planu): "
+_PLAN_TESTS = re.compile(r"^" + re.escape(PLAN_TESTS_PREFIX) + r".*\n?", re.MULTILINE)
+PLAN_TESTS_LABELS = {
+    testpolicy.PROFILE: "zatwierdzony kontrakt w profilu projektu",
+    testpolicy.DETECTED: "brak zatwierdzonego kontraktu, polecenia wykryte z Makefile",
+    testpolicy.COMPAT: "brak zatwierdzonego kontraktu",
+}
+
+
+def plan_tests_line(policy: TestPolicy) -> str:
+    """Jedna linia informacyjna dla planowania i review planu (K-69, PT-284): źródło i polecenia efektywnego
+    kontraktu testów, żeby kryteria ticketów odwoływały się do poleceń tego projektu. Nie zmienia formatu planu
+    ani `plan-review.json`. Polityka planowania nie ma bazy: `{base}` zostaje i jest opisane."""
+    unapproved = " Kontrakt zapisany w profilu nie jest zatwierdzony i nie jest stosowany." if policy.unapproved else ""
+    if not policy.changed and not policy.full:
+        return (f"{PLAN_TESTS_PREFIX}projekt nie ma zastosowanego kontraktu testów ani celów make — kartki ticketów odeślą do zasad "
+                "testów projektu (CLAUDE.md/AGENTS.md); w kryteriach nie podawaj poleceń testów innego projektu."
+                f"{unapproved}\n")
+    changed = f"`{policy.changed}`" if policy.changed else "według zasad projektu (CLAUDE.md/AGENTS.md)"
+    if testpolicy.BASE_PARAM in policy.changed:
+        changed += f" (`{testpolicy.BASE_PARAM}` to przypięty punkt startu ticketu — podstawia go Tide w kartce)"
+    full = f"`{policy.full}`" if policy.full else "według zasad projektu (CLAUDE.md/AGENTS.md)"
+    label = PLAN_TESTS_LABELS.get(policy.source, "zasady projektu")
+    return (f"{PLAN_TESTS_PREFIX}{label}; testy ticketu {changed}, pełne testy przy domknięciu karty {full}. "
+            f"Kryteria testów w kartkach mają odwoływać się do tych poleceń, nie do poleceń innego projektu."
+            f"{unapproved}\n")
+
+
+def with_plan_tests(prompt: str, policy: TestPolicy) -> str:
+    """Polecenie planowania z aktualną linią kontraktu: linia z poprzedniej próby (wznowienie) jest zastępowana."""
+    text = _PLAN_TESTS.sub("", prompt)
+    return text + ("" if text.endswith("\n") else "\n") + plan_tests_line(policy)
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
-                  ticket_branch: str, worktree: str, out_dir: str, error: str, merge_message: str = "") -> str:
+                  ticket_branch: str, worktree: str, out_dir: str, error: str,
+                  policy: TestPolicy | None = None, merge_message: str = "") -> str:
+    policy = _tests_policy(policy, worktree, "")
     # Repozytorium klienta (`ai-docs: tide`): tytuł commita scalenia bez numerów kart i ticketów (09.11, K-89).
     message = (f"\nTytuł commita scalenia ustaw dokładnie na: {json.dumps(merge_message, ensure_ascii=False)} "
                "(`git commit -m …`); nie zostawiaj domyślnego tytułu gita z nazwami gałęzi."
@@ -170,10 +377,10 @@ def conflict_card(*, card_id: str, title: str, description: str, ticket: str, ca
 Karta: {title}. Opis: {description}
 Pracuj wyłącznie w worktree karty {worktree} na gałęzi {card_branch}.
 Zatwierdzony ticket jest na gałęzi {ticket_branch}; przyczyna: {error}.
-Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty, uruchom potrzebne testy i zapisz commit
-scalenia z dwoma rodzicami. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.{message}
+Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty i zapisz commit scalenia z dwoma rodzicami,
+a potem uruchom testy według zasady niżej. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.{message}
 Jeśli nie możesz bezpiecznie rozstrzygnąć konfliktu, zapisz pytanie do użytkownika zamiast zgadywać.
-Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
+{conflict_tests(policy, worktree)}Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{NOTE_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
@@ -182,23 +389,13 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
 
 
 def close_card(*, card_id: str, title: str, description: str, worktree: str, out_dir: str,
-               tickets: list[dict], manual: bool) -> str:
+               tickets: list[dict], manual: bool, policy: TestPolicy | None = None) -> str:
     instruction = ("Dodaj sekcję „Co przetestować ręcznie i jak” z konkretnymi krokami i oczekiwanym wynikiem."
                    if manual else "Nie dodawaj listy testów ręcznych.")
     return f"""Domknij kartę {card_id}: {title}. Pracuj w worktree karty {worktree}.
 Opis karty: {description}
 Wyniki ticketów: {tickets}
-Przed napisaniem podsumowania uruchom raz pełny `make test` w worktree gałęzi karty, po scaleniu ticketów.
-Pełny `make test` zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
-bez wcześniejszej próby pełnego przebiegu w piaskownicy kroku.
-Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
-`make test` na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
-outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
-problemach domknięcia. O przyjęciu odstępstwa decyduje użytkownik.
-{rerun_failed(worktree)} Gdy polecenie wymaga zgody lub wykonania
-poza piaskownicą, użyj kontraktu denied albo outside i poczekaj na wznowienie; nie powtarzaj udanego przebiegu
-bez nowych zmian.
-Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
+{close_tests(worktree, policy)}Napisz zwięzłe podsumowanie tego, co faktycznie powstało i co nadal wymaga uwagi, w {out_dir}/{SUMMARY_FILE}.
 {instruction} Nie scalaj do gałęzi głównej, nie rób push i nie usuwaj worktree.
 Jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
@@ -259,8 +456,39 @@ wykonać w pudełku, zakończ wynikiem `error` z opisem przyczyny.
 """
 
 
+CONTRACT_COMMANDS_OPEN = "<TIDE_CONTRACT_COMMANDS>"
+CONTRACT_COMMANDS_CLOSE = "</TIDE_CONTRACT_COMMANDS>"
+CONTRACT_COMMANDS_HEAD = ("Polecenia zatwierdzonego kontraktu testów projektu — dozwolone w tym kroku dosłownie, bez "
+                          "dodatkowych\nargumentów (zgoda liczona przy tym starcie albo wznowieniu):\n")
+CONTRACT_NOT_GRANTED = "Polecenia kontraktu testów bez automatycznej zgody (uruchomienie wymaga zgody w kroku):\n"
+CONTRACT_FIX = ("Kontrakt testów projektu wymaga poprawy: jego polecenie pasuje do zakazu projektu albo Tide — "
+                "nie uruchamiaj go\ni nie proś o zgodę; zapisz to w notce.\n")
+_CONTRACT_COMMANDS = re.compile(r"\n?" + re.escape(CONTRACT_COMMANDS_OPEN) + r".*?" +
+                                re.escape(CONTRACT_COMMANDS_CLOSE) + r"\n?", re.DOTALL)
+
+
+def contract_commands(grants) -> str:
+    """Blok zgód z kontraktu testów (PT-280) w liście poleceń kroku; pusty bez zgód i bez uwag (tekst master)."""
+    if grants is None or not (grants.commands or grants.notes):
+        return ""
+    text = ""
+    if grants.commands:
+        text += CONTRACT_COMMANDS_HEAD + "".join(f"- {command}\n" for command in grants.commands)
+    if grants.notes:
+        text += CONTRACT_NOT_GRANTED + "".join(f"- `{command}` (tests.{field}): {message}\n"
+                                               for field, command, message in grants.notes)
+    if grants.fix:
+        text += CONTRACT_FIX
+    return f"{CONTRACT_COMMANDS_OPEN}\n{text}{CONTRACT_COMMANDS_CLOSE}\n"
+
+
+def strip_contract_commands(prompt: str) -> str:
+    """Kartka bez bloku zgód kontraktu z poprzedniej próby: wznowienie liczy zgody od nowa (PT-280)."""
+    return _CONTRACT_COMMANDS.sub("\n", prompt)
+
+
 def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: str, boundary: str,
-            report: str, outside: str) -> str:
+            report: str, outside: str, contract=None) -> str:
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
     own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
@@ -270,7 +498,7 @@ def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: st
 Polecenia projektu w tym kroku (najnowsza lista):
 Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
-Zabronione polecenia:
+{contract_commands(contract)}Zabronione polecenia:
 {deny}
 {own}{wrapped}{boundary}
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
@@ -283,27 +511,28 @@ i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
 {outside}"""
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
-    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku."""
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, contract=None) -> str:
+    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku.
+    `contract` — zgody z kontraktu testów (`testpolicy.contract_grants`, PT-280); bez nich tekst master."""
     return _policy(allowed, denied, step_dir, wrapped="", boundary=HOST_BOUNDARY, report=HOST_REPORT,
-                   outside=HOST_OUTSIDE)
+                   outside=HOST_OUTSIDE, contract=contract)
 
 
-def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, contract=None) -> str:
     """Lista poleceń kroku w pudełku: owijka tide-test i ograniczenie pudełka zamiast kontraktu outside."""
     return _policy(allowed, denied, step_dir, wrapped=BOX_WRAPPED, boundary=BOX_BOUNDARY, report=BOX_REPORT,
-                   outside=BOX_OUTSIDE)
+                   outside=BOX_OUTSIDE, contract=contract)
 
 
 def runner_policy(runner: str, allowed: list[str], denied: list[str], step_dir: str = "", *,
-                  profile: dict | None = None) -> str:
+                  profile: dict | None = None, contract=None) -> str:
     """Jedyny wybór treści listy poleceń według zapisanego runnera kroku. Host: tekst master, bez dodatków
     pudełka (także przy `box.enabled: true` i istniejącym profilu). Box: owijka, verify profilu, ograniczenia."""
     if runner == BOX_RUNNER:
-        return box_command_policy(allowed, denied, step_dir) + box_tests(profile or {})
+        return box_command_policy(allowed, denied, step_dir, contract=contract) + box_tests(profile or {})
     if runner != HOST_RUNNER:
         raise ValueError(f"nieznany runner kroku: {runner!r}")
-    return command_policy(allowed, denied, step_dir)
+    return command_policy(allowed, denied, step_dir, contract=contract)
 
 
 def review_evidence(runner: str, source: dict) -> str:
@@ -400,7 +629,8 @@ Plik wyniku: {out_dir}/{RESULT_FILE}
 
 
 def ticket_card(*, card_id: str, title: str, description: str, project: str, ticket: str, branch: str,
-                card_branch: str, worktree: str, out_dir: str, images=(), test_base: str = "") -> str:
+                card_branch: str, worktree: str, out_dir: str, images=(), test_base: str = "",
+                policy: TestPolicy | None = None) -> str:
     shots = "".join(f"- {path}\n" for path in images)
     body = description.strip() or "(karta bez opisu — zrób to, co mówi tytuł)"
     return f"""Krok ticketu {ticket} karty {card_id} w przepływie karty Tide (wejście „Od razu”, krok w tle).
@@ -413,7 +643,7 @@ Twój katalog roboczy: {worktree} (gałąź {branch}, odgałęziona od gałęzi 
 
 Opis karty:
 {body}
-{ticket_tests(test_base, worktree)}
+{ticket_tests(test_base, worktree, policy)}
 {f'''
 Zrzuty ekranu dołączone do zlecenia (przeczytaj je narzędziem Read):
 {shots}''' if shots else ''}
@@ -499,8 +729,9 @@ def test_evidence(step: dict) -> str:
 
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
                 card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
-                diff: str, note: str, rules: str, test_base: str = "") -> str:
+                diff: str, note: str, rules: str, test_base: str = "", policy: TestPolicy | None = None) -> str:
     """Pełne wejście niezależnego przeglądu, przekazane na stdin programu recenzenta."""
+    policy = _tests_policy(policy, worktree, test_base)
     return f"""Krok review {ticket} karty {card_id}, runda {round_no}. Sprawdź wymagania i zmiany, nie edytuj kodu.
 
 Karta {card_id}: {title}
@@ -513,19 +744,14 @@ Twój katalog: {worktree}
 
 Dla recenzenta:
 - sprawdź zgodność z opisem karty i zasadami projektu,
-{"- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;" + chr(10) +
-   "  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,"
-   if has_changed_target(worktree) else
-   "- sprawdź w notce wynik pełnego `make test` (ta gałąź karty nie ma jeszcze `make test-changed`);" + chr(10) +
-   "  nie uruchamiaj go ponownie na potrzeby review,"}
-- ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
+{review_tests(policy)}- ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
   (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów; udane ponowienie nie zastępuje porażki,
   oceń rozliczenie odstępstwa jak przy każdym nieudanym przebiegu,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
 - BLOCKER lub MAJOR oznacza REQUEST_CHANGES,
 - {DESK_HINT}
 
-{ticket_tests(test_base, worktree, author=False)}
+{ticket_tests(test_base, worktree, policy, author=False)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 
@@ -545,14 +771,15 @@ Liczby mają odpowiadać raportowi. Nie rób push ani merge.
 
 
 def fix_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
-             branch: str, worktree: str, out_dir: str, review: str, test_base: str = "") -> str:
+             branch: str, worktree: str, out_dir: str, review: str, test_base: str = "",
+             policy: TestPolicy | None = None) -> str:
     return f"""Krok poprawek ticketu {ticket} karty {card_id} po review, runda {round_no}.
 
 Karta {card_id}: {title}
 Opis/specyfikacja karty:
 {description.strip() or '(brak opisu)'}
 Twój katalog: {worktree}, gałąź {branch}. Popraw BLOCKER i MAJOR z raportu; uruchom odpowiednie testy.
-{ticket_tests(test_base, worktree)}
+{ticket_tests(test_base, worktree, policy)}
 
 Raport review:
 {review}

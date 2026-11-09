@@ -24,6 +24,7 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 """
 from __future__ import annotations
 
+import functools
 import json
 import hashlib
 import hmac
@@ -51,6 +52,7 @@ from ..tasks.runner import HostRunner, Runner
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import testrerun
+from . import testpolicy
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -92,6 +94,12 @@ SETTINGS_FILE = "cardflow.json"
 DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
 MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
+# Kroki, których kartka podaje testy: każdy ich start i wznowienie liczy politykę przez `step_test_policy` (PT-287).
+# Konflikt (PT-284): baza = przypięty punkt startu scalanego ticketu, nie wierzchołek karty.
+TEST_POLICY_KINDS = ("ticket", "fix", "review", "close", "conflict")
+# Planowanie Lekkie i review planu (PT-284): jedna linia informacyjna o efektywnym kontrakcie, bez bazy i bez
+# `testPolicy` w zdarzeniu (polityka nie jest tu wymogiem kroku ani źródłem zgód).
+PLAN_TESTS_KINDS = ("planning", "plan-fix", "plan-review")
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
 ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
@@ -2595,11 +2603,68 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except (agentcmd.StepError, OSError) as exc:
             raise FlowError("read-dirs", f"Nie można zastosować profilu tylko do odczytu: {exc}") from None
 
+    def step_test_policy(self, card_id: str, step: agentcmd.Step, *, base: str) -> testpolicy.TestPolicy:
+        """Jedyny punkt silnika, który liczy testy do kartki kroku (K-69, PT-287) — przy każdym starcie i wznowieniu
+        ticketu, poprawek, review i domknięcia. Czyta bieżący kontrakt projektu z Tablicy, pyta `approval_for_step`
+        o zatwierdzenie dla obszarów zapisu tego kroku (`step` — ten sam `agentcmd.Step`, z którego powstaje
+        piaskownica), bada worktree kroku i woła `effective_tests`. Silnik nie porównuje odcisku sam.
+        `base` — przypięty SHA z wyniku utworzenia gałęzi ticketu (nigdy bieżący wierzchołek karty); pusty zostawia
+        `{base}` nierozwinięte."""
+        _item, project = self._project(card_id)
+        approved, _reason = self.store.approval_for_step(project, step)
+        return testpolicy.effective_tests(project.tests, step.worktree, approved, base, error=project.tests_error)
+
+    def _ticket_base(self, card_id: str, ticket: str, made_ticket: dict) -> str:
+        """Przypięty punkt startu ticketu: `base` z wyniku utworzenia gałęzi ticketu (`made_ticket` albo dziennik)."""
+        if made_ticket.get("base"):
+            return made_ticket["base"]
+        return ticket_of(fold(self.journal.read(card_id)), ticket)["base"] if ticket else ""
+
+    def _background_step(self, *, card, project, selected, kind, prompt, worktree, step_dir, step_id, session,
+                         resume_session, read_dirs, context_dirs, configured, read_profile, branch="",
+                         tooling=None, contract_commands=()) -> agentcmd.Step:
+        """Krok w tle z jego ustawień — jedno miejsce dla startu programu (`Runner.start`) i dla `step_test_policy`
+        (PT-287). `tooling` — składniki z `_step_tooling` (w pudełku bez narzędzi hosta); brak = jak na hoście.
+        `contract_commands` — dokładne polecenia zatwierdzonego kontraktu testów dla tego kroku
+        (`testpolicy.contract_grants`, PT-280); dochodzą do listy kroku, nie do listy zapisanej w projekcie."""
+        from ..board.commands import claude_tools
+        # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
+        # `agentcmd` (`write_out_only`).
+        allowed_tools, disallowed_tools = claude_tools([*project.allowed_commands, *contract_commands],
+                                                       project.denied_commands,
+                                                       step_dir=step_dir) if kind != caretaker.KIND else ((), ())
+        return agentcmd.Step(
+            tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
+            step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
+            branch=branch,
+            resume=bool(resume_session),
+            local=selected.route, effort=selected.effort,
+            permission_mode="acceptEdits" if selected.tool == "claude" else "",
+            allowed_tools=allowed_tools if selected.tool == "claude" else (),
+            disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
+            enforce_command_policy=selected.tool == "claude" or kind == caretaker.KIND,
+            tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])),
+            context_dirs=tuple(context_dirs),
+            read_profile=read_profile,
+            codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()),
+            **(tooling if tooling is not None else self._project_tooling(project, worktree, selected.tool, kind)),
+            write_out_only=kind == caretaker.KIND, **self._git_identity(project.repo))
+
+    def _step_tooling(self, project, worktree, tool, kind, placement) -> dict:
+        """Składniki kroku: w pudełku (PT-181) bez Node, domen i Chrome hosta — zależności instaluje agent przez proxy."""
+        tooling = self._project_tooling(project, worktree, tool, kind)
+        if placement is not None:
+            tooling.update(node_home="", network_domains=(), chrome_bin="")
+        return tooling
+
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
-                *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
+                *, kind="ticket", round_no=0, prompt_text="", card_prompt=None, review_tip="", parent_step="",
                 attempt=0, resume_session="", make_prompt=None, evidence=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153).
+        `card_prompt(policy) -> str` — kartka kroku z polityką testów policzoną tu przez `step_test_policy` (PT-287);
+        `prompt_text` z `parent_step` to kartka poprzedniej próby (wznowienie): dostaje sekcję „Obowiązujące testy”,
+        gdy aktualna polityka różni się od tej, z którą zbudowano kartkę.
         `evidence` — wpis kroku autora dla review: spis jego artefaktów dostaje tylko review w pudełku (PT-291)."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
@@ -2623,10 +2688,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         out = os.path.join(step_dir, "out")
         shots = [os.path.join(step_dir, "in", "images", f"{i + 1}-{os.path.basename(p)}") for i, p in enumerate(images)]
         issue_shots = source_evidence.images(step_dir) if source_evidence else []
-        prompt = "" if make_prompt else prompt_text or handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
-                                                     project=project.name, ticket=ticket, branch=made_ticket["branch"],
-                                                     card_branch=made["branch"], worktree=worktree, out_dir=out,
-                                                     images=[*shots, *issue_shots], test_base=made_ticket.get("base") or "")
+        # Dopiski za kartką; samą kartkę składamy, gdy znane są katalogi kroku i jego polityka testów (PT-287).
+        prompt = ""
         if source_evidence:
             prompt += source_evidence.prompt(step_dir)
         # PT-291: dodatki pudełka zależą od zapisanego runnera tego kroku (placement), nie od profilu ani autora.
@@ -2670,19 +2733,75 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                        if ((shots or issue_shots) and d == os.path.join(step_dir, "in", "images")) or os.path.isdir(d)]
         if source_evidence:
             read_dirs.append(os.path.join(step_dir, "in", "evidence"))
+        session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         from .. import resources
         standard = resources.resolve("plan-standard")
+        # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji. Dopisane przed krokiem
+        # próbnym polityki testów: jego obszary zapisu muszą być obszarami kroku, który startuje (review PT-287 M1).
+        read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
+        # Polityka testów (PT-287): przy każdym starcie i wznowieniu ticketu, poprawek, review, konfliktu (PT-284)
+        # i domknięcia — z tego samego kroku, który niżej startuje (te same katalogi; `reads` przechodzi do `launch`).
+        # Planowanie Lekkie i review planu dostają z niej tylko linię informacyjną (PT-284), bez bazy i zdarzenia.
+        policy, plan_policy, reads, policy_fields = None, None, None, {}
+        if (kind in TEST_POLICY_KINDS or kind in PLAN_TESTS_KINDS) and not make_prompt:
+            try:
+                configured = self._configured_reads(card, project, worktree, step_dir, order=order,
+                                                    route=selected.route)
+                reads = (configured, bool(configured) or self._used_read_profile(card.id, worktree))
+            except FlowError:
+                reads = None    # `launch` odmówi startu w parze „zamiar → wynik”; tu tylko krok bez tych katalogów
+            probe = self._background_step(
+                card=card, project=project, selected=selected, kind=kind, prompt="", worktree=worktree,
+                step_dir=step_dir, step_id=step_id, session=session, resume_session=resume_session,
+                read_dirs=read_dirs, context_dirs=context_dirs, configured=reads[0] if reads else [],
+                read_profile=reads[1] if reads else self._used_read_profile(card.id, worktree),
+                branch=made_ticket["branch"],
+                tooling=self._step_tooling(project, worktree, selected.tool, kind, placement))
+            planned = kind in PLAN_TESTS_KINDS
+            policy = self.step_test_policy(card.id, probe,
+                                           base="" if planned else self._ticket_base(card.id, ticket, made_ticket))
+            if planned:
+                plan_policy, policy = policy, None
+        policy_card = policy.as_dict() if policy is not None else None
+        # Zgody z kontraktu testów (PT-280): z tej samej polityki co zasada testów w kartce, liczone przy każdym
+        # starcie i wznowieniu; blok zgód poprzedniej próby nie przechodzi do kartki wznowienia.
+        grants = testpolicy.contract_grants(policy, project.denied_commands)
+        if prompt_text and parent_step:
+            prompt_text = handoff.strip_contract_commands(prompt_text)
+        if make_prompt:
+            head = ""
+        elif prompt_text and parent_step and policy is not None:
+            # Wznowienie czyta kartkę poprzedniej próby: polityka z jej startu nie obowiązuje sama z siebie —
+            # aktualna trafia do sekcji „Obowiązujące testy”, gdy różni się od tej, z którą zbudowano kartkę.
+            parent = fold(self.journal.read(card.id)).steps.get(parent_step) or {}
+            policy_card = parent.get("testPolicyCard")
+            head = handoff.strip_current_tests(prompt_text)
+            if policy_card != policy.as_dict():
+                head += handoff.current_tests(policy, kind=kind, worktree=worktree)
+        elif card_prompt is not None:
+            head = card_prompt(policy)
+        elif prompt_text:
+            head = prompt_text
+        else:
+            head = handoff.ticket_card(card_id=card.id, title=card.title, description=card.description,
+                                       project=project.name, ticket=ticket, branch=made_ticket["branch"],
+                                       card_branch=made["branch"], worktree=worktree, out_dir=out,
+                                       images=[*shots, *issue_shots], policy=policy)
+        if plan_policy is not None:
+            head = handoff.with_plan_tests(head, plan_policy)
+        prompt = head + prompt
+        if policy is not None:
+            policy_fields = {"testPolicy": policy.as_dict(), "testPolicyCard": policy_card,
+                             "contractCommands": list(grants.commands)}
         if str(standard) not in prompt:
             prompt += resources.instructions()
-        # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji.
-        read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.runner_policy(step_runner, project.allowed_commands, project.denied_commands,
                                             step_dir=step_dir,
-                                            profile=placement.profile if placement is not None else None)
+                                            profile=placement.profile if placement is not None else None,
+                                            contract=grants)
         from .stepnotes import prepare as prepare_notes
         prompt, note_ids = prepare_notes(self.journal.state(card.id), parent_step, prompt)
-        session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
         self._hidden = (ids | {session}, tuple(sorted(set(places) | {os.path.realpath(worktree)})))
 
@@ -2692,20 +2811,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 prompt = make_prompt(step_dir)
                 if source_evidence:
                     prompt += source_evidence.prompt(step_dir)
-            configured = self._configured_reads(card, project, worktree, step_dir, order=order,
-                                                route=selected.route)
-            read_profile = bool(configured) or self._used_read_profile(card.id, worktree)
+            if reads is not None:
+                configured, read_profile = reads
+            else:
+                configured = self._configured_reads(card, project, worktree, step_dir, order=order,
+                                                    route=selected.route)
+                read_profile = bool(configured) or self._used_read_profile(card.id, worktree)
             if configured:
                 prompt += "\nKatalogi danych projektu (wyłącznie do odczytu):\n" + "\n".join(configured) + "\n"
-            from ..board.commands import claude_tools
             from ..tasks import dotnet
-            # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
-            # `agentcmd` (`write_out_only`).
-            allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
-                                                           step_dir=step_dir) if kind != caretaker.KIND else ((), ())
-            tooling = self._project_tooling(project, worktree, selected.tool, kind)
-            if placement is not None:
-                tooling.update(node_home="", network_domains=(), chrome_bin="")
+            tooling = self._step_tooling(project, worktree, selected.tool, kind, placement)
             # W pudełku zależności instaluje agent przez proxy, bez instalacji na hoście.
             if tooling["dotnet"] and placement is None:
                 ok, tail = dotnet.restore(worktree)
@@ -2739,20 +2854,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if placement is not None:
                     boxstep.before_start(self, placement, card.id, step_id,
                                          selected.tool if selected.route is None else "")
-                runner_step = agentcmd.Step(
-                    tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
-                    step_dir=step_dir, step_id=step_id, session_id=session, model=selected.model,
-                    branch=made_ticket["branch"],
-                    resume=bool(resume_session),
-                    local=selected.route, effort=selected.effort,
-                    permission_mode="acceptEdits" if selected.tool == "claude" else "",
-                    allowed_tools=allowed_tools if selected.tool == "claude" else (),
-                    disallowed_tools=disallowed_tools if selected.tool == "claude" else (),
-                    enforce_command_policy=selected.tool == "claude" or kind == caretaker.KIND,
-                    tmp_root=self.tmp_root, read_dirs=tuple(dict.fromkeys([*read_dirs, *configured])),
-                    context_dirs=tuple(context_dirs), read_profile=read_profile,
-                    codex_mcp_skip=tuple(self._settings_data().get("codexMcpSkip") or ()), **tooling,
-                    write_out_only=kind == caretaker.KIND, **self._git_identity(project.repo))
+                runner_step = self._background_step(
+                    card=card, project=project, selected=selected, kind=kind, prompt=prompt, worktree=worktree,
+                    step_dir=step_dir, step_id=step_id, session=session, resume_session=resume_session,
+                    read_dirs=read_dirs, context_dirs=context_dirs, configured=configured, read_profile=read_profile,
+                    branch=made_ticket["branch"], tooling=tooling, contract_commands=grants.commands)
                 if placement is not None:
                     boxstep.prepare_runner(self, placement, runner_step)
                 self._trial_check(ticket)
@@ -2800,7 +2906,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                   routeTokenFile=selected.route.token_file if selected.route else "",
                                   local=selected.local, branch=made_ticket["branch"],
                                   reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                                  deliveredNoteIds=note_ids, **base_context)
+                                  deliveredNoteIds=note_ids, **base_context, **policy_fields)
         except boxstep.BoxWaiting as exc:
             boxstep.release_ports(placement.entry())
             self._release_local(step_id)
@@ -2835,7 +2941,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    readDirsProfile=begun.get("readDirsProfile", False),
-                                   repo=project.repo, **box_fields, **base_context)
+                                   repo=project.repo, **box_fields, **base_context, **policy_fields)
 
     def _box_place(self, card: str, project, selected, ticket: str, kind: str, parent_step: str, step_id: str = ""):
         """PT-181: `None` (host), `Placement` (pudełko) albo FlowDeferred/FlowError — nigdy cichy powrót na hosta."""
@@ -3699,13 +3805,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                     preferredProvider="mixed" if selected.provider != reviewer.provider else selected.provider)
             body = self._plan_card(card, row)
             out = worktree + ".step/out"
-            prompt = handoff.ticket_card(card_id=card, title=row["title"], description=body,
-                                         project=project.name, ticket=ticket, branch=branch,
-                                         card_branch=card_branch, worktree=worktree, out_dir=out,
-                                         test_base=made_ticket.get("base") or "")
+            prompt = functools.partial(handoff.ticket_card, card_id=card, title=row["title"], description=body,
+                                       project=project.name, ticket=ticket, branch=branch,
+                                       card_branch=card_branch, worktree=worktree, out_dir=out)
             step_id = self._next_step_id(card, ticket, st)
             try:
-                self._launch(item, project, selected, ticket, made, made_ticket, step_id, [], prompt_text=prompt)
+                self._launch(item, project, selected, ticket, made, made_ticket, step_id, [],
+                             card_prompt=lambda policy, prompt=prompt: prompt(policy=policy))
             except FlowDeferred:
                 continue
             st = self.journal.state(card)
@@ -4932,15 +5038,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         step_id = self._next_step_id(card, ticket, st)
         out = path + f".review-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
-        prompt = handoff.review_card(card_id=card, title=title, description=description, ticket=ticket,
-                                     round_no=round_no, card_branch=info["cardBranch"],
-                                     ticket_branch=info["branch"], worktree=path, out_dir=out,
-                                     diff=diff, note=self._note(card, source), rules=self._rules(project.repo),
-                                     test_base=info["base"])
+        prompt = functools.partial(handoff.review_card, card_id=card, title=title, description=description,
+                                   ticket=ticket, round_no=round_no, card_branch=info["cardBranch"],
+                                   ticket_branch=info["branch"], worktree=path, out_dir=out,
+                                   diff=diff, note=self._note(card, source), rules=self._rules(project.repo))
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
-                     {"branch": info["branch"], "worktree": path}, step_id, [],
-                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip, evidence=source)
+                     {"branch": info["branch"], "worktree": path, "base": info["base"]}, step_id, [],
+                     kind="review", round_no=round_no, card_prompt=lambda policy: prompt(policy=policy),
+                     review_tip=tip, evidence=source)
 
     def _fix(self, card: str, st: FlowState, review_step: dict) -> None:
         item, project = self._project(card)
@@ -4979,13 +5085,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
-        prompt = handoff.fix_card(card_id=card, title=title, description=description, ticket=ticket,
-                                  round_no=round_no, branch=info["branch"], worktree=info["worktree"],
-                                  out_dir=out, review=self._note(card, review_step), test_base=info["base"])
+        prompt = functools.partial(handoff.fix_card, card_id=card, title=title, description=description,
+                                   ticket=ticket, round_no=round_no, branch=info["branch"],
+                                   worktree=info["worktree"], out_dir=out, review=self._note(card, review_step))
         self._launch(item, project, executor, ticket,
                      {"branch": info["cardBranch"]},
-                     {"branch": info["branch"], "worktree": info["worktree"]},
-                     step_id, [], kind="fix", round_no=round_no, prompt_text=prompt)
+                     {"branch": info["branch"], "worktree": info["worktree"], "base": info["base"]},
+                     step_id, [], kind="fix", round_no=round_no, card_prompt=lambda policy: prompt(policy=policy))
 
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         self._trial_check(ticket)
@@ -5156,7 +5262,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""),
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
                                 **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
-                                                         "boxPortOwner") if intent.get(k)})
+                                                         "boxPortOwner") if intent.get(k)},
+                                **{name: intent[name] for name in ("testPolicy", "testPolicyCard", "contractCommands")
+                                   if name in intent})
 
     def _repo(self, card: str) -> str:
         st = self.journal.state(card)
@@ -6175,16 +6283,23 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         step_id = self._next_step_id(card, ticket, st)
         out = info["cardWorktree"] + f".conflict-{step_id}.step/out"
-        prompt = handoff.conflict_card(card_id=card, title=item.title, description=item.description,
-                                       ticket=ticket, card_branch=info["cardBranch"],
-                                       ticket_branch=info["branch"], worktree=info["cardWorktree"],
-                                       out_dir=out, error=failure.get("error") or "konflikt",
-                                       merge_message=self._merge_message(card, project.repo, review_step.get("reviewTip") or "", "")
-                                       if self._plan_on_board(card) else "")
+        # Testy po scaleniu (PT-284): polityka z `step_test_policy` w `_launch`; baza to przypięty SHA z utworzenia
+        # gałęzi scalanego ticketu (`ticket_of(st, ticket)["base"]`, także przy wznowieniu), nie wierzchołek karty.
+
+        # Repozytorium klienta (`ai-docs: tide`): neutralny tytuł commita scalenia także w kroku konfliktu (09.11, K-89).
+        merge_message = (self._merge_message(card, project.repo, review_step.get("reviewTip") or "", "")
+                         if self._plan_on_board(card) else "")
+
+        def prompt(policy):
+            return handoff.conflict_card(card_id=card, title=item.title, description=item.description,
+                                         ticket=ticket, card_branch=info["cardBranch"],
+                                         ticket_branch=info["branch"], worktree=info["cardWorktree"],
+                                         out_dir=out, error=failure.get("error") or "konflikt", policy=policy,
+                                         merge_message=merge_message)
         self._launch(item, project, selected, ticket,
                      {"branch": info["cardBranch"]},
-                     {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
-                     step_id, [], kind="conflict", prompt_text=prompt,
+                     {"branch": info["cardBranch"], "worktree": info["cardWorktree"], "base": info["base"]},
+                     step_id, [], kind="conflict", card_prompt=prompt,
                      review_tip=review_step.get("reviewTip") or "", attempt=1)
 
     def card_diff(self, card_id: str, target_ref: str = "") -> dict:
@@ -7561,10 +7676,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         step_id = self._next_step_id(card, "", st)
         out = info["cardWorktree"] + f".close-{step_id}.step/out"
-        prompt = handoff.close_card(card_id=card, title=item.title, description=item.description,
-                                    worktree=info["cardWorktree"], out_dir=out, tickets=tickets,
-                                    manual=(st.started or {}).get("check") == "manual")
+        prompt = functools.partial(handoff.close_card, card_id=card, title=item.title, description=item.description,
+                                   worktree=info["cardWorktree"], out_dir=out, tickets=tickets,
+                                   manual=(st.started or {}).get("check") == "manual")
         self._launch(item, project, selected, "", {"branch": info["cardBranch"]},
                      {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
-                     step_id, [], kind="close", prompt_text=prompt)
+                     step_id, [], kind="close", card_prompt=lambda policy: prompt(policy=policy))
         return True

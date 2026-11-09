@@ -1,0 +1,14 @@
+# Profil pudełka projektu — wzorzec zgodności K-69 z K-38 (komentarz poza blokiem tests).
+tide-box: 1
+project: plasma-tide
+apt:
+  - "build-essential"
+  - "python3-pytest"
+network:
+  domains:
+    - "pypi.org"
+verify: ["make --version"]
+# Kontrakt testów projektu (K-69).
+tests:
+  changed: "make test-changed BASE={base}"
+  full: "make test"

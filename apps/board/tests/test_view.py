@@ -2013,6 +2013,282 @@ out["call"] = calls()[-1]
         self.assertEqual(json.loads(out["call"][-1]),
                          {"slug": "plasma-tide", "allowedCommands": ["git status", "git log", "git fetch origin"]})
 
+class ProjectTestsSectionTest(ProbeCase):
+    """Sekcja „Testy projektu” w oknie projektu (PT-281): odczyt, zapis, czyszczenie, zatwierdzenie, błędy."""
+
+    def project_data(self, **fields):
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].update(fields)
+        return data
+
+    OPEN = """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+def scroll_to_end():
+    js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+    wait(60)
+"""
+
+    def test_saved_contract_is_shown_and_untouched_fields_do_not_send_tests(self):
+        data = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": "make test"},
+                                 testsApproved=True, testsGrantNote={"changed": "", "full": ""})
+        out = self.probe(FIND_PY + self.OPEN + """
+out["changed"] = js(find("projectTestsChanged") + ".text")
+out["full"] = js(find("projectTestsFull") + ".text")
+out["warning"] = js(find("projectTestsPending") + ".visible")
+out["approve"] = js(find("projectTestsApprove") + ".visible")
+out["before"] = len(calls())
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["call"] = calls()[-1]
+out["after"] = len(calls())
+""", data=data)
+        self.assertEqual(out["changed"], "make test-changed BASE={base}")
+        self.assertEqual(out["full"], "make test")
+        self.assertFalse(out["warning"])
+        self.assertEqual(out["after"], out["before"] + 1)
+        self.assertNotIn("tests", json.loads(out["call"][-1]))
+
+    def test_project_without_contract_has_empty_fields_and_hint(self):
+        out = self.probe(FIND_PY + self.OPEN + """
+out["changed"] = js(find("projectTestsChanged") + ".text")
+out["full"] = js(find("projectTestsFull") + ".text")
+out["hint"] = js(find("projectTestsEmptyHint") + ".visible")
+out["before"] = len(calls())
+""", data=self.project_data())
+        self.assertEqual((out["changed"], out["full"]), ("", ""))
+        self.assertTrue(out["hint"])
+
+    def test_edit_sends_only_tests_and_clearing_removes_contract(self):
+        data = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": "make test"},
+                                 testsApproved=True)
+        out = self.probe(FIND_PY + self.OPEN + """
+js(find("projectTestsFull") + ".text = 'make test-all'")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["edit"] = calls()[-1]
+js("page.managePage.handleReply('project:plasma-tide', {ok: true})")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(80)
+js(find("projectTestsChanged") + ".text = ''")
+js(find("projectTestsFull") + ".text = ''")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(80)
+out["clear"] = calls()[-1]
+""", data=data)
+        self.assertEqual(out["edit"][0], "UpsertProject")
+        self.assertEqual(json.loads(out["edit"][-1]),
+                         {"slug": "plasma-tide", "tests": {"changed": "make test-changed BASE={base}", "full": "make test-all"}})
+        self.assertEqual(json.loads(out["clear"][-1]), {"slug": "plasma-tide", "tests": {"changed": "", "full": ""}})
+
+    def test_unapproved_contract_warns_and_approval_is_explicit(self):
+        data = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": "make test"},
+                                 testsApproved=False)
+        out = self.probe(FIND_PY + self.OPEN + """
+out["calls_on_open"] = len(calls())
+out["warning"] = js(find("projectTestsPending") + ".visible")
+out["text"] = js(find("projectTestsWarning") + ".text")
+scroll_to_end()
+click(at(find("projectTestsApprove")))
+wait(80)
+out["call"] = calls()[-1]
+out["calls_after"] = len(calls())
+js("page.managePage.handleReply('tests:plasma-tide', {ok: true, testsApproved: true, approvalError: ''})")
+out["open"] = js("page.managePage.openProject")
+out["dbg"] = [js("page.managePage.testsError"), js("page.managePage.testsInRequest"), js("page.managePage.projectError")]
+out["err"] = js(find("projectTestsError") + ".text")
+""", data=data)
+        self.assertTrue(out["warning"])
+        self.assertEqual(out["text"], "kontrakt zmieniony poza oknem projektu — sprawdź i zatwierdź")
+        self.assertEqual(out["calls_after"], out["calls_on_open"] + 1)
+        self.assertEqual(out["call"][0], "UpsertProject")
+        self.assertEqual(json.loads(out["call"][-1]),
+                         {"slug": "plasma-tide", "tests": {"changed": "make test-changed BASE={base}", "full": "make test"}})
+        self.assertEqual(out["open"], "plasma-tide")
+        self.assertEqual(out["err"], "")
+
+    def test_approved_contract_has_no_approve_button_after_refresh(self):
+        data = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""}, testsApproved=True)
+        out = self.probe(FIND_PY + self.OPEN + """
+out["pending"] = js(find("projectTestsPending") + ".visible")
+""", data=data)
+        self.assertFalse(out["pending"])
+
+    def test_grant_note_comes_from_service(self):
+        note = "polecenie zawiera `*` — Tide nie nada mu automatycznej zgody"
+        data = self.project_data(tests={"changed": "", "full": "pytest *"}, testsApproved=True,
+                                 testsGrantNote={"changed": "", "full": note})
+        out = self.probe(FIND_PY + self.OPEN + """
+out["full"] = js(find("projectTestsFullNote") + ".text")
+out["full_visible"] = js(find("projectTestsFullNote") + ".visible")
+out["changed_visible"] = js(find("projectTestsChangedNote") + ".visible")
+""", data=data)
+        self.assertEqual(out["full"], note)
+        self.assertTrue(out["full_visible"])
+        self.assertFalse(out["changed_visible"])
+
+    def test_validation_error_is_shown_in_section_and_keeps_typed_values(self):
+        out = self.probe(FIND_PY + self.OPEN + """
+js(find("projectName") + ".text = 'Nowa nazwa'")
+js(find("projectTestsChanged") + ".text = 'make test-changed'")
+js("page.managePage.projectRow('plasma-tide').save()")
+js("page.managePage.handleReply('project:plasma-tide', {ok: false, error: 'invalid', message: 'tests.changed: brakuje {base}'})")
+out["err"] = js(find("projectTestsError") + ".text")
+out["name"] = js(find("projectName") + ".text")
+out["changed"] = js(find("projectTestsChanged") + ".text")
+out["open"] = js("page.managePage.openProject")
+out["dbg"] = [js("page.managePage.testsError"), js("page.managePage.testsInRequest"), js("page.managePage.projectError")]
+""", data=self.project_data())
+        self.assertIn("brakuje {base}", out["err"])
+        self.assertEqual(out["name"], "Nowa nazwa")
+        self.assertEqual(out["changed"], "make test-changed")
+        self.assertEqual(out["open"], "plasma-tide")
+
+    def test_approval_rejection_is_shown_in_section(self):
+        data = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""}, testsApproved=False)
+        out = self.probe(FIND_PY + self.OPEN + """
+scroll_to_end()
+click(at(find("projectTestsApprove")))
+wait(80)
+js("page.managePage.handleReply('tests:plasma-tide', {ok: true, testsApproved: false, approvalError: 'zatwierdzenie kontraktu testów: brak zapisu'})")
+wait(40)
+out["err"] = js(find("projectTestsError") + ".text")
+""", data=data)
+        self.assertIn("brak zapisu", out["err"])
+
+    def test_approval_rejection_survives_snapshot_refresh(self):
+        data = self.project_data(tests={"changed": "", "full": ""}, testsApproved=True)
+        refreshed = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""},
+                                      testsApproved=False)
+        out = self.probe(FIND_PY + self.OPEN + """
+js(find("projectTestsChanged") + ".text = 'make test-changed BASE={base}'")
+js("page.managePage.projectRow('plasma-tide').save()")
+wait(300)   # odpowiedź prawdziwego backendu (bez usługi) przychodzi asynchronicznie — przeczekaj ją
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+js("page.managePage.handleReply('project:plasma-tide', {ok: true, testsApproved: false, approvalError: 'zatwierdzenie kontraktu testów: brak zapisu'})")
+wait(40)
+out["before"] = js(find("projectTestsError") + ".text")
+set_snapshot(REFRESHED)
+wait(200)
+out["open"] = js("page.managePage.openProject")
+out["after"] = js(find("projectTestsError") + ".text")
+out["changed"] = js(find("projectTestsChanged") + ".text")
+""".replace("REFRESHED", "json.loads(%r)" % json.dumps(refreshed)), data=data)
+        self.assertIn("brak zapisu", out["before"])
+        self.assertEqual(out["open"], "plasma-tide")
+        self.assertIn("brak zapisu", out["after"])
+        self.assertEqual(out["changed"], "make test-changed BASE={base}")
+
+    def reply_js(self, slug, **fields):
+        reply = dict({"ok": True, "changed": "", "full": "", "source": "", "facts": {}, "message": ""}, **fields)
+        return "page.managePage.handleReply('suggest:%s:1', %s)" % (slug, json.dumps(reply))
+
+    def test_source_of_the_effective_contract_comes_from_the_service(self):
+        # PT-282: trzy źródła z odpowiedzi usługi + ostrzeżenie o niezatwierdzonym kontrakcie; QML niczego nie liczy.
+        cases = {
+            "profile": dict(effectiveSource="profile", unapproved=False, testsApproved=True),
+            "detected": dict(effectiveSource="detected", unapproved=False, testsApproved=False),
+            "rules": dict(effectiveSource="rules", unapproved=False, testsApproved=False),
+            "unapproved": dict(effectiveSource="detected", unapproved=True, testsApproved=False),
+        }
+        script = FIND_PY + self.OPEN + """
+out["requests"] = [json.loads(c[-1]) for c in calls() if c[0] == "SuggestProjectTests"]
+out["before"] = [js(find("projectTestsSource") + ".visible"), js(find("projectTestsUnapproved") + ".visible")]
+"""
+        for name, fields in cases.items():
+            script += "js(%r)\nwait(40)\nout[%r] = [js(find('projectTestsSource') + '.text'), js(find('projectTestsUnapproved') + '.visible')]\n" % (
+                self.reply_js("plasma-tide", **fields), name)
+        out = self.probe(script, data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertEqual(out["requests"], [{"slug": "plasma-tide"}])
+        self.assertEqual(out["before"], [False, False])
+        self.assertIn("zatwierdzony kontrakt projektu", out["profile"][0])
+        self.assertIn("Makefile", out["detected"][0])
+        self.assertIn("CLAUDE.md", out["rules"][0])
+        self.assertEqual([out[name][1] for name in cases], [False, False, False, True])
+        self.assertIn("Makefile", out["unapproved"][0])
+
+    def test_suggestion_fills_fields_without_saving(self):
+        suggestion = dict(effectiveSource="rules", unapproved=False, testsApproved=False,
+                          changed="make test-changed BASE={base}", full="make test", source="make")
+        out = self.probe(FIND_PY + self.OPEN + """
+out["hidden"] = js(find("projectTestsSuggestion") + ".visible")
+js(REPLY)
+wait(60)
+out["visible"] = js(find("projectTestsSuggestion") + ".visible")
+out["text"] = js(find("projectTestsSuggestionText") + ".text")
+out["enabled"] = js(find("projectTestsUseSuggestion") + ".enabled")
+out["calls_before"] = len(calls())
+scroll_to_end()
+click(at(find("projectTestsUseSuggestion")))
+wait(80)
+out["changed"] = js(find("projectTestsChanged") + ".text")
+out["full"] = js(find("projectTestsFull") + ".text")
+out["enabled_after"] = js(find("projectTestsUseSuggestion") + ".enabled")
+out["calls_after"] = len(calls())
+out["writes"] = [c[0] for c in calls() if c[0] != "SuggestProjectTests"]
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **suggestion))), data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertFalse(out["hidden"])
+        self.assertTrue(out["visible"])
+        self.assertIn("make test-changed BASE={base}", out["text"])
+        self.assertTrue(out["enabled"])
+        self.assertEqual((out["changed"], out["full"]), ("make test-changed BASE={base}", "make test"))
+        self.assertFalse(out["enabled_after"])
+        self.assertEqual(out["calls_after"], out["calls_before"])   # „Użyj podpowiedzi” nic nie wysyła
+        self.assertEqual(out["writes"], [])
+
+    def test_suggestion_is_hidden_when_contract_exists_and_empty_result_shows_message(self):
+        saved = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""}, testsApproved=True)
+        suggestion = dict(effectiveSource="profile", unapproved=False, testsApproved=True,
+                          changed="make test-changed BASE={base}", full="make test", source="make")
+        out = self.probe(FIND_PY + self.OPEN + """
+js(REPLY)
+wait(60)
+out["saved"] = js(find("projectTestsSuggestion") + ".visible")
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **suggestion))), data=saved)
+        self.assertFalse(out["saved"])
+        empty = dict(effectiveSource="rules", unapproved=False, testsApproved=False,
+                     message="brak podpowiedzi — kartki odeślą do zasad projektu")
+        out = self.probe(FIND_PY + self.OPEN + """
+js(REPLY)
+wait(60)
+out["block"] = js(find("projectTestsSuggestion") + ".visible")
+out["none"] = js(find("projectTestsNoSuggestion") + ".visible")
+out["text"] = js(find("projectTestsNoSuggestion") + ".text")
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **empty))), data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertFalse(out["block"])
+        self.assertTrue(out["none"])
+        self.assertIn("brak podpowiedzi", out["text"])
+
+    def test_adding_a_repository_opens_the_project_form(self):
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(60)
+js("page.managePage.handleReply('repo:/home/user/plasma-tide', {ok: true, slug: 'plasma-tide', changed: true, commitError: ''})")
+wait(100)
+out["open"] = js("page.managePage.openProject")
+out["requests"] = [json.loads(c[-1]) for c in calls() if c[0] == "SuggestProjectTests"]
+js("page.managePage.openProject = ''")
+js("page.managePage.handleReply('repo:Dom', {ok: true, slug: 'dom', changed: true, commitError: ''})")
+out["by_name"] = js("page.managePage.openProject")
+""", data=self.project_data())
+        self.assertEqual(out["open"], "plasma-tide")
+        self.assertEqual(out["requests"], [{"slug": "plasma-tide"}])
+        self.assertEqual(out["by_name"], "")
+
+    def test_profile_error_is_visible_in_section(self):
+        data = self.project_data(tests={"changed": "", "full": ""}, testsError="box.yaml: pusty blok tests")
+        out = self.probe(FIND_PY + self.OPEN + """
+out["err"] = js(find("projectTestsProfileError") + ".text")
+out["visible"] = js(find("projectTestsProfileError") + ".visible")
+""", data=data)
+        self.assertEqual(out["err"], "box.yaml: pusty blok tests")
+        self.assertTrue(out["visible"])
+
+
 class PlanPanelTest(ProbeCase):
     def test_running_plan_review_can_be_transferred_from_wide_view(self):
         data = json.loads(json.dumps(self.data))

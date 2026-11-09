@@ -1,7 +1,11 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1.3, 3.11.2026 (zgodna wstecz z wersjami 1, 1.1 i 1.2: dodatkowe kolumny są opcjonalne,
-a plany z sześcioma kolumnami działają jak dotąd). Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
+Wersja 1.4, 9.11.2026 (zgodna wstecz z wersjami 1, 1.1, 1.2 i 1.3: dodatkowe kolumny są opcjonalne,
+a plany z sześcioma kolumnami działają jak dotąd). **Zmiana 1.4 (K-69):** zasada testów ticketu i domknięcia (K-62)
+jest opisana ogólnie, dla każdej technologii — polecenia pochodzą z kontraktu testów projektu (`tests.changed`
+z `{base}`, `tests.full`), a `make test-changed BASE=…` i `make test` to przykład plasma-tide
+(sekcje „Testy ticketu i review” i „Domknięcie”, reguły 1–9 w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)).
+Format planu, kolumny i stany się nie zmieniają. Ten dokument jest wzorcem, do którego odsyłają pliki `CLAUDE.md` i `AGENTS.md`
 projektów. Plan czyta tide-daemon: tablica w oknie **Tide Sesje**, postęp koordynatora w widżecie
 agentów i sekcja „Plany i tickety” w raporcie porannym (opis: [tide-daemon.md](tide-daemon.md#koordynacja),
 uzasadnienie: decyzja 50 w [decisions.md](decisions.md)).
@@ -220,16 +224,22 @@ lub `majors`. Brak poprawnego wyniku jest błędem
 kroku. Pytanie, zgoda i ponowienie przechodzą przez dziennik karty;
 wznowienie zachowuje worktree i zmiany.
 
-**Testy ticketu i review.** Przed oddaniem ticketu i poprawek autor uruchamia
-`make test-changed BASE=<punkt startu ticketu na gałęzi karty>` i zapisuje polecenie oraz wynik
-w notce. Kartka przekazuje przypięty SHA z wyniku utworzenia gałęzi ticketu; późniejszy ruch
-gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawanych zmian i nie żąda
-osobnego pełnego `make test`. Pełny przebieg nie jest kryterium ticketu ani review. Zasada zastępuje
+**Testy ticketu i review.** Zasada obowiązuje w każdej technologii. Przed oddaniem ticketu i poprawek autor
+uruchamia „testy dobrane do zmian” z kontraktu testów projektu (`tests.changed`, z `{base}` = punkt startu ticketu
+na gałęzi karty) i zapisuje polecenie oraz wynik w notce. Bez zatwierdzonego kontraktu polecenie pochodzi z wykrycia
+w `Makefile`, a potem z zasad projektu (`CLAUDE.md`/`AGENTS.md`); reguły 1–9 (źródła, zatwierdzenie, zgody, `legacy`,
+domknięcie, ponowienie) są w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu). W plasma-tide to
+`make test-changed BASE=<punkt startu ticketu na gałęzi karty>`. Kartka przekazuje przypięty SHA z wyniku utworzenia
+gałęzi ticketu; późniejszy ruch gałęzi karty nie zmienia tej bazy. Recenzent sprawdza udany wynik dla oddawanych zmian
+i nie żąda osobnych pełnych testów projektu (w plasma-tide `make test`). Pełny przebieg nie jest kryterium ticketu ani
+review. Zasada zastępuje
 wymóg pełnego `make test` w kartkach istniejących planów (w tym K-37, K-38 i K-55), bez przepisywania
 planów. Jeśli mapa `test-changed` wybierze pełny zestaw, autor wykonuje go bez dodatkowego `make test`.
 
-Wyjątek dla starszej gałęzi bez celu `test-changed`: autor i recenzent uruchamiają pełny `make test`
-zamiast niedostępnego celu i zapisują wynik. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
+Wyjątek `legacy` (reguła 7, rozstrzygająca w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)):
+bez zastosowanego kontraktu — cel `test` bez `test-changed`; z zatwierdzonym kontraktem — tylko gdy `changed` to zwykłe
+`make test-changed …`, a gałąź ma `test` bez `test-changed`. W `legacy` pełny `make test` jest testem ticketu,
+a recenzent sprawdza jego wynik w notce. Szczegóły: [starsze gałęzie](testing.md#starsze-gałęzie-bez-celu-test-changed).
 
 Zasady rozliczenia nieudanego przebiegu i odstępstwa opisuje
 [dokumentacja testów](testing.md#wyjątki-od-testów). Odstępstwo nie zmienia wyniku na udany.
@@ -313,7 +323,10 @@ Nieznana waga, uwaga bez tekstu albo `tickets` niebędące listą napisów to b�
 review; format pliku planu i reguły zatwierdzania zostają bez zmian.
 
 **Domknięcie.** Tide scala zaakceptowane tickety do gałęzi karty. Krok `close` przed napisaniem podsumowania
-uruchamia raz pełny `make test` na tej gałęzi i zapisuje wynik w podsumowaniu. Nieudane testy obsługuje
+uruchamia raz „pełne testy przy domknięciu” z kontraktu testów projektu (`tests.full`; bez zatwierdzonego kontraktu
+wykryte `make test`, a potem zasady projektu — reguła 8 w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu);
+w plasma-tide pełny `make test`) na tej gałęzi i zapisuje wynik w podsumowaniu. Ponowienie padniętych modułów nie zmienia
+wyniku pierwszego przebiegu (reguła 9). Nieudane testy obsługuje
 jak inne problemy domknięcia: wynik `error` z opisem niepowodzeń zamiast `done`, bez scalenia do głównej.
 Domknięcie mimo nieudanego pełnego przebiegu wymaga jawnego rozliczenia odstępstwa i decyzji użytkownika
 według [zasad wyjątków od testów](testing.md#wyjątki-od-testów).

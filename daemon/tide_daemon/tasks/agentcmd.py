@@ -354,6 +354,80 @@ def _within(path: str, folder: str) -> bool:
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
 
 
+def claude_implicit_tmp() -> tuple:
+    """Zapis, który piaskownica Claude Code daje sama, bez naszych opcji: katalog tymczasowy sandbox-runtime (także
+    dawny `/tmp/claude-<uid>`, por. `_check`). Do tego `write_areas` dokłada wspólny `.git` repozytorium worktree."""
+    return ("/tmp/claude", "/private/tmp/claude", f"/tmp/claude-{os.getuid()}")
+
+
+@dataclass(frozen=True)
+class WriteAreas:
+    """Obszary zapisu kroku (PT-286) — jedno źródło dla argumentów piaskownicy i dla `approval_for_step`.
+
+    Claude: `cwd` (katalog roboczy sesji), `allow_write` (`sandbox.filesystem.allowWrite`), `session_dirs`,
+    `context_dirs` i `read_dirs` (`--add-dir` w tej kolejności), `deny_write` (`denyWrite`: katalogi tylko do odczytu
+    i skille), `tmp_dirs` (`CLAUDE_CODE_TMPDIR`), `implicit` (zapis dawany przez program sam).
+    Codex: `cwd` (`--cd`), `allow_write` (`writable_roots`), `tmp_dirs` (`/tmp` i `$TMPDIR`, chyba że wykluczone),
+    flagi `exclude_slash_tmp` i `exclude_tmpdir_env_var` (`sandbox_workspace_write.*`)."""
+    tool: str
+    cwd: str
+    allow_write: tuple = ()
+    session_dirs: tuple = ()
+    context_dirs: tuple = ()
+    read_dirs: tuple = ()
+    deny_write: tuple = ()
+    tmp_dirs: tuple = ()
+    implicit: tuple = ()
+    exclude_slash_tmp: bool = False
+    exclude_tmpdir_env_var: bool = False
+
+    @property
+    def add_dirs(self) -> tuple:
+        return (*self.session_dirs, *self.context_dirs, *self.read_dirs)
+
+    def writable(self) -> tuple:
+        """Wszystkie katalogi z zapisem w piaskownicy kroku. `--add-dir` bez `denyWrite` daje zapis (Claude CLI
+        rozszerza nim zapis Bash); katalog objęty `denyWrite` — nie."""
+        add = [d for d in self.add_dirs if not any(_within(d, deny) for deny in self.deny_write)]
+        return tuple(dict.fromkeys(p for p in (self.cwd, *self.allow_write, *add, *self.tmp_dirs, *self.implicit) if p))
+
+
+def write_areas(step: Step, *, env: dict, git_dir: str, skills: list) -> WriteAreas:
+    """Obszary zapisu kroku z jego faktycznych ustawień. Z tej funkcji `_claude` i `_codex` składają argumenty
+    piaskownicy, a `step_write_areas` (sprawdzenie zatwierdzenia kontraktu testów, PT-286) — listę do porównania."""
+    out = os.path.join(step.step_dir, "out")
+    if step.tool == "codex":
+        git = os.path.join(step.repo, ".git")
+        roots = [out] if step.write_out_only else [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
+        # PT-143/S2: `writable_roots` tylko dopisuje katalogi; `/tmp` i `$TMPDIR` są zapisywalne domyślnie (i według
+        # ustawień użytkownika), więc dla zapisu wyłącznie do `out` wykluczamy je jawnie — także łatką `apply_patch`.
+        exclude = bool(step.write_out_only or step.read_dirs or step.read_profile)
+        tmp = ([] if exclude else ["/tmp"]) + ([env["TMPDIR"]] if env.get("TMPDIR") and not exclude else [])
+        return WriteAreas("codex", out if step.write_out_only else step.worktree, allow_write=tuple(roots),
+                          tmp_dirs=tuple(tmp), exclude_slash_tmp=exclude, exclude_tmpdir_env_var=exclude)
+    # Claude: zapis Bash do `out` (allowWrite); `--add-dir` rozszerza zapis, więc katalogi tylko do odczytu
+    # i skille dostają jawny denyWrite (wygrywa także ze ścieżkami przez dowiązania).
+    deny = list(dict.fromkeys([*step.read_dirs, *skills_mod.read_dirs(skills), *step.context_dirs]))
+    # Katalogi do odczytu wewnątrz `in` kroku nie idą przez --add-dir (reguła Read w `_claude`; 09.11, K-89).
+    inp = os.path.join(step.step_dir, "in")
+    added = tuple(d for d in step.read_dirs if not _within(d, inp))
+    return WriteAreas("claude", out if step.write_out_only else step.worktree, allow_write=(out,),
+                      session_dirs=(out,), context_dirs=tuple(step.context_dirs), read_dirs=added,
+                      deny_write=tuple(deny), tmp_dirs=(env["CLAUDE_CODE_TMPDIR"],),
+                      implicit=(*claude_implicit_tmp(), os.path.join(step.repo, ".git")))
+
+
+def step_write_areas(step: Step) -> WriteAreas:
+    """Obszary zapisu kroku ustalone tak samo jak w `background()` (te same wejścia, ta sama `write_areas`), bez
+    zakładania plików i bez pytania programu. Błąd ustawień kroku — StepError."""
+    base = dict(os.environ if step.base_env is None else step.base_env)
+    home = base.get("HOME") or os.path.expanduser("~")
+    _check(step, home)
+    env = _env(step, base, os.path.join(step.step_dir, "in"))
+    return write_areas(step, env=env, git_dir=resolve_git_dir(step.repo, step.worktree),
+                       skills=skills_mod.discover(step.tool, home))
+
+
 def _check(step: Step, home: str) -> None:
     """Katalogi kroku: nie w katalogu tymczasowym ani w `~/.local/share` (Codex ze snapa ich nie widzi), nie w ukrytym
     katalogu domowym (też nie), katalog tymczasowy Claude Code poza `~` (pod `~` zapis do niego odrzucało
@@ -485,8 +559,9 @@ def _font_dirs(home: str) -> list[str]:
 
 
 def _claude(step: Step, inp: str, out: str, env: dict, home: str,
-            skills: list[skills_mod.Skill]) -> tuple[list, dict, dict]:
-    """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem."""
+            skills: list[skills_mod.Skill], areas: WriteAreas) -> tuple[list, dict, dict]:
+    """argv, pliki (ustawienia piaskownicy dla `--settings`) i pliki tokenów do sprawdzenia przed startem.
+    Zapis (allowWrite, `--add-dir`, denyWrite) wyłącznie z `areas` (`write_areas`, PT-286)."""
     settings = {"sandbox": {
         "enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
         "autoAllowBashIfSandboxed": not step.enforce_command_policy,
@@ -496,15 +571,11 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
                                                         *skills_mod.read_dirs(skills),
                                                         *([step.node_home] if step.node_home else []),
                                                         *([os.path.dirname(step.chrome_bin)] if step.chrome_bin else [])],
-                       "allowWrite": [out]},
+                       "allowWrite": list(areas.allow_write)},
         "network": {"allowedDomains": list(step.network_domains)}},
         # Zasada projektów: commity bez podpisów i wzmianek o AI (K-33/PT-108: review odrzuciło stopkę
         # Co-Authored-By, którą Claude Code dopisuje domyślnie).
         "includeCoAuthoredBy": False, "attribution": {"commit": "", "pr": ""}}
-    if step.read_dirs:
-        # --add-dir udostępnia także katalog sesji; zakaz Edit nie obejmuje poleceń Bash.
-        # Jawny denyWrite utrzymuje granicę dla materiałów wejścia i pozostałych katalogów tylko do odczytu.
-        settings["sandbox"]["filesystem"]["denyWrite"] = list(step.read_dirs)
     if step.local is not None:
         opts = local_mod.options("claude", step.local)
         token = step.local.token_file
@@ -531,7 +602,6 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         skill_dirs = skills_mod.read_dirs(skills)
         settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
                                    "deny": read_only_rules(skill_dirs)}
-        settings["sandbox"]["filesystem"].setdefault("denyWrite", []).extend(skill_dirs)
     # Katalog do odczytu wewnątrz `in` (dowody sprawy, zrzuty) — reguła Read zamiast --add-dir. Katalog roboczy
     # sesji w trybie acceptEdits dostaje od piaskownicy atrapy chronionych plików (`.mcp.json`…), a bwrap nie
     # założy ich w `in`, zamontowanym już tylko do odczytu: każde polecenie Bash kończyło się błędem
@@ -540,28 +610,28 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
     if inside_input:
         permissions = settings.setdefault("permissions", {})
         permissions["allow"] = [*permissions.get("allow", []), *(f"Read(/{d}/**)" for d in inside_input)]
-    # --add-dir rozszerza również domyślny zapis Bash. Edit nie jest granicą dla powłoki:
-    # jawny denyWrite ma pierwszeństwo także wobec zapisu domyślnego i ścieżek przez dowiązania.
+    # --add-dir udostępnia także katalog sesji i rozszerza domyślny zapis Bash; zakaz Edit nie obejmuje poleceń Bash.
+    # Jawny denyWrite (katalogi tylko do odczytu, skille) ma pierwszeństwo także wobec zapisu domyślnego i ścieżek
+    # przez dowiązania.
+    if areas.deny_write:
+        settings["sandbox"]["filesystem"]["denyWrite"] = list(areas.deny_write)
     readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))
-    if readonly:
-        fs = settings["sandbox"]["filesystem"]
-        fs["denyWrite"] = list(dict.fromkeys([*fs.get("denyWrite", []), *readonly]))
     argv = [step.binary, "-p", *model, "--setting-sources=", "--settings", settings_path,
             "--permission-prompts", "none", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
-            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id]),
-            # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
-            # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
-            "--add-dir", out]
+            *(["--resume", step.session_id] if step.resume else ["--session-id", step.session_id])]
+    for folder in areas.session_dirs:
+        # Katalog wyjściowy kroku musi być katalogiem roboczym sesji: `allowWrite` piaskownicy obejmuje tylko
+        # polecenia Bash, a narzędzia Write/Edit poza katalogami sesji pytają o zgodę, której krok nie dostanie.
+        argv += ["--add-dir", folder]
     if plugin:
         argv += ["--plugin-dir", plugin]
-    for folder in step.context_dirs:
+    for folder in areas.context_dirs:
         # Narzędzie Read poza katalogami sesji pyta o zgodę, której krok nie dostanie — stąd --add-dir.
         argv += ["--add-dir", folder]
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
-    for folder in step.read_dirs:
-        if folder not in inside_input:
-            argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
+    for folder in areas.read_dirs:
+        argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
     allowed, disallowed = step.allowed_tools, step.disallowed_tools
     if step.write_out_only:
         # PT-158: stała lista tylko do odczytu zamiast listy kroku (lista projektu nigdy tu nie trafia). Ścieżka
@@ -578,10 +648,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
     return argv, files, secret
 
 
-def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
-    git = os.path.join(step.repo, ".git")
-    roots = [out] if step.write_out_only else [git_dir, *(os.path.join(git, name) for name in CODEX_GIT_DIRS), out]
-    cwd = out if step.write_out_only else step.worktree
+def _codex(step: Step, env: dict, areas: WriteAreas) -> tuple[list, dict]:
+    """argv i pliki tokenów; zapis (`--cd`, `writable_roots`, wykluczenia `/tmp`) wyłącznie z `areas` (PT-286)."""
     secret = {"secret_env": {}, "token_files": []}
     if step.local is not None:
         opts = local_mod.options("codex", step.local)
@@ -599,15 +667,15 @@ def _codex(step: Step, out: str, env: dict, git_dir: str) -> tuple[list, dict]:
     # zabrania uruchomienia np. interpretera w `out`.
     no_commands = [arg for name in CODEX_NO_COMMANDS for arg in ("-c", f"features.{name}=false")] \
         if step.write_out_only else []
-    # PT-143/S2: `writable_roots` tylko dopisuje katalogi; `/tmp` i `$TMPDIR` są zapisywalne domyślnie (i według
-    # ustawień użytkownika), więc dla zapisu wyłącznie do `out` wykluczamy je jawnie — także łatką `apply_patch`.
-    if step.write_out_only or step.read_dirs or step.read_profile:
-        no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true",
-                        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
+    # Wykluczenia `/tmp` i `$TMPDIR` (PT-143/S2) ustala `write_areas`.
+    if areas.exclude_slash_tmp:
+        no_commands += ["-c", "sandbox_workspace_write.exclude_slash_tmp=true"]
+    if areas.exclude_tmpdir_env_var:
+        no_commands += ["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]
     # `out` leży obok worktree, poza repozytorium; wyjątek dotyczy tylko kroku z zapisem do `out`.
     git_check = ["--skip-git-repo-check"] if step.write_out_only else []
-    argv =[step.binary, "exec", *model, *effort, "--json", "--cd", cwd, "--sandbox", "workspace-write",
-            "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots, ensure_ascii=False),
+    argv =[step.binary, "exec", *model, *effort, "--json", "--cd", areas.cwd, "--sandbox", "workspace-write",
+            "-c", "sandbox_workspace_write.writable_roots=" + json.dumps(list(areas.allow_write), ensure_ascii=False),
             "-c", 'approval_policy="never"', *no_commands, *mcp, *git_check,
             *(["resume", step.session_id] if step.resume else []), "-"]
     return argv, secret
@@ -659,12 +727,13 @@ def background(step: Step) -> Background:
     skills = skills_mod.discover(step.tool, home)
     if step.write_out_only:
         _read_only_git_env(env, read_only_git_config(git_dir))
+    areas = write_areas(step, env=env, git_dir=git_dir, skills=skills)
     if step.tool == "claude":
         step = replace(step, session_id=step.session_id or str(uuid.uuid4()))
-        argv, files, extra = _claude(step, inp, out, env, home, skills)
+        argv, files, extra = _claude(step, inp, out, env, home, skills, areas)
         session = step.session_id
     else:
-        argv, extra = _codex(step, out, env, git_dir)
+        argv, extra = _codex(step, env, areas)
         files, session = {}, step.session_id if step.resume else ""
     files[os.path.join(inp, "gitconfig")] = (f"[user]\n\tname = {step.git_name}\n\temail = {step.git_email}\n"
                                               f"[core]\n\texcludesFile = {os.path.join(inp, 'ignore')}\n")
@@ -677,7 +746,7 @@ def background(step: Step) -> Background:
                       git_dir=git_dir, unit="tide-step-" + step.step_id,
                       runtime_dir=base.get("XDG_RUNTIME_DIR", ""),
                       secret_env=extra.get("secret_env", {}), token_files=extra.get("token_files", []),
-                      files=files, dirs=dirs, workdir=out if step.write_out_only else "")
+                      files=files, dirs=dirs, workdir="" if areas.cwd == step.worktree else areas.cwd)
 
 
 def caretaker_interactive(step: Step) -> Background:

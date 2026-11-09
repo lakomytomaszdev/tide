@@ -43,7 +43,8 @@ class ReviewCompletionSyncTest(unittest.TestCase):
                 return verdicts if kind == "review.verdict" else steps
 
             try:
-                with mock.patch.object(case, "card", return_value="K-1"), \
+                with mock.patch.object(case, "add_make_targets"), \
+                        mock.patch.object(case, "card", return_value="K-1"), \
                         mock.patch.object(case, "start", return_value={"ok": True}), \
                         mock.patch.object(case, "wait_column", side_effect=review_column), \
                         mock.patch.object(case, "shown", return_value=card), \

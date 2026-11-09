@@ -21,7 +21,6 @@ Wszystkie ścieżki zapisu powstają z ID karty i slugów po walidacji, a dodatk
 """
 import os
 import contextlib
-import fcntl
 import json
 import secrets
 import stat
@@ -34,7 +33,7 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows, commands, assignment
+from . import flows, commands, assignment, contract_approval, lockfile, project_tests
 from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
@@ -79,8 +78,12 @@ CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "n
                *LAUNCH_KEYS)
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
-                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs")
+                  "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
+                  "tests")
 TAG_FIELDS = ("name", "newName", "color", "description")
+_CONTRACT_KEY = "_testsContract"   # wewnętrzny klucz wyniku planu projektu: kontrakt po zapisie (nie trafia do D-Bus)
+NO_TESTS_SUGGESTION = "brak podpowiedzi — kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md)"
+TESTS_UNAPPROVED = "kontrakt testów zmieniony poza oknem projektu — sprawdź i zatwierdź"
 
 
 class Board:
@@ -117,13 +120,20 @@ class Change:
 
 
 class BoardStore:
-    def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None):
+    def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None,
+                 approvals_path: str | None = None):
         self.root = os.path.abspath(os.path.expanduser(root))
+        # Magazyn odcisków zatwierdzonych kontraktów testów (contract_approval); None — $XDG_STATE_HOME w chwili wywołania.
+        self.approvals_path = approvals_path
+        # Błędy Tablicy z ostatniego `approval_for_step` (PT-286): slug → wpis; kolizja magazynu z obszarem zapisu kroku.
+        self._step_approval_errors: dict[str, dict] = {}
         self.repo = BoardRepo(self.root, git)
         self.git = self.repo.git
         self.clock = clock
         self._transaction_lock = RLock()
         self._transaction_depth = 0
+        self._transaction_stack: contextlib.ExitStack | None = None
+        self._board_locked = False
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
 
@@ -136,20 +146,39 @@ class BoardStore:
     def transaction(self):
         """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
         with self._transaction_lock:
-            if self._transaction_depth or not self.repo.initialized():
+            if self._transaction_depth:
                 yield
                 return
-            fd = os.open(os.path.join(self.repo.git_dir, "tide-board.lock"),
-                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                self._transaction_depth += 1
-                from ..issue_acceptance import recover
-                recover(self)
-                yield
-            finally:
-                self._transaction_depth = 0
-                os.close(fd)
+            with contextlib.ExitStack() as stack:
+                try:
+                    self._transaction_depth += 1
+                    self._transaction_stack = stack
+                    # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także
+                    # na Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje. Bez katalogu Tablicy blokadę
+                    # bierze dopiero `ensure()` (`_hold_board_lock`) i trzyma do końca tej transakcji: świeży
+                    # odczyt, plan i zapis po założeniu Tablicy nie przeplatają się z zapisem K-38.
+                    if os.path.isdir(self.root):
+                        self._hold_board_lock()
+                        if self.repo.initialized():
+                            from ..issue_acceptance import recover
+                            recover(self)
+                    yield
+                finally:
+                    self._transaction_depth = 0
+                    self._transaction_stack = None
+                    self._board_locked = False
+
+    def _hold_board_lock(self) -> None:
+        """Wspólna blokada Tablicy do końca bieżącej (zewnętrznej) transakcji; brakujący katalog zakłada
+        (tak samo robi `box/profile.board_lock`). Ścieżka, która nie jest katalogiem — bez blokady
+        (`ensure()` i tak ją odrzuci)."""
+        if self._board_locked or self._transaction_stack is None:
+            return
+        if not os.path.lexists(self.root):
+            os.makedirs(self.root, exist_ok=True)
+        if os.path.isdir(self.root):
+            self._transaction_stack.enter_context(lockfile.exclusive(self.root))
+            self._board_locked = True
 
     def load(self) -> Board:
         with self.transaction():
@@ -170,8 +199,10 @@ class BoardStore:
                 continue
             board.tags[tag.name.casefold()] = tag
         for slug, doc, path in self._docs("projects", board.errors):
-            board.projects[slug] = parse_project(doc, path, slug, board.errors)
+            project = board.projects[slug] = parse_project(doc, path, slug, board.errors)
+            self._load_project_tests(project, board.errors)
         self._load_cards(board)
+        board.errors.extend(dict(entry) for entry in list(self._step_approval_errors.values()))
         for card in board.cards.values():
             if card.project and card.project not in board.projects:
                 board.errors.append({"path": card.path, "message": f"{card.id}: nieznany projekt „{card.project}”"})
@@ -512,15 +543,99 @@ class BoardStore:
         return self._execute(lambda board: self._plan_move(board, num, column, int(index), shown))
 
     def upsert_project(self, data: dict) -> dict:
+        """Zapis projektu. Pole `tests` zapisuje kontrakt w `box.yaml`, ale go nie zatwierdza (PT-285):
+        odcisk tworzy wyłącznie approve_project_tests."""
+        result = self._upsert_project(data)
+        result.pop(_CONTRACT_KEY, None)
+        return result
+
+    def _upsert_project(self, data: dict) -> dict:
         values = _project_values(_fields(data, PROJECT_FIELDS), self.root)
         return self._execute(lambda board: self._plan_project(board, values))
+
+    def approve_project_tests(self, data: dict) -> dict:
+        """UpsertProject z polem `tests` z okna projektu (D-Bus, board_monitor): zapis jak upsert_project,
+        a potem zatwierdzenie — odcisk zapisanego kontraktu w stanie usługi (pusty kontrakt usuwa odcisk).
+        Zatwierdzamy tylko wtedy, gdy plik po zapisie ma dokładnie ten kontrakt. Ponowne zatwierdzenie
+        identycznych wartości zapisuje odcisk bez zmiany plików Tablicy i bez commita.
+        Odpowiedź: to co upsert_project oraz `testsApproved` i `approvalError` (pusty bez błędu).
+        Sprawdzenie nadawcy wywołania i kolizje ścieżek z obszarami zapisu kroków — PT-286."""
+        if "tests" not in data:
+            return self.upsert_project(data)
+        with self.transaction():
+            result = self._upsert_project(data)
+            contract = result.pop(_CONTRACT_KEY)
+            slug = result["slug"]
+            project = self._load().projects.get(slug)
+            result["testsApproved"], result["approvalError"] = False, ""
+            if (project is None or project.tests_error or
+                    contract_approval.canonical(project.tests) != contract_approval.canonical(contract)):
+                result["approvalError"] = ("kontrakt testów w pliku różni się od zapisanego — nie zatwierdzam; "
+                                           "sprawdź box.yaml i zapisz ponownie")
+                return result
+            try:
+                contract_approval.record(self.root, slug, contract, self.approvals_path)
+            except contract_approval.ApprovalError as exc:
+                result["approvalError"] = f"zatwierdzenie kontraktu testów: {exc}"
+                return result
+            result["testsApproved"] = contract_approval.approved(self.root, slug, contract, self.approvals_path)
+            return result
+
+    def suggest_project_tests(self, data: dict) -> dict:
+        """Podpowiedź kontraktu testów z repozytorium i źródło obowiązującego kontraktu (SuggestProjectTests).
+        Wejście `{slug}` albo `{repo}` (bezwzględna ścieżka katalogu Git, ta sama walidacja co `_repo`).
+        Odpowiedź: `{changed, full, source, facts, message}`; dla `slug` także `effectiveSource` (`profile`,
+        `detected`, `rules`), `unapproved` i `testsApproved` z `effective_tests` na repozytorium projektu.
+        Odczyt: nic nie zapisuje, nie zatwierdza i nie uruchamia programów. Projekt z brakującym repozytorium
+        albo repozytorium bez celów — pusty wynik z komunikatem, bez błędu."""
+        from ..cardflow import testpolicy
+        data = _fields(data, ("slug", "repo"))
+        slug = _text(data.get("slug"), "slug").strip()
+        project = None
+        if slug:
+            project = self.load().projects.get(slug)
+            if project is None:
+                raise BoardError(f"nie ma projektu „{slug}”", "not-found")
+            repo = project.repo if project.repo and not project.repo_missing else ""
+        elif _text(data.get("repo"), "repo").strip():
+            repo = _repo(data["repo"], self.root)
+        else:
+            raise BoardError("podaj slug projektu albo repo (ścieżka bezwzględna katalogu Git)")
+        result = testpolicy.suggest_tests(testpolicy.repo_facts(repo))
+        result["message"] = "" if result["source"] else NO_TESTS_SUGGESTION
+        result["ok"] = True
+        if project is not None:
+            policy = testpolicy.effective_tests(project.tests, repo, project.tests_approved, "",
+                                                error=project.tests_error)
+            result["effectiveSource"], result["unapproved"] = policy.source, policy.unapproved
+            result["testsApproved"] = project.tests_approved
+        return result
+
+    def approval_for_step(self, project: Project, step) -> tuple[bool, str]:
+        """Zatwierdzenie kontraktu testów projektu dla kroku (`contract_approval.approval_for_step`, PT-286).
+        Kolizja magazynu odcisków z obszarem zapisu kroku zostaje błędem Tablicy do kolejnego sprawdzenia
+        tego projektu bez kolizji."""
+        approved, reason = contract_approval.approval_for_step(project, step, self.root, self.approvals_path)
+        if reason.startswith(contract_approval.STORE_IN_WRITE_AREA):
+            self._step_approval_errors[project.slug] = {
+                "path": self.approvals_path or contract_approval.state_path(), "message": f"{project.slug}: {reason}"}
+        else:
+            self._step_approval_errors.pop(project.slug, None)
+        return approved, reason
 
     def upsert_tag(self, data: dict) -> dict:
         values = _tag_values(_fields(data, TAG_FIELDS), self.colors)
         return self._execute(lambda board: self._plan_tag(board, values))
 
     def ensure(self) -> None:
-        """Zakłada repozytorium tablicy, jeśli go nie ma. Cudzego katalogu nie dotyka."""
+        """Zakłada repozytorium tablicy, jeśli go nie ma. Cudzego katalogu nie dotyka.
+
+        Pod wspólną blokadą Tablicy trzymaną do końca transakcji wywołującego (PT-321)."""
+        with self.transaction():
+            self._hold_board_lock()
+            self._ensure_locked()
+
+    def _ensure_locked(self) -> None:
         if self.exists():
             if not self.repo.initialized():
                 error = self.repo.init()
@@ -809,12 +924,32 @@ class BoardStore:
             _doc_set(doc, readaccess.BINDINGS_KEY, json.dumps(bindings, ensure_ascii=False))
         if "description" in v and v["description"].strip() != doc.body.strip():
             doc.body = v["description"]
+        writes = []
+        contract = None
+        if "tests" in v:  # kontrakt testów żyje w profilu `projects/<slug>/box.yaml`, nie we frontmatterze
+            profile = project
+            if profile is None:  # profil środowiska może istnieć jeszcze przed plikiem projektu
+                profile = Project(slug=slug, name=name)
+                self._load_project_tests(profile, board.errors)
+            if profile.box_unreadable:
+                raise BoardError(f"projects/{slug}/{project_tests.PROFILE_FILE}: profilu nie da się odczytać "
+                                 "(zob. błędy Tablicy) — zapis kontraktu odrzucony, plik bez zmian")
+            old_text = profile.box_text
+            current = dict(profile.tests) if not profile.tests_error else project_tests.empty()
+            contract = {**project_tests.empty(), **current, **v["tests"]}
+            new_text = project_tests.save_tests(old_text, contract)
+            if new_text != (old_text or ""):
+                writes.append((os.path.join("projects", slug, project_tests.PROFILE_FILE), new_text))
         change.result = {"ok": True, "slug": slug, "changed": False}
-        if not created and doc.text() == before:
+        if contract is not None:  # dla approve_project_tests; upsert_project usuwa ten klucz z odpowiedzi
+            change.result[_CONTRACT_KEY] = contract
+        doc_changed = created or doc.text() != before
+        if not doc_changed and not writes:
             return change
         change.result["changed"] = True
-        change.commits.append((f"project {slug}: {'create' if created else 'update'}",
-                               [(os.path.join("projects", f"{slug}.md"), doc.text())]))
+        if doc_changed:
+            writes.insert(0, (os.path.join("projects", f"{slug}.md"), doc.text()))
+        change.commits.append((f"project {slug}: {'create' if created else 'update'}", writes))
         return change
 
     def _plan_tag(self, board: Board, v: dict) -> Change:
@@ -964,6 +1099,22 @@ class BoardStore:
             doc = self._read_doc(os.path.join("cards", name), board.errors)
             if doc is not None:
                 board.cards[num] = parse_card(doc, path, num, board.errors)
+
+    def _load_project_tests(self, project: Project, errors: list) -> None:
+        """Kontrakt testów z `projects/<slug>/box.yaml`; uszkodzony blok — pusty kontrakt i błąd Tablicy."""
+        rel = os.path.join("projects", project.slug, project_tests.PROFILE_FILE)
+        project.box_text = self._read_file(rel, errors)
+        project.box_unreadable = project.box_text is None and os.path.lexists(os.path.join(self.root, rel))
+        project.tests, project.tests_error = project_tests.load_tests(project.box_text)
+        project.tests_approved = False
+        if project.tests_error:
+            errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {project.tests_error}"})
+        elif not contract_approval.is_empty(project.tests):
+            # Tylko odczyt magazynu: odcisk tworzy wyłącznie approve_project_tests (PT-285).
+            project.tests_approved = contract_approval.approved(self.root, project.slug, project.tests,
+                                                                self.approvals_path)
+            if not project.tests_approved:
+                errors.append({"path": os.path.join(self.root, rel), "message": f"{rel}: {TESTS_UNAPPROVED}"})
 
     def _docs(self, folder: str, errors: list):
         try:
@@ -1193,6 +1344,10 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "youtrack": project.youtrack, "youtrackSync": bool(project.youtrack) and project.youtrack_sync,
             "allowedCommands": list(project.allowed_commands), "deniedCommands": list(project.denied_commands),
             "readDirs": list(project.read_dirs),
+            "tests": dict(project.tests), "testsError": project.tests_error,
+            "testsApproved": project.tests_approved,
+            "testsGrantNote": {name: project_tests.grant_note(project.tests.get(name, ""))
+                               for name in project_tests.FIELDS},
             "assignmentRules": project.assignment_rules}
 
 
@@ -1316,7 +1471,9 @@ def _enum(value, allowed: tuple, label: str) -> str:
     return text
 
 
-def _repo(value, board_root: str = "") -> str:
+def git_repo_path(value) -> str:
+    """Bezwzględna ścieżka istniejącego katalogu Git (także worktree: `.git` jako plik); inaczej BoardError.
+    Wspólna walidacja `repo` projektu (`_repo`) i podpowiedzi kontraktu testów (SuggestProjectTests)."""
     path = _text(value, "repo").strip()
     path = os.path.expanduser(path)
     if not os.path.isabs(path):
@@ -1326,6 +1483,11 @@ def _repo(value, board_root: str = "") -> str:
         raise BoardError(f"nie ma katalogu {path}")
     if not os.path.exists(os.path.join(path, ".git")):
         raise BoardError(f"{path} nie jest repozytorium git")
+    return path
+
+
+def _repo(value, board_root: str = "") -> str:
+    path = git_repo_path(value)
     if (board_root and os.path.realpath(path) == os.path.realpath(board_root)) or is_board_repo(path):
         raise BoardError("repozytorium tablicy nie może być projektem")
     return path
@@ -1462,6 +1624,11 @@ def _project_values(data: dict, board_root: str) -> dict:
                 out[field_name] = commands.validate(data[field_name], label)
             except ValueError as exc:
                 raise BoardError(str(exc)) from None
+    if "tests" in data:
+        try:
+            out["tests"] = project_tests.validate_tests(data["tests"])
+        except ValueError as exc:
+            raise BoardError(str(exc)) from None
     if not (out.get("slug") or out.get("name") or out.get("repo")):
         raise BoardError("projekt potrzebuje identyfikatora (slug), nazwy albo repozytorium")
     return out

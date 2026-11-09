@@ -144,10 +144,10 @@ START_IDENTITY = {"ticket": TICKET_START, "kind": KIND, "branch": BRANCH, "workt
                   "stepDir": STEP_DIR, "runner": RUNNER, "box": BOX, "boxSlug": BOX_SLUG,
                   "unit": STEP_UNIT}
 START_NEUTRAL = ("baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "boxPortOwner",
-                 "closeFile", "consoleClosed", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
+                 "closeFile", "consoleClosed", "contractCommands", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
                  "executor", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
                  "readDirsProfile", "repo", "reviewTip", "round", "routeKind", "routeTokenFile", "routeUrl",
-                 "session", "taskFile", "toolingKind")
+                 "session", "taskFile", "testPolicy", "testPolicyCard", "toolingKind")
 CONSOLE_INHERITED = Field(
     "inherited", "str", True, predecessor="step.entered|step.started", domain="console", rule="match",
     source="historical",

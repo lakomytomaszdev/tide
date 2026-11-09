@@ -267,3 +267,24 @@ _Avoid_: reguły routingu
 **Lista dozwolonych poleceń**:
 Polecenia, które krok w tle może uruchomić w projekcie bez pytania użytkownika.
 _Avoid_: allowlist w tekstach dla użytkownika
+
+**Kontrakt testów projektu**:
+Dwa polecenia testów projektu w jego profilu na Tablicy (`projects/<slug>/box.yaml`, klucz `tests`): `tests.changed`
+(testy dobrane do zmian, z parametrem `{base}` = przypięty punkt startu ticketu) i `tests.full` (pełne testy przy
+domknięciu karty). Obowiązuje w każdej technologii; `make test-changed BASE=…` i `make test` to kontrakt plasma-tide.
+To nie `verify` pudełka K-38 (sprawdzenie środowiska po budowie) ani `allowed-commands`. Zasada ogólna i dziewięć
+reguł: [docs/testing.md](docs/testing.md#zasada-ogólna-i-kontrakt-testów-projektu).
+_Avoid_: polecenia testów w profilu, `verify`
+
+**Efektywny kontrakt**:
+Polecenia testów, które naprawdę obowiązują krok: zatwierdzony kontrakt, a gdzie go brak lub nie jest zatwierdzony —
+wykrycie z `Makefile`, a potem zasady projektu; ten sam wynik (`TestPolicy`) daje kartkę kroku i zgody na polecenia.
+Źródło to `profile`, `detected` albo `rules`.
+_Avoid_: aktywny kontrakt
+
+**Zatwierdzenie kontraktu**:
+Decyzja użytkownika zapisana jako odcisk kontraktu poza Tablicą (stan usługi): tylko okno projektu albo `UpsertProject`
+spoza kroku agenta. Zapis pliku `box.yaml` nie jest zatwierdzeniem; niezatwierdzony kontrakt nie jest stosowany i nie
+daje zgód. Szczegóły i warunki scalenia z profilem pudełka K-38:
+[docs/tide-daemon.md](docs/tide-daemon.md#zgodność-z-profilem-pudełka-k-38).
+_Avoid_: zgoda na zapis, akceptacja pliku

@@ -961,7 +961,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules}` albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
+| `SuggestProjectTests(s request)` | `→ s` | podpowiedź kontraktu testów `{slug}` albo `{repo}` → `{ok, changed, full, source, facts, message}`, dla `slug` także `effectiveSource` (`profile`/`detected`/`rules`), `unapproved`, `testsApproved`; tylko odczyt (niżej „Podpowiedź i źródło kontraktu”) |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1196,6 +1197,304 @@ mode: full
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
+
+### Kontrakt testów projektu (K-69, PT-278)
+
+Projekt Tablicy ma kontrakt testów: polecenie „testy dobrane do zmian” (`tests.changed`, z parametrem `{base}`)
+i „pełne testy przy domknięciu” (`tests.full`). Leży w profilu projektu `projects/<slug>/box.yaml` jako klucz
+`tests` schematu `tide-box: 1` — w tym samym pliku co profil pudełka K-38, **nie** we frontmatterze
+`projects/<slug>.md`. Zatwierdzenie przez użytkownika opisuje „Zatwierdzenie kontraktu testów” niżej (PT-285),
+a ochronę przed krokiem agenta — „Ochrona zatwierdzenia przed krokiem agenta” (PT-286).
+
+```yaml
+tide-box: 1
+tests:
+  changed: "make test-changed BASE={base}"
+  full: "make test"
+```
+
+- Kanoniczny zapis: napisy w podwójnym cudzysłowie kodowane przez `json.dumps`, wcięcie dwiema spacjami.
+  Odczyt rozpoznaje cały token napisu dekoderem JSON; dopiero po jego końcu dopuszcza odstępy i komentarz
+  `#`. Apostrofy YAML i napisy niecytowane pozostają obsługiwane przy ręcznej edycji profilu. Brzegowe
+  odstępy wejścia normalizuje `validate_tests`; odstępy wewnątrz polecenia pozostają bez zmian.
+- `UpsertProject` przyjmuje `tests: {"changed": "…", "full": "…"}`. Pusty napis czyści pole, brak klucza go nie
+  zmienia, brak `tests` w żądaniu nie dotyka `box.yaml`. Gdy oba pola są puste, klucz `tests` znika z pliku
+  (plik zostaje, np. z samym `tide-box: 1`). Bez pliku zapis zakłada go z `tide-box: 1`.
+- Zapis podmienia albo dodaje (na końcu pliku) wyłącznie blok `tests` na wcięciu 0 wraz z jego wciętymi liniami;
+  reszta pliku (klucze K-38, komentarze, wcięty `tests` pod innym kluczem) zostaje bajt w bajt. Plik `box.yaml`
+  trafia do tego samego commita Tablicy co zmiana `projects/<slug>.md`; sam zapis `tests` nie zmienia pliku `.md`.
+- Reguły (`validate_tests`): jedna linia, bez NUL, najwyżej 300 znaków; `changed` musi zawierać `{base}` i nie
+  przyjmuje innych parametrów w klamrach; `full` nie przyjmuje żadnych. Odrzucenie to błąd `bad-request` bez zmiany
+  plików i commita. Polecenie z `*` albo niebędące pojedynczym poleceniem (`single_command`) jest poprawne, ale
+  `grant_note(polecenie)` zwraca komunikat, że Tide nie nada mu automatycznej zgody.
+- JSON projektu (migawka, lista projektów): `tests` `{changed, full}` (zawsze oba klucze), `testsError` (napis,
+  pusty bez błędu), `testsApproved` (niżej) i `testsGrantNote` `{changed, full}` z `grant_note`. Uszkodzony blok (zły typ, zły YAML, nieznany
+  klucz, naruszenie reguł) daje pusty kontrakt, `testsError` i wpis w błędach Tablicy; reszta listy działa dalej.
+  Zapis `tests` naprawia taki blok.
+- Moduł: `daemon/tide_daemon/board/project_tests.py` (`validate_tests`, `load_tests`, `save_tests`, `grant_note`),
+  poza katalogiem `box/` K-38.
+
+#### Zatwierdzenie kontraktu testów (PT-285)
+
+Kontrakt leży w plikach Tablicy, więc może go zmienić krok agenta, ręczna edycja albo cofnięcie commita.
+Zatwierdzenie to **odcisk** kontraktu zapisany poza Tablicą, w stanie usługi:
+`$XDG_STATE_HOME/tide/test-contracts.json` (domyślnie `~/.local/state/tide/`).
+
+```json
+{"boards": {"/home/…/tide-board": {"mobileapp": "<sha256 hex>"}}, "version": 1}
+```
+
+- **Odcisk** = SHA-256 reprezentacji kanonicznej `{"changed":"…","full":"…"}` (stała kolejność pól, JSON bez
+  odstępów, UTF-8). Brak pola ≡ pusty napis; usuwane są wyłącznie białe znaki na brzegach każdego polecenia —
+  odstępy wewnątrz (także w cytowanym argumencie) są znaczące. Klucz: ścieżka Tablicy po `realpath` i slug.
+- **Zasada zatwierdzenia.** Odcisk tworzy wyłącznie `UpsertProject` z polem `tests` (okno projektu):
+  `board_monitor` woła `BoardStore.approve_project_tests`, które zapisuje kontrakt jak `upsert_project`,
+  sprawdza pod tą samą blokadą Tablicy, że plik ma dokładnie ten kontrakt, i zapisuje odcisk całego kontraktu
+  po zapisie (zapis częściowy, np. samo `full`, zatwierdza oba pola). Pusty kontrakt usuwa odcisk. Samo
+  `BoardStore.upsert_project` (np. dopisanie dozwolonych poleceń przez silnik kart), odczyt listy, migawka
+  i polecenia dla karty (`RenderFlow`, `RenderLaunch`) odcisku nie tworzą ani nie zmieniają. Ponowne
+  zatwierdzenie identycznych wartości (po utracie odcisku albo przywróceniu treści) zapisuje odcisk bez zmiany
+  plików Tablicy i bez commita (`changed: false`, `testsApproved: true`).
+- **`testsApproved`** w JSON projektu: `true` tylko wtedy, gdy kontrakt jest niepusty, blok poprawny, a jego odcisk
+  równy zapisanemu. Kontrakt różny od odcisku (albo bez odcisku) ma `false` i wpis w błędach Tablicy
+  „`projects/<slug>/box.yaml`: kontrakt testów zmieniony poza oknem projektu — sprawdź i zatwierdź”; zapis
+  w oknie projektu go zatwierdza. Pusty kontrakt i uszkodzony blok mają `false` bez tego wpisu (blok ma własny błąd).
+  Odpowiedź `UpsertProject` z `tests` ma `testsApproved` i `approvalError` (pusty bez błędu); błąd zapisu
+  odcisku nie cofa zapisanego kontraktu — zostaje niezatwierdzony.
+- **Plik odcisków.** Katalog `tide` 0700, plik 0600, właściciel = użytkownik usługi. Odczyt otwiera katalog
+  i plik z `O_NOFOLLOW` (plik także z `O_NONBLOCK`), sprawdza `fstat` i limit 1 MiB. Brak pliku albo katalogu,
+  dowiązanie, zły właściciel, złe prawa, nie zwykły plik, uszkodzony JSON albo zły kształt dają `false`,
+  nigdy `true` i nigdy błąd listy projektów. Zapis: plik tymczasowy w tym samym katalogu (`O_EXCL|O_NOFOLLOW`,
+  0600), `fsync`, `rename` względem uchwytu katalogu, `fsync` katalogu; przerwanie w połowie zostawia stary
+  plik i usuwa tymczasowy. Zapisy szereguje `flock` na uchwycie katalogu. Zapis poprawia prawa katalogu `tide`
+  na 0700, a nieczytelny plik zastępuje nowym.
+- Moduł: `daemon/tide_daemon/board/contract_approval.py` — jedno wejście odczytu `approved(board, slug, contract)`
+  i jedno zapisu `record(board, slug, contract)`; z nich korzysta PT-286.
+- **Granica.** Krok korzysta z zatwierdzenia wyłącznie przez `approval_for_step` (niżej, PT-286); integracja
+  z silnikiem kart to PT-287. Do tego czasu `testsApproved` jest tylko informacją w oknie.
+
+#### Ochrona zatwierdzenia przed krokiem agenta (PT-286)
+
+Prawa 0600 nie odróżniają usługi od kroku agenta tego samego użytkownika, a martwy `DBUS_SESSION_BUS_ADDRESS`
+ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa warunki i próby rzeczywistej piaskownicy.
+
+- **Kolizja ścieżek — `approval_for_step(project, step, board)` → `(approved, reason)`**
+  (`contract_approval.py`; w usłudze `BoardStore.approval_for_step(project, step)`). Zanim kontrakt zostanie
+  dopuszczony dla kroku, funkcja porównuje plik odcisków i każdy jego katalog nadrzędny — w postaci podanej
+  i po `realpath` (z rozwinięciem dowiązań) — z **każdym obszarem zapisu kroku**, także po `realpath`. Ścieżki
+  magazynu nie normalizuje się leksykalnie przed rozwinięciem dowiązań: `link/..` (także w `XDG_STATE_HOME`) to
+  katalog nadrzędny celu dowiązania, jak w systemie plików, więc sprawdza się ten sam plik, który potem jest
+  czytany. Ścieżka jest rozwijana składnik po składniku jak w jądrze: sprawdza się każdy wpis katalogu na drodze
+  rozwinięcia (rzeczywisty katalog + nazwa), także wpisy z treści napotkanych dowiązań — dowiązanie pośrednie
+  w obszarze zapisu (`/safe/alias → /worktree/pivot → /safe/target`) jest kolizją, bo krok mógłby je przestawić
+  między kontrolą a odczytem — oraz cel każdego przedrostka. Pętla dowiązań albo błąd ich odczytu to
+  niepewność, czyli kolizja. Kolizja:
+  plik albo katalog nadrzędny leży w obszarze zapisu, albo obszar zapisu leży w katalogu odcisków. Wtedy
+  `approved: false`, powód „magazyn zatwierdzeń leży w obszarze zapisu kroku: …” i ten sam wpis w błędach Tablicy
+  (z prefiksem slugu), dopóki kolejne sprawdzenie tego projektu nie przejdzie bez kolizji. Bez kolizji wynik daje
+  odczyt magazynu (`approved`). Każda niepewność — błędne ustawienia kroku (`StepError`), worktree nieznany
+  repozytorium, pusta lub względna ścieżka obszaru, obszar `/`, dowolny wyjątek — to `approved: false`.
+- **Obszary zapisu** daje jedna funkcja `tasks/agentcmd.py`: `write_areas(step, env, git_dir, skills)` →
+  `WriteAreas`; z niej `_claude` składa `allowWrite`, `--add-dir` i `denyWrite`, a `_codex` — `--cd`,
+  `writable_roots` i wykluczenia `/tmp`. `step_write_areas(step)` ustala jej wejścia tak samo jak `background()`
+  (bez zakładania plików), więc sprawdzenie i argumenty kroku nie mają dwóch kopii. `WriteAreas.writable()`:
+  - Claude: katalog roboczy sesji (worktree albo `out` kroku opiekuna), `allowWrite` (`out`), każdy `--add-dir`
+    nieobjęty `denyWrite` (dziś `out`; katalogi tylko do odczytu, wyniki poprzednich kroków i skille mają
+    `denyWrite`), `CLAUDE_CODE_TMPDIR` oraz zapis dawany przez program sam: `/tmp/claude`, `/private/tmp/claude`,
+    `/tmp/claude-<uid>` i wspólny `.git` repozytorium,
+  - Codex: `--cd`, `writable_roots` (katalog worktree w `.git/worktrees`, `.git/objects|refs|logs`, `out`) oraz
+    `/tmp` i `$TMPDIR` programu — tylko gdy krok ich nie wyklucza (`exclude_slash_tmp`, `exclude_tmpdir_env_var`:
+    krok opiekuna, katalogi tylko do odczytu, profil odczytu); kolizja liczy się z faktycznych ustawień kroku,
+  - zawsze repozytorium Tablicy (dokumenty AI i Konsola piszą w nim; dokłada je `approval_for_step`).
+- **Pochodzenie wywołania.** `UpsertProject` z polem `tests` ustala PID nadawcy z magistrali
+  (`GetConnectionUnixProcessID`, `QDBusConnectionInterface.servicePid`) i czyta `/proc/<pid>/cgroup`
+  (`daemon/tide_daemon/call_origin.py`). Proces w jednostce kroku (segment `tide-step-*`, także podgrupa jednostki
+  i wpisy hybrydowe cgroup v1), brak PID, PID 0, brak procesu, pusty, nieczytelny albo niezrozumiały plik →
+  odrzucenie `{ok: false, error: "forbidden", message}` bez zmiany `box.yaml`, odcisku i commita (także przy
+  ponownym zatwierdzeniu identycznych wartości). Bez pola `tests` `UpsertProject` działa jak dotąd i nie sprawdza
+  nadawcy. Zapis kontraktu w pliku przez krok nie zmienia `testsApproved` (PT-285). Polecenia poza piaskownicą
+  (`tide-outside-*`) i okno projektu to nadawcy spoza kroku. Opcja usługi `--proc-root` (ukryta) służy wyłącznie
+  testom (atrapa `/proc`). Ograniczenie: proces przeniesiony poza jednostkę kroku (np. `systemd-run --user`
+  z wnętrza kroku) nie byłby rozpoznany — tę drogę musi zamykać piaskownica, co sprawdzają próby niżej.
+- **Próby rzeczywistej piaskownicy (warunek).** Ochrona obowiązuje tylko wtedy, gdy w prawdziwych piaskownicach
+  Claude i Codexa (`workspace-write`) z ustawieniami z `tasks/agentcmd.py` każda z prób kończy się odmową
+  piaskownicy albo odrzuceniem przez sprawdzenie pochodzenia, a odcisk i `box.yaml` zostają bez zmian:
+  (a) zapis, podmiana (`rename`), usunięcie pliku odcisków, przeniesienie jego katalogu, dowiązanie w katalogu
+  stanu, zapis w prawdziwym katalogu magazynu, zapis `box.yaml`; (b) `UpsertProject` z `tests` przy martwym
+  adresie magistrali, przy podanym prawdziwym adresie magistrali usługi i przy nadpisanym
+  `DBUS_SESSION_BUS_ADDRESS`; (c) proces poza jednostką kroku przez `systemd-run --user` (także z
+  `XDG_RUNTIME_DIR` i prawdziwą magistralą) i `UpsertProject` z takiego procesu. Udana próba oznacza, że
+  zatwierdzenia nie wolno dopuścić do kroków. Skrypt: `scripts/sandbox/approval_trials.py <katalog wyniku>`
+  (poza piaskownicą; usługa z kodu repozytorium na osobnej magistrali, magazyn próbny w
+  `~/.local/state/tide-pt286-trials`, raport `report.md`), próby w kroku: `scripts/sandbox/approval_probe.py`.
+  Każda zmiana `tasks/agentcmd.py` dotycząca zapisu, sieci albo środowiska kroku wymaga ponownego przebiegu.
+  Skrypt wybiera program i pomijane serwery MCP Codexa tak jak usługa: Codex z aplikacji ChatGPT zamiast snapa,
+  bo snap nie działa w jednostce `tide-step-*`, oraz `codexMcpSkip` z ponowieniem.
+  **Wynik dla PT-286 (8.11.2026, HEAD `b2b79238`):** w Claude i w Codexie (`workspace-write`) wszystkie próby
+  skończyły się odmową. Claude: katalog domowy jest niewidoczny w piaskownicy, a tworzenia gniazd AF_UNIX zabrania
+  seccomp, więc padają magistrala usługi, magistrala pulpitu i `systemd-run --user`. Codex: system plików poza
+  obszarami zapisu jest tylko do odczytu (`Read-only file system`), a połączenie z każdym gniazdem magistrali kończy
+  się „Operation not permitted”, więc `systemd-run --user` też nie działa. Odcisk, `box.yaml` i HEAD Tablicy zostały
+  bez zmian. Sprawdzenie pochodzenia nie miało czego odrzucać, bo żaden krok nie połączył się z magistralą; chroni
+  ono na wypadek przyszłego poluzowania piaskownicy. Szczegóły każdej próby są w notce ticketu.
+
+#### Podpowiedź i źródło kontraktu (PT-282)
+
+`SuggestProjectTests(s json) -> s` — tylko odczyt; wejście `{slug}` albo `{repo}`, odpowiedź
+`{ok, changed, full, source, facts, message}`, dla `slug` dodatkowo `effectiveSource`, `unapproved`, `testsApproved`.
+
+- **Podpowiedź** liczy `suggest_tests(facts)` (`cardflow/testpolicy.py`) na faktach `repo_facts`, które bierze ze
+  wspólnej `make_targets` (ta sama reguła i te same zabezpieczenia co w kartkach: nic nie uruchamia, dowiązania
+  poza repozytorium pomija). Cel `test-changed` → `make test-changed BASE={base}`, cel `test` → `make test`
+  (źródło `make`); cele bada się niezależnie, więc samo `test` daje `full` bez `changed`
+  (`facts.legacy: true`). Bez celów albo bez `Makefile` wynik jest pusty, `source` = `""`, a `message` mówi „brak
+  podpowiedzi — kartki odeślą do zasad projektu”. Fakty to na razie wyłącznie cele `make`; przełączenie na
+  `StackReport` K-38 czeka na warunek ze szkicu k38-tests-schema.
+- **Źródło** (`effectiveSource`: `profile`, `detected`, `rules`) i `unapproved` to ta sama decyzja `effective_tests`
+  co w kartkach, policzona na repozytorium projektu z kontraktem z `box.yaml` i `testsApproved` z magazynu odcisków.
+  Okno nie jest krokiem, więc kolizja ścieżek z ochroną zatwierdzenia go nie dotyczy.
+- **`repo`** przechodzi tę samą walidację co `repo` projektu (`git_repo_path` w `board/store.py`, wspólna z `_repo`):
+  ścieżka bezwzględna istniejącego katalogu Git, także worktree (plik `.git`); inaczej `bad-request` z komunikatem.
+  Nieznany `slug` → `not-found`. Projekt z brakującym repozytorium (`repoMissing`) albo repozytorium bez celów to
+  pusty wynik z komunikatem, bez błędu.
+- Podpowiedź niczego nie zapisuje i nie zatwierdza; kontrakt powstaje dopiero przy zapisie projektu z okna.
+
+#### Zgodność z profilem pudełka K-38
+
+Wzorcowy plik profilu z kluczami K-38 (`apt`, `network`, `verify`) i blokiem `tests`:
+`daemon/tests/fixtures/box-profile/box.yaml`. Test `daemon/tests/test_board_project_tests.py` czyta go przez
+`load_tests` i porównuje z wynikiem `save_tests`. Szkic zmian po stronie K-38:
+[k38-tests-schema](agents/plans/followups/k38-tests-schema.md). Warunki scalenia drugiej z kart K-38/K-69
+do głównej (spełnione warunki odhaczone przez PT-321; testy: `daemon/tests/test_box_profile_tests_key.py`):
+
+- [x] `tests` w zamkniętej liście kluczy profilu projektu, w `KEY_ORDER` i w `NON_HASH_KEYS` (jako `tests.changed`,
+  `tests.full`): zmiana samych poleceń testów nie zmienia hasha przepisu. Profil karty odrzuca `tests`
+  (`validate(..., "card")`), a `merge(project, card)` przenosi kontrakt z projektu bez zmian;
+- [x] walidacja `tests` deleguje do `validate_tests` (jedna reguła, bez zmian po stronie K-69);
+- [x] czytnik `yamlmini` rozpoznaje kanoniczne napisy JSON także z końcowymi ukośnikami i komentarzem poza
+  napisem: koniec napisu w cudzysłowie wyznacza pełne przejście ucieczek (ukośnik zawsze ucieka następny znak),
+  a wartość i jej koniec — dekoder JSON (`raw_decode`); w apostrofach `''` jest apostrofem w napisie. Regresje
+  generowanych poleceń z `test_board_project_tests.py` czyta też `bp.load_project`, także po zapisie K-38
+  i częściowej aktualizacji przez `BoardStore`;
+- [ ] cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona
+  (poza PT-321: `followups/stack-hints.md`);
+- [x] wzorcowy plik czytany bez błędu przez `box/profile.py` (`load_project`; wynik zawiera `tests`);
+- zmienione ścieżki uruchamiania kroków (start, wznowienie, konflikt, domknięcie, kroki pudełka) sprawdzone pod kątem
+  wywołań polityki testów (po #10, #7 i #3 planu K-69): każda z nich nadal liczy jeden `TestPolicy` dla kartki
+  i zgód (`step_test_policy`), czego dowodzą testy przepływu z atrapą procesu, nie sama zgodność `box.yaml`. Zasada
+  ogólna, na której opiera się ten warunek: [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu).
+  PT-321 nie zmienia ścieżek uruchamiania kroków (tylko odczyt i zapis profilu).
+
+Wspólny plik `projects/<slug>/box.yaml` (PT-321):
+
+- **Odczyt.** `bp.read_project(slug)` zwraca `ProjectFile`: blok `tests` czyta reguła K-69 (`load_tests`), resztę
+  pliku `yamlmini` i schemat K-38. Uszkodzony blok `tests` nie unieważnia profilu K-38: profil jest bez `tests`, a
+  błąd (`tests_error`, ten sam napis co `testsError` w `BoardStore`, z komunikatem `validate_tests`) trafia do uwag
+  sekcji „Środowisko karty”. `bp.load_project` zwraca profil z poprawnym, niepustym kontraktem w `tests`.
+- **Profil bez ustawień K-38 jest nowy.** Plik z samymi `tide-box`, `project` i `tests` (np. założony przez
+  `save_tests`) nie jest zatwierdzonym profilem K-38: `load_project` zwraca None, a zgoda środowiska pokazuje
+  propozycję i pakiet zgód jak projekt bez profilu. Zatwierdzenie pustego profilu zapisuje `box: per-project`
+  (wartość domyślna, poza hashem), żeby kolejny odczyt nie uznał go znów za nowy.
+- **Zapis K-38.** `bp.save_project` (jedyna ścieżka zapisu profilu projektu: `envconsent` przy `box.enabled` true i
+  false, `tide box approve … --accept-red`) pomija `tests` z wejścia i przenosi blok `tests` z pliku bajt w bajt,
+  także uszkodzony. Nie zapisuje `testsApproved` ani nie dotyka magazynu odcisków (PT-285/PT-286): zatwierdzenie
+  kontraktu liczy wyłącznie `BoardStore`. Istniejącego pliku, którego nie da się przeczytać (YAML lub schemat poza
+  blokiem `tests`, inny `project`, `tests` poza blokiem najwyższego poziomu, rozmiar, kodowanie), zapis nie
+  nadpisuje — `ProfileError`, a zgoda środowiska odpowiada błędem bez zapisu.
+- **Wspólna blokada.** `save_project` czyta i zapisuje plik pod tą samą blokadą co `BoardStore.transaction`
+  (`board/lockfile.py`; wielowejściowa w obrębie wątku): `flock` na deskryptorze katalogu Tablicy — działa także na
+  poprawnej Tablicy bez `.git` (np. kopii plików), którą `BoardStore.ensure()` dopiero inicjalizuje — a gdy
+  repozytorium istnieje, dodatkowo `flock` na `<tablica>/.git/tide-board.lock` (zgodność z K-55). Kolejność stała:
+  katalog, potem `.git`. Przeplot zapisu K-38 i zapisu kontraktu w dowolnej kolejności, także przed inicjalizacją
+  gita, daje najnowszy kontrakt i najnowsze ustawienia K-38. Bez katalogu Tablicy sam odczyt niczego nie zakłada
+  i nie bierze blokady; zapis, który zakłada Tablicę (`ensure()`), zakłada katalog, bierze blokadę przed
+  inicjalizacją i trzyma ją do końca zewnętrznej transakcji — świeży odczyt, plan i zapis kontraktu po założeniu
+  Tablicy nie przeplatają się z zapisem K-38 (review PT-321 r2).
+- **Znane ograniczenie: komentarze.** Zapis K-38 (`yamlmini.dumps`) przepisuje plik poza blokiem `tests`, więc
+  komentarze poza tym blokiem (np. nad `tests:`) znikają; komentarze wewnątrz bloku zostają. Zapis kontraktu
+  (`save_tests`) nadal zachowuje cały plik, w tym komentarze — obietnica historii 10 specyfikacji dotyczy zapisu
+  kontraktu, nie zapisu profilu K-38.
+
+#### Efektywny kontrakt testów w kartkach kroków (PT-279)
+
+Kartki ticketu, poprawek, review i domknięcia (`cardflow/handoff.py`) biorą polecenia testów z `TestPolicy`
+(`cardflow/testpolicy.py`). Decyzja `effective_tests(contract, worktree, approved, base, error=…)`:
+
+1. zatwierdzony kontrakt (`approved` — wartość logiczna z zewnątrz; decyzja nie liczy odcisku) → źródło `profile`;
+   brakujące pole uzupełnia zasada ogólna, nie wykrycie;
+2. bez zastosowanego kontraktu (brak, niezatwierdzony, uszkodzony profil `testsError`) — wykrycie
+   `make_targets(worktree)`: cel `test-changed` → `make test-changed BASE={base}`, cel `test` → `make test`
+   (cele badane niezależnie) → źródło `detected`;
+3. reszta → zasada ogólna (`rules`): „testy dobrane do zmian według zasad projektu (CLAUDE.md/AGENTS.md)”, przy
+   domknięciu — pełne testy według zasad projektu.
+
+`legacy` — gałąź z `test` bez `test-changed`: pełny `make test` w tickecie, poprawkach i review, a recenzent
+sprawdza w notce udany pełny `make test` (jedyny wyjątek od zakazu żądania pełnego przebiegu). Zatwierdzone
+`make test-changed …` na gałęzi z samym `test` też daje `legacy`; na gałęzi bez obu celów `changed` przechodzi na
+zasadę ogólną z linią o brakującym celu (tak samo zatwierdzone `make test` bez celu `test` przy domknięciu).
+Sprawdzenie celu dotyczy tylko zwykłego `make <cel> [ZMIENNA=…]`: polecenie z opcją `make` (`-C tests`,
+`-f tests/Makefile`, `-j4`) zostaje zatwierdzonym poleceniem bez sprawdzania, bo cele głównego `Makefile`
+i `mk/*.mk` nie rozstrzygają o nim. Linia źródła zasady ogólnej przy zastosowanym kontrakcie podaje rzeczywistą
+przyczynę: kontrakt nie podaje tego polecenia albo gałąź nie ma celu z kontraktu.
+`{base}` zastępuje przypięty punkt startu ticketu (`shlex.quote`); bez bazy zostaje nierozwinięte
+(`base_pending`), a kartka opisuje je jako przypięty punkt startu ticketu. Kartka ma linię źródła polecenia
+(„wykryte z Makefile”, „zatwierdzony kontrakt…”, „zasady projektu…”) i linię o niezatwierdzonym kontrakcie,
+który nie jest stosowany. Przepis ponowienia przez `tools/test_runner.py` dostają tylko polecenia `make test`
+i `make test-changed`; inne (np. `dotnet test …`) — ogólną zasadę ponowienia.
+
+`make_targets(katalog)` to jedyne miejsce przepływu karty czytające `Makefile` i `mk/*.mk`: tylko odczyt, bez
+uruchamiania programów, z pominięciem plików i katalogu `mk` wychodzących dowiązaniem poza katalog. Do czasu
+integracji z silnikiem (#10) silnik woła kartki bez polityki, a kartki liczą ją `master_policy(worktree, base)`
+— regułą sprzed K-69 (bez `Makefile` nadal `make test-changed` i `make test`, bez linii źródła). Wzorcowe
+fragmenty kartek z master: `MASTER_FRAGMENTS` w `daemon/tests/test_cardflow_effective_tests.py`.
+
+**Kartka konfliktu i linia planowania (PT-284).** Krok rozwiązania konfliktu scalenia (`conflict`) liczy
+politykę przez `step_test_policy` przy starcie i każdym wznowieniu, jak ticket, poprawki, review i domknięcie
+(zdarzenie kroku ma `testPolicy` i `testPolicyCard`, wznowienie dostaje sekcję „Obowiązujące testy” w wariancie
+konfliktu). Bazą jest przypięty SHA z wyniku utworzenia gałęzi scalanego ticketu (`ticket_of(st, ticket)["base"]`),
+nie wierzchołek gałęzi karty; bez znanej bazy `{base}` zostaje nierozwinięte i opisane. Kartka konfliktu
+(`conflict_tests`) każe po zapisaniu commita scalenia uruchomić w worktree karty: `tests.changed` zatwierdzonego
+kontraktu, wykryte `make test-changed BASE=…`, w `legacy` pełny `make test`, a bez polecenia — testy dobrane do
+zmian według zasad projektu; w każdym wariancie polecenie i wynik idą do notki, a `done` wymaga udanego przebiegu.
+Dawne „uruchom potrzebne testy” bez polecenia zniknęło. Kroki `planning`, `plan-fix` i `plan-review` dostają jedną
+linię informacyjną `Kontrakt testów projektu (informacja dla planu): …` (`plan_tests_line`) ze źródłem
+i poleceniami efektywnego kontraktu (`changed` z opisem `{base}`, `full`) albo z informacją, że kartki odeślą do
+zasad projektu. Polityka planowania nie ma bazy ani `testPolicy` w zdarzeniu (nie jest wymogiem kroku ani źródłem
+zgód); wznowienie zastępuje linię, a format `plan-review.json` i reguły zatwierdzania się nie zmieniają.
+
+#### Zgoda na polecenia kontraktu (PT-280)
+
+Autor ticketu, poprawek, recenzent, krok domknięcia i rozwiązania konfliktu mogą uruchomić polecenie
+zatwierdzonego kontraktu testów bez wyniku `denied` i bez pytania. Regułę ma jedna funkcja,
+`testpolicy.contract_grants(policy, denied)` → `ContractGrants(commands, notes, fix)`; `_launch` woła ją przy każdym
+starcie i wznowieniu z **tej samej** `TestPolicy`, z której powstała kartka kroku (`step_test_policy`), więc tekst
+zgody to dokładnie `policy.changed` / `policy.full` z zasady testów tej kartki.
+
+- **Pochodzenie zgody.** Pole trafia na listę tylko ze źródłem `profile` (`changed_source` / `full_source`),
+  czyli gdy `approval_for_step` dla tego kroku dało `approved` przy budowie polityki: odcisk zgodny z treścią
+  pliku w tej chwili i brak kolizji ścieżek magazynu. Kontrakt zmieniony przez planistę, autora, inny krok,
+  ręcznie albo cofnięciem commita (odcisk różny), brak lub uszkodzenie magazynu odcisków i kolizja ścieżek dają
+  listę bez poleceń kontraktu, a kartka mówi, że kontrakt nie jest zatwierdzony; uruchomienie idzie zwykłą
+  ścieżką `denied`. Zgody nie zapamiętujemy między krokami — każde wznowienie liczy ją od nowa. Polecenia
+  wykryte z `Makefile` (źródło `detected`, także `legacy`) i zasada ogólna nie dają zgód.
+- **Literalne polecenie.** Zgodę dostaje tylko polecenie, dla którego `project_tests.grant_note` jest puste:
+  pojedyncze (`single_command` — bez `;`, `&&`, `|`, `$`, odwrotnego apostrofu, podpowłoki, `env`, przypisań
+  innych niż język/strefa) i bez znaku `*` po podstawieniu bazy. W regule Claude daje to `Bash(<polecenie>)` bez
+  wariantu `… *`, a w `is_allowed` — dokładne porównanie argumentów, więc ani dodatkowe argumenty, ani inne
+  polecenie (np. `pytest -x tests/other` przy `full: pytest *`) nie przechodzą. Polecenie z `*` zostaje
+  wymogiem kartki bez zgody, z tym samym komunikatem co `testsGrantNote` w JSON projektu (okno projektu).
+- **Baza.** `changed` z nierozwiniętym `{base}` (brak przypiętej bazy) nie trafia na listę; `full` trafia.
+  SHA bazy jest wstawiane przez `shlex.quote` w `effective_tests`, krok konfliktu ma bazę scalanego ticketu.
+- **Pierwszeństwo zakazów.** Polecenie pasujące do zakazu projektu (`denied-commands`) albo Tide
+  (`TIDE_DENIED`, `make install`) — także z prefiksem `LC_ALL=…` (`forbidding_rule`) — nie jest dokładane,
+  a kartka ostrzega, że kontrakt testów wymaga poprawy.
+- **Gdzie widać zgody.** Polecenia dochodzą do listy kroku (`_background_step(contract_commands=…)` →
+  `claude_tools([*allowed-commands, *zgody], …)`), a nie do listy zapisanej w projekcie (`allowed-commands` się
+  nie zmienia). Kartka ma je w sekcji „Polecenia projektu w tym kroku”, w bloku
+  `<TIDE_CONTRACT_COMMANDS>…</TIDE_CONTRACT_COMMANDS>` (zgody, polecenia bez zgody z komunikatem, ostrzeżenie
+  o poprawie); wznowienie usuwa blok poprzedniej próby i dokłada aktualny. Bez zgód i uwag blok nie powstaje
+  (tekst master). Zdarzenie startu kroku ma `contractCommands`. Piaskownica i kontrakt `outside` się nie zmieniają
+  (sieć i Docker nadal przez `outside`); krok w pudełku dostaje ten sam blok w kartce.
 
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
@@ -3303,7 +3602,8 @@ profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu proj
 wartości domyślnych, niezależnie od kolejności kluczy i białych znaków YAML) wraz z wersją szablonów i agentów.
 Wchodzą: `type`, `base`, `stacks` (kolejność), `node`, `dotnet` (wersje SDK jako zbiór), `apt` (jako zbiór), `setup` (kolejność),
 `docker.enabled`, `docker.images` (jako zbiór). Nie wchodzą: `resources`, `ports`, `network.*`, `verify`, `packs`,
-`box`, `notes`, `project` — limity i politykę czyta się przy starcie albo po budowie. Lista: `HASH_KEYS` i
+`box`, `notes`, `project`, `tests.changed`, `tests.full` — limity i politykę czyta się przy starcie albo po budowie,
+a kontrakt testów (K-69) nie dotyczy obrazu. Lista: `HASH_KEYS` i
 `NON_HASH_KEYS`, test pilnuje, że razem pokrywają cały schemat. `recipe_stamp(...)` dodatkowo zwraca skróty
 kluczy; budowa zapisuje go przy migawce, a `diff(profile, stamp, templates_version, agents_version)` zwraca listę
 kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `agents`…) — źródło stanu „do przebudowy”.
@@ -3313,7 +3613,8 @@ kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `
 Katalog Tablicy: `$TIDE_BOARD_DIR` (domyślnie `~/DevWorkspace/tide-board`). Profil projektu:
 `projects/<slug>/box.yaml`, profil karty: `projects/<slug>/cards/<id karty>/box.yaml`. Zapis jest atomowy (plik
 tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; nazwy ścieżek są ograniczone do
-`[a-z0-9._-]`. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
+`[a-z0-9._-]`. Profil projektu dzieli plik z kontraktem testów K-69 (`tests`); zasady wspólnego pliku — „Zgodność
+z profilem pudełka K-38” w sekcji kontraktu testów. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
 (walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
 nie trafia do repozytoriów projektów (CLAUDE.md firma).
 

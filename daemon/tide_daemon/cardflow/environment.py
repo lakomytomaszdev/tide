@@ -130,7 +130,8 @@ def _section(worktree: str, slug: str, out_dir: str) -> str:
     approved, problem = _approved(slug)
     parts = []
     if approved is not None:
-        parts.append(f"## {ZATWIERDZONE}\nHash przepisu: {recipe_hash(approved)}\n{_fence(box_profile.dump(approved))}")
+        shown = {k: v for k, v in approved.items() if k != box_profile.TESTS_KEY}   # kontrakt testów to nie środowisko
+        parts.append(f"## {ZATWIERDZONE}\nHash przepisu: {recipe_hash(approved)}\n{_fence(box_profile.dump(shown))}")
         if set(report.stacks) == set(approved.get("stacks", [])):
             parts.append(instructions(out_dir, False))
             return "\n\n".join(parts)

@@ -6,7 +6,10 @@ Schemat to granica zgody użytkownika:
 - `network.full: true` wymaga jawnej flagi `network.full-consent: true` (tylko profil karty),
 - klasa czerwona zależy wyłącznie od reguł w tym pliku; dane z szablonów (`known`) mogą pozycję
   najwyżej zaostrzyć, nigdy „odczerwienić”,
-- `.tide/box.yaml` z repozytorium projektu jest tylko propozycją: czytamy go, nigdy nie zapisujemy.
+- `.tide/box.yaml` z repozytorium projektu jest tylko propozycją: czytamy go, nigdy nie zapisujemy,
+- `tests` (kontrakt testów K-69) należy do profilu projektu, ale nie do K-38: regułę daje `validate_tests`
+  z `board/project_tests.py`, zapisuje go i zatwierdza wyłącznie `BoardStore`. Błąd samego bloku `tests` nie
+  unieważnia profilu (`ProjectFile.tests_error`), a `save_project` przenosi blok z dysku bajt w bajt (PT-321).
 
 Wykrywanie stosu i szablony stosów (#30) oraz budowa pudełka (#4) są poza tym modułem.
 Opis: docs/tide-daemon.md (Pudełko karty: profil środowiska).
@@ -20,6 +23,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 
+from ..board import lockfile, project_tests
 from . import yamlmini
 
 SCHEMA_VERSION = 1
@@ -32,15 +36,24 @@ TYPES = ("container", "vm")
 DEFAULT_RESOURCES = {"cpu": 8, "memory": "24GiB", "disk": "60GB", "swap": False}
 
 # Klucze, których zmiana zmienia obraz pudełka, więc wchodzą do hasha przepisu. Reszta (resources,
-# ports, network.*, verify, packs, box, notes, project) jest czytana przy starcie albo po budowie.
+# ports, network.*, verify, packs, box, notes, project) jest czytana przy starcie albo po budowie; `tests`
+# (kontrakt testów K-69) nie dotyczy obrazu.
 HASH_KEYS = ("type", "base", "stacks", "node", "dotnet", "apt", "setup", "docker.enabled", "docker.images")
 # Klucze celowo poza hashem — test sprawdza, że lista razem z HASH_KEYS pokrywa cały schemat.
 NON_HASH_KEYS = ("tide-box", "project", "network.domains", "network.host-ollama", "network.full",
                  "network.full-consent", "ports.pool", "ports.env", "resources.cpu", "resources.memory",
-                 "resources.disk", "resources.swap", "verify", "packs", "box", "notes", "accepted_red")
+                 "resources.disk", "resources.swap", "verify", "packs", "box", "notes", "accepted_red",
+                 "tests.changed", "tests.full")
 
 KEY_ORDER = ("tide-box", "project", "type", "base", "stacks", "node", "dotnet", "apt", "setup", "network",
-             "ports", "docker", "resources", "verify", "packs", "box", "notes", "accepted_red")
+             "ports", "docker", "resources", "verify", "packs", "box", "notes", "accepted_red", "tests")
+
+TESTS_KEY = project_tests.KEY
+# Klucze, które nie są ustawieniami K-38: profil złożony tylko z nich (np. sam kontrakt testów założony przez
+# `save_tests`) jest dla K-38 nowy — `load_project` zwraca None, a zgoda środowiska pokazuje propozycję (PT-321).
+NOT_BOX_KEYS = ("tide-box", "project", TESTS_KEY)
+# Znacznik zatwierdzenia pustego profilu K-38: wartość domyślna, poza hashem, bez wpływu na pudełko.
+EMPTY_MARKER = ("box", "per-project")
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _STACK = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
@@ -241,11 +254,15 @@ def validate(raw, scope: str = "project") -> dict:
                "ports", "docker", "resources", "verify", "box", "notes"}
     if card:
         allowed |= {"packs", "accepted_red"}
+    else:
+        allowed.add(TESTS_KEY)
     if not isinstance(raw, dict):
         raise ProfileError("profil musi być mapą")
     for key in raw:
         if key not in allowed:
-            hint = " (tylko w profilu karty)" if key in ("packs", "accepted_red") else ""
+            hint = (" (tylko w profilu karty)" if key in ("packs", "accepted_red") else
+                    " (tylko w profilu projektu; karta dziedziczy kontrakt testów z projektu)" if key == TESTS_KEY
+                    else "")
             errors.append(f"{key}: nieznany klucz{hint}")
     out = {}
 
@@ -395,6 +412,11 @@ def validate(raw, scope: str = "project") -> dict:
         out["packs"] = validate_specs(raw["packs"], errors)
     if card and "accepted_red" in raw:
         out["accepted_red"] = _str_list(raw["accepted_red"], "accepted_red", errors)
+    if not card and TESTS_KEY in raw:
+        try:   # jedna reguła kontraktu: K-38 tylko deleguje, bez własnych wyjątków
+            out[TESTS_KEY] = {**project_tests.empty(), **project_tests.validate_tests(raw[TESTS_KEY])}
+        except ValueError as exc:
+            errors.append(str(exc))
 
     if errors:
         raise ProfileError(errors)
@@ -502,7 +524,7 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
 
     out = {}
     for key in set(project) | set(card):
-        if key in ("network", "accepted_red", "packs", "project"):
+        if key in ("network", "accepted_red", "packs", "project", TESTS_KEY):
             continue
         pv, cv = project.get(key), card.get(key)
         if isinstance(pv, list) or isinstance(cv, list):
@@ -514,6 +536,8 @@ def merge(project: dict, card: dict, known: dict | None = None) -> MergeResult:
             out[key] = merged
         else:
             out[key] = cv if cv is not None else pv
+    if TESTS_KEY in project:   # karta nie nadpisuje kontraktu testów (validate karty odrzuca ten klucz)
+        out[TESTS_KEY] = dict(project[TESTS_KEY])
     if "project" in project:
         out["project"] = project["project"]
     elif "project" in card:
@@ -628,34 +652,136 @@ def _write_atomic(path: str, text: str) -> None:
         raise
 
 
-def _read(path: str, scope: str, *, validator=None):
+def _read_text(path: str):
+    """Tekst pliku profilu (None — brak pliku); za duży albo nie-UTF-8 to `ProfileError`."""
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read(_MAX_FILE + 1)
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as exc:
+        raise ProfileError(f"{path}: plik nie jest tekstem UTF-8 ({exc.reason})") from None
     if len(text) > _MAX_FILE:
         raise ProfileError(f"{path}: plik większy niż {_MAX_FILE} bajtów")
+    return text
+
+
+def _read(path: str, scope: str, *, validator=None):
+    text = _read_text(path)
+    if text is None:
+        return None
     if validator is not None:
         return validator(yamlmini.loads(text), scope)
     return parse(text, scope)
 
 
+def has_box_settings(profile) -> bool:
+    """Czy profil ma choć jeden klucz K-38 (poza `tide-box`, `project`, `tests`)."""
+    return any(key not in NOT_BOX_KEYS for key in profile or {})
+
+
+@dataclass
+class ProjectFile:
+    """Odczyt `projects/<slug>/box.yaml` (PT-321).
+
+    `profile` — kanoniczny profil K-38; `tests` jest w nim tylko jako poprawny, niepusty kontrakt. `tests`/`tests_error`
+    — wynik `project_tests.load_tests` (ten sam co `testsError` w BoardStore). `tests_block` — surowy blok z pliku,
+    który `save_project` przenosi bez zmian. `foreign_tests` — klucz `tests` poza blokiem rozpoznawanym przez K-69
+    (np. cały dokument wcięty): takiego pliku nie przepisujemy, bo kontrakt by zniknął."""
+    profile: dict
+    tests: dict
+    tests_error: str = ""
+    tests_block: str = ""
+    foreign_tests: bool = False
+
+    @property
+    def is_new(self) -> bool:
+        """Dla K-38 profil bez własnych ustawień (np. sam kontrakt testów) jest nowy — niezatwierdzony."""
+        return not has_box_settings(self.profile)
+
+
+def parse_project_file(text: str, slug: str | None = None) -> ProjectFile:
+    """Profil projektu z tekstu: blok `tests` czyta reguła K-69, resztę `yamlmini` i schemat K-38.
+
+    Błąd samego bloku `tests` nie unieważnia profilu (profil bez `tests`, błąd w `tests_error`); błąd reszty
+    (YAML, schemat, inny `project`) to `ProfileError` jak dotąd."""
+    rest, block = project_tests.split_block(text)
+    tests, error = project_tests.load_tests(text)
+    try:
+        raw = yamlmini.loads(rest)
+    except yamlmini.YamlError as exc:
+        raise ProfileError(f"YAML: {exc}") from None
+    foreign = isinstance(raw, dict) and TESTS_KEY in raw
+    if foreign:
+        raw = {key: value for key, value in raw.items() if key != TESTS_KEY}
+        error = error or "tests: klucz musi zaczynać się na początku linii (bez wcięcia)"
+    profile = validate(raw, "project")
+    if slug is not None and profile.get("project", slug) != slug:
+        raise ProfileError(f"project: {profile['project']!r} różni się od sluga {slug!r}")
+    if error:
+        tests = project_tests.empty()
+    elif any(tests.values()):
+        profile[TESTS_KEY] = dict(tests)
+    return ProjectFile(profile, tests, error, block, foreign)
+
+
+def board_lock():
+    """Blokada zapisu Tablicy wspólna z `BoardStore.transaction` (PT-321), także przed inicjalizacją gita.
+
+    Katalog Tablicy zakładamy, jeśli go nie ma — zapis profilu i tak by go założył (`_write_atomic`)."""
+    root = board_dir()
+    os.makedirs(root, exist_ok=True)
+    return lockfile.exclusive(root)
+
+
 def save_project(slug: str, profile: dict) -> str:
-    """Zapisuje profil projektu w Tablicy (po walidacji); zwraca ścieżkę."""
+    """Zapisuje profil projektu w Tablicy (po walidacji); zwraca ścieżkę.
+
+    Zapis K-38 nie zapisuje kontraktu testów: klucz `tests` z `profile` jest pomijany, a blok `tests` z pliku na
+    dysku przechodzi bajt w bajt (kontrakt i jego zatwierdzenie w `BoardStore` bez zmian). Plik czytamy i
+    zapisujemy pod blokadą Tablicy, więc przeplot z zapisem kontraktu nie cofa żadnej ze stron. Istniejącego
+    pliku, którego nie da się przeczytać, nie nadpisujemy. Komentarze poza blokiem `tests` nie przetrwają
+    (zapis `yamlmini.dumps`; znane ograniczenie, docs/tide-daemon.md). Pusty profil dostaje `box: per-project`,
+    żeby zatwierdzenie bez ustawień nie wyglądało jak profil nowy (`has_box_settings`)."""
+    if isinstance(profile, dict):
+        profile = {key: value for key, value in profile.items() if key != TESTS_KEY}
     clean = validate(profile, "project")
     if clean.setdefault("project", slug) != slug:
         raise ProfileError(f"project: {clean['project']!r} różni się od sluga {slug!r}")
+    if not has_box_settings(clean):
+        clean[EMPTY_MARKER[0]] = EMPTY_MARKER[1]
     path = project_path(slug)
-    _write_atomic(path, dump(clean))
+    with board_lock():
+        _write_atomic(path, dump(clean) + _kept_tests_block(path, slug))
     return path
 
 
+def _kept_tests_block(path: str, slug: str) -> str:
+    try:
+        text = _read_text(path)
+        got = None if text is None else parse_project_file(text, slug)
+    except ProfileError as exc:
+        raise ProfileError(f"{path}: istniejącego profilu nie da się odczytać — zapis odrzucony, "
+                           f"plik bez zmian ({exc})") from None
+    if got is None:
+        return ""
+    if got.foreign_tests:
+        raise ProfileError(f"{path}: klucz tests poza blokiem najwyższego poziomu — zapis odrzucony, plik bez zmian")
+    return got.tests_block
+
+
+def read_project(slug: str):
+    """`ProjectFile` profilu projektu z Tablicy albo None (brak pliku); nieczytelny plik — `ProfileError`."""
+    text = _read_text(project_path(slug))
+    return None if text is None else parse_project_file(text, slug)
+
+
 def load_project(slug: str):
-    got = _read(project_path(slug), "project")
-    if got is not None and got.get("project", slug) != slug:
-        raise ProfileError(f"project: {got['project']!r} różni się od sluga {slug!r}")
-    return got
+    """Zatwierdzony profil K-38 projektu albo None: brak pliku albo profil bez ustawień K-38 (np. sam `tests`)."""
+    got = read_project(slug)
+    if got is None or got.is_new:
+        return None
+    return got.profile
 
 
 def save_card(slug: str, card: str, profile: dict) -> str:

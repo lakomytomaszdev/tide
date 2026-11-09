@@ -36,6 +36,8 @@ Rectangle {
     property string openProject: ""     // slug projektu z otwartym formularzem
     property string openTag: ""         // nazwa tagu z otwartym formularzem ("+" — nowy)
     property string projectError: ""
+    property string testsError: ""      // błąd zapisu albo zatwierdzenia kontraktu testów (sekcja „Testy projektu”)
+    property bool testsInRequest: false // ostatni zapis projektu niósł pole tests
     property string tagError: ""
     property string repoError: ""
     property string busyTag: ""         // tag żądania w toku
@@ -48,6 +50,7 @@ Rectangle {
     readonly property var repos: (snapshot && snapshot.repos) || []
     readonly property var pastels: Object.keys((snapshot && snapshot.colors) || {})
     signal projectRequested(string tag, var request)
+    signal suggestRequested(string tag, var request)       // /Board SuggestProjectTests (tylko odczyt)
     signal tagRequested(string tag, var request)
     signal backRequested()
     signal issuesRequested(string tag, bool refresh)       // /Board YouTrackIssues
@@ -116,20 +119,40 @@ Rectangle {
         issuesRequested(nextTag("yt-issues"), true)
     }
 
+    // Odpowiedzi SuggestProjectTests po slugu: źródło obowiązującego kontraktu i podpowiedź liczy usługa.
+    property var suggestions: ({})
+    property int suggestSerial: 0
+
+    function requestSuggestion(slug) {
+        if (slug) suggestRequested("suggest:" + slug + ":" + (++suggestSerial), { slug: slug })
+    }
+
     // Odpowiedź usługi na zapis z tej strony (tag z prefiksem project:/tag:/repo:).
     function handleReply(tag, reply) {
+        if (tag.indexOf("suggest:") === 0) {
+            const next = Object.assign({}, suggestions)
+            next[tag.split(":")[1]] = reply || ({ ok: false })
+            suggestions = next
+            return
+        }
         if (tag === busyTag) busyTag = ""
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         if (tag.indexOf("rules:") === 0) {
             assignmentError = error
         } else if (tag.indexOf("project:") === 0) {
-            projectError = error
-            if (!error) openProject = ""
+            const approval = !error && reply.approvalError ? String(reply.approvalError) : ""
+            projectError = error || approval
+            testsError = testsInRequest ? projectError : ""
+            if (!projectError) openProject = ""
+        } else if (tag.indexOf("tests:") === 0) {
+            testsError = error || (reply.approvalError ? String(reply.approvalError) : "")
         } else if (tag.indexOf("tag:") === 0) {
             tagError = error
             if (!error) openTag = ""
         } else if (tag.indexOf("repo:") === 0) {
             repoError = error
+            // Dodanie repozytorium jako projektu otwiera jego formularz: tam jest podpowiedź testów z repozytorium.
+            if (!error && reply.slug && tag.indexOf("repo:/") === 0) openProject = reply.slug
         } else if (tag.indexOf("yt-issues:") === 0) {
             importPanel.loading = false
             importPanel.error = error
@@ -170,6 +193,8 @@ Rectangle {
 
     function send(kind, key, request) {
         busyTag = kind + ":" + key
+        if (kind === "project") { testsInRequest = !!(request && request.tests); testsError = "" }
+        if (kind === "tests") testsError = ""
         if (kind === "tag") tagRequested(busyTag, request)
         else projectRequested(busyTag, request)
     }
@@ -847,6 +872,20 @@ Rectangle {
         property string allowedCommands: ""
         property string deniedCommands: ""
         property string readDirs: ""
+        property string testsChanged: ""
+        property string testsFull: ""
+        readonly property var savedTests: (project.tests || {})
+        readonly property bool testsPending: project.testsApproved === false && !project.testsError
+        // Odpowiedź SuggestProjectTests dla projektu (null, dopóki usługa nie odpowie).
+        readonly property var suggestion: page.suggestions[project.slug] || null
+        readonly property bool suggestionOk: suggestion !== null && suggestion.ok === true
+        readonly property bool noSavedContract: !savedTests.changed && !savedTests.full
+        readonly property bool hasSuggestion: suggestionOk && !!(suggestion.changed || suggestion.full)
+        // Zmiana zapisanego kontraktu, zgody albo repozytorium odświeża źródło i podpowiedź z usługi.
+        readonly property string contractKey: JSON.stringify([savedTests.changed || "", savedTests.full || "",
+                                                              project.testsApproved, project.repo || "", !!project.repoMissing])
+        onContractKeyChanged: if (open) page.requestSuggestion(project.slug)
+        Component.onCompleted: if (open) { reset(); page.requestSuggestion(project.slug) }
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -869,6 +908,27 @@ Rectangle {
             readDirs = (project.readDirs || []).join("\n")
             readDirsArea.text = readDirs
             assignmentRulesArea.text = project.assignmentRules || ""
+            testsChanged = savedTests.changed || ""
+            testsFull = savedTests.full || ""
+            testsChangedField.text = testsChanged
+            testsFullField.text = testsFull
+            // testsError nie jest tu czyszczony: odświeżenie migawki odtwarza delegaty i zgubiłoby odmowę zatwierdzenia.
+        }
+
+        // Bieżące pola kontraktu; wysyłane tylko z jawnej akcji użytkownika (zapis zmiany albo „Zatwierdź kontrakt”).
+        function testsValue() {
+            return { changed: testsChanged.trim(), full: testsFull.trim() }
+        }
+
+        // „Użyj podpowiedzi”: tylko wypełnia pola formularza; zapis i zatwierdzenie dopiero z „Zapisz” albo „Zatwierdź”.
+        function useSuggestion() {
+            if (!hasSuggestion) return
+            testsChangedField.text = suggestion.changed || ""
+            testsFullField.text = suggestion.full || ""
+        }
+
+        function approveTests() {
+            page.send("tests", project.slug, { slug: project.slug, tests: testsValue() })
         }
 
         function commandLines(value) {
@@ -896,10 +956,12 @@ Rectangle {
             const dirs = commandLines(readDirs)
             if (JSON.stringify(dirs) !== JSON.stringify(project.readDirs || [])) request.readDirs = dirs
             if (assignmentRulesArea.text.trim() !== (project.assignmentRules || "")) request.assignmentRules = assignmentRulesArea.text.trim()
+            const tests = testsValue()
+            if (tests.changed !== (savedTests.changed || "") || tests.full !== (savedTests.full || "")) request.tests = tests
             page.send("project", project.slug, request)
         }
 
-        onOpenChanged: if (open) reset()
+        onOpenChanged: if (open) { reset(); page.requestSuggestion(project.slug) }
         spacing: 0
 
         Rectangle {
@@ -995,6 +1057,7 @@ Rectangle {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                     page.projectError = ""
+                    page.testsError = ""
                     page.openProject = row.open ? "" : row.project.slug
                 }
             }
@@ -1195,6 +1258,197 @@ Rectangle {
                     font.pixelSize: 11
                     wrapMode: Text.Wrap
                 }
+                FieldLabel { text: "Testy projektu"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 6 }
+                ColumnLayout {
+                    objectName: "projectTests"
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text {
+                        objectName: "projectTestsSource"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: Logic.contractSourceText(row.suggestion)
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsUnapproved"
+                        Layout.fillWidth: true
+                        visible: row.suggestionOk && row.suggestion.unapproved === true
+                        text: "Zapisany kontrakt nie jest zatwierdzony, więc nie obowiązuje — zatwierdź go albo zapisz zmiany."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Testy dobrane do zmian"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                    }
+                    LineInput {
+                        id: testsChangedField
+                        objectName: "projectTestsChanged"
+                        Layout.fillWidth: true
+                        mono: true
+                        placeholder: "np. make test-changed BASE={base}"
+                        accessibleName: "Testy dobrane do zmian"
+                        onTextChanged: row.testsChanged = text
+                        onAccepted: row.save()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "{base} to przypięty punkt startu ticketu na gałęzi karty; Tide podstawia go przy uruchomieniu."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsChangedNote"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: (row.project.testsGrantNote || {}).changed || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        text: "Pełne testy przy domknięciu"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                    }
+                    LineInput {
+                        id: testsFullField
+                        objectName: "projectTestsFull"
+                        Layout.fillWidth: true
+                        mono: true
+                        placeholder: "np. make test"
+                        accessibleName: "Pełne testy przy domknięciu"
+                        onTextChanged: row.testsFull = text
+                        onAccepted: row.save()
+                    }
+                    Text {
+                        objectName: "projectTestsFullNote"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: (row.project.testsGrantNote || {}).full || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsEmptyHint"
+                        Layout.fillWidth: true
+                        visible: row.testsChanged.trim() === "" && row.testsFull.trim() === ""
+                        text: "Bez kontraktu kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md) albo użyją celów wykrytych z Makefile."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "projectTestsSuggestion"
+                        Layout.fillWidth: true
+                        visible: row.noSavedContract && row.hasSuggestion
+                        spacing: 8
+                        Text {
+                            objectName: "projectTestsSuggestionText"
+                            Layout.fillWidth: true
+                            text: "Podpowiedź z repozytorium (Makefile): "
+                                  + (row.hasSuggestion ? [row.suggestion.changed, row.suggestion.full].filter(s => s).join(" · ") : "")
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.monoFamily
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        PillButton {
+                            objectName: "projectTestsUseSuggestion"
+                            implicitHeight: 30
+                            pixelSize: 12
+                            outline: true
+                            enabled: row.hasSuggestion && (row.testsChanged !== (row.suggestion.changed || "")
+                                                           || row.testsFull !== (row.suggestion.full || ""))
+                            text: "Użyj podpowiedzi"
+                            onClicked: row.useSuggestion()
+                        }
+                    }
+                    Text {
+                        objectName: "projectTestsNoSuggestion"
+                        Layout.fillWidth: true
+                        visible: row.noSavedContract && row.suggestionOk && !row.hasSuggestion
+                        text: row.suggestionOk ? (row.suggestion.message || "") : ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsProfileError"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: row.project.testsError || ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "projectTestsPending"
+                        Layout.fillWidth: true
+                        visible: row.testsPending
+                        spacing: 8
+                        Text {
+                            objectName: "projectTestsWarning"
+                            Layout.fillWidth: true
+                            text: "kontrakt zmieniony poza oknem projektu — sprawdź i zatwierdź"
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.butter
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
+                        PillButton {
+                            objectName: "projectTestsApprove"
+                            implicitHeight: 30
+                            pixelSize: 12
+                            enabled: page.busyTag === ""
+                            text: "Zatwierdź kontrakt"
+                            onClicked: row.approveTests()
+                        }
+                    }
+                    Text {
+                        objectName: "projectTestsError"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: row.open ? page.testsError : ""
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.rose
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                }
                 Item { implicitWidth: 1 }
                 RowLayout {
                     Layout.fillWidth: true
@@ -1214,7 +1468,7 @@ Rectangle {
                         pixelSize: 12
                         flat: true
                         text: "Anuluj"
-                        onClicked: page.openProject = ""
+                        onClicked: { page.testsError = ""; page.openProject = "" }
                     }
                     PillButton {
                         objectName: "projectSave"

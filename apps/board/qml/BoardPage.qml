@@ -94,6 +94,7 @@ Rectangle {
     signal updateRequested(string tag, string cardId, string request)
     signal moveRequested(string tag, string cardId, string column, int index)
     signal projectRequested(string tag, string request)
+    signal suggestTestsRequested(string tag, string request)   // SuggestProjectTests (okno projektu)
     signal tagRequested(string tag, string request)
     signal sessionRequested(string session)  // PT-5: koordynator karty w widoku Sesje
     signal agentRequested(string session)    // okno agenta karty (Konsola, wątek Codexa)
@@ -681,6 +682,10 @@ Rectangle {
         }
         if (tag.indexOf("branches:") === 0) {
             launchDialog.basePicker.receive(tag, reply)
+            return
+        }
+        if (tag.indexOf("suggest:") === 0) {   // podpowiedź testów projektu (odczyt): tylko okno projektu, bez toastów
+            manage.handleReply(tag, reply)
             return
         }
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
@@ -1722,6 +1727,7 @@ Rectangle {
         modelsStatus: page.modelsStatus
         flowSettings: page.flowSettings
         onProjectRequested: (tag, request) => page.projectRequested(tag, JSON.stringify(request))
+        onSuggestRequested: (tag, request) => page.suggestTestsRequested(tag, JSON.stringify(request))
         onTagRequested: (tag, request) => page.tagRequested(tag, JSON.stringify(request))
         onIssuesRequested: (tag, refresh) => page.youtrackIssuesRequested(tag, refresh)
         onImportRequested: (tag, keys) => page.importRequested(tag, JSON.stringify({ issues: keys }))

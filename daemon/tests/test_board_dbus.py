@@ -21,10 +21,19 @@ except ImportError:  # pragma: no cover
 
 PATH, IFACE = "/Board", "org.tide.Daemon.Board"
 NOW_TEXT = "2026-10-27T12:00:00Z"
+APP_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tide-board-test.scope\n"
+STEP_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tide-step-K-1-PT-1-1.scope\n"
 
 
 def git_out(cwd, *args) -> str:
     return subprocess.run(["git", "-C", cwd, *args], check=True, capture_output=True, text=True).stdout
+
+
+def read_or_none(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def git_config(tmp) -> dict:
@@ -112,11 +121,22 @@ class BoardDBusTest(unittest.TestCase):
         env = git_config(cls.tmp)
         subprocess.run(["git", "-C", cls.repo, "init", "-q"], check=True, env=dict(os.environ, **env))
         cls.board = os.path.join(cls.ws, "tide-board")
+        # PT-286: atrapa /proc z cgroup procesu testu (nadawcy wywołań) — wynik nie zależy od tego, czy testy
+        # biegną w jednostce kroku `tide-step-*`; test_3c podmienia ją na jednostkę kroku.
+        cls.proc = os.path.join(cls.tmp, "proc")
+        cls.set_sender_cgroup(APP_CGROUP)
         cls.service = PrivateBus("tide-board-test")
         cls.daemon = cls.service.spawn_daemon(
             "--claude-dir", os.path.join(cls.tmp, "claude"), "--codex-dir", os.path.join(cls.tmp, "codex"),
             "--no-processes", "--no-notifications", "--now", NOW_TEXT, "--workspace", cls.ws,
-            "--board-dir", cls.board, extra_env=env)
+            "--board-dir", cls.board, "--proc-root", cls.proc, extra_env=env)
+
+    @classmethod
+    def set_sender_cgroup(cls, text):
+        folder = os.path.join(cls.proc, str(os.getpid()))
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "cgroup"), "w", encoding="utf-8") as fh:
+            fh.write(text)
 
     @classmethod
     def tearDownClass(cls):
@@ -135,6 +155,7 @@ class BoardDBusTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         for member in ("Snapshot", "Work", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag",
+                       "SuggestProjectTests",
                        "RenderFlow", "Badge", "ShowWindow", "CardDocs"):
             self.assertIn(f'<method name="{member}">', xml)
         work = self.call("Work")  # lista „Praca” (PT-40): bez tablicy — pusta, niczego nie zakłada
@@ -209,6 +230,63 @@ class BoardDBusTest(unittest.TestCase):
             self.assertEqual((reply["ok"], reply["error"]), (False, code), (member, reply))
             self.assertTrue(reply["message"])
         self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)  # błąd nie zostawia commita
+
+    def test_3b_project_tests_contract_transport(self):
+        # K-69/PT-278: pole `tests` w żądaniu UpsertProject i w JSON projektu (macierz walidacji: test_board_project_tests).
+        # PT-285: UpsertProject z `tests` to zatwierdzenie — `testsApproved` w odpowiedzi i w JSON projektu
+        # (macierz magazynu odcisków: test_board_contract_approval).
+        tests = {"changed": "make test-changed BASE={base}", "full": "pytest *"}
+        reply = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": tests}))
+        self.assertEqual((reply["changed"], reply["testsApproved"], reply["approvalError"]), (True, True, ""))
+        project = {p["slug"]: p for p in self.snapshot()["projects"]}["mobileapp"]
+        self.assertEqual((project["tests"], project["testsError"], project["testsApproved"]), (tests, "", True))
+        self.assertEqual(project["testsGrantNote"]["changed"], "")
+        self.assertIn("`*`", project["testsGrantNote"]["full"])
+        with open(os.path.join(self.board, "projects", "mobileapp", "box.yaml"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("tide-box: 1\ntests:\n"))
+        bad = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": {"changed": "make test"}}))
+        self.assertEqual((bad["ok"], bad["error"]), (False, "bad-request"))
+
+    def test_3c_approval_from_a_step_unit_is_refused(self):
+        # PT-286: PID nadawcy z magistrali, cgroup z atrapy /proc. Nadawca w jednostce kroku → odrzucenie bez zmiany
+        # box.yaml, odcisku i commita; bez `tests` UpsertProject działa jak dotąd.
+        box = os.path.join(self.board, "projects", "mobileapp", "box.yaml")
+        store = os.path.join(self.service.tmp, "state", "tide", "test-contracts.json")
+        before = [read_or_none(p) for p in (box, store)]
+        head = git_out(self.board, "rev-parse", "HEAD")
+        self.set_sender_cgroup(STEP_CGROUP)
+        try:
+            reply = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "tests": {"changed": "make x {base}"}}))
+            self.assertEqual((reply["ok"], reply["error"]), (False, "forbidden"), reply)
+            self.assertIn("kroku agenta", reply["message"])
+            self.assertEqual([read_or_none(p) for p in (box, store)], before)
+            self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)
+            plain = self.call("UpsertProject", json.dumps({"slug": "mobileapp", "description": "Opis PT-286"}))
+            self.assertEqual((plain["ok"], plain["changed"]), (True, True), plain)
+        finally:
+            self.set_sender_cgroup(APP_CGROUP)
+
+    def test_3d_suggest_project_tests_transport(self):
+        # PT-282: SuggestProjectTests tylko odczytuje — `repo` (podpowiedź z Makefile) i `slug` (źródło kontraktu
+        # z decyzji effective_tests); macierz przypadków: test_board_suggest_tests.
+        repo = os.path.join(self.tmp, "suggest-repo")
+        os.makedirs(repo)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+        with open(os.path.join(repo, "Makefile"), "w", encoding="utf-8") as fh:
+            fh.write("test:\n\t@true\ntest-changed:\n\t@true\n")
+        head = git_out(self.board, "rev-parse", "HEAD")
+        reply = self.call("SuggestProjectTests", json.dumps({"repo": repo}))
+        self.assertEqual((reply["ok"], reply["changed"], reply["full"], reply["source"]),
+                         (True, "make test-changed BASE={base}", "make test", "make"))
+        self.assertNotIn("effectiveSource", reply)
+        by_slug = self.call("SuggestProjectTests", json.dumps({"slug": "mobileapp"}))
+        self.assertEqual((by_slug["ok"], by_slug["effectiveSource"], by_slug["unapproved"]), (True, "profile", False))
+        self.assertEqual((by_slug["changed"], by_slug["full"], by_slug["source"]), ("", "", ""))
+        for request, code in (({"repo": "wzgledna"}, "bad-request"), ({"slug": "brak"}, "not-found")):
+            bad = self.call("SuggestProjectTests", json.dumps(request))
+            self.assertEqual((bad["ok"], bad["error"]), (False, code), bad)
+            self.assertTrue(bad["message"])
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)   # odczyt nie zostawia commita
 
     def test_4_card_docs(self):
         # Plan karty w repozytorium projektu (docs/agents/plans) i specyfikacja po nazwie pliku — odczyt

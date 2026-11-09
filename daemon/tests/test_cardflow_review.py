@@ -115,6 +115,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertTrue(os.path.isfile(os.path.join(review["stepDir"], "out", "pliki-recenzenta", "review-modified.txt")))
 
     def test_approved_review_receives_full_context_and_cleans_worktrees(self):
+        self.add_make_targets()
         card = self.card(description="Dodaj eksport.\n\nATRAPA: gotowe")
         reply = self.start(card, reviewer="Opus")
         self.assertTrue(reply["ok"], reply)
@@ -146,6 +147,7 @@ class ReviewFlowTest(FlowInProcess):
         self.assertFalse(os.path.exists(steps[1]["worktree"]), "worktree review po zatwierdzeniu")
 
     def test_two_request_changes_rounds_then_approve(self):
+        self.add_make_targets()
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 2")
         self.assertTrue(self.start(card)["ok"])
         self.wait_closed(card, timeout=50)

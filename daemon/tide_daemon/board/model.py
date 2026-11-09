@@ -98,7 +98,8 @@ class BoardError(ValueError):
 
     Kody: bad-request (złe dane), not-found (nie ma karty, projektu, tagu), exists (już jest),
     broken-file (pliku nie da się przeczytać — popraw ręcznie), git-busy (w repozytorium tablicy
-    trwa revert, merge, cherry-pick albo rebase), not-a-board (cudzy katalog)."""
+    trwa revert, merge, cherry-pick albo rebase), not-a-board (cudzy katalog), forbidden (nadawca bez prawa
+    do operacji — zatwierdzenie kontraktu testów z kroku agenta, PT-286)."""
 
     def __init__(self, message: str, code: str = "bad-request"):
         super().__init__(message)
@@ -138,6 +139,11 @@ class Project:
     read_dirs: list = field(default_factory=list)
     read_dir_bindings: list = field(default_factory=list)
     read_dirs_error: str = ""
+    box_text: str | None = None   # surowy `projects/<slug>/box.yaml` (None — brak pliku); klucz `tests` czyta project_tests
+    tests: dict = field(default_factory=lambda: {"changed": "", "full": ""})
+    tests_error: str = ""
+    tests_approved: bool = False   # odcisk kontraktu w stanie usługi równy plikowi (contract_approval, PT-285)
+    box_unreadable: bool = False   # `box.yaml` istnieje, ale nie da się go odczytać — zapis kontraktu odrzucony
     doc: Document | None = None
 
 

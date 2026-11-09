@@ -47,6 +47,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
+from . import call_origin
 from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
@@ -97,9 +98,11 @@ class BoardMonitor(QObject):
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
-                 docs=None, youtrack=None, parent=None):
+                 docs=None, youtrack=None, proc_root: str = "/proc", parent=None):
         super().__init__(parent)
         self.store = store
+        # /proc do sprawdzenia nadawcy zatwierdzenia kontraktu testów (call_origin, PT-286); atrapa tylko w testach.
+        self.proc_root = proc_root
         # Synchronizacja z YouTrackiem (ytsync_monitor.YouTrackSyncMonitor) albo None (--no-youtrack).
         self.youtrack = youtrack
         # CardDocs: tablice koordynatorów z /Coordination (funkcja() → lista) i czytnik dokumentów kart.
@@ -430,8 +433,26 @@ class BoardMonitor(QObject):
             return ""
         return next((str(c.get("boardColumn") or "") for c in cards if isinstance(c, dict) and c.get("id") == wanted), "")
 
-    def upsert_project(self, request: str) -> str:
-        return self._mutate(lambda: self.store.upsert_project(_object(request)))
+    def upsert_project(self, request: str, sender_pid=None) -> str:
+        """UpsertProject z okna projektu. Z polem `tests` to także zatwierdzenie kontraktu testów (PT-285):
+        odcisk w stanie usługi tworzy wyłącznie ta ścieżka (store.approve_project_tests) — i tylko po sprawdzeniu
+        nadawcy (PT-286): `sender_pid` z magistrali; brak PID albo proces w jednostce kroku `tide-step-*` →
+        `{ok: false, error: "forbidden"}` bez zmiany `box.yaml` i odcisku. Bez pola `tests` — bez sprawdzenia."""
+        def work():
+            data = _object(request)
+            if "tests" not in data:
+                return self.store.upsert_project(data)
+            refused = call_origin.refusal(sender_pid, self.proc_root)
+            if refused:
+                print(f"tide-daemon: tablica: UpsertProject z `tests` odrzucone (PID {sender_pid}): {refused}",
+                      flush=True)
+                raise BoardError(refused, "forbidden")
+            return self.store.approve_project_tests(data)
+        return self._mutate(work)
+
+    def suggest_project_tests(self, request: str) -> str:
+        """SuggestProjectTests: podpowiedź kontraktu testów i źródło efektywnego kontraktu. Tylko odczyt."""
+        return _reply(lambda: self.store.suggest_project_tests(_object(request)))
 
     def upsert_tag(self, request: str) -> str:
         return self._mutate(lambda: self.store.upsert_tag(_object(request)))

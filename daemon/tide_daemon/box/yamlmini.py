@@ -21,24 +21,45 @@ _PLAIN_SAFE = re.compile(r"^[A-Za-z0-9_./+=\-][A-Za-z0-9_./@+=:\-]*$")
 _RESERVED = {"true", "false", "null", "~", "yes", "no", "on", "off"}
 
 
+def _quoted_end(text: str, start: int) -> int:
+    """Indeks tuż za napisem zaczynającym się w `start` albo -1, gdy napis nie jest zamknięty w tej linii.
+
+    W cudzysłowie ukośnik odwrotny zawsze ucieka następny znak (`"a\\\\"` kończy się po drugim ukośniku), w apostrofach
+    nie ma ucieczek, a `''` to apostrof w napisie (PT-321: kanoniczne napisy JSON kontraktu testów K-69)."""
+    quote = text[start]
+    k = start + 1
+    while k < len(text):
+        ch = text[k]
+        if quote == '"' and ch == "\\":
+            k += 2
+            continue
+        if ch == quote:
+            if quote == "'" and text[k + 1:k + 2] == "'":
+                k += 2
+                continue
+            return k + 1
+        k += 1
+    return -1
+
+
 def _strip_comment(text: str) -> str:
-    out = []
-    quote = ""
+    """Linia bez komentarza `# …`; `#` wewnątrz napisu w cudzysłowie albo apostrofach nie jest komentarzem."""
+    k = 0
     prev = " "
-    for ch in text:
-        if quote:
-            out.append(ch)
-            if ch == quote and prev != "\\":
-                quote = ""
-        elif ch in "\"'" and prev in " \t[{,:":
-            quote = ch
-            out.append(ch)
-        elif ch == "#" and prev in " \t":
-            break
-        else:
-            out.append(ch)
+    while k < len(text):
+        ch = text[k]
+        if ch in "\"'" and prev in " \t[{,:":
+            end = _quoted_end(text, k)
+            if end < 0:
+                return text.rstrip()   # niezamknięty napis: błąd zgłosi parser wartości
+            prev = text[end - 1]
+            k = end
+            continue
+        if ch == "#" and prev in " \t":
+            return text[:k].rstrip()
         prev = ch
-    return "".join(out).rstrip()
+        k += 1
+    return text.rstrip()
 
 
 def _plain(text: str):
@@ -80,17 +101,14 @@ class _Flow:
         self._ws()
         ch = self.s[self.i] if self.i < len(self.s) else ""
         if ch == '"':
-            start = self.i
-            self.i += 1
-            while self.i < len(self.s) and not (self.s[self.i] == '"' and self.s[self.i - 1] != "\\"):
-                self.i += 1
-            if self.i >= len(self.s):
+            # Cały token rozpoznaje dekoder JSON, łącznie z jego końcem (końcowe ukośniki, PT-321).
+            if _quoted_end(self.s, self.i) < 0:
                 raise YamlError("niezamknięty cudzysłów")
-            self.i += 1
             try:
-                return json.loads(self.s[start:self.i])
+                value, self.i = json.JSONDecoder().raw_decode(self.s, self.i)
             except ValueError as exc:
                 raise YamlError(f"zły napis w cudzysłowie: {exc}") from None
+            return value
         if ch == "'":
             self.i += 1
             buf = []

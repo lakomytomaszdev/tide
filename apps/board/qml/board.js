@@ -431,6 +431,18 @@ function errorText(reply) {
     }
 }
 
+// Opis źródła obowiązującego kontraktu testów: `effectiveSource` liczy usługa (decyzja effective_tests),
+// tu tylko tekst. Pusty napis, gdy odpowiedzi nie ma albo jest błędem.
+function contractSourceText(suggestion) {
+    if (!suggestion || !suggestion.ok) return ""
+    switch (suggestion.effectiveSource) {
+    case "profile": return "Obowiązuje zatwierdzony kontrakt projektu."
+    case "detected": return "Obowiązują testy wykryte z Makefile w repozytorium projektu."
+    case "rules": return "Obowiązuje zasada projektu (CLAUDE.md, AGENTS.md) — kartki nie dostają polecenia."
+    default: return ""
+    }
+}
+
 // Ostrzeżenie po zapisie: plik zmieniony, commit czeka (commitError).
 function commitNote(reply) {
     return reply && reply.ok && reply.commitError ? "Zapisane w pliku, commit czeka: " + reply.commitError : ""

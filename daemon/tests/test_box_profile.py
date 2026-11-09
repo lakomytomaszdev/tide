@@ -278,7 +278,7 @@ class HashTest(unittest.TestCase):
                   "network.domains", "network.host-ollama", "network.full", "network.full-consent",
                   "ports.pool", "ports.env", "docker.enabled", "docker.images",
                   "resources.cpu", "resources.memory", "resources.disk", "resources.swap", "verify", "packs", "box", "notes",
-                  "accepted_red"}
+                  "accepted_red", "tests.changed", "tests.full"}
         self.assertEqual(set(bp.HASH_KEYS) | set(bp.NON_HASH_KEYS), schema)
         self.assertFalse(set(bp.HASH_KEYS) & set(bp.NON_HASH_KEYS))
 

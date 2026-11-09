@@ -10,8 +10,11 @@
   dla HostRunnera) dla trzech klas projektów z F1 na tych samych syntetycznych worktree i tych samych danych.
 - `normalize()` jest jawny i wąski: zakończenia linii, końcowe białe znaki linii i pliku oraz wyłącznie nazwane
   zmienne dane (`VARIABLES`: katalog tymczasowy testu, katalog zasobów Tide). Niczego więcej nie usuwa.
-- `APPROVED` to zamknięta lista zatwierdzonych różnic K-38 niezależnych od runnera, z ticketem i commitem:
-  każda jest dokładną zamianą fragmentu master na fragment K-38, wymaganą dokładnie raz.
+- `APPROVED` to zamknięta lista zatwierdzonych różnic K-38 niezależnych od runnera oraz różnic K-69 (polityka
+  testów kroku, PT-279), z ticketem i commitem: każda jest dokładną zamianą fragmentu master na fragment gałęzi,
+  wymaganą dokładnie raz w każdej kartce swoich rodzajów i klas projektów (`projects`; puste — wszystkie klasy).
+- Integracja master → K-69 (scalenie f585b33c) zostawia `MASTER_SHA`: master od K-38 ma `runner_policy`, więc nie
+  jest już wzorcem „sprzed pudełka”, którego wymaga `test_master_module_is_read_from_git_objects`.
 """
 from __future__ import annotations
 
@@ -150,7 +153,8 @@ class Approved:
     commits: tuple[str, ...]
     kinds: tuple[str, ...]
     master: str        # dokładny fragment z kartki master
-    k38: str           # dokładny fragment w kartce K-38 (wymagany dokładnie raz)
+    k38: str           # dokładny fragment w kartce gałęzi (wymagany dokładnie raz)
+    projects: tuple[str, ...] = ()   # klasy projektów (`PROJECTS`), których dotyczy różnica; puste — wszystkie
 
 
 DESK = ("Test wymagający prawdziwego pulpitu oznacz w notce w sekcji „Do sprawdzenia na pulpicie” (nagłówek, "
@@ -164,16 +168,30 @@ APPROVED = (
     Approved("PT-183", ("1a059b60", "946faa0f"), ("review",),
              "- BLOCKER lub MAJOR oznacza REQUEST_CHANGES.\n",
              f"- BLOCKER lub MAJOR oznacza REQUEST_CHANGES,\n- {DESK}\n"),
+    # PT-279 (K-69): jawna linia źródła polecenia testów. Klasy z `Makefile` (cele `test`/`test-changed`) mają
+    # źródło `detected`; projekt bez `Makefile` (proj) ma źródło zgodności `compat`, bez linii — kartka jak master.
+    Approved("PT-279", ("e92603f6",), ("ticket", "fix", "review"),
+             "\nTesty ticketu (także po poprawkach): ",
+             "\nŹródło polecenia testów ticketu: wykryte z Makefile.\nTesty ticketu (także po poprawkach): ",
+             ("plasma-tide", "bez-profilu")),
+    Approved("PT-279", ("e92603f6",), ("close",),
+             "\nPrzed napisaniem podsumowania uruchom raz ",
+             "\nŹródło polecenia pełnych testów: wykryte z Makefile.\nPrzed napisaniem podsumowania uruchom raz ",
+             ("plasma-tide", "bez-profilu")),
 )
+
+
+def approved_for(name: str) -> list[Approved]:
+    """Zatwierdzone różnice kartki `<projekt>/<rodzaj>`."""
+    project, kind = name.rsplit("/", 1)
+    return [change for change in APPROVED
+            if kind in change.kinds and (not change.projects or project in change.projects)]
 
 
 def expected(name: str, master_text: str) -> str:
     """Kartka master po zastosowaniu zatwierdzonych różnic tego rodzaju; brak fragmentu master to błąd."""
-    kind = name.rsplit("/", 1)[1]
     text = master_text
-    for change in APPROVED:
-        if kind not in change.kinds:
-            continue
+    for change in approved_for(name):
         if text.count(change.master) != 1:
             raise AssertionError(f"{name}: fragment master zatwierdzonej różnicy {change.ticket} "
                                  f"nie występuje dokładnie raz")
