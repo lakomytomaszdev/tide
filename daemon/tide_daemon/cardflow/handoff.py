@@ -280,6 +280,8 @@ def current_tests(policy: TestPolicy, *, kind: str, worktree: str = "") -> str:
     rodzaju kroku, z aktualnej polityki. Blok ma znaczniki, więc kolejne wznowienie go zastępuje, a nie dokłada."""
     if kind == "close":
         body = close_tests(worktree, policy)
+    elif kind == "conflict":
+        body = conflict_tests(policy, worktree)
     elif kind == "review":
         body = ("Dla recenzenta:\n" + review_tests(policy) + "\n" +
                 ticket_tests(policy.base, worktree, policy, author=False))
@@ -293,16 +295,87 @@ def strip_current_tests(prompt: str) -> str:
     return _CURRENT_TESTS.sub("\n", prompt)
 
 
+CONFLICT_DONE = ("Nie zapisuj wyniku done bez udanego przebiegu tych testów. Poprawki po testach zacommituj na gałęzi "
+                 "karty\n(worktree karty ma zostać czyste); gdy testy padają, a nie umiesz ich bezpiecznie naprawić, "
+                 "zapisz pytanie\nalbo error z opisem niepowodzeń.\n")
+
+
+def conflict_tests(policy: TestPolicy, worktree: str = "") -> str:
+    """Testy po rozwiązaniu konfliktu scalenia (K-69, PT-284) — nowe zachowanie: wcześniej kartka mówiła tylko
+    „uruchom potrzebne testy”. Polecenie z polityki kroku konfliktu (`step_test_policy`), z bazą = przypięty punkt
+    startu scalanego ticketu, więc `test-changed` obejmuje zmiany ticketu i karty od tego punktu. Każdy wariant
+    wymaga przebiegu i zapisu w notce; zasada ogólna nie podaje polecenia, którego projekt nie ma."""
+    head = _notes(policy)
+    if policy.legacy:
+        text = ("Testy po scaleniu: ta gałąź karty nie ma celu `make test-changed`. Po zapisaniu commita scalenia "
+                f"uruchom raz\npełny `{policy.changed}` w worktree karty i zapisz polecenie oraz wynik w notce.\n")
+        required = f"pełny `{policy.changed}`"
+    elif policy.changed:
+        text = (f"Testy po scaleniu: po zapisaniu commita scalenia uruchom w worktree karty `{policy.changed}`\n"
+                "i zapisz polecenie oraz wynik w notce.\n")
+        param = "BASE" if testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET else "Baza w poleceniu"
+        if policy.base_pending:
+            text += (f"`{testpolicy.BASE_PARAM}` to przypięty punkt startu scalanego ticketu na gałęzi karty (nie "
+                     "bieżący wierzchołek karty ani master);\npodstaw jego SHA przed uruchomieniem.\n")
+        elif policy.base:
+            text += (f"{param} to przypięty punkt startu scalanego ticketu na gałęzi karty (z utworzenia jego gałęzi), "
+                     "a nie bieżący\nwierzchołek karty ani master.\n")
+        required = f"`{policy.changed}`"
+    else:
+        text = ("Testy po scaleniu: projekt nie podaje polecenia testów zmian. Po zapisaniu commita scalenia uruchom "
+                "testy\ndobrane do zmian ticketu i karty według zasad projektu (CLAUDE.md/AGENTS.md) i zapisz "
+                "polecenie oraz wynik w notce.\n")
+        required = RULES_SANDBOX
+    return head + text + CONFLICT_DONE + sandbox_tests(required, worktree, policy.changed) + \
+        rerun_failed(worktree, policy.changed)
+
+
+PLAN_TESTS_PREFIX = "Kontrakt testów projektu (informacja dla planu): "
+_PLAN_TESTS = re.compile(r"^" + re.escape(PLAN_TESTS_PREFIX) + r".*\n?", re.MULTILINE)
+PLAN_TESTS_LABELS = {
+    testpolicy.PROFILE: "zatwierdzony kontrakt w profilu projektu",
+    testpolicy.DETECTED: "brak zatwierdzonego kontraktu, polecenia wykryte z Makefile",
+    testpolicy.COMPAT: "brak zatwierdzonego kontraktu",
+}
+
+
+def plan_tests_line(policy: TestPolicy) -> str:
+    """Jedna linia informacyjna dla planowania i review planu (K-69, PT-284): źródło i polecenia efektywnego
+    kontraktu testów, żeby kryteria ticketów odwoływały się do poleceń tego projektu. Nie zmienia formatu planu
+    ani `plan-review.json`. Polityka planowania nie ma bazy: `{base}` zostaje i jest opisane."""
+    unapproved = " Kontrakt zapisany w profilu nie jest zatwierdzony i nie jest stosowany." if policy.unapproved else ""
+    if not policy.changed and not policy.full:
+        return (f"{PLAN_TESTS_PREFIX}projekt nie ma zastosowanego kontraktu testów ani celów make — kartki ticketów odeślą do zasad "
+                "testów projektu (CLAUDE.md/AGENTS.md); w kryteriach nie podawaj poleceń testów innego projektu."
+                f"{unapproved}\n")
+    changed = f"`{policy.changed}`" if policy.changed else "według zasad projektu (CLAUDE.md/AGENTS.md)"
+    if testpolicy.BASE_PARAM in policy.changed:
+        changed += f" (`{testpolicy.BASE_PARAM}` to przypięty punkt startu ticketu — podstawia go Tide w kartce)"
+    full = f"`{policy.full}`" if policy.full else "według zasad projektu (CLAUDE.md/AGENTS.md)"
+    label = PLAN_TESTS_LABELS.get(policy.source, "zasady projektu")
+    return (f"{PLAN_TESTS_PREFIX}{label}; testy ticketu {changed}, pełne testy przy domknięciu karty {full}. "
+            f"Kryteria testów w kartkach mają odwoływać się do tych poleceń, nie do poleceń innego projektu."
+            f"{unapproved}\n")
+
+
+def with_plan_tests(prompt: str, policy: TestPolicy) -> str:
+    """Polecenie planowania z aktualną linią kontraktu: linia z poprzedniej próby (wznowienie) jest zastępowana."""
+    text = _PLAN_TESTS.sub("", prompt)
+    return text + ("" if text.endswith("\n") else "\n") + plan_tests_line(policy)
+
+
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
-                  ticket_branch: str, worktree: str, out_dir: str, error: str) -> str:
+                  ticket_branch: str, worktree: str, out_dir: str, error: str,
+                  policy: TestPolicy | None = None) -> str:
+    policy = _tests_policy(policy, worktree, "")
     return f"""Rozwiąż konflikt scalenia ticketu {ticket} do karty {card_id}.
 Karta: {title}. Opis: {description}
 Pracuj wyłącznie w worktree karty {worktree} na gałęzi {card_branch}.
 Zatwierdzony ticket jest na gałęzi {ticket_branch}; przyczyna: {error}.
-Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty, uruchom potrzebne testy i zapisz commit
-scalenia z dwoma rodzicami. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.
+Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty i zapisz commit scalenia z dwoma rodzicami,
+a potem uruchom testy według zasady niżej. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.
 Jeśli nie możesz bezpiecznie rozstrzygnąć konfliktu, zapisz pytanie do użytkownika zamiast zgadywać.
-Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
+{conflict_tests(policy, worktree)}Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
 {{"result":"done","notes":["{NOTE_FILE}"]}} albo
 {{"result":"question","question":"…"}} albo {{"result":"error","reason":"…"}}.
