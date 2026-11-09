@@ -602,6 +602,8 @@ DELEGATIONS = {
     ("cardflow/boxstep.py", "check_mounts"): "box-lifecycle",
     ("cardflow/boxstep.py", "place"): "box-lifecycle",
     ("cardflow/boxstep.py", "prepare_runner"): "box-lifecycle",
+    # PT-311: odmowa po automatycznej zgodzie outside — część ResolveCardStep (_trial_check przed zapisem).
+    ("cardflow/consent.py", "deny_queued"): "process-check",
     ("cardflow/caretaker.py", "_answer"): "console",
     ("cardflow/caretaker.py", "_change_executor"): "console",
     ("cardflow/caretaker.py", "_resolve_action"): "console",
@@ -689,6 +691,9 @@ RAW_READS = {
     ("cardflow/consent.py", "automatic"):
         "sprawdzenie zgody na polecenie, bez uruchomienia; skutek zawsze przez _start_outside "
         "z _outside_history pod journal.lock (bariera outside)",
+    ("cardflow/consent.py", "denied_before"):
+        "PT-311: odczyt odmów człowieka i unieważnień decyzji outside; wynik tylko odbiera automatyczną "
+        "zgodę (pominięcie albo unieważnienie), nigdy nie uruchamia procesu ani nie zastępuje _outside_history",
     ("cardflow/consent.py", "view"):
         "projekcja zgód ticketu dla fullcard/UI; zwraca dane active/canRevoke bez skutku procesu",
     ("cardflow/engine.py", "FlowEngine._ticket_consent"):

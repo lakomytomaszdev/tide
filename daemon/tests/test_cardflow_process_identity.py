@@ -661,7 +661,7 @@ class ProcessIdentityProperties(unittest.TestCase):
             "main-merge.checkpoint", "main-merge.waiting", "main-merge.resumed", "main-merge.abandoned",
             "author.reassigned", "step.note-added", "stage.retry",
             "flow.error-persisted", "flow.error-cleared",
-            "outside.ticket-consent-revoked", "outside.decision-invalidated",
+            "outside.ticket-consent-revoked", "outside.decision-invalidated", "outside.auto-skipped",
             "caretaker.started", "caretaker.guard", "caretaker.escalated", "caretaker.action",
             "caretaker.decision", "caretaker.reported", "caretaker.chat", "caretaker.chat-action",
             "caretaker.chat-file",

@@ -314,7 +314,9 @@ EVENTS = MappingProxyType({
                              "ticket"),
     "outside.ticket-consent-revoked": _dynamic("cofnięcie zgody outside; nie jest startem procesu"),
     "outside.decision-invalidated": _metadata("unieważnienie decyzji outside; nie jest startem procesu",
-                                              "decisionSeq", "step", "ticket"),
+                                              "decisionSeq", "reason", "step", "ticket"),
+    "outside.auto-skipped": _metadata("pominięta automatyczna zgoda outside (odmowa człowieka, pauza); "
+                                      "nie jest zgodą ani startem procesu", "command", "reason", "step", "ticket"),
     "caretaker.started": _metadata("problem opiekuna; proces opiekuna zapisuje step.started", "decision", "key",
                                    "n", "problem", "root", "step", "target", "ticket", "trigger", "triggers",
                                    "watermark"),
