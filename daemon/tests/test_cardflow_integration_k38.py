@@ -143,9 +143,10 @@ class Bootstrap(RuntimeError):
 EVIDENCE_ENV = "TIDE_F6_EVIDENCE_FILE"
 
 
-def evidence(test, kind, **data):
-    line = json.dumps({"test": test.id().rsplit(".", 2)[-2] + "." + test._testMethodName, "kind": kind,
-                       "time": round(time.time(), 3), **data}, ensure_ascii=False, sort_keys=True)
+def evidence(test, kind, /, **data):
+    """Rekord dowodu; `kind` jest wyłącznie pozycyjny i wygrywa z polami danych (rodzaj kroku: `stepKind`)."""
+    line = json.dumps({**data, "test": test.id().rsplit(".", 2)[-2] + "." + test._testMethodName, "kind": kind,
+                       "time": round(time.time(), 3)}, ensure_ascii=False, sort_keys=True)
     print("F6-EVIDENCE " + line, file=sys.stderr, flush=True)
     if os.environ.get(EVIDENCE_ENV):
         with open(os.environ[EVIDENCE_ENV], "a", encoding="utf-8") as fh:
@@ -482,11 +483,11 @@ class ServiceCase(unittest.TestCase):
         step = wait_until(found, timeout=timeout)
         if step is None:
             detail = self.blockade(card_id)
-            evidence(self, "blocked", card=card_id, kind=kind, ticket=ticket, hostRunnerStart=False, **detail)
+            evidence(self, "blocked", card=card_id, stepKind=kind, ticket=ticket, hostRunnerStart=False, **detail)
             self.fail(f"BLOCKED: brak startu HostRunner ({kind} {ticket or ''}) w {card_id}: "
                       f"{json.dumps(detail, ensure_ascii=False)}")
         box = {k: step[k] for k in BOX_FIELDS if k in step}
-        evidence(self, "host-start", card=card_id, kind=kind, ticket=step.get("ticket"), step=step["step"],
+        evidence(self, "host-start", card=card_id, stepKind=kind, ticket=step.get("ticket"), step=step["step"],
                  runner=step.get("runner", "host"), box=box)
         self.assertEqual(box, {}, f"krok {step['step']} nie biegnie na hoście")
         self.fake_call(step)
@@ -855,6 +856,22 @@ class EvidenceClassificationTest(unittest.TestCase):
                 records.append(record)
         outcomes = {test.rsplit(".", 2)[-2] + "." + test.rsplit(".", 1)[1]: outcome for test in RED_TESTS}
         return {"outcomes": outcomes, "evidence": records}
+
+    def test_evidence_record_keeps_its_kind_next_to_step_fields(self):
+        path = os.path.join(tempfile.mkdtemp(prefix="tide-f6-ev-"), "e.jsonl")
+        self.addCleanup(shutil.rmtree, os.path.dirname(path), ignore_errors=True)
+        old = os.environ.get(EVIDENCE_ENV)
+        os.environ[EVIDENCE_ENV] = path
+        try:
+            evidence(self, "blocked", kind="ticket", stepKind="ticket", hostRunnerStart=False)
+        finally:
+            if old is None:
+                os.environ.pop(EVIDENCE_ENV)
+            else:
+                os.environ[EVIDENCE_ENV] = old
+        with open(path, encoding="utf-8") as fh:
+            record = json.loads(fh.read())
+        self.assertEqual((record["kind"], record["stepKind"]), ("blocked", "ticket"))
 
     def test_unittest_summary_lines(self):
         self.assertEqual(_outcome("...\nFAILED (failures=1)\n"), "FAIL")
