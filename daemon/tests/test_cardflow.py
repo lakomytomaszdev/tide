@@ -21,17 +21,127 @@ from .privatebus import app, wait_until
 from .test_cardflow_dbus import CLAUDE_MD, git, test_root
 
 
-class _TestCardFlowMonitor(CardFlowMonitor):
+class _FlowMonitor(CardFlowMonitor):
+    """Monitor testu w tym samym procesie co ręczne operacje na silniku."""
+
+    def start(self):
+        # Produkcyjny stop kończy usługę. Fixture dopuszcza ponowny start tego
+        # samego monitora po barierze w stop(), także po anulowaniu ticka.
+        self._stopped = False
+        super().start()
+
     def stop(self):
-        # Fixture czeka na oba rodzaje wątków przed restartem, wstrzyknięciem awarii
-        # albo usunięciem repozytorium; produkcyjne stop() pozostaje nieblokujące.
+        # Produkcja kończy cały proces. Test zachowuje proces i zaraz dotyka silnika
+        # albo dziennika, więc musi najpierw dokończyć biegnący tick starego monitora.
         pools = (self._pool, self._hosting_pool)
         super().stop()
         for pool in pools:
             if pool is not None:
                 pool.shutdown(wait=True, cancel_futures=True)
         app().processEvents()
+        # Anulowany tick nie dostaje callbacka `after`; ten sam monitor testu może ruszyć ponownie.
         self._ticking = False
+
+
+class MonitorFixtureTest(unittest.TestCase):
+    def test_worker_barrier_keeps_start_and_environment_actions_available(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        engine.start.return_value = {"ok": True, "ticket": "PT-1"}
+        engine.approve_environment.return_value = {"ok": True, "boxWait": ""}
+        monitor = _FlowMonitor(engine)
+        self.addCleanup(monitor.stop)
+        fixture = FlowInProcess()
+        fixture.flow = monitor
+        entered, release = threading.Event(), threading.Event()
+
+        def tick():
+            entered.set()
+            release.wait(2)
+
+        engine.tick.side_effect = tick
+        monitor.start()
+        self.assertTrue(entered.wait(2))
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        self.addCleanup(release.set)
+        fixture.stop_flow_worker()
+        self.assertTrue(release.is_set(), "bariera czeka na bieżący tick")
+        self.assertFalse(monitor._timer.isActive())
+        self.assertFalse(monitor._ticking)
+
+        replies = []
+        monitor.start_card("K-1", '{"entry":"now"}', replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=2))
+        self.assertTrue(json.loads(replies.pop())["ok"], "bariera nie zamyka API StartCard")
+        monitor.approve_environment("K-1", "tide-box: 1\n", False, replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=2))
+        self.assertTrue(json.loads(replies.pop())["ok"], "bariera nie zamyka API ApproveCardEnvironment")
+        self.assertEqual(engine.tick.call_count, 1, "akcje nie wznawiają odpytywania")
+        monitor.start()
+        self.assertTrue(wait_until(lambda: engine.tick.call_count == 2, timeout=2))
+        monitor.stop()
+        monitor.start_card("K-1", '{"entry":"now"}', replies.append)
+        monitor.approve_environment("K-1", "tide-box: 1\n", False, replies.append)
+        self.assertEqual([json.loads(reply)["error"] for reply in replies], ["unavailable", "unavailable"])
+        self.assertEqual(engine.start.call_count, 1, "zamknięty monitor nadal odrzuca akcje")
+        self.assertEqual(engine.approve_environment.call_count, 1)
+
+    def test_restart_after_cancelling_a_queued_tick_polls_again(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        monitor = _FlowMonitor(engine)
+        entered, release = threading.Event(), threading.Event()
+
+        def busy():
+            entered.set()
+            release.wait(2)
+
+        monitor._submit(busy, lambda future: None)
+        self.addCleanup(monitor.stop)
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        monitor.tick()  # Tick czeka w kolejce i zostanie anulowany przez stop().
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        monitor.stop()
+        monitor.start()
+        self.assertTrue(wait_until(lambda: engine.tick.call_count == 1, timeout=2),
+                        "anulowany tick nie może zatrzymać odpytywania po ponownym starcie monitora testu")
+
+    def test_stop_settles_inflight_tick_before_manual_engine_operations(self):
+        app()
+        engine = mock.Mock()
+        engine.journal.lock = threading.RLock()
+        engine.journal.take_dirty.return_value = []
+        engine.take_notices.return_value = []
+        monitor = _FlowMonitor(engine)
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def tick():
+            entered.set()
+            release.wait(2)
+            finished.set()
+
+        monitor._submit(tick, lambda future: None)
+        pool = monitor._pool
+        self.addCleanup(lambda: app().processEvents())
+        self.addCleanup(lambda: pool.shutdown(wait=True, cancel_futures=True))
+        self.addCleanup(release.set)
+        self.assertTrue(entered.wait(2))
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        self.addCleanup(timer.join)
+        monitor.stop()
+        self.assertTrue(finished.is_set(), "stary tick nie może modyfikować dziennika po zatrzymaniu monitora testu")
 
 
 class FlowInProcess(unittest.TestCase):
@@ -59,6 +169,7 @@ class FlowInProcess(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "HOME": os.path.join(self.base, "home"), "XDG_RUNTIME_DIR": self.runtime,
             "XDG_STATE_HOME": os.path.join(self.base, "state"), "XDG_CONFIG_HOME": os.path.join(self.base, "config"),
+            "TIDE_BOARD_DIR": os.path.join(self.base, "boxboard"),
             "PATH": os.path.dirname(self.fakes["claude"]) + os.pathsep + "/usr/bin:/bin",
             "GIT_CONFIG_GLOBAL": gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "TIDE_FAKE_LOG": os.path.join(self.base, "calls.log")})
         patcher.start()
@@ -78,7 +189,7 @@ class FlowInProcess(unittest.TestCase):
         from tide_daemon.board_monitor import BoardMonitor
         self.store = BoardStore(self.root)
         self.board = BoardMonitor(self.store, debounce_ms=200, poll_ms=60_000)
-        self.addCleanup(self.board.stop)
+        self.addCleanup(self.stop_board)
         self.flow = self.make_flow()
         self.board.start()
         self.assertTrue(json.loads(self.board.upsert_project(json.dumps({"repo": self.repo})))["ok"])
@@ -91,17 +202,52 @@ class FlowInProcess(unittest.TestCase):
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
-        flow = _TestCardFlowMonitor(engine, self.board, poll_ms=150)
+        flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
+        stop = flow.stop
+
+        def stop_and_drain():
+            # Monitor w produkcji zamyka pulę bez czekania. Test musi zakończyć jej pracę przed
+            # odtworzeniem os.environ i usunięciem repozytoriów, bo wątek korzysta z obu tych rzeczy.
+            flow._timer.stop()
+            if flow._pool is not None:
+                flow._pool.shutdown(wait=True, cancel_futures=False)
+            stop()
+            app().processEvents()
+
+        flow.stop = stop_and_drain
         flow.start()
-        self.addCleanup(flow.stop)
+        self.addCleanup(self.stop_flow, flow)
         return flow
+
+    def stop_flow(self, flow=None):
+        """Kończymy także bieżącą pracę przed zmianą środowiska testu lub ręcznym użyciem silnika."""
+        flow = flow or self.flow
+        flow.stop()
+
+    def stop_board(self):
+        self.board.stop()
+        # QObject monitora może pozostać w cyklu Python/Qt. Nie zostawiamy instancji inotify
+        # do końca wielotysięcznego zestawu testów w jednym procesie.
+        from PyQt6.QtCore import QCoreApplication, QEvent
+        watcher = self.board._watcher
+        watcher.deleteLater()
+        QCoreApplication.sendPostedEvents(watcher, QEvent.Type.DeferredDelete)
 
     def restart(self):
         """Nowy silnik i monitor na tej samej tablicy (bez procesów kroków w pamięci) — jak usługa po restarcie."""
-        self.flow.stop()
-        wait_until(lambda: False, timeout=0.3)
+        self.stop_flow()
         self.flow = self.make_flow()
+
+    def stop_flow_worker(self):
+        """Pauza odpytywania i bariera wątku; API monitora nadal przyjmuje akcje testu."""
+        self.flow._timer.stop()
+        if self.flow._pool is not None:
+            self.flow._pool.shutdown(wait=True, cancel_futures=False)
+            self.flow._pool = None
+        # Dostarczamy zakończenia także ticka: kolejne start() ma wznowić odpytywanie.
+        app().processEvents()
+        self.flow._ticking = False
 
     # --- pomocnicze -------------------------------------------------------------------------------
 
@@ -116,6 +262,16 @@ class FlowInProcess(unittest.TestCase):
         self.board.start_card(card_id, json.dumps({"entry": "now", "executor": "Sonnet", **extra}), box.append)
         self.assertTrue(wait_until(lambda: box, timeout=60), "StartCard bez odpowiedzi")
         return json.loads(box[0])
+
+    def approve_environment(self, card_id) -> dict:
+        """Jawna zgoda na minimalne środowisko; budowa jest atrapą, runner hostowy zostaje bez Incusa."""
+        box = []
+        with mock.patch.object(self.flow.engine, "box_launcher", lambda *_args: None):
+            self.flow.approve_environment(card_id, "tide-box: 1\n", False, box.append)
+            self.assertTrue(wait_until(lambda: box, timeout=10), "ApproveCardEnvironment bez odpowiedzi")
+        reply = json.loads(box[0])
+        self.assertTrue(reply["ok"], reply)
+        return reply
 
     def shown(self, card_id) -> dict:
         return next(c for c in json.loads(self.board.snapshot_json())["cards"] if c["id"] == card_id)
@@ -640,7 +796,8 @@ class RestartInProcessTest(FlowInProcess):
         self.flow = self.make_flow()
         self.assertTrue(wait_until(lambda: len(self.of(card_id, "card.moved")) == 1, timeout=10), self.events(card_id))
         self.assertEqual(self.of(card_id, "card.moved")[0]["moveId"], move_id)
-        self.assertEqual(self.shown(card_id)["boardColumn"], "todo")
+        # Tick zapisuje dziennik w workerze, a dopiero callback publikuje migawkę w wątku Qt.
+        self.wait_column(card_id, "todo")
 
     def test_restart_after_store_move_to_backlog_pauses_the_card(self):
         card_id = self.card(description="ATRAPA: czekaj")
@@ -703,6 +860,8 @@ class RestartInProcessTest(FlowInProcess):
         self.restart()
         self.assertTrue(flowfakes.alive(pid), "krok przeżył restart usługi")
         self.wait_column(card_id, "review", timeout=40)
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=5), self.events(card_id))
+        self.flow.stop()  # migawka obejmuje również końcowe powiadomienia biegnącego ticka
         types = [e["type"] for e in self.events(card_id)]
         for kind in ("card.started", "step.started", "step.finished"):
             self.assertEqual(types.count(kind), 1 if kind == "card.started" else 3, types)
@@ -820,6 +979,9 @@ class ManualColumnsInProcessTest(FlowInProcess):
         card_id = self.card()
         first = self.start(card_id)
         self.wait_column(card_id, "review")
+        # Review jest widoczne już po scaleniu ticketu. Ten scenariusz odsyła do poprawy
+        # dopiero domkniętą kartę, więc nie może ścigać się z zapisem card.closed.
+        self.assertTrue(wait_until(lambda: self.of(card_id, "card.closed"), timeout=30))
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])
         self.wait_column(card_id, "todo")
         self.assertTrue(json.loads(self.board.update_card(card_id, json.dumps({"title": "Nowy tytuł"})))["ok"])

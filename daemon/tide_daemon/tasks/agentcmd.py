@@ -145,8 +145,9 @@ def read_only_git_config(git_dir: str, timeout: float = 20.0) -> list[tuple[str,
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C"}
     try:
-        run = subprocess.run(["git", "--git-dir", git_dir, "config", "--name-only", "--get-regexp",
-                              r"^filter\..*\.(clean|smudge|process)$"],
+        from ..gitcommand import git_argv
+        run = subprocess.run(git_argv("--git-dir", git_dir, "config", "--name-only", "--get-regexp",
+                              r"^filter\..*\.(clean|smudge|process)$"),
                              capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise StepError(f"nie da się odczytać sterowników gita kroku ({type(exc).__name__})") from None
@@ -247,10 +248,12 @@ class Step:
     chrome_bin: str = ""           # Chromium Playwrighta tylko do odczytu, jako CHROME_BIN (Karma, 03.11)
     codex_mcp: tuple | None = None  # serwery MCP Codexa do wyłączenia; None — usługa pyta `codex mcp list --json`
     codex_mcp_skip: tuple = ()      # serwery, których wyłączenie przez `-c` psuje konfigurację Codexa (03.11)
+    branch: str = ""               # gałąź przypisana przez silnik; BoxRunner nie ufa HEAD worktree
     # Krok opiekuna karty (PT-143, PT-158): zapis wyłącznie do `<krok>/out`, który jest też katalogiem roboczym
     # programu. Claude: stała lista poleceń tylko do odczytu (`read_only_tools`, zamiast `allowed_tools`) i zakaz
     # edycji worktree i repozytorium; Codex: jedyny zapisywalny `out` i żadnych poleceń (`CODEX_NO_COMMANDS`).
     write_out_only: bool = False
+    exposure_inputs: object = None # hostowy wybór wejść z wersjonowanego manifestu PT-263, nigdy z promptu
 
 
 @dataclass

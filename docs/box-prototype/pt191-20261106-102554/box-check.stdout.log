@@ -1,0 +1,1 @@
+/usr/bin/python3 daemon/tide.py box run "plasma-tide" -- bash scripts/box/check.sh --host-ip 10.20.1.159

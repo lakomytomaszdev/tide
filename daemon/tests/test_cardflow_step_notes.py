@@ -52,7 +52,7 @@ class QueueTest(unittest.TestCase):
         prompt, ids = stepnotes.prepare(self.state(), "s1", "Polecenie")
         self.assertEqual(ids, [first["noteId"], second["noteId"]])
         self.assertLess(prompt.index("Pierwsza"), prompt.index("Druga"))
-        self.journal.append("K-1", "intent", action="step-start", key="s2", parentStep="s1", deliveredNoteIds=ids)
+        self.journal.append("K-1", "intent", action="step-start", key="s2", ticket="PT-1", kind="ticket", parentStep="s1", deliveredNoteIds=ids)
         self.journal.append("K-1", "result", action="step-start", key="s2", ok=False)
         recovered = Journal(self.journal.root, mirror=self.journal.mirror)
         self.assertEqual(stepnotes.prepare(fold(recovered.read("K-1")), "s1", "retry")[1], ids)

@@ -1,0 +1,767 @@
+Moduły: 229, JOBS=14, logi: /home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/build/test-results/run-pqwece88
+[OK] apps/sessions/tests/test_flow_cards.py: 1 testów, 0.13 s
+[OK] apps/models/tests/test_executors_view.py: 7 testów, 3.69 s
+[OK] apps/sessions/tests/test_card_open.py: 8 testów, 8.67 s
+[OK] apps/reports/tests/test_view.py: 17 testów, 12.18 s
+[OK] apps/docker/tests/test_view.py: 14 testów, 12.42 s
+[OK] daemon/tests/test_activity_look.py: 14 testów, 0.34 s
+[OK] apps/board/tests/test_card_open.py: 14 testów, 12.75 s
+[OK] daemon/tests/test_agents_core.py: 40 testów, 0.29 s
+[OK] daemon/tests/test_agents_reply.py: 42 testów, 1.15 s
+[OK] daemon/tests/test_board_chain.py: 18 testów, 0.29 s
+[OK] daemon/tests/test_board_commands.py: 6 testów, 0.10 s
+[OK] apps/newtask/tests/test_new_task.py: 15 testów, 15.19 s
+[OK] daemon/tests/test_board_core.py: 28 testów, 2.92 s
+[OK] apps/board/tests/test_card_environment.py: 10 testów, 17.26 s
+[OK] daemon/tests/test_attention.py: 14 testów, 4.62 s
+[OK] apps/models/tests/test_view.py: 20 testów, 18.93 s
+[OK] apps/worktrees/tests/test_window.py: 12 testów, 10.42 s
+[OK] apps/board/tests/test_card_full_view.py: 12 testów, 19.33 s
+[OK] daemon/tests/test_board_derive.py: 41 testów, 2.44 s
+[OK] daemon/tests/test_board_docs.py: 24 testów, 2.46 s
+[OK] daemon/tests/test_boardplans.py: 9 testów, 0.73 s
+[OK] daemon/tests/test_board_work.py: 17 testów, 2.00 s
+[OK] daemon/tests/test_box_boundary_trial.py: 6 testów, 0.15 s
+[OK] daemon/tests/test_board_robustness.py: 25 testów, 2.95 s
+[OK] apps/sessions/tests/test_window.py: 10 testów, 22.73 s
+[OK] daemon/tests/test_board_launch.py: 17 testów, 3.95 s
+[OK] daemon/tests/test_board_dbus.py: 12 testów, 8.60 s
+[OK] daemon/tests/test_board_entry.py: 24 testów, 6.62 s
+[OK] daemon/tests/test_board_multiproject.py: 35 testów, 6.73 s
+[OK] daemon/tests/test_box_k3.py: 31 testów, 4.50 s
+[OK] daemon/tests/test_box_ports.py: 5 testów, 0.20 s
+[OK] daemon/tests/test_box_port_failures.py: 11 testów, 2.90 s
+[OK] daemon/tests/test_box_profile.py: 64 testów, 0.23 s
+[OK] daemon/tests/test_box_proxy.py: 50 testów, 0.56 s
+[OK] daemon/tests/test_box_sessions_preparation.py: 11 testów, 0.38 s
+[OK] daemon/tests/test_box_docker.py: 4 testów, 9.10 s
+[OK] daemon/tests/test_agentcmd.py: 68 testów, 20.08 s
+[OK] apps/board/tests/test_card_settings.py: 15 testów, 34.64 s
+[OK] daemon/tests/test_box_base.py: 40 testów, 16.56 s
+[OK] daemon/tests/test_cardflow_chain_permission.py: 16 testów, 6.15 s
+[OK] daemon/tests/test_box_stacks.py: 53 testów, 11.40 s
+[OK] daemon/tests/test_cardflow_decisions.py: 39 testów, 0.33 s
+[OK] apps/tide/tests/test_window.py: 28 testów, 39.30 s
+[OK] daemon/tests/test_cardflow_decisions_dbus.py: 1 testów, 1.75 s
+[OK] daemon/tests/test_cardflow_desk.py: 8 testów, 0.11 s
+[OK] daemon/tests/test_cardflow_enter_dbus.py: 1 testów, 1.67 s
+[OK] daemon/tests/test_cardflow_decisions_flow.py: 5 testów, 2.22 s
+[OK] daemon/tests/test_box_home.py: 14 testów, 22.40 s
+[OK] apps/board/tests/test_decision_dialog.py: 22 testów, 45.64 s
+[OK] daemon/tests/test_cardflow_execution.py: 4 testów, 0.24 s
+[OK] daemon/tests/test_cardflow_enter_unit.py: 25 testów, 1.58 s
+[OK] daemon/tests/test_cardflow_environment_dbus.py: 4 testów, 4.23 s
+[OK] daemon/tests/test_cardflow_faults.py: 13 testów, 0.12 s
+[OK] daemon/tests/test_cardflow_fault_report.py: 6 testów, 3.85 s
+[OK] daemon/tests/test_cardflow_fullcard.py: 18 testów, 0.15 s
+[OK] daemon/tests/test_cardflow_environment.py: 27 testów, 6.41 s
+[OK] daemon/tests/test_cardflow_history.py: 15 testów, 0.14 s
+[OK] daemon/tests/test_cardflow_gitops.py: 13 testów, 2.54 s
+[OK] daemon/tests/test_cardflow_labels.py: 5 testów, 0.12 s
+[OK] daemon/tests/test_cardflow_full_planning.py: 12 testów, 8.08 s
+[OK] daemon/tests/test_cardflow_limit_stop.py: 33 testów, 0.33 s
+[OK] daemon/tests/test_box_command.py: 13 testów, 38.66 s
+[OK] daemon/tests/test_cardflow_box_ports.py: 7 testów, 28.70 s
+[OK] daemon/tests/test_cardflow_overview.py: 14 testów, 0.52 s
+[OK] daemon/tests/test_cardflow_import_plan.py: 8 testów, 14.27 s
+[OK] daemon/tests/test_cardflow_plans.py: 13 testów, 0.34 s
+[OK] daemon/tests/test_box_runner.py: 56 testów, 38.15 s
+[OK] daemon/tests/test_cardflow_light_planning.py: 12 testów, 15.61 s
+[OK] apps/board/tests/test_youtrack_view.py: 8 testów, 69.10 s
+[OK] daemon/tests/test_cardflow_plan_integration.py: 9 testów, 11.77 s
+[OK] daemon/tests/test_cardflow_review_findings.py: 18 testów, 6.80 s
+[OK] daemon/tests/test_codex_desktop.py: 34 testów, 0.43 s
+[OK] daemon/tests/test_codex_homes.py: 30 testów, 1.50 s
+[OK] daemon/tests/test_coordination_core.py: 41 testów, 4.21 s
+[OK] daemon/tests/test_cardflow_dbus.py: 15 testów, 44.08 s
+[OK] daemon/tests/test_box_lifecycle.py: 17 testów, 62.02 s
+[OK] daemon/tests/test_coordination_describe.py: 26 testów, 1.29 s
+[OK] daemon/tests/test_coordination_integration.py: 7 testów, 0.41 s
+[OK] daemon/tests/test_cwdstate.py: 5 testów, 0.13 s
+[OK] daemon/tests/test_cardflow_review.py: 14 testów, 20.42 s
+[OK] daemon/tests/test_dbus_contract.py: 5 testów, 2.34 s
+[OK] daemon/tests/test_coordination_dbus.py: 4 testów, 10.67 s
+[OK] daemon/tests/test_coordination_numbering.py: 27 testów, 4.78 s
+[OK] daemon/tests/test_flowfakes.py: 1 testów, 0.23 s
+[OK] daemon/tests/test_flowfakes_publication.py: 1 testów, 0.16 s
+[OK] daemon/tests/test_cardflow_plan_review_editing.py: 16 testów, 30.79 s
+[OK] daemon/tests/test_install.py: 2 testów, 1.12 s
+[OK] daemon/tests/test_docker_dbus.py: 11 testów, 4.51 s
+[OK] daemon/tests/test_cardflow_limits.py: 45 testów, 35.67 s
+[OK] daemon/tests/test_krunner_core.py: 24 testów, 0.41 s
+[OK] daemon/tests/test_krunner_index.py: 15 testów, 0.21 s
+[OK] daemon/tests/test_docker_core.py: 59 testów, 7.22 s
+[OK] daemon/tests/test_krunner_install.py: 5 testów, 1.16 s
+[OK] daemon/tests/test_krunner_semantic.py: 33 testów, 2.12 s
+[OK] daemon/tests/test_limits_core.py: 35 testów, 2.13 s
+[OK] daemon/tests/test_krunner_dbus.py: 9 testów, 2.94 s
+[OK] daemon/tests/test_models_cloud.py: 9 testów, 0.60 s
+[OK] daemon/tests/test_models_executors.py: 37 testów, 0.34 s
+[OK] daemon/tests/test_idle.py: 23 testów, 7.38 s
+[OK] daemon/tests/test_models_core.py: 46 testów, 2.77 s
+[OK] daemon/tests/test_models_settings.py: 30 testów, 1.64 s
+[OK] daemon/tests/test_limits_dbus.py: 3 testów, 7.70 s
+[OK] daemon/tests/test_notification_release.py: 1 testów, 0.20 s
+[OK] daemon/tests/test_box_builder.py: 45 testów, 81.25 s
+[OK] daemon/tests/test_planning_environment.py: 23 testów, 0.35 s
+[OK] daemon/tests/test_report_data.py: 13 testów, 0.73 s
+[OK] daemon/tests/test_monitors.py: 25 testów, 5.68 s
+[OK] daemon/tests/test_cardflow_youtrack.py: 14 testów, 34.71 s
+[OK] daemon/tests/test_report_living.py: 40 testów, 1.29 s
+[OK] daemon/tests/test_report_read.py: 11 testów, 0.32 s
+[OK] daemon/tests/test_models_queue.py: 24 testów, 10.74 s
+[OK] daemon/tests/test_report_readability.py: 22 testów, 0.38 s
+[OK] daemon/tests/test_report_schedule.py: 26 testów, 0.30 s
+[OK] daemon/tests/test_report_generate.py: 31 testów, 3.71 s
+[OK] daemon/tests/test_models_monitor.py: 15 testów, 13.18 s
+[OK] daemon/tests/test_runner_host.py: 2 testów, 0.29 s
+[OK] daemon/tests/test_stack.py: 22 testów, 0.27 s
+[OK] daemon/tests/test_docker_monitor.py: 18 testów, 20.44 s
+[OK] daemon/tests/test_models_dbus.py: 9 testów, 15.49 s
+[OK] daemon/tests/test_refs_guard.py: 38 testów, 9.11 s
+[OK] daemon/tests/test_stream_shortcuts.py: 28 testów, 1.56 s
+[OK] daemon/tests/test_tabmarks.py: 22 testów, 0.85 s
+[OK] daemon/tests/test_tasks_core.py: 26 testów, 2.21 s
+[OK] daemon/tests/test_tasks_local.py: 31 testów, 1.93 s
+[OK] daemon/tests/test_test_artifacts.py: 13 testów, 0.60 s
+[OK] daemon/tests/test_windows.py: 33 testów, 1.20 s
+[OK] daemon/tests/test_report_dbus.py: 5 testów, 12.00 s
+[OK] daemon/tests/test_tasks_dbus.py: 5 testów, 3.95 s
+[OK] daemon/tests/test_worktrees_sessions.py: 15 testów, 0.70 s
+[OK] daemon/tests/test_worktrees_dbus.py: 11 testów, 3.15 s
+[OK] daemon/tests/test_youtrack_ops.py: 25 testów, 3.84 s
+[OK] kwin/tests/test_agent_jump.py: 6 testów, 1.82 s
+[OK] daemon/tests/test_cardflow_step_decisions.py: 39 testów, 53.74 s
+[OK] kwin/tests/test_new_task_shortcut.py: 4 testów, 1.62 s
+[OK] daemon/tests/test_youtrack_sync.py: 28 testów, 6.58 s
+[OK] daemon/tests/test_report_standup.py: 61 testów, 16.03 s
+[OK] daemon/tests/test_youtrack_board.py: 7 testów, 10.85 s
+[OK] daemon/tests/test_runner_engine.py: 4 testów, 17.58 s
+[OK] daemon/tests/test_stream_mode.py: 11 testów, 17.25 s
+[OK] scripts/tests/test_appearance.py: 9 testów, 5.57 s
+[OK] scripts/tests/test_claude_statusline.py: 7 testów, 1.99 s
+[OK] daemon/tests/test_stepstop_box.py: 2 testów, 19.59 s
+[OK] scripts/tests/test_decoration.py: 4 testów, 1.44 s
+[OK] scripts/tests/test_box_check.py: 8 testów, 5.90 s
+[OK] scripts/tests/test_konsole.py: 6 testów, 2.81 s
+[OK] scripts/tests/test_icons.py: 8 testów, 6.20 s
+[OK] scripts/tests/test_box_install.py: 29 testów, 11.10 s
+[OK] scripts/tests/test_panels.py: 7 testów, 7.86 s
+[OK] scripts/tests/test_plymouth_system.py: 13 testów, 2.85 s
+[OK] scripts/tests/test_plasma_style.py: 10 testów, 4.97 s
+[OK] scripts/tests/test_box_prototype_proxy.py: 21 testów, 14.40 s
+[OK] scripts/tests/test_activity_look.py: 36 testów, 19.56 s
+[BŁĄD] daemon/tests/test_cardflow.py: 34 testów, 110.70 s
+.tide-daemon: przepływ karty K-1: krok K-1-PT-1-1 bez postępu od 3 s — zatrzymuję
+tide-daemon: przepływ karty K-1: krok K-1-PT-1-2 bez postępu od 3 s — zatrzymuję
+.tide-daemon: przepływ karty K-1: krok K-1-PT-1-1 bez postępu od 3 s — zatrzymuję
+tide-daemon: przepływ karty K-1: krok K-1-PT-1-2 bez postępu od 3 s — zatrzymuję
+.tide-daemon: przepływ karty K-1: krok K-1-PT-1-1 bez postępu od 3 s — zatrzymuję
+tide-daemon: przepływ karty K-1: krok K-1-PT-1-2 bez postępu od 3 s — zatrzymuję
+.tide-daemon: przepływ karty: K-1: dziennik karty w repozytorium tablicy był cofnięty albo zmieniony z zewnątrz — odtworzony z kopii usługi
+......F.......................
+======================================================================
+FAIL: test_started_from_backlog_reaches_review_and_back_to_todo_is_rework (daemon.tests.test_cardflow.ManualColumnsInProcessTest.test_started_from_backlog_reaches_review_and_back_to_todo_is_rework)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/daemon/tests/test_cardflow.py", line 780, in test_started_from_backlog_reaches_review_and_back_to_todo_is_rework
+    card = self.wait_column(card_id, "todo")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/daemon/tests/test_cardflow.py", line 220, in wait_column
+    self.assertTrue(found, f"{card_id} w {card['boardColumn']}, a nie {column}: {card.get('derived')}\n"
+AssertionError: False is not true : K-1 w review, a nie todo: {'column': 'review', 'done': 1, 'total': 1, 'tool': 'claude', 'note': '✓ PT-1 na gałęzi karty — do sprawdzenia', 'nextStep': '', 'check': 'auto', 'branch': 'card/k-1-eksport-csv', 'session': '', 'coordinator': '', 'link': 'flow', 'agentState': '', 'tickets': [], 'question': '', 'flow': {'ticket': 'PT-1', 'step': 'K-1--1', 'executor': 'Sonnet', 'entry': 'now', 'result': 'done', 'reason': '', 'cardBranch': 'card/k-1-eksport-csv', 'branch': 'ticket/pt-1-eksport-csv', 'provider': 'anthropic', 'stepKind': 'close', 'decisions': [], 'paused': False, 'timeline': [{'seq': 1, 'ts': '2026-11-06T06:14:56+01:00', 'type': 'card.started', 'executor': 'Sonnet'}, {'seq': 10, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'step.started', 'step': 'K-1-PT-1-1', 'ticket': 'PT-1', 'executor': 'Sonnet', 'kind': 'ticket'}, {'seq': 12, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'step.finished', 'step': 'K-1-PT-1-1', 'ticket': 'PT-1', 'result': 'done', 'reason': ''}, {'seq': 15, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'step.started', 'step': 'K-1-PT-1-2', 'ticket': 'PT-1', 'executor': 'Opus', 'kind': 'review'}, {'seq': 16, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'step.finished', 'step': 'K-1-PT-1-2', 'ticket': 'PT-1', 'result': 'done', 'reason': ''}, {'seq': 17, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'review.verdict', 'step': 'K-1-PT-1-2', 'ticket': 'PT-1', 'verdict': 'APPROVE'}, {'seq': 19, 'ts': '2026-11-06T06:14:57+01:00', 'type': 'result', 'action': 'merge', 'key': 'PT-1', 'ok': True}, {'seq': 24, 'ts': '2026-11-06T06:14:58+01:00', 'type': 'step.started', 'step': 'K-1--1', 'ticket': '', 'executor': 'Sonnet', 'kind': 'close'}, {'seq': 26, 'ts': '2026-11-06T06:14:58+01:00', 'type': 'step.finished', 'step': 'K-1--1', 'ticket': '', 'result': 'done', 'reason': ''}], 'stalledSince': '', 'closed': True, 'summary': '# Podsumowanie karty\n\nTickety zakończone.\n', 'mainMerged': False, 'waiting': [], 'trackerQueue': [], 'steps': [{'id': 'K-1-PT-1-1', 'ticket': 'PT-1', 'mode': 'background', 'result': 'done', 'reason': '', 'startedTs': 1793942097.0, 'lastActivityTs': 1793942097.0, 'kind': 'ticket', 'executor': 'Sonnet', 'provider': 'anthropic', 'canTransfer': False, 'canEnter': True}, {'id': 'K-1-PT-1-2', 'ticket': 'PT-1', 'mode': 'background', 'result': 'done', 'reason': '', 'startedTs': 1793942097.0, 'lastActivityTs': 1793942097.0, 'kind': 'review', 'executor': 'Opus', 'provider': 'anthropic', 'canTransfer': False, 'canEnter': True}, {'id': 'K-1--1', 'ticket': '', 'mode': 'background', 'result': 'done', 'reason': '', 'startedTs': 1793942098.0, 'lastActivityTs': 1793942098.0, 'kind': 'close', 'executor': 'Sonnet', 'provider': 'anthropic', 'canTransfer': False, 'canEnter': True}], 'running': [], 'history': [{'id': 'card.started#1', 'ts': 1793942096.0, 'kind': 'card', 'kindLabel': 'karta', 'text': 'Zlecenie: karta wystartowała (Sonnet)', 'actor': 'user', 'old': False, 'step': '', 'ticket': '', 'result': '', 'attempts': [], 'canResume': False}, {'id': 'K-1-PT-1-1', 'ts': 1793942097.0, 'kind': 'step', 'kindLabel': 'krok', 'text': 'PT-1: Sonnet — gotowe', 'actor': 'Sonnet', 'old': False, 'step': 'K-1-PT-1-1', 'ticket': 'PT-1', 'result': 'done', 'attempts': [{'step': 'K-1-PT-1-1', 'attempt': 0, 'ts': 1793942097.0, 'executor': 'Sonnet', 'result': 'done', 'resultLabel': 'gotowe'}], 'canResume': False}, {'id': 'K-1-PT-1-2', 'ts': 1793942097.0, 'kind': 'review', 'kindLabel': 'review', 'text': 'review PT-1: Opus — gotowe', 'actor': 'Opus', 'old': False, 'step': 'K-1-PT-1-2', 'ticket': 'PT-1', 'result': 'done', 'attempts': [{'step': 'K-1-PT-1-2', 'attempt': 0, 'ts': 1793942097.0, 'executor': 'Opus', 'result': 'done', 'resultLabel': 'gotowe'}], 'canResume': False}, {'id': 'review.verdict#17', 'ts': 1793942097.0, 'kind': 'review', 'kindLabel': 'review', 'text': 'Review PT-1: zatwierdza', 'actor': 'Opus', 'old': False, 'step': 'K-1-PT-1-2', 'ticket': 'PT-1', 'result': '', 'attempts': [], 'canResume': False}, {'id': 'result#19', 'ts': 1793942097.0, 'kind': 'merge', 'kindLabel': 'scalanie', 'text': 'Ticket PT-1 scalony do gałęzi karty', 'actor': 'tide', 'old': False, 'step': '', 'ticket': '', 'result': '', 'attempts': [], 'canResume': False}, {'id': 'K-1--1', 'ts': 1793942098.0, 'kind': 'step', 'kindLabel': 'krok', 'text': 'domknięcie: Sonnet — gotowe', 'actor': 'Sonnet', 'old': False, 'step': 'K-1--1', 'ticket': '', 'result': 'done', 'attempts': [{'step': 'K-1--1', 'attempt': 0, 'ts': 1793942098.0, 'executor': 'Sonnet', 'result': 'done', 'resultLabel': 'gotowe'}], 'canResume': False}, {'id': 'card.closed#27', 'ts': 1793942098.0, 'kind': 'card', 'kindLabel': 'karta', 'text': 'Praca domknięta na gałęzi karty', 'actor': 'tide', 'old': False, 'step': 'K-1--1', 'ticket': '', 'result': '', 'attempts': [], 'canResume': False}], 'finish': {'steps': 0, 'tickets': 0}, 'stoppedByLimit': [], 'otherProviders': [], 'limitTransfer': None, 'headline': 'Praca jest na gałęzi karty i czeka, aż ją sprawdzisz i scalisz do master.', 'boxWait': '', 'boxWaitLabel': ''}, 'phases': [{'id': 'order', 'label': 'Zlecenie', 'state': 'done', 'executor': 'user', 'ts': '2026-11-06T06:14:56+01:00', 'note': ''}, {'id': 'planning', 'label': 'Planowanie', 'state': 'skipped', 'executor': '', 'ts': '', 'note': ''}, {'id': 'plan-review', 'label': 'Review planu', 'state': 'skipped', 'executor': '', 'ts': '', 'note': ''}, {'id': 'plan-approval', 'label': 'Zatwierdzenie planu', 'state': 'skipped', 'executor': '', 'ts': '', 'note': ''}, {'id': 'tickets', 'label': 'Tickety', 'state': 'done', 'executor': 'Sonnet', 'ts': '2026-11-06T06:14:57+01:00', 'note': ''}, {'id': 'closing', 'label': 'Domknięcie', 'state': 'done', 'executor': 'Sonnet', 'ts': '2026-11-06T06:14:58+01:00', 'note': ''}, {'id': 'main-merge', 'label': 'Scalenie do master', 'state': 'you', 'executor': 'user', 'ts': '', 'note': ''}]}
+[
+ {
+  "v": 1,
+  "seq": 1,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "card.started",
+  "entry": "now",
+  "executor": "Sonnet",
+  "program": "claude",
+  "model": "sonnet",
+  "provider": "anthropic",
+  "executorRouteUrl": "",
+  "executorRouteKind": "",
+  "executorRouteTokenFile": "",
+  "executorEffort": "",
+  "reviewer": "Opus",
+  "reviewerProgram": "claude",
+  "reviewerModel": "opus",
+  "reviewerProvider": "anthropic",
+  "reviewerRouteUrl": "",
+  "reviewerRouteKind": "",
+  "reviewerRouteTokenFile": "",
+  "reviewerEffort": "",
+  "preferredProvider": "anthropic",
+  "check": "auto",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj",
+  "project": "proj",
+  "column": "backlog",
+  "moveId": "",
+  "request": {
+   "entry": "now",
+   "executor": "Sonnet"
+  },
+  "trackerProject": "",
+  "trackerUrl": "",
+  "images": []
+ },
+ {
+  "v": 1,
+  "seq": 2,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "reserve",
+  "key": "launch-1",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj",
+  "title": "Eksport CSV"
+ },
+ {
+  "v": 1,
+  "seq": 3,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "reserve",
+  "key": "launch-1",
+  "ok": true,
+  "ticket": "PT-1",
+  "title": "Eksport CSV"
+ },
+ {
+  "v": 1,
+  "seq": 4,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "card-branch",
+  "key": "card/k-1-eksport-csv",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj",
+  "branch": "card/k-1-eksport-csv",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv",
+  "base": "master"
+ },
+ {
+  "v": 1,
+  "seq": 5,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "card-branch",
+  "key": "card/k-1-eksport-csv",
+  "ok": true,
+  "branch": "card/k-1-eksport-csv",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv",
+  "base": "699c299a1a5d28ad57afb9cf7956181afbcf7c13",
+  "existing": false
+ },
+ {
+  "v": 1,
+  "seq": 6,
+  "ts": "2026-11-06T06:14:56+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "ticket-branch",
+  "key": "PT-1",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj",
+  "branch": "ticket/pt-1-eksport-csv",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "base": "refs/heads/card/k-1-eksport-csv",
+  "ticket": "PT-1"
+ },
+ {
+  "v": 1,
+  "seq": 7,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "ticket-branch",
+  "key": "PT-1",
+  "ok": true,
+  "branch": "ticket/pt-1-eksport-csv",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "base": "699c299a1a5d28ad57afb9cf7956181afbcf7c13",
+  "existing": false,
+  "ticket": "PT-1"
+ },
+ {
+  "v": 1,
+  "seq": 8,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "step-start",
+  "key": "K-1-PT-1-1",
+  "unit": "tide-step-K-1-PT-1-1",
+  "session": "01a9fcd2-0706-4033-a33b-5c0cd118e384",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv.step",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "kind": "ticket",
+  "ticket": "PT-1",
+  "round": 0,
+  "executor": "Sonnet",
+  "program": "claude",
+  "model": "sonnet",
+  "provider": "anthropic",
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "local": false,
+  "branch": "ticket/pt-1-eksport-csv",
+  "reviewTip": "",
+  "parentStep": "",
+  "attempt": 0
+ },
+ {
+  "v": 1,
+  "seq": 9,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "step-start",
+  "key": "K-1-PT-1-1",
+  "ok": true,
+  "unit": "tide-step-K-1-PT-1-1",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/pt-1-eksport-csv"
+ },
+ {
+  "v": 1,
+  "seq": 10,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "step.started",
+  "step": "K-1-PT-1-1",
+  "kind": "ticket",
+  "ticket": "PT-1",
+  "round": 0,
+  "executor": "Sonnet",
+  "program": "claude",
+  "model": "sonnet",
+  "provider": "anthropic",
+  "local": false,
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "reviewTip": "",
+  "parentStep": "",
+  "attempt": 0,
+  "unit": "tide-step-K-1-PT-1-1",
+  "session": "01a9fcd2-0706-4033-a33b-5c0cd118e384",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "branch": "ticket/pt-1-eksport-csv",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv.step",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/pt-1-eksport-csv",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj"
+ },
+ {
+  "v": 1,
+  "seq": 11,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "card.moved",
+  "to": "todo",
+  "moveId": "2d7d0731d469cf4de7b3cae105973a18",
+  "from": "backlog"
+ },
+ {
+  "v": 1,
+  "seq": 12,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "step.finished",
+  "step": "K-1-PT-1-1",
+  "ticket": "PT-1",
+  "result": "done",
+  "reason": "",
+  "question": "",
+  "command": "",
+  "options": [],
+  "canAllow": true,
+  "stalledSince": "",
+  "notes": [
+   "note.md"
+  ],
+  "kept": [
+   "note.md",
+   "result.json"
+  ],
+  "exit": 0,
+  "snapshotDir": ""
+ },
+ {
+  "v": 1,
+  "seq": 13,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "step-start",
+  "key": "K-1-PT-1-2",
+  "unit": "tide-step-K-1-PT-1-2",
+  "session": "c59ef4e6-f50a-4b4e-8192-cd8a725fe302",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv.review-1.step",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "kind": "review",
+  "ticket": "PT-1",
+  "round": 1,
+  "executor": "Opus",
+  "program": "claude",
+  "model": "opus",
+  "provider": "anthropic",
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "local": false,
+  "branch": "ticket/pt-1-eksport-csv",
+  "reviewTip": "42f6fc939c5070cb585f77ba51202e71f234d989",
+  "parentStep": "",
+  "attempt": 0
+ },
+ {
+  "v": 1,
+  "seq": 14,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "step-start",
+  "key": "K-1-PT-1-2",
+  "ok": true,
+  "unit": "tide-step-K-1-PT-1-2",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/pt-1-eksport-csv"
+ },
+ {
+  "v": 1,
+  "seq": 15,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "step.started",
+  "step": "K-1-PT-1-2",
+  "kind": "review",
+  "ticket": "PT-1",
+  "round": 1,
+  "executor": "Opus",
+  "program": "claude",
+  "model": "opus",
+  "provider": "anthropic",
+  "local": false,
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "reviewTip": "42f6fc939c5070cb585f77ba51202e71f234d989",
+  "parentStep": "",
+  "attempt": 0,
+  "unit": "tide-step-K-1-PT-1-2",
+  "session": "c59ef4e6-f50a-4b4e-8192-cd8a725fe302",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv",
+  "branch": "ticket/pt-1-eksport-csv",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv.review-1.step",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/pt-1-eksport-csv",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj"
+ },
+ {
+  "v": 1,
+  "seq": 16,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "step.finished",
+  "step": "K-1-PT-1-2",
+  "ticket": "PT-1",
+  "result": "done",
+  "reason": "",
+  "question": "",
+  "command": "",
+  "options": [],
+  "canAllow": true,
+  "stalledSince": "",
+  "notes": [
+   "review.md"
+  ],
+  "kept": [
+   "result.json",
+   "review.md"
+  ],
+  "exit": 0,
+  "snapshotDir": ""
+ },
+ {
+  "v": 1,
+  "seq": 17,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "review.verdict",
+  "step": "K-1-PT-1-2",
+  "ticket": "PT-1",
+  "round": 1,
+  "reviewer": "Opus",
+  "verdict": "APPROVE",
+  "blockers": 0,
+  "majors": 0,
+  "nits": 0
+ },
+ {
+  "v": 1,
+  "seq": 18,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "merge",
+  "key": "PT-1",
+  "branch": "ticket/pt-1-eksport-csv",
+  "into": "card/k-1-eksport-csv",
+  "expectedTip": "42f6fc939c5070cb585f77ba51202e71f234d989",
+  "cardTip": "699c299a1a5d28ad57afb9cf7956181afbcf7c13"
+ },
+ {
+  "v": 1,
+  "seq": 19,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "merge",
+  "key": "PT-1",
+  "ok": true,
+  "commit": "cdc41a4a9ae70a1c507cf63c7ccf775538a10304",
+  "already": false
+ },
+ {
+  "v": 1,
+  "seq": 20,
+  "ts": "2026-11-06T06:14:57+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "cleanup",
+  "key": "PT-1",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj",
+  "branch": "ticket/pt-1-eksport-csv",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/pt-1-eksport-csv"
+ },
+ {
+  "v": 1,
+  "seq": 21,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "cleanup",
+  "key": "PT-1",
+  "ok": true,
+  "removed": true,
+  "already": false
+ },
+ {
+  "v": 1,
+  "seq": 22,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "intent",
+  "action": "step-start",
+  "key": "K-1--1",
+  "unit": "tide-step-K-1--1",
+  "session": "81317f7a-1a21-48ac-9b89-dce0eac93633",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv.close-K-1--1.step",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv",
+  "kind": "close",
+  "ticket": "",
+  "round": 0,
+  "executor": "Sonnet",
+  "program": "claude",
+  "model": "sonnet",
+  "provider": "anthropic",
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "local": false,
+  "branch": "card/k-1-eksport-csv",
+  "reviewTip": "",
+  "parentStep": "",
+  "attempt": 0
+ },
+ {
+  "v": 1,
+  "seq": 23,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "result",
+  "action": "step-start",
+  "key": "K-1--1",
+  "ok": true,
+  "unit": "tide-step-K-1--1",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/k-1-eksport-csv"
+ },
+ {
+  "v": 1,
+  "seq": 24,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "step.started",
+  "step": "K-1--1",
+  "kind": "close",
+  "ticket": "",
+  "round": 0,
+  "executor": "Sonnet",
+  "program": "claude",
+  "model": "sonnet",
+  "provider": "anthropic",
+  "local": false,
+  "effort": "",
+  "routeUrl": "",
+  "routeKind": "",
+  "routeTokenFile": "",
+  "reviewTip": "",
+  "parentStep": "",
+  "attempt": 0,
+  "unit": "tide-step-K-1--1",
+  "session": "81317f7a-1a21-48ac-9b89-dce0eac93633",
+  "worktree": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv",
+  "branch": "card/k-1-eksport-csv",
+  "stepDir": "/tmp/tide-flow-0n169hxk/ws/proj-worktrees/k-1-eksport-csv.close-K-1--1.step",
+  "gitDir": "/tmp/tide-flow-0n169hxk/ws/proj/.git/worktrees/k-1-eksport-csv",
+  "repo": "/tmp/tide-flow-0n169hxk/ws/proj"
+ },
+ {
+  "v": 1,
+  "seq": 25,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "card.moved",
+  "to": "todo",
+  "moveId": "ff9001642edb2c0d1a72bc98aaca1b4c",
+  "from": "review"
+ },
+ {
+  "v": 1,
+  "seq": 26,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "step.finished",
+  "step": "K-1--1",
+  "ticket": "",
+  "result": "done",
+  "reason": "",
+  "question": "",
+  "command": "",
+  "options": [],
+  "canAllow": true,
+  "stalledSince": "",
+  "notes": [
+   "summary.md"
+  ],
+  "kept": [
+   "result.json",
+   "summary.md"
+  ],
+  "exit": 0,
+  "snapshotDir": ""
+ },
+ {
+  "v": 1,
+  "seq": 27,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "card.closed",
+  "step": "K-1--1",
+  "summary": "# Podsumowanie karty\n\nTickety zakończone.\n",
+  "check": "auto"
+ },
+ {
+  "v": 1,
+  "seq": 28,
+  "ts": "2026-11-06T06:14:58+01:00",
+  "card": "K-1",
+  "type": "flow.notice",
+  "key": "review:27",
+  "result": "review"
+ }
+]
+
+----------------------------------------------------------------------
+Ran 34 tests in 109.900s
+
+FAILED (failures=1)
+
+[OK] scripts/tests/test_sandbox_apparmor.py: 19 testów, 4.45 s
+[OK] daemon/tests/test_worktrees_core.py: 70 testów, 29.82 s
+[OK] scripts/tests/test_terminal.py: 8 testów, 1.39 s
+[OK] scripts/tests/test_panels_js.py: 34 testów, 12.87 s
+[OK] scripts/tests/test_sddm_system.py: 10 testów, 6.10 s
+[OK] theme/colors/tests/test_generate.py: 4 testów, 0.13 s
+[OK] theme/colors/tests/test_streamer.py: 2 testów, 0.22 s
+[OK] theme/decoration/tests/test_generate.py: 15 testów, 0.17 s
+[OK] scripts/tests/test_stream_activity.py: 8 testów, 4.30 s
+[OK] scripts/tests/test_vivaldi.py: 5 testów, 1.26 s
+[OK] theme/konsole/tests/test_generate.py: 14 testów, 0.17 s
+[OK] scripts/tests/test_test_runner.py: 12 testów, 2.24 s
+[OK] theme/lockscreen/tests/test_streamer.py: 3 testów, 4.10 s
+[OK] scripts/tests/test_sidebar.py: 12 testów, 12.22 s
+[OK] theme/logo/tests/test_generate.py: 5 testów, 0.13 s
+[OK] theme/icons/tests/test_tide_icons.py: 17 testów, 7.81 s
+[OK] daemon/tests/test_cardflow_waves.py: 12 testów, 86.82 s
+[OK] theme/palette/tests/test_palette.py: 9 testów, 0.13 s
+[OK] theme/palette/tests/test_variants.py: 16 testów, 0.16 s
+[OK] theme/plasma/tests/test_generate.py: 15 testów, 0.30 s
+[OK] theme/palette/tests/test_mist_unchanged.py: 2 testów, 2.61 s
+[OK] theme/plasma/tests/test_streamer.py: 2 testów, 0.38 s
+[OK] theme/plasma/tests/test_ksvg.py: 7 testów, 0.81 s
+[OK] theme/lockscreen/tests/test_cat_backdrop.py: 18 testów, 11.65 s
+[OK] theme/lookandfeel/tests/test_generate.py: 13 testów, 4.98 s
+[OK] theme/plymouth/tests/test_build.py: 11 testów, 2.30 s
+[OK] theme/icons/tests/test_glyphs.py: 27 testów, 13.15 s
+[OK] theme/sddm/tests/test_check.py: 5 testów, 0.31 s
+[OK] theme/terminal/tests/test_generate.py: 8 testów, 0.14 s
+[OK] daemon/tests/test_cardflow_close.py: 32 testów, 122.81 s
+[OK] theme/terminal/tests/test_prompt.py: 16 testów, 1.30 s
+[OK] theme/vivaldi/tests/test_generate.py: 12 testów, 0.12 s
+[OK] theme/terminal/tests/test_statusline.py: 17 testów, 1.75 s
+[OK] theme/plymouth/tests/test_harness.py: 23 testów, 3.64 s
+[OK] theme/lockscreen/tests/test_lockscreen.py: 8 testów, 14.54 s
+[OK] theme/sddm/tests/test_build.py: 13 testów, 7.67 s
+[OK] scripts/tests/test_stream_panels.py: 26 testów, 25.31 s
+[OK] theme/wallpaper/tests/test_map.py: 7 testów, 8.13 s
+[OK] widgets/tests/test_activity_look.py: 4 testów, 6.04 s
+[OK] widgets/tests/test_build_orders.py: 14 testów, 6.09 s
+[OK] scripts/tests/test_box_prototype.py: 22 testów, 49.44 s
+[OK] widgets/tests/test_representations.py: 1 testów, 0.13 s
+[OK] theme/wallpaper/tests/test_generate.py: 9 testów, 17.39 s
+[OK] widgets/tests/test_stale.py: 3 testów, 0.10 s
+[OK] widgets/tests/test_tokens_variant.py: 1 testów, 0.24 s
+[OK] theme/wallpaper/tests/test_variant.py: 22 testów, 12.29 s
+[OK] widgets/tests/test_widget_agents.py: 5 testów, 1.53 s
+[OK] theme/wallpaper/tests/test_plugin.py: 12 testów, 16.11 s
+[OK] theme/wallpaper/tests/test_pictures.py: 12 testów, 21.21 s
+[OK] theme/plymouth/tests/test_check.py: 6 testów, 26.37 s
+[OK] theme/sddm/tests/test_harness.py: 2 testów, 25.67 s
+[OK] widgets/tests/test_widget_limits.py: 15 testów, 3.81 s
+[OK] widgets/tests/test_widget_newtask.py: 4 testów, 1.16 s
+[OK] widgets/tests/test_limits_forecast.py: 11 testów, 15.13 s
+[OK] widgets/tests/test_widget_sidebar.py: 9 testów, 0.92 s
+[OK] widgets/tests/test_widget_docker.py: 12 testów, 12.29 s
+[OK] widgets/tests/test_sidebar_tiles.py: 14 testów, 19.46 s
+[OK] widgets/tests/test_widget_monitors.py: 12 testów, 14.76 s
+[OK] widgets/tests/test_dock_tiles.py: 14 testów, 26.18 s
+[OK] widgets/tests/test_widget_models.py: 15 testów, 16.98 s
+[OK] widgets/tests/test_widget_report.py: 7 testów, 13.34 s
+[OK] widgets/tests/test_widget_board.py: 15 testów, 21.57 s
+[OK] widgets/tests/test_widget_worktrees.py: 5 testów, 1.19 s
+[OK] widgets/tests/test_widget_stream_camera.py: 17 testów, 11.85 s
+[OK] widgets/tests/test_widget_ai.py: 18 testów, 28.95 s
+[OK] widgets/tests/test_widget_system.py: 18 testów, 9.34 s
+[OK] daemon/tests/test_cardflow_execution_box.py: 56 testów, 168.34 s
+[OK] apps/board/tests/test_view.py: 86 testów, 227.15 s
+[OK] widgets/tests/test_widget_work.py: 14 testów, 27.37 s
+[OK] widgets/tests/test_widget_stream_gaming.py: 37 testów, 29.34 s
+[OK] scripts/tests/test_shell_sync.py: 31 testów, 105.06 s
+[OK] widgets/tests/test_widget_stream_console.py: 26 testów, 52.82 s
+[OK] widgets/tests/test_widget_stream_categories.py: 27 testów, 58.17 s
+[OK] scripts/tests/test_wallpaper.py: 66 testów, 139.86 s
+[OK] scripts/tests/test_lookandfeel.py: 21 testów, 178.66 s
+[OK] widgets/tests/test_widget_stream.py: 49 testów, 126.75 s
+
+Razem: 4156 testów, 229 modułów, pominięte: 4, czas: 318.59 s
+Wszystkie nieudane testy:
+- daemon/tests/test_cardflow.py: daemon.tests.test_cardflow.ManualColumnsInProcessTest.test_started_from_backlog_reaches_review_and_back_to_todo_is_rework

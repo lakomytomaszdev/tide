@@ -26,7 +26,7 @@ import os
 import stat
 
 CLAUDE = r'''#!/usr/bin/python3
-import json, os, re, subprocess, sys, time
+import json, os, re, subprocess, sys, time, tempfile
 args = sys.argv[1:]
 if args[:3] == ["mcp", "list", "--json"]:
     print("[]")
@@ -46,8 +46,15 @@ else:
     result = result.group(1) if result else ""
 out = os.path.dirname(result) if result else os.path.join(os.path.dirname(cwd), "missing-out")
 os.makedirs(out, exist_ok=True)
-with open(os.path.join(out, "fake-call.json"), "w", encoding="utf-8") as fh:
-    json.dump({"argv": args, "prompt": prompt, "cwd": cwd, "pid": os.getpid(), "env": dict(os.environ)}, fh)
+fd, call_tmp = tempfile.mkstemp(prefix=".fake-call-", suffix=".tmp", dir=out)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump({"argv": args, "prompt": prompt, "cwd": cwd, "pid": os.getpid(), "env": dict(os.environ)}, fh)
+    # Testy czekają na istnienie tego pliku: publikacja musi oznaczać kompletny JSON.
+    os.replace(call_tmp, os.path.join(out, "fake-call.json"))
+finally:
+    if os.path.exists(call_tmp):
+        os.unlink(call_tmp)
 logs = os.path.join(os.environ["HOME"], ".claude", "projects", re.sub(r"[/.]", "-", cwd))
 os.makedirs(logs, exist_ok=True)
 with open(os.path.join(logs, sid + ".jsonl"), "a", encoding="utf-8") as fh:
@@ -182,10 +189,9 @@ if prompt.startswith("Popraw propozycję planu karty"):
             fh.write("| " + " | ".join([row["workId"], row["title"], "todo", "", row["executor"], row["note"], row["class"], row["reviewer"], ", ".join(row["blockers"])]) + " |\n")
     for row in rows:
         with open(os.path.join(out, "tickets", row["workId"].lstrip("#") + ".md"), "w", encoding="utf-8") as fh:
-            # Pierwszy rozpoczęty ticket zachowuje kartkę także dla numerów z zewnętrznego trackera.
-            kept = (row is rows[0] and not row["workId"].startswith("#")) or (
-                row["workId"].startswith("PT-") and "Dodaj ticket na migrację formatu" in prompt)
-            fh.write(row["body"] + ("" if kept else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
+            # Dodanie ticketu nie zmienia istniejących kartek, także przy numerach z YouTracka.
+            keep = not row["workId"].startswith("#") and ("Dodaj ticket" in prompt or row is rows[0])
+            fh.write(row["body"] + ("" if keep else "\n## Dla recenzenta\nSprawdź wymagany format.\n"))
     if broken_structure:
         with open(os.path.join(out, "tickets", "1.md"), "w", encoding="utf-8") as fh:
             fh.write("# Eksport\nCo zbudować: eksport danych.\n## Dla recenzenta\nSprawdź format.\n")
@@ -289,6 +295,9 @@ if prompt.startswith("Krok review "):
             fh.write("nieautoryzowana zmiana\n")
     with open(os.path.join(out, "review.md"), "w", encoding="utf-8") as fh:
         fh.write("# Review\n\n" + ("MAJOR: popraw ATRAPA.md\n" if bad else "APPROVE\n"))
+        if "ATRAPA: pulpit" in prompt:
+            fh.write("\n## Do sprawdzenia na pulpicie\n\n- otwórz  widżet na drugim monitorze\n"
+                     "- Sprawdź skróty klawiszowe\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": "done", "verdict": "REQUEST_CHANGES" if bad else "APPROVE",
                    "blockers": 0, "majors": 1 if bad else 0, "nits": 0, "notes": ["review.md"]}, fh)
@@ -335,6 +344,9 @@ def commit():
 def finish(kind, **extra):
     with open(os.path.join(out, "note.md"), "w", encoding="utf-8") as fh:
         fh.write("# Notka wyniku\n\nAtrapa zrobiła ticket.\n")
+        if "ATRAPA: pulpit" in prompt:
+            fh.write("\n## Do sprawdzenia na pulpicie\n\n- Otwórz widżet na drugim monitorze\n"
+                     "- Przeciągnij okno\n  i sprawdź ramkę\n")
     with open(result, "w", encoding="utf-8") as fh:
         json.dump({"result": kind, "notes": ["note.md"], **extra}, fh)
 
@@ -351,6 +363,13 @@ if word == "poza-uwagi":
     word = "poza"
 
 write("start")
+if word in ("na-sygnal", "blad-local"):
+    until = time.monotonic() + 120
+    while not os.path.isfile(os.path.join(out, "release-agent")):
+        if time.monotonic() >= until:
+            finish("error", reason="Test nie zwolnił atrapy sygnałem release-agent")
+            sys.exit(1)
+        time.sleep(0.05)
 if word == "czekaj" or (word == "czekaj-pierwszy" and "Notka techniczna przekazania" not in prompt):
     time.sleep(3600)
 elif word == "limit" and "Wznowienie tego samego kroku" not in prompt:
@@ -418,6 +437,12 @@ elif word in ("zgoda-zabroniona", "zgoda-zabroniona-cytat", "zgoda-zabroniona-uk
                    "zgoda-zabroniona-ukosnik": r"make \install",
                    "zgoda-zabroniona-potok": "pwd |& make install"}[word]
         finish("denied", command=command)
+elif word == "siec":
+    # PT-172: odmowa proxy pudełka jest wynikiem denied z poleceniem „network: <domena>”.
+    if "dopisał tę domenę do profilu karty" in prompt or "nie dopisał domeny" in prompt:
+        finish("done")
+    else:
+        finish("denied", command="network: api.sejm.gov.pl")
 elif word == "zgoda-lancuch":
     if "Wznowienie tego samego kroku" in prompt:
         finish("done")
@@ -521,7 +546,6 @@ elif word == "dane-zostaja":
             fh.write("x\n")
     finish("done")
 elif word == "blad-local":
-    time.sleep(0.5)
     finish("error", reason="awaria testowa")
 else:
     finish("done")

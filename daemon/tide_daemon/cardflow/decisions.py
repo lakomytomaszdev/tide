@@ -203,6 +203,8 @@ def _step_decision(st: FlowState, name: str) -> dict | None:
         return None
     if result == "question":
         return _question(st, name, step, done)
+    if result == "denied" and done.get("network"):
+        return _network(st, name, step, done)
     if result == "denied":
         return _permission(st, name, step, done)
     # Wygasłe logowanie Tide pyta od razu, bez automatycznego ponowienia (03.11) — decyzja też od razu.
@@ -280,6 +282,35 @@ def clean_options(raw) -> list[dict]:
     if sum(o["recommended"] for o in result) > 1 or len({o["title"] for o in result}) != len(result):
         return []
     return result
+
+
+def _network(st, name, step, done) -> dict:
+    """Odmowa proxy (`command: "network: <domena>"`, PT-172): pytanie o domenę. Pierwsza możliwość dopisuje domenę do
+    profilu karty, zleca przebudowę i wznawia krok; druga wznawia krok z informacją o odmowie. Domena czerwona
+    (adres wewnętrzny, zdalne repozytorium) nie ma pierwszej możliwości — o niej decyduje się w planie."""
+    from ..box import profile as box_profile
+    from ..box import templates
+    domain = _text(done.get("network"))
+    red = box_profile.classify(domain, templates.known_domains()) == box_profile.RED
+    happened = f"{_who(step, True)} nie dostał połączenia z domeną {domain}: proxy pudełka ją odrzuciło." if domain else ""
+    skip = _option("deny", "Nie, wznów bez", "Krok wznowi się z informacją o odmowie; domena nie trafi do profilu.",
+                   RESOLVE_STEP, {"choice": "deny", "step": name})
+    if red:
+        why = ("Ta domena wymaga jawnej zgody w planie (adres wewnętrzny albo zdalne repozytorium), więc nie dopiszę "
+               "jej w trakcie kroków.")
+        options = [{**skip, "recommended": True}]
+    else:
+        why = "Dopisanie jej do profilu karty wymaga przebudowy środowiska; krok wznowi się po zleceniu przebudowy."
+        options = [
+            _option("box-allow", "Dopisz do profilu karty i przebuduj",
+                    f"Domena {domain} trafi do profilu karty, Tide zleci przebudowę i wznowi krok.",
+                    RESOLVE_STEP, {"choice": "box-allow", "step": name}),
+            skip,
+        ]   # bez polecanej: to decyzja o tym, dokąd pudełko może się łączyć
+    technical = {**_step_technical(step, done), "domain": domain}
+    made = _decision(st, name, step, "permission", happened, why, options, None, "", technical)
+    made["commands"] = []
+    return made
 
 
 OTHER_PERMISSION = ("Zrób zamiast tego…", "Napisz, co krok ma zrobić zamiast tego polecenia.")

@@ -529,11 +529,11 @@ class BaseContextTest(StartBaseSetup):
                         return any(s.get("kind") == "review" and s["step"] in st.finished
                                    for s in st.steps.values())
 
-                    def pause_review(card, st):
+                    def pause_review(card, st, *, own=None):
                         if any(s.get("kind") == "review" and s["step"] in st.finished
                                for s in st.steps.values()):
                             return
-                        return advance(card, st)
+                        return advance(card, st, own=own)
 
                     with mock.patch.object(engine, "_finish", side_effect=interrupt_review), \
                             mock.patch.object(engine, "_advance", side_effect=pause_review):

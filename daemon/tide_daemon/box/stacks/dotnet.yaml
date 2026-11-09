@@ -1,0 +1,48 @@
+stack: dotnet
+description: SDK .NET i NuGet
+apt: []
+domains:
+  - name: api.nuget.org
+    risk: green
+    registry: true
+    note: indeks NuGet
+  - name: globalcdn.nuget.org
+    risk: green
+    registry: true
+    note: pakiety NuGet
+  - name: nuget.org
+    risk: green
+    note: strona i indeks NuGet
+  - name: dotnetcli.azureedge.net
+    risk: green
+    note: instalator SDK
+  - name: builds.dotnet.microsoft.com
+    risk: green
+    note: instalator SDK
+  - name: dot.net
+    risk: green
+    note: skrypt dotnet-install
+  - name: packages.microsoft.com
+    risk: green
+    note: repozytorium pakietów Microsoft
+  - name: mcr.microsoft.com
+    risk: green
+    note: obrazy Microsoft Container Registry
+  - name: "*.data.mcr.microsoft.com"
+    risk: green
+    note: warstwy obrazów MCR
+  - name: crl3.digicert.com
+    risk: green
+    note: sprawdzanie unieważnienia certyfikatów podpisu paczek NuGet (P-6)
+  - name: crl4.digicert.com
+    risk: green
+    note: sprawdzanie unieważnienia certyfikatów podpisu paczek NuGet (P-1)
+  - name: ocsp.digicert.com
+    risk: green
+    note: OCSP certyfikatów podpisu paczek NuGet (P-6)
+# Tylko budowa (dotnet.sh): dotnet-install.sh rozwiązuje kanały przez krótkie odnośniki aka.ms (P-1).
+build-domains:
+  - name: aka.ms
+    risk: yellow
+    note: krótkie odnośniki Microsoft używane przez dotnet-install.sh, tylko budowa
+images: []

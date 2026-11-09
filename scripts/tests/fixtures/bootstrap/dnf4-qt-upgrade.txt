@@ -1,0 +1,18 @@
+Last metadata expiration check: 0:12:41 ago on Sun 08 Nov 2026 10:02:11 CET.
+Dependencies resolved.
+================================================================================
+ Package               Architecture  Version              Repository      Size
+================================================================================
+Installing:
+ python3-pyqt6         x86_64        6.11.0-8.fc44        updates        5.8 M
+Upgrading:
+ qt6-qtbase            x86_64        6.11.2-3.fc44        updates        3.6 M
+ qt6-qtbase-gui        x86_64        6.11.2-3.fc44        updates        6.9 M
+
+Transaction Summary
+================================================================================
+Install  1 Package
+Upgrade  2 Packages
+
+Total download size: 16 M
+Operation aborted.

@@ -978,6 +978,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
+| `ApproveCardEnvironment(s id, s yaml, b onlyPlan)` | `→ s` | pakiet zgód środowiska karty (PT-172, niżej): usługa waliduje `yaml` (profil karty) i zgodę na pozycje czerwone przed jakimkolwiek zapisem; `onlyPlan` zatwierdza sam plan i ustawia `boxWait: environment` (PT-290: tylko przy `box.enabled: true`; przy wyłączonym pudełku zapis samej decyzji, bez budowy) |
+| `BoxStatus(s slug)` | `→ s` | stan pudełka projektu, hash przepisu, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu (PT-172, niżej) |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
 | `MergeCard(s id, s request)` | `→ s` | jawne potwierdzenie aktualnego podglądu (`targetRef`, `previewToken`); lokalny cel, w razie potrzeby ref/worktree tworzone po zgodzie; używa trwałej operacji PT-212 |
@@ -2007,11 +2009,24 @@ prefiks ticketów projektu przez `reserve(dry_run=True)`, gałąź główna, bra
 numeru (`coordination/reservations.py` — kontrola numerów widzi ticket), gałęzi i worktree karty
 (`card/k-12-<opis>` od gałęzi głównej), gałęzi i worktree ticketu (`ticket/pt-7-<opis>` od gałęzi karty), startu
 kroku, na końcu `step.started`. Worktree leżą w `<repo>-worktrees/`, katalog kroku obok worktree (`<worktree>.step`,
-`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to `agentcmd.background()` +
+`in` — kartka, ustawienia, gitconfig; `out` — plik wyniku i notki). Krok to (przez `Runner`, niżej) `agentcmd.background()` +
 `Background.start()` (PT-76): `claude -p` albo `codex exec` w jednostce `systemd-run --user --scope`
 `tide-step-<K-12>-<PT-7>-<n>`, z piaskownicą i kartką na stdin. Claude dostaje
 `--permission-mode acceptEdits`, Codex opcjonalny `model_reasoning_effort`. Inny dostawca dostaje token
 z pliku poza argumentami programu i dziennikiem; lokalny nie przechodzi do chmury. Bez Konsoli.
+
+**Runner** (`tasks/runner.py`, PT-180). Silnik nie woła `agentcmd` ani `stepstop` do startu i zatrzymania kroku,
+tylko wstrzyknięty `Runner` (`FlowEngine(..., runner=)`, domyślnie `HostRunner(systemd_run)`): `start(step,
+before_start=)` składa krok (`agentcmd.background`), przygotowuje katalogi i pliki, woła `before_start` (kopiowanie
+zrzutów) i uruchamia program — zwraca `Started(background, proc)`, a `proc` (Popen) trafia do `procs` silnika;
+`kill(step, proc=, grace=)` zatrzymuje jednostkę z wpisu dziennika (`stop_step` dostaje go jako `kill=`, więc commit
+WIP i wiadomości zostają jak dotąd); `env(step)` zwraca środowisko programu kroku (`agentcmd.background(step).env` — ta sama ścieżka składania co w `start`, z
+zamianami punktu lokalnego, bez sekretów z `secret_env`). Krok Konsoli (`_launch_full_planning`, `resume_interactive`:
+`agentcmd.interactive` + plik zadania) nie pasuje do umowy `start → Background` i zostaje poza `Runner`. `HostRunner`
+to dzisiejszy sposób bez zmian: argv i środowisko pilnuje złoty plik `tests/fixtures/runner/host_argv.json`
+(zapis sprzed refaktoru). Format wpisów kroku (`unit`, `gitDir`, `stepDir`) i odczyt stanu po restarcie usługi
+(`stepstop.unit_state`, `read_exit_code`) bez zmian, więc kroki uruchomione przed aktualizacją są dalej rozpoznawane.
+Wyboru runnera nie ma — to miejsce pod kolejny runner (pudełko karty).
 
 Kartka (`cardflow/handoff.py`): tytuł, opis i zrzuty karty, gałąź i katalog roboczy, zakazy (push, scalanie, zapis
 poza katalogiem roboczym i wyjściowym) i plik wyniku `<krok>/out/result.json`:
@@ -2475,6 +2490,43 @@ Pola w `derived.flow`:
 „Przenieś na Codex” w pełnej karcie wysyła istniejące `ResolveCardStep` (`choice: transfer`, `step`, `executor`)
 po jednym razie na zatrzymany krok; koszt jest widoczny nad przyciskiem przed kliknięciem.
 
+### Wykrywanie stosu i szablony stosów (PT-193, pudełko karty)
+
+`tasks/stack.py` → `detect(worktree)` zwraca `StackReport`: same fakty, bez decyzji. Moduł wyłącznie czyta pliki
+(nie uruchamia `npm`, `dotnet` ani `make`, nie używa sieci) i jest deterministyczny: katalogi przeglądane
+alfabetycznie (bez `node_modules`, `bin`, `obj`, `.git`…), listy bez powtórzeń w stałej kolejności. Raport:
+
+- `stacks` — nazwy szablonów w stałej kolejności `node`, `playwright`, `dotnet`, `docker`, `python-qt`; `[]`, gdy
+  projekt nie ma wzorca;
+- `node` (`package.json`, `.nvmrc`/`engines`, `angular.json`, `karma.conf.js`, `playwright.config.*` ze zmiennymi `*PORT`),
+  `dotnet` (`*.sln`, `*.csproj`: TFM, `Directory.Packages.props`: Testcontainers i `Microsoft.Playwright`, `global.json`),
+  `python` (`Makefile`, `mk/*.mk`, `pyproject.toml`, `requirements.txt`: cele `test`/`lint`, Qt offscreen),
+  `docker` (`docker-compose*.yml`), `testcontainers_images` (literały `"<obraz>:<tag>"` w `*.cs`/`*.ts` plików
+  używających Testcontainers), `ci` (`.gitlab-ci.yml`, `.github/workflows`: obrazy, polecenia; deploy z `rsync`/`ssh`
+  jest ignorowany), `nuget_sources` i `internal_addresses` (rejestry z `NuGet.Config`/`nuget*.config`; adres
+  wewnętrzny = prywatny IP, nazwa bez kropki albo sufiks `.local`/`.lan`/`.internal`/`.corp`/`.biz`).
+
+`propose_profile(report, project)` buduje z raportu słownik w kształcie `tide-box: 1` (walidację schematem robi
+konsument, nie ten moduł) oraz listę `items` (pozycje do pakietu zgód: `kind`, `value`, `risk`, `enabled`, `description`).
+Niezmienniki: nigdy `network.full`; pozycja czerwona nigdy nie jest włączona; adres wewnętrzny z `NuGet.Config` to
+wyłączona pozycja czerwona z opisem (nie trafia do `network.domains`); obraz Testcontainers/compose trafia do
+`docker.images`; `stacks: []` daje propozycję pustą z polem `question` (pytanie do okna planu, nie do kroków).
+
+**Szablony stosów** to dane YAML w `tide_daemon/box/stacks/<stos>.yaml` (`base`, `node`, `playwright`, `dotnet`,
+`docker`, `python-qt`), nie kod powłoki. Każdy ma `domains` (`name`, `risk`: `green`/`yellow`/`red`, `note`, opcjonalnie
+`registry: true` dla rejestrów paczek), `apt` i `images` (szablon `docker` niesie Ryuk z przypiętą wersją i opisem
+ryzyka K1 w `image_notes`). `domains` szablonów nie zawierają `github.com`, `gitlab.*` ani adresów wewnętrznych;
+wyjątkiem jest lista `build-domains` (PT-192) — domeny tylko dla skryptu szablonu w czasie budowy (`docker` →
+`github.com` dla wydania runc), nigdy dla kroków. Projekt nie używa biblioteki YAML, więc `box/templates.py` czyta
+podzbiór (skalary, listy, listy map). Funkcje:
+
+- `work_domains(profile)` — suma `domains` szablonu `base` + szablonów z `stacks` + `network.domains`, bez powtórzeń
+  (polityka kroków w proxy); nieznany stos → `ValueError`;
+- `build_domains(profile)` — `work_domains` + `build-domains` szablonów (lista budowy pudełka dla proxy). Podobnie
+  `build_apt(profile)` i `build_images(profile)`;
+- `known_domains()` — słownik domena → klasa ryzyka (przy rozbieżności wygrywa groźniejsza), dla `classify`;
+- `registry_domains(stack)` — domeny z `registry: true`; z nich składa się `tasks/node.REGISTRY_DOMAINS` i
+  `tasks/dotnet.REGISTRY_DOMAINS` (wartości jak przed zmianą).
 ## Scenariusz 03.11 — ocena na prawdziwym modelu
 
 PT-156 rozdziela dwie rzeczy: test okablowania przez `FlowEngine` na atrapach
@@ -3382,6 +3434,206 @@ qdbus6 org.tide.Daemon /Docker org.tide.Daemon.Docker.Snapshot
 /usr/bin/python3 daemon/tide-daemon.py --print-docker   # migawka i miejsce na dysku, wyłącznie GET do Engine API
 ```
 
+## Pudełko karty: profil środowiska
+
+Moduł `tide_daemon/box/profile.py` (PT-165, karta K-38) opisuje środowisko pudełka: schemat `tide-box: 1`,
+klasyfikację ryzyka, scalanie profilu projektu z profilem karty, hash przepisu oraz zapis i odczyt w Tablicy.
+Bez wykrywania stosu i szablonów (#30) i bez budowy pudełka (#4). YAML czyta własny podzbiór
+(`box/yamlmini.py`: mapy i listy blokowe oraz w nawiasach, cudzysłowy, komentarze), bez biblioteki.
+
+### Schemat `tide-box: 1`
+
+| Klucz | Typ | Uwagi |
+| --- | --- | --- |
+| `tide-box` | `1` | wymagany |
+| `project` | napis | nazwa projektu (`[a-z0-9._-]`) |
+| `type` | `container` \| `vm` | `vm` tylko przechodzi walidację, budowa odmawia (#4) |
+| `base` | napis | obraz bazowy, np. `images:ubuntu/24.04` |
+| `stacks` | lista | nazwy szablonów (lista szablonów należy do #30) |
+| `node.version`, `dotnet.sdk` | napis/liczba, lista dla `dotnet.sdk` | |
+| `dotnet.restore-projects` | opcjonalna niepusta lista względnych ścieżek `.csproj` | publiczny restore tylko wskazanych projektów na kopii HEAD; bez listy restore całego rozwiązania; lista wchodzi do hasha przepisu |
+| `apt`, `setup`, `verify` | listy napisów | |
+| `network.domains` | lista hostów | bez URL-i; adresy wewnętrzne (w każdym zapisie: IPv4 zmapowany w IPv6, `10.1`, liczbowe/szesnastkowe, loopback, link-local, `100.64/10`, prywatne IPv6 także z osadzonym IPv4 — mapowanym, zgodnym wstecznie i NAT64, `localhost`, nazwy jednoetykietowe oraz sufiksy `.local`, `.lan`, `.internal`, `.home.arpa`, `.localdomain`, `.intranet`, `.corp`) tylko w profilu karty; symbol `*.` wymaga co najmniej dwóch etykiet po nim (`*.com` odrzucone w profilu projektu) |
+| `network.host-ollama` | bool | |
+| `network.full`, `network.full-consent` | bool | tylko profil karty; `full: true` wymaga `full-consent: true` |
+| `ports.pool` / `ports.env` | `[od, do]` (1024–65535) / lista nazw zmiennych | |
+| `docker.enabled` / `docker.images` | bool / lista | |
+| `resources.cpu/memory/disk` | liczba / `24GiB` / `60GB` | domyślnie 8 / 24GiB / 60GB |
+| `resources.swap` | bool | domyślnie false; true odmawia startu w projekcie ograniczonym, poza hashem przepisu |
+| `packs`, `accepted_red` | listy | tylko profil karty |
+| `box` | `per-project` \| `per-card` | domyślnie `per-project` |
+| `notes` | napis | |
+
+Nieznany klucz na dowolnym poziomie, zły typ, `packs`/`accepted_red`/`network.full`/adres wewnętrzny w profilu
+projektu oraz `type` spoza `container|vm` to `ProfileError` (lista wszystkich problemów).
+
+### Klasy ryzyka
+
+`classify(item, known)`; `known` to słownik domena → klasa z szablonów stosów (#30).
+
+- **czerwone**: `network.full`, `packs` (`pack:<nazwa>`), adresy `192.168.*`, `10.*`, `172.16–31.*`, `*.local`, `*.lan`, `*.internal`, `*.home.arpa`,
+  `*.localdomain`, `*.intranet`, `*.corp`, nazwy jednoetykietowe, `*.firma.example`, `localhost`, loopback, link-local (`169.254.*`), `100.64/10`, prywatne IPv6 i inne zapisy
+  tych adresów, symbole `*.<jedna etykieta>` (np. `*.com`), zdalne repozytoria (`github.com`, `*.github.com`, host z etykietą `gitlab`),
+- **żółte**: `host-ollama`, domeny oznaczone jako żółte w szablonach, domeny spoza szablonów bez cech czerwonych,
+- **zielone**: domeny oznaczone jako zielone w szablonach, `box: per-card`.
+
+Czerwone reguły są sprawdzane przed `known`, więc szablon nie może „odczerwienić” pozycji (może ją najwyżej
+zaostrzyć wpisem `red`).
+
+### Scalanie
+
+`merge(project, card)` → `MergeResult(profile, dropped_red, project_red)`. Listy sumowane bez duplikatów (najpierw projekt; także `ports.env`),
+skalary i pola map z karty wygrywają (w tym `box`); wyjątek: `ports.pool` to zakres `[od, do]` i karta go zastępuje.
+Pozycje domenowe w `accepted_red` i klucze `known` są normalizowane jak domeny (małe litery, bez końcowej kropki). Czerwone pozycje karty trafiają do wyniku tylko, gdy
+`accepted_red` karty je wymienia; pozostałe lądują w `dropped_red`. `accepted_red` z pozycją, której nie ma w
+profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu projektu (np. `github.com`) przechodzą, ale trafiają do `project_red`, żeby pakiet zgód (#9) je pokazał. `project` w profilu musi zgadzać się ze slugiem (`save_project`/`load_project`). Profil projektu nigdy nie zawiera `network.full` ani adresów wewnętrznych.
+
+### Hash przepisu
+
+`recipe_hash(profile, templates_version, agents_version)` = SHA-256 znormalizowanych kluczy (po wypełnieniu
+wartości domyślnych, niezależnie od kolejności kluczy i białych znaków YAML) wraz z wersją szablonów i agentów.
+Wchodzą: `type`, `base`, `stacks` (kolejność), `node`, `dotnet` (wersje SDK jako zbiór), `apt` (jako zbiór), `setup` (kolejność),
+`docker.enabled`, `docker.images` (jako zbiór). Nie wchodzą: `resources`, `ports`, `network.*`, `verify`, `packs`,
+`box`, `notes`, `project` — limity i politykę czyta się przy starcie albo po budowie. Lista: `HASH_KEYS` i
+`NON_HASH_KEYS`, test pilnuje, że razem pokrywają cały schemat. `recipe_stamp(...)` dodatkowo zwraca skróty
+kluczy; budowa zapisuje go przy migawce, a `diff(profile, stamp, templates_version, agents_version)` zwraca listę
+kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `agents`…) — źródło stanu „do przebudowy”.
+
+### Zapis
+
+Katalog Tablicy: `$TIDE_BOARD_DIR` (domyślnie `~/DevWorkspace/tide-board`). Profil projektu:
+`projects/<slug>/box.yaml`, profil karty: `projects/<slug>/cards/<id karty>/box.yaml`. Zapis jest atomowy (plik
+tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; nazwy ścieżek są ograniczone do
+`[a-z0-9._-]`. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
+(walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
+nie trafia do repozytoriów projektów (CLAUDE.md firma).
+
+### Sekcja środowiska w prompcie planowania (PT-190)
+
+`cardflow/environment.py` składa sekcję, którą `planning.prompt` (Lekkie) i `planning.full_prompt` (Pełne) wstawiają
+przed krokiem „Poznaj repozytorium” / „Pracuj w tej kolejności” (parametr `environment`; pusty = prompt bez zmian).
+Sekcję liczy `engine` przy budowie promptu planowania (także poprawek planu); nie zmienia `_launch`, `agentcmd` ani
+uruchamiania kroków. Błąd odczytu plików nie zatrzymuje planowania — sekcja wtedy znika.
+
+- **Środowisko projektu (wykryte)**: fakty `StackReport` (`tasks/stack.detect`, YAML bez pustych pól) i propozycja profilu
+  w `tide-box: 1`. Źródło propozycji: `.tide/box.yaml` repozytorium (`repo_proposal`, oznaczone „z repozytorium
+  (.tide/box.yaml)”; niepoprawny plik → szablony z uwagą) albo szablony stosów (`propose_profile`, „z szablonów Tide”,
+  z listą pozycji sieci i obrazów; pozycje czerwone są wyłączone). Dane z repozytorium są w prompcie cytowanymi
+  danymi, nie poleceniami. Każdy blok jest ucinany do 8 KB, instrukcje na końcu nigdy.
+- **Środowisko projektu (zatwierdzone)**: gdy Tablica ma `projects/<slug>/box.yaml` — profil i hash przepisu
+  (`recipe_hash` bez wersji szablonów i agentów; te dokłada budowa pudełka). Sekcja „wykryte” dochodzi tylko wtedy,
+  gdy wykryte stosy różnią się od zatwierdzonych.
+- **Instrukcja dla planującego**: może poprawić propozycję w `out/box.yaml`; nie włącza pozycji czerwonych i nie
+  dopisuje ich do `accepted_red`; środowisko ustala w planie, nie pyta o nie w trakcie kroków. Dla projektu bez wzorca
+  (`stacks: []`, propozycja pusta) dodaje do planu (spec.md, Further Notes) dokładnie jedno pytanie „Czego potrzebuje
+  środowisko?”.
+
+### `out/box.yaml` w propozycji planu
+
+`plans.read` czyta `box.yaml` obok `plan.md` (tylko dla pliku o nazwie `plan.md`; plany w repozytorium dzielą katalog)
+i waliduje go schematem profilu karty z `box/profile.py` (`parse(..., "card")` + `merge`), jak tabelę ticketów.
+Błędy formatu trafiają do `Proposal.errors` z prefiksem `box.yaml:`: nieznany klucz, zły typ, `network.full` bez
+`full-consent`, pozycja czerwona (adres wewnętrzny, `github.com`, `packs`) bez jawnego `accepted_red`, dowiązanie
+poza katalog planu, plik większy niż 64 KB. Brak pliku nie jest błędem (`Proposal.box` to `None`); poprawny plik
+wraca w `Proposal.box`. Plik nie jest zapisywany ani kopiowany do Tablicy — zatwierdza go użytkownik.
+
+### Pakiet zgód: środowisko karty (PT-172)
+
+Przy `box.enabled: false` sekcji nie ma (zgoda środowiska nie obowiązuje, PT-290; 09.11: jej liczenie przy każdym
+odświeżeniu wczytywało Tablicę ponad sto razy) — wyjątkiem jest karta, która już czeka na środowisko.
+Plan do zatwierdzenia (i plan zatwierdzony z „Tylko plan”) ma w `derived.flow.plan.environment` sekcję „Środowisko
+karty”, liczoną przez usługę (`cardflow/envconsent.py`) z profilu projektu (zatwierdzonego albo propozycji z PT-190)
+i propozycji `out/box.yaml` (zapisywanej w `plan.proposed.box`). Panel tylko ją pokazuje — nie zna listy kluczy ani
+reguł ryzyka. Pola sekcji:
+
+- `state` / `stateLabel`: `clean` (z datą migawki), `build` („do zbudowania”), `rebuild` („do przebudowy”) i `diff`
+  `{added, removed}` — różnica pozycji względem profilu zatwierdzonego przy hashu migawki `clean` (dziennik pudełka),
+- `items[]`: `id`, `label`, `group`, `risk` (`green|yellow|red` z `box/profile.py`, `display_items`), `riskLabel`, `token`
+  (nazwa koloru motywu), `scope` (`projekt|karta`), `enabled`, `needsConsent` (czerwone: domyślnie wyłączone, włącza je
+  tylko jawne zaznaczenie), `locked`, `note`; pozycja `docker` niesie opis ryzyka K1 z propozycji (szablon docker)
+  i dopisek „K3 aktywne/nieaktywne” według `box/k3.py`; pozycja `box:per-card` ma `toggle {on, off}` (domyślnie jak
+  w profilu projektu),
+- `yaml` (profil karty bez `box` i zgód, do pola „Zmień”), `acceptKey` (`accepted_red` — klucz zgody, który panel dopisuje
+  do YAML-a z zaznaczonych pozycji), `notes[]` (np. odrzucony adres wewnętrzny w `.tide/box.yaml`, D13),
+- `question`: „Czego potrzebuje środowisko?” dla projektu bez profilu i bez wzorca — pozycja planu, nie pytanie w kroku.
+
+`ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
+
+1. `prepare`: `yaml` jest profilem karty (`profile.parse(…, "card")`). Nieznany klucz, zły typ, pozycja czerwona
+   (`network.full`, adres wewnętrzny, `github.com`/`gitlab`, `packs`) bez wpisu w `accepted_red`, wpis `accepted_red`
+   bez takiej pozycji → `{ok: false, error: "invalid-environment", message, errors[], items[]}` **bez żadnego zapisu,
+   bez zatwierdzenia planu i bez budowy** (też gdy wołane spoza panelu). Projekt jeszcze bez profilu: usługa sama
+   buduje propozycję (`.tide/box.yaml` albo szablony stosów), a jej pozycje czerwone też wymagają zgody; adres
+   wewnętrzny w profilu projektu jest odrzucany (D13).
+2. Plan albo poprawka planu czekająca na zatwierdzenie jest zatwierdzana (`ApproveCardPlan`; PT-290: także różnica
+   zatwierdzonego planu z okna, w którym sekcja środowiska zastępuje przycisk planu); `review-pending` przerywa
+   przed zapisem.
+3. `onlyPlan = true`: nic nie jest zapisywane w Tablicy; przy `box.enabled: true` zdarzenie `box.wait` ustawia
+   `boxWait: environment`, przy wyłączonym pudełku zgoda jest tylko odroczona (D1 niżej).
+4. `onlyPlan = false`, `box.enabled: true`: zapis profilu projektu (jeśli nie był zatwierdzony) i karty do Tablicy
+   (`projects/<slug>/box.yaml`, `…/cards/k-n/box.yaml`), zdarzenie `box.approved source=ui` z `accepted_red`, `items`
+   i `recipe`, wyczyszczenie `boxWait`, a gdy pudełko nie ma migawki `clean` z tym hashem — budowa (`build`) albo
+   przebudowa (`rebuild`) przez `Builder` z PT-167 w osobnym wątku (atrapa: `FlowEngine.box_launcher`). Odpowiedź:
+   `{ok, saved[], acceptedRed[], build: "build"|"rebuild"|"", boxWait: "", boxEnabled: true, decision: "recorded"}`.
+5. `onlyPlan = false`, `box.enabled: false` (PT-290): po tej samej walidacji zapis samej decyzji — profile w Tablicy
+   i `box.approved` — bez kopii paczek, budowy, startu, Incusa i ekspozycji; `boxWait` bez zmian (także dawne
+   `environment`), zgoda odroczona. Odpowiedź: `{ok, saved[], acceptedRed[], build: "", boxEnabled: false,
+   decision: "recorded", boxWait, message}`; `message` mówi, że budowy nie zlecono i środowisko nie działa.
+
+**D1 (PT-290, K-38 F2): zgoda środowiska tylko przy `box.enabled: true`.** Zatwierdzenie nowego planu
+(`engine.approve_plan`, `ApproveCardPlan`) i poprawki planu („Tylko plan”) przy wyłączonym pudełku nie tworzy
+oczekiwania `environment` i nie blokuje hostowego kroku (wyłącznik PT-289 i tak wybiera hosta). W dzienniku zostaje
+`box.wait` z pustym `value` i `deferred: environment` (`FlowState.box_env_deferred`, `boxwait.require_environment`).
+Po ponownym włączeniu pierwsza próba kroku wykonawczego zamienia odroczenie na `boxWait: environment`
+(`source: box-enabled`) i czeka — samo zatwierdzenie planu ani decyzja zapisana przy wyłączonym pudełku nie są zgodą
+na budowę i ekspozycję. Dopiero `ApproveCardEnvironment` przy włączonym pudełku czyści oczekiwanie i zleca budowę.
+Zgoda projektu plasma-tide (`projectconsent`) przy wyłączonym pudełku zapisuje decyzję bez `environment`
+(odpowiedź `boxEnabled: false`); przy włączonym bariera ekspozycji v1 obowiązuje jak dotąd. Restart z dawnym
+`environment` niczego nie buduje ani nie migruje; istniejące zgody, propozycje i historia nie są usuwane.
+
+Tablicę commituje Tide; profil zapisuje wyłącznie usługa.
+
+`BoxStatus(slug)` zwraca `Builder.status` (`state`, `recipeHash`, `profileHash`, `diff`, `exists`, `usable`,
+`nicFiltering`) oraz `nicLabel` („filtrowanie NIC: tak/nie”) i `cards[]` = `{card, boxWait}` dla kart projektu z dziennikiem.
+Błędy: `bad-project`, `no-project`.
+
+#### Pole `boxWait`
+
+Pole stanu karty (dziennik: zdarzenie `box.wait` z `value`, puste = wyczyszczone; `FlowState.box_wait`;
+`derived.flow.boxWait` i `boxWaitLabel`; `BoxStatus.cards[].boxWait`). Jedyny czytnik: `cardflow/boxwait.py`,
+`card_box_wait(card)` (przyjmuje `FlowState`, słownik karty albo `derived.flow`); #18 korzysta z niego, nie czyta
+dziennika sam. Brak pola = nic nie blokuje.
+
+| Wartość | Znacznik w panelu | Kto ustawia | Kto czyści |
+|---|---|---|---|
+| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód; PT-290: tylko przy `box.enabled: true`, a odroczona zgoda zamienia się w `environment` po ponownym włączeniu | PT-172: `ApproveCardEnvironment` bez `onlyPlan` przy włączonym pudełku |
+| `start` | „czeka na pudełko” | #18 (silnik, PT-181): pudełko zatrzymane, trwa start | #18, gdy pudełko odpowiada |
+| `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny albo brak filtrowania NIC, przebudowa czeka na zatwierdzenie z planem | #18, gdy pudełko znów jest zgodne |
+
+`set_box_wait(journal, card, value)` zapisuje zmianę (bez zdarzenia, gdy wartość i odroczenie się nie zmieniają;
+czyszczenie kasuje także odroczenie PT-290). `environment_pending(card)` — karta czeka na środowisko albo ma
+odroczoną zgodę; `require_environment(engine, card, source)` — D1 po zatwierdzeniu planu.
+
+#### Pytanie o domenę (wynik kroku `denied`)
+
+Wynik `{"result": "denied", "command": "network: <domena>"}` (odmowa proxy pudełka) nie jest zgodą na polecenie:
+`step.finished` dostaje pole `network`, a decyzja karty (`kind: permission`) ma dwie możliwości bez polecanej:
+`box-allow` („Dopisz do profilu karty i przebuduj”) i `deny` („Nie, wznów bez”). `box-allow` dopisuje domenę do
+profilu karty (`profile.save_card`, domena czerwona jest odrzucana — o niej decyduje się w planie), dopisuje zdarzenie
+`box.rebuild-requested` (dla silnika #18) i wznawia krok z informacją; `deny` wznawia krok z informacją o odmowie
+i niczego nie zapisuje.
+
+### Migracja `cardflow.json` do propozycji profilu (PT-190)
+
+Przy starcie usługi `FlowEngine.migrate_environment()` (`box/migration.py`) dla każdego projektu z wpisem
+w `networkDomains` albo `outsideCommands`, który nie ma `box.yaml` ani `box.proposed.yaml`, tworzy w Tablicy
+`projects/<slug>/box.proposed.yaml`: `networkDomains[slug]` → `network.domains`, `outsideCommands[slug]` → `setup`
+(polecenia `install`/`ci`/`restore`/`pull`…) albo `verify` (reszta; końcówka ` *` rodziny jest zdejmowana).
+Domeny, których schemat profilu projektu nie przyjmuje (adres wewnętrzny, `*.com`), trafiają do `notes`. To tylko
+propozycja do zatwierdzenia — nie jest to profil, nic nie jest zatwierdzane ani nadpisywane; stare klucze zostają
+w `cardflow.json` (usunie je osobny ticket). Plik powstaje raz: usunięcie propozycji bez zatwierdzenia sprawi, że
+następny start utworzy ją ponownie. Błąd zapisu w Tablicy nie zatrzymuje usługi.
+
 ## Modele lokalne
 
 Jedno miejsce w usłudze, przez które Tide rozmawia z serwerem modeli lokalnych: teraz Ollama na tym komputerze (`http://127.0.0.1:11434`), później Mac Studio w sieci — zmianą adresu w ustawieniach, bez zmian w kodzie (plan `docs/agents/plans/2026-10-27-local-models.md`, PT-14). Usługa odczytuje stan serwerów i wystawia go przez D-Bus; przez wywołanie modelu (`tide_daemon.models.chat`) idą „Na daily” i opisy kart w trybie `"summary": "local"` (PT-15, sekcje „Raport poranny” i „Koordynacja”), zawsze przez wspólną kolejkę (PT-16, „Kolejka” niżej).
@@ -3674,6 +3926,1084 @@ Stream to aktywność przypisana do wyglądu `stream` w `$XDG_CONFIG_HOME/tide/a
   stanu: usuwa je i oddaje Meta+B akcji, która ma go w domyślnych. Bezpieczniej jednak robić kopie w pracy.
 - **Wyłączenie:** `--no-stream-shortcuts`; pusty `$TIDE_KAMP` — naciśnięcia nic nie wołają (tak robią testy).
 
+## Pudełko
+
+Odizolowane środowisko projektu w kontenerze Incusa (karta K-38, projekt: `docs/card-box-design.md`, decyzje
+robocze: `docs/box-decisions.md`).
+
+### Instalacja
+
+Incusa, pulę, projekt i reguły sieci zakłada **wyłącznie** `scripts/box/install.sh` uruchamiany z sudo —
+usługa działa jako zwykły użytkownik i niczego z tej listy nie zmienia. `make install` motywu nie woła żadnego
+celu `box-*` (pilnuje tego test `scripts/tests/test_box_install.py`).
+
+```bash
+make box-state OUT=docs/box-prototype/host-before.txt   # migawka stanu hosta przed instalacją
+make box-install                                         # sudo pyta raz o hasło; potem bez pytań
+bash scripts/box/install.sh --dry-run                    # plan bez zmian (z sudo widzi cały stan Incusa)
+make box-uninstall                                       # cofnięcie (pyta, usuwa wszystkie pudełka)
+make box-state OUT=docs/box-prototype/host-after.txt
+diff docs/box-prototype/host-before.txt docs/box-prototype/host-after.txt   # pusty
+```
+
+`make box-install` przyjmuje `BOX_PROXY_PORT=18080` (port proxy Tide, ta sama wartość co `box.proxy-port`
+usługi; zmiana wymaga ponownego `make box-install`, bo reguły są statyczne) i `BOX_PROJECT_MODE=restricted|admin`.
+Kroki — każdy najpierw sprawdza stan, więc drugie uruchomienie nic nie zmienia i wypisuje „bez zmian”:
+
+1. **Symulacja apt** `apt-get -s install incus btrfs-progs` (plus `nftables`, gdy brak `nft`): odmowa, gdy lista
+   zawiera pakiet z `qt6`/`kf6`/`libkf`/`plasma` w nazwie (skrypt wypisuje te pakiety) albo gdy apt podnosi lub
+   usuwa zainstalowany pakiet — tego odinstalowanie by nie cofnęło. Pakiet `incus` z Ubuntu universe (6.0 LTS);
+   repozytorium Zabbly tylko jako osobny wariant z osobną zgodą (P-7). Incusa zainstalowanego wcześniej nie przez
+   ten skrypt nie przejmujemy.
+2. **Instalacja** tych samych pakietów; lista nowych pakietów (z symulacji) trafia do pliku stanu
+   `/var/lib/tide-box/install.state` przed instalacją, razem z grupami istniejącymi wcześniej i kopiami
+   `/etc/subuid`, `/etc/subgid`.
+3. **Preseed** `incus admin init --preseed`:
+   - **pula** btrfs `tide` w rzadkim pliku `/home/tide-incus-pool.img` (200 GiB, decyzja D8). Incus zakłada plik
+     pętli tylko w `/var/lib/incus/disks/tide.img`, więc skrypt robi tam dowiązanie do pliku na `/home` i po
+     preseedzie sprawdza, że plik jest na `/home`; istniejącego pliku bez puli nie formatuje;
+   - **mostek** `incusbr0`: IPv4 z NAT i DHCP (`ipv4.address: auto`), bez IPv6;
+   - profil `default`: dysk na puli `tide`, karta `eth0` w `incusbr0`.
+4. **Grupa**: użytkownik z `SUDO_USER` do grupy `incus` (dostęp przez `incus-user`, tylko do własnego projektu);
+   działa po ponownym zalogowaniu (usługa `tide-daemon` też potrzebuje nowej sesji).
+5. **Projekt ograniczony** `user-<uid>` — ten, którego używa `incus-user`; skrypt zakłada go sam, zanim zrobi to
+   `incus-user` (ten mógłby dać projektowi własny mostek bez naszych reguł): `restricted=true`,
+   `restricted.containers.nesting=allow` (Docker w pudełku), `restricted.devices.disk=allow` tylko pod katalogiem
+   domowym (`restricted.devices.disk.paths`), `restricted.idmap.uid/gid` użytkownika (tylko pozwala instancji ustawić `raw.idmap`
+   z tym uid/gid — mapowanie zakłada dopiero pudełko, PT-169), `restricted.networks.access=incusbr0`; własny profil `default` jak wyżej; `incus-user.socket`
+   włączony. Do tego `root:<uid>:1` w `/etc/subuid` i `root:<gid>:1` w `/etc/subgid` z restartem `incus` —
+   bez nich kontener z `raw.idmap "both <uid> <uid>"` nie startuje, a projekt ograniczony odrzuca `shift=true`
+   na ścieżkach z katalogu domowego (PT-164, P-4); `make box-uninstall` usuwa te linie jak resztę dopisanych. `--project-mode admin` (grupa `incus-admin` = root hosta) skrypt przyjmuje tylko po próbie P-5
+   z PT-164 i z wierszem `tryb-admin` w `docs/box-decisions.md`.
+6. **nftables**: plik `/etc/tide-box/tide-box.nft` (treść: `scripts/box/files.sh rules <adres mostka> <port>`)
+   sprawdzony `nft -c`, potem wczytany `nft -f`.
+7. **Trwałość**: jednostka `tide-box-nft.service` wczytuje plik przy starcie (przed `network-pre.target`
+   i Incusem); drop-in `/etc/systemd/system/incus.service.d/tide-box.conf` daje `incus.service` `Requires=` na nią
+   — bez reguł Incus nie wstaje. **`systemctl stop` i `systemctl restart tide-box-nft` zatrzymują (restart:
+   zatrzymują i uruchamiają ponownie) Incusa razem ze wszystkimi pudełkami i sesjami `incus exec`** —
+   `Requires=` propaguje stop i restart; przy stop to zamierzone (pudełka gasną przed Incusem). Ponowne
+   wczytanie reguł bez ruszania Incusa: `systemctl reload tide-box-nft` (`ExecReload=nft -f …`; reload nie
+   przechodzi przez `Requires=`) albo wprost `sudo nft -f /etc/tide-box/tide-box.nft`. Jednostka nie ma
+   `ExecStop`: jej zatrzymanie nie zdejmuje reguł (tabelę usuwa jawnie `uninstall.sh`), więc filtr zostaje
+   w jądrze także wtedy, gdy incusd zostanie zabity po przekroczeniu czasu zatrzymania, a pudełka przeżyją.
+   Nie używamy `nftables.service`:
+   `/etc/nftables.conf` zaczyna od `flush ruleset` i skasowałby reguły Dockera i Incusa.
+
+Na koniec skrypt wypisuje raport: nowe pakiety z symulacji, `incus list`, `incus project show user-<uid>`
+i `nft list table inet tide-box`.
+
+**Reguły sieci — decyzja „nftables statyczne, polityka w proxy”.** Reguły są statyczne i zakłada je tylko
+skrypt z sudo; usługa nigdy nie modyfikuje nftables (bez sudoers i pomocnika z uprawnieniami, bez ACL sieciowych
+Incusa). Polityka per pudełko — lista domen, Ollama hosta — żyje w proxy Tide, które jako jedyne jest osiągalne
+z mostka. Podszycie się pudełka pod cudzy adres IP zatrzymuje filtrowanie NIC Incusa (PT-167), nie nftables.
+Tabela `inet tide-box` ma dwa nazwane łańcuchy bazowe:
+
+- `input` (hook input) i `forward` (hook forward), oba z priorytetem `filter + 10` — po łańcuchach tabeli
+  `incus` (priorytet `filter`), więc `accept` Incusa (DNS i DHCP jego dnsmasq, forward z NAT) nie wystarcza,
+  a `drop` tutaj jest ostateczny;
+- łańcuchy mają politykę `accept`, bo hook widzi ruch wszystkich interfejsów hosta; „polityką drop” dla ruchu
+  z `incusbr0` jest ostatnia reguła każdego łańcucha (`iifname "incusbr0" drop`);
+- `input`: accept tylko `ip daddr <adres mostka> tcp dport <port proxy>` i DHCP (`udp sport 68 udp dport 67`);
+  DNS (53, tcp i udp) jawnie DROP, potem cała reszta z mostka DROP;
+- `forward`: wszystko z `incusbr0` i do `incusbr0` DROP — pudełko nie wychodzi nigdzie przez NAT, a połączenia
+  z hosta do pudełka nie mają odpowiedzi (porty pudełka nie są wystawiane, sekcja 4.6 projektu).
+
+**Konwencja `tide-proto` dla prób.** Prototypy (PT-164, PT-178) mogą na czas próby wstawić własne reguły
+`accept` przed regułami drop: `nft insert rule inet tide-box forward iifname "incusbr0" … accept comment
+"tide-proto"` (albo w łańcuchu `input`), a po próbie usunąć je po uchwytach (`nft -a list chain inet tide-box
+forward`, `nft delete rule inet tide-box forward handle <n>`). Ponowne wczytanie pliku (`sudo systemctl reload
+tide-box-nft` albo `sudo nft -f /etc/tide-box/tide-box.nft`) też je usuwa i nie dotyka pudełek. **Nie
+`systemctl restart tide-box-nft`** — restart przez `Requires=` zatrzymuje Incusa ze wszystkimi kontenerami próby.
+Usługa takich reguł nie zakłada.
+
+**Odinstalowanie** (`make box-uninstall`, `scripts/box/uninstall.sh`, z `--dry-run` bez sudo) cofa kroki
+w odwrotnej kolejności według pliku stanu: jednostka i drop-in, tabela `inet tide-box` i `/etc/tide-box`,
+`incus admin shutdown` i zatrzymanie jednostek `incus*`, odmontowanie `/var/lib/incus`, odłączenie pętli puli,
+usunięcie `incusbr0` i tabeli `inet incus`, `apt-get purge` pakietów z pliku stanu (najpierw symulacja; odmowa,
+gdy purge usunąłby coś spoza listy), potem `/var/lib/incus`, `/var/cache/incus`, `/var/log/incus`, plik puli,
+grupy założone przez pakiety, linie dopisane do `/etc/subuid` i `/etc/subgid` oraz plik stanu. Odmawia plików
+jednostek bez znacznika Tide. Wszystkie pudełka i ich dane w puli znikają; katalogi hosta montowane do pudełek
+(`~/.local/share/tide/box`) zostają.
+
+**Dowód odwracalności:** `scripts/box/host-state.sh` (tylko odczyt; `nft list ruleset` przez sudo, gdy trzeba)
+zapisuje pakiety (`dpkg-query -W`), łącza (`ip -o link`: nazwa i typ), `nft list ruleset` bez liczników,
+`getent group`, `/etc/subuid` i `/etc/subgid`, istnienie pliku puli i katalogów Incusa oraz jednostki `incus*`,
+`lxcfs*`, `tide-box*`. Migawka przed `make box-install` i po `make box-uninstall` musi być identyczna.
+
+### Budowa pudełka (PT-167)
+
+Moduły: `box/incus.py` (cienki adapter CLI), `box/builder.py` (budowa, kopia per karta, status, reset,
+usunięcie, zatwierdzenie), `box/state.py` (dziennik, stany, `BoxStatus`, `card_box_name`), `box/settings.py`,
+`box/cli.py`; punkt wejścia `python3 daemon/tide.py box …` (instalacja do PATH — z obrazem bazowym, #16).
+
+**Adapter.** Każde polecenie `incus` dostaje `--project <projekt>` (domyślnie `user-<uid>`, projekt ograniczony
+z instalacji) i stdin z `/dev/null`. Program: `$TIDE_INCUS_BIN` albo `incus` z PATH. Instancję szukamy po
+dokładnej nazwie w `incus list --format json` (filtr `incus list <nazwa>` dopasowuje przedrostki — błąd z P-5).
+
+**Ustawienia** — ta sama sekcja `box` w `$XDG_CONFIG_HOME/tide/cardflow.json` i ten sam moduł `box/settings.py`
+(`BoxSettings`) co proxy (niżej, „Proxy wyjściowe”); klucze buildera, wszystkie opcjonalne: `project`
+(`user-<uid>`), `base-image` (`tide-base`), `pool` (`tide`), `nic` (`eth0`), `ipv6-filtering` (`false`),
+`agents-version`, `ip-wait-seconds` (30), `agent-uid`/`agent-gid` (1000 — użytkownik domu `/home/agent`;
+ostateczną wartość ustala obraz bazowy #16). Zła wartość → ostrzeżenie na stderr `tide box` i wartość domyślna.
+Adresu proxy w ustawieniach nie ma: builder bierze adres i port z **uruchomionego proxy** (`box.proxy.running()`:
+nasłuch na adresie mostka `box.bridge`, port `box.proxy-port`) — jedno źródło dla proxy i budowy.
+
+**Kolejność budowy** (`tide box build <slug>`, profil projektu z Tablicy):
+
+Gdy `verify` sprawdza kod projektu (np. `npm ci`, potem `npm run lint`), użyj
+`tide box build <slug> --verify-worktree <katalog>`. CLI sprawdza przynależność katalogu do repozytorium
+projektu w Tablicy i brak zmian śledzonych plików. Przesyła archiwum śledzonych plików HEAD, bez `.git`,
+plików nieśledzonych i ignorowanych zależności hosta. Builder rozpakowuje je w `/opt/tide/verify/work`
+i uruchamia tam wyłącznie `verify` jako użytkownik agenta z jego UID/GID i `HOME=/home/agent`;
+pierwsze niepowodzenie zatrzymuje następne polecenia tej weryfikacji.
+Kod commita zapisuje w `box.verify.source_commit`. Kopia i jej zależności są usuwane przed migawką, także
+po nieudanym verify; błąd sprzątania przerywa budowę. Nie powstaje montowanie repozytorium hosta.
+Polecenia przygotowania zależności muszą być jawnie zatwierdzone w `verify` profilu. `setup` zachowuje
+dotychczasowy katalog pracy. Bez opcji zachowanie buildera pozostaje dotychczasowe.
+
+1. `incus init <base> <slug>` — kopia obrazu bazowego (to `launch` bez startu: karta sieciowa dostaje filtrowanie,
+   zanim wyśle pierwszy pakiet) z `-c limits.cpu=… -c limits.memory=…` z profilu
+   (domyślnie 8 / 24GiB). Docker (`docker.enabled: true` albo `docker` w `stacks`) dostaje
+   `security.nesting=true`, `security.syscalls.intercept.mknod=true` i
+   `security.syscalls.intercept.setxattr=true`, przed startem i pierwszym szablonem.
+   Bez Dockera te klucze są pomijane. **Nigdy `security.privileged`.**
+   `incus config device override <slug> root size=<resources.disk>` (domyślnie 60GB); prywatny katalog hosta
+   `~/.local/share/tide/box/<slug>/home` (0700) jako urządzenie dyskowe na `/home/agent`.
+   `raw.idmap` mapuje UID/GID użytkownika hosta na `agent-uid/gid`, tak samo jak BoxRunner.
+   Dawny wolumen jest wcześniej migrowany bez usuwania danych (PT-189, niżej).
+2. Filtrowanie NIC (niżej).
+3. `incus start`, adres IPv4 pudełka, `set_box_policy(ip, build_domains(profile), host-ollama, dziennik odmów
+   budowy)` w proxy Tide (#5) — przed pierwszym `incus exec`. Dziennik odmów:
+   `$XDG_STATE_HOME/tide/box/<slug>/build-denied.log`.
+4. Kontrola braku swapu: pierwszy `incus exec` sprawdza `/sys/fs/cgroup/memory.swap.max=0`.
+   Brak pliku (wymagane cgroup v2), błąd odczytu albo inna wartość przerywa budowę przed szablonami i migawką.
+   Następnie szablony stosów wg `stacks`: `incus file push box/stacks/lib.sh` i `box/stacks/<stos>.sh` do
+   `<slug>/opt/tide/stacks/`, potem `bash /opt/tide/stacks/<stos>.sh` w kolejności `stacks` (niżej, „Szablony stosów
+   w pudełku (PT-192)”; brak skryptu albo `lib.sh` = błąd przed `incus`).
+5. `apt-get update` i `apt-get install -y --no-install-recommends` z pakietami szablonów i profilu
+   (`templates.build_apt`). 6. Polecenia `setup` (`bash -c`). 7. `docker pull` obrazów (`templates.build_images`),
+   tylko przy włączonym Dockerze. Nieudany pull nie przerywa pozostałych pobrań ani budowy: lista
+   `failed_images` w `box.ready` i stan „zbudowane z ostrzeżeniem”.
+   8. `verify` — nieudane polecenie nie przerywa budowy: zdarzenie `box.verify`
+   z `result: fail` i listą `failed`, stan „zbudowane z ostrzeżeniem” (`clean` z `warning`).
+9. Klucz `user.tide.recipe` = odcisk `profile.recipe_stamp(profile, templates_version, agents-version)`
+   (JSON: hash i skróty kluczy do `diff`), potem `incus snapshot create <slug> clean --reuse`. Migawka niesie
+   klucz w swojej konfiguracji, więc każda kopia z `<slug>/clean` ma ten sam odcisk. (Incus 6.0 nie ustawia
+   opisu migawki przy `snapshot create`, dlatego „opis” to klucz `user.*` konfiguracji migawki.)
+   `templates_version` to skrót wszystkich `box/stacks/*.yaml` i `*.sh` (zapisany jako `builder.STACKS_VERSION`).
+
+### Docker i pula portów w kroku (PT-171)
+
+`docker.enabled: true` włącza także stos `docker`; sam stos `docker` włącza Docker niezależnie od
+pominiętej lub fałszywej flagi. Normalizacja profilu służy też do hasha przepisu.
+Szablon `box/stacks/docker.sh` należy do PT-192 (#29): instaluje Docker, dodaje `agent` do grupy `docker`
+i zapisuje drop-in `dockerd` z proxy oraz `NO_PROXY=BOX_NO_PROXY`. PT-171 nie zmienia tego skryptu ani proxy.
+Builder ustawia konfigurację Incusa i przez `incus exec` pobiera bez duplikatów obrazy szablonów
+(w tym przypięty Ryuk z `docker.yaml`) oraz `docker.images` profilu, z `HTTPS_PROXY` budowy.
+Nie uruchamia Dockera hosta. Budowa nie przekazuje `DOCKER_HOST`; BoxRunner usuwa tę zmienną również
+z dodatków środowiska kroku. Testcontainers korzystają z gniazda `/var/run/docker.sock` wewnątrz pudełka.
+
+`box/ports.py` rezerwuje 10 kolejnych portów z `ports.pool` (obie granice włącznie). Każdy następny
+zakres zaczyna się 10 portów dalej. Niepełny ogon puli nie jest przydzielany. `PORT`, `E2E_PORT`,
+`TIDE_PORT_BASE` i wszystkie nazwy z `ports.env` mają wartość pierwszego portu zakresu.
+Profil karty zastępuje pulę projektu i sumuje nazwy zgodnie z `profile.merge`. Bez `ports.pool` nie ma
+automatycznego przydziału. Rezerwacja nie wymusza na aplikacji użycia portów; aplikacja musi czytać środowisko.
+
+Stan puli: `$XDG_STATE_HOME/tide/box/<slug>/ports/<pudełko>.json`, blokada `flock` na oddzielnym
+pliku `.lock`, atomowa wymiana stanu. Blokada działa między procesami. Przydziały różnych kart i kroków
+w jednym pudełku nie nachodzą na siebie, również po zmianie granic puli. Osobne pudełka mają osobne pule,
+bo mają oddzielne przestrzenie sieciowe. Pliki stanu leżą poza montowaniami agenta.
+
+Silnik zapisuje zamiar `box.ports` przed przydziałem i `boxPortOwner` w metadanych kroku.
+Wyczerpana pula oznacza `step.waiting` z przyczyną `box`; kolejne tyknięcie ponawia przydział.
+Wartości portów BoxRunner zapisuje tylko w `in/env`, nigdy w argv ani w środowisku klienta Incusa hosta.
+Zakończenie kroku (także `error`) i nieudany start zwalniają przydział; odzyskiwanie po restarcie zwalnia
+również zakończone kroki, nieudane zamiary startu i rezerwacje sprzed zamiaru startu.
+Błąd utrwalenia udanego startu pozostawia rezerwację przy otwartym zamiarze; odzyskiwanie
+odnajduje jednostkę i zachowuje jej porty do końca kroku.
+Tryb `BoxRunner --demo` korzysta z tej samej puli zatwierdzonego profilu. Zwalnia przydział dopiero
+po końcu klienta i potwierdzeniu `inactive` jednostki w pudełku. Przerwanie oczekiwania wywołuje zatrzymanie jednostki;
+stan aktywny lub nieznany pozostawia trwałą rezerwację. Kolejne demo sprawdza osierocone przydziały
+tego pudełka i zwalnia wyłącznie te z potwierdzonym końcem jednostki. Identyfikator właściciela
+`demo-<czas>-<losowy sufiks>` określa nazwę jednostki; osobna blokada demo jest dziedziczona
+przez klienta Incusa (`pass_fds`) i chroni również okno przed utworzeniem jednostki. Śmierć rodzica
+lub zamknięcie jego deskryptora nie zwalnia blokady żywego klienta. Dopiero zamknięcie ostatniej
+kopii deskryptora pozwala kolejnemu demo sprawdzić jednostkę i bezpiecznie odzyskać rezerwację.
+
+**Ryzyko K1.** Grupa `docker` daje użytkownikowi `agent` prawa roota pudełka, w tym możliwość
+zamontowania rootfs. Wewnętrzne `denyRead` nie chroni poświadczeń agenta przed kodem testów.
+Filtrowanie NIC jest po stronie Incusa, pełna ochrona poświadczeń wymaga K3. Ten opis jest widoczny
+w propozycji profilu i w pakiecie zgód; pozycja Docker pozostaje żółta.
+
+**Dalszy zakres, poza PT-171 (decyzja użytkownika 6.11.2026).** Przypisywanie rzeczywistych sesji
+Testcontainers do kart oraz sprzątanie ich kontenerów i obrazów po domknięciu wymagają osobnego ticketu.
+PT-171 nie wykonuje `docker rm` ani `docker image prune`. Szkic wymagań:
+`docs/agents/plans/followups/pt-171-testcontainers-cleanup.md`.
+
+**Swap w projekcie ograniczonym (PT-192).** W Incusie 6.0 jawne `limits.memory.swap=false` jest zabronionym
+kluczem niskiego poziomu. Builder pomija ten klucz: przy twardym `limits.memory` Incus ustawia limit swapu na 0
+również dla wartości domyślnej. Kontrola z punktu 4 potwierdza efekt w jądrze; budowa odmawia, jeśli nie może
+go potwierdzić. `restricted.containers.lowlevel` pozostaje zablokowane. Uzasadnienie i źródła:
+decyzja `swap-zero-bez-lowlevel` w `docs/box-decisions.md`. Cykl życia (#19/PT-182) powinien zachować tę samą
+zasadę przy ponownym nakładaniu limitów pamięci.
+
+Każde `incus exec` budowy: `-T`, jako root pudełka, z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami)
+`http://<adres mostka>:<box.proxy-port>` z uruchomionego proxy, `NO_PROXY` = `box/netenv.py` `BOX_NO_PROXY`,
+`DEBIAN_FRONTEND=noninteractive`, `TIDE_BOX_PROXY` (adres proxy) i `TIDE_BOX_NO_PROXY` (= `BOX_NO_PROXY`) dla
+szablonów, `TIDE_NODE_VERSION`/`TIDE_DOTNET_SDK` z profilu. **Brak uruchomionego proxy (albo jego adresu) to błąd
+przed pierwszym poleceniem `incus`** (polityka `ProxyMissing`) — budowy „bez proxy” nie ma. `tide box build`,
+`tide box base` i `tide box login` z wiersza poleceń używają proxy uruchomionego w tym procesie, a bez niego startują
+własne `ProxyService` na czas polecenia (decyzja `base-wlasne-proxy-cli`, dla `build` od PT-192); przy działającej
+usłudze Tide port jest zajęty i polecenie odmawia (kod 1). Dziennik odmów budowy jest czyszczony na jej starcie
+(pusty po budowie = żadna domena nie brakowała), a `tide box build` wypisuje jego ścieżkę. Po migawce (i przy błędzie) builder zdejmuje politykę budowy
+(`clear_box_policy`), więc pudełko po budowie nie ma w proxy żadnej polityki do czasu kroku (#18).
+Wyjście poleceń trafia na bieżąco (strumieniowo) do `$XDG_STATE_HOME/tide/box/<slug>/build.log`.
+`type: vm` → błąd „nieobsługiwane w tej wersji” bez żadnego wywołania `incus`. Istniejące pudełko jest przy
+budowie usuwane i tworzone od nowa (dom `/home/agent` zostaje); budowa odmawia, gdy w pudełku biegną kroki.
+
+**Filtrowanie NIC — dlaczego.** Proxy Tide (#5) rozpoznaje pudełko po adresie IP, a agent w grupie `docker`
+ma w pudełku prawa roota i mógłby zmienić adres IP albo MAC, żeby dostać politykę innego pudełka. Na karcie
+pudełka builder ustawia `security.mac_filtering=true`, `security.ipv4_filtering=true` i
+`security.ipv6_filtering=<ipv6-filtering>` — Incus odrzuca pakiety ze źródłowym adresem innym niż przydzielony
+(P-5: podszycie nie dochodzi do hosta). `ipv6_filtering` domyślnie `false` (decyzja `filtrowanie-nic-bez-ipv6`:
+Incus 6.0 nie startuje karty z nim bez `br_netfilter`, a mostek nie ma IPv6). Karta z profilu `default` dostaje
+`config device override`, karta lokalna (kopia per karta) — `config device set`. Dzieje się to na każdej ścieżce
+tworzącej pudełko: przy budowie i przy kopii. `tide box status` pokazuje „filtrowanie NIC: tak/nie” z
+`incus config device show`; „nie” (brak `mac`/`ipv4`) = stan **niezgodne** i `BoxStatus.usable == False` — krok
+nie startuje (#18).
+
+**Kopia per karta** (`box: per-card`): `copy_for_card(slug, card)` → `incus copy <slug>/clean <slug>-<karta>`
+(nazwa wyłącznie z `card_box_name(slug, card)`, np. `plasma-tide-k-38`), `user.tide.copy-of=<slug>`,
+`user.tide.card=K-38`, własny katalog `<slug>/cards/k-38/home` na `/home/agent` (0700, to samo mapowanie UID/GID),
+filtrowanie NIC (`device set`), **własna migawka `clean`** kopii (`incus copy` z migawki daje instancję bez
+migawek; migawka po podpięciu domu i filtrowania, więc `reset --card` ich nie cofa) i zdarzenie `box.ready`
+z `card`, `copy_of`, `hash` i `warning` przeniesionym z pudełka projektu (zbudowane z ostrzeżeniem → kopia też).
+Druga kopia dla tej samej karty nie powstaje (zwraca istniejącą nazwę), chyba że przepis projektu został
+przebudowany z nowym hashem — wtedy nieaktywna kopia zostaje odtworzona z nowej migawki.
+Przed odtworzeniem kopii jej dawny dom jest migrowany bez usuwania danych. Nowa kopia pozostaje zatrzymana;
+start do pracy prowadzi #18/#19.
+
+**Dziennik i stany.** `<Tablica>/projects/<slug>/box/journal.jsonl` (JSON Lines, `flock`): `box.build`
+(`phase: start|end`, `result`, `steps`, `hash`), `box.ready`, `box.verify` (`result`, `failed`), `box.reset`,
+`box.stop`, `box.approved` (`source: cli`, `accepted_red`), `box.use`/`box.release` (krok w pudełku — woła
+#18 przez `mark_in_use`/`mark_released`) i `box.destroy`. `box.build` (koniec), `box.ready`, `box.reset`,
+`box.stop`, `box.verify` mają `duration` w sekundach. Stany: `brak → budowa → clean → w użyciu → nieaktualny → reset →
+zatrzymane`, plus `niezgodne` i `błąd budowy`. Stan z dziennika jest korygowany przez Incusa: brak instancji →
+`brak`, brak filtrowania → `niezgodne`, hash migawki różny od profilu → `nieaktualny (do przebudowy)` z listą
+kluczy z `profile.diff` (np. `stacks, apt`; zmiana zasobów albo domen nie jest różnicą przepisu), zatrzymana
+instancja → `zatrzymane`. `BoxStatus.usable` (czy krok może wejść, #18) wymaga istniejącej instancji,
+filtrowania NIC, **zatwierdzonego profilu** (brak profilu = nieużywalne) i braku różnic przepisu.
+
+**CLI** `python3 daemon/tide.py box …` (kody: 0 sukces, 1 błąd, 2 zły argument, 3 odmowa/niezgodne/nieaktualne):
+
+**K-38 v1, PT-267:** obecnie działają tylko `status` i `stop`, przez usługę D-Bus.
+Pozostałe polecenia z poniższej historycznej listy oraz modułowy runner `--demo` są wyłączone do etapów II/III;
+nie wykonują operacji lokalnie. Zachowany klient i kontrakt usługi: [CLI v1](box-cli-v1.md).
+
+| Polecenie | Działanie |
+| --- | --- |
+| `build <slug>` | budowa jak wyżej |
+| `status <slug> [--card K-38] [--json]` | stan, stan w dzienniku, hash migawki i profilu, różnice, filtrowanie NIC, kroki w pudełku |
+| `reset <slug> [--card K-38]` | `incus snapshot restore <pudełko> clean`; odmawia (kod 3), gdy biegnie krok; dom hosta zostaje, a stara migawka dostaje ponownie właściwe montowanie |
+| `stop <slug> [--card K-38]` | zatrzymanie przez `incus stop`; kod 3, gdy biegnie krok; zdarzenie `box.stop` z czasem trwania |
+| `start <slug> [--card K-38]` | odczyt limitów z profilu, `incus start`, oczekiwanie na `incus exec … true`; zdarzenie `box.ready` z czasem trwania |
+| `destroy <slug> --yes` | usuwa instancje projektu i kopii (`user.tide.copy-of`); zachowuje domy, eksporty i stare wolumeny do osobnego sprzątania; odmawia, gdy biegnie krok |
+| `approve <slug> --file box.yaml [--accept-red POZYCJA]…` | walidacja schematem z #2, zapis w Tablicy i `box.approved source=cli` — jawna zgoda z wiersza poleceń, równoważna pakietowi zgód; pozycja czerwona (np. `github.com`) tylko z `--accept-red` |
+| `base` | buduje obraz bazowy Tide (`make box-base`) — niżej, „Obraz bazowy Tide” |
+| `login [<slug>]` | logowanie agentów bez K3 (K1) w pudełku projektu; przy K3 dla obu programów — „nic do zalogowania” |
+
+`run` doda #28. Tekstowy `status` pokazuje także czasy zdarzeń `box.stop` i `box.reset`; kontrakt JSON
+`BoxStatus` pozostaje bez zmian (K-36).
+
+**Cykl życia (PT-182, D14).** `box/lifecycle.py` obsługuje auto-stop po `box.idle-hours` bez kroku
+(ustawienie usługi w sekcji `box` pliku `cardflow.json`, domyślnie 4 godziny). Sprawdzenie biegnie w `tick`
+silnika przy włączonym `box.enabled`. Liczy się ostatnie użycie/zwolnienie/start pudełka; sam stary czas
+zdarzenia nie pozwala zatrzymać pudełka. Rezerwacje `box.use`, `procs` i stan jednostek
+`systemctl --user is-active` wewnątrz pudełka blokują stop, reset i przebudowę. Po restarcie usługi stan
+jednostek pochodzi z trwałych wpisów kroków; nieznany stan również blokuje operację. CLI sprawdza te same
+dzienniki i jednostki. Krok trwający dłużej niż limit bezczynności nie zostaje zatrzymany.
+Kontrola aktywności i cała operacja destrukcyjna biegną pod wspólną blokadą projektu (`flock`),
+używaną również przy rezerwacji kroku. Przed `box.use` krok ponownie sprawdza zgodność i gotowość
+pudełka pod tą blokadą. Blokada obejmuje też przebudowę, reset, kopiowanie i usuwanie kopii.
+
+Przy każdym starcie istniejącego pudełka limity są odświeżane przez `incus config set`: `limits.cpu`
+z `resources.cpu`, `limits.memory` z `resources.memory`. Dotyczy to też restartu na nowe montowania:
+wywołujący odświeża limity przed `ensure_devices` i sprawdza swap po przygotowaniu montowań.
+Zgodnie z regułą PT-192 `swap-zero-bez-lowlevel` nie wysyłamy zabronionego `limits.memory.swap`,
+także false; twardy limit RAM ma dawać `memory.swap.max=0` w cgroup v2, co sprawdzamy po starcie
+oraz przed uruchomieniem agenta. Brak potwierdzenia odmawia wykonania kroku. `resources.swap=true`
+jest jawnie odrzucane w ograniczonym projekcie. Zmiana zasobów nie zmienia hasha przepisu i nie wymaga
+przebudowy. Start nie usuwa ani nie wyłącza filtrowania NIC. Instalator ustawia
+`restricted.snapshots=allow` także przy aktualizacji projektu, zachowując pozostałe ograniczenia.
+
+Pudełko projektu resetuje się na żądanie użytkownika lub przy jawnej przebudowie zmienionego przepisu
+(`box.reset`, powód `zmiana przepisu`). Bezczynność i domknięcie karty nie resetują pudełka projektu.
+Po `card.closed` usługa usuwa wyłącznie kopię karty wyliczoną przez `card_box_name` i potwierdzoną
+metadanymi `user.tide.copy-of` oraz `user.tide.card`. Przed usunięciem migruje dawny dom;
+katalog hosta, eksport i stary wolumen pozostają do osobnego sprzątania. Zapisuje `box.reset`
+z powodem `karta domknięta`, `removed: true` i `duration`. Gdy kopia ma aktywny krok, zapisuje
+`result: deferred` i ponawia sprzątanie w kolejnych przebiegach, także po restarcie usługi.
+
+**Testy bez Incusa.** `daemon/tests/fakebin.py` ma atrapę `incus` (`daemon/tests/fake_incus.py`): zapisuje argv
+w `$TIDE_FAKE_LOG`, trzyma stan w `$TIDE_FAKE_INCUS_STATE` (`list`, `snapshot list`, `config show`,
+`config device show`, `info` wypisują z niego JSON; `init/launch/copy/snapshot/restore/start/stop/delete/config
+set/config device set|override|add` i wolumeny go zmieniają), a `exec` wykonuje polecenie lokalnie (w `--cwd`)
+z PATH zaczynającym się od `<fakebin>/box` — `apt-get`, `docker` i inne programy „w pudełku” tylko zapisują
+wywołanie. `daemon/tests/__init__.py` ustawia `TIDE_INCUS_BIN` na nieistniejący program, więc żaden test nie
+dosięgnie prawdziwego Incusa. Testy: `daemon/tests/test_box_builder.py`.
+
+### Obraz bazowy Tide (PT-179)
+
+Obraz, z którego `incus init` buildera robi każde pudełko projektu (`box.base-image`, domyślnie `tide-base`).
+Budowa raz na host i po każdej zmianie wersji agentów albo skryptów: `make box-base` (= `python3 daemon/tide.py box
+base`, bez sudo — projekt ograniczony Incusa). Moduły: `box/base.py` (budowa i logowanie), `box/stacks/base.sh`
+(skrypt w pudełku), `box/stacks/tide-step.sh`, `box/agents.py` (wersje), `box/netenv.py` (`BOX_NO_PROXY`).
+
+**Kolejność `tide box base`:**
+
+1. Adres proxy Tide (#5) — przed pierwszym poleceniem `incus`. Polecenie z wiersza poleceń używa proxy uruchomionego
+   w tym procesie, a gdy go nie ma, startuje własną instancję tego samego `ProxyService` (`start_service` z ustawień:
+   adres mostka, `box.proxy-port` — jedyny port wpuszczany przez nftables) i zatrzymuje ją po budowie. Gdy port
+   trzyma już usługa Tide (`box.enabled`), start się nie uda — budowa odmawia z tą informacją (zatrzymaj usługę na
+   czas budowy). Brak mostka albo `incus` → odmowa. Ścieżki „bez proxy” nie ma.
+2. `incus init images:ubuntu/24.04 tide-base` (bez startu), filtrowanie NIC jak w builderze, start, adres IPv4.
+3. `set_box_policy(ip, domeny szablonu base, ollama=False, base-denied.log)` — lista budowy = `templates.build_domains({})`,
+   czyli szablon `base` z domenami instalatorów agentów z P-6 (`claude.ai`, `downloads.claude.ai`, `registry.npmjs.org`,
+   `archive.ubuntu.com`, `security.ubuntu.com`, `nodejs.org`). Dziennik odmów
+   `$XDG_STATE_HOME/tide/box/tide-base/base-denied.log` (0600) jest czyszczony na starcie budowy — pusty po udanej
+   budowie znaczy „żadna domena nie brakowała”; wyjście poleceń w `base-build.log` obok.
+4. `incus file push` skryptów do `/opt/tide/stacks/` i czcionek użytkownika: zwykłe pliki czcionek (`.ttf`, `.otf`,
+   `.ttc`, `.woff2`, …) z `$XDG_DATA_HOME/fonts` (`~/.local/share/fonts`) hosta, bez dowiązań, jako `fonts.tar`
+   (właściciel root, 0644) — kopiowane, nie montowane (K-33).
+5. `bash /opt/tide/stacks/base.sh <krok>` jako root pudełka, każdy krok osobnym `incus exec` z proxy w środowisku
+   i wartościami z usługi: `TIDE_BOX_PROXY`, `TIDE_BOX_NO_PROXY` (= `BOX_NO_PROXY`), `TIDE_AGENT_UID/GID`
+   (`box.agent-uid/gid`), `TIDE_CLAUDE_VERSION`, `TIDE_CODEX_VERSION`. Kroki (`base.STEPS`):
+
+   | Krok | Co robi |
+   | --- | --- |
+   | `sources` | źródła Ubuntu (`ubuntu.sources` albo `sources.list`) z `http://` na `https://` (decyzja `apt-przez-https`; obce źródło `http://` = błąd), `/etc/apt/apt.conf.d/90tide-proxy` z `Acquire::http::Proxy` i `Acquire::https::Proxy` |
+   | `packages` | `apt-get update --error-on=any`, `git build-essential curl ca-certificates xvfb weston fontconfig nodejs npm bubblewrap socat apparmor` |
+   | `user` | `agent` z uid/gid 1000 (`ubuntu` z uid 1000 jest przejmowany), lingering (`loginctl enable-linger`) |
+   | `environment` | `/etc/environment` (`HTTP_PROXY`, `HTTPS_PROXY`, małe litery, `NO_PROXY`/`no_proxy` = `BOX_NO_PROXY`, `DISABLE_AUTOUPDATER=1`; reszta pliku, np. `PATH`, zostaje), `/etc/profile.d/tide-proxy.sh` (powłoki logowania) i `/etc/systemd/user.conf.d/90-tide-proxy.conf` (`DefaultEnvironment` usług `systemd --user` — kroki) |
+   | `fonts` | `fonts.tar` do `/usr/local/share/fonts/tide`, `fc-cache` |
+   | `tide-step` | `/usr/local/bin/tide-step` (niżej) |
+   | `apparmor` | profil `bwrap` (ten sam co `scripts/sandbox/check.py profile` na hoście) w `/etc/apparmor.d/bwrap-userns-restrict`, `apparmor_parser -r`, usługa `apparmor` włączona — wczytuje go przy każdym starcie pudełka (decyzja `bwrap-profil-w-pudelku`) |
+   | `claude` | instalator natywny `https://claude.ai/install.sh` pobrany do pliku (bez potoku do powłoki) i uruchomiony z dokładną wersją w katalogu tymczasowym; program do `/usr/local/bin/claude` (poza `/home/agent`, który w pudełku projektu przykrywa dom hosta); `claude --version` jako `agent` |
+   | `codex` | `npm install -g @openai/codex@<wersja>`; `codex --version` jako `agent` |
+   | `cleanup` | `apt-get clean`, pamięć npm, listy apt, `/opt/tide` |
+
+6. `user.tide.agents` = `agents.AGENTS_VERSION`, migawka **`tide-base/clean`**, `incus publish tide-base/clean --alias
+   tide-base --reuse` (obraz dla `incus init` buildera), `incus stop tide-base`.
+7. Polityka budowy zdjęta z proxy (`clear_box_policy`) — także po błędzie. Nieudany krok = błąd bez migawki i obrazu.
+
+Bez drop-inu `dockerd` (szablon `docker.sh`, PT-192 — niżej). Skrypt nie wpisuje żadnej wartości z usługi (adres proxy,
+`NO_PROXY`, wersje): odmawia pracy bez `TIDE_BOX_PROXY` równego `HTTP(S)_PROXY` wywołania, z nieprzypiętą wersją
+(`x.y.z`) albo poza rootem.
+
+**Wersje agentów** (`box/agents.py`): Claude Code `CLAUDE_VERSION` (wersja hosta z analizy 4.7, sprawdzona w P-6),
+Codex `CODEX_VERSION` (P-3/P-6) — dokładne, nigdy `latest`; auto-aktualizacja Claude Code w pudełku wyłączona.
+`AGENTS_VERSION` wchodzi do hasha przepisu pudełek projektów (`Builder.agents_version`; `box.agents-version`
+w ustawieniach go nadpisuje), a skrypty `box/stacks/*.sh` — przez `templates_version`. Podbicie wersji albo zmiana
+`base.sh` robi pudełka projektów nieaktualnymi: `make box-base`, potem `tide box build <slug>`. Podbicie Codexa
+= powtórka P-3 (dostawca K3 zależy od ścieżek `backend-api/codex`).
+
+**`BOX_NO_PROXY`** (`box/netenv.py`) = `localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal` (P-6, „NO_PROXY
+per klient”): pętla zwrotna pudełka i sieci Dockera w pudełku. Ta sama stała idzie do `/etc/environment` obrazu,
+do każdego `incus exec` budowy (#4) i — w #6 — do kroku. `netenv.proxy_env(proxy)` daje komplet zmiennych.
+
+**`tide-step`** (`/usr/local/bin/tide-step`, kontrakt BoxRunnera #6/PT-169, który może go rozszerzyć):
+`tide-step <plik env> <plik kodu> <program> [argumenty…]` — wczytuje `/etc/environment`, potem plik kroku
+(`KLUCZ=wartość`, jako dane — nic nie jest wykonywane; zły wiersz → kod 2), uruchamia program i zapisuje jego kod
+wyjścia atomowo do `<plik kodu>` (0600), jak `EXIT_WRAPPER` kroku na hoście. Krok biegnie jako usługa
+`systemd --user` agenta (decyzja `krok-jako-usluga-user`), więc zmienne kroku nie mogą przyjść przez środowisko
+wywołującego.
+
+**Logowanie agentów (K1) — `tide box login [<slug>]`.** Poza budową, jednorazowo. Programy do zalogowania to
+`k3.login_programs()`: dziś puste (K3 dla Claude Code i Codexa), więc polecenie kończy się „nic do zalogowania”
+(kod 0), a `tide box base` — „logowanie agentów niepotrzebne”. Gdyby K3 dla programu zostało wyłączone, budowa
+kończy się instrukcją „zaloguj: `tide box login` <projekt>” (kod 0, nie błąd), a `tide box login <slug>` otwiera
+`incus exec -t <pudełko> --user 1000 --cwd /home/agent -- claude login` (i `codex login`) z proxy Tide i polityką
+projektu (`compose_policy`) na czas logowania. Poświadczenia z `~/.claude`/`~/.codex` hosta nigdy nie są kopiowane.
+
+**Co jest trwałe.** `/home/agent` pudełka projektu to katalog hosta `<slug>/home` (PT-189) — przeżywa reset
+z migawki `clean` i przebudowę pudełka (logowanie K1, `~/.npm`, `~/.nuget/packages`, `~/.cache/ms-playwright`);
+pozostaje również po `tide box destroy` do osobnego sprzątania. Obraz bazowy (instancja `tide-base` z migawką `clean` i obraz `tide-base`) żyje do
+następnego `make box-base`; reszta systemu plików pudełka wraca do `clean` przy resecie. Programy agentów,
+czcionki i konfiguracja proxy są w obrazie, nie w `/home/agent`.
+
+Testy: `daemon/tests/test_box_base.py` (atrapa `incus` z `fake_incus.py` uczy się `publish`; prawdziwy `base.sh`
+nie jest wykonywany w całości — jego funkcje plików biegną po `source` w katalogu tymczasowym).
+
+### Szablony stosów w pudełku (PT-192)
+
+Skrypty powłoki `box/stacks/<stos>.sh` (`node`, `playwright`, `dotnet`, `docker`, `python-qt`) obok danych
+`<stos>.yaml` (#30). Builder (krok 4 budowy) wypycha `lib.sh` i skrypty z `stacks` profilu do `/opt/tide/stacks/`
+i uruchamia każdy jako root pudełka, w kolejności `stacks`, na obrazie bazowym. Każdy skrypt: `set -euo pipefail`,
+`source lib.sh`, odmowa poza rootem i bez proxy (`TIDE_BOX_PROXY` musi być równe `HTTP(S)_PROXY` wywołania),
+pobieranie wyłącznie funkcją `fetch` (`curl` do pliku, tylko `https://`, także przekierowania — nigdy potok do
+powłoki) z domen własnego szablonu, wersje przypięte w skrypcie albo wzięte z profilu (nigdy `latest`). Żaden
+skrypt nie czyta ani nie kopiuje plików agentów hosta (`~/.claude`, `~/.codex`).
+
+**Kto jest właścicielem czego.** `base.sh` (obraz bazowy, apt przez HTTPS, `/etc/environment` z proxy) — #16/PT-179;
+skrypty stosów, `lib.sh`, **drop-in `dockerd` i `/etc/docker/daemon.json` — wyłącznie `docker.sh`** (#29/PT-192;
+test `test_box_stacks.py` sprawdza, że żaden inny plik repozytorium poza dokumentacją, testami i jednorazowymi
+skryptami prototypu nie tworzy `docker.service.d`); obrazy Dockera (`docker pull` z `templates.build_images`) —
+builder (#4) i konfiguracja Dockera w pudełku (#8/PT-171), nie szablon; domeny i klasy ryzyka — `<stos>.yaml` (#30).
+
+| Szablon | Co robi | Wejście z profilu |
+| --- | --- | --- |
+| `node.sh` | Node z `nodejs.org/dist` (archiwum `.tar.gz` ze sprawdzoną sumą z `SHASUMS256.txt` tej wersji) do `/usr/local` (wygrywa w PATH z Node 18 z apt obrazu, którego potrzebuje Codex); npm z tej dystrybucji; `CHROME_BIN=/usr/local/bin/tide-chrome` dla Karmy (opakowanie uruchamiające Chromium z `/opt/ms-playwright`, bez niego kod 127 z podpowiedzią „dodaj stos playwright”); `NODE_USE_ENV_PROXY=1` (Node ≥ 24 `fetch` przez proxy, P-6) | `node.version`: dokładne `x.y.z` albo numer główny przypięty w `NODE_PINS` (18, 20, 22, 24); bez wersji — `NODE_DEFAULT_MAJOR` (22); `x.y` = błąd |
+| `playwright.sh` | `npx --yes playwright@<PLAYWRIGHT_VERSION> install --with-deps chromium` przez proxy (zależności systemowe przez apt obrazu), przeglądarki w `/opt/ms-playwright` (w migawce `clean`, właściciel `agent` — projekt z inną wersją Playwrighta dociąga w kroku swoją rewizję), `PLAYWRIGHT_BROWSERS_PATH`; wymaga Node ≥ 20, czyli stosu `node` wcześniej w `stacks` | — (wersja przypięta w skrypcie) |
+| `dotnet.sh` | `dotnet-install.sh` z `dot.net` pobrany do pliku, SDK do `/usr/share/dotnet` (dowiązanie `/usr/local/bin/dotnet`), zależności (`libicu74`…) z apt, `DOTNET_ROOT`, telemetria wyłączona; `~/.nuget/NuGet/NuGet.Config` agenta z `<clear />` i **wyłącznie `nuget.org`** — bez rejestrów wewnętrznych (zapis jako `agent`, bo `/home/agent` to wolumen agenta) | `dotnet.sdk`: wyłącznie dokładne wersje SDK `x.y.z`, np. `['8.0.415']`; instalacja przez `--version` i kontrola dokładnego numeru; brak albo skróty `8`/`8.0` = błąd przed pobieraniem |
+| `docker.sh` | `docker.io` z Ubuntu, **runc 1.2.6** z wydań GitHub (suma SHA-256 przypięta, ta sama co w P-1; tylko amd64) jako domyślny runtime w `/etc/docker/daemon.json` (decyzja `runc-1-2-6-w-pudelku`), drop-in **`/etc/systemd/system/docker.service.d/proxy.conf`** z `HTTPS_PROXY`/`HTTP_PROXY` (i małymi literami) = `TIDE_BOX_PROXY` i `NO_PROXY`/`no_proxy` = `TIDE_BOX_NO_PROXY` (`BOX_NO_PROXY` wstrzyknięte przez builder — skrypt odmawia przy pustym), `agent` w grupie `docker`, restart `dockerd` i sprawdzenie `systemctl show docker -p Environment`, domyślnego runtime'u i `docker info` jako `agent`. `DOCKER_HOST` nie jest ustawiany | `docker.enabled` (nesting ustawia builder) |
+| `python-qt.sh` | Python 3, `python3-venv`, `pip`, PyQt6 z QML (`python3-pyqt6`, `python3-pyqt6.qtquick`, moduły `qml6-module-qtquick*`) z archiwum Ubuntu, `QT_QPA_PLATFORM=offscreen`; `xvfb` i czcionki są w obrazie bazowym; sprawdzenie `QGuiApplication` offscreen. PySide6 z PyPI nie jest instalowane (projekt dopisuje przypiętą wersję w `setup`) | — |
+
+**Zmienne stosów** (`write_stack_env` z `lib.sh`) trafiają w te same trzy miejsca co proxy obrazu bazowego:
+`/etc/environment`, `/etc/profile.d/tide-<stos>.sh` i `/etc/systemd/user.conf.d/91-tide-<stos>.conf`
+(`DefaultEnvironment` usług `systemd --user`, czyli kroków `tide-step`). Wartości są sprawdzane (bez spacji,
+cudzysłowów i `$`).
+
+**Domeny tylko budowy.** Szablon może mieć poza `domains` listę `build-domains`: domeny dla skryptów i usług
+obrazu wyłącznie w czasie budowy. `templates.build_domains(profile)` (lista budowy dla proxy) zawiera je,
+`templates.work_domains(profile)` (polityka kroków w `proxy.compose_policy`) i `known_domains()` (klasyfikacja
+pozycji profilu) — nie. Dziś: `docker` → `github.com` (czerwone jako domena pracy — repozytorium zdalne)
+i `release-assets.githubusercontent.com` (wydanie runc), `dotnet` → `aka.ms` (kanały `dotnet-install.sh`),
+`base` → `motd.ubuntu.com` (serwis powitalny Ubuntu; wyjaśnione odmowy z próby PT-192 z 18:38). Domeny
+pracy dopisane w PT-192 z dzienników P-1/P-6: `production.cloudfront.docker.com`, `crl3/crl4/ocsp.digicert.com`
+(sprawdzanie podpisów paczek NuGet), lustra `playwright-akamai/verizon.azureedge.net`.
+
+**`STACKS_VERSION`** (`box/builder.py`) to zapisana suma katalogu `box/stacks` (`templates_version()`: wszystkie
+`*.yaml` i `*.sh`, także `lib.sh` i `base.sh`). Wchodzi do hasha przepisu jako `templates`, więc każda zmiana
+szablonu (np. podbicie `PLAYWRIGHT_VERSION` albo przypięcia Node) robi zbudowane pudełka nieaktualnymi.
+`test_box_stacks.py` porównuje sumę katalogu z zapisaną wartością — zmiana szablonu bez podbicia stałej nie
+przechodzi testów. Po zmianie: nowa suma do `STACKS_VERSION`, potem `tide box build <slug>`.
+
+**Ograniczenia.** Archiwum Node i `dotnet-install.sh` są sprawdzane sumą z tego samego źródła (integralność, nie
+niezależne przypięcie); runc ma sumę przypiętą w repozytorium. SDK .NET wymaga dokładnego numeru w profilu
+(np. `dotnet.sdk: ['8.0.415']`); profile ze skrótami `8`/`8.0` trzeba uzupełnić i ponownie zatwierdzić przez
+`tide box approve`. Zmiana numeru SDK zmienia hash przepisu, a zmiana szablonu — `STACKS_VERSION`.
+`verify` z profilu biegnie po szablonach, `apt`,
+`setup` i `docker pull` (krok 8 budowy).
+
+Testy: `daemon/tests/test_box_stacks.py` — tekst skryptów (reguły wyżej, `shellcheck`, jeśli jest), funkcje plików
+po `source` w katalogu tymczasowym (drop-in `dockerd` porównany z `netenv.proxy_env`, `daemon.json`,
+`NuGet.Config`, zmienne stosu, rozwiązywanie wersji Node i SDK), budowa na atrapie `incus` z prawdziwymi `*.yaml`
+i prawdziwym `ProxyService` z #5 (lista domen przed pierwszym `incus exec`, `TIDE_BOX_*` w każdym `exec`).
+Pierwsza prawdziwa budowa i pomiary (budowa ≤ 15 min, reset ≤ 60 s, Docker z proxy w pudełku): `bash
+scripts/box/stacks-trial.sh` poza piaskownicą — profile próbne python-qt (`plasma-tide`) i dotnet + docker
+(`tide-stacks-test`), chwilowe `restricted.snapshots=allow` w projekcie (cofane na końcu), log
+`docs/box-prototype/pt192-<czas>.log`; pudełka i profile próbne są usuwane po próbie.
+Skrypt zwraca kod 1 po nieudanej budowie, kontroli, resecie, przekroczeniu progu czasu albo błędzie
+sprzątania. Gdy usunięcie pudełka się nie powiedzie, zachowuje jego profil próbny do ponowienia sprzątania.
+Pomiary mają kropkę dziesiętną niezależnie od ustawień języka hosta.
+Jeśli zmiana ustawienia migawek wymaga hasła, próba bez terminala używa `sudo -A` z `SUDO_ASKPASS` albo
+wykrytym `ksshaskpass`/`ssh-askpass`. Hasło wpisuje się w oknie systemowym; nie trafia przez stdin skryptu
+ani do dziennika próby. Ten sam mechanizm działa przy cofaniu ustawienia, także po wygaśnięciu zgody sudo.
+Bez terminala i pomocnika pozostaje `sudo -n` (brak wcześniejszej zgody przerywa próbę przed profilami).
+Nieudany odczyt początkowego ustawienia migawek również przerywa próbę, zanim zmieni ona projekt.
+Kontrola Docker po budowie sprawdza `docker info` i lokalny `testcontainers/ryuk:0.11.0` jako agent.
+Obraz pobiera builder, gdy proxy i polityka budowy działają; po budowie proxy CLI jest już zatrzymane.
+Skrypt nie próbuje wtedy pobierać dodatkowego `hello-world`.
+`bash scripts/box/stacks-acceptance.sh` wykonuje poza piaskownicą próbę oraz pełne `make test`, również
+gdy próba się nie powiedzie. Wynik końcowy zachowuje błąd dowolnej części; pełne wyjście jest w dzienniku
+polecenia poza piaskownicą.
+
+Potwierdzone wyniki PT-192 na Incusie 6.0.0: python-qt `clean` w 58,8 s, dotnet + docker `clean` w 76,5 s,
+reset z zachowaniem `/home/agent` w 1,5 s; oba dzienniki odmów budowy puste. Pełne `make test` przeszło.
+Hashe, wersje, kontrole proxy i źródła pomiarów: [pierwsza budowa szablonów](box-prototype.md#pierwsza-budowa-szablonów-stosów-pt-192).
+
+### Proxy wyjściowe (PT-168)
+
+`tide_daemon/box/proxy.py` to jedyna droga pudełka do sieci i do Ollamy hosta: nftables wpuszczają z `incusbr0`
+tylko `<adres mostka>:<box.proxy-port>`, pudełko nie ma DNS ani NAT. Proxy działa w usłudze, we własnym wątku
+z pętlą asyncio, i nigdy nie zmienia nftables ani nie woła `sudo` (test przeszukuje kod usługi).
+
+**Start.** Ustawienia w sekcji `box` pliku `$XDG_CONFIG_HOME/tide/cardflow.json` (`box/settings.py`):
+
+```json
+{"box": {"enabled": true, "proxy-port": 18080, "bridge": "incusbr0"}}
+```
+
+Proxy startuje razem z usługą tylko przy `enabled: true` (domyślnie wyłączone; zła wartość — wyłączone), gdy jest
+polecenie `incus` i mostek ma adres (`incus network get incusbr0 ipv4.address`; z projektu ograniczonego
+`incus-user` to polecenie bywa niedostępne — na tym komputerze zawsze — wtedy zapasem jest adres interfejsu
+`ip -j -4 addr show dev incusbr0`, ten sam, który wpuszczają reguły nftables). Zapas jest słabszy niż odczyt
+z Incusa: sprawdza tylko, że interfejs o nazwie z `box.bridge` jest mostkiem w jądrze (`ip -j -d link show`,
+`linkinfo.info_kind == "bridge"`), więc `"bridge": "wlan0"` czy `eth0` daje odmowę startu, ale inny mostek
+wskazany w ustawieniach wprost (np. `virbr0`) przejdzie — wtedy jego goście dostają 403 na wszystko (brak polityki).
+Sprawdzenie, że profil Incusa podłącza pudełka do tego mostka (`incus profile show default`), odłożone: nie wiemy,
+czy `incus-user` je widzi. Słucha **wyłącznie** na tym
+adresie: `0.0.0.0`, `::`, pętla zwrotna i adres inny niż mostka → odmowa startu. Każda przeszkoda (brak Incusa,
+brak mostka, zły adres, zajęty port) to wpis w dzienniku usługi, a usługa działa dalej jak bez pudełka.
+`--no-box` wyłącza proxy niezależnie od ustawień. `proxy-port` musi być równy `BOX_PROXY_PORT` z `make box-install`.
+PT-292: przed nasłuchem `start_service` czyta zainstalowane reguły `/etc/tide-box/tide-box.nft`
+(`box/nftcontract.py`, tylko odczyt; w testach `TIDE_BOX_NFT_FILE`) i odmawia startu, gdy reguła „proxy Tide”
+tabeli `inet tide-box` nie wpuszcza dokładnie `box.bridge` → `<adres mostka>:<box.proxy-port>` albo pliku nie ma.
+Sekcję `box` zapisuje też `SetCardFlowSettings` (ścisła walidacja, zgodność portu z regułami) — docs/box-cli-v1.md.
+
+**Polityka per pudełko, kluczowana adresem IP.** `set_box_policy(ip, domains, ollama, denied_log_path, *,
+full=False, box="")` ustawia (albo zastępuje) politykę pudełka o adresie `ip`; działa od następnego połączenia,
+bez restartu proxy (otwarte tunele nie są przerywane). Woła ją krok w pudełku (PT-181) przy starcie kroku
+i builder (PT-167) przed pierwszym `incus exec` budowy; `box.proxy.running()` zwraca proxy uruchomione z usługą
+(po `stop()` — `None`).
+Nieznany adres = brak polityki = każde żądanie 403 (wpis tylko w dzienniku usługi). Klucz IP jest bezpieczny
+**wyłącznie dlatego**, że builder ustawia na NIC każdego pudełka `security.mac_filtering`, `ipv4_filtering`
+i `ipv6_filtering` (Incus odrzuca pakiety z cudzym adresem źródłowym) — proxy nie umie tego sprawdzić samo;
+„podszycie pod IP innego pudełka” jest na czerwonej liście PT-191.
+
+Listę składa `compose_policy(project, cards)`: domeny modeli (`MODEL_DOMAINS`: `api.anthropic.com`,
+`statsig.anthropic.com`, `api.openai.com`, `chatgpt.com`, `auth.openai.com` — dokłada usługa, nie profil)
++ `templates.work_domains` profilu projektu (`base`, szablony wg `stacks`, `network.domains` — lista budowy
+z buildera bez `build-domains` szablonów, PT-192) + profile aktywnych kart scalone z profilem projektu przez `profile.merge` (czerwone pozycje karty
+tylko z `accepted_red`). Usługa sama nigdy nie dokłada `github.com`, `gitlab.*`, adresów wewnętrznych ani
+`*.firma.example` (test). `network.full` karty bez `network.full-consent: true` jest pomijane z wpisem w dzienniku
+usługi; z jawną zgodą i `accepted_red: [network.full]` daje `full=True`: każda poprawna nazwa i goły adres
+**publiczny**. Pełna sieć nie otwiera sieci lokalnej ani adresu hosta na mostku — to osobna czerwona klasa: cel
+spoza listy jest zawsze traktowany jako publiczny, więc `CONNECT 10.173.184.1:443`, `10.20.3.10:443`
+czy `nas.lan:443` (rozwiązane do sieci lokalnej) dostają 403, chyba że ten cel jest osobno na liście. `host-ollama: true` w profilu projektu albo karty daje `ollama=True`.
+
+**CONNECT bez MITM.** Tylko port 443; dopasowanie dokładne albo `*.domena` (tylko poddomeny:
+`*.npmjs.org` nie pasuje do `npmjs.org`, `npmjs.org.attacker.com` ani `evil-npmjs.org`). Nazwy są porównywane
+małymi literami i bez jednej kropki końcowej; nazwa z liczbową albo szesnastkową ostatnią etykietą (`10.1`,
+`3232235786`) nie jest nazwą. Goły adres IP przechodzi tylko wtedy, gdy jest dosłownie na liście. Nazwę rozwiązuje
+proxy i łączy się z adresem, który właśnie sprawdziło: pętla zwrotna, link-local, nieokreślony i multicast — nigdy;
+adres prywatny i 100.64/10 — tylko dla celu, który jest na liście pudełka i który profil uznaje za wewnętrzny
+(przyjęta czerwona pozycja karty, `BoxPolicy.internal`), więc nazwa publiczna wskazująca nagle do sieci lokalnej
+nie przechodzi (403 z rodzajem `ADDRESS`). Po `200 Connection established` proxy tylko
+przepisuje bajty w obie strony.
+
+**Zwykłe HTTP.** Do obcej domeny (`GET http://…`) — zawsze 403. Wariantu „zwykłe HTTP do domen z listy”
+(`box.proxy-plain-http`) nie ma: apt idzie przez HTTPS (decyzja `apt-przez-https`, `docs/box-decisions.md`).
+
+**Ollama hosta przez proxy.** Żądanie w formie względnej (`GET /api/tags`, czyli `http://<mostek>:<port>/api/tags`
+z pudełka) albo bezwzględnej na adres samego proxy idzie na `127.0.0.1:11434` — tylko dla pudełka z `ollama=True`
+i tylko ścieżki `/`, `/api/…`, `/v1/…` (reszta 404; `/anthropic/…` i `/chatgpt/…` to trasy K3 niżej). Proxy ustawia `Host:
+127.0.0.1:11434` i `Connection: close`, wyrzuca nagłówki „hop-by-hop”, a odpowiedź przekazuje bajt w bajt bez
+buforowania (strumień `/api/generate` dociera fragmentami). Inny cel niż `127.0.0.1:11434` nie jest możliwy —
+proxy nie jest przekaźnikiem HTTP. `ollama=False` → 403 i wiersz `host-ollama`. Zmian nftables w czasie pracy nie ma.
+`models/boxconfig.for_box(data, mostek, port)` robi z `models.json` hosta wersję dla pudełka: punkty Ollamy hosta
+(`127.0.0.1`/`localhost`/`[::1]` na 11434) → `http://<mostek>:<port proxy>`; inne punkty, dostawcy i `tokenFile`
+nie trafiają do pudełka, a role przypięte do pominiętego punktu znikają (obowiązuje rola domyślna).
+
+**Dziennik odmów.** Odmowa to 403 i wiersz TSV w `denied_log_path` (plik 0600) — w kroku karty
+`proxy-denied.log` w katalogu bieżącego kroku, przy budowie ścieżka od buildera (zdarzenie `box.build` w dzienniku
+Tablicy):
+
+```
+2026-11-04T15:02:11+01:00	tide-proto	10.173.184.23	example.com	443	CONNECT
+```
+
+Pola: czas, pudełko (nazwa z `box`, inaczej adres), adres IP pudełka, domena, port, rodzaj (`CONNECT` — cel spoza
+listy, `ADDRESS` — cel z listy rozwiązany na adres niedozwolony: pętla, link-local, sieć lokalna dla celu
+publicznego; dopisanie domeny tu nie pomoże, `HTTP`, `OLLAMA` z domeną `host-ollama`, `K3` i `K3PATH` z domeną
+hosta trasy — niżej). Tylko nazwa hosta z celu żądania — nigdy ścieżka, parametry, nagłówki, atrapa ani treść;
+znaki sterujące zamieniane na `?`. Zamianę odmowy w wynik kroku (`denied` z `command: "network: <domena>"`) robi
+PT-181, nie proxy.
+
+### Poświadczenia agentów: K3 (PT-175)
+
+Wynik P-3 (`docs/box-prototype.md`): K3 jest możliwe dla Claude Code i dla Codexa, więc w pudełku nie ma
+prawdziwych poświadczeń agentów — ani `~/.claude/.credentials.json`, ani tokenów w `~/.codex/auth.json`.
+`box/k3.py` to jedno miejsce stanu: `k3_active(program)` zwraca `True` dla `claude` i `codex` (czytają to krok
+w pudełku, `tide box login`, dziennik karty #18 i pakiet zgód #9); `login_programs()` — programy do zalogowania
+w obrazie (K1) — jest puste, więc `tide box login` (#4) pomija oba programy. Wewnętrzna piaskownica agenta
+w pudełku zostaje bez zmian (`sandbox.enabled`, `denyRead: ["~/.claude", "~/.codex"]`).
+
+**Atrapa per krok.** Krok w pudełku (PT-181) na starcie woła `box.proxy.running().grants.issue(step, ip pudełka,
+program)` i przekazuje w `in/env` wynik `k3.step_credentials(grant, "http://<mostek>:<box.proxy-port>")`:
+
+- Claude Code: `ANTHROPIC_BASE_URL=http://<mostek>:18080/anthropic` i `CLAUDE_CODE_OAUTH_TOKEN=<atrapa>`
+  (`sk-ant-oat01-tide-k3-<256 losowych bitów>`);
+- Codex: plik `~/.codex/auth.json` z samymi atrapami (JWT bez podpisu z losowym `tide_k3`; z pliku hosta
+  przechodzą tylko identyfikator konta i plan — identyfikatory, bez nich Codex odrzuca konto) i argumenty
+  `-c chatgpt_base_url=…/chatgpt/backend-api/ -c model_provider="tide" -c model_providers.tide={ … base_url =
+  "…/chatgpt/backend-api/codex", wire_api = "responses", requires_openai_auth = true }`. Bez własnego dostawcy
+  Codex woła model przez CONNECT do `chatgpt.com` (P-3) — z atrapą to i tak nic nie da.
+
+Na końcu kroku `grants.revoke_step(step)`; atrapa wygasa też sama po `ttl` (domyślnie 24 h). Atrapa działa tylko
+z adresu IP pudełka, któremu ją wydano, tylko na trasie swojego programu i tylko do odwołania; rejestr trzyma
+skrót SHA-256 atrapy, nie samą atrapę.
+
+**Trasy wstrzykujące w proxy.** Żądanie w formie względnej (albo bezwzględnej na adres proxy) `/anthropic/<ścieżka>`
+→ `https://api.anthropic.com/<ścieżka>`, `/chatgpt/<ścieżka>` → `https://chatgpt.com/<ścieżka>`. Kolejno:
+
+1. pudełko musi mieć politykę (nieznany adres → 403 `K3`);
+2. dokładnie jedna atrapa w `Authorization: Bearer` albo `x-api-key`, ważna dla tego adresu IP i tej trasy —
+   inaczej 403 `K3` (także atrapa po `revoke_step`, po `ttl`, z innego pudełka, z drugiej trasy);
+3. ścieżka z listy z dziennika P-3 — inaczej 403 `K3PATH` (bez ogólnego dostępu do API konta, „confused deputy”):
+   Anthropic `/v1/messages`, `/v1/messages/count_tokens`; ChatGPT `/backend-api/codex/…`,
+   `/backend-api/wham/accounts/check`, `/backend-api/wham/settings/user`, `/backend-api/ps/plugins/…`,
+   `/backend-api/ps/mcp`, `/backend-api/plugins/featured`. Ścieżka z `..`, `.`, `//`, `%` albo znakami spoza
+   `[A-Za-z0-9._~/-]` nie przechodzi; zapytanie po `?` tylko ze znaków `[A-Za-z0-9._~!$&'()*+,;=:@/?%-]` —
+   inaczej 400. Już wcześniej każde żądanie poza `CONNECT` ma metodę będącą tokenem HTTP, wersję `HTTP/1.0`/`1.1`
+   i cel z widocznego ASCII (`0x21–0x7E`), inaczej 400 — goły LF/CR/TAB w linii żądania nie dopisze nagłówków
+   (`Host`, `chatgpt-account-id`, `Content-Length`) przed tymi, które wstawia proxy;
+4. treść jednego żądania według `Content-Length` albo `chunked` (oba naraz, różne długości, inne kodowanie → 400;
+   rozmiar ramki tylko z cyfr szesnastkowych, bez `0x`, znaku, `_` i spacji — inaczej połączenie zamknięte);
+   nic po niej (potokowane drugie żądanie) nie idzie dalej;
+5. token hosta czytany **przy każdym żądaniu** z `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`;
+   `expiresAt` w przeszłości → błąd) albo `~/.codex/auth.json` hosta (`tokens.access_token`, `account_id`).
+   To pliki katalogu domowego hosta, nie pudełka (`~/.local/share/tide/box/<slug>/home`) — nigdy nie są montowane;
+6. nagłówki z pudełka: `Authorization`, `x-api-key`, `chatgpt-account-id`, `Cookie` i nagłówki połączenia są
+   wyrzucane; proxy dopisuje `Authorization: Bearer <token hosta>` (Codex także `chatgpt-account-id`), `Host`
+   hosta trasy i `Connection: close`; dla Claude dokłada `oauth-2025-04-20` do `anthropic-beta` (token
+   subskrypcyjny bez tej bety nie działa). Linia żądania, kolejność i treść pozostałych nagłówków oraz treść — bez
+   zmian (test porównuje bajty);
+7. połączenie z hostem trasy jak dla CONNECT (adres sprawdzony po rozwiązaniu, tylko publiczny), TLS klienta
+   z weryfikacją certyfikatu w `k3.open_upstream`; moduł `proxy.py` nie ma TLS — po stronie pudełka nie ma
+   przechwytywania. Odpowiedź płynie bajt w bajt bez buforowania (SSE).
+
+**Odświeżanie tokenu tylko na hoście.** Proxy nie odświeża tokenu i pudełko też nie (P-3: 0 żądań do punktów
+OAuth). Token odświeża Claude Code / Codex hosta przy zwykłej pracy w Konsoli; ponieważ proxy czyta plik przy każdym
+żądaniu, odświeżony token działa od następnego żądania bez restartu kroku. Brak pliku, zły JSON albo wygasły token
+Claude → 502 z opisem bez treści pliku i wpis w dzienniku usługi; **nie ma cichego powrotu do K1** (proxy nie
+kopiuje niczego do pudełka, a krok nie dostaje innego klucza).
+
+**Token nigdy w dzienniku ani w pudełku.** Komunikaty błędów niosą tylko rodzaj problemu; dziennik odmów — tylko
+host trasy i rodzaj; `Grant.key` nie występuje w `repr`. Test przeszukuje kod `box/`: plików poświadczeń hosta
+dotyka tylko `k3.py`.
+
+**Ryzyko resztkowe K1 przy Dockerze.** W pudełku z Dockerem użytkownik `agent` jest w grupie `docker`, czyli ma
+praktycznie prawa roota pudełka: przez kontener może zamontować rootfs pudełka i przeczytać każdy plik
+w `/home/agent`, niezależnie od `denyRead` wewnętrznej piaskownicy agenta i od wyniku P-2. To samo może każdy kod
+testów uruchomiony w takim pudełku. Przy K1 (osobne logowanie) to byłyby `/home/agent/.claude/.credentials.json`
+i `~/.codex/auth.json` z prawdziwymi tokenami. Z K3 tych plików nie ma: kod w pudełku może przeczytać tylko atrapę
+bieżącego kroku, która działa wyłącznie przez proxy, z tego pudełka, na ścieżkach z listy i do końca kroku — może
+więc w trakcie kroku wywołać model na koncie użytkownika (to samo, co robi agent), ale nie wyniesie tokenu ani nie
+użyje atrapy po kroku czy spoza pudełka. Gdyby K3 dla programu zostało wyłączone (`K3_PROGRAMS`), wraca pełne ryzyko
+K1: jedyną granicą dla poświadczeń jest pudełko, a lista domen proxy ogranicza tylko, dokąd wyciek może trafić.
+
+**Domeny modeli.** Lista `MODEL_DOMAINS` się nie zmienia w PT-175 (`chatgpt.com`, `auth.openai.com` nadal na niej,
+choć z K3 Codex ich nie potrzebuje) — usunięcie to zmiana listy domen, osobna decyzja.
+
+### Krok w pudełku: BoxRunner (PT-169)
+
+`box/runner.py` — `BoxRunner`, drugi `Runner` obok `HostRunner` (`tasks/runner.py`, ta sama umowa `start`, `kill`,
+`env`). Uruchamia program agenta kroku w pudełku projektu (`box_name(slug)`) albo w kopii karty (`per_card=True` →
+`card_box_name(slug, card)`) jako użytkownik `agent` (uid/gid `box.agent-uid`/`agent-gid`) pod tymi samymi ścieżkami
+co na hoście. Wyboru runnera w silniku jeszcze nie ma (#18): silnik dalej dostaje `HostRunner`.
+
+**Polecenie.** Na hoście (widoczne w `ps`) jest tylko:
+
+```
+incus exec <pudełko> --project <p> -T --user 1000 --group 1000 --cwd <worktree> --
+  /usr/bin/env -i TIDE_STEP=<katalog kroku> XDG_RUNTIME_DIR=/run/user/1000
+  /usr/bin/systemd-run --user --unit=tide-step-<id>.service --collect --wait --quiet -p CPUWeight=40 -p IOWeight=40
+    --working-directory=<worktree> --setenv=TIDE_STEP=<katalog kroku> -- /bin/sh <katalog kroku>/in/bin/tide-step <argv agenta>
+```
+
+Krok jest usługą użytkownika `agent`, a nie scope — decyzja `krok-jako-usluga-user` (P-9): proces w scope ginie
+razem z klientem `incus exec`, czyli z restartem usługi Tide; usługa przeżywa, a klient z `--wait` kończy się kodem
+jednostki. Nic z `in/env` nie trafia do argv ani do `--env` `incus exec`; klient `incus` dostaje tylko `HOME`,
+`PATH`, `LANG`, `USER`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `INCUS_DIR` i `INCUS_CONF` usługi (oraz haki testowe
+`TIDE_FAKE*`/`TIDE_INCUS_BIN` atrapy). Wyjście klienta: `out/box-exec.log`.
+
+**Zapis do katalogu kroku.** `<repo>-worktrees` jest w pudełku rw, więc katalog kroku, `in`, `out` i każdy plik mogą
+być w chwili startu dowiązaniem podłożonym z pudełka (agent, Codex, root pudełka). Runner nie woła
+`Background.prepare()`: `StepDir` otwiera każdy składnik od `<repo>-worktrees` w dół przez `dir_fd` z `O_NOFOLLOW`
+(katalogi zakłada `mkdir` bez podążania), pliki kroku (`settings.json`, `gitconfig`, `ignore`, `prompt.txt`) otwiera
+z `O_NOFOLLOW|O_NONBLOCK` i przed obcięciem sprawdza `fstat`: zwykły plik, jedno dowiązanie, właściciel — usługa;
+`out/box-exec.log` tak samo, dopisywany; `in/env` i `in/local-token` zakłada świeże (`unlink` + `O_EXCL`) przez ten
+sam łańcuch; `in/exit-code` usuwa przez `dir_fd`. Dowiązanie, katalog, FIFO albo twarde dowiązanie w drodze →
+odmowa kroku, cel nietknięty. Sam `lstat` przed zapisem nie wystarczy (wyścig z procesem w pudełku).
+
+**`in/env` i `tide-step`.** `start` zapisuje `<krok>/in/env` (świeży plik `O_EXCL|O_NOFOLLOW`, 0600, właściciel —
+usługa; stary plik albo dowiązanie najpierw usuwa) w wierszach `KLUCZ=wartość` (nowa linia w wartości → odmowa):
+całe środowisko programu z `agentcmd.background` (`HOME=/home/agent`, `USER=agent`, `PATH` pudełka, `LANG`,
+zmienne gita i martwy D-Bus jak na hoście), sekrety punktu lokalnego (`secret_env`), `HTTPS_PROXY`, `HTTP_PROXY`
+(i małymi literami) na `http://<adres mostka>:<box.proxy-port>`, `NO_PROXY`/`no_proxy` = `box_no_proxy(<mostek>)`,
+`TIDE_CWD` i zmienne z `step_env(step)` (porty #8, atrapy K3 #18). Adres proxy: jawny `proxy_base`, inaczej proxy
+uruchomione w tym procesie, inaczej `incus network get <box.bridge> ipv4.address`; brak — krok odmówiony.
+`env(step)` zwraca to samo bez sekretów. Token Claude Code dla punktu lokalnego: kopia 0600 w `in/local-token`
+czytana przez `apiKeyHelper` (plik hosta nie jest w pudełku). Node (nvm) i Chromium Playwrighta pochodzą z obrazu
+pudełka, nie z hosta: `box_step` zeruje `node_home` i `chrome_bin` kroku (silnik ustawia je z `~` hosta), więc `PATH`
+zaczyna się od `BOX_PATH`, a `CHROME_BIN` nie trafia do `in/env` ani `env(step)`.
+
+Opakowanie `daemon/tide_daemon/box/tide-step` (POSIX sh) runner kopiuje przez `StepDir` do `in/bin/tide-step`
+każdego kroku, z ochroną przed dowiązaniami. Dzięki temu argv i opakowanie mają tę samą wersję;
+starsze `/usr/local/bin/tide-step` w obrazie bazowym nie jest używane przez domyślną ścieżkę runnera.
+Nie wymaga to instalowania pliku jako root ani przebudowy obrazu. Opakowanie czyści środowisko,
+sprawdza `in/env` (zwykły plik, tryb 0600, właściciel = bieżący
+użytkownik — inaczej kod 125; `PATH` = `BOX_PATH` ustawiane jawnie przed pierwszym poleceniem), eksportuje wiersze
+bez `eval`, przechodzi do `TIDE_CWD`, zakłada
+`CLAUDE_CODE_TMPDIR` w `/tmp` pudełka, uruchamia agenta z `in/prompt.txt` na stdin i wyjściem dopisywanym do
+`out/step.log`, zapisuje kod atomowo w `in/exit-code` (jak `EXIT_WRAPPER` hosta; SIGTERM przeczekuje) i kończy się nim.
+
+**`BOX_NO_PROXY`** — jedna stała w `box/runner.py`: `localhost,127.0.0.1,::1,172.16.0.0/12,host.docker.internal`,
+a `box_no_proxy(adres)` dokleja adres mostka (nigdy `*`). Używają jej: `in/env` i `env(step)` (tu),
+`/etc/environment` obrazu bazowego (#16) i drop-in `dockerd` szablonu `docker.sh` (#29). Sam adres mostka nie
+wystarczy: e2e Playwright, Karma i serwery testowe na `localhost` oraz kontenery Testcontainers poszłyby przez proxy
+(403). Klienci bez CIDR w `NO_PROXY` i tak trafiają w `localhost`, bo Testcontainers mapują porty na localhost (P-6).
+
+**Montowania** (`ensure_devices`, przy każdym starcie; dodaje tylko brakujące, pod blokadą plikową
+`$XDG_STATE_HOME/tide/box/<slug>/devices.lock` — dwa pierwsze kroki naraz dodają je raz):
+
+| Urządzenie | Źródło = ścieżka w pudełku | Tryb |
+| --- | --- | --- |
+| `tide-git` | `<repo>/.git` | rw |
+| `tide-git-hooks`, `tide-git-config`, `tide-git-info` | `.git/hooks`, `.git/config`, `.git/info` (puste katalogi `hooks`/`info` zakładane przed montowaniem) | ro, nad `tide-git` |
+| `tide-wtcfg-<nazwa>` | `.git/worktrees/<nazwa>/config.worktree` — **tylko przy `extensions.worktreeConfig=true`** w `.git/config` hosta | ro, nad `tide-git` |
+| `tide-worktrees` | `<repo>-worktrees` (worktree i katalogi kroku obok niego) | rw |
+| `tide-home` | zapasowe `~/.local/share/tide/box/<slug>/home` (0700) → `/home/agent` — pomijane, gdy builder podpiął już dom projektu lub karty (urządzenie `home`) | rw |
+
+Kolejność montowania: Incus montuje urządzenia `disk` posortowane po `path` (`/` pierwsze, dalej leksykograficznie),
+nie w kolejności `device add` — nakładki leżą nad `.git`, bo ich ścieżki mają `<repo>/.git/` jako przedrostek. Nie
+„poprawiać” kolejności dodawania; test sprawdza przedrostki ścieżek.
+
+**`config.worktree` (D7).** Git czyta `.git/worktrees/<wt>/config.worktree` tylko przy włączonym
+`extensions.worktreeConfig`. Runner czyta flagę z `.git/config` **hosta** (`git config --file`, plik pod nakładką ro —
+agent jej nie włączy; błąd odczytu → odmowa kroku). Wyłączona (stan plasma-tide): żadnych nakładek `tide-wtcfg-*` —
+nowy worktree ticketu nie wymaga zatrzymania pudełka, kroki projektu startują równolegle. Włączona: nakładka na każdy
+istniejący plik, a dla worktree kroku usługa najpierw zakłada pusty `config.worktree` (wskaźnik `<worktree>/.git`
+musi prowadzić bezpośrednio do `.git/worktrees/<nazwa>`; dowiązanie albo katalog zamiast pliku → odmowa; plik
+zakładany przez `dir_fd` z `O_NOFOLLOW` od `<repo>/.git`, bo `.git/worktrees/<nazwa>` może zostać podmienione
+na dowiązanie po sprawdzeniu `realpath`). Nakładka
+chroni tylko plik istniejący w chwili montowania i każdy nowy plik wymaga zatrzymania pudełka (przy innych biegnących
+krokach — odmowa). Agent może jeszcze założyć `config.worktree` innego worktree bez tego pliku (np. z
+`core.hooksPath`); to wykrywa strażnik sum `.git` z #7 (PT-170), a własne wywołania gita usługi chroni
+`gitcommand.git_argv` (`core.hooksPath=/dev/null`, `core.fsmonitor=false`).
+
+### Strażnik refów
+
+`box/refguard.py` zapisuje przed uruchomieniem procesu w `BoxRunner.start` pełną migawkę
+`git for-each-ref` oraz kopie i sumy SHA-256 chronionych plików: `.git/hooks/`, `.git/config`,
+`.git/info/` (także `attributes`), `.git/config.worktree` i `.git/worktrees/*/config.worktree`.
+Spis refów uzupełnia odczytem luźnych refów symbolicznych, także z nieistniejącym celem,
+które `for-each-ref` pomija. Pliki blokad refów nie należą do tego spisu.
+Obejmuje nowe i usunięte pliki, tryby plików oraz dowiązania bez odczytywania ich celów.
+Migawki są atomowo zapisywane w `$XDG_STATE_HOME/tide/refguard/<skrót repozytorium>/`
+(domyślnie `~/.local/state/tide/refguard/`), poza montowaniami pudełka. Przeżywają restart usługi.
+
+Start, porównanie i przywracanie używają tej samej blokady repozytorium co `gitops` oraz
+blokady plikowej `flock`; migawka powstaje dopiero po ich uzyskaniu. Dozwolona jest gałąź
+kroku i gałęzie ticketów tej samej karty aktywnych w dowolnym momencie jego trwania.
+Nowy krok dopisuje swoją gałąź do starszych aktywnych migawek. Zgoda pozostaje w starszej
+migawce po zakończeniu sąsiada, więc równoległe końce nie cofają sobie commitów.
+Gałąź pochodzi z przypisania silnika (`Step.branch`), a zgodność `HEAD` z tym przypisaniem
+jest sprawdzana przed przygotowaniem i zapisaniem migawki. Podmieniony `HEAD` nie może
+rozszerzyć zbioru dozwolonych refów; niezgodność odmawia startu.
+Gałęzie innych kart, nowe tagi i pomocnicze gałęzie agenta nie należą do tego zbioru.
+Kroki innych kart w tym repozytorium czekają na zwolnienie strażnika; końcowa kontrola
+w runnerze odmawia startu, jeżeli dwie karty mimo to równocześnie przejdą sprawdzanie.
+Zaufane tworzenie gałęzi, scalenia i sprzątanie worktree przez `gitops` aktualizują w aktywnych migawkach tylko
+konkretny ref/config zmieniony przez usługę i tylko wtedy, gdy wcześniejsza wartość zgadza
+się z migawką. Runner uwzględnia też założenie pustego `config.worktree` nowego kroku.
+Start kolejnego kroku odmawia utrwalenia obcych zmian aktywnego sąsiada jako nowej kopii.
+
+Silnik sprawdza strażnika przy każdym zakończeniu kroku w pudełku, również po zatrzymaniu,
+timeout i błędzie programu. Najpierw odtwarza konfigurację i pliki. Zakres naprawy refów to
+wyłącznie własna gałąź zapisana przy starcie kroku (`snapshot.branch`), także przy odzyskiwaniu
+starszej migawki. Zwykłe commity/reset tej gałęzi są dozwolone; usunięcie lub zastąpienie jej
+refem symbolicznym jest raportowane i naprawiane. Zmiany pozostałych dozwolonych gałęzi
+sąsiadów są pomijane. Zmiany poza dozwolonym zbiorem są raportowane **bez odtwarzania**:
+migawka nie pozwala odróżnić naruszenia od legalnego zapisu innej karty poza `host_operation`.
+Raport takiej zmiany nadal kończy krok błędem i pozostawia obcy ref nietknięty.
+Naprawa własnego refu używa `git update-ref --no-deref` z oczekiwaną starą wartością;
+zmiana po porównaniu powoduje błąd CAS zamiast nadpisania nowszej wartości.
+Podmiana własnego refu symbolicznego używa standardowego `<ref>.lock`
+i ponownego sprawdzenia OID oraz celu pod blokadą, bez zapisu do celu aliasu.
+Kontrola sprawdza też `HEAD` worktree
+i wskaźnik `.git`; po naruszeniu `HEAD` ponownie wskazuje gałąź kroku.
+
+Naruszenie zapisuje zdarzenie `refs.guard` z polami `refs`, `files`, `head`, `errors`
+i wymusza wynik `error` z powodem `refs.guard`, niezależnie od wyniku agenta.
+Brak lub uszkodzenie migawki i nieudana naprawa również kończą się błędem.
+Uszkodzony wpis w `worktrees/` lub błąd pojedynczego pliku jest raportowany ze ścieżką;
+pozostałe dostępne pliki, refy, `HEAD` i wskaźnik `.git` są nadal sprawdzane i naprawiane.
+Przy błędzie naprawy migawka pozostaje aktywna, zachowuje kopię i listę naruszeń.
+Zapis `step.finished` nie dezaktywuje migawki z niedokończoną naprawą. Odzyskiwanie
+(`recover_network`, także bez proxy) ponawia taką kontrolę w kolejnych tickach z oryginalnej
+kopii, aż odczyt i naprawa zakończą się bez błędów; kolejne wyniki zapisuje jako `refs.guard`.
+W tym czasie inne karty nadal czekają, a nowy krok tej samej karty nie może przyjąć obcych
+zmian jako punktu przywracania. Anulowanie bez kontroli dotyczy wyłącznie nieudanego startu
+bez wpisu uruchomionego kroku.
+Dopiero pełna kontrola bez błędów utrwala końcowy wynik,
+który pozwala ponowić zakończenie bez ponownego cofania refów.
+
+Tryb `--demo` również wykonuje kontrolę po potwierdzeniu nieaktywnej jednostki i zwraca
+kod 1 po naruszeniu. Przy nieznanym stanie jednostki lub błędzie naprawy zachowuje migawkę
+i wypisuje identyfikator próby. Ponowienie samej kontroli, bez ponownego uruchomienia polecenia:
+`python3 -m tide_daemon.box.runner --demo <slug> --worktree <W> --branch <gałąź>
+[--card K-N] --finish-guard <demo-id>` (te same projekt, worktree i karta).
+Naprawa korzysta z pierwotnej kopii; wykryte wcześniej naruszenie nadal daje kod 1 także
+po skutecznej naprawie. Czysta próba zwalnia strażnika i zachowuje kod klienta Incusa.
+
+`HostRunner` nie zakłada migawek i nie uruchamia kontroli. Każde wywołanie gita usługi,
+w tym `Git`, `FlowGit`, `StepGit`, odczyty koordynacji i runnera, przechodzi przez
+`gitcommand.git_argv`, które dopisuje `-c core.hooksPath=/dev/null -c core.fsmonitor=false`.
+
+Strażnik wykrywa zmiany po kroku; nakładki tylko do odczytu pozostają granicą zapobiegającą
+zapisowi haków i konfiguracji podczas pracy agenta. Testy: `daemon/tests/test_refs_guard.py`.
+
+Bez `shift=true` (projekt ograniczony go odrzuca): pudełko dostaje `raw.idmap "both <uid> <agent-uid>"` (P-4,
+`raw-idmap-zamiast-shift`). Zmiana `raw.idmap` albo nowa nakładka-plik wymaga zatrzymanego pudełka (pliku nie da się
+dołączyć do działającego kontenera), więc runner zatrzymuje je na czas dodania i startuje z powrotem — a gdy według
+dziennika pudełka biegną w nim inne kroki, krok jest odmówiony. Z tej listy runner wyklucza własny `step_id`, więc
+silnik (#18, PT-181) musi zapisać `box.use` (`state.mark_in_use`) **przed** `runner.start` każdego kroku — inaczej
+biegnący krok drugiego worktree, którego wpisu jeszcze nie ma, zginąłby przy zatrzymaniu pudełka. Po takim restarcie runner czeka (najwyżej
+`box.ip-wait-seconds`) na menedżer usług użytkownika `agent` (`systemctl --user show-environment` przez `incus exec`),
+bo bez niego `systemd-run --user` kończy się kodem 1 (w próbie ręcznej menedżer wstawał ~2 s po starcie); bez
+menedżera krok jest odmówiony. Worktree albo katalog kroku spoza `<repo>-worktrees` → odmowa. Zatrzymane pudełko →
+odmowa z czytelnym błędem (pudełko uruchamia wcześniej silnik, niżej „Krok w pudełku w silniku”). Błąd `incus` przy montowaniu → `StepError`. Źródło
+równe głównemu repozytorium (albo nad nim), katalogowi domowemu hosta (albo nad nim) albo leżące w głównym worktree
+poza `.git` → odmowa: główny worktree i `~` hosta nigdy nie trafiają do pudełka. Źródło w repozytorium albo
+w `<repo>-worktrees`, którego `realpath` różni się od ścieżki (składnik-dowiązanie, np. `.git/hooks` → `~/.ssh`
+podłożone przez rw `.git`) → odmowa, bo Incus dostaje literalne `source`. Kopia karty dostaje urządzenia
+we własnej konfiguracji, pudełko projektu zostaje bez zmian.
+
+**Ustawienia agentów w pudełku.** Claude Code: plik `<krok>/in/settings.json` (katalog kroku — ustawienia hosta bez
+zmian) z `sandbox.enabled` = `BOX_SANDBOX` (wynik P-2, decyzja `bwrap-profil-w-pudelku`: `true`, z
+`failIfUnavailable`), `filesystem.denyRead: ["~/.claude", "~/.codex", "/packs", "<krok>/in/env"]` (+ `in/local-token`),
+`allowWrite: [<krok>/out, <repo>/.git]` (nakładki ro pilnują haków i konfiguracji), `network.allowedDomains: []`
+(granicą sieci jest proxy Tide), `autoAllowBashIfSandboxed: true`; `--allowedTools` bez list poleceń (`Bash(…)`
+wypadają, dochodzi `Bash`; zakazy projektu zostają wskazówkami w prompcie, `--disallowedTools` bez zmian). Wariant
+`sandbox=False`: `sandbox.enabled=false` i jeden wpis `box.risk` („ryzyko K1”) przez `journal(kind, fields)`
+w dzienniku karty. Codex: `--sandbox workspace-write` bez zmian, serwery MCP hosta nie są pytane
+(`codex_mcp=()`).
+
+**Zatrzymanie.** `kill(step)` woła przez `incus exec … --user <agent>` `systemctl --user kill --signal=SIGTERM
+tide-step-<id>.service` w pudełku z wpisu (`box`, domyślnie pudełko runnera), czeka `grace` na `is-active`, potem
+SIGKILL; klient `incus exec` kończy się razem z jednostką. Nazwy jednostki i pudełka są sprawdzane wzorcem. Stan
+jednostki (`unit_state`) ma trzy wartości jak `stepstop.unit_state`: `active` (kod 0), `inactive` (kody 3 i 4
+`systemctl is-active`, przekazane przez `incus exec`) i `unknown` (każdy inny kod: błąd klienta `incus exec`,
+niedostępny incusd, zatrzymane pudełko, timeout). `kill` zwraca True tylko przy `inactive` — z `unknown` `stepstop`
+nie wnosi zatrzymania i nie robi commitu WIP; `alive` przy `unknown` zwraca True.
+
+**Ręcznie** (poza piaskownicą, na pudełku z #1/#4): `python3 -m tide_daemon.box.runner --demo <slug> --branch <gałąź> [--worktree W]
+[--card K-N] -- <polecenie>` — krok syntetyczny `<worktree>.demo-<czas>-<losowy-sufiks>.step` z poleceniem zamiast agenta i znacznikiem
+`TIDE_DEMO_SECRET` w `in/env` (do sprawdzenia, że `ps -o args` hosta go nie pokazuje); wypisuje `step.log` i kod.
+Testy: `daemon/tests/test_box_runner.py` (atrapa `incus`, `tide-step` lokalnie przez `/bin/sh`).
+
+### Dzienniki i przygotowanie zależności (PT-189)
+
+`worktrees/sessions.py` oprócz korzeni hosta czyta domy projektów w
+`$XDG_DATA_HOME/tide/box/<slug>/home` (domyślnie `~/.local/share/tide/box/<slug>/home`):
+`.claude/projects`, `.codex` i `.codex/steps/*` dla sesji K3. Odkrywanie jest ponawiane przy odświeżeniu.
+Kopie per-card mają osobne domy `<slug>/cards/<karta>/home`, skanowane na tych samych zasadach.
+Wspólny czytnik `box/logfiles.py` otwiera każdy składnik ścieżki pudełka względem deskryptora katalogu
+z `O_NOFOLLOW`, także po podmianie rodzica między wykryciem a odczytem. Ochrona obejmuje Sesje,
+Agents, KRunner, koordynację, raporty i indeksy JSONL. Ścieżek pudełek nie rozwiązujemy przez `realpath`.
+Bazy SQLite pudełek pomijamy (SQLite sam otwiera WAL po nazwie); tytuły pochodzą z `session_index.jsonl`
+albo dziennika. Domy hosta zachowują obsługę dowiązania snapa `current`.
+Kopie Claude skaner łączy po identyfikatorze, a Codexa po względnej
+ścieżce pliku dziennika, zachowując osobne segmenty. Katalog roboczy sesji pozostaje ścieżką worktree,
+więc powiązanie z krokiem karty nie wymaga przepisywania ścieżek. Wyszukiwanie dziennika do przekazania
+(`tasks/stepstop.py`) korzysta z tych samych dodatkowych korzeni.
+
+**Przejście ze starego wolumenu.** `Builder.ensure_home`, przed krokiem, przebudową i resetem, sprawdza
+montowanie domu. Atomowa zmiana urządzenia czyta konfigurację z `incus list --format json`, zachowując
+zapisywalne pola instancji i wielowierszowy `raw.idmap`, bez ograniczeń parsera YAML.
+Dla dawnego `<pudełko>-home` zatrzymuje instancję (bez czynnych kroków) i wykonuje
+[`incus storage volume export`](https://linuxcontainers.org/incus/docs/main/howto/storage_backup_volume/)
+z `--volume-only --compression=none`. Inna instancja korzystająca z tego wolumenu blokuje migrację.
+Eksport pozostaje w prywatnym `.home-migration-*` obok domu. Rozpakowanie przyjmuje tylko `backup/volume`,
+odrzuca ścieżki wychodzące poza kopię, dowiązania jako rodziców plików i pliki specjalne.
+Symlinki są tworzone na końcu, bez podążania za nimi. Właścicielem kopii jest użytkownik usługi;
+zachowane są treść, symlinki, czasy plików i zwykłe bity uprawnień, bez UID/GID, suid i atrybutów specjalnych.
+Zapis `home-migration.json` pozwala wznowić publikację po awarii; opublikowany dom nie jest nadpisywany ponownym
+eksportem. Niepusty dom bez tego zapisu oznacza konflikt i odmowę. Zmiana urządzenia jest atomowa;
+błąd nie usuwa starego montowania. Przy błędzie migracji instancja może pozostać zatrzymana.
+Stary wolumen, eksport i dom pozostają także po `destroy`. Reset starej migawki ponownie podpina dom hosta,
+bez cofania nowych dzienników. `BoxRunner` i `engine._launch` nie uczestniczą w migracji.
+
+`tasks/preparation.py` jest wołane przez `boxstep.configure_background`, po montowaniach i konfiguracji proxy.
+`node.install` i `dotnet.restore` otrzymują runner z istniejącego `Placement`; polecenia wykonuje `incus exec`
+jako użytkownik `agent`, z katalogiem worktree i środowiskiem pudełka. Wartości środowiska, w tym tożsamość proxy,
+przechodzą przez prywatny plik `in/prepare-env` (0600), usuwany po poleceniu; nie trafiają do argv incusa.
+NuGet używa `/home/agent/.nuget/packages`, CLI `/home/agent`, Node jest wyszukiwany wewnątrz pudełka,
+a Chromium w `/home/agent/.cache/ms-playwright`. Wynik przygotowania trafia do `out/prepare.log` i promptu.
+Niepowodzenie nie uruchamia instalacji zastępczej na hoście. Zachowanie `HostRunner` i dotychczasowych
+atrap `subprocess.run` pozostaje zgodne z wcześniejszym interfejsem.
+
+K3 Codexa zapisuje sesje w `/home/agent/.codex/steps/<hash katalogu pierwotnego kroku>`;
+wznowienie korzysta z tego samego domu. Reset rootfs nie usuwa danych urządzenia domowego.
+Prawdziwy test widoczności Sesji i zrzut ekranu pozostają do wykonania po #28.
+
+### Polecenie i czerwona lista: `tide box run` (PT-191)
+
+`python3 daemon/tide.py box run <slug> [--card K-N] [--worktree /ścieżka] -- <polecenie>` uruchamia
+polecenie bez agenta przez `BoxRunner.start`. Podział po pierwszym `--` zachowuje każdy argument, także
+spacje, puste argumenty i opcje. Kod wyjścia CLI jest kodem polecenia; przygotowanie lub kontrola refów
+może odmówić kodem 1, brak portów/zajęte pudełko — 3. `Ctrl+C` próbuje zatrzymać jednostkę i daje 130.
+Środowisko jest budowane od zera, bez tokenów agentów hosta, z proxy, pełnym `NO_PROXY`, portami z
+`box/ports.py` PT-171 i zabezpieczeniami gita. Wartości `in/env` (0600) nie są argumentami klienta Incusa.
+CLI nie loguje agenta, nie wydaje grantu K3 i nie czyta konfiguracji MCP hosta.
+
+Repozytorium musi odpowiadać slugowi projektu w Tablicy. Domyślnie polecenie działa w bieżącym worktree.
+Z głównego katalogu powstaje worktree `<repo>-worktrees/demo-…`, gałąź `box-run/demo-…` bez upstreamu
+i tymczasowy katalog kroku. Worktree i logi pozostają do obejrzenia, ścieżki trafiają na stderr. Montowania
+są te same co w kroku, w tym nakładki ro na konfigurację i haki `.git`; główny worktree nie jest montowany.
+`--card` respektuje `box: per-card` i dołącza zaakceptowane, już przygotowane kopie paczek PT-173 jako
+`/packs/<nazwa>` ro. CLI nie kopiuje źródeł użytkownika; brak kopii, dowiązanie w ścieżce lub paczki innej
+karty oznaczają odmowę. Po potwierdzonym końcu jednostki paczki są odpinane.
+
+CLI używa `base.ensure_proxy`, czyli tej samej instancji `ProxyService` w procesie albo własnego proxy
+na statycznym porcie mostka, jak `tide box build`. Nie steruje proxy innego procesu: gdy port zajmuje
+działający demon, odmawia zamiast wybierać inny port lub omijać politykę. Wymaga bezczynnego pudełka
+i trzyma blokadę jego cyklu życia na czas polecenia. Domeny pochodzą z `compose_policy` projektu i karty,
+a `boxaccess` nadaje tożsamość dziennika bez tokenu agenta. Po utracie klienta nieznany stan jednostki
+zachowuje rezerwacje; następne `run` ponawia odzyskanie po potwierdzeniu `inactive` i zwolnieniu
+odziedziczonej blokady życia z PT-171. Kontrola refów PT-170 obowiązuje także zwykłe polecenie.
+
+`make box-check BOX=<slug>` woła `scripts/box/check.sh` przez `tide box run` i drukuje tabelę
+„punkt → odmowa/przeszło/nie dotyczy”. Czerwona lista obejmuje SSH i git-credentials hosta, główny worktree,
+HTTP(S) z proxy i bez niego, DNS, Docker i D-Bus hosta, push, brak gh, przestrzeń PID hosta, zapis do `/etc`,
+Postgres hosta, podszycie IP oraz osobny dowód z Bash agenta. Każde „przeszło” daje kod 1. Brak programu,
+origin, uprawnienia do nadania IP lub rzeczywistego Bash agenta to jawne „nie dotyczy”, a nie zaliczona odmowa.
+`CHECK_ARGS="--host-ip <IP-hosta> --spoof-ip <sprawdzony-wolny-IP>"` wskazuje adresy prób; opcjonalny
+`--spoof-image <lokalny-obraz-z-ip-i-curl>` pozwala nadać IP przez Docker `--privileged --net=host`
+bez pobierania obrazu. Skrypt wysyła `curl --interface` dopiero po skutecznym `ip addr add` i usuwa adres
+w trap. HTTP 403 też znaczy „przeszło”: pakiet doszedł do proxy. Na hoście trzeba potwierdzić brak wpisu
+z próbnego IP. Docker bez K3 oznacza „ryzyko resztkowe K1” dla poświadczeń Claude; pozostały wariant wymaga
+sprawdzenia `cat ~/.claude/.credentials.json` narzędziem Bash rzeczywistego agenta według P-2.
+
+Pełny dowód i zasady pierwszego kroku: [Pierwszy krok w pudełku](box-prototype.md#pierwszy-krok-w-pudełku).
+Testy z atrapami nie potwierdzają izolacji prawdziwego Incusa. `scripts/box/boundary-trial.py` zbiera
+próbę CLI, `ps -o args`, tabelę i pełne `make test` poza piaskownicą; osobna karta testowa nadal wymaga
+zatwierdzonego planu, dziennika, runnera oraz czasu kroku bez `envAnswer`/`outside`.
+Opcja `--prepare-missing` tego skryptu odtwarza brakujące środowisko: pozostawia istniejące pudełko i profil,
+buduje tylko brakujące pudełko, a przy braku profilu zatwierdza jawny
+`docs/agents/pt-191/plasma-tide-proof.box.yaml`. Pakiety narzędzi prób są instalowane w pudełku, bez zmian
+pakietów i ustawień hosta. Domyślne wywołanie skryptu nie zatwierdza profilu ani nie buduje pudełka.
+Przy starszej konfiguracji projektu Incusa osobna, jawna opcja `--enable-snapshots` ustawia przez sudo
+`restricted.snapshots=allow`, zgodnie z instalatorem PT-182 (trwale, po odczycie i z kontrolą wyniku).
+`--retry-failed-build` ponawia tylko pudełko w stanie błędu budowy z hashem zgodnym z profilem i bez kroków,
+z zachowaniem zabezpieczeń buildera. Nie zastępuje istniejącego profilu ani nie przebudowuje pudełka clean.
+
+### Krok w pudełku w silniku (PT-181)
+
+`cardflow/boxstep.py`, wołane z `FlowEngine._launch`, `_poll`, `_kill` i `_finish`. Dowód na prawdziwym pudełku
+(`tide box run`, czerwona lista, pierwszy prawdziwy krok) jest w #28.
+
+**Które kroki idą do pudełka.** Stała `BOX_STEP_KINDS` w `cardflow/engine.py`: `ticket`, `fix` (poprawki po
+review), `review` i `close` (domknięcie karty) — kroki, które uruchamiają kod projektu. Planowanie w każdej odmianie
+(`planning`, `plan-fix`, `plan-amend`, `plan-revise`, `plan-review`, pełne planowanie w Konsoli) i `conflict` zostają
+na hoście w bwrap (`HostRunner`), bo czytają repozytorium i Tablicę. Wznowienie (`parentStep`) nie wybiera na nowo:
+dziedziczy runner wznawianego kroku z jego wpisu (krok z hosta zostaje na hoście, nawet gdy pudełko jest już gotowe;
+krok z pudełka zostaje w pudełku, a gdy pudełko jest wyłączone albo projekt stracił profil — błąd karty `box`, nigdy
+cichy powrót na hosta).
+Dziedziczona jest także konkretna instancja `box`: zmiana profilu `per-project` ↔ `per-card` nie przenosi
+wznowienia. Brak zapisanej instancji oznacza czekanie, niespójna tożsamość — jawny błąd; silnik nie tworzy kopii
+zastępczej dla utraconego środowiska.
+Syntetyczna próba zakończona `local-unavailable` również zachowuje pola runnera i instancji, więc ponowienie po
+powrocie wykonawcy pozostaje w tym samym pudełku.
+
+**Wybór** (rodzaj z `BOX_STEP_KINDS` albo wznowienie kroku z pudełka), po kolei:
+
+| Stan | Wynik |
+|---|---|
+| `box.enabled: false` (PT-289) | `HostRunner` (jak przed K-38) przed wszystkimi niżej wymienionymi kontrolami: bez odczytu `boxWait` (także `environment` i `rebuild`), ekspozycji projektu PT-264, profili, rezerwacji repozytorium, admission i Incusa. Wznowienie kroku z pudełka (`runner: box`) nie przechodzi na hosta: `BoxError`, nic nie jest uruchamiane |
+| `boxWait: environment` albo zgoda odroczona przy wyłączonym pudełku (PT-290) | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu lub przy hostowym rodzicu; odroczenie staje się `boxWait: environment` (`source: box-enabled`); planowanie pozostaje dostępne |
+| projekt `plasma-tide` (ekspozycja v1, PT-264) | krok wykonawczy czeka na manifest projektu i odebrane montowania |
+| projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38), chyba że karta już czeka na `rebuild` — wtedy nadal czeka |
+| budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
+| pudełka nie ma (Incus), bez `boxWait: rebuild` i bez nieudanej budowy w dzienniku pudełka | `HostRunner` |
+| pudełka nie ma po błędzie budowy albo przy `boxWait: rebuild` | nadal `boxWait: rebuild`; brak instancji po nieudanej przebudowie nie przenosi kroku na hosta |
+| brak filtrowania NIC, brak migawki `clean`, niezgodny hash instancji lub migawki, albo błąd budowy | `boxWait: rebuild` (zdarzenie `box.wait` z `why`), krok nie startuje: „czeka na pudełko (do przebudowy)”; silnik sprawdza odcisk `user.tide.recipe` konfiguracji migawki z `incus snapshot list` także dla istniejącej kopii karty; przebudowę zatwierdza się z planem (PT-172) |
+| `box: per-card` | `Builder.copy_for_card` przy pierwszym kroku karty (gdy kopii nie ma), krok w `card_box_name(slug, karta)` |
+| pudełko (albo kopia) zatrzymane | `boxWait: start`, `incus start`, `incus exec <pudełko> -- true` do skutku (najwyżej `box.ip-wait-seconds`), menedżer usług `agent`, adres IPv4; potem `boxWait` czyszczone |
+| gotowe | `BoxRunner` |
+
+`step.waiting` z pudełka ma `cause: "box"`; silnik ponawia start w każdym `tick`. `boxWait: rebuild`/`start` czyści
+silnik, gdy pudełko znów nadaje się do kroku. Krok w pudełku nie robi na hoście `dotnet restore` ani `npm ci`
+(paczki instaluje agent w pudełku przez proxy) i nie dostaje `networkDomains`.
+
+**Wpis kroku.** `intent`/`result` akcji `step-start` i `step.started` kroku w pudełku mają pola `runner: "box"`,
+`box` (instancja), `boxSlug`, `boxIp` i `boxAccess: 1` (wymagany zapis kontekstu sieci); krok na hoście ich nie ma
+(format bez zmian). Po nich silnik — także po
+restarcie usługi, gdy nie ma uchwytu procesu — sprawdza krok (`BoxRunner.step_state`: `incus exec … systemctl --user
+is-active tide-step-<id>.service`), kończy go z `result.json` i kodem z `in/exit-code` i zatrzymuje (`stepstop`:
+`BoxRunner.kill`, potem commit WIP gitem w piaskownicy na hoście jak dziś).
+Zakończenie klienta `incus exec` nie kończy kroku: jednostka może nadal pracować. Stan `active` zachowuje krok,
+zajętość pudełka i dostęp proxy/K3, a `unknown` nie dowodzi zakończenia. Dopiero `inactive` pozwala odebrać wynik
+i kod z `in/exit-code`; kod klienta nie zastępuje kodu kroku.
+
+**Polityka proxy.** Przed `BoxRunner.start`: `set_box_policy(ip pudełka, domeny, ollama, dziennik, full, box)`
+z `proxy.compose_policy(profil projektu, profile kart)` — karty to bieżąca i każda karta z trwającym krokiem w tym
+pudełku (karta bez własnego profilu nic nie dodaje). Każdy krok ma losowy identyfikator w adresie
+`HTTP_PROXY`/`HTTPS_PROXY` (i odpowiednikach małymi literami), przekazywany przez klienta jako
+`Proxy-Authorization: Basic`. `register_step` wiąże identyfikator z adresem IP i dziennikiem odmów kroku:
+`$XDG_STATE_HOME/tide/box/<slug>/steps/<krok>/proxy-denied.log` — poza katalogiem kroku, który jest rw w pudełku
+(proxy dopisuje do niego jako usługa, a podrobiony wpis zmieniałby wynik kroku). Zaraz potem `box.use`
+(`state.mark_in_use`) — przed startem, bo BoxRunner zatrzymuje pudełko na nowe montowania tylko, gdy według dziennika
+pudełka nic w nim nie biegnie; nieudany start zapisuje `box.release`. Po kroku: `box.release` i polityka ustawiona
+na nowo dla pozostałych kroków w pudełku albo `clear_box_policy`, gdy nie ma żadnego. Ruch bez poprawnego
+identyfikatora kroku (np. procesy wspólnego Dockera) trafia do osobnego dziennika pudełka
+`$XDG_STATE_HOME/tide/box/<slug>/proxy-denied.log` i nie zmienia wyniku żadnego kroku.
+Brak uruchomionego proxy = krok nie startuje (`StepError`).
+
+**K3 i restart.** Przed startem programu chmurowego z `k3_active(program)` silnik wydaje atrapę
+`GrantRegistry.issue` i przekazuje `step_credentials`: zmienne Claude do `in/env`, a dla Codexa argumenty trasy
+oraz plik `auth.json` w osobnym `CODEX_HOME` sesji kroku (wznowienie zachowuje ten katalog). Klucze nie trafiają
+do argv. Po końcu albo nieudanym starcie `revoke_step` unieważnia atrapę i identyfikator proxy. Prywatny plik
+`steps/<krok>/access.json` (0600, poza montowaniami pudełka) przechowuje tylko atrapy i zatwierdzony kontekst
+sieciowy; nigdy poświadczenia hosta. Nowy proces usługi odtwarza z niego polityki aktywnych pudełek i te same
+atrapy przed monitorowaniem kroków. Dotyczy to również zamiaru `step-start` bez zapisanego wyniku startu:
+jednostka jest sprawdzana we wskazanym runnerze, a nie na hoście.
+Odtwarzanie uzgadnia też zwolnienia na podstawie `step.finished` oraz nieudanego wyniku zamiaru `step-start`.
+Awaria po zapisie końca lub przed startem jednostki nie pozostawia trwałego `box.use`: kolejne sprawdzenie
+ponawia `box.release`, usuwa `access.json`, unieważnia identyfikator proxy i atrapę K3. Powtórne `_finish` też
+ponawia zwolnienie bez drugiego wyniku. Nieudane sprzątanie jest ponawiane bez nowego zdarzenia i bez restartu.
+Polityka po odtworzeniu pochodzi z zapisanych kontekstów nadal aktywnych kroków; gdy żaden nie pozostał,
+jest zdejmowana. Zwolnienie wpisu użycia i pliku kontekstu działa również przy niedostępnym proxy.
+
+**Artefakty testów kroku (PT-174).** BoxRunner dostarcza `in/bin/tide-test` w PATH agenta.
+Prompt ticketu i poprawek każe uruchamiać testy przez `tide-test <polecenie> [argumenty…]`,
+także polecenia `verify` profilu i rodziny `npm test`, `npx playwright test`, `dotnet test`,
+`make test`, `pytest`, `python -m unittest`. Złożone polecenie: `tide-test sh -c '…'`.
+Polityka promptu pudełka pozwala opakować dozwolony test bez osobnej zgody na `tide-test`:
+listę zgód porównuje się z poleceniem wewnętrznym (dla `sh -c` z jego treścią).
+Zakazy mają pierwszeństwo i obejmują pełne wywołanie oraz polecenia wewnątrz owijki i powłoki.
+Owijka nie rozszerza zgody na argumenty ani łańcuchy; sam wpis w `verify` nie nadaje zgody.
+Nie ma globalnego przechwytywania poleceń; uruchomienie bez owijki nie daje artefaktu.
+Owijka dziedziczy środowisko, stdin i katalog roboczy, łączy stdout/stderr w log oraz przekazuje kod wyjścia.
+Każde wywołanie tworzy `out/tests/<n>.log` i atomowo dopisuje rekord do listy `out/tests/summary.json`:
+`command`, `argv`, `exit_code`, `started_at` (UTC), `duration` (sekundy), `log` oraz
+`passed`/`failed`, gdy parser zna format (pytest, unittest, VSTest, Playwright, Jest/Vitest/Mocha).
+Nieznany format daje rekord bez liczników, awaria parsera nie zmienia kodu wyjścia.
+Równoległe wywołania rezerwują numery i aktualizują listę pod blokadą; bez wywołań katalog testów nie powstaje.
+Artefakty leżą w katalogu kroku obok worktree. Po zakończeniu usługa kopiuje tam także
+`out/proxy-denied.log`, jeżeli istnieją odmowy, zachowując źródłowy dziennik poza pudełkiem.
+Kartka recenzenta wymienia ścieżki i rozmiary artefaktów ostatniego kroku autora oraz instrukcję
+„świeży artefakt = dowód; nie proś o ponowny przebieg”; bez testów mówi „krok bez testów”.
+Recenzent ocenia aktualność polecenia i czasu względem zmiany. Kroki HostRunner zachowują dotychczasowe prompty.
+
+**Kartka według runnera kroku (PT-291, K-38 F3).** O dodatkach pudełka decyduje wyłącznie zapisany runner
+tego kroku (`placement` w `_launch`), nie profil projektu ani runner autora: `handoff.runner_policy(runner, …)`
+i `handoff.review_evidence(runner, autor)`. Krok `box` dostaje owijkę `tide-test`, polecenia `verify`, spis
+artefaktów autora (tylko review w pudełku po autorze z pudełka) i ograniczenie pudełka: brak wyniku `outside`,
+bo silnik i tak go odrzuca (`box-outside`). Krok hostowy — także przy `box.enabled: true` i po autorze
+z pudełka, np. review po wyłączeniu pudełek — dostaje tekst master: kontrakt `outside` hosta, `test-changed`
+i zasady pełnych testów bez zmian. Zgodność pilnuje `daemon/tests/test_cardflow_host_cards.py`: kartki
+ticket/fix/review/close dla trzech klas projektów z F1 porównywane po wąskiej normalizacji (zakończenia linii,
+końcowe białe znaki, katalog tymczasowy) z kartkami generowanymi przez moduły master `292fb204` wczytane
+z obiektów gita; wzorce i pochodzenie: `daemon/tests/fixtures/host-cards-master/`. Jedyne dopuszczone różnice
+to zamknięta lista `hostcards.APPROVED` (dokładne fragmenty, obecnie PT-183: wskazówka „Do sprawdzenia na pulpicie”).
+
+**Odmowa proxy → wynik kroku.** W `_finish` (krok zakończony sam, nie zatrzymany) wynik zestawia się z dziennikiem
+odmów kroku (wiersze `CONNECT` i `HTTP`):
+
+- `question`, którego treść wymienia domenę z dziennika → `{"result": "denied", "command": "network: <domena>"}`
+  — pytanie o domenę z PT-172 (pole `network`, bez `envAnswer`),
+- `error`, którego `out/step.log` albo `out/box-exec.log` (końcówka) wymienia domenę z dziennika → to samo,
+- `done` albo `error` z wpisami, których wynik nie dotyczy → bez zmiany wyniku, notka `proxy-denied.md`
+  (zapisana przez usługę w `flow/<karta>/steps/<krok>/`, dopisana do `notes`).
+
+Jeden adres IP pudełka = jedna polityka domen, ale osobne dzienniki identyfikowanych kroków. Wynik i jego
+dziennik muszą wskazywać tę samą domenę; odmowa połączenia innej karty nie zmienia wyniku tego kroku.
+
+**`box.risk`.** Pierwszy krok karty w pudełku z `docker.enabled` i `k3_active(program) == False` dopisuje do dziennika
+karty `box.risk` (`risk: "K1"`, `box`, `step`, `program`, `text`: „poświadczenia agenta czytelne dla kodu w pudełku
+(grupa docker); pełna ochrona: K3”) — raz na kartę.
+
+**Ograniczenia.** `OUTSIDE_PER_PROJECT` dotyczy wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
+tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Wynik `outside` kroku pudełkowego
+nie dostaje zgody na wykonanie na hoście: blokada obejmuje nowe wyniki, ponowne sprawdzanie zgód, decyzje
+oraz sam start polecenia. Dotychczasowe `outside*` kroków hostowych działają jak wcześniej.
+
+Testy: `daemon/tests/test_cardflow_execution_box.py` i `daemon/tests/test_stepstop_box.py` (baza `boxflow.py`:
+atrapa `incus` z prawdziwym `tide-step`, atrapy `systemd-run`/`systemctl --user` pudełka i proxy).
+
 ## Uruchamianie
 
 ```bash
@@ -3859,7 +5189,15 @@ zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuw
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
-przy `check: auto` pomija tę listę. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
+przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,
+poprawki) może mieć nagłówek „Do sprawdzenia na pulpicie” z listą punktów (pozycje mogą zajmować kilka wierszy,
+pusta sekcja jest dozwolona; kolejny akapit po pustym wierszu nie dokleja się do pozycji, a bloki ``` są pomijane;
+kroki odrzuconych ticketów są pomijane). Przy `check: manual` usługa zbiera te punkty ze wszystkich kroków karty i dopisuje
+do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z notek kroków)”; każda pozycja ma odwołanie
+„(krok …, ticket …)”, a ta sama pozycja z kilku notek (bez względu na wielkość liter i odstępy) pojawia się raz,
+ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani
+pudełka. Prompty ticketu i review mówią agentowi, by test wymagający prawdziwego pulpitu oznaczył w tej sekcji,
+a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
 `check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.

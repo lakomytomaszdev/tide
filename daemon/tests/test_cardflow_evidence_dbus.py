@@ -144,6 +144,7 @@ class EvidenceBusTest(FlowCase):
         self.restart()
         approved = self.call("ApproveCardPlan", card)
         self.assertTrue(approved["ok"], approved)
+        self.approve_environment(card)     # zatwierdzenie planu nie zastępuje zgody środowiska (PT-172)
         ticket, _ = self.observed(card, 3)
         self.assertEqual(ticket["kind"], "ticket")
         self.answer(card, ticket)

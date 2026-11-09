@@ -68,7 +68,7 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "TalkToCaretaker", "AbandonStep", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "SetCardPaused",
-          "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
+          "ApproveCardEnvironment", "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
 TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
@@ -479,6 +479,10 @@ class Backend(QObject):
     @pyqtSlot(str, str)
     def approveCardPlan(self, tag: str, card_id: str) -> None:
         self._write(tag, "ApproveCardPlan", [card_id])
+
+    @pyqtSlot(str, str, str, bool)
+    def approveCardEnvironment(self, tag: str, card_id: str, yaml_text: str, only_plan: bool) -> None:
+        self._write(tag, "ApproveCardEnvironment", [card_id, yaml_text, only_plan])
 
     @pyqtSlot(str, str)
     @pyqtSlot(str, str, str)

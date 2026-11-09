@@ -74,7 +74,7 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         self.flow._timer.stop()
         self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
         eng = self.flow.engine
-        order = eng.journal.append(card, "card.started", entry="plan", repo=self.repo, baseVersion=1)
+        order = eng.journal.append(card, "card.started", project="proj", entry="plan", repo=self.repo, baseVersion=1)
         eng.journal.append(card, "plan.approved", rows=[{"id": "PT-1"}, {"id": "PT-2"}])
         steps = []
         for index in range(1, 4):
@@ -132,6 +132,32 @@ class TicketConsentInProcessTest(ConsentScenario, FlowInProcess):
         eng.journal.append(card, "card.resumed")
         eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
         self.assertEqual([e["step"] for e in self.of(card, "outside.started")], ["s1"])
+
+    def test_outside_command_runs_without_qml_disk_cache(self):
+        """08.11: testy qml6 poza piaskownicą zapełniały ~/.cache/QtProject (100 GB) — polecenie outside dostaje
+        QML_DISABLE_DISK_CACHE=1 niezależnie od uruchamiacza testów na gałęzi."""
+        from tide_daemon.cardflow.state import fold
+        card, eng, steps, _ = self.seeded()
+        self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"choice": "run", "step": "s1"}))["ok"])
+        st = fold(eng.journal.read(card))
+        # Uruchamiacz testów sam ustawia tę zmienną — bez jej usunięcia test nie sprawdzałby usługi.
+        clean = {k: v for k, v in os.environ.items() if k != "QML_DISABLE_DISK_CACHE"}
+        with mock.patch.dict(os.environ, clean, clear=True), \
+                mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
+            eng._outside_ready(card, steps[0], st.finished["s1"], st.step_decisions["s1"])
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(popen.call_args.kwargs["env"].get("QML_DISABLE_DISK_CACHE"), "1")
+        # Jawna wartość użytkownika zostaje (setdefault).
+        st = fold(eng.journal.read(card))
+        self.assertTrue(self.call("ResolveCardStep", card, json.dumps({"choice": "run", "step": "s2"}))["ok"])
+        st = fold(eng.journal.read(card))
+        with mock.patch.dict(os.environ, {**clean, "QML_DISABLE_DISK_CACHE": "0"}, clear=True), \
+                mock.patch.object(eng, "_outside_busy", return_value=False), \
+                mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
+            eng._outside_active.clear()
+            eng._outside_ready(card, steps[1], st.finished["s2"], st.step_decisions["s2"])
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(popen.call_args.kwargs["env"].get("QML_DISABLE_DISK_CACHE"), "0")
 
     def test_running_command_finishes_and_separate_manual_once_still_starts(self):
         from tide_daemon.cardflow.state import fold

@@ -41,6 +41,17 @@ import sys
 FLOW_TRANSFER_CLOSE = ".flow-transfer-close"
 
 
+def trial_console_allowed(task):
+    # Samodzielny launcher nie importuje pakietu usługi. Mały plik polityki
+    # jest częścią instalacji hosta; jego brak/nieczytelność zamyka start.
+    import runpy
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "trialpolicy.py")
+        return runpy.run_path(path)["console_allowed"](task) is True
+    except Exception:
+        return False
+
+
 def _identity(pid: int) -> dict:
     with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
         fields = fh.read().rpartition(")")[2].split()
@@ -333,6 +344,9 @@ def shell() -> list[str]:
 
 def run_flow(task: dict) -> int:
     """Agent i późniejsza powłoka pracują w jednej cgroup; znacznik wymaga jej nieaktywności."""
+    if not trial_console_allowed(task):
+        print("Tide: K-38 v1 — start dawnej lub nieznanej próby w Konsoli wstrzymany.", flush=True)
+        return 3
     import signal
     import subprocess
     import time
@@ -428,6 +442,9 @@ def scope_kill(unit: str, systemctl: str, sig: str) -> None:
 
 def run_flow_child(task: dict) -> int:
     """Część w scope: agent i powłoka zachowują ten sam terminal i katalog roboczy."""
+    if not trial_console_allowed(task):
+        print("Tide: K-38 v1 — start dawnej lub nieznanej próby w Konsoli wstrzymany.", flush=True)
+        return 3
     import subprocess
     try:
         env = agent_env(task, os.environ) if has_env(task) else dict(os.environ)

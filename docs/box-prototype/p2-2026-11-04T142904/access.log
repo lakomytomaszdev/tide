@@ -1,0 +1,89 @@
+2026-11-04T14:29:06+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:06+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:06+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:06+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/suggested/codex	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/codex/models	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	204
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/plugins/featured	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/settings/user	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:07+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	200
+2026-11-04T14:29:08+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:08+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:08+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/responses	200
+2026-11-04T14:29:08+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:09+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:10+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:10+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:11+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:12+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:13+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:13+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:13+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/responses	200
+2026-11-04T14:29:15+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:16+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:16+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:16+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:16+01:00	10.173.184.91	CONNECT	ab.chatgpt.com:443	403
+2026-11-04T14:29:17+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:18+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:18+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:18+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:19+01:00	10.173.184.91	INJECT POST	/anthropic/v1/messages	200
+2026-11-04T14:29:20+01:00	10.173.184.91	INJECT POST	/anthropic/v1/messages	200
+2026-11-04T14:29:23+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:23+01:00	10.173.184.91	INJECT POST	/anthropic/v1/messages	200
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	api.anthropic.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	200
+2026-11-04T14:29:24+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	CONNECT	sdmntprsouthcentralus.oaiusercontent.com:443	403
+2026-11-04T14:29:24+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/plugins/featured	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	204
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/codex/models	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/suggested/codex	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/accounts/check	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/installed	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/wham/settings/user	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/ps/mcp	200
+2026-11-04T14:29:25+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:26+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:26+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/responses	200
+2026-11-04T14:29:27+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:27+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:28+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:29+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:29+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:30+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:31+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:31+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:31+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/responses	200
+2026-11-04T14:29:32+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:33+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:33+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:34+01:00	10.173.184.91	INJECT GET	/chatgpt/backend-api/ps/plugins/list	200
+2026-11-04T14:29:34+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:34+01:00	10.173.184.91	INJECT POST	/chatgpt/backend-api/codex/analytics-events/events	200
+2026-11-04T14:29:34+01:00	10.173.184.91	CONNECT	ab.chatgpt.com:443	403

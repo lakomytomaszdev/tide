@@ -7,6 +7,159 @@ K-38: zamiast coraz drobniejszych zgód — zamknięte środowisko, w którym ag
 Oznaczenia: **[sprawdzone]** — wynik z tego komputera (03.11.2026); **[założenie]** — do potwierdzenia prototypem
 albo w rozmowie; **[decyzja]** — pytanie do użytkownika (zebrane w sekcji 9).
 
+## Kontrakt granicy projektu v2 — PT-264 (07.11.2026)
+
+Ta sekcja zastępuje historyczne założenie „całe `.git` rw + nakładki ro” w dalszej
+części projektu. Zmianę zakresu zatwierdzono przy wznowieniu PT-264 o 15:33.
+Implementacja wymaga odbioru niezależną rodziną modeli; sam opis nie otwiera
+bramki PT-261 i nie zastępuje prób PT-273/PT-274.
+
+**Domena zaufania pozostaje projektem.** Wszystkie jego karty mogą czytać wspólne
+obiekty, refy, wejścia, worktrees, home i robocze wyniki. Nie ma granicy poufności
+między kartami. Hostowe magazyny wyników, werdyktów, zgód i strażnika pozostają
+poza urządzeniami. `per-card` nie daje prawa montowania wspólnego rodzica projektów.
+
+**Manifest PT-263.** Nowe propozycje mają `mountContract: 2`. Bazowe `.git` jest
+ro, a tylko `objects`, `refs`, `logs` mają osobne źródła rw. Hostowe config,
+hooks, info, config.worktree i rejestr administracji worktrees nie znajdują się
+w źródle rw obejmującym całą administrację. Workspaces i dedykowany home projektu
+są rw; wyłącznie dokładne `PackSnapshot.directory` wejść są ro. Zmiana planu
+zmienia odcisk i wymaga nowego podglądu oraz świadomej zgody projektu. Istniejący
+rekord nie jest przepisywany na nową treść ani automatycznie rozszerzany.
+
+**Administracja i indeks.** `box/gitview.py`, kopiowany do `in/bin/git`, utrzymuje
+prywatny HEAD i indeks w domu pudełka. Korzysta ze wspólnych objects/refs/logs;
+wewnętrzne piaskownice obu programów mają jawny zapis do tego prywatnego widoku.
+commity nadal są od razu widoczne w projekcie. Host nigdy nie wykonuje programu
+ani nie uruchamia Git na administracji wybranej z tego prywatnego katalogu.
+Strażnik sprawdza sam HEAD kanonicznego prywatnego widoku przez deskryptory bez
+podążania za symlinkami; nie interpretuje jego config ani indeksu. Odłączony HEAD
+lub inna gałąź dają `refs.guard`, zachowują obserwowany OID w raporcie i przywracają
+przypisanie gałęzi. Działa to także po użyciu `/usr/bin/git` z tym widokiem, bez
+zaufania do wrappera. Jest to kontrola stanu kanonicznego widoku, nie dowód wszystkich
+poleceń roota w dowolnej administracji. Plik `.git`
+w zapisywalnym worktree jest niezaufaną wskazówką: host sprawdza jego zgodność
+z rejestrem pod bazowym montowaniem ro i przypina własne `--git-dir`/`--work-tree`.
+Podmiana nie wybiera obcego projektu. Nie polegamy na nakładce pojedynczego pliku
+w zapisywalnym źródle ani na maskowaniu tego pliku przed zwykłym użytkownikiem.
+
+Inicjalizacja `init`/`init-db`/`clone` w pudełku nie korzysta z widoku istniejącego checkoutu.
+Wrapper usuwa odziedziczone zmienne `GIT_*` poza tożsamością także na ścieżce
+zwykłego repozytorium i uruchamia te polecenia bez własnego `GIT_DIR`,
+`GIT_COMMON_DIR` i `GIT_WORK_TREE`. Prywatny hostowy widok strażnika dopuszcza tylko
+`config`, `for-each-ref`, `check-ref-format` i `update-ref`. Odmawia pozostałych
+poleceń, także inicjalizacji i aliasów, przed wykonaniem Git: służy istniejącemu
+magazynowi, a inicjalizacja mogłaby przez `commondir` przepisać wspólny config. Zwykła hostowa inicjalizacja
+oddzielnego repozytorium zachowuje zamknięte środowisko i granicę procesu.
+To poprawka wykonania kontraktu v2, bez zmiany manifestu i uprawnień montowań.
+
+Przed ekspozycją host zapisuje w chronionej administracji `tide-boundary` i punkty
+`tide-index-tip`. Po przesunięciu refu przez prywatny widok host odtwarza swój
+indeks z nowego HEAD przed operacją wymagającą indeksu. Nie kopiuje indeksu z domu
+pudełka. Zmiany robocze pozostają na dysku. Ten mechanizm dotyczy worktrees
+projektu prowadzonych przez Tide; główny indeks użytkownika nie jest synchronizowany.
+Karty nadal podlegają serializacji PT-266. Równoległa ręczna praca na indeksie tego
+samego worktree nie jest osobną domeną ani obsługiwanym sposobem zachowania stagingu.
+
+**Hostowe operacje Git na danych pudełka.** Każde hostowe wywołanie Git przechodzi
+przez `gitcommand` (FlowGit, skaner, Tablica, opiekun, przygotowanie źródeł,
+ponowienia testów, StepGit). Granica — izolowany interpreter `git_sandbox.py` —
+jest włączona, gdy (1) usługa ma `box.enabled` (plik ustawień czytany ponownie po
+każdej zmianie, bez restartu), (2) wywołanie dotyczy repozytorium oznaczonego
+`<common-dir>/tide-boundary` — znacznik zapisuje `initialize_indexes` przed pierwszym
+wystawieniem repozytorium pudełku i zostaje także po wyłączeniu pudełka — albo
+(3) wywołuje ją ścieżka pudełkowa (`box/*`, strażnik refów, migawka checkoutu w trybie
+granicy). Niepewny odczyt (błąd stat ustawień, nieczytelny wskaźnik `.git`
+lub `commondir`) wybiera granicę. W pozostałych przypadkach — pudełko wyłączone
+i repozytorium nigdy niewystawione — argv i otoczenie są takie jak przed K-38:
+`git -c core.hooksPath=/dev/null -c core.fsmonitor=false …` bez drugiego interpretera
+(decyzja właściciela 08.11, pomiar ~4× sumy czasów modułów przy granicy bezwarunkowej;
+[decyzje PT-264](agents/pt-264/decisions.md#granica-gita-warunkowa)). Osobny rootfs bwrap zawiera tylko
+program systemowy, jego biblioteki/dane ro oraz jawne korzenie projektu.
+Nie ma hostowego `/tmp`, `/run`, procesów, IPC ani sieci. To ogranicza także
+zmiany metadanych przez chmod/utime i gniazda ścieżkowe; sama polityka plików
+Landlock nie wystarcza do ich ochrony. Landlock ABI co najmniej 6
+ogranicza pliki do jawnego repozytorium/workspaces i jawnych plików wejścia/wyjścia
+wybranych przez usługę. Rozstrzyga dostęp także po późniejszej podmianie symlinka.
+Nie przyznaje wykonania plików projektu, powłoki, filtrów ani pomocników z config;
+wykonuje wyłącznie systemowy Git i jego ten sam program w git-core. Nie przyznaje
+połączeń TCP ani wyjścia z zakresu IPC. Biblioteki i dane systemowego programu są
+ro; konfiguracja systemowa/globalna, lazy fetch i zmienne Git z otoczenia są
+wyłączone. Zachowane są tylko user.name/email hosta: osobne zabezpieczone
+`git config --no-includes --file` odczytuje te dwa pola, a operacja projektu
+dostaje wygenerowany plik tożsamości. Oryginalny config hosta nie jest przy niej
+montowany; lokalna i jawna tożsamość mają pierwszeństwo. Brak bwrap lub wymaganego
+ABI oznacza odmowę bez cichego powrotu do starego Git.
+
+Odczyty pojedynczej migawki checkoutu mogą współdzielić jeden start bwrap.
+Zaufany interpreter wykonuje stałą listę odczytów HEAD, gałęzi, statusu, indeksu
+i administracji; każdy proces Git dostaje tę samą politykę Landlock i przypięte
+gitdir/worktree. To nie jest interfejs dowolnego batch argv ani trwały worker.
+Wyniki mają sprawdzany pełny format, a błąd dowolnego wymaganego odczytu odmawia
+migawki. Każda następna migawka ponawia odczyty i walidację granicy; nie ma cache
+zmiennego stanu między podglądem, zgodą i wykonaniem. Odciski plików, sprawdzanie
+repozytorium źródłowego oraz porównania kolejnych faz pozostają obowiązkowe.
+Migawka nadal jest odczytem wieloetapowym, a nie atomową transakcją Git.
+Plan mountów i uprawnienia PT-263/PT-266 nie są przez to rozszerzane.
+
+**Koszt Git w v1 — decyzja właściciela 08.11.2026.** Przyjmujemy próg
+**1,6 zamiast 1,05** dla ilorazu średnich enabled/BASE. Native40 w kolejności
+B/E/E/B dał `37.12540199293289 / 54.42815118690487 / 54.10217254597228 /
+33.05383698607329` s, po 31 tych samych testów OK bez pominięć. Średnie to
+`35.08961948950309` i `54.265161866438575` s: **1,5464733632313044 (+54,65%)**.
+Enabled był prototypem trwałego workera w jednorazowych archiwach, pozostawionym
+w out kroku 40; nie został włączony do kodu gałęzi. Ten pomiar nie potwierdza
+takiego samego kosztu dostarczonej implementacji. Właściciel odrzucił przebudowę
+w C i polecił pozostawić bezpieczeństwo oraz mechanizmy produktu bez zmian.
+
+Ryzyko resztkowe to dłuższe operacje i podatność na obciążenie; rozrzut BASE
+wyniósł 12,318%, a dwa z czterech surowych ilorazów przekroczyły 1,6. Akceptacja
+średniej nie jest gwarancją opóźnienia każdej operacji. Zawężenie granicy do danych
+pudełka weszło do PT-264 (powyżej); etap 2 / K-75 może rozważyć dalsze zawężenie
+per repozytorium przy włączonym pudełku albo rdzeń natywny. Pełny pomiar, hash źródła i zakres decyzji:
+[decyzje PT-264](agents/pt-264/decisions.md#asked-akceptacja-narzutu-git-w-v1-bez-przebudowy-w-c).
+Historyczny kod 1 native40 według progu 1,05 i wcześniejsze porażki funkcjonalne
+pozostają zapisane. Wymagane są aktualny `test-changed`, niezależne review,
+nowa zgoda projektu przy zmianie manifestu i dalsze utrzymanie zamkniętej bramki prób.
+
+Alternates/http-alternates i przekierowania commondir są odrzucane przed startem.
+Próba wyścigu na magazynie Git nadal ma ograniczenia jądra przy otwarciu pliku;
+sama wcześniejsza walidacja ścieżki nie jest jedyną granicą. Prywatny widok
+`guardgit` zachowuje swój algorytm własnego refu i CAS, ale też używa tej granicy.
+Zatwierdzone argv usługi są zaufanym opisem jej operacji, nie dowolnym poleceniem
+przyjmowanym od pudełka. Jawny plik archiwum/indeksu nie upoważnia config do
+wybrania kolejnego celu. Kod zainstalowanej usługi musi być poza źródłami rw.
+
+Hostowe tworzenie i usuwanie worktrees zachowuje także używaną przez Planner
+konwencję `<repo>/.claude/worktrees`; to nadal wnętrze jawnego projektu. Przy
+`worktree list` istniejący checkout poza typowym kontenerem nie wymaga montowania
+jego katalogu ani rodzica: granica udostępnia tylko jego sprawdzony wskaźnik `.git`
+ro, ze zgodnym common-dir i hostową administracją. Nie zmienia to planu urządzeń pudełka.
+
+**Urządzenia PT-264.** Kolejność to paczki → zgoda → urządzenia. Blokada zgody
+szereguje również operacje na urządzeniach. Adapter porównuje kompletny efektywny
+zestaw urządzeń, także dziedziczonych, a nie tylko ich nazwy. Odrzuca dodatkowe
+dyski, urządzenia/gniazda, surowe konfiguracje i uprzywilejowany kontener. Zmiana
+montowań wymaga braku żywego kroku i zatrzymania całego pudełka, także Dockera.
+Przed podłączeniem źródeł odrzucane są hardlinki i pliki specjalne; symlinki
+zwykłych danych rozwiązują się w przestrzeni pudełka. Nieznany mount pozostaje
+niezmieniony i blokuje start. Callback `detach_snapshot` odłącza wyłącznie własne
+udowodnione urządzenia we wszystkich instancjach projektu przed usunięciem danych
+PT-262; nie resetuje innych kart. Reset projektu odmawia także przy żywej kopii karty.
+
+**Wpływ na gotowe tickety.** PT-263 zachowuje wersjonowany magazyn zgód, lecz
+wyprowadza nowy plan i odcisk. PT-266 zachowuje serializację, własny ref i CAS;
+jego prywatny Git dostaje dodatkową granicę procesu. PT-169 ma nowy adapter v1,
+nie używa starej ścieżki montowań dla plasma-tide. PT-262 nadal wyłącznie kopiuje,
+skanuje i usuwa dane po callbacku. PT-268/PT-269 muszą konsumować dokładną nową
+zgodę; nie wolno aktywować ich dawnymi profilami kart. Integracja wyboru kroku
+i polityki projektu pozostaje w PT-265/PT-269. Wykonana historyczna część K-38,
+WIP i wyniki review nie są przepisywane.
+
+Automatyczne dowody są na jednorazowych repozytoriach i atrapie urządzeń.
+Nie oznaczają zaliczenia root/Dockera na prawdziwym Incusie. Ten odbiór wymaga
+zarejestrowanego celu PT-273 i bramki PT-274; nie używa `.git` użytkownika.
+
 ## 1. Cel i kryteria sukcesu
 
 **Cel.** Krok w tle (ticket, review, poprawka, planowanie) pracuje w pudełku projektu: instaluje paczki, stawia

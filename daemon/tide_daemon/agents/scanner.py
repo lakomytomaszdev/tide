@@ -18,6 +18,7 @@ import os
 
 from ..processes import ProcessTable
 from .. import codex_app, codex_homes, windows
+from ..box import logfiles
 from ..board.place import work_cwd
 from . import gitinfo
 from .claude import ClaudeLog, escape_cwd, read_process_status, status_from
@@ -341,6 +342,9 @@ def _same_place(log: SessionLog, cwd: str) -> bool:
 
 
 def _claude_files(projects: str):
+    if logfiles.is_box(projects):
+        yield from ((p, st.st_mtime) for p, st in logfiles.files(projects, 1) if p.endswith(".jsonl"))
+        return
     try:
         dirs = [e for e in os.scandir(projects) if e.is_dir()]
     except OSError:
@@ -360,6 +364,9 @@ def _claude_files(projects: str):
 
 
 def _codex_files(root: str):
+    if logfiles.is_box(root):
+        yield from ((p, st.st_mtime) for p, st in logfiles.files(root, 3) if p.endswith(".jsonl"))
+        return
     for dirpath, dirnames, filenames in os.walk(root):
         depth = dirpath[len(root):].count(os.sep)
         if depth >= 3:
@@ -375,6 +382,8 @@ def _codex_files(root: str):
 
 def _recent_codex_dirs(root: str) -> list[str]:
     """Rok, miesiąc i dwa ostatnie dni — tam pojawiają się nowe pliki sesji."""
+    if logfiles.is_box(root):
+        return sorted({os.path.dirname(p) for p, _st in logfiles.files(root, 3)})
     out = []
     try:
         years = sorted(e.path for e in os.scandir(root) if e.is_dir())[-1:]

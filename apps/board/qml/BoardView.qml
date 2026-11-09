@@ -118,6 +118,7 @@ Item {
         onPauseRequested: (tag, id, paused) => view.backend.setCardPaused(tag, id, paused)
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
+        onEnvironmentApproveRequested: (tag, id, yaml, onlyPlan) => view.backend.approveCardEnvironment(tag, id, yaml, onlyPlan)
         onBranchDiffRequested: (tag, id) => view.backend.cardBranchDiff(tag, id)
         onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)

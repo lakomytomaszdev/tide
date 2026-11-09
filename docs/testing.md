@@ -14,6 +14,14 @@ Brak zgody lub konieczność wykonania
 poza piaskownicą obsłuż zwykłym kontraktem `denied`/`outside`; po wznowieniu wykorzystaj wynik
 przebiegu. Powtarzaj udany pełny przebieg dopiero po nowych zmianach.
 
+Krok w tle (ticket, poprawki, domknięcie) uruchamia w piaskownicy kroku tylko testy celowane
+(`make test-cardflow`, `make test-daemon`, `make test-board` albo `tools/test_runner.py --modules`).
+Wymagany `make test-changed BASE=…` (a przy domknięciu pełny `make test`) zgłasza od razu jako
+polecenie `outside`, bez wcześniejszej próby w piaskownicy. 08.11.2026 kroki puszczały pełny przebieg
+najpierw w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp i zagnieżdżonego bwrap), a potem drugi raz
+poza nią — obciążenie maszyny 40–58 na 16 rdzeniach. Tekst w kartkach: `sandbox_tests`
+w `daemon/tide_daemon/cardflow/handoff.py`.
+
 Ta zasada zastępuje wymóg pełnego `make test` przed oddaniem ticketu zapisany w kartkach
 istniejących planów, w tym K-37, K-38 i K-55. Nie przepisujemy tych planów.
 
@@ -123,6 +131,43 @@ Nieudana walidacja nie kasuje zebranego porównania, ale pozostaje zapisana w ra
 niezerowy wynik całej procedury. Gotowa tabela czasów nie oznacza wtedy udanego `test-changed`.
 
 ## Wyjątki od testów
+
+### Budżety oczekiwania przy granicy hostowego Git
+
+Granica hostowego Git (PT-264) działa tylko dla danych pudełka: przy `box.enabled`,
+dla repozytorium oznaczonego `tide-boundary` i w modułach ścieżki pudełkowej. Testy
+z wyłączonym pudełkiem uruchamiają więc Git jak przed PT-264 i mają pierwotne budżety
+oczekiwania: 30 s dla callbacku korekty bazy (15 s dla `BaseChangeInProcessTest.call`),
+10 s dla callbacku scalenia i 40/30/25 s dla zakończenia planu fal. Wcześniejsze
+podniesienie do 120/60/120 s kompensowało narzut granicy przy każdym wywołaniu
+(pomiar właściciela 08.11: suma czasów modułów ~4× bazy) i zostało cofnięte razem
+z warunkową granicą (`docs/agents/pt-264/decisions.md`, „Granica Gita warunkowa”).
+Scenariusze granicy sprawdzają moduły z włączonym pudełkiem (`boundary_on`
+w `daemon/tests/test_host_git_invocation.py`); nie mierzą czasu odpowiedzi.
+Krótkie okna sprawdzania współbieżności i braku działania pozostają oddzielne. Test priorytetu raportu zwalnia
+pierwszą atrapę dopiero po potwierdzeniu obecności raportu w kolejce, zamiast polegać
+na dwusekundowym opóźnieniu atrapy.
+
+Test równoległego StartCard i odczytu CLI używa bariery `release-hosting`: rzeczywisty
+proces atrapy CLI musi nadal czekać, gdy nadejdzie poprawna odpowiedź StartCard.
+Budżet odpowiedzi wynosi 60 s, a atrapa i jej deadline 120 s; zwolnienie w `finally`
+kończy CLI kontrolowanym błędem i pozwala sprawdzić ostrzeżenie. To sprawdzenie
+niezależności operacji zastępuje dawny wyścig odpowiedzi z 2-sekundowym oknem przy
+4-sekundowym timeout CLI. Pomiar wykazał 5,66 s lokalnego startu z chronionym Git;
+stos pokazywał pracę rezerwacji, podczas gdy osobny wątek nadal czekał na CLI.
+Test nie potwierdza już dawnego progu 2 s. Testy timeoutu hostingcli pozostają osobne.
+
+Dwie próby edycji pracującego ticketu używają tej samej bariery `release-agent`,
+aby naturalny koniec ośmiosekundowej atrapy nie zastąpił sprawdzanego zatrzymania.
+Po zwolnieniu oczekiwanie końca planu ma pierwotny budżet 25 s. Test poświadczeń kolejnych programów czeka na domknięcie poprzedniej
+karty: koniec jej ticketu nie zwalnia jeszcze blokady jednego repozytorium.
+
+Zmiana budżetu wymaga zmierzonego uzasadnienia i review tak jak kod testu. Nie zastępuje
+naprawy błędnego wyniku, nie wyłącza granic ani kontroli puli/izolacji i nie jest
+odstępstwem od wcześniejszych nieudanych przebiegów. Po zmianie obowiązuje nowy
+`make test-changed`; wcześniejsze porażki pozostają w notkach.
+
+### Rozliczenie nieudanych przebiegów
 
 Nieudany test pozostaje nieudanym wynikiem. Udana ponowna próba ani „osobno przechodzi” nie zastępują
 pierwszego wyniku i nie są samodzielnym uzasadnieniem odstępstwa. Zachowaj logi obu przebiegów.
@@ -342,6 +387,16 @@ HEAD przy czystym drzewie i takim samym poleceniu (cel, BASE, JOBS), Tide urucha
 `tools/test_runner.py --modules` z modułami, które padły według `summary.json` tamtego przebiegu, i zapisuje
 w dzienniku `rerunOf`. Brak raportu, brak listy padniętych modułów, zmiana kodu albo `TIDE_FULL_RUN=1` w poleceniu
 oznaczają zwykły pełny przebieg. Dotyczy gałęzi, których uruchamiacz ma opcję `--modules`.
+
+`TEST_OUTPUT=<katalog>` wskazuje tylko miejsce raportu: polecenie z nim nadal jest pełnym przebiegiem, przy porównaniu
+przebiegów katalog się pomija, a ponowienie zapisuje raport w katalogu z bieżącego polecenia (08.11: przez
+`TEST_OUTPUT` katalogu kroku ponowienie nie włączyło się w żadnym z 8 uciętych przebiegów PT-264).
+
+Przebieg ucięty przez Tide (limit czasu polecenia poza piaskownicą albo zatrzymanie jednostki) nie ma `summary.json`.
+Uruchamiacz zapisuje na starcie `modules.json` z listą modułów przebiegu, a każdy moduł zostawia raport z kodem
+wyjścia procesu, więc ponowienie obejmuje moduły padnięte i te bez wyniku (w toku albo niezaczęte), a pomija tylko
+zakończone kodem 0 bez porażek. Starszy uruchamiacz (bez `modules.json`): pełny przebieg, bo niezaczętych modułów
+nie da się ustalić. Zwykła porażka z kodem wyjścia nadal wymaga kompletnego `summary.json`.
 
 ## Starsze gałęzie bez celu test-changed
 

@@ -62,13 +62,14 @@ Po zapisaniu plików zapisz {out_dir}/result.json: {{"result":"done","notes":["p
 
 
 def prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, errors=(), previous="", tool="claude", images=(),
-           tracker="local", tracker_url="", tracker_project="", projects=()):
+           tracker="local", tracker_url="", tracker_project="", projects=(), environment=""):
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
     multi = _multi(projects)
     header = HEADER_PROJECTS if multi else HEADER
     sample = ("| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | | <projekt> |"
               if multi else "| #1 | <zachowanie> | todo | | <wykonawca> | <uzasadnienie> | standard | <recenzent> | |")
+    environment = f"{environment}\n\n" if environment else ""   # PT-190: sekcja środowiska, gdy jest co pokazać
     return f"""Krok planowania Lekkiego karty {card.id}.
 {resources.instructions()}
 Pracuj bez pytań. Rozsądne założenia zapisz w specyfikacji. Tylko przygotuj propozycję, nie wykonuj ticketów.
@@ -90,7 +91,7 @@ Katalog wykonawców (nazwa, dostawca, program, model, klasy):
 Zasady przydziału:
 {assignment_rules}
 
-1. Poznaj repozytorium i kontekst. Czytaj zasady AGENTS.md/CLAUDE.md, słownik CONTEXT.md i decyzje ADR.
+{environment}1. Poznaj repozytorium i kontekst. Czytaj zasady AGENTS.md/CLAUDE.md, słownik CONTEXT.md i decyzje ADR.
 Używaj terminów domeny. Bez grillingu i pytań: uzupełnij brakujące szczegóły rozsądnymi założeniami.
 2. Przeprowadź to-spec. Opisz problem i rozwiązanie z punktu widzenia użytkownika.
 Zapisz {out_dir}/spec.md z sekcjami:
@@ -151,7 +152,7 @@ Jeżeli krok wymaga zgody na polecenie, zapisz {{"result": "denied", "command": 
 
 
 def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, out_dir, tool,
-                images=(), tracker="local", tracker_url="", tracker_project="", projects=()):
+                images=(), tracker="local", tracker_url="", tracker_project="", projects=(), environment=""):
     """Pełny proces w jednej rozmowie; artefakty pozostają w katalogu kroku do zatwierdzenia."""
     executors = [{"name": e.name, "provider": e.provider, "program": e.program, "model": e.model,
                   "classes": list(e.classes)} for e in catalog.executors]
@@ -161,6 +162,7 @@ def full_prompt(*, card, project, catalog, preferred, assignment_rules, prefix, 
               "<recenzent> | | <projekt> |" if multi else
               "| #1 | <działające zachowanie> | todo | | <wykonawca> | <jednozdaniowe uzasadnienie> | standard | "
               "<recenzent> | |")
+    environment = f"{environment}\n\n" if environment else ""   # PT-190: sekcja środowiska, gdy jest co pokazać
     discovery = ("Użyj skilli grill-with-docs oraz domain-modeling. Prowadź dociekliwą rozmowę z użytkownikiem: "
                  "pytaj o cel, przypadki brzegowe, proces i decyzje. W trakcie rozmowy aktualizuj słownik "
                  "domenowy i uzasadnienia decyzji projektu w artefaktach katalogu wyjściowego, "
@@ -184,7 +186,7 @@ Katalog wykonawców (nazwa, dostawca, program, model, klasy):
 Zasady przydziału:
 {assignment_rules}
 
-Pracuj w tej kolejności:
+{environment}Pracuj w tej kolejności:
 1. {discovery} Poznaj zasady AGENTS.md/CLAUDE.md, CONTEXT.md i decyzje ADR. Uzgadniaj terminy
 z użytkownikiem. Zapisuj ustalenia jako {out_dir}/discovery.md i w razie potrzeby {out_dir}/decisions.md.
 2. Użyj to-spec po zakończeniu rozmowy o wymaganiach. Utwórz {out_dir}/spec.md z pełną specyfikacją:

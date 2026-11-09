@@ -1,0 +1,178 @@
+# P-9 — systemd --user agenta i systemd-run przez incus exec
+
+- data: 2026-11-04T14:46:49+01:00
+- skrypt: scripts/box/prototype/p9.sh
+- jądro hosta: 7.0.0-38-generic
+- kontener: tide-proto (images:ubuntu/24.04)
+
+$ incus info 
+  [dostęp do Incusa (incus-user, projekt user-1000)] kod wyjścia: 0, czas: 0.020 s
+    | … (pominięto 440 wierszy)
+    |     network_phys_macvlan_mtu: "true"
+    |     network_veth_router: "true"
+    |     pidfd: "true"
+    |     seccomp_allow_deny_syntax: "true"
+    |     seccomp_notify: "true"
+    |     seccomp_proxy_send_notify_fd: "true"
+    |   os_name: KDE neon
+    |   os_version: "24.04"
+    |   project: user-1000
+    |   server: incus
+    |   server_clustered: false
+    |   server_event_mode: full-mesh
+    |   server_name: tomek-pc
+    |   server_pid: 260168
+    |   server_version: 6.0.0
+    |   storage: btrfs
+    |   storage_version: 6.6.3
+    |   storage_supported_drivers:
+    |   - name: btrfs
+    |     version: 6.6.3
+    |     remote: false
+    |   - name: dir
+    |     version: "1"
+    |     remote: false
+    |   - name: lvm
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: false
+    |   - name: lvmcluster
+    |     version: 2.03.16(2) (2022-05-18) / 1.02.185 (2022-05-18) / 4.50.0
+    |     remote: true
+$ incus version 
+  [wersja Incusa] kod wyjścia: 0, czas: 0.019 s
+    | Client version: 6.0.0
+    | Server version: 6.0.0
+Kontener tide-proto już jest — używam go.
+$ incus config show tide-proto 
+  [konfiguracja kontenera] kod wyjścia: 0, czas: 0.020 s
+    | … (pominięto 6 wierszy)
+    |   image.requirements.cgroup: v2
+    |   image.serial: "20261103_07:42"
+    |   image.type: squashfs
+    |   image.variant: default
+    |   security.nesting: "true"
+    |   volatile.base_image: c8260bb3cab33bbb3b20dd6cd581dab8735b2253484fc19ad904adbdf2b946eb
+    |   volatile.cloud-init.instance-id: 38468a45-11b4-49d1-a811-40423f87789f
+    |   volatile.eth0.host_name: vethea81f5ef
+    |   volatile.eth0.hwaddr: 00:16:3e:ee:b5:9e
+    |   volatile.idmap.base: "0"
+    |   volatile.idmap.current: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.idmap.next: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.last_state.idmap: '[{"Isuid":true,"Isgid":false,"Hostid":1000000,"Nsid":0,"Maprange":1000000000},{"Isuid":false,"Isgid":true,"Hostid":1000000,"Nsid":0,"Maprange":1000000000}]'
+    |   volatile.last_state.power: RUNNING
+    |   volatile.last_state.ready: "false"
+    |   volatile.uuid: c8f15df4-46e1-4f94-9d29-087cf95e6d6c
+    |   volatile.uuid.generation: e621d5b3-78ff-4998-9cae-efdbfe99f9bf
+    | devices:
+    |   eth0:
+    |     name: eth0
+    |     network: incusbr0
+    |     security.ipv4_filtering: "true"
+    |     security.ipv6_filtering: "false"
+    |     security.mac_filtering: "true"
+    |     type: nic
+    | ephemeral: false
+    | profiles:
+    | - default
+    | stateful: false
+    | description: ""
+$ systemd_ready 
+  [czekanie na start systemd w kontenerze] kod wyjścia: 0, czas: 0.548 s
+    | running (próba 1)
+$ incus exec tide-proto -T -- bash -c $'\n        set -e\n        name=$(id -un 1000 2>/dev/null || true)\n        if [ -z "$name" ]; then\n            useradd -m -u 1000 -U -s /bin/bash agent\n        elif [ "$name" != agent ]; then\n            usermod -l agent -d /home/agent -m "$name"\n            groupmod -n agent "$(id -gn 1000)" 2>/dev/null || true\n        fi\n        id agent' 
+  [użytkownik agent (uid 1000)] kod wyjścia: 0, czas: 0.058 s
+    | uid=1000(agent) gid=1000(agent) groups=1000(agent),27(sudo)
+$ incus exec tide-proto -T -- loginctl enable-linger agent 
+  [lingering użytkownika agent] kod wyjścia: 0, czas: 0.065 s
+$ incus exec tide-proto -T -- bash -c $'\n    for i in $(seq 60); do [ -S /run/user/1000/bus ] && systemctl is-active user@1000.service && exit 0; sleep 1; done\n    systemctl status user@1000.service --no-pager; exit 1' 
+  [czekanie na systemd --user agenta (user@1000)] kod wyjścia: 0, czas: 0.067 s
+    | active
+
+WYNIK lingering: ok — systemd --user agenta działa (lingering)
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --quiet true 
+  [systemd-run --user --scope true przez incus exec] kod wyjścia: 0, czas: 0.067 s
+
+WYNIK scope: ok — systemd-run --user --scope przez incus exec --user 1000 działa
+
+$ incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --quiet --collect --wait true 
+  [systemd-run --user --wait true przez incus exec (usługa)] kod wyjścia: 0, czas: 0.070 s
+
+WYNIK usluga-user: ok — systemd-run --user --wait (usługa) przez incus exec działa
+
+$ systemd-run --user --unit=tide-proto-client --collect --quiet -- incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --scope --unit=tide-proto-sleep-1 sleep 30 
+  [[scope] klient incus exec w jednostce hosta tide-proto-client] kod wyjścia: 0, czas: 0.006 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[scope] sleep w kontenerze przed zatrzymaniem klienta] kod wyjścia: 0, czas: 0.073 s
+    | 492 /usr/bin/sleep 30
+$ systemctl --user stop tide-proto-client 
+  [[scope] zatrzymanie klienta na hoście] kod wyjścia: 0, czas: 0.008 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[scope] sleep w kontenerze po zatrzymaniu klienta] kod wyjścia: 1, czas: 0.065 s
+
+WYNIK przezywa-klienta-scope: fail — przed: 1, po zatrzymaniu klienta: 0 (scope)
+
+$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
+  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 1, czas: 0.059 s
+$ systemd-run --user --unit=tide-proto-client --collect --quiet -- incus exec tide-proto -T --user 1000 --group 1000 --cwd /home/agent --env HOME=/home/agent --env XDG_RUNTIME_DIR=/run/user/1000 --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus -- systemd-run --user --unit=tide-proto-sleep-2 --collect --wait sleep 30 
+  [[usługa-user] klient incus exec w jednostce hosta tide-proto-client] kod wyjścia: 0, czas: 0.014 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[usługa-user] sleep w kontenerze przed zatrzymaniem klienta] kod wyjścia: 0, czas: 0.068 s
+    | 497 /usr/bin/sleep 30
+$ systemctl --user stop tide-proto-client 
+  [[usługa-user] zatrzymanie klienta na hoście] kod wyjścia: 0, czas: 0.010 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[usługa-user] sleep w kontenerze po zatrzymaniu klienta] kod wyjścia: 0, czas: 0.062 s
+    | 497 /usr/bin/sleep 30
+
+WYNIK przezywa-klienta-usługa-user: ok — proces (usługa-user) przeżył śmierć klienta incus exec na hoście
+
+$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
+  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 0, czas: 0.062 s
+$ systemd-run --user --unit=tide-proto-client --collect --quiet -- incus exec tide-proto -T -- systemd-run --uid=1000 --gid=1000 --unit=tide-proto-sleep-3 --collect --wait sleep 30 
+  [[usługa-root] klient incus exec w jednostce hosta tide-proto-client] kod wyjścia: 0, czas: 0.017 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[usługa-root] sleep w kontenerze przed zatrzymaniem klienta] kod wyjścia: 0, czas: 0.075 s
+    | 503 /usr/bin/sleep 30
+$ systemctl --user stop tide-proto-client 
+  [[usługa-root] zatrzymanie klienta na hoście] kod wyjścia: 0, czas: 0.010 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [[usługa-root] sleep w kontenerze po zatrzymaniu klienta] kod wyjścia: 0, czas: 0.076 s
+    | 503 /usr/bin/sleep 30
+
+WYNIK przezywa-klienta-usługa-root: ok — proces (usługa-root) przeżył śmierć klienta incus exec na hoście
+
+$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
+  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 0, czas: 0.067 s
+
+WYNIK przezywa-klienta: ok — śmierć klienta incus exec przeżywa: usługa-user usługa-root
+
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [sleep w kontenerze przed restartem tide-daemon] kod wyjścia: 0, czas: 0.096 s
+    | 508 /usr/bin/sleep 30
+$ systemctl --user restart tide-daemon 
+  [restart tide-daemon na hoście] kod wyjścia: 0, czas: 4.474 s
+$ incus exec tide-proto -T -- pgrep -u 1000 -a -x sleep 
+  [sleep w kontenerze po restarcie tide-daemon] kod wyjścia: 0, czas: 0.062 s
+    | 508 /usr/bin/sleep 30
+
+WYNIK przezywa-restart-daemona: ok — proces (scope) żyje po systemctl --user restart tide-daemon
+
+$ systemctl --user stop tide-proto-client 
+  [sprzątanie: jednostka hosta tide-proto-client] kod wyjścia: 5, czas: 0.005 s
+    | Failed to stop tide-proto-client.service: Unit tide-proto-client.service not loaded.
+$ incus exec tide-proto -T -- pkill -u 1000 -x sleep 
+  [sprzątanie: sleep agenta w kontenerze] kod wyjścia: 1, czas: 0.060 s
+
+## Podsumowanie
+
+- lingering: ok — systemd --user agenta działa (lingering)
+- scope: ok — systemd-run --user --scope przez incus exec --user 1000 działa
+- usluga-user: ok — systemd-run --user --wait (usługa) przez incus exec działa
+- przezywa-klienta-scope: fail — przed: 1, po zatrzymaniu klienta: 0 (scope)
+- przezywa-klienta-usługa-user: ok — proces (usługa-user) przeżył śmierć klienta incus exec na hoście
+- przezywa-klienta-usługa-root: ok — proces (usługa-root) przeżył śmierć klienta incus exec na hoście
+- przezywa-klienta: ok — śmierć klienta incus exec przeżywa: usługa-user usługa-root
+- przezywa-restart-daemona: ok — proces (scope) żyje po systemctl --user restart tide-daemon
+
+Niepowodzeń: 1

@@ -1,0 +1,13 @@
+stack: python-qt
+description: Python z PyQt6 i QML (tryb offscreen)
+apt: [python3-pyqt6, python3-pyqt6.qtquick]
+domains:
+  - name: pypi.org
+    risk: green
+    registry: true
+    note: indeks PyPI
+  - name: files.pythonhosted.org
+    risk: green
+    registry: true
+    note: pakiety PyPI
+images: []

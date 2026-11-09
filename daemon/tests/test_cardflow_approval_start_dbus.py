@@ -73,6 +73,10 @@ class ApprovalStartBusTest(FlowCase):
     def approve(self, card):
         reply = self.call("ApproveCardPlan", card)
         self.assertTrue(reply["ok"], reply)
+        # PT-290 (D1): usługa testu ma `box.enabled: false` — zatwierdzenie planu nie tworzy oczekiwania
+        # `environment` (zgoda odroczona) i nie blokuje hostowego kroku; przy włączonym pudełku zgoda nadal
+        # obowiązuje (PT-172, test_cardflow_plan_integration / test_cardflow_env_consent_switch).
+        self.assertEqual([(e["value"], e.get("deferred")) for e in self.of(card, "box.wait")], [("", "environment")])
         return reply
 
     def ticket_starts(self, card):

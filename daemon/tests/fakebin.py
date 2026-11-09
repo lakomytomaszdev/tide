@@ -9,6 +9,8 @@ $XDG_DATA_HOME/kwin/scripts/<id> dla skryptów KWin), żeby dało się sprawdzi�
 kwriteconfig6 i dbus-send tylko zapisują wywołanie — nic nie trafia do konfiguracji ani na magistralę.
 qdbus6 zapisuje do dziennika tylko usługę, ścieżkę i metodę, a pełny ostatni argument (np. skrypt
 dla evaluateScript, zwykle wielowierszowy) do kolejnego pliku w <dziennik>.qdbus6/ — patrz qdbus_args().
+incus to atrapa ze stanem (fake_incus.py, $TIDE_FAKE_INCUS_STATE): zapisuje argv, a `exec` wykonuje polecenie
+lokalnie z PATH zaczynającym się od <fakebin>/box (apt-get, docker, … tylko zapisują wywołanie).
 """
 import os
 import shutil
@@ -50,15 +52,33 @@ FAKES = {"systemctl": SYSTEMCTL, "kpackagetool6": KPACKAGETOOL, "kwriteconfig6":
          "systemd-run": LOG_ONLY, "konsole": LOG_ONLY, "rider": LOG_ONLY, "claude": LOG_ONLY, "codex": LOG_ONLY,
          "xdg-open": LOG_ONLY,
          # Codex Desktop — atrapa zamiast prawdziwej aplikacji ChatGPT (odnośnik codex://threads/<id>).
-         "chatgpt": LOG_ONLY}
+         "chatgpt": LOG_ONLY,
+         # Incus (pudełko karty, PT-167) — atrapa ze stanem w $TIDE_FAKE_INCUS_STATE (fake_incus.py).
+         "incus": None}
+
+FAKE_INCUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_incus.py")
+INCUS = f"""#!/bin/bash
+export TIDE_FAKE_BOX_BIN="$(dirname "$0")/box"
+exec /usr/bin/python3 -s {FAKE_INCUS} "$@"
+"""
+# Programy wywoływane przez `incus exec` atrapy (PATH w „pudełku”): tylko zapis wywołania ze zmienną proxy,
+# żeby polecenia budowy (apt-get, docker pull) nigdy nie dotknęły hosta.
+BOX_LOG_ONLY = """#!/bin/bash
+echo "box[$TIDE_FAKE_BOX] $(basename "$0") HTTPS_PROXY=${HTTPS_PROXY:-} $*" >> "$TIDE_FAKE_LOG"
+if [[ ${TIDE_FAKE_BOX_FAIL:-} == "$(basename "$0")" ]]; then exit 9; fi
+"""
+BOX_FAKES = ("apt-get", "apt", "docker", "systemctl", "npm", "npx", "dotnet", "pip", "pip3", "curl", "wget", "install")
 
 
 def make_env(tmp: str) -> dict:
     """Środowisko z tymczasowym HOME, XDG_* i atrapami na początku PATH."""
     fake = os.path.join(tmp, "fakebin")
     os.makedirs(fake, exist_ok=True)
-    for name, body in FAKES.items():
-        path = os.path.join(fake, name)
+    box = os.path.join(fake, "box")
+    os.makedirs(box, exist_ok=True)
+    scripts = {os.path.join(fake, n): (INCUS if n == "incus" else b) for n, b in FAKES.items()}
+    scripts.update({os.path.join(box, n): BOX_LOG_ONLY for n in BOX_FAKES})
+    for path, body in scripts.items():
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
@@ -73,6 +93,9 @@ def make_env(tmp: str) -> dict:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         # Bez Codex Desktop, chyba że test wskaże własny plik .desktop z atrapą chatgpt.
         "TIDE_CODEX_DESKTOP": "",
+        # Atrapa incus: stan instancji i migawek; adapter woła `incus` z PATH (nie $TIDE_INCUS_BIN).
+        "TIDE_FAKE_INCUS_STATE": os.path.join(tmp, "incus-state"),
+        "TIDE_INCUS_BIN": "",
     }
     for key in ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
         os.makedirs(env[key], exist_ok=True)

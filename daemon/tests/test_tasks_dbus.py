@@ -115,6 +115,11 @@ class TasksContractTest(unittest.TestCase):
         except OSError:
             return []
 
+    def wait_for_agent_calls(self, count):
+        # Start potwierdza przejęcie pliku zadania, zanim powłoka wykona program atrapy.
+        runs = wait_until(lambda: (calls if len(calls := self.agent_calls()) >= count else None))
+        self.assertIsNotNone(runs, f"atrapa nie zapisała {count} wywołań")
+        return runs
     def wait_for_agent_call(self, offset, prompt, timeout=5):
         """Start potwierdza przejęcie zadania, nie zakończenie zapisu przez agenta."""
         deadline = time.monotonic() + timeout

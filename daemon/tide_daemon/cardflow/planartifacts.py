@@ -1,4 +1,4 @@
-"""Ograniczony pakiet Markdownów planowania, niezależny od katalogu wyjściowego autora."""
+"""Ograniczony pakiet planowania (Markdown i box.yaml), niezależny od katalogu wyjściowego autora."""
 import os
 import posixpath
 import re
@@ -37,7 +37,7 @@ def keep_committed_plan_text(state):
 
 
 def read(root, *, validate=True, plan_name=None):
-    """Czyta tylko *.md obok planu, tickets/*.md i followups/**/*.md, bez dowiązań.
+    """Czyta *.md obok planu, tickets/*.md, followups/**/*.md i profil box.yaml, bez dowiązań.
 
     Deskryptory katalogów i O_NOFOLLOW chronią również przed podmianą ścieżki podczas odczytu.
     Cały pakiet jest sprawdzany przed pierwszym zapisem migawki.
@@ -52,11 +52,14 @@ def read(root, *, validate=True, plan_name=None):
                 continue
             rel = posixpath.join(prefix, name)
             meta = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            selected = name.endswith('.md') or prefix.startswith('followups') or (not prefix and name in ('tickets', 'followups'))
+            box_profile = not prefix and name == "box.yaml" and plan_name in (None, "plan.md")
+            selected = box_profile or name.endswith('.md') or prefix.startswith('followups') or (not prefix and name in ('tickets', 'followups'))
             if not selected:
                 continue
             if stat.S_ISLNK(meta.st_mode):
                 raise ValueError(f'dowiązanie w artefaktach: {rel}')
+            if box_profile and not stat.S_ISREG(meta.st_mode):
+                raise ValueError(f'artefakt nie jest zwykłym plikiem: {rel}')
             if stat.S_ISDIR(meta.st_mode):
                 if prefix == 'tickets' or (not prefix and name not in ('tickets', 'followups')):
                     continue
@@ -65,7 +68,7 @@ def read(root, *, validate=True, plan_name=None):
                     walk(child, rel)
                 finally:
                     os.close(child)
-            elif name.endswith('.md'):
+            elif name.endswith('.md') or box_profile:
                 if not stat.S_ISREG(meta.st_mode):
                     raise ValueError(f'artefakt nie jest zwykłym plikiem: {rel}')
                 child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
@@ -92,6 +95,8 @@ def read(root, *, validate=True, plan_name=None):
 def check_links(files, *, published=None):
     """Lokalny link do followups musi wskazywać Markdown wewnątrz tego pakietu."""
     for source, body in files.items():
+        if not source.endswith(".md"):
+            continue
         for match in LINK.finditer(body.decode('utf-8')):
             raw = (match.group(1) or match.group(2)).strip('<>')
             url = urlsplit(raw)
@@ -101,7 +106,7 @@ def check_links(files, *, published=None):
             if not path or ('followups' not in path.split('/') and not source.startswith('followups/')):
                 continue
             target = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
-            if url.scheme == 'file' or path.startswith('/') or target.startswith('../') or target not in files:
+            if url.scheme == 'file' or path.startswith('/') or target.startswith('../') or target not in files or not target.endswith('.md'):
                 raise ValueError(f'{source}: brak lokalnego celu followups lub wyjście poza artefakty: {raw}')
             if published is not None and target not in published:
                 raise ValueError(f'{source}: lokalny cel szkicu nie trafia do commita planu: {raw}')

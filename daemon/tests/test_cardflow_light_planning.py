@@ -78,6 +78,7 @@ class LightPlanningTest(FlowInProcess):
         self.flow.approve_plan(card, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
         self.assertTrue(json.loads(box[0])["ok"], box)
+        self.approve_environment(card)
         self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=30), self.events(card))
         self.wait_column(card, "review")
         self.assertEqual([s["kind"] for s in self.of(card, "step.started")],

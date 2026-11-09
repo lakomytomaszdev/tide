@@ -85,6 +85,7 @@ SHARED_TEST_MODULES = (
 # uruchamiamy jeden po drugim dopiero po zakończeniu wszystkich równoległych.
 # Prywatne magistrale D-Bus, porty 0 i TemporaryDirectory nie wymagają wyjątków.
 SERIAL_MODULES = {
+    "theme/terminal/tests/test_statusline.py": "pomiar budżetu 150 ms czasu ściennego bez konkurencji pozostałych modułów o CPU",
     "daemon/tests/test_cardflow_review.py":
         "Qt: tick uruchamia domknięcie przed callbackiem decyzji; test liczy step.started przed następnym tickiem. "
         "Próba PT-215: 0/3 porażek osobno, 1/5 przy 14 procesach; osobno do czasu synchronizacji scenariusza.",

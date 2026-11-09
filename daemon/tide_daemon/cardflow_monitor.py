@@ -138,7 +138,17 @@ class CardFlowMonitor(QObject):
         self._action("SetCardPaused", lambda: self.engine.set_paused(card_id, paused), reply)
 
     def get_settings(self, reply) -> None:
-        self._action("GetCardFlowSettings", self.engine.get_flow_settings, reply)
+        # Odczyt pliku ustawień (zapis jest atomowy) od razu na wątku głównym — nie w kolejce za `engine.tick`,
+        # który po K-38 trwał dziesiątki sekund (09.11: GetCardFlowSettings 14–46 s, Tablica startowała długo).
+        def immediate(work, then) -> bool:
+            future = Future()
+            try:
+                future.set_result(work())
+            except Exception as exc:
+                future.set_exception(exc)
+            then(future)
+            return True
+        self._action("GetCardFlowSettings", self.engine.get_flow_settings, reply, submit=immediate)
 
     def set_settings(self, request: str, reply) -> None:
         try:
@@ -260,6 +270,16 @@ class CardFlowMonitor(QObject):
 
         if not self._submit(lambda: self.engine.approve_plan(card_id), answer):
             reply(json.dumps(_failure("unavailable", "usługa się zamyka"), ensure_ascii=False))
+
+    def approve_environment(self, card_id: str, yaml_text: str, only_plan: bool, reply) -> None:
+        """ApproveCardEnvironment (PT-172): walidacja i zapis w tym samym szeregowym wątku co kroki; budowa w tle."""
+        self._action("ApproveCardEnvironment", lambda: self.engine.approve_environment(card_id, yaml_text, only_plan), reply)
+
+    def box_status(self, slug: str, reply, card: str = "") -> None:
+        self._action("BoxStatus", lambda: self.engine.box_status(slug, card), reply)
+
+    def stop_box(self, slug: str, card: str, reply) -> None:
+        self._action("StopBox", lambda: self.engine.stop_box(slug, card), reply)
 
     def card_diff(self, card_id: str, reply, target_ref: str = "") -> None:
         self._action("CardBranchDiff", lambda: self.engine.card_diff(card_id, target_ref), reply)

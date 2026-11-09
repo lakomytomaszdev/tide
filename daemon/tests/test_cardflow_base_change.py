@@ -59,8 +59,9 @@ class BaseChangeTest(StartBaseSetup):
         self.ask()
         path = self.started["cardWorktree"]
         ignored = Path(path, "ignored.bin")
-        git(path, "config", "core.excludesFile", str(Path(self.base, "excludes")))
-        Path(self.base, "excludes").write_text("ignored.bin\n")
+        excludes = Path(self.repo, ".git", "info", "exclude")
+        git(path, "config", "core.excludesFile", str(excludes))
+        excludes.write_text("ignored.bin\n")
         ignored.write_bytes(b"1234")
         initial = self.preview(step="ask")
         self.assertTrue(initial["canChange"], initial)
@@ -110,7 +111,7 @@ class BaseChangeTest(StartBaseSetup):
 
     def test_large_ignored_trees_are_compact_and_no_file_contents_are_hashed(self):
         self.ask()
-        excludes = Path(self.base, "excludes")
+        excludes = Path(self.repo, ".git", "info", "exclude")
         excludes.write_text("bin/\nobj/\nnode_modules/\ncache-*.bin\n")
         for path in (self.started["cardWorktree"], self.started["worktree"]):
             git(path, "config", "core.excludesFile", str(excludes))
@@ -142,7 +143,7 @@ class BaseChangeTest(StartBaseSetup):
 
     def test_local_metadata_budget_exhaustion_refuses_without_partial_qualification(self):
         self.ask()
-        excludes = Path(self.base, "excludes")
+        excludes = Path(self.repo, ".git", "info", "exclude")
         excludes.write_text("cache-*.bin\n")
         path = self.started["cardWorktree"]
         git(path, "config", "core.excludesFile", str(excludes))
@@ -158,7 +159,7 @@ class BaseChangeTest(StartBaseSetup):
 
     def test_ignored_directory_metadata_change_during_second_pass_invalidates_preview(self):
         path = self.started["cardWorktree"]
-        excludes = Path(self.base, "excludes")
+        excludes = Path(self.repo, ".git", "info", "exclude")
         excludes.write_text("bin/\n")
         git(path, "config", "core.excludesFile", str(excludes))
         directory = Path(path, "bin")
@@ -239,7 +240,7 @@ class BaseChangeTest(StartBaseSetup):
 
     def test_active_and_unknown_process_finished_before_exit_then_wip(self):
         self.ask()
-        self.flow.engine.journal.append(self.ident, "step.started", step="parallel", kind="ticket", unit="worker",
+        self.flow.engine.journal.append(self.ident, "step.started", step="parallel", kind="ticket", ticket=self.started["ticket"], unit="worker",
                                        branch=self.started["branch"], worktree=self.started["worktree"])
         for state in ("active", "unknown"):
             with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value=state), \
@@ -318,7 +319,7 @@ class BaseChangeTest(StartBaseSetup):
         versioned = self.preview()
         self.assertEqual(versioned["baseVersion"], 2)
         self.assertNotEqual(versioned["previewId"], initial["previewId"])
-        journal.append(self.ident, "step.started", step="process", kind="ticket", unit="process",
+        journal.append(self.ident, "step.started", step="process", kind="ticket", ticket=self.started["ticket"], unit="process",
                        branch=self.started["branch"], worktree=self.started["worktree"])
         journal.append(self.ident, "step.finished", step="process", result="done")
         with mock.patch("tide_daemon.cardflow.engine.stepstop.unit_state", return_value="inactive"):

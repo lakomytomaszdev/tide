@@ -124,6 +124,7 @@ class StepDecisionTest(FlowInProcess):
         # Po restarcie usługi polecenie w toku (outside.started bez zakończenia) nie może wywrócić przebiegu karty.
         engine._outside_active = None
         step = {"step": "K-1-PT-1-9", "ticket": "PT-1", "stepDir": self.base}
+        engine.journal.append(card_id, "step.started", **step)
         engine.journal.append(card_id, "outside.started", step="K-1-PT-1-9", ticket="PT-1", command="echo x",
                               unit="tide-outside-K-1-PT-1-9", log="/nonexistent", exitFile=os.path.join(self.base, "in", "exit-code"))
         self.assertIsNone(engine._outside_ready(card_id, step, {"command": "echo x"}, {"choice": "run"}))
@@ -300,8 +301,7 @@ class StepDecisionTest(FlowInProcess):
         card = self.wait_column(card_id, "waiting")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "question")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["question"], "Który format daty?")
-        # Stan dziennika jest widoczny przed końcem przebiegu i dostarczeniem powiadomienia w wątku Qt.
-        self.assertTrue(wait_until(lambda: bool(notices), timeout=5), "brak powiadomienia o pytaniu")
+        self.assertTrue(wait_until(lambda: len(notices) == 1, timeout=5), self.events(card_id))
         self.assertEqual(len(notices), 1)
         self.assertEqual((notices[0]["card"], notices[0]["result"]), (card_id, "question"))
         self.flow.tick()
@@ -354,8 +354,8 @@ class StepDecisionTest(FlowInProcess):
         card_id = self.card(description="Test.\n\nATRAPA: pytanie")
         self.assertTrue(self.start(card_id)["ok"])
         self.wait_column(card_id, "waiting")
-        # Kolumna pochodzi z dziennika; wysłanie powiadomienia czeka na callback Qt tego ticka.
-        self.assertTrue(wait_until(lambda: notices, timeout=5), "powiadomienie pytania nie dotarło")
+        # Publikacja kolumny i dostarczenie powiadomienia są osobnymi zdarzeniami Qt.
+        self.assertTrue(wait_until(lambda: len(notices) == 1, timeout=5), self.events(card_id))
         self.assertEqual(len(notices), 1)
         self.flow.tick()
         self.restart()
@@ -482,7 +482,8 @@ class StepDecisionTest(FlowInProcess):
         command = "git fetch origin " + "x" * 300
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["technical"]["command"], command)
         self.assertTrue(card["derived"]["flow"]["decisions"][0]["technical"]["canAllow"])
-        self.assertTrue(self.decide(card_id, choice="allow")["ok"])
+        reply = self.decide(card_id, choice="allow")
+        self.assertTrue(reply["ok"], reply)
         self.assertIn("git fetch *", self.store.load().projects["proj"].allowed_commands)
         self.assertNotIn(command, self.store.load().projects["proj"].allowed_commands)
 
@@ -538,6 +539,8 @@ class StepDecisionTest(FlowInProcess):
         reply = self.decide(card_id, choice="change-executor", executor="Haiku")
         self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "review")
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
         steps = self.of(card_id, "step.started")
         self.assertEqual([(s["kind"], s["executor"]) for s in steps],
                          [("ticket", "Sonnet"), ("ticket", "Sonnet"), ("caretaker", "Opus"), ("ticket", "Haiku"),
@@ -552,6 +555,8 @@ class StepDecisionTest(FlowInProcess):
         # 03.11 (decyzja użytkownika): ten sam model co autor nie blokuje — wybór użytkownika wygrywa.
         self.assertTrue(self.decide(card_id, choice="change-executor", executor="Haiku")["ok"])
         self.wait_column(card_id, "review")
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "close" for s in self.of(card_id, "step.started")),
+                                   timeout=30), self.events(card_id))
         self.assertEqual([(s["kind"], s["executor"]) for s in self.of(card_id, "step.started")],
                          [("ticket", "Sonnet"), ("review", "Opus"), ("review", "Opus"), ("caretaker", "Opus"),
                           ("review", "Haiku"), ("fix", "Sonnet"), ("review", "Haiku"),
@@ -649,9 +654,20 @@ class StepDecisionTest(FlowInProcess):
             "models": [{"name": "qwen3-coder:30b"}, {"name": "qwen2.5-coder:7b"}]}
         card_id = self.card(description="Test.\n\nATRAPA: blad-local")
         self.assertTrue(self.start(card_id, executor="Lokalny", preferredProvider="local")["ok"])
-        self.started(card_id)
-        self.flow.engine.model_probe = lambda endpoint: {"online": False, "error": "offline", "models": []}
+        first = self.started(card_id)
+        self.assertEqual(self.of(card_id, "step.finished"), [], "Awaria nastąpiła przed odłączeniem modelu")
+        offline_probes = []
+
+        def offline(endpoint):
+            offline_probes.append(endpoint)
+            return {"online": False, "error": "offline", "models": []}
+
+        # Dopiero teraz pierwsza awaria może uruchomić ponowienie z nową sondą.
+        self.flow.engine.model_probe = offline
+        with open(os.path.join(first["stepDir"], "out", "release-agent"), "w", encoding="utf-8"):
+            pass
         card = self.wait_column(card_id, "waiting", timeout=30)
+        self.assertTrue(offline_probes, "Ponowienie nie sprawdziło dostępności modelu")
         self.assertEqual(card["derived"]["flow"]["decisions"][0]["kind"], "error")
         self.assertEqual([s["provider"] for s in self.of(card_id, "step.started")], ["local", "local"])
         self.assertEqual([e["reason"] for e in self.of(card_id, "step.finished")],
@@ -751,14 +767,14 @@ class IsolationTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}, {"id": "PT-3", "blockers": []}])
         for ticket in ("PT-2", "PT-3"):
             journal.append(card, "step.started", step=f"s-{ticket}", ticket=ticket, kind="ticket")
             journal.append(card, "step.finished", step=f"s-{ticket}", ticket=ticket, result="done")
         calls = []
 
-        def advance(card_id, st):
+        def advance(card_id, st, *, own=None):
             calls.append(st.last_step)
             if st.last_step == "s-PT-2":
                 raise AttributeError("zepsuty krok")
@@ -780,7 +796,7 @@ class RejectFailedTicketTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         row = {"executor": "Sonnet", "reviewer": "Opus", "class": "standard", "note": ""}
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": [], "title": "a", **row},
                                                    {"id": "PT-3", "blockers": ["PT-2"], "title": "b", **row}])
@@ -852,7 +868,7 @@ class MergeRetryTest(FlowInProcess):
         self.flow.stop()
         engine = self.flow.engine
         journal = engine.journal
-        journal.append(card, "card.started", entry="plan", repo=self.repo)
+        journal.append(card, "card.started", entry="plan", repo=self.repo, project="proj")
         journal.append(card, "plan.approved", rows=[{"id": "PT-2", "blockers": []}])
         journal.append(card, "step.started", step="t", ticket="PT-2", kind="ticket")
         journal.append(card, "step.finished", step="t", ticket="PT-2", result="done")

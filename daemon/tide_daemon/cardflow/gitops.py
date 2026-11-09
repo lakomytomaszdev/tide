@@ -21,9 +21,10 @@ import threading
 from ..worktrees.git import MAIN_CANDIDATES, Git, pick_main_branch
 from ..tasks.agentcmd import StepError, resolve_git_dir
 from ..tasks.stepstop import StepGit, sandbox_available
+from ..gitcommand import HOST_OPTIONS
 from .mergepreview import checkout_snapshot, assess_local
 
-HARDENED = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null",
+HARDENED = (*HOST_OPTIONS, "-c", "core.attributesFile=/dev/null",
             "-c", "submodule.recurse=false", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false",
             "-c", "gc.auto=0")
 FALLBACK_IDENTITY = ("-c", "user.name=Tide", "-c", "user.email=tide@localhost")
@@ -67,6 +68,12 @@ class FlowGit:
 
     def run(self, cwd: str, *args, timeout=None, input_text=None):
         options = {"input_text": input_text} if input_text is not None else {}
+        # Legalne scalenie i sprzątanie ticketu może wypaść w czasie innego kroku.
+        # Aktualizujemy tylko konkretne ścieżki/refy zmieniane przez tę operację usługi.
+        if args and (args[0] == "update-ref" or args[:2] in (("worktree", "remove"), ("worktree", "add"))):
+            from ..box import refguard
+            with refguard.host_operation(cwd, args, input_text=input_text):
+                return self.git.run(cwd, *HARDENED, *args, timeout=timeout, **options)
         return self.git.run(cwd, *HARDENED, *args, timeout=timeout, **options)
 
     def main_branch(self, repo: str) -> str:
@@ -81,6 +88,11 @@ class FlowGit:
         current = self.run(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
         existing = {line.strip() for line in listed.out.splitlines() if line.strip()} if listed.ok else set()
         return pick_main_branch(existing, current.out.strip() if current.ok else "")
+
+    def read_checkout(self, cwd, **kwargs):
+        # Adaptery innych backendów mogą zachować pojedyncze odczyty przez run.
+        reader = getattr(type(self.git), "read_checkout", None)
+        return reader(self.git, cwd, *HARDENED, **kwargs) if reader else None
 
     def sha(self, repo: str, ref: str) -> str:
         res = self.run(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
@@ -432,7 +444,9 @@ class FlowGit:
                 return {"commit": self.sha(repo, branch), "already": True}
             if changed.code != 1:
                 raise FlowGitError("nie można sprawdzić zmian planu w indeksie karty")
-            made = work_git.run("commit", "-m", "docs(plan): update card ticket plan", "--", *files)
+            from ..box import refguard
+            with refguard.host_operation(repo, ("update-ref", f"refs/heads/{branch}")):
+                made = work_git.run("commit", "-m", "docs(plan): update card ticket plan", "--", *files)
             if not made.ok:
                 raise FlowGitError("nie można zapisać planu na gałęzi karty: " + made.err)
             return {"commit": self.sha(repo, branch), "already": False}

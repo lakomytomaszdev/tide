@@ -12,6 +12,15 @@ with open(os.path.join(folder, 'hosting-calls.jsonl'), 'a') as f:
 mode = scenario.get('mode', '')
 if mode == 'timeout':
     time.sleep(11)
+if mode == 'blocked':
+    until = time.monotonic() + 120
+    while not os.path.isfile(os.path.join(folder, 'release-hosting')):
+        if time.monotonic() >= until:
+            print('Test nie zwolnil atrapy hostingowej', file=sys.stderr)
+            sys.exit(1)
+        time.sleep(0.05)
+    print('Kontrolowany blad CLI po zwolnieniu bariery', file=sys.stderr)
+    sys.exit(1)
 if mode == 'error':
     print('FAKE_SECRET login error', file=sys.stderr)
     sys.exit(1)

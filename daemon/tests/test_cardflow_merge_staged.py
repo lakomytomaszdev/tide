@@ -94,7 +94,8 @@ class StagedMergeTest(recovery.DurableMergeFixture, FlowInProcess):
                 # Prawdziwe opcje i środowisko StepGit; mounty symulujemy prawami katalogu.
                 runner.env = {argv[i + 1]: argv[i + 2] for i, arg in enumerate(argv) if arg == "--setenv"}
                 if index_dir is not None:
-                    runner.env["GIT_INDEX_FILE"] = os.path.join(index_dir, "index")
+                    runner.index = os.path.join(index_dir, "index")
+                    runner.write_roots = (index_dir,)
                 index = Path(self.git_dir, "index")
                 previous = index.read_bytes() if args[0] == "status" else None
                 mode = os.stat(self.git_dir).st_mode
@@ -303,7 +304,7 @@ class StagedMergeTest(recovery.DurableMergeFixture, FlowInProcess):
         user = self.abandon_materialized_with_staged()
         self.write(self.source_tree, "later.txt", "revision\n")
         self.commit(self.source_tree, "revise card")
-        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Po poprawkach")
+        self.close_after_rework("Po poprawkach")
         self.assertTrue(self.merge()["ok"])
         self.assertEqual(self.user_work(), user)
         self.assertEqual(Path(self.repo, "later.txt").read_bytes(), b"revision\n")
@@ -315,7 +316,7 @@ class StagedMergeTest(recovery.DurableMergeFixture, FlowInProcess):
         user = self.user_work()
         Path(self.source_tree, "local.txt").write_bytes(b"staged\x00\xff\r\n")
         self.commit(self.source_tree, "overlap local staged")
-        self.flow.engine.journal.append(self.card_id, "card.closed", summary="Po poprawkach")
+        self.close_after_rework("Po poprawkach")
         before = fingerprint(self.repo)
         r = self.merge()
         self.assertFalse(r["ok"], r)

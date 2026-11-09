@@ -1,0 +1,734 @@
+"""Migawki wspólnego .git poza pudełkiem; porównanie i naprawa pod blokadą repozytorium.
+
+Dozwolone refy zapamiętujemy jako sumę gałęzi kroków tej samej karty, które nakładały się
+w czasie. Zakończenie sąsiada nie odbiera uprawnienia starszej migawce. Kopie i rejestr
+są w stanie hosta, nigdy w zapisywalnym przez agenta katalogu kroku.
+Odtwarzanie refów obejmuje wyłącznie zapisaną gałąź własnego kroku. Zmiany poza tym
+zakresem raportujemy bez zapisu: migawka nie dowodzi, kto przesunął obcy ref.
+"""
+from __future__ import annotations
+
+import base64
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import json
+import os
+import secrets
+import shutil
+import stat
+import time
+
+from ..tasks.agentcmd import StepError
+from . import guardgit
+
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _root(repo):
+    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    key = hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()
+    return os.path.join(state, "tide", "refguard", key)
+
+
+def _path(repo, card, step):
+    key = hashlib.sha256(json.dumps([card, step]).encode()).hexdigest()
+    return os.path.join(_root(repo), key + ".json")
+
+
+@contextmanager
+def locked(repo, *, existing_only=False):
+    # Ta sama blokada co tworzenie worktrees i scalenia; flock obejmuje też drugi proces usługi.
+    from ..cardflow.gitops import lock_for
+    with lock_for(repo):
+        root = _root(repo)
+        for exposed in (os.path.realpath(repo), os.path.realpath(repo) + "-worktrees"):
+            if os.path.commonpath((os.path.realpath(root), exposed)) == exposed:
+                raise StepError("strażnik refów: stan hosta wewnątrz montowania projektu")
+        if existing_only and not os.path.isdir(root):
+            yield False
+            return
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        with open(os.path.join(root, "lock"), "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield True
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _save(path, value):
+    tmp = path + "." + secrets.token_hex(8)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(value, fh, ensure_ascii=True, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        parent = os.open(os.path.dirname(path), DIR_FLAGS)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _load(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _active(repo):
+    active = []
+    for name in sorted(os.listdir(_root(repo))):
+        if name.endswith(".json"):
+            path = os.path.join(_root(repo), name)
+            data = _load(path)
+            if data.get("active"):
+                active.append((path, data))
+    return sorted(active, key=lambda pair: pair[1]["started"])
+
+
+def _git(repo, *args):
+    with guardgit.trusted(repo) as (git, private):
+        result = git.run(private, "--git-dir=" + private, *args)
+    if not result.ok:
+        raise StepError("strażnik refów: git: " + result.err)
+    return result.out.strip()
+
+
+def _refs(repo):
+    text = _git(repo, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")
+    refs = {}
+    for line in text.splitlines():
+        ref, oid, *target = line.split()
+        refs[ref] = {"oid": oid, "target": target[0] if target else ""}
+    # for-each-ref pomija aliasy o nieistniejącym celu. Czytamy także luźne refy,
+    # bez podążania za dowiązaniami i bez traktowania plików .lock jako refów.
+    root = _open_git(repo)
+    try:
+        loose = _node(root, "refs")
+    finally:
+        os.close(root)
+
+    def visit(path, node):
+        if not node:
+            return
+        if node["kind"] == "dir":
+            for name, child in node["children"].items():
+                if not name.endswith(".lock"):
+                    visit(path + "/" + name, child)
+        elif node["kind"] == "file" and path not in refs:
+            content = base64.b64decode(node["data"])
+            if content.startswith(b"ref: "):
+                refs[path] = {"oid": "", "target": content[5:].decode("utf-8").strip()}
+
+    visit("refs", loose)
+    return refs
+
+
+def _same_ref(left, right):
+    # OID refu symbolicznego zmienia się też przy legalnym commicie na jego celu.
+    # Sam alias pozostaje nietknięty, jeżeli nadal wskazuje ten sam ref.
+    if left and right and left["target"] and right["target"]:
+        return left["target"] == right["target"]
+    return left == right
+
+
+def _node(parent, name):
+    try:
+        meta = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    mode = stat.S_IMODE(meta.st_mode)
+    if stat.S_ISLNK(meta.st_mode):
+        return {"kind": "link", "target": os.readlink(name, dir_fd=parent)}
+    if stat.S_ISDIR(meta.st_mode):
+        fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+        try:
+            return {"kind": "dir", "mode": mode,
+                    "children": {n: _node(fd, n) for n in sorted(os.listdir(fd))}}
+        finally:
+            os.close(fd)
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            return {"kind": "special", "mode": mode}
+        content = fh.read()
+    return {"kind": "file", "mode": mode, "sha256": hashlib.sha256(content).hexdigest(),
+            "data": base64.b64encode(content).decode("ascii")}
+
+
+@contextmanager
+def _parent(root, path, *, create=False):
+    fd = os.dup(root)
+    try:
+        parts = path.split("/")
+        for part in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(part, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd, parts[-1]
+    finally:
+        os.close(fd)
+
+
+def _files(root, *, errors=None):
+    def failed(path, exc):
+        if errors is None:
+            raise exc
+        errors[path] = str(exc)
+
+    paths = ["hooks", "config", "info", "config.worktree"]
+    try:
+        wts = os.open("worktrees", DIR_FLAGS, dir_fd=root)
+    except FileNotFoundError:
+        wts = None
+    except OSError as exc:
+        failed("worktrees", exc)
+        wts = None
+    if wts is not None:
+        try:
+            for name in sorted(os.listdir(wts)):
+                path = f"worktrees/{name}"
+                try:
+                    meta = os.stat(name, dir_fd=wts, follow_symlinks=False)
+                    if not stat.S_ISDIR(meta.st_mode):
+                        raise StepError("wpis administracyjny nie jest katalogiem")
+                    paths.append(path + "/config.worktree")
+                except (OSError, StepError) as exc:
+                    failed(path, exc)
+        except OSError as exc:
+            failed("worktrees", exc)
+        finally:
+            os.close(wts)
+    out = {}
+    for path in paths:
+        try:
+            with _parent(root, path) as (parent, name):
+                node = _node(parent, name)
+            if node is not None:
+                out[path] = node
+        except (OSError, StepError) as exc:
+            failed(path, exc)
+    return out
+
+
+def _remove(parent, name):
+    try:
+        meta = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(meta.st_mode):
+        shutil.rmtree(name, dir_fd=parent)
+    else:
+        os.unlink(name, dir_fd=parent)
+
+
+def _restore(parent, name, node):
+    if node is None:
+        _remove(parent, name)
+    elif node["kind"] == "dir":
+        # Nie podążamy za dowiązaniem ani hardlinkiem podłożonym zamiast pliku.
+        try:
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+        except (NotADirectoryError, FileNotFoundError):
+            _remove(parent, name)
+            os.mkdir(name, node["mode"], dir_fd=parent)
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+        try:
+            for child in set(os.listdir(fd)) | set(node["children"]):
+                _restore(fd, child, node["children"].get(child))
+            os.fchmod(fd, node["mode"])
+        finally:
+            os.close(fd)
+    else:
+        tmp = ".tide-guard-" + secrets.token_hex(8)
+        if node["kind"] == "link":
+            os.symlink(node["target"], tmp, dir_fd=parent)
+        elif node["kind"] == "file":
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(base64.b64decode(node["data"]))
+                os.fchmod(fh.fileno(), node["mode"])
+                fh.flush()
+                os.fsync(fh.fileno())
+        else:
+            raise StepError("strażnik refów: plik specjalny w kopii")
+        try:
+            try:
+                if stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode):
+                    _remove(parent, name)
+            except FileNotFoundError:
+                pass
+            os.replace(tmp, name, src_dir_fd=parent, dst_dir_fd=parent)
+        finally:
+            try:
+                os.unlink(tmp, dir_fd=parent)
+            except FileNotFoundError:
+                pass
+
+
+def _open_git(repo):
+    return os.open(os.path.join(os.path.realpath(repo), ".git"), DIR_FLAGS)
+
+
+def _open_worktree(repo, worktree):
+    base = os.path.realpath(repo) + "-worktrees"
+    relative = os.path.relpath(worktree, base)
+    if (not os.path.isabs(worktree) or os.path.normpath(worktree) != worktree
+            or any(p in ("", ".", "..") for p in relative.split("/"))):
+        raise StepError("strażnik refów: worktree poza katalogiem projektu")
+    root = os.open(base, DIR_FLAGS)
+    try:
+        with _parent(root, relative + "/.git") as (parent, _name):
+            return os.dup(parent)
+    finally:
+        os.close(root)
+
+
+def begin(repo, card, step, git_dir, *, branch, prepare=None, worktree="", box_view_home=""):
+    """Zapisuje migawkę dopiero pod blokadą; prepare wykonuje zaufane montowania runnera."""
+    with locked(repo):
+        peers = list(_active(repo))
+        if any(peer["card"] != card for _path_peer, peer in peers):
+            raise StepError("strażnik refów: w repozytorium trwa krok innej karty")
+        if any(peer["step"] == step for _path_peer, peer in peers):
+            raise StepError("strażnik refów: próba już aktywna; wymaga uzgodnienia po restarcie")
+        if not branch:
+            raise StepError("strażnik refów: brak zaufanej gałęzi kroku")
+        branch = "refs/heads/" + branch
+        head = guardgit.admin(repo, git_dir)
+        _git(repo, "check-ref-format", branch)
+        if (not head or head["kind"] != "file"
+                or base64.b64decode(head["data"]) != ("ref: " + branch + "\n").encode()):
+            raise StepError("strażnik refów: HEAD nie wskazuje przypisanej gałęzi kroku")
+        root = _open_git(repo)
+        try:
+            before = _files(root)
+            if prepare is not None:
+                prepare()
+            files = _files(root)
+        finally:
+            os.close(root)
+        # Runner może założyć pusty config.worktree dla nowego kroku. To zmiana usługi,
+        # którą wcześniejsze migawki muszą znać, bez zatwierdzania innych zmian agenta.
+        own_config = os.path.relpath(git_dir, os.path.join(os.path.realpath(repo), ".git")) + "/config.worktree"
+        trusted = {p: n for p, n in files.items() if p not in before and (
+            p in ("hooks", "info") and n.get("kind") == "dir" and not n["children"] or
+            p == own_config and n.get("kind") == "file" and not n["data"])}
+        allowed = {branch}
+        refs = _refs(repo)
+        if not refs.get(branch) or refs[branch]["target"]:
+            raise StepError("strażnik refów: zaufana gałąź nie jest istniejącym refem bezpośrednim")
+        # Nie utrwalamy naruszenia sąsiada jako nowego punktu przywracania.
+        # Inaczej drugi kończący krok mógłby odtworzyć usunięty już obcy hak/ref.
+        for _path_peer, peer in peers:
+            expected_files = {**peer["files"], **{p: n for p, n in trusted.items() if p not in peer["files"]}}
+            if files != expected_files:
+                raise StepError("strażnik refów: chronione pliki zmienione w aktywnym kroku")
+            own_ref = refs.get(peer["branch"])
+            if not own_ref or own_ref["target"]:
+                raise StepError("strażnik refów: gałąź aktywnego kroku wymaga naprawy")
+            permitted = set(peer["allowed"]) | ({branch} if peer["card"] == card else set())
+            if any(not _same_ref(refs.get(r), peer["refs"].get(r))
+                   for r in set(refs) | set(peer["refs"]) if r not in permitted):
+                raise StepError("strażnik refów: obce refy zmienione w aktywnym kroku")
+        for path, peer in peers:
+            for p, node in trusted.items():
+                if p not in peer["files"]:
+                    peer["files"][p] = node
+            if peer["card"] == card:
+                allowed.add(peer["branch"])
+                peer["allowed"] = sorted(set(peer["allowed"]) | {branch})
+            _save(path, peer)
+        snapshot = dict(active=True, started=time.time_ns(), card=card, step=step, gitDir=git_dir, branch=branch,
+                        allowed=sorted(allowed), refs=refs, files=files, worktree=worktree)
+        if box_view_home:
+            from ..git_sandbox import canonical
+            snapshot["boxViewHome"] = canonical(box_view_home)
+        if worktree:
+            fd = _open_worktree(repo, worktree)
+            try:
+                snapshot["pointer"] = _node(fd, ".git")
+            finally:
+                os.close(fd)
+        _save(_path(repo, card, step), snapshot)
+
+
+def cancel(repo, card, step):
+    """Start nie uruchomił procesu; migawka nie jest aktywnym krokiem."""
+    with locked(repo):
+        path = _path(repo, card, step)
+        try:
+            data = _load(path)
+        except FileNotFoundError:
+            return
+        data["active"] = False
+        _save(path, data)
+
+
+def other_cards(repo, card):
+    """Kolejkujemy inne karty zamiast uznawać ich legalne commity za obce zmiany."""
+    with locked(repo, existing_only=True) as present:
+        return sorted({peer["card"] for _path_peer, peer in _active(repo) if peer["card"] != card}) if present else []
+
+
+def _transaction_fields(line):
+    """Pola tekstowego update-ref: pojedyncze SP i cytowanie C na bajtach jak w Git.
+
+    Apostrof i backslash poza cudzysłowem są dosłowne. Sekwencje ósemkowe
+    opisują bajty (także UTF-8), a nie punkty kodowe Unicode.
+    """
+    data = os.fsencode(line)
+    fields = []
+    pos = 0
+    escapes = {ord(k): v for k, v in {'a': 7, 'b': 8, 't': 9, 'n': 10,
+                                     'v': 11, 'f': 12, 'r': 13, '\\': 92, '"': 34}.items()}
+    while pos < len(data):
+        value = bytearray()
+        quoted = data[pos] == 34
+        if quoted:
+            pos += 1
+            while pos < len(data) and data[pos] != 34:
+                char = data[pos]
+                pos += 1
+                if char == 92:
+                    if pos == len(data):
+                        raise ValueError("urwana sekwencja cytowania C")
+                    char = data[pos]
+                    pos += 1
+                    if char in escapes:
+                        char = escapes[char]
+                    elif 48 <= char <= 51 and pos + 2 <= len(data) and all(
+                            48 <= c <= 55 for c in data[pos:pos + 2]):
+                        char = int(bytes([char]) + data[pos:pos + 2], 8)
+                        pos += 2
+                    else:
+                        raise ValueError("nieznana sekwencja cytowania C")
+                value.append(char)
+            if pos == len(data):
+                raise ValueError("niezamknięte cytowanie C")
+            pos += 1
+        else:
+            start = pos
+            while pos < len(data) and data[pos] != 32:
+                pos += 1
+            value.extend(data[start:pos])
+        if 0 in value or not quoted and any(c in b'\t\n\v\f\r ' for c in value):
+            raise ValueError("NUL lub niecytowany biały znak w polu transakcji")
+        fields.append(os.fsdecode(bytes(value)))
+        if pos < len(data):
+            if data[pos] != 32 or pos + 1 == len(data) or data[pos + 1] == 32:
+                raise ValueError("niepoprawny separator pól transakcji")
+            pos += 1
+    return fields
+
+
+def _transaction_commands(input_text, nul):
+    if not isinstance(input_text, str):
+        raise ValueError("brak tekstu transakcji")
+    if not nul:
+        if '\0' in input_text:
+            raise ValueError("NUL w transakcji tekstowej")
+        lines = input_text.split('\n')
+        if lines[-1] == "":
+            lines.pop()
+        for line in lines:
+            command, space, rest = line.partition(' ')
+            yield [command, *_transaction_fields(rest)] if space else [command]
+        return
+    if input_text and not input_text.endswith('\0'):
+        raise ValueError("brak końcowego NUL")
+    parts = iter(input_text.split('\0')[:-1])
+    for head in parts:
+        command, space, ref = head.partition(' ')
+        # W -z opcjonalny stary OID też zajmuje pole: pusty oznacza brak wartości.
+        count = {"update": 2, "create": 1, "delete": 1, "verify": 1}.get(command, 0)
+        fields = [command, ref] if space else [command]
+        for _ in range(count):
+            value = next(parts, None)
+            if value is None:
+                raise ValueError("urwana transakcja NUL")
+            fields.append(value)
+        yield fields
+
+
+def _written_refs(args, input_text):
+    """Zakres zapisu transakcji update-ref; verify nie uprawnia do zmiany refu.
+
+    Git dostaje ten sam tekst, który tu czytamy. Nie rozpoznajemy nieznanego protokołu
+    przez domysł: brak dokładnego zakresu ma zatrzymać zaufaną operację.
+    """
+    if not args or args[0] != "update-ref":
+        return []
+    if "--stdin" not in args:
+        return [arg for arg in args if arg.startswith("refs/")]
+    refs = []
+    try:
+        for fields in _transaction_commands(input_text, "-z" in args):
+            if not fields:
+                raise ValueError("puste polecenie")
+            command = fields[0]
+            arity = {"update": (3, 4), "create": (3,), "delete": (2, 3), "verify": (2, 3),
+                     "start": (1,), "prepare": (1,), "commit": (1,), "abort": (1,), "option": (2,)}
+            # Nieznane rozszerzenia, w tym symref-*, wymagają osobnego ustalenia zakresu.
+            if command not in arity or len(fields) not in arity[command]:
+                raise ValueError("nieznane lub niepoprawne polecenie: " + command)
+            if command == "option" and fields[1] != "no-deref":
+                raise ValueError("nieznana opcja transakcji")
+            if command in ("update", "create", "delete", "verify"):
+                ref = fields[1]
+                if not ref.startswith("refs/") or any(ord(c) <= 32 or ord(c) == 127 for c in ref):
+                    raise ValueError("brak dokładnego pełnego refu")
+                if command != "verify":
+                    refs.append(ref)
+    except ValueError as exc:
+        raise StepError("strażnik refów: niepoprawna transakcja update-ref: " + str(exc)) from None
+    return list(dict.fromkeys(refs))
+
+
+@contextmanager
+def host_operation(repo, args, *, input_text=None):
+    """Zaufana zmiana konkretnego refu/configu przez gitops, bez zatwierdzania obcych zmian."""
+    with locked(repo, existing_only=True) as present:
+        if not present:
+            yield
+            return
+        peers = list(_active(repo))
+        if not peers:
+            yield
+            return
+        refs = _written_refs(args, input_text)
+        if args[:2] == ("worktree", "add") and "-b" in args:
+            refs = ["refs/heads/" + args[args.index("-b") + 1]]
+        paths = []
+        if args[:2] == ("worktree", "remove"):
+            from ..tasks.agentcmd import resolve_git_dir
+            admin = resolve_git_dir(repo, args[-1])
+            paths = [os.path.relpath(admin, os.path.join(os.path.realpath(repo), ".git")) + "/config.worktree"]
+        before_refs = _refs(repo) if refs else {}
+        root = _open_git(repo)
+        try:
+            before_files = _files(root) if paths else {}
+            yield
+            after_refs = _refs(repo) if refs else {}
+            after_files = _files(root) if paths else {}
+        finally:
+            os.close(root)
+        for path, peer in peers:
+            for ref in refs:
+                if peer["refs"].get(ref) == before_refs.get(ref):
+                    if ref in after_refs:
+                        peer["refs"][ref] = after_refs[ref]
+                    else:
+                        peer["refs"].pop(ref, None)
+            for p in paths:
+                if peer["files"].get(p) == before_files.get(p):
+                    if p in after_files:
+                        peer["files"][p] = after_files[p]
+                    else:
+                        peer["files"].pop(p, None)
+            _save(path, peer)
+
+
+def _restore_symref(repo, ref, old, now):
+    # Starszy git (dystrybucja hosta) nie ma symref-update w update-ref --stdin.
+    # Bierzemy standardowy <ref>.lock i sprawdzamy zarówno OID, jak i cel symboliczny.
+    root = _open_git(repo)
+    try:
+        with _parent(root, ref, create=True) as (parent, name):
+            lock = name + ".lock"
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=parent)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    if _refs(repo).get(ref) != now:
+                        raise StepError(f"{ref}: zmieniony po porównaniu")
+                    fh.write((old["oid"] + "\n").encode())
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(lock, name, src_dir_fd=parent, dst_dir_fd=parent)
+            finally:
+                try:
+                    os.unlink(lock, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(root)
+
+
+def finish(repo, card, step, *, branch="", active_only=False):
+    """Trwały wynik po pełnej kontroli; błędy naprawy pozostawiają migawkę do ponowienia.
+
+    active_only służy odzyskiwaniu: pomija brak migawki starszych kroków i zakończone kontrole.
+    Odczyt stanu oraz decyzja o ponowieniu odbywają się pod tą samą blokadą co naprawa.
+    """
+    report = {"refs": [], "files": [], "head": False, "errors": []}
+
+    @contextmanager
+    def checking(label):
+        # Uszkodzenie jednego obiektu nie pomija pozostałych niezależnych napraw.
+        try:
+            yield
+        except (OSError, ValueError, KeyError, StepError) as exc:
+            report["errors"].append(f"{label}: {exc}")
+
+    with locked(repo, existing_only=active_only) as present:
+        if not present:
+            return {}
+        path = _path(repo, card, step)
+        try:
+            saved = _load(path)
+            if branch and "refs/heads/" + branch != saved["branch"]:
+                raise StepError("strażnik refów: gałąź zakończenia różna od zaufanej gałęzi startu")
+            if active_only and not saved.get("active"):
+                return {}
+            if "report" in saved:
+                return saved["report"]
+            previous = saved.get("pendingReport", {})
+            for field in ("refs", "files", "head", "boxViewHead"):
+                if field in previous:
+                    report[field] = previous[field]
+        except FileNotFoundError as exc:
+            if not active_only:
+                report["errors"].append(str(exc))
+            return report if report["errors"] else {}
+        except (OSError, ValueError, KeyError, StepError) as exc:
+            report["errors"].append(str(exc))
+            return report
+        with checking("pliki"):
+            root = _open_git(repo)
+            try:
+                unreadable = {}
+                current = _files(root, errors=unreadable)
+                report["errors"].extend(f"{p}: {error}" for p, error in unreadable.items())
+                for p in sorted(set(current) | set(saved["files"])):
+                    if any(p == failed or p.startswith(failed + "/") for failed in unreadable):
+                        continue
+                    if current.get(p) != saved["files"].get(p):
+                        report["files"].append(p)
+                        with checking(p):
+                            with _parent(root, p) as (parent, name):
+                                _restore(parent, name, saved["files"].get(p))
+            finally:
+                os.close(root)
+        # Najpierw próbujemy odtworzyć konfigurację, ale błąd pliku nie pomija refów/HEAD.
+        with checking("refy"):
+            current = _refs(repo)
+            for ref in sorted(set(current) | set(saved["refs"])):
+                old, now = saved["refs"].get(ref), current.get(ref)
+                if _same_ref(old, now):
+                    continue
+                own = ref == saved["branch"]
+                if own:
+                    # Zwykły commit/reset własnej gałęzi jest dozwolony. Usunięcie
+                    # lub podmiana jej na alias wymaga naprawy wyłącznie tego refu.
+                    if now and not now["target"]:
+                        continue
+                elif ref in saved["allowed"]:
+                    continue
+                report["refs"].append(ref)
+                if not own:
+                    continue
+                # Uprawnienie naprawy wynika z gałęzi zapisanej w begin, nigdy
+                # z sumy allowed sąsiadów ani z aktualnego HEAD. CAS chroni
+                # także własny ref przed ruchem po porównaniu; alias nie daje
+                # prawa zapisu jego celu.
+                # Start wymaga istniejącej gałęzi bezpośredniej. Stara migawka,
+                # która tego nie dowodzi, nie daje prawa do usuwania refu.
+                if not old or old["target"]:
+                    report["errors"].append(f"{ref}: brak zaufanej wartości początkowej")
+                    continue
+                if now and now["target"]:
+                    with checking(ref):
+                        _restore_symref(repo, ref, old, now)
+                    continue
+                zero = "0" * len((now or old)["oid"])
+                args = (ref, old["oid"], now["oid"] if now else zero)
+                with checking(ref):
+                    _git(repo, "update-ref", "--no-deref", *args)
+        with checking("HEAD"):
+            expected = saved["branch"]
+            guardgit.admin(repo, saved["gitDir"])
+            common = os.path.join(os.path.realpath(repo), ".git")
+            relative = os.path.relpath(saved["gitDir"], common)
+            if not relative.startswith("worktrees/") or ".." in relative.split("/"):
+                raise StepError("strażnik refów: katalog administracyjny poza worktrees")
+            root = _open_git(repo)
+            try:
+                with _parent(root, relative + "/HEAD") as (parent, name):
+                    head = _node(parent, name)
+                    wanted = ("ref: " + expected + "\n").encode()
+                    if not head or head.get("kind") != "file" or base64.b64decode(head["data"]) != wanted:
+                        report["head"] = True
+                        _restore(parent, name, {"kind": "file", "mode": 0o644,
+                                                "data": base64.b64encode(wanted).decode("ascii")})
+            finally:
+                os.close(root)
+        if saved.get("worktree"):
+            with checking("worktree/.git"):
+                fd = _open_worktree(repo, saved["worktree"])
+                try:
+                    if _node(fd, ".git") != saved["pointer"]:
+                        report["files"].append("worktree/.git")
+                        _restore(fd, ".git", saved["pointer"])
+                finally:
+                    os.close(fd)
+        if saved.get("boxViewHome"):
+            with checking("box-view/HEAD"):
+                from .gitview import relative_admin
+                root = os.open(saved["boxViewHome"], DIR_FLAGS)
+                try:
+                    try:
+                        with _parent(root, relative_admin(saved["gitDir"]) + "/HEAD") as (parent, name):
+                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                         dir_fd=parent)
+                            with os.fdopen(fd, "rb") as source:
+                                info = os.fstat(source.fileno())
+                                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 8192:
+                                    raise StepError("niebezpieczny prywatny HEAD")
+                                data = source.read(8193)
+                                if len(data) > 8192:
+                                    raise StepError("przekroczony limit prywatnego HEAD")
+                            wanted = ("ref: " + saved["branch"] + "\n").encode()
+                            if data != wanted:
+                                report["files"].append("box-view/HEAD")
+                                report["boxViewHead"] = data.decode("utf-8", "replace").strip()
+                                temporary = ".tide-head-" + secrets.token_hex(8)
+                                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                             0o644, dir_fd=parent)
+                                try:
+                                    with os.fdopen(fd, "wb") as target:
+                                        target.write(wanted)
+                                        target.flush()
+                                        os.fsync(target.fileno())
+                                    # Katalog podłożony w wyścigu daje odmowę;
+                                    # nigdy nie czytamy ani nie usuwamy go rekurencyjnie.
+                                    os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+                                finally:
+                                    try:
+                                        os.unlink(temporary, dir_fd=parent)
+                                    except FileNotFoundError:
+                                        pass
+                    except FileNotFoundError:
+                        pass  # Krok mógł nie użyć Git; nie czytamy innych prywatnych administracji.
+                finally:
+                    os.close(root)
+        for field in ("refs", "files"):
+            report[field] = sorted(set(report[field]))
+        result = report if any(report.values()) else {}
+        if report["errors"]:
+            saved.update(active=True, pendingReport=result)
+        else:
+            saved.pop("pendingReport", None)
+            saved.update(active=False, report=result)
+        _save(path, saved)
+        return result

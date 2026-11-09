@@ -206,14 +206,16 @@ class ReviewFlowTest(FlowInProcess):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 4")
         self.assertTrue(self.start(card)["ok"])
         self.wait_column(card, "waiting", timeout=50)
-        before = len(self.of(card, "step.started"))
+        # Odrzucenie kończy wykonanie ticketu; osobne domknięcie karty nadal może wystartować.
+        execution_steps = lambda: [s for s in self.of(card, "step.started") if s["kind"] != "close"]
+        before = len(execution_steps())
         replies = []
         self.board.resolve_card_review(card, "reject", replies.append)
         self.assertTrue(wait_until(lambda: replies, timeout=10))
         self.assertTrue(json.loads(replies[0])["ok"])
         self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["reject"])
         self.assertEqual(len(self.of(card, "ticket.rejected")), 1)
-        self.assertEqual(len(self.of(card, "step.started")), before)
+        self.assertEqual(len(execution_steps()), before)
         self.assertEqual(self.results(card, "merge"), [])
         replies = []
         self.board.resolve_card_review(card, "retry", replies.append)

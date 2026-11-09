@@ -213,7 +213,8 @@ class GapActionTest(EngineOnJournal):
                         {"type": "result", "action": "merge", "key": "PT-9", "ok": True}]
                     st = fold(completed)
                     st.last_step = TARGET
-                    restarted._advance("K-1", st)
+                    with mock.patch.object(restarted.journal, "read_complete", return_value=completed):
+                        restarted._advance("K-1", st)
                     resume.assert_called_once()
                     self.assertEqual(resume.call_args.args[2]["step"], TARGET)
 

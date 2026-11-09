@@ -1,0 +1,262 @@
+Moduły: 227, JOBS=14, logi: /home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/build/test-results/run-xb3kgac2
+[OK] apps/sessions/tests/test_flow_cards.py: 1 testów, 0.12 s
+[OK] apps/models/tests/test_executors_view.py: 7 testów, 3.17 s
+[OK] apps/sessions/tests/test_card_open.py: 8 testów, 7.94 s
+[OK] apps/reports/tests/test_view.py: 17 testów, 11.80 s
+[OK] apps/board/tests/test_card_open.py: 14 testów, 11.92 s
+[OK] daemon/tests/test_activity_look.py: 14 testów, 0.35 s
+[OK] apps/docker/tests/test_view.py: 14 testów, 12.33 s
+[OK] daemon/tests/test_agents_core.py: 40 testów, 0.24 s
+[OK] daemon/tests/test_agents_reply.py: 42 testów, 1.26 s
+[OK] daemon/tests/test_board_chain.py: 18 testów, 0.30 s
+[OK] daemon/tests/test_board_commands.py: 6 testów, 0.11 s
+[OK] apps/newtask/tests/test_new_task.py: 15 testów, 14.63 s
+[OK] apps/board/tests/test_card_environment.py: 10 testów, 16.33 s
+[OK] daemon/tests/test_board_core.py: 28 testów, 2.63 s
+[OK] daemon/tests/test_attention.py: 14 testów, 4.43 s
+[OK] apps/board/tests/test_card_full_view.py: 12 testów, 18.22 s
+[OK] apps/worktrees/tests/test_window.py: 12 testów, 10.34 s
+[OK] daemon/tests/test_board_derive.py: 41 testów, 2.40 s
+[OK] daemon/tests/test_board_docs.py: 24 testów, 2.34 s
+[OK] apps/models/tests/test_view.py: 20 testów, 19.51 s
+[OK] daemon/tests/test_boardplans.py: 9 testów, 0.74 s
+[OK] daemon/tests/test_board_work.py: 17 testów, 1.78 s
+[OK] daemon/tests/test_board_robustness.py: 25 testów, 2.70 s
+[OK] daemon/tests/test_board_launch.py: 17 testów, 3.89 s
+[OK] apps/sessions/tests/test_window.py: 10 testów, 22.94 s
+[OK] daemon/tests/test_board_dbus.py: 12 testów, 8.51 s
+[OK] daemon/tests/test_board_entry.py: 24 testów, 6.53 s
+[OK] daemon/tests/test_board_multiproject.py: 35 testów, 6.43 s
+[OK] daemon/tests/test_box_k3.py: 31 testów, 4.42 s
+[OK] daemon/tests/test_box_port_failures.py: 11 testów, 2.99 s
+[OK] daemon/tests/test_box_ports.py: 5 testów, 0.16 s
+[OK] daemon/tests/test_box_profile.py: 64 testów, 0.21 s
+[OK] daemon/tests/test_box_proxy.py: 50 testów, 0.62 s
+[OK] daemon/tests/test_box_sessions_preparation.py: 11 testów, 0.41 s
+[OK] daemon/tests/test_box_docker.py: 4 testów, 8.99 s
+[OK] daemon/tests/test_agentcmd.py: 68 testów, 19.74 s
+[OK] apps/board/tests/test_card_settings.py: 15 testów, 33.72 s
+[OK] daemon/tests/test_box_base.py: 40 testów, 18.37 s
+[BŁĄD] daemon/tests/test_cardflow_chain_permission.py: 16 testów, 6.99 s
+...E............
+======================================================================
+ERROR: test_continue_without_commands_option (daemon.tests.test_cardflow_chain_permission.ChainPermissionFlowTest.test_continue_without_commands_option)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/daemon/tests/test_cardflow_chain_permission.py", line 111, in test_continue_without_commands_option
+    prompt = self.resumed(card_id, decision["step"])["prompt"]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/DevWorkspace/plasma-tide-worktrees/pt-191-dowod-granicy-tide-box/daemon/tests/test_cardflow_chain_permission.py", line 37, in resumed
+    return json.load(fh)
+           ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ^^^^^^^^^^^^^^^^^^^^^^
+json.decoder.JSONDecodeError: Expecting ',' delimiter: line 1 column 12238 (char 12237)
+
+----------------------------------------------------------------------
+Ran 16 tests in 6.476s
+
+FAILED (errors=1)
+
+[OK] daemon/tests/test_box_stacks.py: 53 testów, 13.28 s
+[OK] apps/tide/tests/test_window.py: 28 testów, 39.48 s
+[OK] daemon/tests/test_cardflow_decisions.py: 39 testów, 0.67 s
+[OK] daemon/tests/test_cardflow_decisions_dbus.py: 1 testów, 2.60 s
+[OK] daemon/tests/test_cardflow_desk.py: 8 testów, 0.17 s
+[OK] daemon/tests/test_cardflow_decisions_flow.py: 5 testów, 3.32 s
+[OK] daemon/tests/test_cardflow_enter_unit.py: 25 testów, 1.67 s
+[OK] daemon/tests/test_cardflow_enter_dbus.py: 1 testów, 2.47 s
+[OK] apps/board/tests/test_decision_dialog.py: 22 testów, 48.43 s
+[OK] daemon/tests/test_cardflow_execution.py: 4 testów, 0.37 s
+[OK] daemon/tests/test_box_home.py: 14 testów, 25.93 s
+[OK] daemon/tests/test_cardflow_fault_report.py: 6 testów, 3.90 s
+[OK] daemon/tests/test_cardflow_faults.py: 13 testów, 0.15 s
+[OK] daemon/tests/test_cardflow_environment_dbus.py: 4 testów, 5.35 s
+[OK] daemon/tests/test_cardflow_fullcard.py: 18 testów, 0.30 s
+[OK] daemon/tests/test_cardflow_environment.py: 27 testów, 7.55 s
+[OK] daemon/tests/test_cardflow_history.py: 15 testów, 0.20 s
+[OK] daemon/tests/test_cardflow_gitops.py: 13 testów, 2.97 s
+[OK] daemon/tests/test_cardflow_labels.py: 5 testów, 0.22 s
+[OK] daemon/tests/test_cardflow_full_planning.py: 12 testów, 9.42 s
+[OK] daemon/tests/test_cardflow_limit_stop.py: 33 testów, 0.43 s
+[OK] daemon/tests/test_box_command.py: 13 testów, 41.98 s
+[OK] daemon/tests/test_cardflow_overview.py: 14 testów, 0.49 s
+[OK] daemon/tests/test_cardflow_box_ports.py: 7 testów, 33.36 s
+[OK] apps/board/tests/test_youtrack_view.py: 8 testów, 71.37 s
+[OK] daemon/tests/test_cardflow_plans.py: 13 testów, 0.42 s
+[OK] daemon/tests/test_cardflow_import_plan.py: 8 testów, 16.37 s
+[OK] daemon/tests/test_box_runner.py: 56 testów, 44.63 s
+[OK] daemon/tests/test_cardflow_light_planning.py: 12 testów, 16.21 s
+[OK] daemon/tests/test_cardflow_plan_integration.py: 9 testów, 12.49 s
+[OK] daemon/tests/test_cardflow_review_findings.py: 18 testów, 7.00 s
+[OK] daemon/tests/test_codex_desktop.py: 34 testów, 0.38 s
+[OK] daemon/tests/test_codex_homes.py: 30 testów, 1.75 s
+[OK] daemon/tests/test_coordination_core.py: 41 testów, 4.05 s
+[OK] daemon/tests/test_cardflow_dbus.py: 15 testów, 48.55 s
+[OK] daemon/tests/test_coordination_describe.py: 26 testów, 1.31 s
+[OK] daemon/tests/test_coordination_integration.py: 7 testów, 0.42 s
+[OK] daemon/tests/test_box_lifecycle.py: 17 testów, 69.45 s
+[OK] daemon/tests/test_cwdstate.py: 5 testów, 0.11 s
+[OK] daemon/tests/test_cardflow_review.py: 14 testów, 22.17 s
+[OK] daemon/tests/test_coordination_dbus.py: 4 testów, 10.43 s
+[OK] daemon/tests/test_dbus_contract.py: 5 testów, 2.55 s
+[OK] daemon/tests/test_coordination_numbering.py: 27 testów, 4.89 s
+[OK] daemon/tests/test_flowfakes.py: 1 testów, 0.28 s
+[OK] daemon/tests/test_cardflow_plan_review_editing.py: 16 testów, 32.98 s
+[OK] daemon/tests/test_install.py: 2 testów, 1.11 s
+[OK] daemon/tests/test_krunner_core.py: 24 testów, 0.47 s
+[OK] daemon/tests/test_docker_dbus.py: 11 testów, 4.70 s
+[OK] daemon/tests/test_krunner_index.py: 15 testów, 0.25 s
+[OK] daemon/tests/test_cardflow_limits.py: 45 testów, 37.80 s
+[OK] daemon/tests/test_docker_core.py: 59 testów, 7.27 s
+[OK] daemon/tests/test_krunner_install.py: 5 testów, 1.20 s
+[OK] daemon/tests/test_krunner_dbus.py: 9 testów, 3.13 s
+[OK] daemon/tests/test_krunner_semantic.py: 33 testów, 2.06 s
+[OK] daemon/tests/test_limits_core.py: 35 testów, 1.64 s
+[OK] daemon/tests/test_models_cloud.py: 9 testów, 0.62 s
+[OK] daemon/tests/test_idle.py: 23 testów, 7.22 s
+[OK] daemon/tests/test_models_executors.py: 37 testów, 0.37 s
+[OK] daemon/tests/test_models_core.py: 46 testów, 2.71 s
+[OK] daemon/tests/test_models_settings.py: 30 testów, 1.60 s
+[OK] daemon/tests/test_box_builder.py: 45 testów, 88.21 s
+[OK] daemon/tests/test_limits_dbus.py: 3 testów, 7.43 s
+[OK] daemon/tests/test_notification_release.py: 1 testów, 0.23 s
+[OK] daemon/tests/test_planning_environment.py: 23 testów, 0.44 s
+[OK] daemon/tests/test_report_data.py: 13 testów, 0.83 s
+[OK] daemon/tests/test_cardflow.py: 34 testów, 81.80 s
+[OK] daemon/tests/test_cardflow_youtrack.py: 14 testów, 36.70 s
+[OK] daemon/tests/test_monitors.py: 25 testów, 6.15 s
+[OK] daemon/tests/test_report_read.py: 11 testów, 0.40 s
+[OK] daemon/tests/test_report_readability.py: 22 testów, 0.45 s
+[OK] daemon/tests/test_report_schedule.py: 26 testów, 0.24 s
+[OK] daemon/tests/test_report_living.py: 40 testów, 1.32 s
+[OK] daemon/tests/test_models_queue.py: 24 testów, 10.78 s
+[OK] daemon/tests/test_runner_host.py: 2 testów, 0.35 s
+[OK] daemon/tests/test_stack.py: 22 testów, 0.33 s
+[OK] daemon/tests/test_docker_monitor.py: 18 testów, 20.64 s
+[OK] daemon/tests/test_models_monitor.py: 15 testów, 13.36 s
+[OK] daemon/tests/test_report_generate.py: 31 testów, 4.54 s
+[OK] daemon/tests/test_tabmarks.py: 22 testów, 0.89 s
+[OK] daemon/tests/test_models_dbus.py: 9 testów, 15.47 s
+[OK] daemon/tests/test_stream_shortcuts.py: 28 testów, 1.83 s
+[OK] daemon/tests/test_refs_guard.py: 38 testów, 10.11 s
+[OK] daemon/tests/test_test_artifacts.py: 13 testów, 0.57 s
+[OK] daemon/tests/test_tasks_local.py: 31 testów, 2.04 s
+[OK] daemon/tests/test_tasks_core.py: 26 testów, 2.50 s
+[OK] daemon/tests/test_windows.py: 33 testów, 1.18 s
+[OK] daemon/tests/test_worktrees_sessions.py: 15 testów, 0.71 s
+[OK] daemon/tests/test_tasks_dbus.py: 5 testów, 4.15 s
+[OK] daemon/tests/test_report_dbus.py: 5 testów, 13.37 s
+[OK] daemon/tests/test_worktrees_dbus.py: 11 testów, 3.06 s
+[OK] kwin/tests/test_agent_jump.py: 6 testów, 1.80 s
+[OK] daemon/tests/test_youtrack_ops.py: 25 testów, 4.44 s
+[OK] kwin/tests/test_new_task_shortcut.py: 4 testów, 1.48 s
+[OK] daemon/tests/test_cardflow_step_decisions.py: 39 testów, 55.09 s
+[OK] daemon/tests/test_youtrack_sync.py: 28 testów, 6.36 s
+[OK] daemon/tests/test_report_standup.py: 61 testów, 16.93 s
+[OK] daemon/tests/test_runner_engine.py: 4 testów, 17.09 s
+[OK] scripts/tests/test_appearance.py: 9 testów, 5.77 s
+[OK] daemon/tests/test_youtrack_board.py: 7 testów, 11.43 s
+[OK] daemon/tests/test_stream_mode.py: 11 testów, 18.40 s
+[OK] scripts/tests/test_box_check.py: 8 testów, 6.92 s
+[OK] scripts/tests/test_decoration.py: 4 testów, 1.59 s
+[OK] scripts/tests/test_claude_statusline.py: 7 testów, 1.97 s
+[OK] daemon/tests/test_stepstop_box.py: 2 testów, 20.83 s
+[OK] scripts/tests/test_konsole.py: 6 testów, 3.13 s
+[OK] scripts/tests/test_icons.py: 8 testów, 7.85 s
+[OK] scripts/tests/test_box_install.py: 29 testów, 12.92 s
+[OK] scripts/tests/test_plasma_style.py: 10 testów, 6.57 s
+[OK] scripts/tests/test_panels.py: 7 testów, 9.52 s
+[OK] scripts/tests/test_plymouth_system.py: 13 testów, 2.93 s
+[OK] scripts/tests/test_box_prototype_proxy.py: 21 testów, 14.78 s
+[OK] scripts/tests/test_sandbox_apparmor.py: 19 testów, 5.68 s
+[OK] scripts/tests/test_panels_js.py: 34 testów, 14.85 s
+[OK] scripts/tests/test_stream_activity.py: 8 testów, 4.65 s
+[OK] scripts/tests/test_activity_look.py: 36 testów, 24.72 s
+[OK] scripts/tests/test_sddm_system.py: 10 testów, 7.48 s
+[OK] scripts/tests/test_terminal.py: 8 testów, 1.32 s
+[OK] theme/colors/tests/test_generate.py: 4 testów, 0.10 s
+[OK] theme/colors/tests/test_streamer.py: 2 testów, 0.25 s
+[OK] theme/decoration/tests/test_generate.py: 15 testów, 0.25 s
+[OK] scripts/tests/test_vivaldi.py: 5 testów, 1.24 s
+[OK] scripts/tests/test_test_runner.py: 12 testów, 2.32 s
+[OK] theme/konsole/tests/test_generate.py: 14 testów, 0.10 s
+[OK] daemon/tests/test_worktrees_core.py: 70 testów, 36.10 s
+[OK] scripts/tests/test_sidebar.py: 12 testów, 15.58 s
+[OK] theme/icons/tests/test_tide_icons.py: 17 testów, 9.08 s
+[OK] theme/logo/tests/test_generate.py: 5 testów, 0.12 s
+[OK] theme/lockscreen/tests/test_streamer.py: 3 testów, 5.42 s
+[OK] daemon/tests/test_cardflow_waves.py: 12 testów, 91.14 s
+[OK] theme/palette/tests/test_palette.py: 9 testów, 0.15 s
+[OK] theme/palette/tests/test_variants.py: 16 testów, 0.18 s
+[OK] theme/plasma/tests/test_generate.py: 15 testów, 0.45 s
+[OK] theme/palette/tests/test_mist_unchanged.py: 2 testów, 2.81 s
+[OK] theme/plasma/tests/test_streamer.py: 2 testów, 0.52 s
+[OK] theme/lockscreen/tests/test_cat_backdrop.py: 18 testów, 12.69 s
+[OK] theme/plasma/tests/test_ksvg.py: 7 testów, 1.10 s
+[OK] theme/lookandfeel/tests/test_generate.py: 13 testów, 5.26 s
+[OK] theme/plymouth/tests/test_build.py: 11 testów, 3.33 s
+[OK] theme/sddm/tests/test_check.py: 5 testów, 0.25 s
+[OK] theme/icons/tests/test_glyphs.py: 27 testów, 17.26 s
+[OK] theme/terminal/tests/test_generate.py: 8 testów, 0.14 s
+[OK] theme/plymouth/tests/test_harness.py: 23 testów, 5.34 s
+[OK] theme/terminal/tests/test_prompt.py: 16 testów, 1.51 s
+[OK] daemon/tests/test_cardflow_close.py: 32 testów, 133.12 s
+[OK] theme/vivaldi/tests/test_generate.py: 12 testów, 0.16 s
+[OK] theme/terminal/tests/test_statusline.py: 17 testów, 1.85 s
+[OK] theme/lockscreen/tests/test_lockscreen.py: 8 testów, 14.74 s
+[OK] theme/sddm/tests/test_build.py: 13 testów, 10.09 s
+[OK] scripts/tests/test_stream_panels.py: 26 testów, 30.85 s
+[OK] theme/wallpaper/tests/test_map.py: 7 testów, 9.78 s
+[OK] widgets/tests/test_activity_look.py: 4 testów, 7.04 s
+[OK] widgets/tests/test_build_orders.py: 14 testów, 7.75 s
+[OK] theme/wallpaper/tests/test_variant.py: 22 testów, 13.24 s
+[OK] widgets/tests/test_representations.py: 1 testów, 0.13 s
+[OK] scripts/tests/test_box_prototype.py: 22 testów, 61.28 s
+[OK] widgets/tests/test_stale.py: 3 testów, 0.07 s
+[OK] widgets/tests/test_tokens_variant.py: 1 testów, 0.27 s
+[OK] theme/wallpaper/tests/test_generate.py: 9 testów, 21.29 s
+[OK] widgets/tests/test_widget_agents.py: 5 testów, 1.70 s
+[OK] theme/wallpaper/tests/test_plugin.py: 12 testów, 19.39 s
+[OK] theme/plymouth/tests/test_check.py: 6 testów, 31.14 s
+[OK] theme/sddm/tests/test_harness.py: 2 testów, 29.48 s
+[OK] theme/wallpaper/tests/test_pictures.py: 12 testów, 27.41 s
+[OK] widgets/tests/test_widget_limits.py: 15 testów, 4.71 s
+[OK] widgets/tests/test_widget_newtask.py: 4 testów, 1.32 s
+[OK] widgets/tests/test_limits_forecast.py: 11 testów, 16.12 s
+[OK] widgets/tests/test_widget_sidebar.py: 9 testów, 0.95 s
+[OK] widgets/tests/test_widget_docker.py: 12 testów, 13.34 s
+[OK] widgets/tests/test_sidebar_tiles.py: 14 testów, 20.64 s
+[OK] widgets/tests/test_dock_tiles.py: 14 testów, 27.95 s
+[OK] widgets/tests/test_widget_models.py: 15 testów, 17.34 s
+[OK] widgets/tests/test_widget_monitors.py: 12 testów, 15.45 s
+[OK] widgets/tests/test_widget_report.py: 7 testów, 13.81 s
+[OK] widgets/tests/test_widget_board.py: 15 testów, 22.78 s
+[OK] widgets/tests/test_widget_worktrees.py: 5 testów, 1.46 s
+[OK] widgets/tests/test_widget_stream_camera.py: 17 testów, 12.11 s
+[OK] widgets/tests/test_widget_ai.py: 18 testów, 30.27 s
+[OK] widgets/tests/test_widget_system.py: 18 testów, 9.40 s
+[OK] daemon/tests/test_cardflow_execution_box.py: 56 testów, 182.78 s
+[OK] apps/board/tests/test_view.py: 86 testów, 242.16 s
+[OK] widgets/tests/test_widget_work.py: 14 testów, 27.53 s
+[OK] widgets/tests/test_widget_stream_gaming.py: 37 testów, 29.54 s
+[OK] scripts/tests/test_shell_sync.py: 31 testów, 108.09 s
+[OK] widgets/tests/test_widget_stream_console.py: 26 testów, 53.09 s
+[OK] widgets/tests/test_widget_stream_categories.py: 27 testów, 58.48 s
+[OK] scripts/tests/test_wallpaper.py: 66 testów, 150.42 s
+[OK] scripts/tests/test_lookandfeel.py: 21 testów, 188.07 s
+[OK] widgets/tests/test_widget_stream.py: 49 testów, 126.49 s
+
+Razem: 4149 testów, 227 modułów, pominięte: 4, czas: 332.94 s
+Wszystkie nieudane testy:
+- daemon/tests/test_cardflow_chain_permission.py: daemon.tests.test_cardflow_chain_permission.ChainPermissionFlowTest.test_continue_without_commands_option

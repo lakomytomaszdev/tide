@@ -27,9 +27,12 @@ class CancellationTest(unittest.TestCase):
             script.chmod(0o755)
             (root / "slow-arm").touch()
             cancel = Cancellation()
-            git = Git(str(script), cancel=cancel)
+            git = Git(cancel=cancel)
             git.env["TIDE_LIFECYCLE_DIR"] = folder
-            future = pool.submit(git.run, folder, "worktree", "list", "--porcelain")
+            # Opóźnienie jest atrapą transportu Cancellation, nie podmianą
+            # systemowego programu dopuszczonego przez granicę hostowego Git.
+            future = pool.submit(cancel.run, [str(script), "worktree", "list", "--porcelain"],
+                                 timeout=120, env=git.env)
             deadline = time.monotonic() + 3
             try:
                 while not (root / "slow-pid").exists() and time.monotonic() < deadline:

@@ -30,7 +30,7 @@ class Journal:
     def __init__(self, provider="anthropic"):
         self.events = [ev(1, "card.started", entry="now", executor="Sonnet", program="claude", model="sonnet",
                           provider="anthropic" if provider != "local" else "local", preferredProvider=provider,
-                          repo="/r", column="todo")]
+                          repo="/r", project="proj", column="todo")]
 
     def add(self, etype, /, **fields):
         self.events.append(ev(len(self.events) + 1, etype, **fields))
@@ -41,7 +41,9 @@ class Journal:
                  attempt=attempt, parentStep=parent, worktree="/w", branch="ticket/pt-7", stepDir="/w.step")
 
     def error(self, name, reason="awaria testowa", **extra):
-        self.add("step.finished", step=name, ticket="PT-7", result="error", reason=reason, **extra)
+        ticket = next((e.get("ticket", "") for e in reversed(self.events)
+                       if e["type"] == "step.started" and e.get("step") == name), "PT-7")
+        self.add("step.finished", step=name, ticket=ticket, result="error", reason=reason, **extra)
 
     def failed_twice(self, first, second, parent=""):
         self.step(first, 0, parent)
@@ -717,7 +719,7 @@ class CaretakerFlowTest(FlowInProcess):
             engine._caretake(card_id, st)
             self.assertEqual(len(self.caretaker_steps(card_id)), 1, "otwarty problem pozostaje oddany")
 
-            engine.journal.append(card_id, "step.started", step="recovery", kind="ticket", ticket="PT-recovery")
+            engine.journal.append(card_id, "step.started", step="recovery", kind="ticket", ticket="PT-999")
             resolved = engine.journal.append(card_id, "step.finished", step="recovery", result="done")
             st = fold(engine.journal.read(card_id))
             self.assertEqual(caretaker.problems(st), [])

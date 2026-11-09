@@ -42,8 +42,10 @@ class InstalledResourceFlowTest(FlowCase):
             (skill / "SKILL.md").write_text("---\nname: to-spec\ndescription: Kontrola\n---\nprocedura kontrolna")
             (skill / "references/zasob.txt").write_text("zasób kontrolny")
             fake = Path(self.base) / "fakebin/claude"
-            body = flowfakes.CLAUDE.replace('with open(os.path.join(out, "fake-call.json")',
-                                            READ_PROOF + '\nwith open(os.path.join(out, "fake-call.json")')
+            # Atrapa publikuje fake-call.json atomowo (mkstemp + replace); dowód odczytu przed tym zapisem.
+            anchor = 'fd, call_tmp = tempfile.mkstemp('
+            self.assertIn(anchor, flowfakes.CLAUDE)
+            body = flowfakes.CLAUDE.replace(anchor, READ_PROOF + '\n' + anchor)
             fake.write_text(body)
         return self.service.spawn([sys.executable, "-s", str(self.installed / "tide-daemon.py"),
              "--claude-dir", str(Path(self.env["HOME"]) / ".claude"),

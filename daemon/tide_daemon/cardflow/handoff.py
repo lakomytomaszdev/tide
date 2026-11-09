@@ -6,6 +6,7 @@ from . import testpolicy
 from .testpolicy import TestPolicy
 
 import os
+import re
 
 RESULT_FILE = "result.json"
 NOTE_FILE = "note.md"
@@ -13,6 +14,62 @@ REVIEW_FILE = "review.md"
 SUMMARY_FILE = "summary.md"
 OPTIONS_HINT = ('Do pytania możesz dodać "options": [{"title": "…", "effect": "…", "recommended": true}] — '
                 "1–4 gotowe odpowiedzi, najwyżej jedna polecona; Tide sam dokłada „Inną odpowiedź…”.")
+DESK_HEADING = "Do sprawdzenia na pulpicie"
+DESK_HINT = (f"Test wymagający prawdziwego pulpitu oznacz w notce w sekcji „{DESK_HEADING}” (nagłówek, pod nim lista "
+             "punktów: co zrobić i czego oczekiwać), nie proś o to użytkownika w trakcie. Tide zbierze te punkty "
+             "do listy ręcznych testów w domknięciu karty.")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*(.*?)\s*#*\s*$")
+_BULLET = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*\S)\s*$")
+
+
+def desk_items(note: str) -> list[str]:
+    """Pozycje sekcji „Do sprawdzenia na pulpicie” z notki kroku. Sekcja kończy się na następnym nagłówku;
+    pozycja może mieć kolejne wiersze (wcięte albo bez pustego wiersza przed nimi); bloki ``` są pomijane,
+    pusta sekcja daje pustą listę."""
+    items: list[str] = []
+    inside = False
+    fenced = False
+    blank = False
+    for line in (note or "").splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        head = _HEADING.match(line)
+        if head:
+            inside = head.group(1).strip().strip("*_: ").casefold() == DESK_HEADING.casefold()
+            continue
+        if not inside:
+            continue
+        bullet = _BULLET.match(line)
+        if bullet:
+            items.append(bullet.group(1).strip())
+            blank = False
+        elif not line.strip():
+            blank = True
+        else:
+            if items and (not blank or line[:1] in (" ", "\t")):
+                items[-1] += " " + line.strip()
+            blank = False
+    return items
+
+
+def desk_section(found: list[tuple[str, str, list[str]]]) -> str:
+    """Lista do domknięcia: `found` to (krok, ticket, pozycje) w kolejności kroków. Ta sama pozycja
+    (bez względu na wielkość liter i odstępy) pojawia się raz, ze wszystkimi odwołaniami."""
+    merged: dict[str, tuple[str, list[str]]] = {}
+    for step, ticket, items in found:
+        ref = f"krok {step}, ticket {ticket}" if ticket else f"krok {step}"
+        for item in items:
+            key = " ".join(item.split()).casefold()
+            text, refs = merged.setdefault(key, (" ".join(item.split()), []))
+            if ref not in refs:
+                refs.append(ref)
+    if not merged:
+        return ""
+    lines = [f"- {text} ({'; '.join(refs)})" for text, refs in merged.values()]
+    return f"\n\n### {DESK_HEADING} (z notek kroków)\n" + "\n".join(lines) + "\n"
 
 
 RERUN_MODULES = ("Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`\n"
@@ -55,6 +112,25 @@ polecenie oraz wynik w notce. Nie przenoś infrastruktury testów z master i nie
 """
 
 
+def sandbox_tests(full: str, worktree: str = "") -> str:
+    """08.11: kroki uruchamiały pełny przebieg w piaskownicy (moduły padały bez D-Bus, zapisu do /tmp
+    i zagnieżdżonego bwrap), a potem drugi raz poza nią — obciążenie maszyny 40–58 na 16 rdzeniach.
+    `full` to wymagany pełny przebieg w formie zdania („`make test-changed BASE=…`”, „pełny `make test`”)."""
+    from .testrerun import runner_reruns
+    known = not worktree or not os.path.isdir(worktree)
+    if known or os.path.isfile(os.path.join(worktree, "tools", "test_runner.py")):
+        targeted = "`make test-cardflow`, `make test-daemon`, `make test-board`"
+        targeted += (" albo `/usr/bin/python3 tools/test_runner.py --modules <moduły>`"
+                     if known or runner_reruns(worktree) else " albo inny zestaw `make test-<zestaw>`")
+    else:
+        targeted = "narzędziem testów projektu z filtrem na zmieniony obszar"
+    return f"""W piaskownicy kroku uruchamiaj tylko testy celowane ({targeted}).
+Wymagany {full} zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy: część modułów (D-Bus, zapis do /tmp, zagnieżdżona
+piaskownica) i tak tam pada, a drugi przebieg poza piaskownicą tylko dociąża maszynę.
+"""
+
+
 SOURCE_LABELS = {
     testpolicy.PROFILE: "zatwierdzony kontrakt testów projektu (profil projektu na Tablicy)",
     testpolicy.DETECTED: "wykryte z Makefile",
@@ -69,9 +145,11 @@ UNAPPROVED_LINE = ("Kontrakt testów w profilu projektu nie jest zatwierdzony i 
 RULES_CHANGED = ("Testy ticketu (także po poprawkach): projekt nie podaje polecenia testów zmian. Przed oddaniem "
                  "uruchom testy dobrane do zmian\nwedług zasad projektu (CLAUDE.md/AGENTS.md); ")
 RULES_FULL = "pełne testy według zasad projektu (CLAUDE.md/AGENTS.md)"
+# Wymagany przebieg zasady ogólnej w zdaniu `sandbox_tests` („Wymagany … zgłoś od razu …”).
+RULES_SANDBOX = "przebieg testów dobranych do zmian według zasad projektu (CLAUDE.md/AGENTS.md)"
 
 
-def _policy(policy: TestPolicy | None, worktree: str, base: str) -> TestPolicy:
+def _tests_policy(policy: TestPolicy | None, worktree: str, base: str) -> TestPolicy:
     """Do czasu #10 silnik nie podaje polityki: kartka liczy ją regułą zgodności z master."""
     return policy if policy is not None else testpolicy.master_policy(worktree, base)
 
@@ -117,12 +195,17 @@ def _full_phrases(policy: TestPolicy) -> tuple[str, str, str]:
     return "pełny przebieg testów", "pełnego przebiegu testów", "pełnego przebiegu testów"
 
 
-def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None = None) -> str:
-    """Zasada testów ticketu, poprawek i review z polityki testów (bez polityki — reguła zgodności z master)."""
-    policy = _policy(policy, worktree, base)
+def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None = None, *,
+                 author: bool = True) -> str:
+    """Zasada testów ticketu, poprawek i review z polityki testów (bez polityki — reguła zgodności z master).
+    `author=False` (kartka review): zasada bez instrukcji uruchamiania przebiegu — recenzent sprawdza wynik
+    autora i nie zgłasza własnego pełnego przebiegu (08.11, review Astry)."""
+    policy = _tests_policy(policy, worktree, base)
+    sandbox = sandbox_tests if author else (lambda _full, _worktree="": "")
     head = _notes(policy)
     if policy.legacy:
-        return head + OLD_BRANCH_TESTS + rerun_failed(worktree, policy.changed)
+        return head + OLD_BRANCH_TESTS + sandbox(f"pełny `{policy.changed}`", worktree) + \
+            rerun_failed(worktree, policy.changed)
     full_nom, full_gen, full_short = _full_phrases(policy)
     make = testpolicy.make_target(policy.changed) == testpolicy.CHANGED_TARGET
     if policy.changed:
@@ -141,7 +224,8 @@ def ticket_tests(base: str = "", worktree: str = "", policy: TestPolicy | None =
              "w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.\n")
     if make:
         text += f"Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego {full_short}.\n"
-    return head + text + rerun_failed(worktree, policy.changed)
+    required = f"`{policy.changed}`" if policy.changed else RULES_SANDBOX
+    return head + text + sandbox(required, worktree) + rerun_failed(worktree, policy.changed)
 
 
 def review_tests(policy: TestPolicy) -> str:
@@ -164,10 +248,12 @@ def review_tests(policy: TestPolicy) -> str:
 
 def close_tests(worktree: str, policy: TestPolicy | None = None) -> str:
     """Pełne testy domknięcia (K-62: raz, porażka → error) z polityki testów."""
-    policy = _policy(policy, worktree, "")
+    policy = _tests_policy(policy, worktree, "")
     run = f"pełny `{policy.full}`" if policy.full else RULES_FULL
     again = f"`{policy.full}`" if policy.full else "przebiegu"
     return _notes(policy, close=True) + f"""Przed napisaniem podsumowania uruchom raz {run} w worktree gałęzi karty, po scaleniu ticketów.
+{run[0].upper() + run[1:]} zgłoś od razu jako polecenie poza piaskownicą (wynik `outside`),
+bez wcześniejszej próby pełnego przebiegu w piaskownicy kroku.
 Zapisz polecenie i wynik w podsumowaniu. Jeśli testy nie przejdą, nie zgłaszaj done i nie powtarzaj całego
 {again} na tym samym kodzie: dowody do rozliczenia zbierz ponowieniem tylko padniętych modułów (kontrakt
 outside) według zasady niżej, a potem zapisz wynik error z opisem niepowodzeń i tym rozliczeniem, jak przy innych
@@ -228,8 +314,43 @@ Nie wykonuj push ani scalenia gałęzi.
 """
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
-    """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
+# PT-291 (K-38 F3): treść kartki zależna od runnera kroku. Tekst hosta (HostRunner) jest tekstem master
+# (wzorzec: daemon/tests/fixtures/host-cards-master/), dodatki pudełka są osobnymi stałymi i trafiają
+# wyłącznie do kroku, którego zapisanym runnerem jest `box` — nigdy według samego profilu projektu.
+HOST_RUNNER = "host"
+BOX_RUNNER = "box"
+
+BOX_WRAPPED = ("W pudełku wolno opakować dozwolone polecenie testowe jako `tide-test <polecenie> [argumenty…]`\n"
+               "bez osobnego wpisu tide-test na liście zgód. Dla tej formy sprawdzaj listę dozwolonych\n"
+               "wobec polecenia wewnątrz owijki. Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c,\n"
+               "nie sam program sh; owijka ani powłoka nie rozszerzają zgody na argumenty lub łańcuchy.\n"
+               "Zakazy mają pierwszeństwo: sprawdzaj zarówno pełne wywołanie, jak i polecenie wewnętrzne\n"
+               "(w tym każde polecenie w treści sh -c). Zabronionego polecenia nie uruchamiaj przez owijkę.\n"
+               "Lista verify profilu wskazuje testy do opakowania, sama nie nadaje zgody na ich wykonanie.\n")
+HOST_BOUNDARY = "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok."
+BOX_BOUNDARY = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
+                "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
+HOST_REPORT = "`denied` albo `outside`"
+BOX_REPORT = "`denied`"
+HOST_OUTSIDE = """Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
+Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
+jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
+np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
+worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
+"""
+# Krok w pudełku nie uruchamia poleceń na hoście: wynik `outside` Tide odrzuca (FlowError box-outside w silniku).
+BOX_OUTSIDE = """Ograniczenie pudełka: ten krok biegnie w pudełku i nie ma wyniku `outside` — Tide nie uruchamia poleceń
+kroku na hoście i odrzuci taką prośbę. Testy, budowanie, Docker i instalację paczek wykonuj w pudełku; sieć idzie
+przez proxy, a odmowę połączenia Tide sam przedstawi użytkownikowi jako pytanie o domenę. Gdy polecenia nie da się
+wykonać w pudełku, zakończ wynikiem `error` z opisem przyczyny.
+"""
+
+
+def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: str, boundary: str,
+            report: str, outside: str) -> str:
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
     own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
@@ -241,23 +362,49 @@ Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
 Zabronione polecenia:
 {deny}
-{own}Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+{own}{wrapped}{boundary}
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
 na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
 Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
 NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
-uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie ({report}); gdy mimo to się nie da,
 zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
 i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
-Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
-Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
-{{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.
-Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
-Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
-jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
-np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
-worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
-"""
+{outside}"""
+
+
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku."""
+    return _policy(allowed, denied, step_dir, wrapped="", boundary=HOST_BOUNDARY, report=HOST_REPORT,
+                   outside=HOST_OUTSIDE)
+
+
+def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+    """Lista poleceń kroku w pudełku: owijka tide-test i ograniczenie pudełka zamiast kontraktu outside."""
+    return _policy(allowed, denied, step_dir, wrapped=BOX_WRAPPED, boundary=BOX_BOUNDARY, report=BOX_REPORT,
+                   outside=BOX_OUTSIDE)
+
+
+def runner_policy(runner: str, allowed: list[str], denied: list[str], step_dir: str = "", *,
+                  profile: dict | None = None) -> str:
+    """Jedyny wybór treści listy poleceń według zapisanego runnera kroku. Host: tekst master, bez dodatków
+    pudełka (także przy `box.enabled: true` i istniejącym profilu). Box: owijka, verify profilu, ograniczenia."""
+    if runner == BOX_RUNNER:
+        return box_command_policy(allowed, denied, step_dir) + box_tests(profile or {})
+    if runner != HOST_RUNNER:
+        raise ValueError(f"nieznany runner kroku: {runner!r}")
+    return command_policy(allowed, denied, step_dir)
+
+
+def review_evidence(runner: str, source: dict) -> str:
+    """Spis artefaktów autora w kartce review — tylko dla review biegnącego w pudełku (zapisany runner kroku
+    review), i tylko gdy autor biegł w pudełku. Review na hoście zachowuje zasady testów hosta (test-changed
+    z notki), także po pudełkowym autorze i przy wyłączonym pudełku."""
+    if runner == BOX_RUNNER:
+        return test_evidence(source)
+    if runner != HOST_RUNNER:
+        raise ValueError(f"nieznany runner kroku: {runner!r}")
+    return ""
 
 
 def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,
@@ -293,6 +440,12 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
     elif choice in ("run", "run-always", "run-ticket"):
         detail = (f"Użytkownik uruchomił poza piaskownicą, w tym worktree, polecenie: {command}\n{answer}\n"
                   "Zmiany w plikach (np. package.json, package-lock.json) są już w worktree — sprawdź `git status`.")
+    elif choice == "box-allow":
+        detail = (f"Proxy odmówiło połączenia: {command}. Użytkownik dopisał tę domenę do profilu karty i zlecił "
+                  "przebudowę środowiska. Kontynuuj; jeśli domena nadal jest niedostępna, zgłoś to w notce.")
+    elif choice == "deny" and prior.get("network"):
+        detail = (f"Użytkownik nie dopisał domeny do profilu środowiska: {command}. Połączenie jest odrzucone — "
+                  "kontynuuj bez niego.")
     elif choice == "deny" and prior.get("outside") and instead:
         # 04.11 (K-43/BO-13, K-38/PT-164): instrukcja „zamiast tego” przy odmowie polecenia poza piaskownicą ginęła —
         # agent widział samo „nie zgodził się” i prosił o to samo polecenie w kółko.
@@ -364,6 +517,7 @@ Co masz zrobić:
 - nikt nie odpowie ci w trakcie: gdy potrzebujesz decyzji albo zgody na polecenie, zakończ krok plikiem wyniku
   z pytaniem albo z brakiem zgody — Tide zapyta użytkownika i wznowi krok,
 - na koniec zapisz notkę wyniku w {out_dir}/{NOTE_FILE} (co zrobiono, jak sprawdzono, ograniczenia),
+- {DESK_HINT}
 - ostatnią czynnością zapisz plik wyniku (JSON):
 
 Plik wyniku: {out_dir}/{RESULT_FILE}
@@ -382,11 +536,63 @@ Bez pliku wyniku krok kończy się błędem, nawet gdy praca jest zrobiona.
 """
 
 
+def box_tests(profile: dict) -> str:
+    """Instrukcja tylko dla BoxRunner; polecenia profilu są także testami."""
+    import shlex
+    commands = profile.get("verify") or []
+    examples = "\n".join(f"- tide-test {shlex.join(['sh', '-c', command])}" for command in commands)
+    return ("\nTesty w pudełku: testy uruchamiaj przez `tide-test <polecenie> [argumenty…]`. "
+            "Dotyczy verify profilu oraz npm test, npx playwright test, dotnet test, make test, pytest "
+            "i python -m unittest. Dla złożonego polecenia użyj tide-test sh -c '…'. "
+            "Owijka zachowuje środowisko, katalog roboczy i kod wyjścia; zapisuje log i podsumowanie "
+            "w out/tests katalogu tego kroku, poza worktree.\n" +
+            ("Polecenia verify profilu:\n" + examples + "\n" if examples else ""))
+
+
+def test_evidence(step: dict) -> str:
+    """Spis istniejących artefaktów autora; HostRunner zachowuje dawne przekazanie."""
+    if step.get("runner") != "box":
+        return ""
+    import os
+    import stat
+    from ..box.runner import StepDir
+    from ..tasks.agentcmd import StepError
+    path = step.get("stepDir") or ""
+    found = []
+    tests = False
+    try:
+        fs = StepDir(os.path.dirname(path), path)
+        for parts in (("out",), ("out", "tests")):
+            try:
+                fd = fs._walk(parts, create=False)
+            except OSError:
+                continue
+            try:
+                for name in sorted(os.listdir(fd)):
+                    wanted = (name == "proxy-denied.log" if len(parts) == 1 else
+                              name == "summary.json" or bool(re.fullmatch(r"\d+\.log", name)))
+                    if not wanted:
+                        continue
+                    info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                    if stat.S_ISREG(info.st_mode):
+                        artifact = os.path.join(path, *parts, name)
+                        found.append(f"- `{artifact}` — {info.st_size} B")
+                        tests |= len(parts) == 2
+            finally:
+                os.close(fd)
+    except (OSError, ValueError, StepError):
+        pass
+    return ("\nArtefakty kroku wykonawcy:\n" + "\n".join(found) + "\n" +
+            ("krok bez testów.\n" if not tests else "") +
+            "świeży artefakt = dowód; nie proś o ponowny przebieg. "
+            "Sprawdź zgodność polecenia, wyniku i czasu artefaktu z ocenianą zmianą.\n")
+
+
 def review_card(*, card_id: str, title: str, description: str, ticket: str, round_no: int,
                 card_branch: str, ticket_branch: str, worktree: str, out_dir: str,
                 diff: str, note: str, rules: str, test_base: str = "", policy: TestPolicy | None = None) -> str:
     """Pełne wejście niezależnego przeglądu, przekazane na stdin programu recenzenta."""
-    policy = _policy(policy, worktree, test_base)
+    policy = _tests_policy(policy, worktree, test_base)
     return f"""Krok review {ticket} karty {card_id}, runda {round_no}. Sprawdź wymagania i zmiany, nie edytuj kodu.
 
 Karta {card_id}: {title}
@@ -403,9 +609,10 @@ Dla recenzenta:
   (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów; udane ponowienie nie zastępuje porażki,
   oceń rozliczenie odstępstwa jak przy każdym nieudanym przebiegu,
 - podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
-- BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
+- BLOCKER lub MAJOR oznacza REQUEST_CHANGES,
+- {DESK_HINT}
 
-{ticket_tests(test_base, worktree, policy)}
+{ticket_tests(test_base, worktree, policy, author=False)}
 Zasady projektu:
 {rules or '(brak pliku zasad)'}
 

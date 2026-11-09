@@ -123,7 +123,7 @@ class ProjectReadDirsTest(BoardCase):
                 card = f"K-{1 if stored is True else 2 if stored is False else 3}"
                 journal = Journal(self.root, mirror=os.path.join(self.tmp, "mirror"))
                 engine = FlowEngine(self.store, journal=journal)
-                journal.append(card, "card.started", repo=self.ws, executor="Sonnet", program="claude")
+                journal.append(card, "card.started", project="proj", repo=self.ws, executor="Sonnet", program="claude")
                 journal.append(card, "intent", action="step-start", key="step-1", ticket="PT-1",
                                worktree=self.data, branch="ticket/pt-1", repo=self.ws)
                 journal.append(card, "result", action="step-start", key="step-1", ok=True,

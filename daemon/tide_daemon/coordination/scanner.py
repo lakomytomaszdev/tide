@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from .. import codex_homes
+from ..box import logfiles
 from ..agents import gitinfo
 from ..board.place import work_cwd
 from . import board as board_mod
@@ -395,7 +396,7 @@ def _plan_files(roots) -> list[str]:
 
 def _recent(path: str, cutoff: float) -> bool:
     try:
-        return os.path.getmtime(path) >= cutoff
+        return logfiles.stat_log(path).st_mtime >= cutoff
     except OSError:
         return False
 
@@ -430,7 +431,7 @@ def _codex_files(root: str, cutoff: float, now: float):
     while day <= end:
         folder = os.path.join(root, f"{day.year:04d}", f"{day.month:02d}", f"{day.day:02d}")
         try:
-            names = os.listdir(folder)
+            names = logfiles.names(folder)
         except OSError:
             names = []
         for name in names:
@@ -443,7 +444,7 @@ def _codex_files(root: str, cutoff: float, now: float):
 
 def _mtime(path: str) -> float:
     try:
-        return os.stat(path).st_mtime
+        return logfiles.stat_log(path).st_mtime
     except OSError:
         return 0.0
 
@@ -457,7 +458,7 @@ def _find_codex_thread(codex_root: str, tid: str) -> str:
 
     def listdir(folder):
         try:
-            return sorted(os.listdir(folder), reverse=True)
+            return sorted(logfiles.names(folder), reverse=True)
         except OSError:
             return []
     for year in listdir(sessions):

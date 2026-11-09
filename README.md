@@ -27,6 +27,9 @@ metodologii i migrację szablonów opisuje [przenośność zasobów](docs/tide-r
 
 KDE neon, Plasma 6.8, Wayland, dwa monitory (2560×1440 główny i 1920×1080). Motyw instaluje się do katalogu domowego. Sudo wymagają tylko ekran logowania (SDDM) i ekran startowy systemu (Plymouth).
 
+Nowa maszyna (Kubuntu albo Fedora z Plasmą 6), sama usługa, okno Tablicy i CLI bez motywu:
+`bash scripts/bootstrap-machine.sh` — instrukcja krok po kroku: [docs/install-new-machine.md](docs/install-new-machine.md).
+
 ## Struktura
 
 | Katalog | Zawartość |

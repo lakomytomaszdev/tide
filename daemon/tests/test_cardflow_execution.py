@@ -43,5 +43,52 @@ class ExecutionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "local-unavailable")
 
 
+class AgentWhichTest(unittest.TestCase):
+    """Usługa systemd bez ~/.local/bin w PATH nadal znajduje `claude` z instalatora Claude Code."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.home = temp.name
+        self.bin = os.path.join(self.home, ".local", "bin")
+        os.makedirs(self.bin)
+        empty = os.path.join(self.home, "empty-path")
+        os.makedirs(empty)
+        patcher = mock.patch.dict(os.environ, {"PATH": empty})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def program(self, folder, name, mode=0o755):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(path, mode)
+        return path
+
+    def test_local_bin_is_used_when_path_has_no_program(self):
+        claude = self.program(self.bin, "claude")
+        self.assertEqual(execution.agent_which("claude", home=self.home), claude)
+        chosen = execution.resolve("Sonnet", executors.default_catalog(),
+                                   which=lambda name: execution.agent_which(name, home=self.home))
+        self.assertEqual(chosen.binary, claude)
+
+    def test_path_wins_over_local_bin(self):
+        self.program(self.bin, "claude")
+        other = os.path.join(self.home, "other")
+        os.makedirs(other)
+        path_claude = self.program(other, "claude")
+        with mock.patch.dict(os.environ, {"PATH": other}):
+            self.assertEqual(execution.agent_which("claude", home=self.home), path_claude)
+
+    def test_missing_or_not_executable_program_is_none(self):
+        self.program(self.bin, "codex", mode=0o644)
+        self.assertIsNone(execution.agent_which("codex", home=self.home))
+        self.assertIsNone(execution.agent_which("claude", home=self.home))
+        with self.assertRaises(execution.ExecutionError) as caught:
+            execution.resolve("Sonnet", executors.default_catalog(),
+                              which=lambda name: execution.agent_which(name, home=self.home))
+        self.assertEqual(caught.exception.code, "no-program")
+
+
 if __name__ == "__main__":
     unittest.main()

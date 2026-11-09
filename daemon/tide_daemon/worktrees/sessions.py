@@ -38,6 +38,8 @@ import threading
 from dataclasses import dataclass
 
 from .. import codex_homes
+from ..box import homes as box_homes
+from ..box import logfiles
 from ..agents.claude import shorten
 from ..agents.timeutil import parse_ts
 
@@ -87,8 +89,10 @@ class SessionIndex:
     def refresh(self, now: float) -> list[SessionInfo]:
         """Doczytuje zmienione pliki z ostatnich max_age. Wołać poza wątkiem D-Bus."""
         cutoff = now - self.max_age
-        found = {path: ("claude", st) for path, st in _claude_files(self.claude_projects) if st.st_mtime >= cutoff}
-        homes = codex_homes.resolve(self.codex_roots)
+        projects = [self.claude_projects, *box_homes.claude_projects()]
+        found = {path: ("claude", st) for root in projects for path, st in _claude_files(root)
+                 if st.st_mtime >= cutoff}
+        homes = codex_homes.resolve([*codex_homes.resolve(self.codex_roots), *codex_homes.box_homes()])
         roots = [os.path.join(home, codex_homes.SESSIONS) for home in homes]
         codex = [(path, st) for root in roots for path, st in _codex_files(root)]
         found.update({path: ("codex", st) for path, st in codex_homes.unique_files(codex, roots,
@@ -118,8 +122,12 @@ class SessionIndex:
                                         parsed.cwds, parsed.last_ts or mtime,
                                         tuple(os.path.realpath(c) for c in parsed.cwds)))
         with self._lock:
-            self.sessions = sessions
-        return sessions
+            # Claude: ten sam identyfikator w kopii hosta i pudełka to jedna sesja.
+            # Segmenty Codexa pozostają osobne (mają różne cwd), jak dotąd.
+            self.sessions = codex_homes.newest(
+                sessions, key=lambda s: (s.tool, s.session_id) if s.tool == "claude" else id(s),
+                stamp=lambda s: s.last_ts)
+        return self.sessions
 
     def link(self, worktrees, live=()) -> dict[str, SessionInfo]:
         """Ścieżka worktree → sesja w nim: żywa przed zakończoną, potem najświeższa.
@@ -146,7 +154,7 @@ class SessionIndex:
     def _read_codex_titles(self, index: str) -> dict[str, str]:
         """Nazwy wątków z jednego session_index.jsonl; plik bez zmian rozmiaru i mtime nie jest czytany."""
         try:
-            st = os.stat(index)
+            st = logfiles.stat_log(index)
         except OSError:
             self._codex_titles.pop(index, None)
             return {}
@@ -156,7 +164,7 @@ class SessionIndex:
             return old[1]
         titles = {}
         try:
-            with open(index, "rb") as fh:
+            with logfiles.open_log(index) as fh:
                 for line in fh:
                     record = _loads(line)
                     if record and record.get("id") and isinstance(record.get("thread_name"), str):
@@ -178,6 +186,11 @@ def _deepest(bases, real: str) -> str:
 # --- pliki ------------------------------------------------------------------------------
 
 def _claude_files(projects: str):
+    if logfiles.is_box(projects):
+        yield from ((p, st) for p, st in logfiles.files(projects, 1) if p.endswith(".jsonl"))
+        return
+    if os.path.islink(projects):
+        return
     try:
         dirs = [e for e in os.scandir(projects) if e.is_dir(follow_symlinks=False)]
     except OSError:
@@ -197,12 +210,19 @@ def _claude_files(projects: str):
 
 
 def _codex_files(sessions: str):
+    if logfiles.is_box(sessions):
+        yield from ((p, st) for p, st in logfiles.files(sessions)
+                    if os.path.basename(p).startswith("rollout-") and p.endswith(".jsonl"))
+        return
+    if os.path.islink(sessions):
+        return
     for dirpath, _dirs, names in os.walk(sessions):
         for name in names:
             if name.startswith("rollout-") and name.endswith(".jsonl"):
                 path = os.path.join(dirpath, name)
                 try:
-                    yield path, os.stat(path)
+                    if not os.path.islink(path):
+                        yield path, os.stat(path)
                 except OSError:
                     continue
 
@@ -210,7 +230,7 @@ def _codex_files(sessions: str):
 def head_and_tail(path: str) -> tuple[list[bytes], list[bytes]]:
     """Pełne linie z początku i z końca pliku (cały plik, gdy jest mały)."""
     try:
-        with open(path, "rb") as fh:
+        with logfiles.open_log(path) as fh:
             size = os.fstat(fh.fileno()).st_size
             if size <= HEAD_BYTES + TAIL_BYTES:
                 lines = fh.read().split(b"\n")

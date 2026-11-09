@@ -37,6 +37,7 @@ from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
 from .labels import result_label, tide_fault_text, waiting_text
+from .processidentity import START_FIELDS, process_identities
 
 REASON_LABELS = {"no-result": "brak pliku wyniku", "bad-result": "zły plik wyniku", "no-progress": "bez postępu",
                  "exit": "program zakończył się błędem", "start": "krok nie wystartował",
@@ -53,6 +54,7 @@ PLAN_WORK_KINDS = ("plan-amend", "plan-revise", "plan-review")
 
 @dataclass
 class FlowState:
+    process_identities: dict = field(default_factory=dict)  # cała historia, także poprzednie zlecenia
     started: dict | None = None                     # ostatnie card.started
     base: dict = field(default_factory=dict)
     initial_base: dict = field(default_factory=dict)
@@ -102,6 +104,8 @@ class FlowState:
     plan_returns: list = field(default_factory=list)
     plan_user_seq: int = 0
     plan_finished: bool = False
+    box_wait: str = ""                              # PT-172: na co karta czeka przed pudełkiem (boxwait.py)
+    box_env_deferred: bool = False                  # PT-290: zgoda środowiska odroczona przy box.enabled=false
     plan_change_seq: int = 0
     plan_change_ts: str = ""
     assignments: dict = field(default_factory=dict)  # ticket → autor i recenzent z planu
@@ -302,6 +306,8 @@ def fold(events: list[dict]) -> FlowState:
             st.plan_reviewer = ""
             st.plan_review_wait = None
             st.plan_finished = False
+            st.box_wait = ""
+            st.box_env_deferred = False
             st.plan_change_seq, st.plan_change_ts = 0, ""
             st.assignments = {}
             st.reviewer_overrides = {}
@@ -502,7 +508,11 @@ def fold(events: list[dict]) -> FlowState:
             st.transfer_requests[e.get("step")] = e
         elif kind == "step.finished":
             st.finished[e.get("step")] = e
-            if st.moved_to not in ("done", "archived"):
+            # Domknięcie mogło zacząć się przed ręcznym odesłaniem karty do poprawy.
+            # Jego późniejszy wynik nie jest nową pracą i nie cofa decyzji użytkownika.
+            closing_after_rework = (st.moved_to == "todo" and
+                                    (st.steps.get(e.get("step")) or {}).get("kind") == "close")
+            if st.moved_to not in ("done", "archived") and not closing_after_rework:
                 st.moved_to = ""
         elif kind == "review.verdict":
             source = st.steps.get(e.get("step")) or {}
@@ -525,6 +535,9 @@ def fold(events: list[dict]) -> FlowState:
             current = st.step_decisions.get(e.get("step")) or {}
             if current.get("seq") == e.get("decisionSeq"):
                 st.step_decisions.pop(e.get("step"), None)
+        elif kind == "box.wait":
+            st.box_wait = str(e.get("value") or "")
+            st.box_env_deferred = not st.box_wait and e.get("deferred") == "environment"
         elif kind == "permission.rechecked":
             if e.get("step") in st.finished:
                 st.finished[e["step"]] = {**st.finished[e["step"]], "canAllow": bool(e.get("canAllow"))}
@@ -680,7 +693,7 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.finished":
             st.card_finished = True
         elif kind == "card.closed":
-            if e.get("step") not in st.superseded and (not st.base_change or
+            if st.moved_to != "todo" and e.get("step") not in st.superseded and (not st.base_change or
                     e.get("baseVersion") == st.base_version and e.get("baseCommit") == st.base.get("baseCommit")):
                 st.closed = e
         elif kind == "card.main-merged":
@@ -727,6 +740,20 @@ def fold(events: list[dict]) -> FlowState:
                 (kind == "result" and e.get("action") == "merge")):
             st.plan_change_seq = int(e.get("seq") or 0)
             st.plan_change_ts = e.get("ts") or ""
+    st.process_identities = process_identities(events)
+    # Widok operacyjny może nadpisywać ostatni wpis. Tożsamość i ochrona
+    # pochodzą zawsze z całej historii, również przy tolerancyjnym odczycie UI.
+    for steps in (st.steps, st.caretakers):
+        for name, step in steps.items():
+            identity = st.process_identities.get(name)
+            if identity is not None:
+                steps[name] = {**step, **{k: identity.data[k] for k in START_FIELDS if k in identity.data},
+                               "_identityHeld": identity.held}
+    for key, intent in st.intents.items():
+        identity = st.process_identities.get(key[1]) if key[0] == "step-start" else None
+        if identity is not None:
+            st.intents[key] = {**intent, **{k: identity.data[k] for k in START_FIELDS if k in identity.data},
+                               "_identityHeld": identity.held}
     return st
 
 

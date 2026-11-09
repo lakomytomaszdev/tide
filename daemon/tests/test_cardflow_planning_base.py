@@ -23,6 +23,7 @@ class PlanningBaseTest(FlowInProcess):
         self.assertTrue(wait_until(lambda: box, timeout=10))
         reply = json.loads(box[0])
         self.assertTrue(reply["ok"], reply)
+        self.approve_environment(card)
         return reply
 
     def assert_feature(self, path):

@@ -7,9 +7,11 @@ Zasady:
 - GIT_TERMINAL_PROMPT=0: git nigdy nie czeka na hasło,
 - LC_ALL=C: komunikaty i format wyjścia niezależne od języka systemu.
 """
+import json
 import os
 import subprocess
 from dataclasses import dataclass
+from ..gitcommand import boundary_active, git_command
 
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
@@ -34,26 +36,75 @@ class Result:
 
 
 class Git:
-    """Uruchamia gita w podanym katalogu. Podmienialny w testach (np. inny plik wykonywalny)."""
+    """Systemowy Git w granicy procesu; testy mogą podmieniać run/cancel."""
 
     def __init__(self, executable: str = "git", timeout: float = 60, cancel=None):
         self.executable = executable
         self.timeout = timeout
         self.env = dict(os.environ, **GIT_ENV)
         self.cancel = cancel
+        self.read_roots = ()
+        self.write_roots = ()
+        self.private = False
+        self.index = None
 
-    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None) -> Result:
+    def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None,
+            checkout=None, checkout_ignored=False) -> Result:
         try:
-            argv = [self.executable, "-C", cwd, *args]
+            argv, env = git_command("-C", cwd, *args, executable=self.executable, env=self.env,
+                                    identity=any(a in ("commit", "commit-tree", "var") for a in args),
+                                    read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
+                                    index=self.index, checkout=checkout, checkout_ignored=checkout_ignored)
             if self.cancel is not None:
-                proc = self.cancel.run(argv, env=self.env, timeout=timeout or self.timeout, input_text=input_text)
+                proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
             else:
                 proc = subprocess.run(argv, capture_output=True, text=True,
-                                      errors="replace", env=self.env, timeout=timeout or self.timeout,
+                                      errors="replace", env=env, timeout=timeout or self.timeout,
                                       **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return Result(-1, "", str(exc))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())
+
+    def read_checkout(self, cwd, *options, untracked_files="all", include_ignored=False):
+        """Świeże odczyty migawki, bez cache stanu: w granicy jednym jej uruchomieniem, bez granicy
+        tymi samymi poleceniami Git po kolei (jak przed PT-264)."""
+        status = ("status", "--porcelain=v1", "-z", "--untracked-files=" + untracked_files,
+                  "--ignore-submodules=none")
+        if not self.private and not boundary_active(("-C", cwd, *options)):
+            return self._read_checkout_direct(cwd, options, status, include_ignored)
+        result = self.run(cwd, *options, *status, checkout=untracked_files, checkout_ignored=include_ignored)
+        if not result.ok:
+            raise OSError("nie można odczytać checkoutu: " + result.err)
+        expected = {"head", "symbolic", "status", "index", "gitdir", "index_entries"}
+        if include_ignored:
+            expected.update(("ignored", "repository"))
+        try:
+            data = json.loads(result.out)
+            if (not isinstance(data, dict) or set(data) != expected or
+                    any(not isinstance(row, dict) or set(row) != {"code", "out", "err"} or
+                        type(row["code"]) is not int or not isinstance(row["out"], str) or
+                        not isinstance(row["err"], str) or row["code"] not in
+                        ((0, 1) if name == "symbolic" else (0,)) for name, row in data.items())):
+                raise ValueError("niepełny wynik")
+            return {name: Result(**row) for name, row in data.items()}
+        except (ValueError, TypeError) as exc:
+            raise OSError("niepoprawny wynik migawki checkoutu") from exc
+
+    def _read_checkout_direct(self, cwd, options, status, include_ignored):
+        commands = [("head", ("rev-parse", "--verify", "HEAD")), ("symbolic", ("symbolic-ref", "--quiet", "HEAD")),
+                    ("status", status), ("index", ("rev-parse", "--path-format=absolute", "--git-path", "index")),
+                    ("gitdir", ("rev-parse", "--absolute-git-dir")),
+                    ("index_entries", ("ls-files", "--stage", "-v", "-z"))]
+        if include_ignored:
+            commands += [("ignored", ("ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")),
+                         ("repository", ("rev-parse", "--path-format=absolute", "--git-common-dir"))]
+        results = {}
+        for name, tail in commands:
+            result = self.run(cwd, *options, *tail)
+            if result.code not in ((0, 1) if name == "symbolic" else (0,)):
+                raise OSError("nie można odczytać checkoutu: " + result.err)
+            results[name] = result
+        return results
 
 
 @dataclass

@@ -1,0 +1,3 @@
+registry-1.docker.io
+auth.docker.io
+production.cloudfront.docker.com

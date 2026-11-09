@@ -127,6 +127,8 @@ class YouTrackFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))['ok'])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        'kończymy tick monitora przed bezpośrednim zatwierdzaniem planu')
         self.fake.lose_replies = 1
         self.fake.search_delay_after_create = 3
         reply = self.flow.engine.approve_plan(card)
@@ -234,11 +236,14 @@ class YouTrackFlowTest(FlowInProcess):
     def test_offline_result_comment_does_not_block_next_ticket(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))['ok'])
-        self.flow.stop()
+        self.stop_flow_worker()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        'kończymy tick monitora przed bezpośrednim zatwierdzaniem planu')
         self.flow.engine.approve_plan(card)
+        self.approve_environment(card)
         # Wyłącznie komentarze są niedostępne; zgłoszenia i lokalna praca pozostają dostępne.
         self.fake.comment_status = 503
-        self.flow = self.make_flow()
+        self.restart()
         self.flow.engine.tracker.clock = lambda: 10**12
         self.wait_column(card, 'review')
         self.assertEqual({s['ticket'] for s in self.of(card, 'step.started') if s['kind'] == 'ticket'},
@@ -292,6 +297,9 @@ class YouTrackFlowTest(FlowInProcess):
                 result = self.flow.engine.resolve_step(card, {'choice': 'retry'})
                 self.assertTrue(result['ok'], result)
                 self.flow = self.make_flow()
+                if entry == 'plan':
+                    self.assertTrue(wait_until(lambda: self.of(card, 'plan.approved'), timeout=10))
+                    self.approve_environment(card)
                 self.wait_column(card, 'review')
 
     def test_retry_after_permanent_lookup_error_keeps_uncertain_create_read_only(self):
@@ -322,5 +330,7 @@ class YouTrackFlowTest(FlowInProcess):
         self.assertFalse(self.fake.issues)
         self.fake.projects = {'LOG'}
         self.assertTrue(self.flow.engine.resolve_step(card, {'choice': 'retry'})['ok'])
+        self.assertTrue(wait_until(lambda: self.of(card, 'plan.approved'), timeout=10))
+        self.approve_environment(card)
         self.wait_column(card, 'review')
         self.assertEqual(len(self.fake.issues), 2)

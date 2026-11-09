@@ -295,7 +295,9 @@ def _run_module(module, output, root=ROOT):
     # Każdy moduł dostaje własny katalog stanu: test bez izolacji nie czyta ani nie nadpisuje stanu działającej
     # usługi użytkownika (05.11: test tablicy zapisał atrapę K-1 do ~/.local/state/tide/board-derived.json).
     state = tempfile.mkdtemp(prefix="tide-test-state-")
-    env = {**state_environment(state), SLOT_HELD: "1"}
+    # Bez pamięci dyskowej QML: qml6 na plikach z ciągle nowych ścieżek tymczasowych zapełniał
+    # ~/.cache/QtProject (08.11: 100 GB, ~10 GB na dobę).
+    env = {**state_environment(state), SLOT_HELD: "1", "QML_DISABLE_DISK_CACHE": "1"}
     with log.open("w", encoding="utf-8") as stream:
         try:
             proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", module,
@@ -314,6 +316,13 @@ def _run_module(module, output, root=ROOT):
         returncode = returncode or 1
     data.update(module=module, returncode=returncode, seconds=time.monotonic() - started,
                 log=str(log))
+    # Raport modułu z kodem wyjścia procesu: worker pisze wynik przed zakończeniem, a moduł może jeszcze paść
+    # (np. przy zwijaniu Qt). Ponowienie po uciętym przebiegu uznaje moduł tylko z returncode 0 (review 08.11).
+    try:
+        report.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        # Błąd zapisu raportu oznacza ten moduł, nie przerywa całego przebiegu.
+        data.update(returncode=data["returncode"] or 1, crash=f"Nie można zapisać raportu modułu: {exc}")
     return data
 
 
@@ -413,6 +422,9 @@ def main(root=ROOT):
     parent = args.output or root / "build" / "test-results"
     parent.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
+    # Lista modułów przed startem: przebieg ucięty limitem (bez summary.json) nadal mówi, które moduły się nie
+    # zaczęły, więc Tide ponawia tylko padnięte i niezaczęte (08.11, K-38/PT-264).
+    (output / "modules.json").write_text(json.dumps({"modules": modules}, ensure_ascii=False), encoding="utf-8")
     print(f"Moduły: {len(modules)}, JOBS={args.jobs}, logi: {output}", flush=True)
     started = time.monotonic()
     results = execute(modules, args.jobs, output, root)

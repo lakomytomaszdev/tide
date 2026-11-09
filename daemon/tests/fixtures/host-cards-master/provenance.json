@@ -1,0 +1,31 @@
+{
+ "source": "git show <sha>:<ścieżka> (bez checkoutu), render() z daemon/tests/hostcards.py",
+ "masterSha": "a6efe28cdfe2e727bbc1dec085ac3aebfb76abe6",
+ "why": "merge-base gałęzi integracji K-38 i master; master scalony do integracji K-38 w 047c79b2 i dbb740b6",
+ "blobs": {
+  "daemon/tide_daemon/cardflow/handoff.py": "d85660fe8cb6a0cc9ab2b13622cb562f94059cf7",
+  "daemon/tide_daemon/cardflow/testrerun.py": "b872541b77204afd7ac7b648a762abb90de29161",
+  "daemon/tide_daemon/resources.py": "b6f869194c2ec7cf2a1fa10b3522ac415543f8c7"
+ },
+ "cards": [
+  "bez-profilu/close",
+  "bez-profilu/fix",
+  "bez-profilu/review",
+  "bez-profilu/ticket",
+  "plasma-tide/close",
+  "plasma-tide/fix",
+  "plasma-tide/review",
+  "plasma-tide/ticket",
+  "proj/close",
+  "proj/fix",
+  "proj/review",
+  "proj/ticket"
+ ],
+ "normalization": [
+  "tmp-root",
+  "tide-resources",
+  "line-endings",
+  "trailing-whitespace"
+ ],
+ "regenerate": "daemon/tests/hostcards.py: write_fixtures(<katalog tymczasowy>)"
+}

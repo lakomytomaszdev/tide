@@ -3,6 +3,9 @@ import json
 import os
 from unittest import mock
 
+from tide_daemon.cardflow import boxwait
+from tide_daemon.cardflow.state import fold
+
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 
@@ -34,18 +37,49 @@ class PlanFlowTest(FlowInProcess):
             self.assertTrue(wait_until(lambda: self.of(card_id, "plan.reviewed"), timeout=20), self.events(card_id))
         return reply
 
-    def approve(self, card_id):
+    def approve(self, card_id, *, environment=True):
+        """Testy wykonania zatwierdzają plan i środowisko; sam plan wymaga `environment=False`."""
         box = []
         self.flow.approve_plan(card_id, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=10))
-        return json.loads(box[0])
+        reply = json.loads(box[0])
+        if environment and reply.get("ok") and not reply.get("queued"):
+            state = fold(self.flow.engine.journal.read(card_id))
+            if boxwait.card_box_wait(state) == boxwait.ENVIRONMENT:
+                self.approve_environment(card_id)
+        return reply
+
+    def test_plain_plan_approval_leaves_the_card_waiting_for_the_environment(self):
+        # PT-172: zatwierdzenie z okna decyzji (ApproveCardPlan) nie omija pakietu zgód.
+        from tide_daemon.box.settings import BoxSettings
+        from tide_daemon.cardflow import boxstep
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        # PT-290 (D1): oczekiwanie powstaje tylko przy włączonych pudełkach (wyłączone: test_cardflow_env_consent_switch).
+        with mock.patch.object(boxstep, "settings_of", return_value=BoxSettings(enabled=True)):
+            self.assertTrue(self.approve(card, environment=False)["ok"])
+        st = fold(self.flow.engine.journal.read(card))
+        self.assertEqual(boxwait.card_box_wait(st), boxwait.ENVIRONMENT)
+        # Bariera zgody obowiązuje przy włączonych pudełkach; przy `box.enabled: false` wyłącznik (PT-289)
+        # wybiera hosta przed nią (test_cardflow_box_switch). Projekt bez profilu nie dochodzi tu do Incusa.
+        with mock.patch.object(boxstep, "settings_of", return_value=BoxSettings(enabled=True)):
+            self.restart()
+            self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5), self.events(card))
+            self.assertFalse(any(s.get("kind") == "ticket" for s in self.of(card, "step.started")))
+            self.assertEqual(boxwait.card_box_wait(fold(self.flow.engine.journal.read(card))), boxwait.ENVIRONMENT)
+            self.assertEqual(self.of(card, "step.waiting")[-1]["reason"], boxstep.WAIT_ENVIRONMENT)
+            self.stop_flow_worker()
+        self.flow.start()
+        self.approve_environment(card)
+        self.assertTrue(wait_until(lambda: any(s.get("kind") == "ticket" for s in self.of(card, "step.started")),
+                                   timeout=10), self.events(card))
 
     def test_partial_reservation_failure_can_resume_without_duplicate_numbers(self):
         from tide_daemon.cardflow.engine import FlowError
         from tide_daemon.coordination import reservations
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.flow.stop()
+        self.stop_flow()
         original = reservations.reserve
         calls = 0
         def fail_second(*args, **kwargs):
@@ -145,9 +179,8 @@ class PlanFlowTest(FlowInProcess):
     def test_restart_between_reservation_and_approval_reuses_ids(self):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        # Awarię wstrzykujemy bezpośrednio w silnik. Monitor nie może równolegle
-        # odtwarzać plan.approval_requested ani przechwycić kontrolowanego wyjątku.
-        self.flow.stop()
+        # Kontrolowane przerwanie zapisu nie może ścigać się z automatycznym odzyskiwaniem monitora.
+        self.stop_flow()
         journal = self.flow.engine.journal
         original = journal.append
         interrupted = False
@@ -175,19 +208,19 @@ class PlanFlowTest(FlowInProcess):
         from tide_daemon.coordination.repoplans import RepoPlans
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.flow.stop()
+        self.stop_flow()
         engine = self.flow.engine
         mapping = engine.approve_plan(card)["map"]
         journal = engine.journal
         original = journal.append
         interrupted = False
 
-        def stop_after_commit(ident, kind, **data):
+        def stop_after_commit(ident, event_type, **data):
             nonlocal interrupted
-            if kind == "result" and data.get("action") == "plan-commit" and not interrupted:
+            if event_type == "result" and data.get("action") == "plan-commit" and not interrupted:
                 interrupted = True
                 raise OSError("przerwanie po commicie planu")
-            return original(ident, kind, **data)
+            return original(ident, event_type, **data)
 
         with mock.patch.object(journal, "append", side_effect=stop_after_commit):
             with self.assertRaises(OSError):
@@ -208,6 +241,8 @@ class PlanFlowTest(FlowInProcess):
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5),
+                        "koniec tyknięcia przed ręcznym zatwierdzeniem i ponowieniem commita")
         engine = self.flow.engine
         engine.approve_plan(card)
         reserved = [r["ticket"] for r in self.results(card, "reserve")]

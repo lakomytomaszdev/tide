@@ -30,10 +30,11 @@ class CaretakerDecisionTest(unittest.TestCase):
             events.append(event)
             return event
 
-        engine.journal = SimpleNamespace(read=lambda card: events, append=append)
+        engine.journal = SimpleNamespace(read=lambda card: events, state=lambda card: fold(events), append=append)
         engine._notices = []
         engine._caretaker_withheld = mock.Mock(return_value=set())
         engine._limit_view = mock.Mock()
+        engine._environment_view = mock.Mock()
         return engine, events
 
     def test_both_triggers_and_limit_give_a_decision_and_one_notice_even_after_restart(self):

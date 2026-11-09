@@ -10,6 +10,7 @@ wtedy warunek `enough(rekordy)` — dopóki ogon go nie spełnia, okno rośnie (
 """
 import json
 import os
+from ..box import logfiles
 
 TAIL_BYTES = 1024 * 1024  # stan sesji wynika z ostatnich wpisów, starsze nie są potrzebne
 MAX_TAIL_BYTES = 16 * 1024 * 1024  # górna granica okna, gdy ogon nie zawiera ostatniej tury (enough)
@@ -33,18 +34,14 @@ class JsonlTail:
     def read_new(self) -> list[dict]:
         """Zwraca rekordy dopisane od ostatniego odczytu (przy pierwszym: nagłówek i ogon)."""
         try:
-            st = os.stat(self.path)
-        except OSError:
-            return []
-        if st.st_size < self.offset:
-            # Plik skrócony albo podmieniony — czytamy od nowa.
-            self.offset, self._rest = 0, b""
-        self.size, self.mtime = st.st_size, st.st_mtime
-        if st.st_size == self.offset:
-            return []
-
-        try:
-            with open(self.path, "rb") as fh:
+            with logfiles.open_log(self.path) as fh:
+                st = os.fstat(fh.fileno())
+                if st.st_size < self.offset:
+                    # Stat i odczyt dotyczą tego samego otwartego pliku.
+                    self.offset, self._rest = 0, b""
+                self.size, self.mtime = st.st_size, st.st_mtime
+                if st.st_size == self.offset:
+                    return []
                 if self.offset == 0 and self.tail_bytes is not None and st.st_size > self.tail_bytes:
                     records, rest = self._first_tail(fh, st.st_size)
                 else:
@@ -80,7 +77,7 @@ class JsonlTail:
 def read_head(path: str, limit: int) -> list[dict]:
     """Rekordy z pierwszych `limit` bajtów pliku (bez uciętej ostatniej linii)."""
     try:
-        with open(path, "rb") as fh:
+        with logfiles.open_log(path) as fh:
             data = fh.read(limit)
     except OSError:
         return []

@@ -54,6 +54,7 @@ CAUSE_LABELS = {
     "bad-result": "wykonawca zapisał niepoprawny plik wyniku",
     "bad-review": "recenzent zapisał niepoprawny werdykt",
     "review-changed-ticket": "recenzent zmienił gałąź albo pliki ticketu",
+    "refs.guard": "kontrola repozytorium wykryła naruszenie chronionych gałęzi lub plików albo błąd ich sprawdzania",
     "abandoned": "krok porzucono",
     "interactive-closed": "rozmowę w Konsoli zamknięto przed zapisaniem wyniku",
     "other": "wykonawca zgłosił błąd z własnym powodem",
@@ -62,7 +63,8 @@ CAUSE_LABELS = {
 # Powody, które ustawia sam Tide (skończony zbiór). Swobodny powód z `result.json` agenta nie jest przyczyną:
 # przy `unknown` przyczyną jest wtedy `other`, żeby podpis był stały, a tekst agenta nie trafiał do tytułu i podpisu.
 TIDE_REASONS = frozenset({"no-result", "bad-result", "no-progress", "exit", "start", "timeout", "local-unavailable",
-                          "lost", "bad-review", "review-changed-ticket", "abandoned", "interactive-closed", "limit"})
+                          "lost", "bad-review", "review-changed-ticket", "abandoned", "interactive-closed", "limit",
+                          "refs.guard"})
 KNOWN_CAUSES = TIDE_REASONS | frozenset(CAUSE_LABELS)
 
 FAULT_LABELS = {"tide": "błąd Tide", "model": "błąd wykonawcy", "user": "przerwane przez użytkownika",

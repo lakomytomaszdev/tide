@@ -19,7 +19,7 @@ from datetime import datetime
 
 from .labels import result_label, step_name
 
-LOGGED = ("card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
+LOGGED = ("packs.removed", "card.started", "card.paused", "card.resumed", "card.closed", "card.main-merged", "card.merged", "step.started",
           "step.finished", "step.decision", "review.decision", "review.verdict", "plan.proposed", "plan.reviewed", "plan.approved",
           "ticket.rejected", "outside.ticket-consent", "outside.ticket-consent-revoked", "result", "caretaker.escalated", "caretaker.action", "caretaker.reported")
 USER_EVENTS = ("card.started", "card.paused", "card.resumed", "card.main-merged", "card.merged", "step.decision", "plan.approved",
@@ -133,6 +133,8 @@ def _event_entry(e: dict, st=None) -> dict | None:
         group, text = "card", "Karta wznowiona"
     elif kind == "card.closed":
         group, text = "card", "Praca domknięta na gałęzi karty"
+    elif kind == "packs.removed":
+        group, text = "card", "Usunięto paczki danych karty i ich urządzenia z pudełka"
     elif kind in ("card.main-merged", "card.merged"):
         from .state import merge_of
         target = merge_of(e)["targetBranch"]

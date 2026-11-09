@@ -1,0 +1,18 @@
+NOTE: This is only a simulation!
+      apt-get needs root privileges for real execution.
+      Keep also in mind that locking is deactivated,
+      so don't depend on the relevance to the real current situation!
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Solving dependencies...
+The following packages will be upgraded:
+  libkf6coreaddons6 libqt6core6t64 qml6-module-qtquick
+3 upgraded, 1 newly installed, 1 to remove and 40 not upgraded.
+Remv kf6-kio-legacy [6.20.0-0ubuntu1]
+Inst libqt6core6t64 [6.10.2+dfsg-3] (6.10.2+dfsg-7 Ubuntu:26.04/resolute-updates [amd64])
+Inst qml6-module-qtquick [6.10.2+dfsg-3] (6.10.2+dfsg-7 Ubuntu:26.04/resolute-updates [amd64])
+Inst libkf6coreaddons6 [6.20.0-0ubuntu1] (6.21.0-0ubuntu1 Ubuntu:26.04/resolute-updates [amd64])
+Inst libpolkit-qt6-1-1 [0.200.0-1] (0.200.0-2 Ubuntu:26.04/resolute-updates [amd64])
+Inst qml6-module-qtquick-shapes (6.10.2+dfsg-7 Ubuntu:26.04/resolute-updates [amd64])
+Conf libqt6core6t64 (6.10.2+dfsg-7 Ubuntu:26.04/resolute-updates [amd64])

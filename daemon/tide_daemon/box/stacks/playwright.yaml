@@ -1,0 +1,28 @@
+stack: playwright
+description: Playwright i przeglądarka do testów e2e
+apt: []
+domains:
+  - name: playwright.azureedge.net
+    risk: yellow
+    note: CDN przeglądarek Playwrighta
+  - name: playwright-akamai.azureedge.net
+    risk: yellow
+    note: lustro pobierania przeglądarek Playwrighta (P-6)
+  - name: playwright-verizon.azureedge.net
+    risk: yellow
+    note: lustro pobierania przeglądarek Playwrighta (P-6)
+  - name: cdn.playwright.dev
+    risk: yellow
+    note: CDN przeglądarek Playwrighta
+  - name: playwright.download.prss.microsoft.com
+    risk: yellow
+    note: pobieranie przeglądarek Playwrighta
+  - name: storage.googleapis.com
+    risk: yellow
+    note: ogólny magazyn Google; Playwright pobiera stąd Chromium, ale domena obsługuje dowolne zasoby
+# Wariant .NET (PT-184): projekt instalatora z przypiętą paczką, tylko podczas budowy.
+build-domains:
+  - name: api.nuget.org
+    risk: green
+    note: paczka Microsoft.Playwright do instalacji przeglądarki .NET
+images: []

@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 
 MAX_PATHS = 20
 MAX_BRANCHES = 100
@@ -22,9 +23,10 @@ def suggest_files(git, repo: str, description: str, text: str) -> dict:
         if message not in warnings and len(warnings) < 20:
             warnings.append(message)
 
-    def run(*args):
-        if time.monotonic() >= deadline:
-            raise TimeoutError
+    # Gałęzie często wskazują ten sam commit. Cztery ostatnie odczyty mieszczą
+    # drzewo i historię bez trzymania wyników wszystkich 100 drzew w pamięci.
+    @lru_cache(maxsize=4)
+    def read(*args):
         result = git.run(repo, "--no-replace-objects", "--literal-pathspecs", *args,
                          timeout=max(.001, deadline - time.monotonic()))
         if not result.ok:
@@ -32,6 +34,11 @@ def suggest_files(git, repo: str, description: str, text: str) -> dict:
                 raise TimeoutError
             raise OSError
         return result.out
+
+    def run(*args):
+        if time.monotonic() >= deadline:
+            raise TimeoutError
+        return read(*args)
 
     try:
         # Cytaty zachowują spacje i metaznaki jako dane. Nie interpretujemy powłoki ani globów.

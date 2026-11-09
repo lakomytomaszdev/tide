@@ -162,7 +162,8 @@ class EngineGuardTest(GuardRepo):
 
     def tide_writes(self, work, action="merge"):
         """Prawdziwe `_act`: sprawdzenie przed działaniem Tide, zamrożenie kroku, działanie, stan na nowo."""
-        self.engine._act(CARD, action, f"{action}-{len(self.calls)}", lambda: work() or {})
+        self.engine._act(CARD, action, f"{action}-{len(self.calls)}", lambda: work() or {},
+                         **({"kind": "ticket", "ticket": "PT-1"} if action == "step-start" else {}))
 
     def append(self, path, text="zapis\n"):
         with open(path, "a", encoding="utf-8") as fh:

@@ -1,0 +1,31 @@
+# Usługa pudełka: bez tego nie zbudujemy obrazu bazowego. Domeny instalatorów agentów z P-6 dopisał #16 (PT-179);
+# to też lista budowy obrazu bazowego (`tide box base`).
+stack: base
+description: Obraz bazowy pudełka (Ubuntu, Node, git)
+apt: [git, build-essential, curl, ca-certificates, xvfb]
+domains:
+  - name: archive.ubuntu.com
+    risk: green
+    note: pakiety apt
+  - name: security.ubuntu.com
+    risk: green
+    note: poprawki bezpieczeństwa apt
+  - name: nodejs.org
+    risk: green
+    note: dystrybucja Node
+  - name: registry.npmjs.org
+    risk: green
+    note: rejestr npm (instalatory agentów)
+  - name: claude.ai
+    risk: green
+    note: instalator natywny Claude Code (P-6, obraz bazowy)
+  - name: downloads.claude.ai
+    risk: green
+    note: pliki instalatora Claude Code (P-6, obraz bazowy)
+# Usługa powitalna Ubuntu w obrazie odzywa się w czasie budowy. W próbie PT-192 z 18:38 obie budowy
+# skończyły się clean, ale miały po osiem odmów tej domeny. Wyjaśniona domena jest dostępna tylko przy budowie.
+build-domains:
+  - name: motd.ubuntu.com
+    risk: green
+    note: Ubuntu motd-news w obrazie bazowym (PT-192, dziennik próby); tylko budowa
+images: []

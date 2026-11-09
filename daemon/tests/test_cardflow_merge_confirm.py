@@ -74,7 +74,7 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertEqual(self.sha(self.target), self.before)
         self.restart_stopped()
         journal = self.flow.engine.journal
-        journal.append(self.card_id, "step.started", step="active", kind="ticket")
+        journal.append(self.card_id, "step.started", step="active", kind="ticket", ticket="PT-1")
         before = fingerprint(self.repo)
         blocked = self.call("merge_card", req)
         self.assertEqual(blocked.get("error"), "main-merge", blocked)
@@ -151,7 +151,7 @@ class ConfirmMergeTest(DurableMergeFixture, FlowInProcess):
         self.assertIn("plan-change", [r["reason"] for r in p["blockedReasons"]])
         self.assert_refused(self.request(p), p["reason"])
         # Pytanie o bazę ma tę samą reprezentację, której używa PT-208.
-        self.flow.engine.journal.append(self.card_id, "step.started", step="question", kind="ticket")
+        self.flow.engine.journal.append(self.card_id, "step.started", step="question", kind="ticket", ticket="PT-1")
         self.flow.engine.journal.append(self.card_id, "step.finished", step="question", result="question",
                                        question="Baza?", baseProposal={"valid": True,
                                            "ref": "refs/heads/" + self.target, "baseCommit": self.before})

@@ -1,0 +1,7 @@
+{
+  "failures": [
+    "make-test",
+    "preflight"
+  ],
+  "firstAgentStep": "pending-approved-test-card"
+}

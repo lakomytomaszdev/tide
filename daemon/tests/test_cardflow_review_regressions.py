@@ -24,7 +24,7 @@ class ReviewRegressionsTest(unittest.TestCase):
         self.store = SimpleNamespace(root=str(self.root / "board"))
         self.journal = Journal(self.store.root, mirror=str(self.root / "mirror"))
         self.engine = self.new_engine()
-        self.journal.append("K-1", "card.started", entry="now", executor="Sonnet",
+        self.journal.append("K-1", "card.started", project="proj", entry="now", executor="Sonnet",
                             repo=str(self.root), cardBranch="card/k-1", cardWorktree=str(self.root),
                             ticket="PT-1", branch="ticket/pt-1", worktree=str(self.root))
         self.rows = [{"id": f"PT-{n}", "workId": f"#{n}", "executor": "Sonnet", "blockers": []}

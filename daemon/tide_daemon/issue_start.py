@@ -163,11 +163,11 @@ def _dispatch(store, engine, intent):
 
 def _response(store, intent):
     state = intent["state"]
-    start_error = (intent.get("error") or {"code": "reconciling", "message": "Trwa rozliczanie przekazania."}) \
+    failure = (intent.get("error") or {"code": "reconciling", "message": "Trwa rozliczanie przekazania."}) \
         if state in ("start-error", "reconciling") else None
     return {"accepted": True, "issue": store._show(intent["issue"]), "card": intent["card"],
             "acceptedVersion": intent["acceptedVersion"], "started": state in ("started", "completed"),
-            "queued": state == "queued", "startError": start_error, "start": _public(intent)}
+            "queued": state == "queued", "startError": failure, "start": _public(intent)}
 
 
 def accept(store, engine, ident, request):

@@ -69,7 +69,7 @@ class MergeTargetsTest(DurableMergeFixture, FlowInProcess):
         other = self.card()
         journal = self.flow.engine.journal
         journal.append(other, "card.started", entry="now", repo=self.repo)
-        journal.append(other, "step.started", step="active", kind="ticket", branch=self.target,
+        journal.append(other, "step.started", step="active", kind="ticket", ticket="PT-1", branch=self.target,
                        repo=self.repo, worktree=self.repo)
         [blocked] = self.listed(text=ref)["branches"]
         self.assertFalse(blocked["selectable"])
@@ -121,7 +121,7 @@ class MergeTargetsTest(DurableMergeFixture, FlowInProcess):
         journal = self.flow.engine.journal
         # Inny projekt może wskazywać worktree tego samego repozytorium.
         journal.append(other, "card.started", entry="now", repo=self.source_tree)
-        journal.append(other, "step.started", step="active", kind="ticket", branch="different-name",
+        journal.append(other, "step.started", step="active", kind="ticket", ticket="PT-1", branch="different-name",
                        repo=self.source_tree, worktree=self.repo)
         [blocked] = self.listed(text=self.target)["branches"]
         self.assertFalse(blocked["selectable"])

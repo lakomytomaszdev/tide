@@ -1,0 +1,25 @@
+# `registry: true` — domena rejestru paczek, z której krok w tle dostaje sieć (tasks/node.REGISTRY_DOMAINS).
+stack: node
+description: Node i npm
+apt: []
+domains:
+  - name: registry.npmjs.org
+    risk: green
+    registry: true
+    note: rejestr npm
+  - name: registry.yarnpkg.com
+    risk: green
+    registry: true
+    note: rejestr Yarn
+  - name: fonts.googleapis.com
+    risk: yellow
+    registry: true
+    note: czcionki ładowane przez budowę aplikacji
+  - name: fonts.gstatic.com
+    risk: yellow
+    registry: true
+    note: pliki czcionek
+  - name: nodejs.org
+    risk: green
+    note: dystrybucja Node
+images: []

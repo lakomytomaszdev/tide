@@ -1,0 +1,21 @@
+{
+  "slug": "plasma-tide",
+  "box": "plasma-tide",
+  "state": "błąd budowy",
+  "exists": true,
+  "running": true,
+  "journalState": "błąd budowy",
+  "warning": false,
+  "nicFiltering": true,
+  "nic": {
+    "security.mac_filtering": "true",
+    "security.ipv4_filtering": "true",
+    "security.ipv6_filtering": "false"
+  },
+  "recipeHash": "a54b9c825c7f88bf8c8a8b0f2412cd5188302b9a53c97a37e84dde2988292331",
+  "profileHash": "a54b9c825c7f88bf8c8a8b0f2412cd5188302b9a53c97a37e84dde2988292331",
+  "diff": [],
+  "steps": [],
+  "usable": false,
+  "error": ""
+}

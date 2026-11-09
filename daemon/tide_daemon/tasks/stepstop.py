@@ -28,7 +28,6 @@
 """
 from __future__ import annotations
 
-import glob
 import os
 import shutil
 import signal
@@ -42,6 +41,7 @@ from .. import codex_homes
 from ..agents.claude import synthetic_user
 from ..agents.jsonl import JsonlTail, read_head
 from ..worktrees.git import MAIN_CANDIDATES, Result
+from ..gitcommand import git_argv, SANDBOX
 from .agentcmd import EXIT_CODE_FILE
 
 WIP_MESSAGE = "WIP: step stopped before it finished"
@@ -258,6 +258,7 @@ class StepGit:
             # Prywatna kopia indeksu przeżywa kolejne wywołania, ale nie odsłania innych plików /tmp.
             argv += ["--bind", index_dir, "/tmp/tide-index"]
         argv += ["--ro-bind-try", self.inp, self.inp, "--clearenv"]
+        argv += ["--ro-bind", SANDBOX, "/run/tide-git-host.py"]
         env = {"PATH": SANDBOX_PATH, "HOME": self.home, "TMPDIR": "/tmp", "LC_ALL": "C",
                "GIT_CONFIG_GLOBAL": self.gitconfig, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1",
                "GIT_COMMON_DIR": self.common, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
@@ -273,7 +274,11 @@ class StepGit:
 
     def run(self, *args, timeout=120, index_dir: str | None = None) -> Result:
         try:
-            proc = subprocess.run([*self.sandbox(index_dir), "git", *self.opts, *args], capture_output=True, text=True,
+            proc = subprocess.run([*self.sandbox(index_dir), *git_argv(*self.opts, *args,
+                                  launcher="/run/tide-git-host.py",
+                                  read_roots=(self.inp,) if os.path.isdir(self.inp) else (),
+                                  write_roots=("/tmp/tide-index",) if index_dir is not None else (),
+                                  index="/tmp/tide-index/index" if index_dir is not None else None)], capture_output=True, text=True,
                                   errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin"})
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -473,19 +478,24 @@ def _codex_messages(records) -> list:
 
 
 def find_claude_log(projects: str, session_id: str) -> str:
-    if not projects or not session_id:
+    if not session_id:
         return ""
-    found = glob.glob(os.path.join(glob.escape(projects), "*", glob.escape(session_id) + ".jsonl"))
-    return max(found, key=lambda p: os.stat(p).st_mtime) if found else ""
+    from ..box.homes import claude_projects
+    from ..worktrees.sessions import _claude_files
+    roots = ([projects] if projects else []) + claude_projects()
+    found = [(path, st.st_mtime) for root in roots for path, st in _claude_files(root)
+             if os.path.basename(path) == session_id + ".jsonl"]
+    return max(found, key=lambda p: p[1])[0] if found else ""
 
 
 def find_codex_log(roots, worktree: str, session_id: str = "") -> str:
     """Najnowszy dziennik Codexa z katalogu kroku (`session_meta.cwd`), w katalogach danych `roots`."""
+    from ..worktrees.sessions import _codex_files
     files = []
-    for folder in codex_homes.sessions_dirs(roots or []):
-        files += glob.glob(os.path.join(glob.escape(folder), "**", "rollout-*.jsonl"), recursive=True)
+    for folder in codex_homes.sessions_dirs([*codex_homes.resolve(roots or []), *codex_homes.box_homes()]):
+        files.extend(_codex_files(folder))
     want = os.path.realpath(worktree)
-    for path in sorted(files, key=lambda p: os.stat(p).st_mtime, reverse=True):
+    for path, _stat in sorted(files, key=lambda p: p[1].st_mtime, reverse=True):
         if session_id and session_id not in os.path.basename(path):
             continue
         for record in read_head(path, 64 * 1024):
@@ -510,14 +520,15 @@ def last_messages(path: str, tool: str, limit: int = MESSAGE_LIMIT) -> list:
 def stop_step(proc=None, *, unit: str = "", worktree: str, step_dir: str, repo: str, git_dir: str, branch: str,
               tool: str, session_id: str = "", claude_projects: str = "", codex_roots=None,
               grace: float = 10.0, limit: int = MESSAGE_LIMIT,
-              recovered_snapshot: Snapshot | None = None, commit_wip: bool = True) -> StopResult:
+              recovered_snapshot: Snapshot | None = None, commit_wip: bool = True, kill=None) -> StopResult:
     """Zatrzymuje krok, commituje WIP i czyta ostatnie wiadomości. `unit` (Background.unit) i/lub `proc` (Popen z
     Background.start() albo pid; None, gdy usługa się zrestartowała i zna tylko jednostkę). `git_dir` i `repo`
     z Background (ustalone przed krokiem), `branch` — gałąź kroku, na której ma wylądować commit.
     Commit robimy także wtedy, gdy program już nie żył — zmiany w worktree nie mogą zostać bez śladu.
     `commit_wip=False` (krok opiekuna, PT-158: pisze tylko do `out`) — bez commita: worktree i gałąź kroku zostają,
     jakie są, a ewentualny zapis kroku wykrywa strażnik."""
-    stopped = terminate(proc, unit, grace)
+    # `kill` pochodzi z runnera; bez niego zatrzymujemy jednostkę lub proces hosta.
+    stopped = kill() if kill is not None else terminate(proc, unit, grace)
     result = StopResult(stopped=stopped, exit_code=getattr(proc, "returncode", None))
     if not stopped:
         result.error = "not-stopped"        # nie dotykamy worktree, w którym program jeszcze pisze
