@@ -86,6 +86,13 @@ BOX_FIELDS = ("runner", "box", "boxSlug", "boxIp", "boxAccess", "boxPortOwner")
 # Pierwszy format `step.started` (PT-58, c0b2cd16) i pola tożsamości `intent` wymagane przez model PT-288.
 PT58_STEP_FIELDS = ("v", "seq", "ts", "card", "type", "step", "kind", "ticket", "executor", "program", "model",
                     "unit", "session", "worktree", "branch", "stepDir", "gitDir", "repo")
+# Najstarszy format, który umiał wznowić krok po decyzji (80ae0057, 29.10.2026): bez deliveredNoteIds,
+# readDirsProfile, baseVersion/baseRef/baseCommit i pól pudełka. Format PT-58 (c0b2cd16) poprzedza wznowienia
+# (brak `provider`), więc takiego kroku z pytaniem nie dało się wznowić także na master.
+DECISION_STEP_FIELDS = ("v", "seq", "ts", "card", "type", "step", "kind", "ticket", "round", "executor", "program",
+                        "model", "provider", "local", "effort", "routeUrl", "routeKind", "routeTokenFile",
+                        "reviewTip", "parentStep", "attempt", "unit", "session", "worktree", "branch", "stepDir",
+                        "gitDir", "repo")
 PT58_INTENT_FIELDS = ("v", "seq", "ts", "card", "type", "action", "key", "ticket", "kind", "unit", "session",
                       "stepDir", "worktree")
 PT58_RESULT_FIELDS = ("v", "seq", "ts", "card", "type", "action", "key", "ok", "unit", "gitDir")
@@ -702,11 +709,11 @@ class RestartHistoricalHostStepTest(ServiceCase):
     projects = (PLASMA,)
 
     @staticmethod
-    def old_format(steps):
-        """Zdarzenia kroku w pierwszym formacie PT-58; pola runner/box ani późniejsze pola nie istnieją."""
+    def old_format(steps, fields=PT58_STEP_FIELDS):
+        """Zdarzenia kroku w dawnym formacie (`fields`); pola runner/box ani późniejsze pola nie istnieją."""
         def change(event):
             if event.get("type") == "step.started" and event.get("step") in steps:
-                return {k: event[k] for k in PT58_STEP_FIELDS if k in event}
+                return {k: event[k] for k in fields if k in event}
             if event.get("action") == "step-start" and event.get("key") in steps:
                 fields = PT58_INTENT_FIELDS if event["type"] == "intent" else PT58_RESULT_FIELDS
                 return {k: event[k] for k in fields if k in event}
@@ -726,10 +733,11 @@ class RestartHistoricalHostStepTest(ServiceCase):
         self.assertEqual(self.finished(asked, question["step"])[0]["result"], "question")
         self.stop_proc(self.daemon)
         historic = {}
-        for card_id, step in ((running, alive), (asked, question)):
-            new = self.rewrite(card_id, self.old_format({step["step"]}))
+        for card_id, step, fields in ((running, alive, PT58_STEP_FIELDS), (asked, question, DECISION_STEP_FIELDS)):
+            new = self.rewrite(card_id, self.old_format({step["step"]}, fields))
             historic[card_id] = next(e for e in new if e.get("type") == "step.started" and e["step"] == step["step"])
-            self.assertEqual(set(historic[card_id]) - set(PT58_STEP_FIELDS), set())
+            self.assertEqual(set(historic[card_id]) - set(fields), set())
+            self.assertFalse({"deliveredNoteIds", "readDirsProfile", "baseVersion", *BOX_FIELDS} & set(historic[card_id]))
         self.assertTrue(flowfakes.alive(pid) or os.path.isfile(os.path.join(alive["stepDir"], "out", "result.json")))
         self.restart()
 
