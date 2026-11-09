@@ -1,7 +1,7 @@
 """PT-291 (K-38 F3): porównanie kartek hosta (HostRunner) z kartkami wygenerowanymi przez przypięty master.
 
 - `MASTER_SHA` to commit master zintegrowany z gałęzią K-38 (`git merge-base` gałęzi integracji i master; scalony
-  w 047c79b2). Ten sam commit jest wzorcem i bazą porównania; po kolejnej integracji przypnij go na nowo
+  w 047c79b2 i dbb740b6). Ten sam commit jest wzorcem i bazą porównania; po kolejnej integracji przypnij go na nowo
   (`write_fixtures`).
 - `load_master()` czyta moduły `cardflow/handoff.py` i `cardflow/testrerun.py` wprost z obiektów gita
   (`git show <sha>:<ścieżka>`) do osobnego pakietu w katalogu tymczasowym — bez checkoutu, worktree ani zmiany
@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MASTER_SHA = "321590c4901108cecbc1014ffe23a61f9341e270"
+MASTER_SHA = "a6efe28cdfe2e727bbc1dec085ac3aebfb76abe6"
 # `resources.py` (poziom pakietu): handoff master od 321590c4 importuje `from .. import resources`.
 MASTER_MODULES = ("daemon/tide_daemon/cardflow/handoff.py", "daemon/tide_daemon/cardflow/testrerun.py",
                   "daemon/tide_daemon/resources.py")
@@ -262,7 +262,7 @@ def write_fixtures(root: str) -> None:
     provenance = {
         "source": "git show <sha>:<ścieżka> (bez checkoutu), render() z daemon/tests/hostcards.py",
         "masterSha": MASTER_SHA,
-        "why": "merge-base gałęzi integracji K-38 i master; master scalony do integracji K-38 w 047c79b2",
+        "why": "merge-base gałęzi integracji K-38 i master; master scalony do integracji K-38 w 047c79b2 i dbb740b6",
         "blobs": blob_ids(),
         "cards": sorted(cards),
         "normalization": [name for name, _ in VARIABLES] + ["line-endings", "trailing-whitespace"],
