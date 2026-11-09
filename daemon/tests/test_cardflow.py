@@ -105,6 +105,16 @@ class FlowInProcess(unittest.TestCase):
 
     # --- pomocnicze -------------------------------------------------------------------------------
 
+    def add_make_targets(self):
+        """Cele `test` i `test-changed` w repozytorium projektu (commit na master). Od PT-287 kartka podaje
+        `make test-changed BASE=…` tylko wtedy, gdy worktree ma ten cel (`effective_tests`, źródło `detected`);
+        repozytorium bez `Makefile` dostaje zasadę ogólną projektu."""
+        with open(os.path.join(self.repo, "Makefile"), "w", encoding="utf-8") as fh:
+            fh.write(".PHONY: test test-changed\n\ntest:\n\t@true\n\ntest-changed:\n\t@true\n")
+        git(self.repo, "add", "Makefile")
+        git(self.repo, "commit", "-q", "-m", "make targets")
+        self.master = git(self.repo, "rev-parse", "master").strip()
+
     def card(self, title="Eksport CSV", description="Dodaj eksport.\n\nATRAPA: gotowe", column="todo") -> str:
         reply = json.loads(self.board.create_card(json.dumps({"title": title, "project": "proj",
                                                               "description": description, "column": column})))

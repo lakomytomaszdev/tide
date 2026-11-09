@@ -98,6 +98,7 @@ class PlanFlowTest(FlowInProcess):
         self.assertEqual(self.results(card, "reserve"), [])
 
     def test_approval_assigns_ids_then_runs_blocked_ticket_after_merge(self):
+        self.add_make_targets()
         card = self.card(description="Plan z pliku")
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.assertEqual(self.results(card, "reserve"), [], "propozycja nie bierze numerów")
