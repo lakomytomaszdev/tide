@@ -11,7 +11,7 @@ tylko to, co `--data` daje na stałe: timer w procesie woła `Backend._got_snaps
 
 Użycie (jedno powtórzenie = jeden nowy proces okna; domyślnie 3 powtórzenia, 10 s rozgrzewki + 60 s okna):
   /usr/bin/python3 apps/board/tests/measure_window.py --variant a|b --scenario idle|active5 [--cadence full|unchanged|none]
-        [--no-animations] [--top WIDOK] [--platform auto|offscreen|<qpa>] [--data-dir KAT] [--out PLIK.json]
+        [--no-animations] [--top WIDOK] [--platform offscreen|<qpa>] [--nested kwin|weston] [--data-dir KAT] [--out PLIK.json]
   /usr/bin/python3 apps/board/tests/measure_window.py --matrix [--only nazwa,nazwa] [--out PLIK.json]
 
 --variant a   odwiedzona tylko Tablica; b — odwiedzone też Sprawy, Sesje, Worktrees, Docker, Raporty, Modele
@@ -20,7 +20,9 @@ Użycie (jedno powtórzenie = jeden nowy proces okna; domyślnie 3 powtórzenia,
 --scenario    idle: tablica bez aktywnych kart, tylko niezmieniona migawka co 1 s; active5: 5 aktywnych kart,
               zmieniona co 2 s i niezmieniona co 1 s (--cadence zmienia kadencję: eksperyment „wstrzymane migawki”),
 --no-animations  eksperyment: w KOPII pakietu animacja pracujących segmentów nie startuje (repozytorium bez zmian),
---platform    auto: sesja graficzna, gdy jest WAYLAND_DISPLAY/DISPLAY, inaczej offscreen (zapisane w wyniku).
+--platform    domyślnie offscreen (wtyczka Qt bez okien); DISPLAY/WAYLAND_DISPLAY użytkownika są zawsze czyszczone,
+              więc pomiar nie otwiera okien na jego pulpicie ani nie zabiera fokusu,
+--nested      kwin|weston: okno w niewidocznym, zagnieżdżonym kompozytorze z własnym gniazdem (brak — błąd).
 Widoki poza Tablicą dostają puste dane (jak `tide.py --data`: bez usługi) — pomiar (b) nie obejmuje kosztu ich danych
 z żywej usługi.
 """
@@ -112,13 +114,43 @@ def child(args) -> int:
     return 0 if "error" not in result else 1
 
 
-def platform_env(choice: str) -> dict:
+def platform_env(choice: str, socket: str = "") -> dict:
+    """Środowisko okna pomiarowego: NIGDY sesja graficzna użytkownika (DISPLAY/WAYLAND_DISPLAY są czyszczone).
+    offscreen (domyślnie) — wtyczka Qt bez żadnego okna; z `socket` — zagnieżdżony, niewidoczny kompozytor."""
     env = dict(os.environ, QT_FORCE_STDERR_LOGGING="1")
-    if choice == "auto":
-        choice = "" if (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")) else "offscreen"
-    if choice:
-        env["QT_QPA_PLATFORM"] = choice
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
+        env.pop(name, None)
+    if socket:
+        env["WAYLAND_DISPLAY"] = socket
+        env["QT_QPA_PLATFORM"] = "wayland"
+    else:
+        env["QT_QPA_PLATFORM"] = "offscreen" if choice in ("auto", "") else choice
     return env
+
+
+def start_nested_compositor(kind: str):
+    """Niewidoczny kompozytor Wayland z własnym gniazdem (kwin_wayland --virtual albo weston headless).
+    Zwraca (proces, nazwa gniazda); SystemExit, gdy się nie da — nigdy nie wraca do pulpitu użytkownika."""
+    import shutil
+    import time
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    socket = f"tide-measure-{os.getpid()}"
+    exe = shutil.which("kwin_wayland" if kind == "kwin" else "weston")
+    if not exe or not runtime:
+        raise SystemExit(f"measure_window: brak {kind} albo XDG_RUNTIME_DIR — pomiar nie ruszy na pulpicie użytkownika")
+    cmd = [exe, "--virtual", "--socket", socket, "--width", "1920", "--height", "1080"] if kind == "kwin" \
+        else [exe, "--backend=headless", f"--socket={socket}"]
+    env = platform_env("offscreen")
+    env["XDG_RUNTIME_DIR"] = runtime
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(100):
+        if os.path.exists(os.path.join(runtime, socket)):
+            return proc, socket
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    proc.terminate()
+    raise SystemExit(f"measure_window: {kind} nie uruchomił gniazda {socket}")
 
 
 def run_combo(name: str, opts: dict, args, fixtures: dict, pkgs: dict) -> dict:
@@ -133,15 +165,16 @@ def run_combo(name: str, opts: dict, args, fixtures: dict, pkgs: dict) -> dict:
     cmd = ["/usr/bin/python3", os.path.abspath(__file__), "--child", "--pkg", pkgs[animations],
            "--data", fixtures[scenario]["path"], "--variant", variant, "--scenario", scenario, "--cadence", cadence,
            "--top", top, "--warmup", str(args.warmup), "--duration", str(args.duration)]
-    env = platform_env(args.platform)
+    env = platform_env(args.platform, args.nested_socket)
     runs = [mk.run_child(cmd, env, args.warmup + args.duration + 180) for _ in range(args.repeats)]
     parts = ["/usr/bin/python3", "apps/board/tests/measure_window.py", "--variant", variant, "--scenario", scenario,
              "--cadence", cadence, "--top", top, "--warmup", str(args.warmup), "--duration", str(args.duration),
              "--repeats", str(args.repeats)] + ([] if animations else ["--no-animations"]) \
-        + (["--platform", args.platform] if args.platform != "auto" else [])
+        + (["--platform", args.platform] if args.platform != "auto" else []) \
+        + (["--nested", args.nested] if args.nested else [])
     return {"name": name, "variant": variant, "scenario": scenario, "cadence": cadence, "top": top,
             "animations_disabled_in_copy": not animations, "command": " ".join(parts),
-            "qpa_platform": env.get("QT_QPA_PLATFORM", "sesja graficzna"), **mk.aggregate(runs)}
+            "qpa_platform": env["QT_QPA_PLATFORM"] + (" (zagnieżdżony " + args.nested + ")" if args.nested else ""), **mk.aggregate(runs)}
 
 
 def main(argv=None) -> int:
@@ -152,6 +185,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-animations", action="store_true")
     parser.add_argument("--top", default="board")
     parser.add_argument("--platform", default="auto")
+    parser.add_argument("--nested", choices=("", "kwin", "weston"), default="")
     parser.add_argument("--matrix", action="store_true")
     parser.add_argument("--only", default="")
     parser.add_argument("--data-dir", default=os.path.join(mk.REPO, "build", "pt-323-measure", "data"))
@@ -167,7 +201,10 @@ def main(argv=None) -> int:
         return child(args)
 
     args.work = tempfile.mkdtemp(prefix="tide-measure-window-")
+    args.nested_socket, compositor = "", None
     try:
+        if args.nested:
+            compositor, args.nested_socket = start_nested_compositor(args.nested)
         fixtures = mk.build_fixtures(args.data_dir)
         if args.matrix:
             wanted = [n for n in args.only.split(",") if n]
@@ -190,6 +227,8 @@ def main(argv=None) -> int:
         print(text)
         return 0
     finally:
+        if compositor is not None:
+            compositor.terminate()
         shutil.rmtree(args.work, ignore_errors=True)
 
 
