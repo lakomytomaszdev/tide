@@ -256,11 +256,14 @@ class WaveFlowTest(FlowInProcess):
             self.assertFalse(os.path.exists(image))
             with open(os.path.join(started["stepDir"], "in", "images", "1-shot.png"), "rb") as fh:
                 self.assertEqual(fh.read(), b"screenshot-data")
-            # 04.11, K-49: Read musi móc odczytać zrzut z katalogu wejść kroku.
+            # 04.11, K-49: Read musi móc odczytać zrzut z katalogu wejść kroku. 09.11, K-89: regułą Read, nie
+            # `--add-dir` — katalog w `in` jako katalog roboczy psuł każde polecenie Bash (atrapa `.mcp.json`).
             with open(os.path.join(started["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
                 argv = json.load(fh)["argv"]
             images = os.path.join(started["stepDir"], "in", "images")
-            self.assertIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+            self.assertNotIn(images, [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--add-dir"])
+            with open(os.path.join(started["stepDir"], "in", "settings.json"), encoding="utf-8") as fh:
+                self.assertIn(f"Read(/{images}/**)", json.load(fh)["permissions"]["allow"])
         finally:
             # Start w bieżącym ticku musi się zakończyć przed odczytem listy,
             # także gdy asercja zawiedzie przed zapisem step.started.
