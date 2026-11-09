@@ -57,6 +57,7 @@ Rectangle {
                 : ghost ? Tide.Theme.alpha(Tide.Tokens.accent, 0.45) : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
     opacity: dragged ? 0.35 : 1
     activeFocusOnTab: !ghost
+    Component.onCompleted: if (!ghost) Logic.noteCardDelegate()   // licznik pomiarowy (PT-323), duch karty się nie liczy
 
     Accessible.role: Accessible.Button
     Accessible.name: (root.c.id || "") + " " + (root.c.title || "")

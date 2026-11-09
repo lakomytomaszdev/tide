@@ -73,6 +73,18 @@ function isManual(column) {
     return MANUAL.indexOf(column) >= 0
 }
 
+// Licznik utworzonych delegatów BoardCard (PT-323: pomiar przebudów modeli). Biblioteka `.pragma library` jest
+// jedna na silnik, więc liczy karty wszystkich kolumn; nic nie czyta i niczego nie zmienia w oknie.
+var cardDelegatesCreated = 0
+
+function noteCardDelegate() {
+    cardDelegatesCreated++
+}
+
+function cardDelegates() {
+    return cardDelegatesCreated
+}
+
 function displayColumn(card) {
     return card.boardColumn || card.column || "backlog"
 }
