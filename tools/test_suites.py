@@ -57,6 +57,8 @@ CHANGE_MAP["apps/issues/"] = "issues"
 FILE_TEST_MODULES = {
     "tools/board_compat_check.py": ("daemon/tests/test_board_compat_check.py",),
     "tools/question_corpus.py": ("daemon/tests/test_question_corpus.py",),
+    "tools/push_guard.py": ("daemon/tests/test_push_guard.py",),
+    "tools/push_guard.json": ("daemon/tests/test_push_guard.py",),
     "tools/next_id.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
     "tools/check_plans.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
     "tools/sessions_preview.py": ("apps/sessions/tests/test_window.py",),
