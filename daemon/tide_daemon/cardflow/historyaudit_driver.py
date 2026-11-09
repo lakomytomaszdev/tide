@@ -181,7 +181,8 @@ def derived(st):
     return out
 
 
-def run(cfg):
+def read_cards(cfg):
+    """Odczyt każdej karty z `cfg["cards"]` kodem drzewa `cfg["tree"]`; odrzucenie historii to wynik, nie skutek."""
     forbidden = []
     tree = os.path.realpath(cfg["tree"])
     sys.path.insert(0, os.path.join(tree, "daemon"))
@@ -244,7 +245,7 @@ def run(cfg):
 
 def main():
     cfg = json.loads(sys.stdin.read())
-    report = run(cfg)
+    report = read_cards(cfg)
     sys.stdout.write(json.dumps(report, ensure_ascii=False, sort_keys=True))
     sys.stdout.flush()
 
