@@ -21,7 +21,6 @@ Wszystkie ścieżki zapisu powstają z ID karty i slugów po walidacji, a dodatk
 """
 import os
 import contextlib
-import fcntl
 import json
 import secrets
 import stat
@@ -34,7 +33,7 @@ from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
 from ..worktrees.git import Git
 from ..worktrees.naming import slug_from_prompt
-from . import flows, commands, assignment, contract_approval, project_tests
+from . import flows, commands, assignment, contract_approval, lockfile, project_tests
 from .frontmatter import Document, FrontmatterError, dump
 from .marker import FORMAT_VERSION, MARKER_FILE, MARKER_KEY, is_board_repo
 from .repo import BoardRepo
@@ -148,17 +147,15 @@ class BoardStore:
             if self._transaction_depth or not self.repo.initialized():
                 yield
                 return
-            fd = os.open(os.path.join(self.repo.git_dir, "tide-board.lock"),
-                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-                self._transaction_depth += 1
-                from ..issue_acceptance import recover
-                recover(self)
-                yield
-            finally:
-                self._transaction_depth = 0
-                os.close(fd)
+            # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321).
+            with lockfile.exclusive(self.repo.git_dir):
+                try:
+                    self._transaction_depth += 1
+                    from ..issue_acceptance import recover
+                    recover(self)
+                    yield
+                finally:
+                    self._transaction_depth = 0
 
     def load(self) -> Board:
         with self.transaction():

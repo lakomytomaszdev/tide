@@ -1365,21 +1365,49 @@ Wzorcowy plik profilu z kluczami K-38 (`apt`, `network`, `verify`) i blokiem `te
 `daemon/tests/fixtures/box-profile/box.yaml`. Test `daemon/tests/test_board_project_tests.py` czyta go przez
 `load_tests` i porównuje z wynikiem `save_tests`. Szkic zmian po stronie K-38:
 [k38-tests-schema](agents/plans/followups/k38-tests-schema.md). Warunki scalenia drugiej z kart K-38/K-69
-do głównej:
+do głównej (spełnione warunki odhaczone przez PT-321; testy: `daemon/tests/test_box_profile_tests_key.py`):
 
-- `tests` w zamkniętej liście kluczy profilu projektu i w `NON_HASH_KEYS` (jako `tests.changed`, `tests.full`);
-- walidacja `tests` deleguje do `validate_tests` (jedna reguła);
-- czytnik `yamlmini` rozpoznaje kanoniczne napisy JSON także z końcowymi ukośnikami i komentarzem poza
-  napisem. Wersja K-38 `fa32809ebd0b5839306c94a3b9dd0e67f05b0137` czyta wzorzec, lecz ręczne szukanie
-  zamykającego cudzysłowu odrzuca np. `full: "pytest path\\\\"`. Po stronie K-38 trzeba rozpoznawać cały
-  token dekoderem JSON (łącznie z jego końcem), zamiast ponownie interpretować ucieczki przy usuwaniu
-  komentarza; regresje generowanych poleceń są w `test_board_project_tests.py`;
-- cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona;
-- wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem;
+- [x] `tests` w zamkniętej liście kluczy profilu projektu, w `KEY_ORDER` i w `NON_HASH_KEYS` (jako `tests.changed`,
+  `tests.full`): zmiana samych poleceń testów nie zmienia hasha przepisu. Profil karty odrzuca `tests`
+  (`validate(..., "card")`), a `merge(project, card)` przenosi kontrakt z projektu bez zmian;
+- [x] walidacja `tests` deleguje do `validate_tests` (jedna reguła, bez zmian po stronie K-69);
+- [x] czytnik `yamlmini` rozpoznaje kanoniczne napisy JSON także z końcowymi ukośnikami i komentarzem poza
+  napisem: koniec napisu w cudzysłowie wyznacza pełne przejście ucieczek (ukośnik zawsze ucieka następny znak),
+  a wartość i jej koniec — dekoder JSON (`raw_decode`); w apostrofach `''` jest apostrofem w napisie. Regresje
+  generowanych poleceń z `test_board_project_tests.py` czyta też `bp.load_project`, także po zapisie K-38
+  i częściowej aktualizacji przez `BoardStore`;
+- [ ] cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona
+  (poza PT-321: `followups/stack-hints.md`);
+- [x] wzorcowy plik czytany bez błędu przez `box/profile.py` (`load_project`; wynik zawiera `tests`);
 - zmienione ścieżki uruchamiania kroków (start, wznowienie, konflikt, domknięcie, kroki pudełka) sprawdzone pod kątem
   wywołań polityki testów (po #10, #7 i #3 planu K-69): każda z nich nadal liczy jeden `TestPolicy` dla kartki
   i zgód (`step_test_policy`), czego dowodzą testy przepływu z atrapą procesu, nie sama zgodność `box.yaml`. Zasada
   ogólna, na której opiera się ten warunek: [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu).
+  PT-321 nie zmienia ścieżek uruchamiania kroków (tylko odczyt i zapis profilu).
+
+Wspólny plik `projects/<slug>/box.yaml` (PT-321):
+
+- **Odczyt.** `bp.read_project(slug)` zwraca `ProjectFile`: blok `tests` czyta reguła K-69 (`load_tests`), resztę
+  pliku `yamlmini` i schemat K-38. Uszkodzony blok `tests` nie unieważnia profilu K-38: profil jest bez `tests`, a
+  błąd (`tests_error`, ten sam napis co `testsError` w `BoardStore`, z komunikatem `validate_tests`) trafia do uwag
+  sekcji „Środowisko karty”. `bp.load_project` zwraca profil z poprawnym, niepustym kontraktem w `tests`.
+- **Profil bez ustawień K-38 jest nowy.** Plik z samymi `tide-box`, `project` i `tests` (np. założony przez
+  `save_tests`) nie jest zatwierdzonym profilem K-38: `load_project` zwraca None, a zgoda środowiska pokazuje
+  propozycję i pakiet zgód jak projekt bez profilu. Zatwierdzenie pustego profilu zapisuje `box: per-project`
+  (wartość domyślna, poza hashem), żeby kolejny odczyt nie uznał go znów za nowy.
+- **Zapis K-38.** `bp.save_project` (jedyna ścieżka zapisu profilu projektu: `envconsent` przy `box.enabled` true i
+  false, `tide box approve … --accept-red`) pomija `tests` z wejścia i przenosi blok `tests` z pliku bajt w bajt,
+  także uszkodzony. Nie zapisuje `testsApproved` ani nie dotyka magazynu odcisków (PT-285/PT-286): zatwierdzenie
+  kontraktu liczy wyłącznie `BoardStore`. Istniejącego pliku, którego nie da się przeczytać (YAML lub schemat poza
+  blokiem `tests`, inny `project`, `tests` poza blokiem najwyższego poziomu, rozmiar, kodowanie), zapis nie
+  nadpisuje — `ProfileError`, a zgoda środowiska odpowiada błędem bez zapisu.
+- **Wspólna blokada.** `save_project` czyta i zapisuje plik pod tą samą blokadą co `BoardStore.transaction`
+  (`flock` na `<tablica>/.git/tide-board.lock`, `board/lockfile.py`; wielowejściowa w obrębie wątku). Przeplot
+  zapisu K-38 i zapisu kontraktu w dowolnej kolejności daje najnowszy kontrakt i najnowsze ustawienia K-38.
+- **Znane ograniczenie: komentarze.** Zapis K-38 (`yamlmini.dumps`) przepisuje plik poza blokiem `tests`, więc
+  komentarze poza tym blokiem (np. nad `tests:`) znikają; komentarze wewnątrz bloku zostają. Zapis kontraktu
+  (`save_tests`) nadal zachowuje cały plik, w tym komentarze — obietnica historii 10 specyfikacji dotyczy zapisu
+  kontraktu, nie zapisu profilu K-38.
 
 #### Efektywny kontrakt testów w kartkach kroków (PT-279)
 
@@ -3568,7 +3596,8 @@ profilu karty (albo nie jest czerwona), to błąd. Czerwone pozycje profilu proj
 wartości domyślnych, niezależnie od kolejności kluczy i białych znaków YAML) wraz z wersją szablonów i agentów.
 Wchodzą: `type`, `base`, `stacks` (kolejność), `node`, `dotnet` (wersje SDK jako zbiór), `apt` (jako zbiór), `setup` (kolejność),
 `docker.enabled`, `docker.images` (jako zbiór). Nie wchodzą: `resources`, `ports`, `network.*`, `verify`, `packs`,
-`box`, `notes`, `project` — limity i politykę czyta się przy starcie albo po budowie. Lista: `HASH_KEYS` i
+`box`, `notes`, `project`, `tests.changed`, `tests.full` — limity i politykę czyta się przy starcie albo po budowie,
+a kontrakt testów (K-69) nie dotyczy obrazu. Lista: `HASH_KEYS` i
 `NON_HASH_KEYS`, test pilnuje, że razem pokrywają cały schemat. `recipe_stamp(...)` dodatkowo zwraca skróty
 kluczy; budowa zapisuje go przy migawce, a `diff(profile, stamp, templates_version, agents_version)` zwraca listę
 kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `agents`…) — źródło stanu „do przebudowy”.
@@ -3578,7 +3607,8 @@ kluczy różniących się od zapisanego odcisku (`apt`, `stacks`, `templates`, `
 Katalog Tablicy: `$TIDE_BOARD_DIR` (domyślnie `~/DevWorkspace/tide-board`). Profil projektu:
 `projects/<slug>/box.yaml`, profil karty: `projects/<slug>/cards/<id karty>/box.yaml`. Zapis jest atomowy (plik
 tymczasowy w tym samym katalogu, `fsync`, `rename`) i poprzedzony walidacją; nazwy ścieżek są ograniczone do
-`[a-z0-9._-]`. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
+`[a-z0-9._-]`. Profil projektu dzieli plik z kontraktem testów K-69 (`tests`); zasady wspólnego pliku — „Zgodność
+z profilem pudełka K-38” w sekcji kontraktu testów. `repo_proposal(worktree)` czyta `.tide/box.yaml` z repozytorium wyłącznie jako propozycję
 (walidacja jak profilu projektu, dowiązanie poza repozytorium odrzucane) i niczego tam nie zapisuje — profil
 nie trafia do repozytoriów projektów (CLAUDE.md firma).
 

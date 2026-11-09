@@ -201,6 +201,26 @@ def load_tests(text) -> tuple:
         return empty(), f"tests: {exc}"
 
 
+def split_block(text) -> tuple:
+    """(reszta, blok): tekst `box.yaml` bez bloków `tests` najwyższego poziomu i ich surowy tekst, w kolejności
+    z pliku. Granica bloku jest ta sama co w `load_tests`/`save_tests`; blok jest kopiowany bajt w bajt (także
+    uszkodzony), a gdy kończy plik bez znaku nowej linii, dostaje `\\n`. Dla profilu K-38 (PT-321): zapis
+    `box/profile.py` przepisuje resztę, a blok przenosi bez zmian. BOM z początku pliku nie należy do żadnej części."""
+    if not text:
+        return "", ""
+    lines = text.lstrip("﻿").splitlines(keepends=True)
+    rest, block, cursor = [], [], 0
+    for start, end in _blocks(lines):
+        rest += lines[cursor:start]
+        block += lines[start:end]
+        cursor = end
+    rest += lines[cursor:]
+    cut = "".join(block)
+    if cut and cut[-1] not in _LINE_BREAKS:
+        cut += "\n"
+    return "".join(rest), cut
+
+
 def save_tests(text, tests: dict) -> str:
     """Nowy tekst `box.yaml`: blok `tests` podmieniony (albo dodany na końcu, albo usunięty, gdy oba pola
     puste). Bez pliku (`text` None) zakłada go z `tide-box: 1`; bez pliku i bez poleceń — pusty napis.

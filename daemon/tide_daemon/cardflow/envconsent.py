@@ -188,25 +188,38 @@ def box_state(slug: str, profile: dict | None, ids: list) -> dict:
             "baseline": bool(base)}
 
 
-def _approved_project(slug: str):
+def _project_file(slug: str):
+    """(`bp.ProjectFile` albo None, problem): odczyt `box.yaml` projektu; nieczytelny plik — None i opis."""
     try:
-        return bp.load_project(slug), ""
+        return bp.read_project(slug), ""
     except bp.ProfileError as exc:
         return None, f"zatwierdzony profil jest nieczytelny: {exc}"
 
 
+def _approved_project(slug: str):
+    """(zatwierdzony profil K-38 albo None, problem). Sam kontrakt testów nie jest zatwierdzonym profilem (PT-321)."""
+    got, problem = _project_file(slug)
+    return (got.profile if got is not None and not got.is_new else None), problem
+
+
 def _project_profile(slug: str, repo: str):
-    """(profil projektu, nowy?, pozycje szablonów, czy pusty projekt, uwagi). Nowy = jeszcze niezatwierdzony."""
-    approved, problem = _approved_project(slug)
+    """(profil projektu, nowy?, pozycje szablonów, czy pusty projekt, uwagi). Nowy = jeszcze niezatwierdzony.
+
+    Profil bez ustawień K-38 (np. sam `tests` z okna projektu) jest nowy: propozycja i pakiet zgód jak bez profilu.
+    Uszkodzony blok `tests` nie unieważnia profilu — trafia do uwag jak `testsError`; zapis zachowa go bez zmian."""
+    got, problem = _project_file(slug)
     notes = [problem] if problem else []
-    if approved is not None:
-        return approved, False, [], False, notes
+    if got is not None and got.tests_error:
+        notes.append(f"kontrakt testów projektu jest uszkodzony (testsError: {got.tests_error}); "
+                     "zapis środowiska zostawia blok tests bez zmian — popraw go w oknie projektu")
+    if got is not None and not got.is_new:
+        return got.profile, False, [], False, notes
     report = stack.detect(repo) if repo and os.path.isdir(repo) else stack.StackReport()
     source, proposal, tmpl_items, note = environment._proposal(repo or "", slug, report)
     if note:
         notes.append(note)
-    try:
-        profile = bp.validate(proposal, "project")
+    try:   # kontrakt testów nie przychodzi z propozycji (zapisuje go wyłącznie okno projektu)
+        profile = bp.validate({k: v for k, v in proposal.items() if k != bp.TESTS_KEY}, "project")
     except (bp.ProfileError, ValueError) as exc:
         notes.append(f"propozycja profilu projektu jest niepoprawna: {exc}")
         profile = {"tide-box": bp.SCHEMA_VERSION, "project": slug}
@@ -282,7 +295,11 @@ def prepare(engine, card_id: str, text: str, st) -> Prepared:
     except yamlmini.YamlError as exc:
         raise EnvError(f"YAML: {exc}") from None
     project, new, tmpl_items, _empty, notes = _project_profile(slug, repo)
-    shown = _profile_items(project, known, "projekt", locked_red=not new) + _template_items(tmpl_items) \
+    if new:
+        _got, problem = _project_file(slug)
+        if problem:   # nieczytelnego box.yaml nie zastępujemy propozycją (PT-321)
+            raise EnvError([f"{problem} — zapis środowiska odrzucony, plik bez zmian; popraw box.yaml w Tablicy"])
+    shown =_profile_items(project, known, "projekt", locked_red=not new) + _template_items(tmpl_items) \
         + _profile_items(card, known, "karta", set(card.get(CONSENT_KEY, [])))
     accepted = [a if a == "network.full" or a.startswith("pack:") else bp.normalize_host(a)
                 for a in card.get(CONSENT_KEY, [])]
