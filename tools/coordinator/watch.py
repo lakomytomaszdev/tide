@@ -1,7 +1,7 @@
 """Strażnik nocny: kończy się (budzi koordynatora), gdy pojawi się nowa decyzja, karta zmieni kolumnę
 na review/waiting albo minie limit czasu (puls). Widziane decyzje w seen.json."""
 import json, os, subprocess, sys, time
-CARDS = ("K-89", "K-91", "K-69", "K-78", "K-88", "K-82", "K-83", "K-75", "K-79", "K-56", "K-76")
+CARDS = ("K-89", "K-91", "K-92", "K-69", "K-78", "K-88", "K-82", "K-83", "K-75", "K-79", "K-56", "K-76")
 SEEN = os.path.join(os.environ.get("TIDE_WATCH_STATE") or os.path.dirname(__file__), "seen.json")
 deadline = time.time() + float(sys.argv[1] if len(sys.argv) > 1 else 3000)
 seen = set(json.load(open(SEEN))) if os.path.exists(SEEN) else set()
