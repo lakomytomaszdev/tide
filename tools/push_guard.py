@@ -5,19 +5,24 @@ Użycie: /usr/bin/python3 tools/push_guard.py REPOZYTORIUM GAŁĄŹ-KARTY GAŁĄ
             [--project NAZWA] [--prefix PREFIKS ...] [--plans KATALOG ...] [--config PLIK] [--json]
 
 Sprawdza to, co trafiłoby do repozytorium klienta, czyli commity z zakresu DOCELOWA..KARTY:
-temat i treść każdego commita (także scalenia) oraz dodane linie w diffie każdego commita
-niebędącego scaleniem. Szuka śladów wewnętrznych: Tide, YouTrack, numerów kart `K-*`, spraw `S-*`,
+temat i treść każdego commita (także scalenia) oraz dodane linie w diffie każdego commita; dla
+scaleń są to zmiany wprowadzone przy scalaniu (rozwiązanie konfliktu, `git show --remerge-diff`,
+wymaga git >= 2.36). Szuka śladów wewnętrznych: Tide, YouTrack, numerów kart `K-*`, spraw `S-*`,
 ticketów (`PT-*`, `LOG-*` i prefiksy planów projektu, np. `DLE-*`), stopek `Co-Authored-By`,
 „Generated with” i wzmianek o AI.
 
 Wynik: lista trafień (commit, miejsce, reguła, tekst) i raport commitów do przeredagowania
 (trafienie w temacie albo treści; w diffie trzeba poprawić kod, nie opis) albo „czysto”.
-Kod wyjścia: 0 — czysto, 1 — są trafienia (wysyłka wstrzymana), 2 — błąd (zła gałąź, brak git).
+Kod wyjścia: 0 — czysto, 1 — są trafienia (wysyłka wstrzymana), 2 — błąd (zła gałąź, brak git,
+zła konfiguracja).
 
 Wzorce: jedna lista `RULES` poniżej + prefiksy ticketów: stałe `LOG`, `PT`, prefiksy z `--prefix`,
-z `ticket-prefix:` planów podanych w `--plans` (katalog z planami `*.md`) i z konfiguracji projektu.
-Konfiguracja per projekt (`tools/push_guard.json`, klucz = nazwa katalogu repozytorium małymi literami
-albo `--project`): `prefixes` (lista) i `allow` — wyjątki dla słów, które w kodzie klienta są nazwą
+z `ticket-prefix:` planów (`--plans`, domyślnie `docs/agents/plans/` sprawdzanego repozytorium, jeśli istnieje)
+i z konfiguracji projektu. Numery `K-*` i ticketów rozpoznawane są wielkimi literami, a małymi tylko w nazwach
+gałęzi (po `/` albo cudzysłowie, np. `ticket/dle-1-…`).
+Konfiguracja per projekt (`tools/push_guard.json`, klucz = nazwa repozytorium małymi literami wyznaczona
+z katalogu głównego `.git`, więc worktree `<repo>-worktrees/<slug>` daje nazwę repozytorium, albo `--project`;
+użyty projekt i prefiksy są wypisywane, a nieznany projekt daje ostrzeżenie):`prefixes` (lista) i `allow` — wyjątki dla słów, które w kodzie klienta są nazwą
 domenową (np. „tide” jako pływ w aplikacji o morzu): `{"rule": "tide", "path": "src/Domain/*",
 "line": "regex"}`; pola `rule`, `path` (fnmatch; dla commitów bez pliku nie pasuje) i `line`
 (regex na całej linii) są opcjonalne i wszystkie podane muszą pasować. Wyjątek bez `path`
@@ -35,12 +40,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG = os.path.join(HERE, "push_guard.json")
 FIXED_PREFIXES = ("PT", "LOG")
 _L = r"(?<![A-Za-z0-9_])"  # początek identyfikatora (K-12 nie w „SHA-12”)
+_BRANCH = r"(?<=[/'\"])"  # nazwa gałęzi (`ticket/dle-1-…`, `'dle-1'`): tu wielkość liter nie ma znaczenia
 
 # Jedna lista stałych wzorców: (nazwa reguły, opis, regex). Reguła `ticket` jest budowana z prefiksów.
 RULES = (
     ("tide", "Tide", re.compile(r"\btide\b", re.I)),
     ("youtrack", "YouTrack", re.compile(r"you\s?track", re.I)),
-    ("card", "numer karty K-*", re.compile(_L + r"K-\d+\b")),
+    ("card", "numer karty K-*", re.compile(_L + r"K-\d+\b|" + _BRANCH + r"(?i:k-\d+\b)")),
     ("case", "numer sprawy S-*", re.compile(_L + r"S-\d+\b")),
     ("trailer", "stopka Co-Authored-By", re.compile(r"co-authored-by\s*:", re.I)),
     ("generated", "„Generated with”", re.compile(r"generated\s+(?:with|by)\b", re.I)),
@@ -68,15 +74,38 @@ def run_git(repo, *args) -> str:
     return done.stdout
 
 
-def load_config(path, project) -> dict:
+def load_config(path, project, explicit=False):
+    """(konfiguracja projektu, czy projekt jest w pliku). Błąd pliku, regexu albo jawna brakująca ścieżka → GuardError."""
     if not path or not os.path.isfile(path):
-        return {}
+        if explicit:
+            raise GuardError(f"brak pliku konfiguracji: {path}")
+        return {}, False
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError) as exc:
         raise GuardError(f"konfiguracja {path}: {exc}") from exc
-    return (data.get("projects") or {}).get(project, {}) or {}
+    projects = data.get("projects") or {}
+    config = projects.get(project) or {}
+    for entry in config.get("allow") or []:
+        if entry.get("line"):
+            try:
+                re.compile(entry["line"])
+            except re.error as exc:
+                raise GuardError(f"konfiguracja {path}: zły regex w allow ({entry['line']!r}): {exc}") from exc
+    return config, project in projects
+
+
+def project_name(repo) -> str:
+    """Nazwa repozytorium z katalogu głównego `.git` (worktree karty daje nazwę repozytorium, nie slug karty)."""
+    common = run_git(repo, "rev-parse", "--git-common-dir").strip()
+    common = os.path.normpath(os.path.join(repo, common))
+    name = os.path.basename(common)
+    if name == ".git":
+        name = os.path.basename(os.path.dirname(common))
+    elif name.endswith(".git"):
+        name = name[:-4]
+    return name.lower()
 
 
 def plan_prefixes(directories) -> list:
@@ -98,9 +127,14 @@ def plan_prefixes(directories) -> list:
     return found
 
 
+def all_prefixes(prefixes) -> list:
+    return sorted({p.upper() for p in (*FIXED_PREFIXES, *prefixes) if p})
+
+
 def build_rules(prefixes) -> list:
-    unique = sorted({p.upper() for p in (*FIXED_PREFIXES, *prefixes) if p})
-    ticket = re.compile(_L + "(?:" + "|".join(re.escape(p) for p in unique) + r")-\d+\b")
+    unique = all_prefixes(prefixes)
+    alt = "|".join(re.escape(p) for p in unique)
+    ticket = re.compile(_L + "(?:" + alt + r")-\d+\b|" + _BRANCH + "(?i:(?:" + alt + r")-\d+\b)")
     rules = list(RULES)
     rules.insert(4, ("ticket", "numer ticketu " + "/".join(f"{p}-*" for p in unique), ticket))
     return rules
@@ -143,17 +177,21 @@ def commits(repo, target, branch) -> list:
     return result
 
 
-def added_lines(repo, sha):
-    """(plik, numer linii, tekst) dla dodanych linii commita niebędącego scaleniem."""
-    patch = run_git(repo, "show", "--format=", "-U0", "--no-color", "--no-ext-diff", sha)
-    path, number = None, 0
+def added_lines(repo, sha, merge=False):
+    """(plik, numer linii, tekst) dla dodanych linii commita; dla scalenia: zmiany względem automatycznego scalenia."""
+    args = ["show", "--format=", "-U0", "--no-color", "--no-ext-diff"]
+    patch = run_git(repo, *args, *(["--remerge-diff"] if merge else []), sha)
+    path, number, header = None, 0, False
     for line in patch.splitlines():
-        if line.startswith("+++ "):
+        if line.startswith("diff --git "):
+            path, header = None, True
+        elif header and line.startswith("+++ "):
             path = line[6:] if line.startswith("+++ b/") else None
         elif line.startswith("@@"):
+            header = False
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
             number = int(match.group(1)) if match else 0
-        elif line.startswith("+") and path:
+        elif not header and line.startswith("+") and path:
             yield path, number, line[1:]
             number += 1
 
@@ -174,9 +212,8 @@ def scan(repo, branch, target, prefixes=(), allow=()) -> list:
         add(commit, "temat", None, None, commit["subject"])
         for number, text in enumerate(commit["body"].splitlines(), 1):
             add(commit, "treść", None, number, text)
-        if not commit["merge"]:
-            for path, number, text in added_lines(repo, commit["sha"]):
-                add(commit, "diff", path, number, text)
+        for path, number, text in added_lines(repo, commit["sha"], commit["merge"]):
+            add(commit, "diff", path, number, text)
     return hits
 
 
@@ -214,23 +251,30 @@ def main(argv=None) -> int:
     parser.add_argument("--project", default="", help="klucz projektu w konfiguracji (domyślnie nazwa katalogu)")
     parser.add_argument("--prefix", action="append", default=[], help="dodatkowy prefiks ticketów (np. DLE)")
     parser.add_argument("--plans", action="append", default=[], help="katalog planów z `ticket-prefix:`")
-    parser.add_argument("--config", default=DEFAULT_CONFIG, help="plik konfiguracji (domyślnie tools/push_guard.json)")
+    parser.add_argument("--config", default=None, help="plik konfiguracji (domyślnie tools/push_guard.json)")
     parser.add_argument("--json", action="store_true", help="wynik jako JSON")
     args = parser.parse_args(argv)
     try:
         repo = os.path.abspath(args.repo)
         for ref in (args.branch, args.target):
             run_git(repo, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
-        project = (args.project or os.path.basename(repo.rstrip("/"))).lower()
-        config = load_config(args.config, project)
-        prefixes = [*config.get("prefixes", []), *args.prefix, *plan_prefixes(args.plans)]
+        project = (args.project or project_name(repo)).lower()
+        config, known = load_config(args.config or DEFAULT_CONFIG, project, explicit=bool(args.config))
+        plans = args.plans or [d for d in (os.path.join(repo, "docs", "agents", "plans"),) if os.path.isdir(d)]
+        prefixes = [*config.get("prefixes", []), *args.prefix, *plan_prefixes(plans)]
+        warnings = [] if known else [f"projekt „{project}” nie ma wpisu w konfiguracji: brak jego prefiksów i wyjątków "
+                                      f"(użyj --project albo --prefix)"]
         hits = scan(repo, args.branch, args.target, prefixes, config.get("allow", []))
     except GuardError as exc:
         print(f"push_guard: {exc}", file=sys.stderr)
         return 2
+    for warning in warnings:
+        print(f"push_guard: OSTRZEŻENIE: {warning}", file=sys.stderr)
     if args.json:
-        print(json.dumps({"clean": not hits, "hits": hits}, ensure_ascii=False, indent=2))
+        print(json.dumps({"clean": not hits, "project": project, "prefixes": all_prefixes(prefixes),
+                          "warnings": warnings, "hits": hits}, ensure_ascii=False, indent=2))
     else:
+        print(f"projekt: {project}; prefiksy ticketów: " + ", ".join(f"{p}-*" for p in all_prefixes(prefixes)))
         print(format_report(hits))
     return 1 if hits else 0
 

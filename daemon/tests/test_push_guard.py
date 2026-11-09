@@ -74,15 +74,109 @@ class PushGuardTest(unittest.TestCase):
             git(self.repo, "checkout", "-q", "-b", f"dle-{number}", "card")
             commit(self.repo, f"f{number}.cs", "class F {}\n", f"add feature {number}")
             git(self.repo, "checkout", "-q", "card")
-            git(self.repo, "merge", "-q", "--no-ff", f"dle-{number}", "-m", f"Merge branch 'dle-{number}': DLE-{number}")
+            git(self.repo, "merge", "-q", "--no-ff", f"dle-{number}", "-m",
+                f"Merge ticket DLE-{number} into card K-89")
         code, out, _ = guard(self.repo, "--prefix", "DLE", "--json")
         self.assertEqual(code, 1)
         hits = json.loads(out)["hits"]
-        self.assertEqual(len(hits), 3)
-        self.assertTrue(all(h["merge"] and h["where"] == "temat" and h["rule"] == "ticket" for h in hits))
-        self.assertEqual(sorted(h["match"] for h in hits), ["DLE-1", "DLE-2", "DLE-5"])
+        self.assertEqual(len(hits), 6)  # po 2 trafienia na scalenie: ticket i card
+        self.assertTrue(all(h["merge"] and h["where"] == "temat" for h in hits))
+        self.assertEqual(sorted(h["match"] for h in hits if h["rule"] == "ticket"), ["DLE-1", "DLE-2", "DLE-5"])
+        self.assertEqual({h["rule"] for h in hits}, {"ticket", "card"})
         _, text, _ = guard(self.repo, "--prefix", "DLE")
-        self.assertIn("(scalenie)", text)
+        self.assertIn("DO PRZEREDAGOWANIA (opis commita): 3", text)
+        self.assertEqual(text.count("(scalenie)"), 3)
+
+    def test_worktree_of_card_uses_repository_project_config(self):
+        self.branch()
+        git(self.repo, "checkout", "-q", "master")
+        work = os.path.join(self._tmp.name, "LogViewer-worktrees", "k-89-slug")
+        git(self.repo, "worktree", "add", "-q", "-b", "k89", work, "master")
+        commit(work, "a.cs", "class A {}\n", "add a (DLE-3)")
+        code, out, err = guard(work, "--json", branch="k89")
+        self.assertEqual(code, 1)
+        data = json.loads(out)
+        self.assertEqual(data["project"], "logviewer")
+        self.assertIn("DLE", data["prefixes"])
+        self.assertEqual(data["warnings"], [])
+        self.assertEqual(err, "")
+
+    def test_unknown_project_warns_and_prints_project_and_prefixes(self):
+        self.branch()
+        commit(self.repo, "a.cs", "class A {}\n", "add a")
+        other = os.path.join(self._tmp.name, "Inny")
+        os.rename(self.repo, other)
+        code, out, err = guard(other)
+        self.assertEqual(code, 0)
+        self.assertIn("OSTRZEŻENIE", err)
+        self.assertIn("projekt: inny", out)
+        self.assertIn("PT-*", out)
+
+    def test_merge_commit_conflict_resolution_is_scanned(self):
+        git(self.repo, "checkout", "-q", "-b", "card")
+        commit(self.repo, "base.txt", "card side\n", "card edit")
+        git(self.repo, "checkout", "-q", "-b", "side", "master")
+        commit(self.repo, "base.txt", "side edit\n", "side edit")
+        git(self.repo, "checkout", "-q", "card")
+        merged = subprocess.run(["git", "merge", "--no-ff", "-m", "Merge work", "side"], cwd=self.repo,
+                                capture_output=True, text=True)
+        self.assertNotEqual(merged.returncode, 0)
+        with open(os.path.join(self.repo, "base.txt"), "w", encoding="utf-8") as fh:
+            fh.write("resolved\n// K-89 conflict fixed by Claude\n")
+        git(self.repo, "add", "base.txt")
+        git(self.repo, "commit", "-q", "--no-edit")
+        code, out, _ = guard(self.repo, "--json")
+        self.assertEqual(code, 1)
+        hits = [h for h in json.loads(out)["hits"] if h["where"] == "diff"]
+        self.assertEqual({(h["file"], h["line"], h["rule"], h["merge"]) for h in hits},
+                         {("base.txt", 2, "card", True), ("base.txt", 2, "ai", True)})
+
+    def test_plus_plus_line_is_not_taken_for_file_header(self):
+        self.branch()
+        commit(self.repo, "a.txt", "ok\n++ not a header\nsee K-4\n", "add a")
+        code, out, _ = guard(self.repo, "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual([(h["file"], h["line"]) for h in json.loads(out)["hits"]], [("a.txt", 3)])
+
+    def test_bad_allow_regex_and_missing_explicit_config_exit_two(self):
+        self.branch()
+        commit(self.repo, "a.cs", "class A {}\n", "add a")
+        config = os.path.join(self._tmp.name, "bad.json")
+        with open(config, "w", encoding="utf-8") as fh:
+            json.dump({"projects": {"logviewer": {"allow": [{"rule": "tide", "line": "("}]}}}, fh)
+        code, _, err = guard(self.repo, "--config", config)
+        self.assertEqual(code, 2)
+        self.assertIn("regex", err)
+        code, _, err = guard(self.repo, "--config", os.path.join(self._tmp.name, "nie-ma.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("push_guard", err)
+
+    def test_lowercase_ids_in_branch_names_are_hits(self):
+        self.branch()
+        git(self.repo, "checkout", "-q", "-b", "ticket/dle-1-x", "card")
+        commit(self.repo, "f.cs", "class F {}\n", "add f")
+        git(self.repo, "checkout", "-q", "card")
+        git(self.repo, "merge", "-q", "--no-ff", "ticket/dle-1-x", "-m", "Merge branch 'ticket/dle-1-x' into card/k-89-y")
+        code, out, _ = guard(self.repo, "--json")
+        self.assertEqual(code, 1)
+        self.assertEqual({h["rule"] for h in json.loads(out)["hits"]}, {"ticket", "card"})
+
+    def test_lowercase_ids_outside_branch_names_are_not_hits(self):
+        self.branch()
+        commit(self.repo, "h.cs", "// maintain k-1 style, dle-2 lookalike\n", "add h")
+        self.assertEqual(guard(self.repo)[0], 0)
+
+    def test_default_plans_dir_of_repository_supplies_prefixes(self):
+        self.branch()
+        plans = os.path.join(self.repo, "docs", "agents", "plans")
+        os.makedirs(plans)
+        with open(os.path.join(plans, "p.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\ntide-plan: 1\nticket-prefix: ZZZ\n---\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "add plans")
+        base = git(self.repo, "rev-parse", "HEAD").strip()
+        commit(self.repo, "a.cs", "class A {}\n", "add a (ZZZ-4)")
+        self.assertEqual(guard(self.repo, target=base)[0], 1)
 
     def test_clean_after_rewording(self):
         self.branch()
