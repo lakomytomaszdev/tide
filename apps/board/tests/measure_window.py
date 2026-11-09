@@ -20,8 +20,9 @@ Użycie (jedno powtórzenie = jeden nowy proces okna; domyślnie 3 powtórzenia,
 --scenario    idle: tablica bez aktywnych kart, tylko niezmieniona migawka co 1 s; active5: 5 aktywnych kart,
               zmieniona co 2 s i niezmieniona co 1 s (--cadence zmienia kadencję: eksperyment „wstrzymane migawki”),
 --no-animations  eksperyment: w KOPII pakietu animacja pracujących segmentów nie startuje (repozytorium bez zmian),
---platform    domyślnie offscreen (wtyczka Qt bez okien); DISPLAY/WAYLAND_DISPLAY użytkownika są zawsze czyszczone,
-              więc pomiar nie otwiera okien na jego pulpicie ani nie zabiera fokusu,
+--platform    domyślnie offscreen (wtyczka Qt bez okien); DISPLAY/WAYLAND_DISPLAY użytkownika są czyszczone
+              (poza jawnym `--platform session`, który zostawia środowisko pulpitu: okno jest widoczne i może zabrać
+              fokus, więc tylko za zgodą właściciela), dlatego domyślny pomiar nie dotyka jego pulpitu,
 --nested      kwin|weston: okno w niewidocznym, zagnieżdżonym kompozytorze z własnym gniazdem (brak — błąd).
 Widoki poza Tablicą dostają puste dane (jak `tide.py --data`: bez usługi) — pomiar (b) nie obejmuje kosztu ich danych
 z żywej usługi.
@@ -131,7 +132,8 @@ def child(args) -> int:
 
 
 def platform_env(choice: str, socket: str = "") -> dict:
-    """Środowisko okna pomiarowego: NIGDY sesja graficzna użytkownika (DISPLAY/WAYLAND_DISPLAY są czyszczone).
+    """Środowisko okna pomiarowego: poza jawnym `session` nigdy sesja graficzna użytkownika (DISPLAY/WAYLAND_DISPLAY
+    są czyszczone); `session` zostawia środowisko pulpitu bez zmian.
     offscreen (domyślnie) — wtyczka Qt bez żadnego okna; z `socket` — zagnieżdżony, niewidoczny kompozytor."""
     env = dict(os.environ, QT_FORCE_STDERR_LOGGING="1")
     if choice == "session":
