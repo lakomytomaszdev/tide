@@ -11,6 +11,13 @@ from .test_cardflow import FlowInProcess
 
 
 class PlanFlowTest(FlowInProcess):
+    def setUp(self):
+        super().setUp()
+        # 09.11: kopia planu na gałęzi karty dotyczy projektów z planami w repozytorium (`ai-docs: repo`);
+        # projekt z `ai-docs: tide` trzyma plany na Tablicy (test_plan_of_a_project_with_board_docs_…).
+        self.assertTrue(json.loads(self.board.upsert_project(json.dumps(
+            {"slug": "proj", "repo": self.repo, "aiDocs": "repo"})))["ok"])
+
     def proposal(self, card_id, invalid=False):
         folder = os.path.join(self.repo, "docs", "agents", "plans")
         os.makedirs(os.path.join(folder, "tickets"), exist_ok=True)
@@ -255,6 +262,35 @@ class PlanFlowTest(FlowInProcess):
         engine._plan_commit(card, state, self.repo, info["cardBranch"], info["cardWorktree"])
         self.assertTrue(self.results(card, "plan-commit")[-1]["ok"])
         self.assertEqual([r["ticket"] for r in self.results(card, "reserve")], reserved)
+
+    def test_plan_of_a_project_with_board_docs_is_not_committed_to_the_repository(self):
+        """09.11, K-89 (LogViewer, `ai-docs: tide`): plany żyją na Tablicy, a repozytorium wyklucza
+        docs/agents/plans — zapis planu do repo blokował kartę i wyniósłby plan na gałąź do wypchnięcia."""
+        import dataclasses
+        from tide_daemon.cardflow.state import fold, ticket_of
+
+        with open(os.path.join(self.repo, ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
+            fh.write("/docs/agents/plans/\n")
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.flow.stop()
+        self.assertTrue(wait_until(lambda: not self.flow._ticking, timeout=5))
+        engine = self.flow.engine
+        real = engine._project
+
+        def board_docs(card_id):
+            item, project = real(card_id)
+            return item, dataclasses.replace(project, ai_docs="tide")
+        with mock.patch.object(engine, "_project", side_effect=board_docs):
+            engine.approve_plan(card)
+            state = fold(engine.journal.read(card))
+            info = ticket_of(state)
+            before = engine.git.sha(self.repo, info["cardBranch"])
+            engine._plan_commit(card, state, self.repo, info["cardBranch"], info["cardWorktree"])
+        result = self.results(card, "plan-commit")[-1]
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(engine.git.sha(self.repo, info["cardBranch"]), before, "plan trafił na gałąź karty w repo")
+        self.assertNotIn("plan-commit", fold(engine.journal.read(card)).flow_errors)
 
 
 if __name__ == "__main__":
