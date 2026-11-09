@@ -364,6 +364,65 @@ class UninitializedBoardInterleavingTest(BoardProfileCase):
             self.assertTrue(os.path.exists(os.path.join(self.root, ".git", "tide-board.lock")))
 
 
+class MissingBoardInterleavingTest(BoardCase):
+    """Review PT-321 r2 M2: katalog Tablicy jeszcze nie istnieje — zakłada go dopiero zapis kontraktu (`ensure()`).
+
+    Transakcja, która sama zakłada Tablicę, trzyma wspólną blokadę od `ensure()` do końca: zapis K-38 rozpoczęty
+    po inicjalizacji czeka, aż przygotowany zapis kontraktu trafi na dysk, i potem czyta go świeżo."""
+
+    def setUp(self):
+        super().setUp()
+        self.state = os.path.join(self.tmp, "state")
+        patcher = mock.patch.dict(os.environ, {"TIDE_BOARD_DIR": self.root, "XDG_STATE_HOME": self.state})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.assertFalse(os.path.lexists(self.root))
+
+    def test_k38_write_after_board_creation_waits_for_contract_write(self):
+        from tide_daemon.board.store import BoardStore
+        entered, gate = threading.Event(), threading.Event()
+        real = BoardStore._write
+        results = {}
+
+        def held_write(store, rel, text):
+            if rel.startswith("projects" + os.sep) and not entered.is_set():
+                entered.set()                       # po ensure(), z przygotowanym Change, przed zapisem
+                self.assertTrue(gate.wait(10))
+            return real(store, rel, text)
+
+        def approve():
+            results["board"] = self.store.approve_project_tests({"slug": "app", "tests": {"full": "pytest"}})
+
+        def k38():
+            results["k38"] = bp.save_project("app", {"tide-box": 1, "apt": ["git"]})
+
+        with mock.patch.object(BoardStore, "_write", held_write):
+            board = threading.Thread(target=approve)
+            board.start()
+            self.assertTrue(entered.wait(10))
+            self.assertTrue(self.store.repo.initialized())
+            writer = threading.Thread(target=k38)
+            writer.start()
+            writer.join(0.3)
+            self.assertTrue(writer.is_alive(), "zapis K-38 musi czekać na transakcję, która założyła Tablicę")
+            gate.set()
+            board.join(10)
+            writer.join(10)
+        self.assertFalse(board.is_alive() or writer.is_alive())
+        self.assertTrue(results["board"]["testsApproved"], results)
+        self.assertEqual((results["board"]["commitError"], results["board"]["approvalError"]), ("", ""))
+        self.assertEqual(bp.load_project("app")["apt"], ["git"])
+        path = os.path.join(self.root, "projects", "app", "box.yaml")
+        self.assertEqual(project_tests.load_tests(read(path)), ({**project_tests.empty(), "full": "pytest"}, ""))
+        project = {p["slug"]: p for p in self.store.snapshot()["projects"]}["app"]
+        self.assertTrue(project["testsApproved"])
+
+    def test_read_without_board_creates_nothing(self):
+        self.store.load()
+        self.store.snapshot()
+        self.assertFalse(os.path.lexists(self.root))
+
+
 class EnvironmentConsentTest(tce.EnvBase):
     """Zatwierdzenie środowiska karty (envconsent) na Tablicy, która jest też Tablicą pudełek."""
 

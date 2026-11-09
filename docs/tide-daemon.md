@@ -1406,8 +1406,10 @@ Wspólny plik `projects/<slug>/box.yaml` (PT-321):
   poprawnej Tablicy bez `.git` (np. kopii plików), którą `BoardStore.ensure()` dopiero inicjalizuje — a gdy
   repozytorium istnieje, dodatkowo `flock` na `<tablica>/.git/tide-board.lock` (zgodność z K-55). Kolejność stała:
   katalog, potem `.git`. Przeplot zapisu K-38 i zapisu kontraktu w dowolnej kolejności, także przed inicjalizacją
-  gita, daje najnowszy kontrakt i najnowsze ustawienia K-38. Bez katalogu Tablicy transakcja nie bierze blokady —
-  nie ma wtedy `box.yaml`, który przeplot mógłby cofnąć.
+  gita, daje najnowszy kontrakt i najnowsze ustawienia K-38. Bez katalogu Tablicy sam odczyt niczego nie zakłada
+  i nie bierze blokady; zapis, który zakłada Tablicę (`ensure()`), zakłada katalog, bierze blokadę przed
+  inicjalizacją i trzyma ją do końca zewnętrznej transakcji — świeży odczyt, plan i zapis kontraktu po założeniu
+  Tablicy nie przeplatają się z zapisem K-38 (review PT-321 r2).
 - **Znane ograniczenie: komentarze.** Zapis K-38 (`yamlmini.dumps`) przepisuje plik poza blokiem `tests`, więc
   komentarze poza tym blokiem (np. nad `tests:`) znikają; komentarze wewnątrz bloku zostają. Zapis kontraktu
   (`save_tests`) nadal zachowuje cały plik, w tym komentarze — obietnica historii 10 specyfikacji dotyczy zapisu

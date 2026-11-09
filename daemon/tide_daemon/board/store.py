@@ -132,6 +132,8 @@ class BoardStore:
         self.clock = clock
         self._transaction_lock = RLock()
         self._transaction_depth = 0
+        self._transaction_stack: contextlib.ExitStack | None = None
+        self._board_locked = False
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
 
@@ -144,21 +146,39 @@ class BoardStore:
     def transaction(self):
         """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
         with self._transaction_lock:
-            if self._transaction_depth or not os.path.isdir(self.root):
-                # Bez katalogu Tablicy nie ma też `box.yaml`, którego przeplot mógłby cofnąć.
+            if self._transaction_depth:
                 yield
                 return
-            # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także na
-            # Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje.
-            with lockfile.exclusive(self.root):
+            with contextlib.ExitStack() as stack:
                 try:
                     self._transaction_depth += 1
-                    if self.repo.initialized():
-                        from ..issue_acceptance import recover
-                        recover(self)
+                    self._transaction_stack = stack
+                    # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także
+                    # na Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje. Bez katalogu Tablicy blokadę
+                    # bierze dopiero `ensure()` (`_hold_board_lock`) i trzyma do końca tej transakcji: świeży
+                    # odczyt, plan i zapis po założeniu Tablicy nie przeplatają się z zapisem K-38.
+                    if os.path.isdir(self.root):
+                        self._hold_board_lock()
+                        if self.repo.initialized():
+                            from ..issue_acceptance import recover
+                            recover(self)
                     yield
                 finally:
                     self._transaction_depth = 0
+                    self._transaction_stack = None
+                    self._board_locked = False
+
+    def _hold_board_lock(self) -> None:
+        """Wspólna blokada Tablicy do końca bieżącej (zewnętrznej) transakcji; brakujący katalog zakłada
+        (tak samo robi `box/profile.board_lock`). Ścieżka, która nie jest katalogiem — bez blokady
+        (`ensure()` i tak ją odrzuci)."""
+        if self._board_locked or self._transaction_stack is None:
+            return
+        if not os.path.lexists(self.root):
+            os.makedirs(self.root, exist_ok=True)
+        if os.path.isdir(self.root):
+            self._transaction_stack.enter_context(lockfile.exclusive(self.root))
+            self._board_locked = True
 
     def load(self) -> Board:
         with self.transaction():
@@ -608,7 +628,14 @@ class BoardStore:
         return self._execute(lambda board: self._plan_tag(board, values))
 
     def ensure(self) -> None:
-        """Zakłada repozytorium tablicy, jeśli go nie ma. Cudzego katalogu nie dotyka."""
+        """Zakłada repozytorium tablicy, jeśli go nie ma. Cudzego katalogu nie dotyka.
+
+        Pod wspólną blokadą Tablicy trzymaną do końca transakcji wywołującego (PT-321)."""
+        with self.transaction():
+            self._hold_board_lock()
+            self._ensure_locked()
+
+    def _ensure_locked(self) -> None:
         if self.exists():
             if not self.repo.initialized():
                 error = self.repo.init()
