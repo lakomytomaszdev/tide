@@ -5,11 +5,14 @@ Użycie: /usr/bin/python3 tools/push_guard.py REPOZYTORIUM GAŁĄŹ-KARTY GAŁĄ
             [--project NAZWA] [--prefix PREFIKS ...] [--plans KATALOG ...] [--config PLIK] [--json]
 
 Sprawdza to, co trafiłoby do repozytorium klienta, czyli commity z zakresu DOCELOWA..KARTY:
-temat i treść każdego commita (także scalenia) oraz dodane linie w diffie każdego commita; dla
+temat i treść każdego commita (także scalenia), ścieżki plików dodanych, skopiowanych
+i przemianowanych (także pustych i binarnych) oraz dodane linie w diffie każdego commita; dla
 scaleń są to zmiany wprowadzone przy scalaniu (rozwiązanie konfliktu, `git show --remerge-diff`,
 wymaga git >= 2.36). Szuka śladów wewnętrznych: Tide, YouTrack, numerów kart `K-*`, spraw `S-*`,
 ticketów (`PT-*`, `LOG-*` i prefiksy planów projektu, np. `DLE-*`), stopek `Co-Authored-By`,
-„Generated with” i wzmianek o AI.
+„Generated with”, wzmianek o AI i plików agentów (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.codex/`,
+`docs/agents/` — reguła `agent-file`, tylko dla ścieżek). W ścieżkach numery kart, spraw i ticketów
+rozpoznawane są bez względu na wielkość liter (`docs/plan-k-89.md`).
 
 Wynik: lista trafień (commit, miejsce, reguła, tekst) i raport commitów do przeredagowania
 (trafienie w temacie albo treści; w diffie trzeba poprawić kod, nie opis) albo „czysto”.
@@ -26,11 +29,14 @@ i z konfiguracji projektu. Numery `K-*` i ticketów rozpoznawane są wielkimi li
 gałęzi (po `/` albo cudzysłowie, np. `ticket/dle-1-…`).
 Konfiguracja per projekt (`tools/push_guard.json`, klucz = nazwa repozytorium małymi literami wyznaczona
 z katalogu głównego `.git`, więc worktree `<repo>-worktrees/<slug>` daje nazwę repozytorium, albo `--project`;
-użyty projekt i prefiksy są wypisywane, a nieznany projekt daje ostrzeżenie):`prefixes` (lista) i `allow` — wyjątki dla słów, które w kodzie klienta są nazwą
-domenową (np. „tide” jako pływ w aplikacji o morzu): `{"rule": "tide", "path": "src/Domain/*",
+użyty projekt i prefiksy są wypisywane, a nieznany projekt daje ostrzeżenie):
+`prefixes` (lista) i `allow` — wyjątki dla słów, które w kodzie klienta są nazwą domenową
+(np. „tide” jako pływ w aplikacji o morzu): `{"rule": "tide", "path": "src/Domain/*",
 "line": "regex"}`; pola `rule`, `path` (fnmatch; dla commitów bez pliku nie pasuje) i `line`
-(regex na całej linii) są opcjonalne i wszystkie podane muszą pasować. Wyjątek bez `path`
-obejmuje też temat i treść commita.
+(regex na całej linii albo ścieżce pliku) są opcjonalne i wszystkie podane muszą pasować.
+Wyjątek bez `path` obejmuje też temat i treść commita. Wyjątek z polem `mask` (regex) nie zwalnia
+całej linii: wycina z niej tylko fragmenty pasujące do `mask` (nazwę domenową, np. `LogTool AI`)
+i reguła sprawdza resztę, więc „Claude” obok nazwy domenowej dalej jest trafieniem.
 """
 import argparse
 import fnmatch
@@ -61,6 +67,11 @@ _AI_CASE_SENSITIVE = re.compile(r"\bAI\b|\bA\.I\.|\bLLMs?\b")
 _AI_NAMES = re.compile(
     r"\bClaude\b|\bAnthropic\b|\bCodex\b|\bOpenAI\b|\bChatGPT\b|\bGPT-?\d|\bCopilot\b|\bGemini\b|"
     r"\bagent(?:a|em|owi|y|ów)?\s+AI\b|\U0001F916", re.I)
+# Pliki agentów i dokumenty pracy kartami — tylko dla ścieżek plików.
+AGENT_FILES = ("agent-file", "plik agenta (CLAUDE.md, AGENTS.md, .claude/, .codex/, docs/agents/)", re.compile(
+    r"(?:^|/)(?:CLAUDE|AGENTS|GEMINI)\.md$|(?:^|/)\.(?:claude|codex|cursor|aider[^/]*)(?:/|$)|"
+    r"(?:^|/)\.github/copilot-instructions\.md$|(?:^|/)docs/agents/", re.I))
+_ID_RULES = ("card", "case", "ticket")
 
 
 class GuardError(Exception):
@@ -92,11 +103,13 @@ def load_config(path, project, explicit=False):
     projects = data.get("projects") or {}
     config = projects.get(project) or {}
     for entry in config.get("allow") or []:
-        if entry.get("line"):
+        for key in ("line", "mask"):
+            if not entry.get(key):
+                continue
             try:
-                re.compile(entry["line"])
+                re.compile(entry[key])
             except re.error as exc:
-                raise GuardError(f"konfiguracja {path}: zły regex w allow ({entry['line']!r}): {exc}") from exc
+                raise GuardError(f"konfiguracja {path}: zły regex w allow ({entry[key]!r}): {exc}") from exc
     return config, project in projects
 
 
@@ -144,29 +157,51 @@ def build_rules(prefixes) -> list:
     return rules
 
 
-def line_matches(rules, text):
-    """Zwraca (reguła, opis, dopasowany tekst) dla każdej reguły pasującej do linii."""
-    for name, label, rx in rules:
-        if rx is None:
-            match = _AI_CASE_SENSITIVE.search(text) or _AI_NAMES.search(text)
-        else:
-            match = rx.search(text)
-        if match:
-            yield name, label, match.group(0)
+def path_rules(rules) -> list:
+    """Reguły dla ścieżek plików: numery bez względu na wielkość liter i reguła plików agentów."""
+    out = [(name, label, re.compile(rx.pattern, re.I) if name in _ID_RULES else rx) for name, label, rx in rules]
+    return [*out, AGENT_FILES]
+
+
+def rule_match(rx, text):
+    if rx is None:
+        return _AI_CASE_SENSITIVE.search(text) or _AI_NAMES.search(text)
+    return rx.search(text)
+
+
+def _applies(entry, rule, path, line) -> bool:
+    if entry.get("rule") and entry["rule"] != rule:
+        return False
+    if entry.get("path") and not (path and fnmatch.fnmatch(path, entry["path"])):
+        return False
+    if entry.get("line") and not re.search(entry["line"], line):
+        return False
+    return True
 
 
 def allowed(allow, rule, path, line) -> bool:
+    """Wyjątek bez `mask` zwalnia całą linię dla reguły."""
+    return any(not entry.get("mask") and any(entry.get(k) for k in ("rule", "path", "line"))
+               and _applies(entry, rule, path, line) for entry in allow)
+
+
+def masked(allow, rule, path, line) -> str:
+    """Linia z wyciętymi fragmentami `mask` wyjątków pasujących do reguły, ścieżki i linii."""
+    out = line
     for entry in allow:
-        if entry.get("rule") and entry["rule"] != rule:
+        if entry.get("mask") and _applies(entry, rule, path, line):
+            out = re.sub(entry["mask"], lambda m: " " * len(m.group(0)), out)
+    return out
+
+
+def line_matches(rules, text, allow=(), path=None):
+    """Zwraca (reguła, opis, dopasowany tekst) dla każdej reguły pasującej do linii po wyjątkach."""
+    for name, label, rx in rules:
+        if rule_match(rx, text) is None or allowed(allow, name, path, text):
             continue
-        if entry.get("path") and not (path and fnmatch.fnmatch(path, entry["path"])):
-            continue
-        if entry.get("line") and not re.search(entry["line"], line):
-            continue
-        if not any(entry.get(k) for k in ("rule", "path", "line")):
-            continue
-        return True
-    return False
+        match = rule_match(rx, masked(allow, name, path, text))
+        if match:
+            yield name, label, match.group(0)
 
 
 def commits(repo, target, branch) -> list:
@@ -222,14 +257,33 @@ def added_lines(repo, sha, merge=False):
             number += 1
 
 
+def added_paths(repo, sha, merge=False) -> list:
+    """Ścieżki plików dodanych, skopiowanych i przemianowanych w commicie (dla scalenia: przy scalaniu)."""
+    args = ["show", "--format=", "--name-status", "-z", "-M", "-C", "--no-color", "--no-ext-diff"]
+    fields = run_git(repo, *args, *(["--remerge-diff"] if merge else []), sha).split("\0")
+    paths, i = [], 0
+    while i < len(fields):
+        status = fields[i]
+        if not status:
+            i += 1
+            continue
+        if status[0] in "RC":
+            paths.append(fields[i + 2])
+            i += 3
+        else:
+            if status[0] == "A":
+                paths.append(fields[i + 1])
+            i += 2
+    return paths
+
+
 def scan(repo, branch, target, prefixes=(), allow=()) -> list:
     rules = build_rules(prefixes)
+    file_rules = path_rules(rules)
     hits = []
 
     def add(commit, where, path, number, text):
-        for rule, label, found in line_matches(rules, text):
-            if allowed(allow, rule, path, text):
-                continue
+        for rule, label, found in line_matches(file_rules if where == "plik" else rules, text, allow, path):
             hits.append({"commit": commit["sha"], "subject": commit["subject"], "merge": commit["merge"],
                          "where": where, "file": path, "line": number, "rule": rule, "label": label,
                          "match": found, "text": text.strip()[:160]})
@@ -238,6 +292,8 @@ def scan(repo, branch, target, prefixes=(), allow=()) -> list:
         add(commit, "temat", None, None, commit["subject"])
         for number, text in enumerate(commit["body"].splitlines(), 1):
             add(commit, "treść", None, number, text)
+        for path in added_paths(repo, commit["sha"], commit["merge"]):
+            add(commit, "plik", path, None, path)
         for path, number, text in added_lines(repo, commit["sha"], commit["merge"]):
             add(commit, "diff", path, number, text)
     return hits
@@ -248,9 +304,8 @@ def format_report(hits) -> str:
         return "czysto: brak śladów wewnętrznych w historii i diffie"
     out = [f"TRAFIENIA: {len(hits)}"]
     for h in hits:
-        place = h["where"] if h["where"] != "diff" else f"{h['file']}:{h['line']}"
-        if h["where"] == "treść":
-            place = f"treść:{h['line']}"
+        place = {"diff": f"{h['file']}:{h['line']}", "treść": f"treść:{h['line']}",
+                 "plik": f"plik {h['file']}"}.get(h["where"], h["where"])
         out.append(f"  {h['commit'][:8]} {place} [{h['rule']}] „{h['match']}” — {h['text']}")
     reword = {}
     for h in hits:
@@ -262,9 +317,10 @@ def format_report(hits) -> str:
         for sha, h in reword.items():
             kind = "scalenie" if h["merge"] else "commit"
             out.append(f"  {sha[:8]} ({kind}) {h['subject']}")
-    diff_commits = sorted({h["commit"][:8] for h in hits if h["where"] == "diff"})
+    diff_commits = sorted({h["commit"][:8] for h in hits if h["where"] in ("diff", "plik")})
     if diff_commits:
-        out.append("DO POPRAWIENIA W KODZIE (diff; commit trzeba przepisać): " + ", ".join(diff_commits))
+        out.append("DO POPRAWIENIA W KODZIE (diff albo nazwa pliku; commit trzeba przepisać): "
+                   + ", ".join(diff_commits))
     out.append("Wysyłka wstrzymana.")
     return "\n".join(out)
 

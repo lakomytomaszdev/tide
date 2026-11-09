@@ -3,7 +3,9 @@
     "logviewer": {
       "prefixes": ["DLE"],
       "allow": [
-        {"rule": "ai", "path": "*"}
+        {"rule": "ai", "path": "*", "mask": "\\bLogTool AI\\b"},
+        {"rule": "ai", "path": "*", "mask": "\\bAnthropic\\b"},
+        {"rule": "ai", "path": "*", "mask": "\\b(?i:openai|anthropic)/[\\w.:-]+"}
       ]
     }
   }
