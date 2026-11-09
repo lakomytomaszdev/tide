@@ -13,6 +13,7 @@ from unittest import mock
 from tide_daemon.box import builder as bb
 from tide_daemon.box import profile as bp
 from tide_daemon.box import state as bs
+from tide_daemon.box.settings import BoxSettings
 from tide_daemon.cardflow import boxwait, envconsent
 from tide_daemon.cardflow.decisions import build_decisions
 from tide_daemon.cardflow.state import fold
@@ -35,6 +36,9 @@ class EnvBase(FlowInProcess):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.engine = self.flow.engine
+        # PT-290 (D1): oczekiwanie i budowa tylko przy włączonych pudełkach; te testy opisują włączone pudełko.
+        # Zachowanie przy `box.enabled: false` — test_cardflow_env_consent_switch.py.
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=True)
 
 
 class EnvEngineTest(EnvBase):
