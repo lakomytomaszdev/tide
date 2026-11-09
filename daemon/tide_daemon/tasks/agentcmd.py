@@ -528,6 +528,14 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
         settings["permissions"] = {"allow": [f"Read(/{d}/**)" for d in skill_dirs],
                                    "deny": read_only_rules(skill_dirs)}
         settings["sandbox"]["filesystem"].setdefault("denyWrite", []).extend(skill_dirs)
+    # Katalog do odczytu wewnątrz `in` (dowody sprawy, zrzuty) — reguła Read zamiast --add-dir. Katalog roboczy
+    # sesji w trybie acceptEdits dostaje od piaskownicy atrapy chronionych plików (`.mcp.json`…), a bwrap nie
+    # założy ich w `in`, zamontowanym już tylko do odczytu: każde polecenie Bash kończyło się błędem
+    # (09.11, K-89; odtworzone wprost z Claude Code 2.1.319). Bash czyta je przez `allowRead` katalogu `in`.
+    inside_input = [d for d in step.read_dirs if _within(d, inp)]
+    if inside_input:
+        permissions = settings.setdefault("permissions", {})
+        permissions["allow"] = [*permissions.get("allow", []), *(f"Read(/{d}/**)" for d in inside_input)]
     # --add-dir rozszerza również domyślny zapis Bash. Edit nie jest granicą dla powłoki:
     # jawny denyWrite ma pierwszeństwo także wobec zapisu domyślnego i ścieżek przez dowiązania.
     readonly = list(dict.fromkeys([*step.read_dirs, *step.context_dirs]))
@@ -548,7 +556,8 @@ def _claude(step: Step, inp: str, out: str, env: dict, home: str,
     if step.permission_mode:
         argv += ["--permission-mode", step.permission_mode]
     for folder in step.read_dirs:
-        argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
+        if folder not in inside_input:
+            argv += ["--add-dir", folder]   # Read i Grep bez pytania; zapis blokują reguły Edit niżej i piaskownica
     allowed, disallowed = step.allowed_tools, step.disallowed_tools
     if step.write_out_only:
         # PT-158: stała lista tylko do odczytu zamiast listy kroku (lista projektu nigdy tu nie trafia). Ścieżka
