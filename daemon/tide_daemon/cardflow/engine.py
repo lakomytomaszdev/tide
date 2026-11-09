@@ -1037,7 +1037,30 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         with self.journal.lock, self.store.transaction():
             from . import startorder
-            return startorder.start(self, card_id, request, resume=_resume, order=_order)
+            begun = (self.journal.state(card_id).started or {}).get("seq")
+            result = startorder.start(self, card_id, request, resume=_resume, order=_order)
+            # Ruch w tej samej blokadzie co zapis zlecenia: okno nie wciśnie się między start a przeniesienie.
+            if not _resume and self._lift_from_backlog(card_id, begun) and isinstance(result, dict) \
+                    and result.get("ok"):
+                result = {**result, "column": "todo"}
+            return result
+
+    def _lift_from_backlog(self, card_id: str, begun) -> bool:
+        """Udany start zdejmuje kartę z Backlogu do „Do zrobienia” (na koniec) tym samym mechanizmem co MoveCard
+        (PT-313; wcześniej robiło to tylko okno, a karta uruchomiona przez D-Bus — `tide go`, skrypty koordynatora —
+        stała w Backlogu z niewidocznym stanem). Tylko świeżo zapisany `card.started`: nieudany start i ponowienie
+        (resume) niczego nie ruszają, karta w innej kolumnie zostaje na miejscu. Ruch okna po odpowiedzi trafia
+        na kartę już stojącą w „Do zrobienia” na końcu — bez skutku dla kolejności."""
+        st = self.journal.state(card_id)
+        if st.started is None or st.started.get("seq") == begun or st.card_finished or st.paused:
+            return False
+        stored = self.store.load().cards.get(card_num(card_id))
+        if stored is None or stored.column != "backlog":
+            return False
+        self.store.move_card(card_id, "todo", -1, from_column="backlog")
+        moved = self.store.load().cards.get(card_num(card_id))
+        self.moved(card_id, "todo", "backlog", getattr(moved, "move_id", "") or "")
+        return True
 
     def _start(self, card_id: str, request: dict, *, _resume=False, _prepare=None, _order=None) -> dict:
         try:
