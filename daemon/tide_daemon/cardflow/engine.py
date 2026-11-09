@@ -7521,8 +7521,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         else:
             return False
         executor = (st.author_overrides.get(CLOSE_AUTHOR) or {}).get("executor") or executor
+        # Zatwierdzona zmiana planu (np. ticket dopisany na prośbę domknięcia) też unieważnia wcześniejsze domknięcie —
+        # inaczej karta stała „bez kroku” za starym krokiem `close` z błędem (09.11, K-69).
         last_return = max((int(e.get("seq") or 0) for e in self.journal.read(card)
-                           if e.get("type") == "plan.returned"), default=0)
+                           if e.get("type") in ("plan.returned", "plan.revision-approved")), default=0)
         last_return = max(last_return, st.base_change.get("seq", 0))
         closings = [s for s in st.steps.values() if s.get("kind") == "close" and
                     int(s.get("seq") or 0) > last_return]
