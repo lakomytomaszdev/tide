@@ -3716,11 +3716,25 @@ class FlowEngine(CaretakerChat, PlanEditing):
         rows = approved.get("rows") or []
         merged = set(st.imported_done) | {row["id"] for row in rows if (st.results.get(("merge", row["id"])) or {}).get("ok")}
         key = f"{approved.get('seq')}:{st.plan_change_seq}"
+        if self._plan_on_board(card):
+            # 09.11, K-89: projekt z `ai-docs: tide` trzyma plany i kartki na Tablicy (flow/K-*/plan), a jego
+            # repozytorium może je celowo wykluczać (repo klienta) — kopii planu nie zapisujemy na gałęzi karty.
+            self._act(card, "plan-commit", key,
+                      lambda: {"commit": "", "already": True, "skipped": "ai-docs: tide"},
+                      retry_failed=True, repo=repo, branch=branch, worktree=worktree)
+            return
         files = self._plan_files(card, st, merged, worktree=worktree)
         self._act(card, "plan-commit", key,
                   lambda: self.git.commit_plan(repo, branch, worktree, files),
                   retry_failed=True,
                   repo=repo, branch=branch, worktree=worktree)
+
+    def _plan_on_board(self, card: str) -> bool:
+        try:
+            _item, project = self._project(card)
+        except FlowError:
+            return False
+        return project.ai_docs == "tide"
 
     @staticmethod
     def _plan_extra(text: str) -> tuple[str, str]:

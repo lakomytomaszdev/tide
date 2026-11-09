@@ -301,6 +301,8 @@ class StageObservationTest(unittest.TestCase):
             setattr(self.engine, name, mock.Mock())
         self.engine._repo = mock.Mock(return_value="/r")
         self.engine._plan_files = mock.Mock(return_value={})
+        # Plan w repozytorium (`ai-docs: repo`): te testy mierzą commit planu na gałęzi karty.
+        self.engine._plan_on_board = mock.Mock(return_value=False)
         self.engine._card_column = mock.Mock(return_value="todo")
         self.engine._environment_view = mock.Mock()
 

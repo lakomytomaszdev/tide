@@ -1,3 +1,4 @@
+import json
 """PT-247: szkice przechodzą przez migawkę, review, poprawkę i commit gałęzi karty."""
 import os
 from pathlib import Path
@@ -305,6 +306,13 @@ class ArtifactsTest(unittest.TestCase):
 
 
 class ArtifactsFlowTest(FlowInProcess):
+    def setUp(self):
+        super().setUp()
+        # 09.11: kopia planu na gałęzi karty dotyczy projektów z planami w repozytorium (`ai-docs: repo`);
+        # projekt z `ai-docs: tide` trzyma plany na Tablicy (test_plan_of_a_project_with_board_docs_…).
+        self.assertTrue(json.loads(self.board.upsert_project(json.dumps(
+            {"slug": "proj", "repo": self.repo, "aiDocs": "repo"})))["ok"])
+
     proposal = integration.PlanFlowTest.proposal
     submit = integration.PlanFlowTest.submit
 
