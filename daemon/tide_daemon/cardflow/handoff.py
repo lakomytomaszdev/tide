@@ -219,22 +219,47 @@ Nie wykonuj push ani scalenia gałęzi.
 """
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, box: bool = False) -> str:
-    """Wskazówka dla kooperującego agenta; twardą granicą pozostaje piaskownica kroku."""
-    allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
-    deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
-    own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
-           "nie proś o zgodę na niego.\n") if step_dir else ""
-    wrapped = ("W pudełku wolno opakować dozwolone polecenie testowe jako `tide-test <polecenie> [argumenty…]`\n"
+# PT-291 (K-38 F3): treść kartki zależna od runnera kroku. Tekst hosta (HostRunner) jest tekstem master
+# (wzorzec: daemon/tests/fixtures/host-cards-master/), dodatki pudełka są osobnymi stałymi i trafiają
+# wyłącznie do kroku, którego zapisanym runnerem jest `box` — nigdy według samego profilu projektu.
+HOST_RUNNER = "host"
+BOX_RUNNER = "box"
+
+BOX_WRAPPED = ("W pudełku wolno opakować dozwolone polecenie testowe jako `tide-test <polecenie> [argumenty…]`\n"
                "bez osobnego wpisu tide-test na liście zgód. Dla tej formy sprawdzaj listę dozwolonych\n"
                "wobec polecenia wewnątrz owijki. Dla `tide-test sh -c '…'` oceniaj treść przekazaną do sh -c,\n"
                "nie sam program sh; owijka ani powłoka nie rozszerzają zgody na argumenty lub łańcuchy.\n"
                "Zakazy mają pierwszeństwo: sprawdzaj zarówno pełne wywołanie, jak i polecenie wewnętrzne\n"
                "(w tym każde polecenie w treści sh -c). Zabronionego polecenia nie uruchamiaj przez owijkę.\n"
-               "Lista verify profilu wskazuje testy do opakowania, sama nie nadaje zgody na ich wykonanie.\n") if box else ""
-    boundary = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
-                "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.") if box else (
-                "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
+               "Lista verify profilu wskazuje testy do opakowania, sama nie nadaje zgody na ich wykonanie.\n")
+HOST_BOUNDARY = "Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok."
+BOX_BOUNDARY = ("Przed poleceniem spoza listy dozwolonych (dla opakowanych testów ocenionej według powyższych zasad) "
+                "zapisz wynik `denied` z pełnym poleceniem i zakończ krok.")
+HOST_REPORT = "`denied` albo `outside`"
+BOX_REPORT = "`denied`"
+HOST_OUTSIDE = """Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
+Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
+jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
+np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
+worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
+"""
+# Krok w pudełku nie uruchamia poleceń na hoście: wynik `outside` Tide odrzuca (FlowError box-outside w silniku).
+BOX_OUTSIDE = """Ograniczenie pudełka: ten krok biegnie w pudełku i nie ma wyniku `outside` — Tide nie uruchamia poleceń
+kroku na hoście i odrzuci taką prośbę. Testy, budowanie, Docker i instalację paczek wykonuj w pudełku; sieć idzie
+przez proxy, a odmowę połączenia Tide sam przedstawi użytkownikowi jako pytanie o domenę. Gdy polecenia nie da się
+wykonać w pudełku, zakończ wynikiem `error` z opisem przyczyny.
+"""
+
+
+def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: str, boundary: str,
+            report: str, outside: str) -> str:
+    allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
+    deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
+    own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
+           "nie proś o zgodę na niego.\n") if step_dir else ""
     return f"""
 
 Polecenia projektu w tym kroku (najnowsza lista):
@@ -247,18 +272,44 @@ Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedn
 na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
 Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
 NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
-uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie ({report}); gdy mimo to się nie da,
 zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
 i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
-Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
-Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
-{{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"}} i zakończ krok.
-Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
-Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
-jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
-np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
-worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.
-"""
+{outside}"""
+
+
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku."""
+    return _policy(allowed, denied, step_dir, wrapped="", boundary=HOST_BOUNDARY, report=HOST_REPORT,
+                   outside=HOST_OUTSIDE)
+
+
+def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+    """Lista poleceń kroku w pudełku: owijka tide-test i ograniczenie pudełka zamiast kontraktu outside."""
+    return _policy(allowed, denied, step_dir, wrapped=BOX_WRAPPED, boundary=BOX_BOUNDARY, report=BOX_REPORT,
+                   outside=BOX_OUTSIDE)
+
+
+def runner_policy(runner: str, allowed: list[str], denied: list[str], step_dir: str = "", *,
+                  profile: dict | None = None) -> str:
+    """Jedyny wybór treści listy poleceń według zapisanego runnera kroku. Host: tekst master, bez dodatków
+    pudełka (także przy `box.enabled: true` i istniejącym profilu). Box: owijka, verify profilu, ograniczenia."""
+    if runner == BOX_RUNNER:
+        return box_command_policy(allowed, denied, step_dir) + box_tests(profile or {})
+    if runner != HOST_RUNNER:
+        raise ValueError(f"nieznany runner kroku: {runner!r}")
+    return command_policy(allowed, denied, step_dir)
+
+
+def review_evidence(runner: str, source: dict) -> str:
+    """Spis artefaktów autora w kartce review — tylko dla review biegnącego w pudełku (zapisany runner kroku
+    review), i tylko gdy autor biegł w pudełku. Review na hoście zachowuje zasady testów hosta (test-changed
+    z notki), także po pudełkowym autorze i przy wyłączonym pudełku."""
+    if runner == BOX_RUNNER:
+        return test_evidence(source)
+    if runner != HOST_RUNNER:
+        raise ValueError(f"nieznany runner kroku: {runner!r}")
+    return ""
 
 
 def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_dir: str,

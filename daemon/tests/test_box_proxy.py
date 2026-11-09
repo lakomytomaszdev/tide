@@ -567,14 +567,37 @@ class StartTests(unittest.TestCase):
         self.logs = []
         FakeService.started = []
 
+    def installed_rules(self, address, port):
+        """Plik reguł inet tide-box z generatora instalatora (`files.sh rules`), jak po `make box-install`."""
+        result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "box", "files.sh"), "rules", address,
+                                 str(port)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = os.path.join(self.tmp, f"tide-box-{address}-{port}.nft")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(result.stdout)
+        return path
+
     def start(self, bridge, settings=None, ip=None, kind="bridge", **kw):
         env = {"PATH": self.bin + os.pathsep + "/usr/bin:/bin", "TIDE_FAKE_LOG": self.calls,
                "TIDE_FAKE_BRIDGE": bridge or "", "TIDE_FAKE_IP_JSON": ip_json(ip) if ip else "",
                "TIDE_FAKE_LINK_JSON": link_json(kind) if ip else ""}
         settings = settings or bs.BoxSettings(enabled=True)
+        address = (bridge or "").split("/")[0] or ip
+        if "rules" not in kw:   # domyślnie instalacja zgodna z adresem mostka i portem ustawień
+            kw["rules"] = (self.installed_rules(address, settings.proxy_port) if address
+                           else os.path.join(self.tmp, "brak.nft"))
         return bx.start_service(settings, run=partial(subprocess.run, env=env),
                                 which=lambda name: shutil.which(name, path=self.bin), log=self.logs.append,
                                 factory=FakeService, **kw)
+
+    def test_refuses_port_or_address_outside_installed_nftables_rules(self):
+        # PT-292: sam wolny port nie dowodzi zgodności — proxy wstaje tylko na adresie i porcie z inet tide-box.
+        for rules in (self.installed_rules("10.173.184.1", 18080), self.installed_rules("10.173.184.9", 18555),
+                      os.path.join(self.tmp, "brak.nft")):
+            with self.subTest(rules=rules), self.assertRaises(bx.ProxyError) as ctx:
+                self.start("10.173.184.1/24", bs.BoxSettings(enabled=True, proxy_port=18555), rules=rules)
+            self.assertIn("make box-install BOX_PROXY_PORT=18555", str(ctx.exception))
+        self.assertEqual(FakeService.started, [])
 
     def incus_calls(self):
         try:

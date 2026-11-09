@@ -59,6 +59,8 @@ from . import boxstep
 from . import trialhold
 from . import processidentity
 from ..box import trialgate
+from ..box import nftcontract
+from ..box import settings as bsettings
 from . import consent
 from .decisions import clean_options
 from . import environment as flow_environment
@@ -509,6 +511,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.codex_roots = codex_homes.default_homes() if codex_roots is None else codex_roots
         self.tmp_root = tmp_root or tempfile.gettempdir()
         self.settings = settings or settings_path()
+        self.box_rules = None   # plik reguł inet tide-box (None — nftcontract.rules_file(): /etc/tide-box/…)
         self.git = flow_git or FlowGit()
         self.clock = clock
         self.tracker = TrackerOutbox(self.journal, clock)
@@ -674,13 +677,37 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slots = data.get("providerSlots") if isinstance(data.get("providerSlots"), dict) else {}
         slots = {k: v for k, v in slots.items() if isinstance(k, str) and isinstance(v, int)
                  and not isinstance(v, bool) and 1 <= v <= MAX_PROVIDER_SLOTS}
+        box = bsettings.from_dict(data)
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
                 "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(),
-                **caretaker.settings_of(data)}
+                **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings)}
+
+    def _box_patch(self, request: dict, data: dict) -> dict | None:
+        """PT-292: sekcja `box` po częściowym zapisie (`None` — żądanie bez `box`). Ścisła walidacja kluczy
+        z `box/settings.py`, a zmiana portu albo włączenie pudełka wymaga zgodności z zainstalowanymi regułami
+        nftables (`box/nftcontract.py`, tylko odczyt). Zapis nie przełącza działającego proxy ani runnerów:
+        proxy czyta port przy starcie usługi."""
+        if "box" not in request:
+            return None
+        patch = request["box"]
+        problem = bsettings.problem(patch)
+        if problem:
+            raise FlowError("bad-settings", problem)
+        stored = data.get("box") if isinstance(data.get("box"), dict) else {}
+        merged = {**stored, **patch}
+        before, after = bsettings.from_dict({"box": stored}), bsettings.from_dict({"box": merged})
+        port_changed = after.proxy_port != before.proxy_port
+        activated = after.enabled and (not before.enabled or port_changed or after.bridge != before.bridge)
+        if port_changed or activated:
+            path = self.box_rules or nftcontract.rules_file()
+            problem = nftcontract.check_file(path, port=after.proxy_port, bridge=after.bridge)
+            if problem:
+                raise FlowError("box-install-mismatch", problem)
+        return merged
 
     def set_flow_settings(self, request: dict) -> dict:
-        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion",
+        allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
                    *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
@@ -715,10 +742,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 20:
             raise FlowError("bad-settings", "liczba rund review przed pytaniem musi być od 1 do 20")
         data = self._settings_data()
+        box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
         if "reviewRoundsBeforeQuestion" in request:
             data["reviewRoundsBeforeQuestion"] = rounds
+        if box is not None:
+            data["box"] = box
         self._write_settings(data)
         return self.get_flow_settings()
 
@@ -2317,8 +2347,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if row.get("sourceState") in ("gotowe", "odrzucone"):
                 self.journal.append(card_id, "ticket.imported", ticket=row["id"], state=row["sourceState"])
         # PT-172: plan bez zatwierdzonego środowiska to „czeka na środowisko”; czyści to dopiero ApproveCardEnvironment.
+        # PT-290 (D1): tylko przy `box.enabled: true`; przy wyłączonym pudełku zgoda jest odroczona, host działa dalej.
         from . import boxwait
-        boxwait.set_box_wait(self.journal, card_id, boxwait.ENVIRONMENT, source="plan-approval")
+        boxwait.require_environment(self, card_id, source="plan-approval")
         return {"ok": True, "id": card_id, "map": mapping, "waves": waves}
 
     def _images(self, value) -> list[str]:
@@ -2561,9 +2592,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
-                attempt=0, resume_session="", make_prompt=None) -> dict:
+                attempt=0, resume_session="", make_prompt=None, evidence=None) -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
-        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153)."""
+        „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153).
+        `evidence` — wpis kroku autora dla review: spis jego artefaktów dostaje tylko review w pudełku (PT-291)."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
         evidence_state = self.journal.state(card.id)
@@ -2592,6 +2624,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                                      images=[*shots, *issue_shots], test_base=made_ticket.get("base") or "")
         if source_evidence:
             prompt += source_evidence.prompt(step_dir)
+        # PT-291: dodatki pudełka zależą od zapisanego runnera tego kroku (placement), nie od profilu ani autora.
+        step_runner = handoff.BOX_RUNNER if placement is not None else handoff.HOST_RUNNER
+        if evidence is not None:
+            prompt += handoff.review_evidence(step_runner, evidence)
         context_prompt, base_context = self._step_base_context(self.journal.state(card.id))
         prompt += context_prompt
         read_dirs, context_dirs = [], []
@@ -2636,9 +2672,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji.
         read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
-            prompt += handoff.command_policy(project.allowed_commands, project.denied_commands, step_dir=step_dir, box=placement is not None)
-        if placement is not None:
-            prompt += handoff.box_tests(placement.profile)
+            prompt += handoff.runner_policy(step_runner, project.allowed_commands, project.denied_commands,
+                                            step_dir=step_dir,
+                                            profile=placement.profile if placement is not None else None)
         from .stepnotes import prepare as prepare_notes
         prompt, note_ids = prepare_notes(self.journal.state(card.id), parent_step, prompt)
         session = resume_session or (str(uuid.uuid4()) if selected.tool == "claude" else "")
@@ -4872,11 +4908,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                      ticket_branch=info["branch"], worktree=path, out_dir=out,
                                      diff=diff, note=self._note(card, source), rules=self._rules(project.repo),
                                      test_base=info["base"])
-        prompt += handoff.test_evidence(source)
         self._launch(item, project, reviewer, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": path}, step_id, [],
-                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip)
+                     kind="review", round_no=round_no, prompt_text=prompt, review_tip=tip, evidence=source)
 
     def _fix(self, card: str, st: FlowState, review_step: dict) -> None:
         item, project = self._project(card)

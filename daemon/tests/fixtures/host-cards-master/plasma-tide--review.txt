@@ -1,0 +1,88 @@
+Krok review PT-901 karty K-90, runda 1. Sprawdź wymagania i zmiany, nie edytuj kodu.
+
+Karta K-90: Eksport raportu
+Opis/specyfikacja karty:
+Dodaj eksport raportu do CSV.
+
+Kryteria: plik ma nagłówek.
+
+Gałąź karty: card/k-90-eksport
+Gałąź ticketu: ticket/pt-901-eksport
+Twój katalog: <TMP>/wt/plasma-tide
+
+Dla recenzenta:
+- sprawdź zgodność z opisem karty i zasadami projektu,
+- sprawdź w notce, że `make test-changed` z poniższą bazą przeszedł dla oddawanych zmian;
+  nie żądaj osobnego pełnego `make test` i nie uruchamiaj go ponownie na potrzeby review,
+- ponowienie samych padniętych modułów uznaj tylko przy tym samym HEAD co pełny przebieg i czystym drzewie
+  (zapis w notce); inaczej wymagaj pełnego polecenia z zasady testów; udane ponowienie nie zastępuje porażki,
+  oceń rozliczenie odstępstwa jak przy każdym nieudanym przebiegu,
+- podaj konkretne BLOCKER, MAJOR, NIT z plikiem i linią,
+- BLOCKER lub MAJOR oznacza REQUEST_CHANGES.
+
+Testy ticketu (także po poprawkach): autor przed oddaniem uruchamia `make test-changed BASE=0123456789abcdef0123456789abcdef01234567`.
+BASE to przypięty punkt startu ticketu na gałęzi karty, a nie bieżący wierzchołek karty ani master.
+Zapisz polecenie i wynik w notce. Pełny `make test` nie jest kryterium oddania ticketu ani jego review;
+jest wykonywany raz przy domknięciu karty. Ta zasada zastępuje wymóg pełnego `make test` zapisany
+w kartkach istniejących planów (w tym K-37, K-38 i K-55); nie przepisuj tych planów.
+Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez dodatkowego `make test`.
+Ponowienie bez zmian kodu: gdy przebieg padł, a od jego commita nie zmieniasz żadnego pliku (podejrzenie
+niestabilności lub obciążenia), nie powtarzaj całego zestawu. Uruchom tylko moduły z listy „Wszystkie nieudane testy” (albo z `summary.json` przebiegu, `returncode`
+różny od 0) przez uruchamiacz projektu — ta sama pula maszyny i izolacja stanu co w pełnym przebiegu:
+`/usr/bin/python3 tools/test_runner.py --modules <ścieżki modułów>`. Tide robi to także sam, gdy prosisz
+o to samo pełne polecenie na tym samym HEAD.
+W notce zapisz pełny przebieg (polecenie, `git rev-parse HEAD`, wynik, ścieżka raportu) i ponowienie
+(ten sam HEAD, czysty `git status`, lista ponowionych testów, wynik). Gdy zmieniasz jakikolwiek plik, obowiązuje
+pełne polecenie z akapitu wyżej. Ponowienie zmienia tylko to, co uruchamiasz, nie ocenę: porażka pierwszego
+przebiegu zostaje wynikiem, a udane ponowienie jej nie zastępuje. Rozlicz ją jak każde odstępstwo
+według zasad wyjątków od testów projektu (w Tide: `docs/testing.md`, „Wyjątki od testów”): ten sam test na bazie
+ticketu i na głównej gałęzi projektu, obciążenie, zakres, właściciel.
+
+Zasady projektu:
+# Zasady
+- testy przed oddaniem
+
+
+Notka wyniku wykonawcy:
+Zrobione: eksport. make test-changed BASE=0123456 — OK.
+
+Diff ticketu względem gałęzi karty:
+diff --git a/export.py b/export.py
++def export():
++    return 'a,b'
+
+
+Zapisz raport w <TMP>/wt/plasma-tide.review-1.step/out/review.md. Ostatnią czynnością zapisz plik wyniku:
+Plik wyniku: <TMP>/wt/plasma-tide.review-1.step/out/result.json
+{"result":"done","verdict":"APPROVE","blockers":0,"majors":0,"nits":0,"notes":["review.md"]}
+albo
+{"result":"done","verdict":"REQUEST_CHANGES","blockers":1,"majors":0,"nits":0,"notes":["review.md"]}
+Liczby mają odpowiadać raportowi. Nie rób push ani merge.
+
+
+Polecenia projektu w tym kroku (najnowsza lista):
+Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
+- make test
+- make test-changed *
+- git status *
+- python3 -m unittest *
+Zabronione polecenia:
+- make install
+Odczyt własnych katalogów kroku <TMP>/wt/plasma-tide.review-1.step/in i <TMP>/wt/plasma-tide.review-1.step/out (ls, cat) jest zawsze dozwolony —
+nie proś o zgodę na niego.
+Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.
+Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
+na cały program ani na łańcuch poleceń. Zwykłe pojedyncze polecenia (testy, budowanie, lint, instalacja paczek)
+Tide zatwierdza i uruchamia automatycznie — zgłaszaj je śmiało, po jednym, bez łączenia.
+NIE zadawaj użytkownikowi pytań o środowisko (porty, serwery, instalacje, sieć, uruchomienie testów, „czy możesz
+uruchomić…”). Środowisko to zadanie Tide i Twoje: zgłoś polecenie (`denied` albo `outside`); gdy mimo to się nie da,
+zakończ wynikiem `error` z opisem przyczyny. Pytanie (`question`) jest tylko na decyzje o zakresie, wymaganiach
+i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
+Jeśli potrzebujesz polecenia, którego piaskownica kroku nie wykona (sieć, np. `npm install <paczka>`; Docker/
+Testcontainers; pełne testy, które same uruchamiają piaskownicę), zapisz
+{"result":"outside","command":"jedno pełne polecenie","reason":"po co i dlaczego nie w piaskownicy"} i zakończ krok.
+Użytkownik może je uruchomić poza piaskownicą w tym worktree; przy wznowieniu dostaniesz kod wyjścia i koniec wyniku.
+Polecenie startuje w katalogu worktree, więc nie pisz `cd … &&`, `;`, `|` ani `bash -c` — Tide uruchamia sam tylko
+jedno polecenie bez łańcucha. Ścieżki podawaj bezwzględnie albo względem worktree; zmienne tylko na początku,
+np. `env PYTHONPATH=<worktree>/src <repo>/.venv/bin/python -m pytest -q <worktree>/tests` (PYTHONPATH wyłącznie do
+worktree albo repozytorium projektu). Dłuższą procedurę zapisz jako skrypt w worktree i zgłoś `bash <skrypt>`.

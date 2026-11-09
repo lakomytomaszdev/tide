@@ -294,7 +294,8 @@ class ServiceTests(ExposureCase):
             _project=lambda card: (SimpleNamespace(id=card), self.project),
             store=SimpleNamespace(load=lambda: SimpleNamespace(projects={
                 ex.PROJECT: self.project, "other": SimpleNamespace(repo=str(self.foreign))})),
-            journal=self.journal, approve_plan=mock.Mock(), box_launcher=mock.Mock())
+            journal=self.journal, approve_plan=mock.Mock(), box_launcher=mock.Mock(),
+            box_settings_source=lambda: BoxSettings(enabled=True))   # PT-290: zgoda przy włączonym pudełku
         bp.save_project(ex.PROJECT, {"tide-box": 1, "project": ex.PROJECT})
 
     def request(self, action="preview", **extras):
@@ -409,6 +410,29 @@ class ServiceTests(ExposureCase):
         revoked = self.call(self.request("revoke", **{projectconsent.EXPECTED: approved["consentVersion"]}))
         self.assertTrue(revoked["ok"], revoked)
         self.assertIsNone(ex.current(ex.PROJECT))
+
+    def test_disabled_box_records_project_consent_without_wait_exposure_or_build(self):
+        # PT-290 (D1): przy `box.enabled: false` zgoda projektu jest tylko zapisem decyzji — bez `environment`,
+        # bez montowań/ekspozycji i budowy; wcześniejsze zgody, kopie i historia zostają.
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=False)
+        before = self.journal.read("K-38")
+        preview = self.call(self.request())
+        ack = {projectconsent.EXPECTED: preview["exposure"]["expected"], projectconsent.ACCEPTED: True}
+        with mock.patch.object(packs, "materialize", side_effect=AssertionError("kopia")):
+            approved = self.call(self.request("approve", **ack))
+        self.assertTrue(approved["ok"], approved)
+        self.assertEqual([e for e in self.journal.read("K-38") if e.get("value") == "environment"], [])
+        self.engine.box_launcher.assert_not_called()
+        self.assertEqual(self.journal.read("K-38")[:len(before)], before)
+        self.assertEqual(approved["boxWait"], "")
+        self.assertIn("bez ekspozycji projektu i bez budowy", approved["message"])
+        self.assertEqual(ex.current(ex.PROJECT)["version"], approved["consentVersion"])
+        self.assertTrue(self.copy.directory and os.path.isdir(self.copy.directory))
+        self.assertIsNone(boxstep.place(self.engine, "K-38", ex.PROJECT, "ticket", "", ("ticket",)))
+        # Ponowne włączenie: bariera v1 i zgoda środowiska obowiązują jak dotąd.
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=True)
+        with self.assertRaises(boxstep.BoxWaiting):
+            boxstep.place(self.engine, "K-38", ex.PROJECT, "ticket", "", ("ticket",))
 
     def test_full_profile_update_roundtrip_with_stage2_data_is_refused_without_loss(self):
         for scope in ("project", "card"):

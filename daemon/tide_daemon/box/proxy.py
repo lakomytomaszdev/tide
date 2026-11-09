@@ -840,10 +840,12 @@ class ProxyService:
 # ------------------------------------------------------------ start z usługą
 
 def start_service(settings, *, listen: str | None = None, run=subprocess.run, which=shutil.which,
-                  log=_stderr, factory=ProxyService) -> ProxyService | None:
+                  log=_stderr, factory=ProxyService, rules: str | None = None) -> ProxyService | None:
     """Proxy pudełka razem z usługą: tylko gdy `box.enabled` i mostek Incusa istnieje; inaczej `None`
     i usługa działa jak przed pudełkiem. Adres nasłuchu = adres mostka (`listen`, jeśli podany, musi mu być
-    równy). Zły adres → `ProxyError`; zajęty port → `ProxyError`."""
+    równy). Zły adres → `ProxyError`; zajęty port → `ProxyError`. Adres, port i mostek niezgodne z zainstalowaną
+    tabelą `inet tide-box` (`rules`, domyślnie `nftcontract.rules_file()`) albo brak potwierdzonej instalacji →
+    `ProxyError` z procedurą uzgodnienia (PT-292); reguł nie zmieniamy."""
     global _running
     if not settings.enabled:
         return None
@@ -857,6 +859,11 @@ def start_service(settings, *, listen: str | None = None, run=subprocess.run, wh
         log(f"box.enabled, ale mostek {settings.bridge} nie istnieje albo nie ma adresu IPv4 — proxy nie startuje")
         return None
     address = check_listen(listen if listen is not None else bridge, bridge)
+    from . import nftcontract
+    problem = nftcontract.check_file(rules or nftcontract.rules_file(), port=settings.proxy_port,
+                                     bridge=settings.bridge, address=address)
+    if problem:
+        raise ProxyError(problem)
     service = factory(address, settings.proxy_port, log=log).start()
     log(f"słucha na {address}:{service.port}")
     _running = service

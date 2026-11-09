@@ -127,7 +127,8 @@ class HandoffTest(unittest.TestCase):
         text = handoff.command_policy(["make test"], ["make install"], step_dir="/step")
         self.assertIn("Przed poleceniem spoza listy dozwolonych zapisz wynik `denied` z pełnym poleceniem i zakończ krok.", text)
         self.assertNotIn("tide-test", text)
-        self.assertEqual(text, handoff.command_policy(["make test"], ["make install"], step_dir="/step", box=False))
+        self.assertEqual(text, handoff.runner_policy(handoff.HOST_RUNNER, ["make test"], ["make install"],
+                                                     step_dir="/step"))
 
     def test_box_instruction_includes_custom_verify(self):
         text = handoff.box_tests({"verify": ["./check-project --quick", "make test"]})

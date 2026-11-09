@@ -113,7 +113,24 @@ def model(engine, card_id, st):
     return out
 
 
+def _wait(engine, card_id):
+    """D1 (PT-290): zgoda projektu nie aktywuje ekspozycji v1, więc karta wymaga środowiska — `environment` tylko
+    przy włączonym pudełku; przy wyłączonym zgoda jest odroczona, a hostowy krok nie czeka."""
+    return boxwait.require_environment(engine, card_id, source="project-consent")
+
+
+def _current_wait(engine, card_id):
+    from .state import fold
+    return boxwait.card_box_wait(fold(engine.journal.read(card_id)))
+
+
+DISABLED = ("Zgoda zapisana. Pudełko jest wyłączone (box.enabled=false): bez ekspozycji projektu i bez budowy; "
+            "kroki biegną na hoście.")
+
+
 def approve(engine, card_id, text, st):
+    from .envconsent import boxes_enabled, plan_pending
+    enabled = boxes_enabled(engine)
     try:
         raw = yamlmini.loads(text)
         if not isinstance(raw, dict):
@@ -125,7 +142,7 @@ def approve(engine, card_id, text, st):
         svc = service(engine, card_id)
         if action == "revoke":
             message = ex.revoke(svc.project, raw.get(EXPECTED))
-            boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="project-consent")
+            _wait(engine, card_id)
             return {"ok": True, "id": card_id, "message": message, "revoked": True}
         _project, _card, merged = _profiles(engine, card_id, st, {k: v for k, v in raw.items() if k not in CONTROL})
         if action == "preview":
@@ -140,14 +157,16 @@ def approve(engine, card_id, text, st):
             raise ex.ExposureError("Wymagana świadoma zgoda projektu i dokładny aktualny podgląd zakresu")
         # Przed zapisem zgody sprawdzamy review planu. Nie zapisujemy profili ani
         # nie uruchamiamy budowy na podstawie YAML z pudełka.
-        if st.plan_proposed and not st.plan_approved:
+        if plan_pending(st):
             engine.approve_plan(card_id)
         record = svc.approve(merged, request.get("snapshotIds"), expected=raw.get(EXPECTED),
                              accepted=raw.get(ACCEPTED))
-        boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="project-consent")
-        return {"ok": True, "id": card_id, "onlyPlan": False, "boxWait": boxwait.ENVIRONMENT,
-                "consentVersion": record["version"], "message": ex.PENDING,
+        _wait(engine, card_id)
+        return {"ok": True, "id": card_id, "onlyPlan": False, "boxWait": _current_wait(engine, card_id),
+                "consentVersion": record["version"], "message": ex.PENDING if enabled else DISABLED,
+                "boxEnabled": enabled, "build": "", "decision": "recorded",
                 "exposure": view(svc.preview(merged, request["snapshotIds"]), record)}
     except (ex.ExposureError, OSError, bp.ProfileError, yamlmini.YamlError, ValueError) as exc:
         return {"ok": False, "id": card_id, "error": "project-exposure-wait", "message": str(exc),
-                "boxWait": boxwait.ENVIRONMENT}
+                "boxWait": boxwait.ENVIRONMENT if enabled else _current_wait(engine, card_id),
+                "boxEnabled": enabled}

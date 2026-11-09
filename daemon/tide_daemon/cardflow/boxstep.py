@@ -9,7 +9,7 @@ Silnik (`engine.py`) woła stąd operacje kroku, reszta to szczegóły:
   zatwierdzony profil i pudełko istnieje; wznowienie (`parent_step`) bierze runner z wpisu wznawianego kroku
   i niczego nie wybiera na nowo.
   Kolejno: `box.enabled: false` → host (wznowienie kroku z pudełka → `BoxError`), przed wszystkimi dalszymi
-  kontrolami (PT-289); `boxWait: environment` → czeka; projekt z ekspozycją v1 (PT-264) → czeka; budowa/reset → czeka; brak pudełka → host; brak filtrowania NIC albo
+  kontrolami (PT-289); `boxWait: environment` albo odroczona zgoda środowiska (PT-290 → `environment`) → czeka; projekt z ekspozycją v1 (PT-264) → czeka; budowa/reset → czeka; brak pudełka → host; brak filtrowania NIC albo
   hash migawki różny od hasha profilu → `boxWait: rebuild` i czeka; `box: per-card` → `copy_for_card` (raz na
   kartę); pudełko zatrzymane → `boxWait: start`, `incus start`, `incus exec … true`, menedżer usług `agent`,
   adres IP, a potem `boxWait` czyszczone.
@@ -193,7 +193,11 @@ def place(engine, card_id: str, slug: str, kind: str, parent_step: str, kinds) -
         return None
     # Zgoda na środowisko blokuje wykonanie przy włączonych pudełkach także bez profilu i na hoście.
     # Planowanie nadal może przygotować profil do zatwierdzenia.
-    if (kind in kinds or forced) and boxwait.card_box_wait(st) == boxwait.ENVIRONMENT:
+    if (kind in kinds or forced) and boxwait.environment_pending(st):
+        if boxwait.card_box_wait(st) != boxwait.ENVIRONMENT:
+            # PT-290 (D1): plan zatwierdzony przy wyłączonym pudełku ma tylko odroczoną zgodę. Ponowne włączenie
+            # nie zamienia samego zatwierdzenia planu w zgodę na środowisko: karta dostaje `environment`.
+            boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="box-enabled")
         raise BoxWaiting(WAIT_ENVIRONMENT)
     if parent_step:
         if not forced:
