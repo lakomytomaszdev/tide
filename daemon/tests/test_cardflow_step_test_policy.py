@@ -374,11 +374,22 @@ class ContractGrantsFlowTest(PolicyFlowCase):
         self.assertEqual(self.grants_of(conflict), [old, "make test"])
 
         def retried(step):
+            """Następna próba kroku konfliktu: ponowienie użytkownika albo automatyczne (atrapa zawsze kończy błędem,
+            a Tide może sam ponowić krok po błędzie) — zgody liczy każda próba od nowa."""
             self.assertTrue(wait_until(lambda: any(e.get("step") == step["step"]
                                                    for e in self.of(card_id, "step.finished")), timeout=15))
-            self.assertTrue(self.decide(card_id, {"choice": "retry", "step": step["step"]})["ok"])
-            found = wait_until(lambda: [s for s in self.of(card_id, "step.started")
-                                        if s.get("parentStep") == step["step"]], timeout=20)
+
+            def child():
+                return [s for s in self.of(card_id, "step.started") if s.get("parentStep") == step["step"]]
+
+            def pending():
+                return any(d["step"] == step["step"] for d in self.shown(card_id)["derived"]["flow"]["decisions"])
+
+            self.assertTrue(wait_until(lambda: child() or pending(), timeout=20), self.events(card_id))
+            if not child():
+                reply = self.decide(card_id, {"choice": "retry", "step": step["step"]})
+                self.assertTrue(reply["ok"] or wait_until(child, timeout=5), reply)
+            found = wait_until(child, timeout=20)
             self.assertTrue(found, self.events(card_id))
             self.assertEqual(found[0]["kind"], "conflict")
             return found[0]

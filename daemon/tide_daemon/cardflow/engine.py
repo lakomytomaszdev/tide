@@ -5239,7 +5239,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
                                 **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
                                                          "boxPortOwner") if intent.get(k)},
-                                **{name: intent[name] for name in ("testPolicy", "testPolicyCard") if name in intent})
+                                **{name: intent[name] for name in ("testPolicy", "testPolicyCard", "contractCommands")
+                                   if name in intent})
 
     def _repo(self, card: str) -> str:
         st = self.journal.state(card)
