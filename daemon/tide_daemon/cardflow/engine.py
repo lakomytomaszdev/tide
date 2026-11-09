@@ -3729,6 +3729,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
                   retry_failed=True,
                   repo=repo, branch=branch, worktree=worktree)
 
+    def _merge_message(self, card: str, repo: str, tip: str, default: str) -> str:
+        """Tytuł commita scalenia. Repozytorium klienta (`ai-docs: tide`) nie może dostać numerów kart ani ticketów
+        (09.11, K-89: „Merge ticket DLE-1 into card K-89” na gałęzi do wypchnięcia) — tytuł bierze się z ostatniego
+        commita scalanej pracy."""
+        if not self._plan_on_board(card):
+            return default
+        res = self.git.run(repo, "log", "-1", "--no-show-signature", "--format=%s", tip) if tip else None
+        subject = res.out.strip() if res is not None and res.ok else ""
+        return f"Merge: {subject}" if subject else "Merge reviewed work"
+
     def _plan_on_board(self, card: str) -> bool:
         try:
             _item, project = self._project(card)
@@ -6138,7 +6148,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         try:
             self._act(card, "merge", ticket, lambda: self.git.merge(
                 repo, info["cardBranch"], step.get("branch") or info["branch"], info["cardWorktree"],
-                f"Merge ticket {ticket} into card {card}", expected_tip=expected_tip),
+                self._merge_message(card, repo, expected_tip, f"Merge ticket {ticket} into card {card}"),
+                expected_tip=expected_tip),
                 branch=step.get("branch") or info["branch"], into=info["cardBranch"], expectedTip=expected_tip,
                 cardTip=self.git.sha(repo, f"refs/heads/{info['cardBranch']}"), retry_failed=retry)
         except FlowError as exc:
@@ -6167,7 +6178,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         prompt = handoff.conflict_card(card_id=card, title=item.title, description=item.description,
                                        ticket=ticket, card_branch=info["cardBranch"],
                                        ticket_branch=info["branch"], worktree=info["cardWorktree"],
-                                       out_dir=out, error=failure.get("error") or "konflikt")
+                                       out_dir=out, error=failure.get("error") or "konflikt",
+                                       merge_message=self._merge_message(card, project.repo, review_step.get("reviewTip") or "", "")
+                                       if self._plan_on_board(card) else "")
         self._launch(item, project, selected, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
@@ -7343,11 +7356,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             main_tree = preview["targetWorktree"]
         try:
             tip = self.git.clean_tip(repo, info["cardBranch"], info["cardWorktree"])
+            main_message = self._merge_message(card, repo, tip, f"Merge card {card} into {main}")
             if preview is not None and preview.get("targetPreparation", {}).get("createWorktree"):
-                prepared = MergeWorktree.prepare_fresh(self.git, repo, preview, f"Merge card {card} into {main}")
+                prepared = MergeWorktree.prepare_fresh(self.git, repo, preview, main_message)
             else:
                 prepared = MergeWorktree(self.git, repo, main, main_tree).prepare(
-                    f"refs/heads/{info['cardBranch']}", tip, f"Merge card {card} into {main}",
+                    f"refs/heads/{info['cardBranch']}", tip, main_message,
                     abandoned=next((i for i in reversed(list(st.intents.values()))
                                     if i.get("action") == "main-merge" and i["key"] in st.abandoned_main_merges and
                                     i.get("requestSeq") == (st.started or {}).get("seq") and

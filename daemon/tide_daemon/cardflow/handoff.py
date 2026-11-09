@@ -4,6 +4,7 @@ from __future__ import annotations
 from .. import resources
 
 import glob
+import json
 import os
 import re
 import shlex
@@ -160,13 +161,17 @@ Jeśli `make test-changed` wybierze pełny zestaw z mapy zmian, wykonaj go bez d
 
 
 def conflict_card(*, card_id: str, title: str, description: str, ticket: str, card_branch: str,
-                  ticket_branch: str, worktree: str, out_dir: str, error: str) -> str:
+                  ticket_branch: str, worktree: str, out_dir: str, error: str, merge_message: str = "") -> str:
+    # Repozytorium klienta (`ai-docs: tide`): tytuł commita scalenia bez numerów kart i ticketów (09.11, K-89).
+    message = (f"\nTytuł commita scalenia ustaw dokładnie na: {json.dumps(merge_message, ensure_ascii=False)} "
+               "(`git commit -m …`); nie zostawiaj domyślnego tytułu gita z nazwami gałęzi."
+               if merge_message else "")
     return f"""Rozwiąż konflikt scalenia ticketu {ticket} do karty {card_id}.
 Karta: {title}. Opis: {description}
 Pracuj wyłącznie w worktree karty {worktree} na gałęzi {card_branch}.
 Zatwierdzony ticket jest na gałęzi {ticket_branch}; przyczyna: {error}.
 Scal dokładnie tę gałąź do gałęzi karty, rozwiąż konflikty, uruchom potrzebne testy i zapisz commit
-scalenia z dwoma rodzicami. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.
+scalenia z dwoma rodzicami. Nie zmieniaj gałęzi ticketu ani głównej. Nie rób push.{message}
 Jeśli nie możesz bezpiecznie rozstrzygnąć konfliktu, zapisz pytanie do użytkownika zamiast zgadywać.
 Zapisz notkę w {out_dir}/{NOTE_FILE}; jako ostatnią czynność zapisz plik:
 Plik wyniku: {out_dir}/{RESULT_FILE}
