@@ -50,3 +50,88 @@ Etykieta jest stała — skrypty i testy mogą się do niej odwoływać (np. `tr
 | obraz-bazowy-publikowany | 2026-11-04 | PT-179 | Obraz bazowy to instancja `tide-base` z migawką `clean` **i** obraz Incusa `tide-base` z `incus publish tide-base/clean --alias tide-base --reuse`; builder (#4) robi pudełka projektów `incus init tide-base …` jak dotąd. apt w obrazie bez zmian względem `apt-przez-https` — wariantu zwykłego HTTP nie ma. | `box.base-image` od #4 jest aliasem obrazu, a `incus init` z obrazu daje pudełko bez konfiguracji i migawek instancji bazowej (filtrowanie NIC, wolumen `/home/agent`, limity nakłada builder). Kopia `incus copy tide-base/clean` byłaby szybsza na btrfs, ale zmieniałaby kolejność i testy buildera #4; do rozważenia przy pomiarze pierwszej budowy w #29, jeśli publikacja okaże się długa. |
 | base-wlasne-proxy-cli | 2026-11-04 | PT-179 | `tide box base` (i `tide box login`) z wiersza poleceń startuje własną instancję `ProxyService` z #5 (`start_service` z ustawień: adres mostka, `box.proxy-port`) na czas budowy, gdy proxy nie biegnie w tym procesie; port zajęty przez usługę Tide → odmowa z podpowiedzią. Bez D-Bus do usługi. | nftables wpuszczają z mostka tylko ten jeden port, więc budowa idzie przez ten sam kod proxy co kroki (lista domen, dziennik odmów, bez MITM) i nie ma ścieżki „bez proxy”. Metoda D-Bus usługi do długiej budowy (postęp, przerwanie) to osobny zakres; obraz bazowy buduje się rzadko. |
 | codex-k1-w-pudelku | 2026-11-04 | PT-179 | Otwarte z `bwrap-profil-w-pudelku`: obraz bazowy wczytuje profil `bwrap`, więc piaskownica Codexa startuje, ale ograniczenie zapisu poza katalogiem roboczym nadal nie jest dowiedzione — dla Codexa obowiązuje ryzyko K1 z wariantu bez piaskownicy wewnętrznej (granicą jest pudełko). Przy K3 (`k3-wdrozone`) w pudełku i tak nie ma poświadczeń Codexa. | Ten ticket nie powtarzał P-2 (próba wymaga prawdziwego Incusa i modelu); wpis zamyka pytanie „do #16” odesłaniem do powtórki `TRIALS=p2` na obrazie z `make box-base`. |
+
+## PT-293: wycofanie K-38 do przypiętego mastera (2026-11-09)
+
+### AUTO: Poprawny fold mastera nie jest dowodem bezpiecznego wznowienia
+
+- **Próba**: `daemon/tests/test_cardflow_rollback.py` (harness `rollback_trial.py`). Historię generuje kod K-38
+  publicznymi ścieżkami na atrapach (Incus, jednostki pudełka, proxy, `claude`): karta tylko na hoście, oczekiwanie
+  `box.wait=environment`, zgoda środowiska, `box.wait=rebuild` (karta wstrzymana), pytanie kroku w pudełku, krok
+  w pudełku zatrzymany przez strażnika i automatycznie wznowiony (`step.retry`). Stary silnik to `daemon/`, `docs/`
+  i `tools/` z `git archive` przypiętego mastera `a6efe28cdfe2e727bbc1dec085ac3aebfb76abe6` (master w chwili startu
+  PT-293; inny SHA: `TIDE_ROLLBACK_OLD_SHA`), uruchomiony w osobnym `python3 -I` na tym samym autorytatywnym
+  dzienniku (mirror usługi). Artefakty: pełne zdarzenia w kolejności, SHA obu wersji, raport starego silnika
+  (`$TIDE_ROLLBACK_ARTIFACTS`).
+- **Wynik bez procedury** (usługa K-38 zatrzymana bez pauzy, krok w pudełku żyje): fold mastera czyta wszystkie karty
+  bez wyjątku (`FlowState` nie ma pól pudełka), a stary silnik: sprawdza jednostkę kroku z pudełka na hoście
+  (`systemctl --user is-active tide-step-…scope`), zapisuje żywemu krokowi `error/lost` i startuje opiekuna na hoście
+  (podwójna praca), po odpowiedzi wznawia na hoście sesję kroku z pudełka (`--resume` sesji z domu pudełka),
+  ignoruje `box.wait=environment` i `rebuild` (start ticketu na hoście po odpowiedzi lub wznowieniu karty).
+- **Wynik z procedurą** (pauza → koniec procesów i `StopBox` → kontrola → zatrzymanie usługi → stary silnik → restart
+  starego silnika): zero startów i wywołań `systemctl`, zero dopisanych zdarzeń, niezmienione dane spoza dziennika
+  (stan pudełek i Incusa atrapy, refy, worktrees), komplet historii według odcisku. Karta `safe` wznowiona na
+  starym kodzie zachowuje się jak w K-38 przy `box.enabled: false` (wznowienie sesji na hoście). Kontrola odmawia
+  przy braku pauzy, przy pauzie bez końca procesu i przy nieznanym stanie jednostki — stary silnik wtedy nie rusza.
+- **Ograniczenia**: atrapy, nie prawdziwy Incus/systemd; nie certyfikujemy wycofania z aktywnym krokiem w pudełku
+  (procedura wymaga jego końca); odczytu wszystkich historii rzeczywistej Tablicy dotyczy F7 (PT-295). Blokada prób
+  PT-261 nie jest zwalniana: kroki objęte `trialpolicy` mają klasę `decision`.
+
+### Znaczenia zdarzeń: K-38 a przypięty master
+
+Kontrola: `tide_daemon/cardflow/rollback.py` (`check`, klasy `safe` / `hold-paused` / `decision`, przeszkody `stops`).
+
+| Rodzaj zdarzenia / pola | Znaczenie w K-38 | Znaczenie na przypiętym master | Ryzyko | Warunek i działanie rollbacku |
+| --- | --- | --- | --- | --- |
+| `box.wait` `value: environment` (`source`: ui, plan-approval, box-enabled, project-consent) | karta czeka na zgodę środowiska; kroki wykonawcze i wznowienia kroków hostowych nie startują | nieznany typ, pomijany przez fold | odpowiedź lub wznowienie startuje krok na hoście bez zgody (próba: start ticketu `env-pending`) | `hold-paused`: karta wstrzymana przed i po wycofaniu; odblokowanie dopiero na K-38 |
+| `box.wait` `value: rebuild` (`box`, `why`) | przepis lub migawka `clean` niezgodne, brak NIC; kroki czekają na przebudowę | pomijane | wznowienie karty startuje ticket na hoście (próba: `rebuild`) | `hold-paused` |
+| `box.wait` `value: start` | pudełko zatrzymane, trwa jego start | pomijane | jak wyżej; start pudełka nie dokończy się | `hold-paused`; przeszkoda, gdy trwa start (rozpoczęta akcja, slot) |
+| `box.wait` `value: ""`, `deferred: environment` (PT-290) | zgoda środowiska odroczona przy `box.enabled: false`, nic nie blokuje | pomijane | brak: kroki i tak biegną na hoście, jak w K-38 przy wyłączonym pudełku | `safe` (partia 1) |
+| `box.wait` `value: ""` po `environment` (+ `box.approved` w dzienniku pudełka) | zgoda środowiska: kroki wykonawcze w zatwierdzonym pudełku | pomijane | dalsze kroki na hoście zamiast w pudełku | `hold-paused` |
+| `box.rebuild-requested` (`domain`, `project`) | zlecona przebudowa po decyzji o domenie | pomijane | przebudowa nie nastąpi, krok ruszy na hoście | `hold-paused` |
+| `intent`/`result` `step-start` i `step.started` z `runner: box`, `box`, `boxSlug`, `boxIp`, `boxAccess`, `unit` | krok w pudełku; jednostka `tide-step-<id>.service` usługi użytkownika w pudełku, stan przez `incus exec … systemctl --user` | pola nieznane; stan przez `systemctl --user is-active <unit>.scope` hosta | hostowe sprawdzanie: żywy krok uznany za `error/lost`, opiekun lub ponowienie startuje na hoście przy żywym procesie w pudełku | przeszkoda `step-running`/`process-alive`/`process-unknown`, dopóki jednostka w pudełku nie jest nieaktywna albo instancja zatrzymana; karta `decision` |
+| `step.finished` kroku z pudełka (`question`, `denied`, `stopped`, `error`) | wznowienie w tym samym pudełku (`--resume` sesji z domu pudełka, runner z wpisu) | wznowienie na hoście | wznowienie na hoście sesji kroku z pudełka (próba: `box-question`) | `decision`: bez decyzji właściciela karta nie jest wznawiana na starym kodzie |
+| `step.retry` i krok z `parentStep`, `runner: box` | automatyczne ponowienie w tym samym pudełku | ponowienie na hoście | jak wyżej | przeszkoda do końca procesu; `decision` |
+| `step.waiting` `cause: box`, `refs.guard`, `box.ports`, `box.risk` | powód czekania (pudełko, jedna karta repozytorium), strażnik refów, porty, ryzyko K1 | tekst bez skutku albo pomijane | brak serializacji kart repozytorium (D7) i strażnika refów | dane zostają; karty z krokami w pudełku `decision` |
+| `k38.handoff`, `k38.inventory`, `k38.public-inventory`, kroki objęte `trialpolicy.blocked_event` lub `_identityHeld` (PT-261, PT-288) | blokada prób i chroniona tożsamość procesu | brak blokady | stary kod mógłby wznowić historyczne próby objęte PT-261 | `decision`; PT-261 pozostaje w mocy, rollback go nie zwalnia |
+| dziennik pudełka (`box.build`, `box.ready`, `box.use`, `box.release`, `box.approved`), globalny slot `box-admission`, wolumeny domowe | stan pudełek, rezerwacja jednego aktywnego zasobu | nieczytane | zajęty slot i działające pudełko bez właściciela; dane obce | przeszkoda `box-use-held`, `box-slot-held`, `box-queue`; `tide box stop <projekt>` przed wycofaniem; danych nie kasujemy |
+| odczyt pełnej historii `read_complete` (PT-288) | niepełna lub nieczytelna historia = stan nieznany | tolerancyjny odczyt | dopisywanie do historii, której K-38 nie uznaje | przeszkoda `unknown-history`/`unknown-registry` |
+| mirror usługi (`$XDG_STATE_HOME/tide/cardflow/<skrót tablicy>/<karta>.jsonl`) a plik Tablicy `flow/<karta>/journal.jsonl` | mirror autorytatywny; Tablica jest kopią | to samo: `Journal.read` czyta mirror, `check` przywraca z niego Tablicę | rsync kopii Tablicy nad mirrorem lub ręczne kasowanie usuwa nowe zdarzenia | kopia Tablicy tylko do porównania; po wycofaniu `verify` z odciskiem `check` |
+
+### Procedura wycofania (zapis i instalacja tylko po osobnej zgodzie właściciela)
+
+Kontrola i weryfikacja tylko czytają; polecenia uruchamiamy z checkoutu K-38 (`PYTHONPATH=<checkout>/daemon`),
+bo po odwróceniu integracji modułu `rollback.py` nie ma w zainstalowanym kodzie.
+
+1. Wstrzymać każdą kartę z trwającym przepływem (Tablica albo `SetCardPaused`). Pauza nie kończy procesów.
+2. Potwierdzić koniec: brak kroków bez wyniku, konsol i outside; jednostki kroków (host i pudełko), konsol i outside
+   nieaktywne (cgroup jednostki obejmuje potomków); `box.use` zwolnione; pudełka zatrzymane `tide box stop <projekt>`,
+   slot i kolejka wolne.
+3. `python3 -m tide_daemon.cardflow.rollback check > rollback-check.json` — wymagane `ok: true`. Każda pozycja
+   `stops`, także stan nieznany, zatrzymuje procedurę przed downgrade'em.
+4. Zatrzymać usługę (`systemctl --user stop tide-daemon`) i powtórzyć `check`: `ok: true`, ten sam `fingerprint`.
+5. Kopia Tablicy wyłącznie jako dowód porównania. Bez rsync nad mirrorem, bez kasowania nowych zdarzeń,
+   bez reset/rebase gałęzi i bez automatycznej migracji dziennika.
+6. `python3 -m tide_daemon.cardflow.rollback revert-plan K-38` czyta `card.merged` karty. `MergeCardToMain` tworzy
+   commit scalenia `commit-tree -p <targetCommitBefore> -p <sourceCommit>` (także po integracji
+   `integrate/k-38-master-v2`, która zmienia tylko gałąź karty): poleceniem jest `git revert -m 1 <resultCommit>`
+   po sprawdzeniu, że pierwszy rodzic to `targetCommitBefore`. Integracja bez commita scalenia: `git revert --no-edit`
+   commitów `targetCommitBefore..resultCommit` od najnowszego. Brak zapisu lub niespójni rodzice: bez polecenia,
+   decyzja właściciela. Na dzień PT-293 integracji nie ma: kandydat karty `d00270439dd7aaa99c6683b4419064b56e585e31`
+   (start ticketu), master `a6efe28cdfe2e727bbc1dec085ac3aebfb76abe6`; dokładny SHA daje dopiero zapis scalenia.
+   Ponowne scalenie K-38 po takim odwróceniu wymaga odwrócenia commita revert.
+7. Przed instalacją powtórzyć próbę dla pierwszego rodzica: `TIDE_ROLLBACK_OLD_SHA=<targetCommitBefore>`.
+   Następnie `make install` (kopia zapasowa) i start starego silnika, potem jego restart. Po każdym:
+   `python3 -m tide_daemon.cardflow.rollback verify rollback-check.json` — `ok: true`.
+8. Karty `hold-paused` i `decision` pozostają wstrzymane. Wznawiać wolno tylko karty `safe`.
+
+### Rozstrzygnięcie dla wydania
+
+- **Partia 1** (`box.enabled: false`, brak kroków w pudełku): historia ma wyłącznie karty `safe` (`batch1Safe: true`).
+  Wycofanie dowiedzione na atrapach: stary silnik i jego restart bez skutków, wznowienie karty jak w K-38.
+- **Znaczenia historyczne/oczekujące** (`hold-paused`): wycofanie bezpieczne tylko przy pozostawieniu pauzy. Odblokowanie
+  na starym kodzie jest niebezpieczne (próba).
+- **Bez decyzji nie wolno odblokować** (`decision`): kroki w pudełku, wznowienia sesji z pudełka, blokada PT-261.
+  Bezpiecznego wznowienia takich kart na starym kodzie nie da się dowieść. **Blokada wydania**: każda partia
+  z `box.enabled: true` (pierwsze `box.wait` albo krok w pudełku) nie ma dowodu bezpiecznego wycofania. Do decyzji
+  właściciela bez fikcyjnego APPROVE i automatycznej migracji dziennika.
