@@ -144,15 +144,18 @@ class BoardStore:
     def transaction(self):
         """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
         with self._transaction_lock:
-            if self._transaction_depth or not self.repo.initialized():
+            if self._transaction_depth or not os.path.isdir(self.root):
+                # Bez katalogu Tablicy nie ma też `box.yaml`, którego przeplot mógłby cofnąć.
                 yield
                 return
-            # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321).
-            with lockfile.exclusive(self.repo.git_dir):
+            # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także na
+            # Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje.
+            with lockfile.exclusive(self.root):
                 try:
                     self._transaction_depth += 1
-                    from ..issue_acceptance import recover
-                    recover(self)
+                    if self.repo.initialized():
+                        from ..issue_acceptance import recover
+                        recover(self)
                     yield
                 finally:
                     self._transaction_depth = 0

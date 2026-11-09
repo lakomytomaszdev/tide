@@ -14,7 +14,6 @@ Schemat to granica zgody użytkownika:
 Wykrywanie stosu i szablony stosów (#30) oraz budowa pudełka (#4) są poza tym modułem.
 Opis: docs/tide-daemon.md (Pudełko karty: profil środowiska).
 """
-import contextlib
 import copy
 import hashlib
 import ipaddress
@@ -727,9 +726,12 @@ def parse_project_file(text: str, slug: str | None = None) -> ProjectFile:
 
 
 def board_lock():
-    """Blokada zapisu Tablicy wspólna z `BoardStore.transaction` (PT-321); bez repozytorium gita — żadna."""
-    git_dir = os.path.join(board_dir(), ".git")
-    return lockfile.exclusive(git_dir) if os.path.isdir(git_dir) else contextlib.nullcontext()
+    """Blokada zapisu Tablicy wspólna z `BoardStore.transaction` (PT-321), także przed inicjalizacją gita.
+
+    Katalog Tablicy zakładamy, jeśli go nie ma — zapis profilu i tak by go założył (`_write_atomic`)."""
+    root = board_dir()
+    os.makedirs(root, exist_ok=True)
+    return lockfile.exclusive(root)
 
 
 def save_project(slug: str, profile: dict) -> str:

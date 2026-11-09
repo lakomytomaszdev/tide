@@ -1402,8 +1402,12 @@ Wspólny plik `projects/<slug>/box.yaml` (PT-321):
   blokiem `tests`, inny `project`, `tests` poza blokiem najwyższego poziomu, rozmiar, kodowanie), zapis nie
   nadpisuje — `ProfileError`, a zgoda środowiska odpowiada błędem bez zapisu.
 - **Wspólna blokada.** `save_project` czyta i zapisuje plik pod tą samą blokadą co `BoardStore.transaction`
-  (`flock` na `<tablica>/.git/tide-board.lock`, `board/lockfile.py`; wielowejściowa w obrębie wątku). Przeplot
-  zapisu K-38 i zapisu kontraktu w dowolnej kolejności daje najnowszy kontrakt i najnowsze ustawienia K-38.
+  (`board/lockfile.py`; wielowejściowa w obrębie wątku): `flock` na deskryptorze katalogu Tablicy — działa także na
+  poprawnej Tablicy bez `.git` (np. kopii plików), którą `BoardStore.ensure()` dopiero inicjalizuje — a gdy
+  repozytorium istnieje, dodatkowo `flock` na `<tablica>/.git/tide-board.lock` (zgodność z K-55). Kolejność stała:
+  katalog, potem `.git`. Przeplot zapisu K-38 i zapisu kontraktu w dowolnej kolejności, także przed inicjalizacją
+  gita, daje najnowszy kontrakt i najnowsze ustawienia K-38. Bez katalogu Tablicy transakcja nie bierze blokady —
+  nie ma wtedy `box.yaml`, który przeplot mógłby cofnąć.
 - **Znane ograniczenie: komentarze.** Zapis K-38 (`yamlmini.dumps`) przepisuje plik poza blokiem `tests`, więc
   komentarze poza tym blokiem (np. nad `tests:`) znikają; komentarze wewnątrz bloku zostają. Zapis kontraktu
   (`save_tests`) nadal zachowuje cały plik, w tym komentarze — obietnica historii 10 specyfikacji dotyczy zapisu

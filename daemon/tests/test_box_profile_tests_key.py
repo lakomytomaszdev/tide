@@ -8,6 +8,7 @@ zatwierdzonego profilu K-38 oraz że obie strony serializują się wspólną blo
 import itertools
 import json
 import os
+import shutil
 import threading
 import unittest
 from unittest import mock
@@ -294,6 +295,73 @@ class InterleavingTest(BoardProfileCase):
         with self.store.transaction():
             self.k38_update(apt=["git"])
         self.assert_contract(CONTRACT)
+
+
+class UninitializedBoardInterleavingTest(BoardProfileCase):
+    """Review PT-321 r1 M2: poprawna Tablica bez `.git` (np. kopia plików), którą `ensure()` dopiero inicjalizuje.
+
+    Blokada nie może zależeć od istnienia `.git`: zapis K-38 rozpoczęty przed inicjalizacją nie może cofnąć
+    kontraktu zatwierdzonego w tym czasie przez `BoardStore` (i odwrotnie)."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("projects/app/box.yaml", K38)
+        shutil.rmtree(os.path.join(self.root, ".git"))
+        self.assertFalse(self.store.repo.initialized())
+        self.assertTrue(self.store.exists())
+
+    def test_k38_first_then_contract_before_git_init(self):
+        stale = bp.load_project("app")
+        entered, gate = threading.Event(), threading.Event()
+        real = bp._write_atomic
+        results = {}
+
+        def held_write(path, text):
+            entered.set()
+            self.assertTrue(gate.wait(10))
+            real(path, text)
+
+        def approve():
+            results["board"] = self.store.approve_project_tests({"slug": "app", "tests": OTHER})
+
+        with mock.patch.object(bp, "_write_atomic", held_write):
+            k38 = threading.Thread(target=bp.save_project, args=("app", {**stale, "apt": ["git"]}))
+            k38.start()
+            self.assertTrue(entered.wait(10))
+            board = threading.Thread(target=approve)
+            board.start()
+            board.join(0.3)
+            self.assertTrue(board.is_alive(), "zapis kontraktu musi czekać na zapis K-38 także bez .git")
+            self.assertFalse(self.store.repo.initialized(), "inicjalizacja gita dopiero pod blokadą")
+            gate.set()
+            k38.join(10)
+            board.join(10)
+        self.assertTrue(results["board"]["testsApproved"], results)
+        self.assertTrue(self.store.repo.initialized())
+        self.assertEqual(bp.load_project("app")["apt"], ["git"])
+        self.assertEqual(bp.load_project("app")["tests"], OTHER)
+        self.assert_contract(OTHER)
+
+    def test_contract_first_then_k38_before_git_init(self):
+        stale = bp.load_project("app")
+        with self.store.transaction():
+            k38 = threading.Thread(target=bp.save_project, args=("app", {**stale, "apt": ["git"]}))
+            k38.start()
+            self.approve(OTHER)                             # inicjalizuje git wewnątrz transakcji
+            k38.join(0.3)
+            self.assertTrue(k38.is_alive(), "zapis K-38 musi czekać na transakcję Tablicy także bez .git")
+            stored = read_bytes(self.approvals)
+        k38.join(10)
+        self.assertEqual(read_bytes(self.approvals), stored)
+        self.assertEqual(bp.load_project("app")["apt"], ["git"])
+        self.assertEqual(bp.load_project("app")["tests"], OTHER)
+        self.assert_contract(OTHER)
+
+    def test_lock_takes_git_lock_once_repository_exists(self):
+        """Zgodność z K-55: po inicjalizacji blokada obejmuje też `.git/tide-board.lock` (starsze procesy)."""
+        self.store.ensure()
+        with bp.board_lock():
+            self.assertTrue(os.path.exists(os.path.join(self.root, ".git", "tide-board.lock")))
 
 
 class EnvironmentConsentTest(tce.EnvBase):
