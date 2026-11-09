@@ -97,6 +97,7 @@ Item {
         onUpdateRequested: (tag, id, request) => view.backend.updateCard(tag, id, request)
         onMoveRequested: (tag, id, column, index) => view.backend.moveCard(tag, id, column, index)
         onProjectRequested: (tag, request) => view.backend.upsertProject(tag, request)
+        onSuggestTestsRequested: (tag, request) => view.backend.suggestProjectTests(tag, request)
         onTagRequested: (tag, request) => view.backend.upsertTag(tag, request)
         onRenderRequested: (tag, id, request) => view.backend.renderLaunch(tag, id, request)
         onStartRequested: (tag, request) => view.backend.startTask(tag, request)

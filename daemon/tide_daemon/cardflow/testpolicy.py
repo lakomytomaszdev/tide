@@ -28,6 +28,7 @@ import shlex
 from dataclasses import asdict, dataclass
 
 PROFILE, DETECTED, RULES, COMPAT = "profile", "detected", "rules", "compat"
+MAKE = "make"   # źródło podpowiedzi (`suggest_tests`): polecenia potwierdzone celami `make` w repozytorium
 BASE_PARAM = "{base}"
 DETECTED_CHANGED = "make test-changed BASE={base}"
 DETECTED_FULL = "make test"
@@ -172,6 +173,25 @@ def effective_tests(contract, worktree: str, approved: bool, base: str = "", *, 
         full, full_source = "", RULES
     return _policy(changed, changed_source, full, full_source, base, legacy=legacy, missing=tuple(missing),
                    declared_changed=declared["changed"], declared_full=declared["full"])
+
+
+def repo_facts(directory: str) -> dict:
+    """Fakty o repozytorium dla `suggest_tests`: cele `test-changed` i `test` z `make_targets` (jedyny czytnik
+    `Makefile`; nic nie uruchamia). Przełączenie na `StackReport` K-38 — dopiero po warunku ze szkicu k38-tests-schema."""
+    targets = set(make_targets(directory))
+    return {"makeTargets": [name for name in (CHANGED_TARGET, FULL_TARGET) if name in targets]}
+
+
+def suggest_tests(facts: dict) -> dict:
+    """Podpowiedź kontraktu z faktów `repo_facts`: `{changed, full, source, facts}`. Cel `test-changed` →
+    `make test-changed BASE={base}`, `test` → `make test` (cele badane niezależnie); gałąź tylko z `test` to
+    `legacy` — `full` bez `changed`. Bez celów — pusty wynik (źródło ""). Nigdy nie zapisuje ani nie zatwierdza."""
+    targets = set((facts or {}).get("makeTargets") or [])
+    changed = DETECTED_CHANGED if CHANGED_TARGET in targets else ""
+    full = DETECTED_FULL if FULL_TARGET in targets else ""
+    legacy = FULL_TARGET in targets and CHANGED_TARGET not in targets
+    return {"changed": changed, "full": full, "source": MAKE if changed or full else "",
+            "facts": {"makeTargets": sorted(targets & {CHANGED_TARGET, FULL_TARGET}), "legacy": legacy}}
 
 
 def master_policy(worktree: str = "", base: str = "") -> TestPolicy:

@@ -962,6 +962,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
 | `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
+| `SuggestProjectTests(s request)` | `→ s` | podpowiedź kontraktu testów `{slug}` albo `{repo}` → `{ok, changed, full, source, facts, message}`, dla `slug` także `effectiveSource` (`profile`/`detected`/`rules`), `unapproved`, `testsApproved`; tylko odczyt (niżej „Podpowiedź i źródło kontraktu”) |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1336,6 +1337,27 @@ ze środowiska kroku agent może nadpisać. Dlatego zatwierdzenie chronią dwa w
   się „Operation not permitted”, więc `systemd-run --user` też nie działa. Odcisk, `box.yaml` i HEAD Tablicy zostały
   bez zmian. Sprawdzenie pochodzenia nie miało czego odrzucać, bo żaden krok nie połączył się z magistralą; chroni
   ono na wypadek przyszłego poluzowania piaskownicy. Szczegóły każdej próby są w notce ticketu.
+
+#### Podpowiedź i źródło kontraktu (PT-282)
+
+`SuggestProjectTests(s json) -> s` — tylko odczyt; wejście `{slug}` albo `{repo}`, odpowiedź
+`{ok, changed, full, source, facts, message}`, dla `slug` dodatkowo `effectiveSource`, `unapproved`, `testsApproved`.
+
+- **Podpowiedź** liczy `suggest_tests(facts)` (`cardflow/testpolicy.py`) na faktach `repo_facts`, które bierze ze
+  wspólnej `make_targets` (ta sama reguła i te same zabezpieczenia co w kartkach: nic nie uruchamia, dowiązania
+  poza repozytorium pomija). Cel `test-changed` → `make test-changed BASE={base}`, cel `test` → `make test`
+  (źródło `make`); cele bada się niezależnie, więc samo `test` daje `full` bez `changed`
+  (`facts.legacy: true`). Bez celów albo bez `Makefile` wynik jest pusty, `source` = `""`, a `message` mówi „brak
+  podpowiedzi — kartki odeślą do zasad projektu”. Fakty to na razie wyłącznie cele `make`; przełączenie na
+  `StackReport` K-38 czeka na warunek ze szkicu k38-tests-schema.
+- **Źródło** (`effectiveSource`: `profile`, `detected`, `rules`) i `unapproved` to ta sama decyzja `effective_tests`
+  co w kartkach, policzona na repozytorium projektu z kontraktem z `box.yaml` i `testsApproved` z magazynu odcisków.
+  Okno nie jest krokiem, więc kolizja ścieżek z ochroną zatwierdzenia go nie dotyczy.
+- **`repo`** przechodzi tę samą walidację co `repo` projektu (`git_repo_path` w `board/store.py`, wspólna z `_repo`):
+  ścieżka bezwzględna istniejącego katalogu Git, także worktree (plik `.git`); inaczej `bad-request` z komunikatem.
+  Nieznany `slug` → `not-found`. Projekt z brakującym repozytorium (`repoMissing`) albo repozytorium bez celów to
+  pusty wynik z komunikatem, bez błędu.
+- Podpowiedź niczego nie zapisuje i nie zatwierdza; kontrakt powstaje dopiero przy zapisie projektu z okna.
 
 #### Zgodność z profilem pudełka K-38
 

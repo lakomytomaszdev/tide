@@ -2183,6 +2183,102 @@ out["changed"] = js(find("projectTestsChanged") + ".text")
         self.assertIn("brak zapisu", out["after"])
         self.assertEqual(out["changed"], "make test-changed BASE={base}")
 
+    def reply_js(self, slug, **fields):
+        reply = dict({"ok": True, "changed": "", "full": "", "source": "", "facts": {}, "message": ""}, **fields)
+        return "page.managePage.handleReply('suggest:%s:1', %s)" % (slug, json.dumps(reply))
+
+    def test_source_of_the_effective_contract_comes_from_the_service(self):
+        # PT-282: trzy źródła z odpowiedzi usługi + ostrzeżenie o niezatwierdzonym kontrakcie; QML niczego nie liczy.
+        cases = {
+            "profile": dict(effectiveSource="profile", unapproved=False, testsApproved=True),
+            "detected": dict(effectiveSource="detected", unapproved=False, testsApproved=False),
+            "rules": dict(effectiveSource="rules", unapproved=False, testsApproved=False),
+            "unapproved": dict(effectiveSource="detected", unapproved=True, testsApproved=False),
+        }
+        script = FIND_PY + self.OPEN + """
+out["requests"] = [json.loads(c[-1]) for c in calls() if c[0] == "SuggestProjectTests"]
+out["before"] = [js(find("projectTestsSource") + ".visible"), js(find("projectTestsUnapproved") + ".visible")]
+"""
+        for name, fields in cases.items():
+            script += "js(%r)\nwait(40)\nout[%r] = [js(find('projectTestsSource') + '.text'), js(find('projectTestsUnapproved') + '.visible')]\n" % (
+                self.reply_js("plasma-tide", **fields), name)
+        out = self.probe(script, data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertEqual(out["requests"], [{"slug": "plasma-tide"}])
+        self.assertEqual(out["before"], [False, False])
+        self.assertIn("zatwierdzony kontrakt projektu", out["profile"][0])
+        self.assertIn("Makefile", out["detected"][0])
+        self.assertIn("CLAUDE.md", out["rules"][0])
+        self.assertEqual([out[name][1] for name in cases], [False, False, False, True])
+        self.assertIn("Makefile", out["unapproved"][0])
+
+    def test_suggestion_fills_fields_without_saving(self):
+        suggestion = dict(effectiveSource="rules", unapproved=False, testsApproved=False,
+                          changed="make test-changed BASE={base}", full="make test", source="make")
+        out = self.probe(FIND_PY + self.OPEN + """
+out["hidden"] = js(find("projectTestsSuggestion") + ".visible")
+js(REPLY)
+wait(60)
+out["visible"] = js(find("projectTestsSuggestion") + ".visible")
+out["text"] = js(find("projectTestsSuggestionText") + ".text")
+out["enabled"] = js(find("projectTestsUseSuggestion") + ".enabled")
+out["calls_before"] = len(calls())
+scroll_to_end()
+click(at(find("projectTestsUseSuggestion")))
+wait(80)
+out["changed"] = js(find("projectTestsChanged") + ".text")
+out["full"] = js(find("projectTestsFull") + ".text")
+out["enabled_after"] = js(find("projectTestsUseSuggestion") + ".enabled")
+out["calls_after"] = len(calls())
+out["writes"] = [c[0] for c in calls() if c[0] != "SuggestProjectTests"]
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **suggestion))), data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertFalse(out["hidden"])
+        self.assertTrue(out["visible"])
+        self.assertIn("make test-changed BASE={base}", out["text"])
+        self.assertTrue(out["enabled"])
+        self.assertEqual((out["changed"], out["full"]), ("make test-changed BASE={base}", "make test"))
+        self.assertFalse(out["enabled_after"])
+        self.assertEqual(out["calls_after"], out["calls_before"])   # „Użyj podpowiedzi” nic nie wysyła
+        self.assertEqual(out["writes"], [])
+
+    def test_suggestion_is_hidden_when_contract_exists_and_empty_result_shows_message(self):
+        saved = self.project_data(tests={"changed": "make test-changed BASE={base}", "full": ""}, testsApproved=True)
+        suggestion = dict(effectiveSource="profile", unapproved=False, testsApproved=True,
+                          changed="make test-changed BASE={base}", full="make test", source="make")
+        out = self.probe(FIND_PY + self.OPEN + """
+js(REPLY)
+wait(60)
+out["saved"] = js(find("projectTestsSuggestion") + ".visible")
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **suggestion))), data=saved)
+        self.assertFalse(out["saved"])
+        empty = dict(effectiveSource="rules", unapproved=False, testsApproved=False,
+                     message="brak podpowiedzi — kartki odeślą do zasad projektu")
+        out = self.probe(FIND_PY + self.OPEN + """
+js(REPLY)
+wait(60)
+out["block"] = js(find("projectTestsSuggestion") + ".visible")
+out["none"] = js(find("projectTestsNoSuggestion") + ".visible")
+out["text"] = js(find("projectTestsNoSuggestion") + ".text")
+""".replace("REPLY", repr(self.reply_js("plasma-tide", **empty))), data=self.project_data(tests={"changed": "", "full": ""}))
+        self.assertFalse(out["block"])
+        self.assertTrue(out["none"])
+        self.assertIn("brak podpowiedzi", out["text"])
+
+    def test_adding_a_repository_opens_the_project_form(self):
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(60)
+js("page.managePage.handleReply('repo:/home/user/plasma-tide', {ok: true, slug: 'plasma-tide', changed: true, commitError: ''})")
+wait(100)
+out["open"] = js("page.managePage.openProject")
+out["requests"] = [json.loads(c[-1]) for c in calls() if c[0] == "SuggestProjectTests"]
+js("page.managePage.openProject = ''")
+js("page.managePage.handleReply('repo:Dom', {ok: true, slug: 'dom', changed: true, commitError: ''})")
+out["by_name"] = js("page.managePage.openProject")
+""", data=self.project_data())
+        self.assertEqual(out["open"], "plasma-tide")
+        self.assertEqual(out["requests"], [{"slug": "plasma-tide"}])
+        self.assertEqual(out["by_name"], "")
+
     def test_profile_error_is_visible_in_section(self):
         data = self.project_data(tests={"changed": "", "full": ""}, testsError="box.yaml: pusty blok tests")
         out = self.probe(FIND_PY + self.OPEN + """

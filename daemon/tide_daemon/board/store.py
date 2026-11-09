@@ -83,6 +83,7 @@ PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "ent
                   "tests")
 TAG_FIELDS = ("name", "newName", "color", "description")
 _CONTRACT_KEY = "_testsContract"   # wewnętrzny klucz wyniku planu projektu: kontrakt po zapisie (nie trafia do D-Bus)
+NO_TESTS_SUGGESTION = "brak podpowiedzi — kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md)"
 TESTS_UNAPPROVED = "kontrakt testów zmieniony poza oknem projektu — sprawdź i zatwierdź"
 
 
@@ -559,6 +560,36 @@ class BoardStore:
                 return result
             result["testsApproved"] = contract_approval.approved(self.root, slug, contract, self.approvals_path)
             return result
+
+    def suggest_project_tests(self, data: dict) -> dict:
+        """Podpowiedź kontraktu testów z repozytorium i źródło obowiązującego kontraktu (SuggestProjectTests).
+        Wejście `{slug}` albo `{repo}` (bezwzględna ścieżka katalogu Git, ta sama walidacja co `_repo`).
+        Odpowiedź: `{changed, full, source, facts, message}`; dla `slug` także `effectiveSource` (`profile`,
+        `detected`, `rules`), `unapproved` i `testsApproved` z `effective_tests` na repozytorium projektu.
+        Odczyt: nic nie zapisuje, nie zatwierdza i nie uruchamia programów. Projekt z brakującym repozytorium
+        albo repozytorium bez celów — pusty wynik z komunikatem, bez błędu."""
+        from ..cardflow import testpolicy
+        data = _fields(data, ("slug", "repo"))
+        slug = _text(data.get("slug"), "slug").strip()
+        project = None
+        if slug:
+            project = self.load().projects.get(slug)
+            if project is None:
+                raise BoardError(f"nie ma projektu „{slug}”", "not-found")
+            repo = project.repo if project.repo and not project.repo_missing else ""
+        elif _text(data.get("repo"), "repo").strip():
+            repo = _repo(data["repo"], self.root)
+        else:
+            raise BoardError("podaj slug projektu albo repo (ścieżka bezwzględna katalogu Git)")
+        result = testpolicy.suggest_tests(testpolicy.repo_facts(repo))
+        result["message"] = "" if result["source"] else NO_TESTS_SUGGESTION
+        result["ok"] = True
+        if project is not None:
+            policy = testpolicy.effective_tests(project.tests, repo, project.tests_approved, "",
+                                                error=project.tests_error)
+            result["effectiveSource"], result["unapproved"] = policy.source, policy.unapproved
+            result["testsApproved"] = project.tests_approved
+        return result
 
     def approval_for_step(self, project: Project, step) -> tuple[bool, str]:
         """Zatwierdzenie kontraktu testów projektu dla kroku (`contract_approval.approval_for_step`, PT-286).
@@ -1413,7 +1444,9 @@ def _enum(value, allowed: tuple, label: str) -> str:
     return text
 
 
-def _repo(value, board_root: str = "") -> str:
+def git_repo_path(value) -> str:
+    """Bezwzględna ścieżka istniejącego katalogu Git (także worktree: `.git` jako plik); inaczej BoardError.
+    Wspólna walidacja `repo` projektu (`_repo`) i podpowiedzi kontraktu testów (SuggestProjectTests)."""
     path = _text(value, "repo").strip()
     path = os.path.expanduser(path)
     if not os.path.isabs(path):
@@ -1423,6 +1456,11 @@ def _repo(value, board_root: str = "") -> str:
         raise BoardError(f"nie ma katalogu {path}")
     if not os.path.exists(os.path.join(path, ".git")):
         raise BoardError(f"{path} nie jest repozytorium git")
+    return path
+
+
+def _repo(value, board_root: str = "") -> str:
+    path = git_repo_path(value)
     if (board_root and os.path.realpath(path) == os.path.realpath(board_root)) or is_board_repo(path):
         raise BoardError("repozytorium tablicy nie może być projektem")
     return path

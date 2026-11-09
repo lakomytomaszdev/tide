@@ -155,6 +155,7 @@ class BoardDBusTest(unittest.TestCase):
         xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
         self.assertIn(f'<interface name="{IFACE}">', xml)
         for member in ("Snapshot", "Work", "CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag",
+                       "SuggestProjectTests",
                        "RenderFlow", "Badge", "ShowWindow", "CardDocs"):
             self.assertIn(f'<method name="{member}">', xml)
         work = self.call("Work")  # lista „Praca” (PT-40): bez tablicy — pusta, niczego nie zakłada
@@ -264,6 +265,28 @@ class BoardDBusTest(unittest.TestCase):
             self.assertEqual((plain["ok"], plain["changed"]), (True, True), plain)
         finally:
             self.set_sender_cgroup(APP_CGROUP)
+
+    def test_3d_suggest_project_tests_transport(self):
+        # PT-282: SuggestProjectTests tylko odczytuje — `repo` (podpowiedź z Makefile) i `slug` (źródło kontraktu
+        # z decyzji effective_tests); macierz przypadków: test_board_suggest_tests.
+        repo = os.path.join(self.tmp, "suggest-repo")
+        os.makedirs(repo)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+        with open(os.path.join(repo, "Makefile"), "w", encoding="utf-8") as fh:
+            fh.write("test:\n\t@true\ntest-changed:\n\t@true\n")
+        head = git_out(self.board, "rev-parse", "HEAD")
+        reply = self.call("SuggestProjectTests", json.dumps({"repo": repo}))
+        self.assertEqual((reply["ok"], reply["changed"], reply["full"], reply["source"]),
+                         (True, "make test-changed BASE={base}", "make test", "make"))
+        self.assertNotIn("effectiveSource", reply)
+        by_slug = self.call("SuggestProjectTests", json.dumps({"slug": "mobileapp"}))
+        self.assertEqual((by_slug["ok"], by_slug["effectiveSource"], by_slug["unapproved"]), (True, "profile", False))
+        self.assertEqual((by_slug["changed"], by_slug["full"], by_slug["source"]), ("", "", ""))
+        for request, code in (({"repo": "wzgledna"}, "bad-request"), ({"slug": "brak"}, "not-found")):
+            bad = self.call("SuggestProjectTests", json.dumps(request))
+            self.assertEqual((bad["ok"], bad["error"]), (False, code), bad)
+            self.assertTrue(bad["message"])
+        self.assertEqual(git_out(self.board, "rev-parse", "HEAD"), head)   # odczyt nie zostawia commita
 
     def test_4_card_docs(self):
         # Plan karty w repozytorium projektu (docs/agents/plans) i specyfikacja po nazwie pliku — odczyt

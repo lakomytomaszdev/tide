@@ -126,6 +126,9 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
 - UpsertProject(s json) -> s nowy albo zmieniony projekt → {ok, slug, changed, commitError}; z polem `tests`
                              także zatwierdzenie kontraktu testów → dodatkowo {testsApproved, approvalError};
                              nadawca z jednostki kroku tide-step-* albo nieustalony → error "forbidden" (PT-286),
+- SuggestProjectTests(s json) -> s  podpowiedź kontraktu testów {slug|repo} → {ok, changed, full, source, facts,
+                             message}; dla slug także effectiveSource (profile|detected|rules), unapproved, testsApproved;
+                             tylko odczyt (nic nie zapisuje i nie zatwierdza),
 - UpsertTag(s json) -> s     nowy albo zmieniony tag (także newName — zmiana nazwy w kartach) → {ok, name, changed, commitError},
 - RenderFlow(s id, s mode) -> s  polecenie dla karty: {ok, text, entry, mode, tool, branch, docsDir, …},
 - RenderLaunch(s id, s json) -> s  to samo z wyborem z okna „Co ma zrobić agent?”: {entry, mode, tool, branch},
@@ -478,6 +481,10 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
     <arg name="json" type="s" direction="out"/>
   </method>
   <method name="UpsertProject">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="SuggestProjectTests">
     <arg name="request" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
@@ -1459,6 +1466,10 @@ class BoardAdaptor(QDBusAbstractAdaptor):
         # PT-286: PID nadawcy z magistrali (GetConnectionUnixProcessID) — zatwierdzenie kontraktu testów
         # odrzuca kroki agenta i nadawcę, którego nie da się ustalić (board_monitor.upsert_project).
         return self.monitor.upsert_project(request, sender_pid=_sender_pid(self.bus, message))
+
+    @pyqtSlot(str, result=str)
+    def SuggestProjectTests(self, request: str) -> str:
+        return self.monitor.suggest_project_tests(request)
 
     @pyqtSlot(str, result=str)
     def UpsertTag(self, request: str) -> str:

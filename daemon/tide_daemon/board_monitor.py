@@ -450,6 +450,10 @@ class BoardMonitor(QObject):
             return self.store.approve_project_tests(data)
         return self._mutate(work)
 
+    def suggest_project_tests(self, request: str) -> str:
+        """SuggestProjectTests: podpowiedź kontraktu testów i źródło efektywnego kontraktu. Tylko odczyt."""
+        return _reply(lambda: self.store.suggest_project_tests(_object(request)))
+
     def upsert_tag(self, request: str) -> str:
         return self._mutate(lambda: self.store.upsert_tag(_object(request)))
 

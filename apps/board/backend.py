@@ -394,6 +394,11 @@ class Backend(QObject):
         self._write(tag, "UpsertProject", [request])
 
     @pyqtSlot(str, str)
+    def suggestProjectTests(self, tag: str, request: str) -> None:
+        """Podpowiedź kontraktu testów i jego źródło (tylko odczyt; nie przeładowuje migawki)."""
+        self._write(tag, "SuggestProjectTests", [request])
+
+    @pyqtSlot(str, str)
     def upsertTag(self, tag: str, request: str) -> None:
         self._write(tag, "UpsertTag", [request])
 

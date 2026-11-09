@@ -50,6 +50,7 @@ Rectangle {
     readonly property var repos: (snapshot && snapshot.repos) || []
     readonly property var pastels: Object.keys((snapshot && snapshot.colors) || {})
     signal projectRequested(string tag, var request)
+    signal suggestRequested(string tag, var request)       // /Board SuggestProjectTests (tylko odczyt)
     signal tagRequested(string tag, var request)
     signal backRequested()
     signal issuesRequested(string tag, bool refresh)       // /Board YouTrackIssues
@@ -118,8 +119,22 @@ Rectangle {
         issuesRequested(nextTag("yt-issues"), true)
     }
 
+    // Odpowiedzi SuggestProjectTests po slugu: źródło obowiązującego kontraktu i podpowiedź liczy usługa.
+    property var suggestions: ({})
+    property int suggestSerial: 0
+
+    function requestSuggestion(slug) {
+        if (slug) suggestRequested("suggest:" + slug + ":" + (++suggestSerial), { slug: slug })
+    }
+
     // Odpowiedź usługi na zapis z tej strony (tag z prefiksem project:/tag:/repo:).
     function handleReply(tag, reply) {
+        if (tag.indexOf("suggest:") === 0) {
+            const next = Object.assign({}, suggestions)
+            next[tag.split(":")[1]] = reply || ({ ok: false })
+            suggestions = next
+            return
+        }
         if (tag === busyTag) busyTag = ""
         const error = reply && reply.ok ? "" : Logic.errorText(reply)
         if (tag.indexOf("rules:") === 0) {
@@ -136,6 +151,8 @@ Rectangle {
             if (!error) openTag = ""
         } else if (tag.indexOf("repo:") === 0) {
             repoError = error
+            // Dodanie repozytorium jako projektu otwiera jego formularz: tam jest podpowiedź testów z repozytorium.
+            if (!error && reply.slug && tag.indexOf("repo:/") === 0) openProject = reply.slug
         } else if (tag.indexOf("yt-issues:") === 0) {
             importPanel.loading = false
             importPanel.error = error
@@ -859,6 +876,16 @@ Rectangle {
         property string testsFull: ""
         readonly property var savedTests: (project.tests || {})
         readonly property bool testsPending: project.testsApproved === false && !project.testsError
+        // Odpowiedź SuggestProjectTests dla projektu (null, dopóki usługa nie odpowie).
+        readonly property var suggestion: page.suggestions[project.slug] || null
+        readonly property bool suggestionOk: suggestion !== null && suggestion.ok === true
+        readonly property bool noSavedContract: !savedTests.changed && !savedTests.full
+        readonly property bool hasSuggestion: suggestionOk && !!(suggestion.changed || suggestion.full)
+        // Zmiana zapisanego kontraktu, zgody albo repozytorium odświeża źródło i podpowiedź z usługi.
+        readonly property string contractKey: JSON.stringify([savedTests.changed || "", savedTests.full || "",
+                                                              project.testsApproved, project.repo || "", !!project.repoMissing])
+        onContractKeyChanged: if (open) page.requestSuggestion(project.slug)
+        Component.onCompleted: if (open) { reset(); page.requestSuggestion(project.slug) }
         property alias youtrackKey: youtrackField.text
         readonly property bool youtrackToggleEnabled: youtrackToggle.enabled
         readonly property string youtrackSummary: youtrackLabel.visible ? youtrackLabel.text : ""
@@ -891,6 +918,13 @@ Rectangle {
         // Bieżące pola kontraktu; wysyłane tylko z jawnej akcji użytkownika (zapis zmiany albo „Zatwierdź kontrakt”).
         function testsValue() {
             return { changed: testsChanged.trim(), full: testsFull.trim() }
+        }
+
+        // „Użyj podpowiedzi”: tylko wypełnia pola formularza; zapis i zatwierdzenie dopiero z „Zapisz” albo „Zatwierdź”.
+        function useSuggestion() {
+            if (!hasSuggestion) return
+            testsChangedField.text = suggestion.changed || ""
+            testsFullField.text = suggestion.full || ""
         }
 
         function approveTests() {
@@ -927,7 +961,7 @@ Rectangle {
             page.send("project", project.slug, request)
         }
 
-        onOpenChanged: if (open) reset()
+        onOpenChanged: if (open) { reset(); page.requestSuggestion(project.slug) }
         spacing: 0
 
         Rectangle {
@@ -1230,6 +1264,28 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 6
                     Text {
+                        objectName: "projectTestsSource"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: Logic.contractSourceText(row.suggestion)
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
+                        objectName: "projectTestsUnapproved"
+                        Layout.fillWidth: true
+                        visible: row.suggestionOk && row.suggestion.unapproved === true
+                        text: "Zapisany kontrakt nie jest zatwierdzony, więc nie obowiązuje — zatwierdź go albo zapisz zmiany."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.butter
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Text {
                         Layout.fillWidth: true
                         text: "Testy dobrane do zmian"
                         textFormat: Text.PlainText
@@ -1302,6 +1358,44 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: row.testsChanged.trim() === "" && row.testsFull.trim() === ""
                         text: "Bez kontraktu kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md) albo użyją celów wykrytych z Makefile."
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        objectName: "projectTestsSuggestion"
+                        Layout.fillWidth: true
+                        visible: row.noSavedContract && row.hasSuggestion
+                        spacing: 8
+                        Text {
+                            objectName: "projectTestsSuggestionText"
+                            Layout.fillWidth: true
+                            text: "Podpowiedź z repozytorium (Makefile): "
+                                  + (row.hasSuggestion ? [row.suggestion.changed, row.suggestion.full].filter(s => s).join(" · ") : "")
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textSecondary
+                            font.family: Tide.Theme.monoFamily
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                        PillButton {
+                            objectName: "projectTestsUseSuggestion"
+                            implicitHeight: 30
+                            pixelSize: 12
+                            outline: true
+                            enabled: row.hasSuggestion && (row.testsChanged !== (row.suggestion.changed || "")
+                                                           || row.testsFull !== (row.suggestion.full || ""))
+                            text: "Użyj podpowiedzi"
+                            onClicked: row.useSuggestion()
+                        }
+                    }
+                    Text {
+                        objectName: "projectTestsNoSuggestion"
+                        Layout.fillWidth: true
+                        visible: row.noSavedContract && row.suggestionOk && !row.hasSuggestion
+                        text: row.suggestionOk ? (row.suggestion.message || "") : ""
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
