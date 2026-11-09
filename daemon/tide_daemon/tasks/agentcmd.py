@@ -180,6 +180,10 @@ def read_only_tools(worktree: str, step_dir: str = "") -> tuple[tuple[str, ...],
         allowed += [f"Bash(git -C {worktree} {sub})", f"Bash(git -C {worktree} {sub} *)"]
     # Ścieżka bezwzględna w regule Claude CLI zaczyna się od `//`; reguła Read obejmuje też Grep i Glob.
     allowed += [f"Read(/{worktree}/**)", *step_reads(step_dir)]
+    if step_dir and os.path.isabs(step_dir):
+        # Własne wejście kroku (kontekst opiekuna: history.md, attempts.md, plan) narzędziem Read — `cat` ze
+        # `step_reads` CLI i tak odrzuca jako ścieżkę spoza katalogów sesji (09.11: opiekun oceniał na ślepo).
+        allowed.append(f"Read(/{os.path.normpath(step_dir)}/in/**)")
     return tuple(dict.fromkeys(allowed)), tuple(f"Bash({rule})" for rule in READ_ONLY_BANS)
 
 
