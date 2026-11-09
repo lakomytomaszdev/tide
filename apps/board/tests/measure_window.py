@@ -134,6 +134,11 @@ def platform_env(choice: str, socket: str = "") -> dict:
     """Środowisko okna pomiarowego: NIGDY sesja graficzna użytkownika (DISPLAY/WAYLAND_DISPLAY są czyszczone).
     offscreen (domyślnie) — wtyczka Qt bez żadnego okna; z `socket` — zagnieżdżony, niewidoczny kompozytor."""
     env = dict(os.environ, QT_FORCE_STDERR_LOGGING="1")
+    if choice == "session":
+        # Jawna zgoda właściciela na pomiar na jego pulpicie (okno będzie widoczne i może zabrać fokus);
+        # tylko wtedy, gdy offscreen nie daje wiarygodnego wyniku — uzasadnienie w notce.
+        env.pop("QT_QPA_PLATFORM", None)
+        return env
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"):
         env.pop(name, None)
     if socket:
@@ -190,7 +195,7 @@ def run_combo(name: str, opts: dict, args, fixtures: dict, pkgs: dict) -> dict:
         + (["--nested", args.nested] if args.nested else [])
     return {"name": name, "variant": variant, "scenario": scenario, "cadence": cadence, "top": top,
             "animations_disabled_in_copy": not animations, "command": " ".join(parts),
-            "qpa_platform": env["QT_QPA_PLATFORM"] + (" (zagnieżdżony " + args.nested + ")" if args.nested else ""), **mk.aggregate(runs)}
+            "qpa_platform": env.get("QT_QPA_PLATFORM", "sesja graficzna użytkownika") + (" (zagnieżdżony " + args.nested + ")" if args.nested else ""), **mk.aggregate(runs)}
 
 
 def main(argv=None) -> int:
