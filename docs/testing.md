@@ -1,5 +1,50 @@
 # Testy podczas pracy nad ticketem
 
+## Zasada ogólna i kontrakt testów projektu
+
+Zasada K-62 obowiązuje w każdej technologii: w tickecie i po poprawkach autor uruchamia testy dobrane do zmian
+od przypiętego punktu startu ticketu, recenzent sprawdza ten przebieg, a pełne testy projektu są wykonywane raz
+przy domknięciu karty. Polecenia nie są wpisane w Tide na stałe, tylko pochodzą z **kontraktu testów projektu**:
+`tests.changed` (testy dobrane do zmian, z parametrem `{base}` — przypięty SHA startu ticketu) i `tests.full`
+(pełne testy przy domknięciu) w profilu projektu Tablicy (`projects/<slug>/box.yaml`, opis:
+[tide-daemon.md](tide-daemon.md#kontrakt-testów-projektu-k-69-pt-278)). `make test-changed BASE=…` i `make test`
+poniżej to polecenia **plasma-tide**, czyli przykład kontraktu, a nie wymóg dla innych projektów (np. `dotnet test …`
+albo `npm test` w ich kontrakcie). `CLAUDE.md` i `AGENTS.md` plasma-tide zostają przy poleceniach `make`.
+
+Dziewięć reguł doboru i zgód (numeracja K-69, do której odsyła [standard planu](agent-plan-standard.md#przepływ-karty-prowadzony-przez-tide-12), sekcje „Testy ticketu i review” i „Domknięcie”):
+
+1. **Kolejność źródeł.** Polecenia testów pochodzą z zatwierdzonego kontraktu, a gdy go nie ma, z wykrycia
+   w `Makefile` (z `mk/*.mk`), a gdy nie ma wykrycia, z zasad projektu (`CLAUDE.md`/`AGENTS.md`).
+2. **Brak pola w kontrakcie.** Brakujące pole zatwierdzonego kontraktu uzupełnia zasada ogólna (zasady projektu),
+   nie wykrycie z `Makefile`.
+3. **Wykrycie.** Wykrycie bada cele niezależnie: cel `test-changed` daje `changed`, cel `test` daje `full`,
+   a przy braku celu `test` pełne testy wykonuje się według zasad projektu.
+4. **Zatwierdzenie.** Kontrakt jest zatwierdzony tylko przez okno projektu albo przez `UpsertProject` wywołane spoza
+   kroku agenta; sam zapis pliku `box.yaml` (przez krok, ręcznie, cofnięcie commita) nie jest zatwierdzeniem, a kontrakt
+   niezatwierdzony — także przy kolizji magazynu odcisków z obszarem zapisu kroku — nie jest stosowany i nie daje
+   automatycznych zgód
+   ([zatwierdzenie](tide-daemon.md#zatwierdzenie-kontraktu-testów-pt-285),
+   [ochrona](tide-daemon.md#ochrona-zatwierdzenia-przed-krokiem-agenta-pt-286)).
+5. **Zgoda na polecenie.** Automatyczną zgodę dostaje tylko literalne pojedyncze polecenie zatwierdzonego kontraktu
+   bez znaku `*`, z podstawionym przypiętym SHA bazy; `changed` bez znanej bazy zgody nie dostaje
+   ([zgoda](tide-daemon.md#zgoda-na-polecenia-kontraktu-pt-280)).
+6. **Pierwszeństwo zakazów.** Zakazy projektu (`denied-commands`) i Tide (np. `make install`) mają pierwszeństwo
+   przed poleceniem kontraktu: zakazane polecenie nie dostaje zgody.
+7. **Warunek `legacy`.** Tryb `legacy` zachodzi dokładnie wtedy, gdy gałąź ma cel `test` bez `test-changed`, także
+   gdy zatwierdzone `changed` zaczyna się od `make test-changed`; w `legacy` pełny `make test` jest testem ticketu
+   i poprawek, a recenzent sprawdza jego wynik w notce (zob. [starsze gałęzie](#starsze-gałęzie-bez-celu-test-changed)).
+8. **Domknięcie.** Krok `close` raz uruchamia pełne testy (`tests.full` zatwierdzonego kontraktu, wykryte `make test`
+   albo pełne testy według zasad projektu), a ich porażka kończy krok wynikiem `error`, nie `done`.
+9. **Ponowienie.** Ponowienie padniętych modułów ogranicza tylko to, co się uruchamia: nie zamienia wcześniejszej
+   porażki w sukces, a jej rozliczenie wymaga [wyjątków od testów](#wyjątki-od-testów)
+   (zob. [ponowienie](#ponowienie-padniętych-modułów)).
+
+Te reguły nie osłabiają zasad wyjątków od testów ani wymogu pełnego przebiegu przy domknięciu.
+
+## Polecenia plasma-tide (przykład kontraktu)
+
+W plasma-tide kontrakt odpowiada celom `make`: `make test-changed BASE=<SHA>` (`changed`) i `make test` (`full`).
+
 W trakcie implementacji uruchamiaj zestawy dobrane do zmiany. Przed oddaniem ticketu i po
 poprawkach uruchom `make test-changed BASE=<punkt startu ticketu na gałęzi karty>`.
 Używaj przypiętego SHA z kartki kroku, nie przesuwającego się wierzchołka gałęzi karty ani

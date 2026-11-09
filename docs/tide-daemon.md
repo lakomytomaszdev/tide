@@ -1375,7 +1375,11 @@ do głównej:
   token dekoderem JSON (łącznie z jego końcem), zamiast ponownie interpretować ucieczki przy usuwaniu
   komentarza; regresje generowanych poleceń są w `test_board_project_tests.py`;
 - cele `make` (`test-changed`, `test`, `lint`) dostępne w raporcie niezależnie od rozpoznania Pythona;
-- wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem.
+- wzorcowy plik czytany bez błędu przez `box/profile.py` przed scaleniem;
+- zmienione ścieżki uruchamiania kroków (start, wznowienie, konflikt, domknięcie, kroki pudełka) sprawdzone pod kątem
+  wywołań polityki testów (po #10, #7 i #3 planu K-69): każda z nich nadal liczy jeden `TestPolicy` dla kartki
+  i zgód (`step_test_policy`), czego dowodzą testy przepływu z atrapą procesu, nie sama zgodność `box.yaml`. Zasada
+  ogólna, na której opiera się ten warunek: [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu).
 
 #### Efektywny kontrakt testów w kartkach kroków (PT-279)
 
