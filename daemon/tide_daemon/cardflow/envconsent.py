@@ -6,7 +6,8 @@ Cała walidacja YAML-a i klasyfikacja ryzyka są tutaj i w `box/profile.py`; pan
   z klasą ryzyka, ostrzeżenia i jedno pytanie planu dla projektu bez profilu i bez wzorca,
 - `prepare(...)` + `approve(...)` — `ApproveCardEnvironment(card, yaml, onlyPlan)`: walidacja schematem i zgodą na
   pozycje czerwone przed jakimkolwiek zapisem, zapis profilu projektu i karty do Tablicy, zdarzenie `box.approved
-  source=ui`, `boxWait`, start budowy/przebudowy w tle,
+  source=ui`, `boxWait`, start budowy/przebudowy w tle; przy `box.enabled: false` (D1, PT-290) tylko zapis decyzji,
+  bez oczekiwania `environment`, kopii paczek i budowy,
 - `status(...)` — `BoxStatus(slug)`,
 - `network_domain`, `add_card_domain` — wynik kroku `denied` z `command: "network: <domena>"` (pytanie o domenę).
 
@@ -258,7 +259,7 @@ def model(engine, card_id: str, st) -> dict:
            "items": items, "yaml": yaml_base(card), "acceptKey": CONSENT_KEY, "notes": notes,
            "question": QUESTION if empty else "", "questionHint": QUESTION_HINT if empty else "",
            "boxWait": boxwait.card_box_wait(st), "boxWaitLabel": boxwait.label(boxwait.card_box_wait(st)),
-           "approved": bool(st.plan_approved) and not boxwait.card_box_wait(st) == boxwait.ENVIRONMENT}
+           "approved": bool(st.plan_approved) and not boxwait.environment_pending(st)}
     return out
 
 
@@ -312,6 +313,34 @@ def prepare(engine, card_id: str, text: str, st) -> Prepared:
     return Prepared(slug, card_id, project, new, card, accepted, merged.profile, ids, red)
 
 
+DISABLED_PLAN = ("Plan zatwierdzony. Pudełko jest wyłączone (box.enabled=false): karta nie czeka na środowisko, "
+                 "kroki biegną na hoście. Po włączeniu pudełka środowisko wymaga osobnej zgody.")
+DISABLED_DECISION = ("Decyzja o środowisku zapisana. Pudełko jest wyłączone (box.enabled=false): budowy nie zlecono, "
+                     "środowisko nie działa, kroki biegną na hoście. Po włączeniu pudełka środowisko wymaga "
+                     "ponownego zatwierdzenia, które dopiero zleci budowę.")
+
+
+def boxes_enabled(engine) -> bool:
+    """`box.enabled` z ustawień silnika (to samo źródło co wybór runnera w `boxstep.place`)."""
+    from .boxstep import settings_of
+    return bool(settings_of(engine).enabled)
+
+
+def plan_pending(st) -> bool:
+    """Nowy plan albo poprawka planu czeka na zatwierdzenie (PT-290: obie ścieżki przez ApproveCardEnvironment)."""
+    return bool(st.plan_proposed and not st.plan_approved) or bool((st.plan_revision or {}).get("pending"))
+
+
+def only_plan_reply(engine, card_id: str, plan: dict) -> dict:
+    """„Tylko plan”: D1 (PT-290) — `environment` tylko przy włączonym pudełku, inaczej odroczenie bez oczekiwania."""
+    wait = boxwait.require_environment(engine, card_id, source="ui")
+    out = {"ok": True, "id": card_id, "onlyPlan": True, "boxWait": wait, "plan": plan,
+           "boxEnabled": boxes_enabled(engine), "build": ""}
+    if not out["boxEnabled"]:
+        out["message"] = DISABLED_PLAN
+    return out
+
+
 def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     """`ApproveCardEnvironment(card, yaml, onlyPlan)`; wynik JSON-owy dla D-Bus."""
     from .engine import FlowError, fold
@@ -330,9 +359,8 @@ def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
     if project_scope:
         from . import projectconsent
         if only_plan:
-            plan = engine.approve_plan(card_id) if st.plan_proposed and not st.plan_approved else {}
-            boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="ui")
-            return {"ok": True, "id": card_id, "onlyPlan": True, "boxWait": boxwait.ENVIRONMENT, "plan": plan}
+            plan = engine.approve_plan(card_id) if plan_pending(st) else {}
+            return only_plan_reply(engine, card_id, plan)
         return projectconsent.approve(engine, card_id, text, st)
     try:
         prepared = prepare(engine, card_id, text, st)
@@ -341,16 +369,17 @@ def approve(engine, card_id: str, text: str, only_plan: bool) -> dict:
         return {"ok": False, "id": card_id, "error": "invalid-environment", "message": "; ".join(exc.errors),
                 "errors": exc.errors, "items": exc.items}
     plan = {}
-    if st.plan_proposed and not st.plan_approved:
+    if plan_pending(st):
         plan = engine.approve_plan(card_id)          # rzuca przy review-pending: nic jeszcze nie zapisano
     if only_plan:
-        boxwait.set_box_wait(engine.journal, card_id, boxwait.ENVIRONMENT, source="ui")
-        return {"ok": True, "id": card_id, "onlyPlan": True, "boxWait": boxwait.ENVIRONMENT, "plan": plan}
+        return only_plan_reply(engine, card_id, plan)
     return _commit(engine, prepared, plan)
 
 
 def _commit(engine, prepared: Prepared, plan: dict) -> dict:
     slug, card_id = prepared.slug, prepared.card_id
+    if not boxes_enabled(engine):
+        return _record_disabled(engine, prepared, plan)
     saved = []
     if prepared.card.get("packs"):
         try:
@@ -371,7 +400,32 @@ def _commit(engine, prepared: Prepared, plan: dict) -> dict:
     boxwait.set_box_wait(engine.journal, card_id, "", source="ui")
     action = _launch(engine, slug, effective, recipe)
     return {"ok": True, "id": card_id, "onlyPlan": False, "boxWait": "", "saved": saved, "acceptedRed": prepared.accepted,
-            "build": action, "plan": plan}
+            "build": action, "plan": plan, "boxEnabled": True, "decision": "recorded"}
+
+
+def _record_disabled(engine, prepared: Prepared, plan: dict) -> dict:
+    """D1 (PT-290): zgoda środowiska przy `box.enabled: false` — zapis samej decyzji po pełnej walidacji.
+
+    Zapisuje profile w Tablicy i `box.approved`, niczego nie usuwa (wcześniejsze zgody, propozycje i historia zostają).
+    Nie kopiuje paczek, nie zleca budowy ani startu, nie woła Incusa i nie czyści `boxWait`. Zgoda na środowisko
+    zostaje odroczona: po włączeniu pudełka trzeba ją potwierdzić (wtedy dopiero kopia paczek i budowa)."""
+    from .engine import fold
+    slug, card_id = prepared.slug, prepared.card_id
+    saved = []
+    if prepared.new_project:
+        saved.append(bp.save_project(slug, prepared.project))
+    card_clean = dict(prepared.card)
+    if prepared.accepted:
+        card_clean[CONSENT_KEY] = list(prepared.accepted)
+    saved.append(bp.save_card(slug, card_id, card_clean))
+    effective = bp.load_project(slug) or prepared.project
+    bs.record(slug, "box.approved", bs.box_name(slug), engine.clock, source="ui", card=card_id,
+              accepted_red=list(prepared.accepted), items=list(prepared.items), recipe=_stamp(effective), path=saved[0])
+    boxwait.require_environment(engine, card_id, source="ui")
+    return {"ok": True, "id": card_id, "onlyPlan": False,
+            "boxWait": boxwait.card_box_wait(fold(engine.journal.read(card_id))), "saved": saved,
+            "acceptedRed": prepared.accepted, "build": "", "plan": plan, "boxEnabled": False,
+            "decision": "recorded", "message": DISABLED_DECISION}
 
 
 def _launch(engine, slug: str, profile: dict, recipe: str) -> str:

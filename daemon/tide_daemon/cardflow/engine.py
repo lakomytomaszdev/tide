@@ -2134,8 +2134,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if row.get("sourceState") in ("gotowe", "odrzucone"):
                 self.journal.append(card_id, "ticket.imported", ticket=row["id"], state=row["sourceState"])
         # PT-172: plan bez zatwierdzonego środowiska to „czeka na środowisko”; czyści to dopiero ApproveCardEnvironment.
+        # PT-290 (D1): tylko przy `box.enabled: true`; przy wyłączonym pudełku zgoda jest odroczona, host działa dalej.
         from . import boxwait
-        boxwait.set_box_wait(self.journal, card_id, boxwait.ENVIRONMENT, source="plan-approval")
+        boxwait.require_environment(self, card_id, source="plan-approval")
         return {"ok": True, "id": card_id, "map": mapping, "waves": waves}
 
     def _images(self, value) -> list[str]:

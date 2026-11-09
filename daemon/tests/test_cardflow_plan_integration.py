@@ -51,15 +51,17 @@ class PlanFlowTest(FlowInProcess):
 
     def test_plain_plan_approval_leaves_the_card_waiting_for_the_environment(self):
         # PT-172: zatwierdzenie z okna decyzji (ApproveCardPlan) nie omija pakietu zgód.
+        from tide_daemon.box.settings import BoxSettings
+        from tide_daemon.cardflow import boxstep
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
-        self.assertTrue(self.approve(card, environment=False)["ok"])
+        # PT-290 (D1): oczekiwanie powstaje tylko przy włączonych pudełkach (wyłączone: test_cardflow_env_consent_switch).
+        with mock.patch.object(boxstep, "settings_of", return_value=BoxSettings(enabled=True)):
+            self.assertTrue(self.approve(card, environment=False)["ok"])
         st = fold(self.flow.engine.journal.read(card))
         self.assertEqual(boxwait.card_box_wait(st), boxwait.ENVIRONMENT)
         # Bariera zgody obowiązuje przy włączonych pudełkach; przy `box.enabled: false` wyłącznik (PT-289)
         # wybiera hosta przed nią (test_cardflow_box_switch). Projekt bez profilu nie dochodzi tu do Incusa.
-        from tide_daemon.box.settings import BoxSettings
-        from tide_daemon.cardflow import boxstep
         with mock.patch.object(boxstep, "settings_of", return_value=BoxSettings(enabled=True)):
             self.restart()
             self.assertTrue(wait_until(lambda: self.of(card, "step.waiting"), timeout=5), self.events(card))

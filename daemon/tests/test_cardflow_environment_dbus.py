@@ -55,18 +55,33 @@ class EnvironmentDbusTest(FlowCase):
             approved = [e for e in map(json.loads, fh) if e["type"] == "box.approved"]
         self.assertEqual([(e["source"], e["accepted_red"]) for e in approved], [("ui", ["github.com"])])
 
-    def test_only_plan_sets_box_wait_visible_in_snapshot_and_box_status(self):
+    def test_only_plan_with_disabled_boxes_defers_consent_without_wait_in_snapshot_and_box_status(self):
+        # PT-290 (D1): usługa testu ma domyślne `box.enabled: false` — „Tylko plan” spoza UI nie tworzy oczekiwania
+        # `environment`; zapis odroczenia jest w dzienniku. Przy włączonym pudełku: test_cardflow_environment.py.
         card_id = self.started_card()
         reply = self.call("ApproveCardEnvironment", card_id, "tide-box: 1\n", True)
         self.assertTrue(reply["ok"], reply)
-        self.assertEqual(reply["boxWait"], "environment")
-        self.assertEqual([e["value"] for e in self.of(card_id, "box.wait")], ["environment"])
+        self.assertEqual((reply["boxWait"], reply["boxEnabled"], reply["build"]), ("", False, ""))
+        self.assertIn("box.enabled=false", reply["message"])
+        self.assertEqual([(e["value"], e.get("deferred")) for e in self.of(card_id, "box.wait")],
+                         [("", "environment")])
         self.assertEqual(self.box_files(), [])
         flow = self.shown(card_id)["derived"]["flow"]
-        self.assertEqual((flow["boxWait"], flow["boxWaitLabel"]), ("environment", "czeka na środowisko"))
+        self.assertEqual((flow["boxWait"], flow["boxWaitLabel"]), ("", ""))
         status = self.call("BoxStatus", "proj")
         self.assertTrue(status["ok"], status)
-        self.assertEqual([(c["card"], c["boxWait"]) for c in status["cards"]], [(card_id, "environment")])
+        self.assertEqual([(c["card"], c["boxWait"]) for c in status["cards"]], [(card_id, "")])
+
+    def test_disabled_full_approval_over_dbus_records_the_decision_but_builds_nothing(self):
+        card_id = self.started_card()
+        reply = self.call("ApproveCardEnvironment", card_id, "tide-box: 1\n", False)
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual((reply["build"], reply["boxEnabled"], reply["decision"]), ("", False, "recorded"))
+        self.assertIn("budowy nie zlecono", reply["message"])
+        journal = os.path.join(self.base, "boxboard", "projects", "proj", "box", "journal.jsonl")
+        with open(journal, encoding="utf-8") as fh:
+            types = [json.loads(line)["type"] for line in fh]
+        self.assertEqual(types, ["box.approved"], "bez box.build i innych zdarzeń budowy")
 
     def test_box_status_contract(self):
         status = self.call("BoxStatus", "proj")

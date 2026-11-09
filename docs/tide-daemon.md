@@ -978,7 +978,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
-| `ApproveCardEnvironment(s id, s yaml, b onlyPlan)` | `→ s` | pakiet zgód środowiska karty (PT-172, niżej): usługa waliduje `yaml` (profil karty) i zgodę na pozycje czerwone przed jakimkolwiek zapisem; `onlyPlan` zatwierdza sam plan i ustawia `boxWait: environment` |
+| `ApproveCardEnvironment(s id, s yaml, b onlyPlan)` | `→ s` | pakiet zgód środowiska karty (PT-172, niżej): usługa waliduje `yaml` (profil karty) i zgodę na pozycje czerwone przed jakimkolwiek zapisem; `onlyPlan` zatwierdza sam plan i ustawia `boxWait: environment` (PT-290: tylko przy `box.enabled: true`; przy wyłączonym pudełku zapis samej decyzji, bez budowy) |
 | `BoxStatus(s slug)` | `→ s` | stan pudełka projektu, hash przepisu, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu (PT-172, niżej) |
 | `CardBranchDiff(s id)` / `CardBranchDiff(s id, s targetRef)` | `→ s` | po domknięciu diff względem bieżącego refu zapisanej bazy albo jawnego pełnego refu lokalnego/znanego zdalnego; unknown wymaga jawnego celu. Bez zapisu bazy i bez zgody na merge |
 | `PreviewCardMerge(s id, s request)` | `→ s` | odczyt drzewa scalenia i lokalnych kolizji; `{}` wybiera lokalną bazę, jednoznaczny lokalny upstream bazy zdalnej albo główną przy bazie nieznanej; opcjonalny `targetRef` to pełny `refs/heads/…`, także nowy od znanej bazy zdalnej; zwraca `previewToken` i plan zasobów, bez zgody na wykonanie |
@@ -3372,13 +3372,31 @@ reguł ryzyka. Pola sekcji:
    bez zatwierdzenia planu i bez budowy** (też gdy wołane spoza panelu). Projekt jeszcze bez profilu: usługa sama
    buduje propozycję (`.tide/box.yaml` albo szablony stosów), a jej pozycje czerwone też wymagają zgody; adres
    wewnętrzny w profilu projektu jest odrzucany (D13).
-2. Plan czekający na zatwierdzenie jest zatwierdzany (`ApproveCardPlan`); `review-pending` przerywa przed zapisem.
-3. `onlyPlan = true`: nic nie jest zapisywane w Tablicy; zdarzenie `box.wait` ustawia `boxWait: environment`.
-4. `onlyPlan = false`: zapis profilu projektu (jeśli nie był zatwierdzony) i karty do Tablicy
+2. Plan albo poprawka planu czekająca na zatwierdzenie jest zatwierdzana (`ApproveCardPlan`; PT-290: także różnica
+   zatwierdzonego planu z okna, w którym sekcja środowiska zastępuje przycisk planu); `review-pending` przerywa
+   przed zapisem.
+3. `onlyPlan = true`: nic nie jest zapisywane w Tablicy; przy `box.enabled: true` zdarzenie `box.wait` ustawia
+   `boxWait: environment`, przy wyłączonym pudełku zgoda jest tylko odroczona (D1 niżej).
+4. `onlyPlan = false`, `box.enabled: true`: zapis profilu projektu (jeśli nie był zatwierdzony) i karty do Tablicy
    (`projects/<slug>/box.yaml`, `…/cards/k-n/box.yaml`), zdarzenie `box.approved source=ui` z `accepted_red`, `items`
    i `recipe`, wyczyszczenie `boxWait`, a gdy pudełko nie ma migawki `clean` z tym hashem — budowa (`build`) albo
    przebudowa (`rebuild`) przez `Builder` z PT-167 w osobnym wątku (atrapa: `FlowEngine.box_launcher`). Odpowiedź:
-   `{ok, saved[], acceptedRed[], build: "build"|"rebuild"|"", boxWait: ""}`.
+   `{ok, saved[], acceptedRed[], build: "build"|"rebuild"|"", boxWait: "", boxEnabled: true, decision: "recorded"}`.
+5. `onlyPlan = false`, `box.enabled: false` (PT-290): po tej samej walidacji zapis samej decyzji — profile w Tablicy
+   i `box.approved` — bez kopii paczek, budowy, startu, Incusa i ekspozycji; `boxWait` bez zmian (także dawne
+   `environment`), zgoda odroczona. Odpowiedź: `{ok, saved[], acceptedRed[], build: "", boxEnabled: false,
+   decision: "recorded", boxWait, message}`; `message` mówi, że budowy nie zlecono i środowisko nie działa.
+
+**D1 (PT-290, K-38 F2): zgoda środowiska tylko przy `box.enabled: true`.** Zatwierdzenie nowego planu
+(`engine.approve_plan`, `ApproveCardPlan`) i poprawki planu („Tylko plan”) przy wyłączonym pudełku nie tworzy
+oczekiwania `environment` i nie blokuje hostowego kroku (wyłącznik PT-289 i tak wybiera hosta). W dzienniku zostaje
+`box.wait` z pustym `value` i `deferred: environment` (`FlowState.box_env_deferred`, `boxwait.require_environment`).
+Po ponownym włączeniu pierwsza próba kroku wykonawczego zamienia odroczenie na `boxWait: environment`
+(`source: box-enabled`) i czeka — samo zatwierdzenie planu ani decyzja zapisana przy wyłączonym pudełku nie są zgodą
+na budowę i ekspozycję. Dopiero `ApproveCardEnvironment` przy włączonym pudełku czyści oczekiwanie i zleca budowę.
+Zgoda projektu plasma-tide (`projectconsent`) przy wyłączonym pudełku zapisuje decyzję bez `environment`
+(odpowiedź `boxEnabled: false`); przy włączonym bariera ekspozycji v1 obowiązuje jak dotąd. Restart z dawnym
+`environment` niczego nie buduje ani nie migruje; istniejące zgody, propozycje i historia nie są usuwane.
 
 Tablicę commituje Tide; profil zapisuje wyłącznie usługa.
 
@@ -3395,11 +3413,13 @@ dziennika sam. Brak pola = nic nie blokuje.
 
 | Wartość | Znacznik w panelu | Kto ustawia | Kto czyści |
 |---|---|---|---|
-| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód | PT-172: `ApproveCardEnvironment` bez `onlyPlan` |
+| `environment` | „czeka na środowisko” | PT-172: „Tylko plan” oraz każde zatwierdzenie planu (`engine.approve_plan`, także `ApproveCardPlan` z okna decyzji i widoku planu) — plan nie omija pakietu zgód; PT-290: tylko przy `box.enabled: true`, a odroczona zgoda zamienia się w `environment` po ponownym włączeniu | PT-172: `ApproveCardEnvironment` bez `onlyPlan` przy włączonym pudełku |
 | `start` | „czeka na pudełko” | #18 (silnik, PT-181): pudełko zatrzymane, trwa start | #18, gdy pudełko odpowiada |
 | `rebuild` | „do przebudowy” | #18: hash przepisu niezgodny albo brak filtrowania NIC, przebudowa czeka na zatwierdzenie z planem | #18, gdy pudełko znów jest zgodne |
 
-`set_box_wait(journal, card, value)` zapisuje zmianę (bez zdarzenia, gdy wartość się nie zmienia).
+`set_box_wait(journal, card, value)` zapisuje zmianę (bez zdarzenia, gdy wartość i odroczenie się nie zmieniają;
+czyszczenie kasuje także odroczenie PT-290). `environment_pending(card)` — karta czeka na środowisko albo ma
+odroczoną zgodę; `require_environment(engine, card, source)` — D1 po zatwierdzeniu planu.
 
 #### Pytanie o domenę (wynik kroku `denied`)
 
@@ -4676,7 +4696,7 @@ powrocie wykonawcy pozostaje w tym samym pudełku.
 | Stan | Wynik |
 |---|---|
 | `box.enabled: false` (PT-289) | `HostRunner` (jak przed K-38) przed wszystkimi niżej wymienionymi kontrolami: bez odczytu `boxWait` (także `environment` i `rebuild`), ekspozycji projektu PT-264, profili, rezerwacji repozytorium, admission i Incusa. Wznowienie kroku z pudełka (`runner: box`) nie przechodzi na hosta: `BoxError`, nic nie jest uruchamiane |
-| `boxWait: environment` | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu lub przy hostowym rodzicu; planowanie pozostaje dostępne |
+| `boxWait: environment` albo zgoda odroczona przy wyłączonym pudełku (PT-290) | krok wykonawczy ani jego wznowienie nie startuje: `step.waiting` „czeka na środowisko”; także bez profilu lub przy hostowym rodzicu; odroczenie staje się `boxWait: environment` (`source: box-enabled`); planowanie pozostaje dostępne |
 | projekt `plasma-tide` (ekspozycja v1, PT-264) | krok wykonawczy czeka na manifest projektu i odebrane montowania |
 | projekt bez zatwierdzonego profilu | `HostRunner` (jak przed K-38), chyba że karta już czeka na `rebuild` — wtedy nadal czeka |
 | budowa albo reset pudełka w toku | krok nie startuje: „czeka na pudełko (budowa)” |
