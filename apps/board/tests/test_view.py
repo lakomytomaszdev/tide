@@ -136,6 +136,66 @@ class LogicTest(unittest.TestCase):
         self.assertTrue(self.js("draggable(S.cards.find(c => c.id === 'K-15'))"))
         self.assertFalse(self.js("draggable(S.cards.find(c => c.id === 'K-5'))"), "kartę prowadzi koordynator")
 
+    def apply_ops(self, prev, nxt):
+        """diffCards z board.js zastosowane do `prev`: (operacje, id po operacjach, karty po operacjach)."""
+        order = []
+        for c in prev:
+            if c["id"] not in order:
+                order.append(c["id"])
+        ops = self.js(f"diffCards({json.dumps(prev)}, {json.dumps(nxt)})")
+        cards = {c["id"]: c for c in prev}
+        for op in ops:
+            if op["op"] == "remove":
+                self.assertEqual(order.pop(op["index"]), op["id"])
+            elif op["op"] == "insert":
+                order.insert(op["index"], op["id"])
+            elif op["op"] == "move":
+                moved = order.pop(op["from"])
+                self.assertEqual(moved, op["id"])
+                order.insert(op["to"], moved)
+            if "card" in op:
+                cards[op["id"]] = op["card"]
+        return ops, order, [cards[i] for i in order]
+
+    def test_diff_cards(self):
+        a, b, c, d = ({"id": i, "title": i.lower()} for i in "ABCD")
+        ops, order, _ = self.apply_ops([], [])
+        self.assertEqual((ops, order), ([], []), "pusta lista")
+        ops, order, _ = self.apply_ops([], [a, b])
+        self.assertEqual([o["op"] for o in ops], ["insert", "insert"])
+        self.assertEqual(order, ["A", "B"], "same dodania")
+        ops, order, _ = self.apply_ops([a, b, c], [])
+        self.assertEqual([o["op"] for o in ops], ["remove"] * 3)
+        self.assertEqual(order, [], "same usunięcia")
+        self.assertEqual(self.js(f"diffCards({json.dumps([a, b, c])}, {json.dumps([a, b, c])})"), [],
+                         "bez zmian — bez operacji, także dla innych obiektów o tej samej treści")
+        ops, order, _ = self.apply_ops([a, b, c, d], [d, a, c, b])
+        self.assertEqual(order, ["D", "A", "C", "B"], "zmiana kolejności")
+        self.assertTrue(all(o["op"] == "move" for o in ops), ops)
+        changed = dict(b, title="nowy")
+        ops, order, cards = self.apply_ops([a, b, c], [a, changed, c])
+        self.assertEqual(ops, [{"op": "set", "id": "B", "card": changed}], "zmiana pola: tylko ustawienie pól")
+        self.assertEqual(cards[1]["title"], "nowy")
+        ops, order, cards = self.apply_ops([a, b, c], [changed, a, d])
+        self.assertEqual(order, ["B", "A", "D"], "usunięcie, wstawienie i przeniesienie razem")
+        self.assertEqual([x["title"] for x in cards], ["nowy", "a", "d"], "przeniesiona karta ma nowe pole")
+
+    def test_diff_cards_between_columns_and_duplicates(self):
+        a, b, c = ({"id": i, "boardColumn": "todo"} for i in "ABC")
+        moved = dict(b, boardColumn="done", title="x")
+        # Kolumna źródłowa traci kartę, docelowa ją dostaje — z nową treścią.
+        _, order, _ = self.apply_ops([a, b, c], [a, c])
+        self.assertEqual(order, ["A", "C"])
+        ops, order, cards = self.apply_ops([], [moved])
+        self.assertEqual(order, ["B"])
+        self.assertEqual(cards[0]["boardColumn"], "done")
+        # Zduplikowane id: pierwsze wystąpienie wygrywa, model bez duchów.
+        dup = dict(a, title="drugi")
+        ops, order, cards = self.apply_ops([a, a], [a, b, dup, b])
+        self.assertEqual(order, ["A", "B"])
+        self.assertEqual(cards[0].get("title"), None)
+        self.assertEqual(self.js(f"diffCards({json.dumps([a, a])}, {json.dumps([a, a])})"), [])
+
     def test_confirming_review_cards_and_agent_target(self):
         k7, k5, k15 = ("S.cards.find(c => c.id === '%s')" % i for i in ("K-7", "K-5", "K-15"))
         self.assertTrue(self.js(f"confirmable({k7})"), "Do sprawdzenia — potwierdzasz przeniesieniem")

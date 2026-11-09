@@ -234,6 +234,59 @@ function column(list, columnId) {
     return list.filter(c => displayColumn(c) === columnId)
 }
 
+// Równość treści (karty z migawki to dane JSON): zmiana kolejności kluczy też liczy się jako zmiana, co jest
+// bezpieczne (najwyżej jedna zbędna aktualizacja karty).
+function sameValue(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b)
+}
+
+// Karty bez powtórzeń `id` (pierwsze wystąpienie wygrywa) — model o stabilnej tożsamości nie znosi duplikatów.
+function uniqueCards(list) {
+    const seen = {}
+    const out = []
+    for (const card of list || []) {
+        if (!card || card.id === undefined || card.id === null || seen[card.id]) continue
+        seen[card.id] = true
+        out.push(card)
+    }
+    return out
+}
+
+// Operacje przerabiające poprzednią listę kart na nową (model kolumny, PT-324). Operacje stosuje się po kolei,
+// każda działa na liście po poprzednich: {op: "remove", index, id} | {op: "insert", index, id, card} |
+// {op: "move", from, to, id} | {op: "set", id, card}. Karta o niezmienionej treści i miejscu nie daje operacji.
+function diffCards(prev, next) {
+    const before = uniqueCards(prev)
+    const after = uniqueCards(next)
+    const old = {}
+    for (const card of before) old[card.id] = card
+    const wanted = {}
+    for (const card of after) wanted[card.id] = true
+    const order = before.map(card => card.id)
+    const ops = []
+    for (let i = order.length - 1; i >= 0; i--) {
+        if (wanted[order[i]]) continue
+        ops.push({ op: "remove", index: i, id: order[i] })
+        order.splice(i, 1)
+    }
+    for (let i = 0; i < after.length; i++) {
+        const card = after[i]
+        if (order[i] !== card.id) {
+            const from = order.indexOf(card.id, i)
+            if (from < 0) {
+                order.splice(i, 0, card.id)
+                ops.push({ op: "insert", index: i, id: card.id, card: card })
+                continue
+            }
+            order.splice(from, 1)
+            order.splice(i, 0, card.id)
+            ops.push({ op: "move", from: from, to: i, id: card.id })
+        }
+        if (!sameValue(old[card.id], card)) ops.push({ op: "set", id: card.id, card: card })
+    }
+    return ops
+}
+
 // Pozycja dla MoveCard: miejsce wśród kart zapisanych w kolumnie docelowej (bez przenoszonej),
 // przed kartą `before` (pusty — na koniec, -1). Karta z inną kolumną zapisaną (stan z koordynatora)
 // nie liczy się — usługa porządkuje tylko pliki tej kolumny.

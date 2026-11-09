@@ -175,7 +175,14 @@ Rectangle {
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
     readonly property var cards: Logic.visible(snapshot, filters, optimistic)
     readonly property var allCards: Logic.visible(snapshot, null, optimistic)
-    readonly property var columnSpecs: Logic.columns(snapshot)
+    // Kolumny jako model Repeaterów: nowa tablica przebudowałaby je wszystkie, więc tożsamość zmienia się tylko
+    // wtedy, gdy zmieniła się ich treść (PT-324).
+    property var columnSpecs: Logic.columns(null)
+    function refreshColumnSpecs() {
+        const next = Logic.columns(snapshot)
+        if (!Logic.sameValue(next, columnSpecs)) columnSpecs = next
+    }
+    Component.onCompleted: refreshColumnSpecs()
     readonly property bool exists: !!snapshot && snapshot.exists === true
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
     readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
@@ -827,6 +834,7 @@ Rectangle {
 
     // Nowa migawka: przeniesienie w locie już w niej jest (albo przepadło).
     onSnapshotChanged: {
+        refreshColumnSpecs()
         optimistic = []
         if (mergeTargets.visible && mergeTargets.contextKey !== mergeContext(mergeTargets.cardId)) mergeTargets.close()
         if (mergePreview.visible && mergePreview.contextKey !== mergeContext(mergePreview.cardId)) mergePreview.close()
