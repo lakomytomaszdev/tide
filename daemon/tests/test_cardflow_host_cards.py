@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tide_daemon.box import refguard
+from tide_daemon.box import runner as br
 from tide_daemon.cardflow import boxstep, handoff
 
 from . import hostcards
@@ -218,7 +220,14 @@ class HostReviewAfterBoxAuthorTest(BoxFlow):
         def clean_tip(repo, branch, path, *, untracked=True):
             return self.engine.git.sha(repo, f"refs/heads/{branch}")
 
+        # Odczyt `extensions.worktreeConfig` i strażnik refów (PT-170/PT-266) wołają git w bwrap, którego
+        # piaskownica kroku nie tworzy. Ten test dotyczy wyłącznie treści kartek: obie bariery mają własne testy,
+        # tu są atrapami (rozszerzenie „wyłączone”, strażnik bez migawki i bez naprawy).
         with mock.patch.object(boxstep, "configure_background", side_effect=prepare), \
+                mock.patch.object(br, "worktree_config_enabled", return_value=False), \
+                mock.patch.object(refguard, "begin", return_value=None), \
+                mock.patch.object(refguard, "cancel", return_value=None), \
+                mock.patch.object(refguard, "finish", return_value={}), \
                 mock.patch.object(self.engine.git, "clean_tip", side_effect=clean_tip):
             reply = self.start(card_id)
             self.assertTrue(reply["ok"], reply)
