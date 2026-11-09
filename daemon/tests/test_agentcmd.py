@@ -190,6 +190,21 @@ class BackgroundClaudeTest(BackgroundBase):
         self.assertNotIn(folder, filesystem["allowWrite"])
         self.assertIn(f"Edit(/{folder}/**)", cmd.argv)
 
+    def test_read_directory_inside_the_step_input_gets_a_read_rule_instead_of_add_dir(self):
+        """09.11, K-89: `--add-dir` katalogu w `in` kazało piaskownicy (acceptEdits) zakładać atrapę `.mcp.json`
+        w montowaniu tylko do odczytu — każde polecenie Bash kończyło się błędem bwrap."""
+        evidence = os.path.join(self.step_dir, "in", "evidence")
+        other = os.path.join(self.home, "inny-projekt")
+        cmd = agentcmd.background(self.step(read_dirs=(evidence, other)))
+        settings = self.settings(cmd)
+        added = [cmd.argv[i + 1] for i, arg in enumerate(cmd.argv) if arg == "--add-dir"]
+        self.assertNotIn(evidence, added)
+        self.assertIn(other, added)
+        self.assertIn(f"Read(/{evidence}/**)", settings["permissions"]["allow"])
+        filesystem = settings["sandbox"]["filesystem"]
+        self.assertIn(evidence, filesystem["allowRead"])
+        self.assertIn(evidence, filesystem["denyWrite"])
+
     def test_step_files_exclude_sandbox_dummies_and_set_the_author(self):
         cmd = agentcmd.background(self.step(git_name="Krok", git_email="krok@tide.invalid"))
         inp = os.path.join(self.step_dir, "in")
