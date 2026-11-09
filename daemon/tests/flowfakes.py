@@ -14,7 +14,9 @@
   PT-147: `akcja-<nazwa>-powoli` — 6 s pracy, potem `akcja-<nazwa>`;
   PT-158: `pisze-sledzony`, `pisze-nowy`,
   `commit` — zapis do worktree albo commit, `karta-sledzony`, `karta-nowy` — zapis do worktree karty; potem
-  poprawny `escalate`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
+  poprawny `escalate`; PT-317: `cc-writes` — zapis Claude Code w `.claude/.cc-writes`, `cc-ustawienia`
+  i `cc-obok` — ten zapis i zmiana `.claude/settings.local.json` albo nowy plik obok, potem `escalate`;
+  „ATRAPA-CLAUDE-DIR” w opisie każe krokowi ticketu zostawić `.claude/settings.local.json`). Krok ticketu `blad-opiekun` kończy się błędem z powodem z linii „ATRAPA-POWOD: …” (powód
   jest też w dzienniku kroku).
 - `systemd-run` zapisuje pid pod nazwą jednostki w `$XDG_RUNTIME_DIR/fake-units/` i robi `exec` programu — jak
   `--scope`, w którym program jest procesem jednostki; proces żyje dalej po końcu usługi, która go uruchomiła.
@@ -112,7 +114,19 @@ if prompt.startswith("Jesteś opiekunem karty"):
         else:
             with open(os.path.join(card_tree, "opiekun-w-karcie.txt"), "w", encoding="utf-8") as fh:
                 fh.write("nowy plik\n")
-    if care in ("pisze-sledzony", "pisze-nowy", "commit", "karta-sledzony", "karta-nowy"):
+    elif care in ("cc-writes", "cc-ustawienia", "cc-obok"):
+        # PT-317: Claude Code zapisuje `.claude/.cc-writes` (katalog) w worktree kroku; `cc-ustawienia` — model
+        # zmienia `.claude/settings.local.json`, `cc-obok` — model dokłada plik obok `.cc-writes`.
+        claude_dir = os.path.join(tree, ".claude")
+        os.makedirs(os.path.join(claude_dir, ".cc-writes"), exist_ok=True)
+        with open(os.path.join(claude_dir, ".cc-writes", "zapis"), "a", encoding="utf-8") as fh:
+            fh.write("Claude Code\n")
+        other = {"cc-ustawienia": "settings.local.json", "cc-obok": "obok.txt"}.get(care)
+        if other:
+            with open(os.path.join(claude_dir, other), "a", encoding="utf-8") as fh:
+                fh.write("model pisze\n")
+    if care in ("pisze-sledzony", "pisze-nowy", "commit", "karta-sledzony", "karta-nowy", "cc-writes",
+                "cc-ustawienia", "cc-obok"):
         care = "escalate"
     data = None
     if care == "zly-format":
@@ -501,6 +515,11 @@ elif word == "blad-opiekun":
     else:
         reason = re.search(r"ATRAPA-POWOD: (.+)", prompt)
         reason = reason.group(1).strip() if reason else "awaria testowa"
+        if "ATRAPA-CLAUDE-DIR" in prompt:
+            # PT-317: sesja autora zostawia w worktree `.claude` (ignorowany) — jak prawdziwy Claude Code.
+            os.makedirs(os.path.join(cwd, ".claude"), exist_ok=True)
+            with open(os.path.join(cwd, ".claude", "settings.local.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
         # PT-153: powód (z sekretami z testu) trafia też do dziennika kroku — kontekst opiekuna musi go zamaskować.
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "text", "text": "Test pada: " + reason}]}}), flush=True)

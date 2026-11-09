@@ -3122,6 +3122,14 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   czytania plików. Git nie jest uruchamiany w worktree (haki, `core.fsmonitor`): drzewo czyta Python bez
   podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez usługę, gałęzie — `FlowGit.sha`
   w repozytorium.
+- Jedyny wyjątek (PT-317): `.claude/.cc-writes` w katalogu głównym worktree — plik albo katalog z zawartością,
+  który zapisuje sam Claude Code, a nie model. Strażnik liczy drzewo tak, jakby tej ścieżki nie było: pomija ją,
+  a rekord katalogu `.claude` ma tylko typ, prawa i i-węzeł (bez rozmiaru, `mtime` i `ctime`, które zmienia
+  powstanie `.cc-writes`). Każdy inny wpis w `.claude` ma pełny rekord, więc zmiana `settings.local.json`, nowy,
+  usunięty albo przeniesiony plik obok `.cc-writes` nadal dają `caretaker-wrote`. Dowiązanie o nazwie
+  `.cc-writes` nie jest wyjątkiem (rekord z celem), a zapis przez nie do pliku worktree widać w rekordzie celu;
+  `.cc-writes` w podkatalogu też nie jest wyjątkiem. Powstanie samego katalogu `.claude` w trakcie kroku jest
+  zmianą.
 - Stan bazowy: `caretaker.guard` z `cause: start` tuż przed startem programu (po przygotowaniu katalogów kroku,
   przed `step.started`) — `{step, repo, worktrees: [{worktree, gitDir, tree, head}], branches, refs, cause,
   wrote}`.
