@@ -19,6 +19,8 @@ Użycie (jedno powtórzenie = jeden nowy proces okna; domyślnie 3 powtórzenia,
               (domyślnie board),
 --scenario    idle: tablica bez aktywnych kart, tylko niezmieniona migawka co 1 s; active5: 5 aktywnych kart,
               zmieniona co 2 s i niezmieniona co 1 s (--cadence zmienia kadencję: eksperyment „wstrzymane migawki”),
+              stress: scenariusz zgodności skali (spoza protokołu): wszystkie karty spoza Gotowych/Archiwum aktywne,
+              kadencja `fast` (zmieniona co 0,5 s, niezmieniona co 0,25 s),
 --no-animations  eksperyment: w KOPII pakietu animacja pracujących segmentów nie startuje (repozytorium bez zmian),
 --platform    domyślnie offscreen (wtyczka Qt bez okien); DISPLAY/WAYLAND_DISPLAY użytkownika są czyszczone
               (poza jawnym `--platform session`, który zostawia środowisko pulpitu: okno jest widoczne i może zabrać
@@ -44,6 +46,8 @@ MATRIX = [
     ("a-active5", dict(variant="a", scenario="active5")),
     ("b-idle", dict(variant="b", scenario="idle")),
     ("b-active5", dict(variant="b", scenario="active5")),
+    ("a-stress", dict(variant="a", scenario="stress")),
+    ("b-stress", dict(variant="b", scenario="stress")),
     ("a-active5-unchanged-only", dict(variant="a", scenario="active5", cadence="unchanged")),
     ("a-active5-no-snapshots", dict(variant="a", scenario="active5", cadence="none")),
     ("a-active5-no-animations", dict(variant="a", scenario="active5", no_animations=True)),
@@ -178,10 +182,10 @@ def start_nested_compositor(kind: str):
 
 def run_combo(name: str, opts: dict, args, fixtures: dict, pkgs: dict) -> dict:
     variant, scenario = opts["variant"], opts["scenario"]
-    cadence = opts.get("cadence") or ("unchanged" if scenario == "idle" else "full")
+    cadence = opts.get("cadence") or {"idle": "unchanged", "stress": "fast"}.get(scenario, "full")
     top = opts.get("top", "board")
     animations = not opts.get("no_animations")
-    if animations not in pkgs:
+    if animations not in pkgs or not os.path.exists(os.path.join(pkgs[animations], "tide.py")):
         pkgs[animations] = mk.stage(args.work)
         if not animations:
             mk.strip_animations(pkgs[animations])
@@ -203,8 +207,8 @@ def run_combo(name: str, opts: dict, args, fixtures: dict, pkgs: dict) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--variant", choices=("a", "b"), default="a")
-    parser.add_argument("--scenario", choices=("idle", "active5"), default="idle")
-    parser.add_argument("--cadence", choices=("full", "unchanged", "none"), default="")
+    parser.add_argument("--scenario", choices=("idle", "active5", "stress"), default="idle")
+    parser.add_argument("--cadence", choices=("full", "unchanged", "none", "fast"), default="")
     parser.add_argument("--no-animations", action="store_true")
     parser.add_argument("--top", default="board")
     parser.add_argument("--platform", default="auto")

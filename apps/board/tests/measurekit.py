@@ -119,11 +119,17 @@ def install_cleanup_handlers() -> None:
 
 
 def remove_stale_dirs(keep: str = "") -> None:
-    """Usuwa pozostałości poprzednich, przerwanych pomiarów: <tmp>/tide-measure-*."""
+    """Usuwa pozostałości poprzednich, przerwanych pomiarów: <tmp>/tide-measure-*, ale tylko starsze niż 3 godziny.
+    Młodszych nie ruszamy: mogą należeć do równolegle biegnącego pomiaru (usunięty katalog pakietu psuł powtórzenia,
+    PT-323 fix-1)."""
     import glob
     import shutil
     for path in glob.glob(os.path.join(tempfile.gettempdir(), "tide-measure-*")):
-        if path != keep:
+        try:
+            young = time.time() - os.path.getmtime(path) < 3 * 3600
+        except OSError:
+            continue
+        if path != keep and not young:
             shutil.rmtree(path, ignore_errors=True)
 
 
@@ -163,23 +169,28 @@ def _active_derived(n: int) -> dict:
 def build_fixtures(data_dir: str, force: bool = False) -> dict:
     """idle.json i active5.json w data_dir (istniejące zostają, chyba że force) → {nazwa: {path, sha256}}."""
     os.makedirs(data_dir, exist_ok=True)
-    paths = {name: os.path.join(data_dir, name + ".json") for name in ("idle", "active5")}
+    paths = {name: os.path.join(data_dir, name + ".json") for name in ("idle", "active5", "stress")}
     if force or not all(os.path.exists(p) for p in paths.values()):
         sys.path.insert(0, REPO)
         from apps.board.tests.boardfix import preview_data
         with tempfile.TemporaryDirectory(prefix="tide-measure-fx-") as tmp:
             data = preview_data(tmp, derived=False)
         data.pop("cardDocs", None)   # nie należy do migawki usługi, a backend i tak by je odciął
-        with open(paths["idle"], "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=1)
-        # active5: pięć pierwszych kart spoza Gotowych i Archiwum (kolejność migawki) dostaje stan z koordynatora.
-        active = json.loads(json.dumps(data))
-        chosen = [c for c in active["cards"] if c.get("column") not in ("done", "archived")][:ACTIVE_CARDS]
-        for n, card in enumerate(chosen, 1):
-            card["boardColumn"] = "progress"
-            card["derived"] = _active_derived(n)
-        with open(paths["active5"], "w", encoding="utf-8") as fh:
-            json.dump(active, fh, ensure_ascii=False, indent=1)
+
+        def active_variant(limit):
+            # pierwsze `limit` kart spoza Gotowych i Archiwum (kolejność migawki) dostaje stan z koordynatora
+            snap = json.loads(json.dumps(data))
+            chosen = [c for c in snap["cards"] if c.get("column") not in ("done", "archived")][:limit]
+            for n, card in enumerate(chosen, 1):
+                card["boardColumn"] = "progress"
+                card["derived"] = _active_derived(n)
+            return snap
+
+        variants = {"idle": data, "active5": active_variant(ACTIVE_CARDS), "stress": active_variant(10 ** 6)}
+        for name, snap in variants.items():
+            if force or not os.path.exists(paths[name]):   # istniejące pliki (i ich skróty) zostają bez zmian
+                with open(paths[name], "w", encoding="utf-8") as fh:
+                    json.dump(snap, fh, ensure_ascii=False, indent=1)
     out = {}
     for name, path in paths.items():
         with open(path, "rb") as fh:
@@ -256,14 +267,16 @@ class Driver:
         self.window.afterAnimating.connect(self._after_animating)
         self.window.frameSwapped.connect(self._frame_swapped)
         self._changed_timer, self._same_timer = QTimer(), QTimer()
-        self._changed_timer.setInterval(2000)
-        self._same_timer.setInterval(1000)
+        # "fast" (scenariusz zgodności skali, nie z protokołu): cztery razy częściej niż protokół — 0,5 s i 0,25 s
+        scale = 0.25 if self.cadence == "fast" else 1.0
+        self._changed_timer.setInterval(int(2000 * scale))
+        self._same_timer.setInterval(int(1000 * scale))
         self._changed_timer.timeout.connect(self._changed)
         self._same_timer.timeout.connect(self._same)
-        if self.cadence == "full":
+        if self.cadence in ("full", "fast"):
             self._changed_timer.start()
-        if self.cadence in ("full", "unchanged"):
-            QTimer.singleShot(500, self._same_timer.start)   # niezmieniona w połowie sekundy między zmienionymi
+        if self.cadence in ("full", "unchanged", "fast"):
+            QTimer.singleShot(int(500 * scale), self._same_timer.start)   # niezmieniona w połowie okresu zmienionych
         QTimer.singleShot(int(self.warmup * 1000), self._mark)
         QTimer.singleShot(int((self.warmup + self.duration) * 1000), self._finish)
 
