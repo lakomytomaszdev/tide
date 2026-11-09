@@ -63,8 +63,19 @@ def run_child(cmd: list[str], env: dict, timeout: float) -> dict:
     try:
         proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        return {"error": f"przekroczono limit {timeout:.0f} s", "loadavg_before": before, "loadavg_after": loadavg(),
-                "stderr_tail": str(exc.stderr or "")[-1500:]}
+        def text(raw):
+            return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else (raw or "")
+        lines = text(exc.stdout).strip().splitlines()
+        try:   # wynik mógł zostać wypisany, a proces zawiesił się dopiero przy zamykaniu
+            result = json.loads(lines[-1]) if lines else {}
+        except ValueError:
+            result = {}
+        if result and "error" not in result:
+            result["note"] = "proces zabity po limicie czasu, wynik odzyskany ze stdout"
+        else:
+            result = {"error": f"przekroczono limit {timeout:.0f} s"}
+        result.update(loadavg_before=before, loadavg_after=loadavg(), stderr_tail=text(exc.stderr)[-1500:])
+        return result
     after = loadavg()
     lines = proc.stdout.strip().splitlines()
     try:
@@ -94,6 +105,26 @@ def aggregate(runs: list[dict]) -> dict:
         "errors": [r["error"] + ": " + r.get("stderr_tail", "") for r in runs if "error" in r],
         "runs": [{k: v for k, v in r.items() if k != "snapshot_ms_all"} for r in runs],
     }
+
+
+def install_cleanup_handlers() -> None:
+    """SIGTERM/SIGHUP kończą skrypt wyjątkiem, więc `finally` sprząta katalogi i zabija procesy potomne."""
+    import signal
+
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+
+
+def remove_stale_dirs(keep: str = "") -> None:
+    """Usuwa pozostałości poprzednich, przerwanych pomiarów: <tmp>/tide-measure-*."""
+    import glob
+    import shutil
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "tide-measure-*")):
+        if path != keep:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def stage(out_dir: str) -> str:

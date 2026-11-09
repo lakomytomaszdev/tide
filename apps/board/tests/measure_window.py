@@ -84,8 +84,12 @@ def child(args) -> int:
     tide.QQmlApplicationEngine, tide.Shell, tide.make_backends = CapturingEngine, CapturingShell, make_backends
     results = []
 
+    def trace(message):
+        print(f"[child {os.getpid()}] {message}", file=sys.stderr, flush=True)
+
     def setup():
         try:
+            trace("setup")
             window = seen["engine"].rootObjects()[0]
             shell = seen["shell"]
             if args.variant == "b":
@@ -94,24 +98,36 @@ def child(args) -> int:
                     QTest.qWait(400)
             shell.show(args.top, "")
             QTest.qWait(600)
+            trace("views ready")
             board_view = mk.qml_value(seen["engine"], window, "loaders.itemAt(0).item")
             board_page = mk.qml_value(seen["engine"], board_view, "page")   # obiekt z BoardView.qml: tam jest Logic
             delegates = lambda: mk.read_counter(seen["engine"], board_page)
             driver = mk.Driver(seen["backends"]["board"], window, delegates, cadence=args.cadence,
                                warmup=args.warmup, duration=args.duration)
+            seen["driver"] = driver   # timery żyją tyle, co Driver
             driver.start(finish)
+            trace("driver started")
+            # Bezpiecznik: gdyby wynik nie nadszedł, proces kończy się sam, zamiast wisieć.
+            QTimer.singleShot(int((args.warmup + args.duration + 40) * 1000),
+                              lambda: finish({"error": "bezpiecznik: pomiar nie zakończył się w czasie"}))
         except Exception as exc:  # wynik z błędem — rodzic pokaże przyczynę
             finish({"error": repr(exc)})
 
     def finish(result):
+        if results:
+            return
+        trace("finish")
         results.append(result)
-        QGuiApplication.quit()
+        result.update(variant=args.variant, scenario=args.scenario, top=args.top,
+                      platform=os.environ.get("QT_QPA_PLATFORM", "sesja"))
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        # Wynik jest już wypisany; zamykanie okna i backendów (wątki, D-Bus) pomijamy, żeby proces nie wisiał.
+        sys.stderr.flush()
+        os._exit(0 if "error" not in result else 1)
 
     code = tide.main(["--view", "board", "--data", f"board={args.data}"])
-    result = results[0] if results else {"error": f"okno zakończyło się bez wyniku (kod {code})"}
-    result.update(variant=args.variant, scenario=args.scenario, top=args.top, platform=os.environ.get("QT_QPA_PLATFORM", "sesja"))
-    print(json.dumps(result, ensure_ascii=False))
-    return 0 if "error" not in result else 1
+    finish({"error": f"okno zakończyło się bez wyniku (kod {code})"})
+    return 1
 
 
 def platform_env(choice: str, socket: str = "") -> dict:
@@ -200,6 +216,8 @@ def main(argv=None) -> int:
     if args.child:
         return child(args)
 
+    mk.install_cleanup_handlers()
+    mk.remove_stale_dirs()
     args.work = tempfile.mkdtemp(prefix="tide-measure-window-")
     args.nested_socket, compositor = "", None
     try:

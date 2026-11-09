@@ -82,6 +82,8 @@ def main(argv=None) -> int:
     parser.add_argument("--out", default="")
     args = parser.parse_args(argv)
 
+    mk.install_cleanup_handlers()
+    mk.remove_stale_dirs()
     work = tempfile.mkdtemp(prefix="tide-measure-board-")
     try:
         pkg = mk.stage(work)
