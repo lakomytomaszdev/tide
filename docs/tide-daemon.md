@@ -3348,6 +3348,8 @@ wraca w `Proposal.box`. Plik nie jest zapisywany ani kopiowany do Tablicy — za
 
 ### Pakiet zgód: środowisko karty (PT-172)
 
+Przy `box.enabled: false` sekcji nie ma (zgoda środowiska nie obowiązuje, PT-290; 09.11: jej liczenie przy każdym
+odświeżeniu wczytywało Tablicę ponad sto razy) — wyjątkiem jest karta, która już czeka na środowisko.
 Plan do zatwierdzenia (i plan zatwierdzony z „Tylko plan”) ma w `derived.flow.plan.environment` sekcję „Środowisko
 karty”, liczoną przez usługę (`cardflow/envconsent.py`) z profilu projektu (zatwierdzonego albo propozycji z PT-190)
 i propozycji `out/box.yaml` (zapisywanej w `plan.proposed.box`). Panel tylko ją pokazuje — nie zna listy kluczy ani
