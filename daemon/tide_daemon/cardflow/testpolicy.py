@@ -175,6 +175,61 @@ def effective_tests(contract, worktree: str, approved: bool, base: str = "", *, 
                    declared_changed=declared["changed"], declared_full=declared["full"])
 
 
+@dataclass(frozen=True)
+class ContractGrants:
+    """Zgody kroku z polityki testów (K-69, PT-280). `commands` — dokładne polecenia dokładane do listy dozwolonych
+    tego kroku (bez wzorców), `notes` — `(pole, polecenie, komunikat)` dla poleceń zatwierdzonego kontraktu, które
+    zgody nie dostały, `fix` — część z nich pasuje do zakazu projektu albo Tide (kontrakt wymaga poprawy)."""
+    __test__ = False
+
+    commands: tuple = ()
+    notes: tuple = ()
+    fix: bool = False
+
+
+NO_BASE_NOTE = ("baza ticketu nie jest znana (`{base}` nierozwinięte) — Tide nie nada temu poleceniu automatycznej "
+                "zgody")
+FORBIDDEN_NOTE = "polecenie pasuje do zakazu „{rule}” — Tide nie nada mu zgody; kontrakt testów wymaga poprawy"
+
+
+def contract_grants(policy: TestPolicy | None, denied) -> ContractGrants:
+    """Jedyna reguła zgód z kontraktu testów dla kroku: polecenie pola, które pochodzi z zatwierdzonego kontraktu
+    (`*_source == profile`, czyli `approval_for_step` dało `approved` przy budowie tej polityki), trafia na listę
+    dozwolonych tego kroku dosłownie — tylko gdy:
+
+    - ma znaną bazę (`changed` bez nierozwiniętego `{base}`),
+    - `project_tests.grant_note` nie zgłasza braku zgody (pojedyncze polecenie bez `*`; po podstawieniu bazy),
+    - nie pasuje do zakazu projektu (`denied`) ani Tide (`TIDE_DENIED`), także z prefiksem `LC_ALL=…`.
+
+    Polecenia wykryte z `Makefile`, zasada ogólna i kontrakt niezatwierdzony nie dają zgód. Tekst polecenia to
+    dokładnie `policy.changed` / `policy.full` — ten sam, który kartka kroku podaje w zasadzie testów."""
+    if policy is None:
+        return ContractGrants()
+    from ..board import commands, project_tests
+    bans = [*(denied or ()), *commands.TIDE_DENIED]
+    granted, notes, fix = [], [], False
+    for field, command, source in (("changed", policy.changed, policy.changed_source),
+                                   ("full", policy.full, policy.full_source)):
+        command = (command or "").strip()
+        if source != PROFILE or not command:
+            continue
+        if field == "changed" and (policy.base_pending or BASE_PARAM in command):
+            notes.append((field, command, NO_BASE_NOTE))
+            continue
+        message = project_tests.grant_note(command)
+        if message:
+            notes.append((field, command, message))
+            continue
+        rule = commands.forbidding_rule(command, bans)
+        if rule is not None:
+            notes.append((field, command, FORBIDDEN_NOTE.format(rule=rule)))
+            fix = True
+            continue
+        if command not in granted:
+            granted.append(command)
+    return ContractGrants(tuple(granted), tuple(notes), fix)
+
+
 def repo_facts(directory: str) -> dict:
     """Fakty o repozytorium dla `suggest_tests`: cele `test-changed` i `test` z `make_targets` (jedyny czytnik
     `Makefile`; nic nie uruchamia). Przełączenie na `StackReport` K-38 — dopiero po warunku ze szkicu k38-tests-schema."""

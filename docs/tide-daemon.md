@@ -1424,6 +1424,40 @@ i poleceniami efektywnego kontraktu (`changed` z opisem `{base}`, `full`) albo z
 zasad projektu. Polityka planowania nie ma bazy ani `testPolicy` w zdarzeniu (nie jest wymogiem kroku ani źródłem
 zgód); wznowienie zastępuje linię, a format `plan-review.json` i reguły zatwierdzania się nie zmieniają.
 
+#### Zgoda na polecenia kontraktu (PT-280)
+
+Autor ticketu, poprawek, recenzent, krok domknięcia i rozwiązania konfliktu mogą uruchomić polecenie
+zatwierdzonego kontraktu testów bez wyniku `denied` i bez pytania. Regułę ma jedna funkcja,
+`testpolicy.contract_grants(policy, denied)` → `ContractGrants(commands, notes, fix)`; `_launch` woła ją przy każdym
+starcie i wznowieniu z **tej samej** `TestPolicy`, z której powstała kartka kroku (`step_test_policy`), więc tekst
+zgody to dokładnie `policy.changed` / `policy.full` z zasady testów tej kartki.
+
+- **Pochodzenie zgody.** Pole trafia na listę tylko ze źródłem `profile` (`changed_source` / `full_source`),
+  czyli gdy `approval_for_step` dla tego kroku dało `approved` przy budowie polityki: odcisk zgodny z treścią
+  pliku w tej chwili i brak kolizji ścieżek magazynu. Kontrakt zmieniony przez planistę, autora, inny krok,
+  ręcznie albo cofnięciem commita (odcisk różny), brak lub uszkodzenie magazynu odcisków i kolizja ścieżek dają
+  listę bez poleceń kontraktu, a kartka mówi, że kontrakt nie jest zatwierdzony; uruchomienie idzie zwykłą
+  ścieżką `denied`. Zgody nie zapamiętujemy między krokami — każde wznowienie liczy ją od nowa. Polecenia
+  wykryte z `Makefile` (źródło `detected`, także `legacy`) i zasada ogólna nie dają zgód.
+- **Literalne polecenie.** Zgodę dostaje tylko polecenie, dla którego `project_tests.grant_note` jest puste:
+  pojedyncze (`single_command` — bez `;`, `&&`, `|`, `$`, odwrotnego apostrofu, podpowłoki, `env`, przypisań
+  innych niż język/strefa) i bez znaku `*` po podstawieniu bazy. W regule Claude daje to `Bash(<polecenie>)` bez
+  wariantu `… *`, a w `is_allowed` — dokładne porównanie argumentów, więc ani dodatkowe argumenty, ani inne
+  polecenie (np. `pytest -x tests/other` przy `full: pytest *`) nie przechodzą. Polecenie z `*` zostaje
+  wymogiem kartki bez zgody, z tym samym komunikatem co `testsGrantNote` w JSON projektu (okno projektu).
+- **Baza.** `changed` z nierozwiniętym `{base}` (brak przypiętej bazy) nie trafia na listę; `full` trafia.
+  SHA bazy jest wstawiane przez `shlex.quote` w `effective_tests`, krok konfliktu ma bazę scalanego ticketu.
+- **Pierwszeństwo zakazów.** Polecenie pasujące do zakazu projektu (`denied-commands`) albo Tide
+  (`TIDE_DENIED`, `make install`) — także z prefiksem `LC_ALL=…` (`forbidding_rule`) — nie jest dokładane,
+  a kartka ostrzega, że kontrakt testów wymaga poprawy.
+- **Gdzie widać zgody.** Polecenia dochodzą do listy kroku (`_background_step(contract_commands=…)` →
+  `claude_tools([*allowed-commands, *zgody], …)`), a nie do listy zapisanej w projekcie (`allowed-commands` się
+  nie zmienia). Kartka ma je w sekcji „Polecenia projektu w tym kroku”, w bloku
+  `<TIDE_CONTRACT_COMMANDS>…</TIDE_CONTRACT_COMMANDS>` (zgody, polecenia bez zgody z komunikatem, ostrzeżenie
+  o poprawie); wznowienie usuwa blok poprzedniej próby i dokłada aktualny. Bez zgód i uwag blok nie powstaje
+  (tekst master). Zdarzenie startu kroku ma `contractCommands`. Piaskownica i kontrakt `outside` się nie zmieniają
+  (sieć i Docker nadal przez `outside`); krok w pudełku dostaje ten sam blok w kartce.
+
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
 W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,

@@ -412,6 +412,9 @@ if word == "pytanie":
         finish("done")
     else:
         finish("question", question="Który format daty?")
+elif word == "pytanie-zawsze":
+    # PT-280: pytanie w każdej próbie — kolejne wznowienia tego samego kroku (zgody liczone przy każdym).
+    finish("question", question="Który format daty?")
 elif word in ("pytanie-opcje", "pytanie-zle-opcje"):
     if "Odpowiedź użytkownika:" in prompt:
         finish("done")

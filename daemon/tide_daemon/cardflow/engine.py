@@ -2622,13 +2622,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _background_step(self, *, card, project, selected, kind, prompt, worktree, step_dir, step_id, session,
                          resume_session, read_dirs, context_dirs, configured, read_profile, branch="",
-                         tooling=None) -> agentcmd.Step:
+                         tooling=None, contract_commands=()) -> agentcmd.Step:
         """Krok w tle z jego ustawień — jedno miejsce dla startu programu (`Runner.start`) i dla `step_test_policy`
-        (PT-287). `tooling` — składniki z `_step_tooling` (w pudełku bez narzędzi hosta); brak = jak na hoście."""
+        (PT-287). `tooling` — składniki z `_step_tooling` (w pudełku bez narzędzi hosta); brak = jak na hoście.
+        `contract_commands` — dokładne polecenia zatwierdzonego kontraktu testów dla tego kroku
+        (`testpolicy.contract_grants`, PT-280); dochodzą do listy kroku, nie do listy zapisanej w projekcie."""
         from ..board.commands import claude_tools
         # Krok opiekuna (PT-158) nie dostaje listy poleceń projektu: jego stałą listę tylko do odczytu składa
         # `agentcmd` (`write_out_only`).
-        allowed_tools, disallowed_tools = claude_tools(project.allowed_commands, project.denied_commands,
+        allowed_tools, disallowed_tools = claude_tools([*project.allowed_commands, *contract_commands],
+                                                       project.denied_commands,
                                                        step_dir=step_dir) if kind != caretaker.KIND else ((), ())
         return agentcmd.Step(
             tool=selected.tool, binary=selected.binary, prompt=prompt, worktree=worktree, repo=project.repo,
@@ -2760,6 +2763,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if planned:
                 plan_policy, policy = policy, None
         policy_card = policy.as_dict() if policy is not None else None
+        # Zgody z kontraktu testów (PT-280): z tej samej polityki co zasada testów w kartce, liczone przy każdym
+        # starcie i wznowieniu; blok zgód poprzedniej próby nie przechodzi do kartki wznowienia.
+        grants = testpolicy.contract_grants(policy, project.denied_commands)
+        if prompt_text and parent_step:
+            prompt_text = handoff.strip_contract_commands(prompt_text)
         if make_prompt:
             head = ""
         elif prompt_text and parent_step and policy is not None:
@@ -2783,13 +2791,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
             head = handoff.with_plan_tests(head, plan_policy)
         prompt = head + prompt
         if policy is not None:
-            policy_fields = {"testPolicy": policy.as_dict(), "testPolicyCard": policy_card}
+            policy_fields = {"testPolicy": policy.as_dict(), "testPolicyCard": policy_card,
+                             "contractCommands": list(grants.commands)}
         if str(standard) not in prompt:
             prompt += resources.instructions()
         if kind != caretaker.KIND:      # opiekun: stała lista tylko do odczytu w kartce, bez listy projektu (PT-158)
             prompt += handoff.runner_policy(step_runner, project.allowed_commands, project.denied_commands,
                                             step_dir=step_dir,
-                                            profile=placement.profile if placement is not None else None)
+                                            profile=placement.profile if placement is not None else None,
+                                            contract=grants)
         from .stepnotes import prepare as prepare_notes
         prompt, note_ids = prepare_notes(self.journal.state(card.id), parent_step, prompt)
         ids, places = self._hidden    # ukryta, zanim program zapisze pierwszą linię dziennika sesji
@@ -2848,7 +2858,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     card=card, project=project, selected=selected, kind=kind, prompt=prompt, worktree=worktree,
                     step_dir=step_dir, step_id=step_id, session=session, resume_session=resume_session,
                     read_dirs=read_dirs, context_dirs=context_dirs, configured=configured, read_profile=read_profile,
-                    branch=made_ticket["branch"], tooling=tooling)
+                    branch=made_ticket["branch"], tooling=tooling, contract_commands=grants.commands)
                 if placement is not None:
                     boxstep.prepare_runner(self, placement, runner_step)
                 self._trial_check(ticket)

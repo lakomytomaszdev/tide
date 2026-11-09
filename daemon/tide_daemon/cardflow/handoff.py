@@ -451,8 +451,39 @@ wykonać w pudełku, zakończ wynikiem `error` z opisem przyczyny.
 """
 
 
+CONTRACT_COMMANDS_OPEN = "<TIDE_CONTRACT_COMMANDS>"
+CONTRACT_COMMANDS_CLOSE = "</TIDE_CONTRACT_COMMANDS>"
+CONTRACT_COMMANDS_HEAD = ("Polecenia zatwierdzonego kontraktu testów projektu — dozwolone w tym kroku dosłownie, bez "
+                          "dodatkowych\nargumentów (zgoda liczona przy tym starcie albo wznowieniu):\n")
+CONTRACT_NOT_GRANTED = "Polecenia kontraktu testów bez automatycznej zgody (uruchomienie wymaga zgody w kroku):\n"
+CONTRACT_FIX = ("Kontrakt testów projektu wymaga poprawy: jego polecenie pasuje do zakazu projektu albo Tide — "
+                "nie uruchamiaj go\ni nie proś o zgodę; zapisz to w notce.\n")
+_CONTRACT_COMMANDS = re.compile(r"\n?" + re.escape(CONTRACT_COMMANDS_OPEN) + r".*?" +
+                                re.escape(CONTRACT_COMMANDS_CLOSE) + r"\n?", re.DOTALL)
+
+
+def contract_commands(grants) -> str:
+    """Blok zgód z kontraktu testów (PT-280) w liście poleceń kroku; pusty bez zgód i bez uwag (tekst master)."""
+    if grants is None or not (grants.commands or grants.notes):
+        return ""
+    text = ""
+    if grants.commands:
+        text += CONTRACT_COMMANDS_HEAD + "".join(f"- {command}\n" for command in grants.commands)
+    if grants.notes:
+        text += CONTRACT_NOT_GRANTED + "".join(f"- `{command}` (tests.{field}): {message}\n"
+                                               for field, command, message in grants.notes)
+    if grants.fix:
+        text += CONTRACT_FIX
+    return f"{CONTRACT_COMMANDS_OPEN}\n{text}{CONTRACT_COMMANDS_CLOSE}\n"
+
+
+def strip_contract_commands(prompt: str) -> str:
+    """Kartka bez bloku zgód kontraktu z poprzedniej próby: wznowienie liczy zgody od nowa (PT-280)."""
+    return _CONTRACT_COMMANDS.sub("\n", prompt)
+
+
 def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: str, boundary: str,
-            report: str, outside: str) -> str:
+            report: str, outside: str, contract=None) -> str:
     allow = "\n".join(f"- {cmd}" for cmd in allowed) or "- (brak)"
     deny = "\n".join(f"- {cmd}" for cmd in denied) or "- (brak)"
     own = (f"Odczyt własnych katalogów kroku {step_dir}/in i {step_dir}/out (ls, cat) jest zawsze dozwolony —\n"
@@ -462,7 +493,7 @@ def _policy(allowed: list[str], denied: list[str], step_dir: str, *, wrapped: st
 Polecenia projektu w tym kroku (najnowsza lista):
 Dozwolone polecenia i wzorce (końcowe `*` oznacza argumenty jednego polecenia):
 {allow}
-Zabronione polecenia:
+{contract_commands(contract)}Zabronione polecenia:
 {deny}
 {own}{wrapped}{boundary}
 Polecenia zabronionego nie uruchamiaj i nie proś o zgodę na nie. Zgoda na jedno polecenie nie zezwala
@@ -475,27 +506,28 @@ i wyborach biznesowych — z krótkimi opcjami i Twoją rekomendacją.
 {outside}"""
 
 
-def command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
-    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku."""
+def command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, contract=None) -> str:
+    """Lista poleceń kroku na hoście (HostRunner) — tekst master; twardą granicą pozostaje piaskownica kroku.
+    `contract` — zgody z kontraktu testów (`testpolicy.contract_grants`, PT-280); bez nich tekst master."""
     return _policy(allowed, denied, step_dir, wrapped="", boundary=HOST_BOUNDARY, report=HOST_REPORT,
-                   outside=HOST_OUTSIDE)
+                   outside=HOST_OUTSIDE, contract=contract)
 
 
-def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "") -> str:
+def box_command_policy(allowed: list[str], denied: list[str], step_dir: str = "", *, contract=None) -> str:
     """Lista poleceń kroku w pudełku: owijka tide-test i ograniczenie pudełka zamiast kontraktu outside."""
     return _policy(allowed, denied, step_dir, wrapped=BOX_WRAPPED, boundary=BOX_BOUNDARY, report=BOX_REPORT,
-                   outside=BOX_OUTSIDE)
+                   outside=BOX_OUTSIDE, contract=contract)
 
 
 def runner_policy(runner: str, allowed: list[str], denied: list[str], step_dir: str = "", *,
-                  profile: dict | None = None) -> str:
+                  profile: dict | None = None, contract=None) -> str:
     """Jedyny wybór treści listy poleceń według zapisanego runnera kroku. Host: tekst master, bez dodatków
     pudełka (także przy `box.enabled: true` i istniejącym profilu). Box: owijka, verify profilu, ograniczenia."""
     if runner == BOX_RUNNER:
-        return box_command_policy(allowed, denied, step_dir) + box_tests(profile or {})
+        return box_command_policy(allowed, denied, step_dir, contract=contract) + box_tests(profile or {})
     if runner != HOST_RUNNER:
         raise ValueError(f"nieznany runner kroku: {runner!r}")
-    return command_policy(allowed, denied, step_dir)
+    return command_policy(allowed, denied, step_dir, contract=contract)
 
 
 def review_evidence(runner: str, source: dict) -> str:
