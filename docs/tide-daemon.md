@@ -1410,6 +1410,20 @@ integracji z silnikiem (#10) silnik woła kartki bez polityki, a kartki liczą j
 — regułą sprzed K-69 (bez `Makefile` nadal `make test-changed` i `make test`, bez linii źródła). Wzorcowe
 fragmenty kartek z master: `MASTER_FRAGMENTS` w `daemon/tests/test_cardflow_effective_tests.py`.
 
+**Kartka konfliktu i linia planowania (PT-284).** Krok rozwiązania konfliktu scalenia (`conflict`) liczy
+politykę przez `step_test_policy` przy starcie i każdym wznowieniu, jak ticket, poprawki, review i domknięcie
+(zdarzenie kroku ma `testPolicy` i `testPolicyCard`, wznowienie dostaje sekcję „Obowiązujące testy” w wariancie
+konfliktu). Bazą jest przypięty SHA z wyniku utworzenia gałęzi scalanego ticketu (`ticket_of(st, ticket)["base"]`),
+nie wierzchołek gałęzi karty; bez znanej bazy `{base}` zostaje nierozwinięte i opisane. Kartka konfliktu
+(`conflict_tests`) każe po zapisaniu commita scalenia uruchomić w worktree karty: `tests.changed` zatwierdzonego
+kontraktu, wykryte `make test-changed BASE=…`, w `legacy` pełny `make test`, a bez polecenia — testy dobrane do
+zmian według zasad projektu; w każdym wariancie polecenie i wynik idą do notki, a `done` wymaga udanego przebiegu.
+Dawne „uruchom potrzebne testy” bez polecenia zniknęło. Kroki `planning`, `plan-fix` i `plan-review` dostają jedną
+linię informacyjną `Kontrakt testów projektu (informacja dla planu): …` (`plan_tests_line`) ze źródłem
+i poleceniami efektywnego kontraktu (`changed` z opisem `{base}`, `full`) albo z informacją, że kartki odeślą do
+zasad projektu. Polityka planowania nie ma bazy ani `testPolicy` w zdarzeniu (nie jest wymogiem kroku ani źródłem
+zgód); wznowienie zastępuje linię, a format `plan-review.json` i reguły zatwierdzania się nie zmieniają.
+
 ### Katalogi danych projektu tylko do odczytu (PT-246)
 
 W „Projekty i tagi” pole „Katalogi tylko do odczytu” przyjmuje po jednym katalogu w wierszu,

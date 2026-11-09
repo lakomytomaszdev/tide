@@ -95,7 +95,11 @@ DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (pro
 MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
 # Kroki, których kartka podaje testy: każdy ich start i wznowienie liczy politykę przez `step_test_policy` (PT-287).
-TEST_POLICY_KINDS = ("ticket", "fix", "review", "close")
+# Konflikt (PT-284): baza = przypięty punkt startu scalanego ticketu, nie wierzchołek karty.
+TEST_POLICY_KINDS = ("ticket", "fix", "review", "close", "conflict")
+# Planowanie Lekkie i review planu (PT-284): jedna linia informacyjna o efektywnym kontrakcie, bez bazy i bez
+# `testPolicy` w zdarzeniu (polityka nie jest tu wymogiem kroku ani źródłem zgód).
+PLAN_TESTS_KINDS = ("planning", "plan-fix", "plan-review")
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
 ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
@@ -2732,10 +2736,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Korzystamy z istniejących katalogów tylko do odczytu; bez nowej polityki izolacji. Dopisane przed krokiem
         # próbnym polityki testów: jego obszary zapisu muszą być obszarami kroku, który startuje (review PT-287 M1).
         read_dirs += [str(standard.parent), str(resources.resolve("next-id").parent)]
-        # Polityka testów (PT-287): przy każdym starcie i wznowieniu ticketu, poprawek, review i domknięcia — z tego
-        # samego kroku, który niżej startuje (te same katalogi; `reads` przechodzi do `launch`).
-        policy, reads, policy_fields = None, None, {}
-        if kind in TEST_POLICY_KINDS and not make_prompt:
+        # Polityka testów (PT-287): przy każdym starcie i wznowieniu ticketu, poprawek, review, konfliktu (PT-284)
+        # i domknięcia — z tego samego kroku, który niżej startuje (te same katalogi; `reads` przechodzi do `launch`).
+        # Planowanie Lekkie i review planu dostają z niej tylko linię informacyjną (PT-284), bez bazy i zdarzenia.
+        policy, plan_policy, reads, policy_fields = None, None, None, {}
+        if (kind in TEST_POLICY_KINDS or kind in PLAN_TESTS_KINDS) and not make_prompt:
             try:
                 configured = self._configured_reads(card, project, worktree, step_dir, order=order,
                                                     route=selected.route)
@@ -2749,7 +2754,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 read_profile=reads[1] if reads else self._used_read_profile(card.id, worktree),
                 branch=made_ticket["branch"],
                 tooling=self._step_tooling(project, worktree, selected.tool, kind, placement))
-            policy = self.step_test_policy(card.id, probe, base=self._ticket_base(card.id, ticket, made_ticket))
+            planned = kind in PLAN_TESTS_KINDS
+            policy = self.step_test_policy(card.id, probe,
+                                           base="" if planned else self._ticket_base(card.id, ticket, made_ticket))
+            if planned:
+                plan_policy, policy = policy, None
         policy_card = policy.as_dict() if policy is not None else None
         if make_prompt:
             head = ""
@@ -2770,6 +2779,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                        project=project.name, ticket=ticket, branch=made_ticket["branch"],
                                        card_branch=made["branch"], worktree=worktree, out_dir=out,
                                        images=[*shots, *issue_shots], policy=policy)
+        if plan_policy is not None:
+            head = handoff.with_plan_tests(head, plan_policy)
         prompt = head + prompt
         if policy is not None:
             policy_fields = {"testPolicy": policy.as_dict(), "testPolicyCard": policy_card}
@@ -6236,14 +6247,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         step_id = self._next_step_id(card, ticket, st)
         out = info["cardWorktree"] + f".conflict-{step_id}.step/out"
-        prompt = handoff.conflict_card(card_id=card, title=item.title, description=item.description,
-                                       ticket=ticket, card_branch=info["cardBranch"],
-                                       ticket_branch=info["branch"], worktree=info["cardWorktree"],
-                                       out_dir=out, error=failure.get("error") or "konflikt")
+        # Testy po scaleniu (PT-284): polityka z `step_test_policy` w `_launch`; baza to przypięty SHA z utworzenia
+        # gałęzi scalanego ticketu (`ticket_of(st, ticket)["base"]`, także przy wznowieniu), nie wierzchołek karty.
+
+        def prompt(policy):
+            return handoff.conflict_card(card_id=card, title=item.title, description=item.description,
+                                         ticket=ticket, card_branch=info["cardBranch"],
+                                         ticket_branch=info["branch"], worktree=info["cardWorktree"],
+                                         out_dir=out, error=failure.get("error") or "konflikt", policy=policy)
         self._launch(item, project, selected, ticket,
                      {"branch": info["cardBranch"]},
-                     {"branch": info["cardBranch"], "worktree": info["cardWorktree"]},
-                     step_id, [], kind="conflict", prompt_text=prompt,
+                     {"branch": info["cardBranch"], "worktree": info["cardWorktree"], "base": info["base"]},
+                     step_id, [], kind="conflict", card_prompt=prompt,
                      review_tip=review_step.get("reviewTip") or "", attempt=1)
 
     def card_diff(self, card_id: str, target_ref: str = "") -> dict:

@@ -17,13 +17,17 @@ from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 from .test_cardflow_dbus import git
 from .test_cardflow_effective_tests import BASE, CHANGED, DETECTED_LINE, MASTER_FRAGMENTS
+# Moduły, nie klasy: zaimportowana klasa testów uruchomiłaby tu drugi raz swoje testy.
+from . import test_cardflow_plan_integration as plan_flow, test_cardflow_waves as wave_flow
 
 FIRST = {"changed": "make test-changed BASE={base} JOBS=1", "full": "make test"}
 SECOND = {"changed": "make test-changed BASE={base} JOBS=2", "full": "make test"}
 SECTION = "Obowiązujące testy ("
 
 
-class StepTestPolicyFlowTest(FlowInProcess):
+class PolicyFlowCase(FlowInProcess):
+    """Repozytorium jak plasma-tide i podsłuch `approval_for_step` oraz startu piaskownicy (bez scenariuszy)."""
+
     def setUp(self):
         super().setUp()
         # Repozytorium jak plasma-tide: `test` w Makefile, `test-changed` w mk/tests.mk, uruchamiacz z `--modules`.
@@ -108,6 +112,8 @@ class StepTestPolicyFlowTest(FlowInProcess):
         self.assertEqual(areas, agentcmd.step_write_areas(real).writable())
         return probe, result
 
+
+class StepTestPolicyFlowTest(PolicyFlowCase):
     # --- scenariusze ------------------------------------------------------------------------------
 
     def test_contract_change_reaches_the_resume_and_base_stays_pinned(self):
@@ -186,3 +192,80 @@ class StepTestPolicyFlowTest(FlowInProcess):
         self.assertEqual(text.count(expected), 1)
         for step in (first, resumed):
             self.assertEqual(self.approval_for(step)[1], (False, "projekt nie ma kontraktu testów"))
+
+
+class ConflictAndPlanningPolicyFlowTest(PolicyFlowCase):
+    """PT-284 (K-69 #7): krok konfliktu liczy politykę z bazą scalanego ticketu, planowanie dostaje linię kontraktu."""
+    proposal = plan_flow.PlanFlowTest.proposal
+    submit = plan_flow.PlanFlowTest.submit
+    approve_plan = plan_flow.PlanFlowTest.approve
+    wave_plan = wave_flow.WaveFlowTest.wave_plan
+
+    def conflicting_plan(self, card_id):
+        path = self.wave_plan(card_id)
+        for number, mode in ((1, "gotowe"), (2, "powoli 2")):
+            with open(os.path.join(os.path.dirname(path), "tickets", f"{number}.md"), "w", encoding="utf-8") as fh:
+                fh.write(f"# Ticket {number}\n\nATRAPA: {mode}\nATRAPA-PLIK: same\n\n- [ ] Wynik.\n")
+        self.assertTrue(self.submit(card_id, path)["ok"])
+        approved = self.approve_plan(card_id)
+        self.assertTrue(approved["ok"], approved)
+        return approved
+
+    def test_conflict_policy_uses_pinned_ticket_base_and_is_recomputed_on_resume(self):
+        self.approve(FIRST)
+        card_id = self.card(description="Plan z konfliktem\n\nATRAPA: conflict-error")
+        self.conflicting_plan(card_id)
+        self.assertTrue(wait_until(lambda: any(s.get("kind") == "conflict" for s in self.of(card_id, "step.started")),
+                                   timeout=25), self.events(card_id))
+        conflict = next(s for s in self.of(card_id, "step.started") if s.get("kind") == "conflict")
+        ticket = conflict["ticket"]
+        base = next(r for r in self.results(card_id, "ticket-branch") if r["ticket"] == ticket)["base"]
+        # Gałąź karty poszła dalej (scalony pierwszy ticket): baza konfliktu to nadal punkt startu ticketu.
+        card_tree = conflict["worktree"]
+        self.assertNotEqual(git(card_tree, "rev-parse", "HEAD").strip(), base)
+        policy = conflict["testPolicy"]
+        self.assertEqual((policy["source"], policy["base"], policy["changed"]),
+                         ("profile", base, f"make test-changed BASE={base} JOBS=1"))
+        self.assertEqual(conflict["testPolicyCard"], policy)
+        text = self.prompt_of(conflict)
+        self.assertIn(f"uruchom w worktree karty `make test-changed BASE={base} JOBS=1`", text)
+        self.assertNotIn("uruchom potrzebne testy", text)
+        self.assertEqual(self.approval_for(conflict)[1], (True, ""))
+
+        self.assertTrue(wait_until(lambda: any(e.get("step") == conflict["step"]
+                                               for e in self.of(card_id, "step.finished")), timeout=15))
+        self.approve(SECOND)
+        self.assertTrue(self.decide(card_id, {"choice": "retry", "step": conflict["step"]})["ok"])
+        found = wait_until(lambda: [s for s in self.of(card_id, "step.started")
+                                    if s.get("parentStep") == conflict["step"]], timeout=20)
+        self.assertTrue(found, self.events(card_id))
+        resumed = found[0]
+        self.assertEqual(resumed["kind"], "conflict")
+        policy = resumed["testPolicy"]
+        self.assertEqual((policy["base"], policy["changed"]), (base, f"make test-changed BASE={base} JOBS=2"))
+        self.assertEqual(resumed["testPolicyCard"], conflict["testPolicy"])
+        text = self.prompt_of(resumed)
+        section = text[text.index(handoff.CURRENT_TESTS_OPEN):text.index(handoff.CURRENT_TESTS_CLOSE)]
+        self.assertIn("Testy po scaleniu:", section)
+        self.assertIn(f"`make test-changed BASE={base} JOBS=2`", section)
+        self.assertEqual(self.approval_for(resumed)[1], (True, ""))
+
+    def test_light_planning_and_plan_review_get_one_contract_line(self):
+        self.approve(FIRST)
+        card_id = self.card(description="Dodaj eksport. ATRAPA: planowanie")
+        self.assertTrue(self.start(card_id, entry="planning", mode="light")["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card_id, "plan.reviewed"), timeout=20), self.events(card_id))
+        steps = {s["kind"]: s for s in self.of(card_id, "step.started")}
+        self.assertEqual(set(steps), {"planning", "plan-review"})
+        for kind, step in steps.items():
+            text = self.prompt_of(step)
+            with self.subTest(kind=kind):
+                self.assertEqual(text.count(handoff.PLAN_TESTS_PREFIX), 1)
+                line = next(line for line in text.splitlines() if line.startswith(handoff.PLAN_TESTS_PREFIX))
+                self.assertIn("zatwierdzony kontrakt w profilu projektu", line)
+                self.assertIn("`make test-changed BASE={base} JOBS=1`", line)
+                self.assertNotIn("testPolicy", step)
+                self.assertEqual(self.approval_for(step)[1], (True, ""))
+        # Format wyniku review planu i jego odczyt bez zmian.
+        reviewed = self.of(card_id, "plan.reviewed")[0]
+        self.assertEqual(reviewed["verdict"], "APPROVE")
