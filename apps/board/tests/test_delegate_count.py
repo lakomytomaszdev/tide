@@ -33,12 +33,19 @@ out["afterSecondIdentical"] = counter()
 snap["cards"][0]["title"] += " (zmiana)"
 set_snapshot(snap)
 out["afterTitleChange"] = counter()
+extra = json.loads(json.dumps(snap["cards"][0]))
+extra["id"] = "K-9999"
+extra["title"] = "nowa karta"
+snap["cards"].append(extra)
+set_snapshot(snap)
+out["afterNewCard"] = counter()
 """)
 
-    def test_counter_sees_initial_and_rebuilt_delegates(self):
+    def test_counter_sees_initial_and_new_delegates(self):
+        # Asercje prawdziwe przed i po #2: nie zakładają przebudowy kolumny przy zmianie jednej karty.
         out = self.counts()
         self.assertEqual(out["start"], out["cards"], "po załadowaniu: jeden delegat na kartę")
-        self.assertGreater(out["afterTitleChange"], out["afterSecondIdentical"], "licznik widzi przebudowę kolumny")
+        self.assertGreaterEqual(out["afterNewCard"] - out["afterTitleChange"], 1, "nowa karta daje co najmniej 1 delegat")
 
     def test_identical_snapshots_do_not_recreate_delegates(self):
         out = self.counts()
