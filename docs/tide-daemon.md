@@ -2104,6 +2104,16 @@ karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `ret
 na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
 Jeżeli restart rozdzieli te dwa zdarzenia, usługa dopisuje brakujące odrzucenie przy następnym przebiegu; ta sama
 odpowiedź `reject` może być bezpiecznie ponowiona.
+
+Wykonawcę poprawek (K-88/PT-312) wybiera kolejno: ręczna zmiana autora z panelu (`executorReason: override`),
+eskalacja od rundy `ESCALATE_FIX_ROUND` (3; `escalated`) i dotychczasowy autor (`author`). Eskalacja dotyczy tylko
+ticketu, którego klasa w zatwierdzonym planie nie jest `mocny` ani `lokalny` (brak klasy = `standard`). Jej cel to
+pierwszy dostępny wykonawca klasy `mocny` preferowanego dostawcy zlecenia (w trybie mieszanym — dostawcy autora),
+inny niż recenzent ocenianego i następnego review oraz inny niż autor; bez takiego poprawki robi autor, a zmiana
+autora w katalogu nadal kończy krok błędem `changed-executor`. Autor to ostatni krok autora ticketu, który nie był
+eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Wznowienie poprawek tym
+samym wykonawcą zachowuje `executorReason`; nowy wykonawca wznowienia zapisuje `override`. Próg pytania o review
+(`reviewRoundsBeforeQuestion`) się nie zmienia.
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
