@@ -16,6 +16,10 @@ Wynik: lista trafień (commit, miejsce, reguła, tekst) i raport commitów do pr
 Kod wyjścia: 0 — czysto, 1 — są trafienia (wysyłka wstrzymana), 2 — błąd (zła gałąź, brak git,
 zła konfiguracja).
 
+Prefiksy planów: domyślnie z `docs/agents/plans/` repozytorium klienta; projekty `ai-docs: tide` trzymają plany
+na Tablicy Tide, więc ich prefiksy trzeba wpisać do konfiguracji (`prefixes`) albo podać `--prefix`/`--plans`
+(czytanie planów z Tablicy: K-57).
+
 Wzorce: jedna lista `RULES` poniżej + prefiksy ticketów: stałe `LOG`, `PT`, prefiksy z `--prefix`,
 z `ticket-prefix:` planów (`--plans`, domyślnie `docs/agents/plans/` sprawdzanego repozytorium, jeśli istnieje)
 i z konfiguracji projektu. Numery `K-*` i ticketów rozpoznawane są wielkimi literami, a małymi tylko w nazwach
@@ -49,7 +53,7 @@ RULES = (
     ("card", "numer karty K-*", re.compile(_L + r"K-\d+\b|" + _BRANCH + r"(?i:k-\d+\b)")),
     ("case", "numer sprawy S-*", re.compile(_L + r"S-\d+\b")),
     ("trailer", "stopka Co-Authored-By", re.compile(r"co-authored-by\s*:", re.I)),
-    ("generated", "„Generated with”", re.compile(r"generated\s+(?:with|by)\b", re.I)),
+    ("generated", "„Generated with”", re.compile(r"generated\s+with\b", re.I)),
     ("ai", "wzmianka o AI", None),  # dwa wzorce niżej: wielkość liter ma znaczenie tylko dla „AI”
 )
 # „AI” jako słowo wielkimi literami; pozostałe nazwy bez względu na wielkość liter.
@@ -177,6 +181,28 @@ def commits(repo, target, branch) -> list:
     return result
 
 
+def _diff_path(raw):
+    """Ścieżka z nagłówka `+++ ` (git ujmuje w cudzysłów ścieżki z `"`, `\\` i znakami sterującymi); /dev/null → None."""
+    if len(raw) > 1 and raw.startswith('"') and raw.endswith('"'):
+        body = raw[1:-1]
+        simple = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13}
+        out, i = bytearray(), 0
+        while i < len(body):
+            ch = body[i]
+            if ch != "\\" or i + 1 >= len(body):
+                out += ch.encode("utf-8")
+                i += 1
+            elif body[i + 1].isdigit():
+                out.append(int(body[i + 1:i + 4], 8) & 255)
+                i += 4
+            else:
+                nxt = body[i + 1]
+                out.append(simple[nxt] if nxt in simple else ord(nxt))
+                i += 2
+        raw = out.decode("utf-8", errors="replace")
+    return raw[2:] if raw.startswith("b/") else None
+
+
 def added_lines(repo, sha, merge=False):
     """(plik, numer linii, tekst) dla dodanych linii commita; dla scalenia: zmiany względem automatycznego scalenia."""
     args = ["show", "--format=", "-U0", "--no-color", "--no-ext-diff"]
@@ -186,7 +212,7 @@ def added_lines(repo, sha, merge=False):
         if line.startswith("diff --git "):
             path, header = None, True
         elif header and line.startswith("+++ "):
-            path = line[6:] if line.startswith("+++ b/") else None
+            path = _diff_path(line[4:])
         elif line.startswith("@@"):
             header = False
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
