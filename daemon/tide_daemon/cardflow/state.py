@@ -9,8 +9,8 @@ Typy zdarzeń (schemat 1, PT-58):
   ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
 - `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,
 - `main-merge.abandoned` — porzucenie zamiaru po decyzji użytkownika, bez cofania materializacji,
-- `merge.check-armed` / `merge.check-requested` / `merge.check-finished` — bramka testów po scaleniu ticketu do gałęzi
-  karty (PT-318, opis w mergecheck.py),
+- `merge.check-armed` / `merge.check-requested` / `merge.check-finished` / `merge.check-accepted` — bramka testów po
+  scaleniu ticketu do gałęzi karty (PT-318, akceptacja mimo porażki PT-320, opis w mergecheck.py),
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
@@ -423,7 +423,8 @@ def fold(events: list[dict]) -> FlowState:
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":
                 st.caretaker_escalations[e.get("problem")] = e
-        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED, mergecheck.STEP):
+        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED, mergecheck.STEP,
+                      mergecheck.ACCEPTED):
             mergecheck.fold_event(st, e)
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
@@ -1281,8 +1282,9 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         index = asking[0] if asking else 0
         first = held[index]
         stage = stages[index]
-        text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu",
-                mergecheck.FAILED: "testy po scaleniu nie przeszły",
+        text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu "
+                                        "albo zaakceptuj",
+                mergecheck.FAILED: "testy po scaleniu nie przeszły — ponów albo zaakceptuj",
                 mergecheck.DENIED: "odmowa zgody na testy po scaleniu — ponów albo zaakceptuj",
                 mergecheck.PENDING: {"consent": "testy po scaleniu czekają na zgodę na polecenie poza piaskownicą",
                                      "queued": "testy po scaleniu w kolejce poza piaskownicą",

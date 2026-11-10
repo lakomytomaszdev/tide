@@ -4104,10 +4104,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
                                                             "card", "ticket", "baseDecision", "baseRef", "baseCommit",
-                                                            "previewId", "waitTicket", "check"}:
+                                                            "previewId", "waitTicket", "check", "after"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
+        if request.get("choice") == mergecheck.ACCEPT:
+            # „Akceptuj mimo porażki” (PT-320) — decyzja karty o dokładnej próbie; tylko jawne wywołanie człowieka
+            # (D-Bus z panelu karty), nigdy opiekun ani decyzja automatyczna.
+            if caretaker_problem or caretaker_step or set(request) - {"choice", "ticket", "check", "after", "card"}:
+                raise FlowError("bad-request", "accept-merge-check przyjmuje tylko `ticket`, `check` i `after`")
+            self._require_base_context(card)
+            return self.accept_merge_check(card, request)
+        if "after" in request:
+            raise FlowError("bad-request", "`after` idzie tylko z choice=accept-merge-check")
         if "check" in request and request.get("choice") != "retry-merge-check":
-            raise FlowError("bad-request", "`check` idzie tylko z choice=retry-merge-check")
+            raise FlowError("bad-request", "`check` idzie tylko z choice=retry-merge-check albo accept-merge-check")
         if request.get("choice") == "retry-merge-check":
             # Ponowienie próby testów po scaleniu (PT-318) — decyzja karty, nie kroku; tylko jawne wywołanie.
             if caretaker_problem or set(request) - {"choice", "ticket", "check", "card"}:
@@ -6814,6 +6823,33 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                             before=old.get("before") or "", after=after,
                                             merge_seq=old.get("mergeSeq"), retry_of=current)
         return {"ok": True, "id": card, "choice": "retry-merge-check", "ticket": ticket, "check": made["check"]}
+
+    def accept_merge_check(self, card: str, request: dict) -> dict:
+        """„Akceptuj mimo porażki” (PT-320): zapis `merge.check-accepted {ticket, check, after, by}` dla bieżącej próby
+        ticketu w stanie `merge-check-failed`, `merge-check-denied` albo `merge-check-unavailable`, gdy `check` i SHA
+        `after` z pytania są dokładnie tymi z próby. Otwiera bramkę tylko dla tej próby; niczego nie uruchamia.
+        Nieaktualna próba (inny `check`, inny wierzchołek), próba udana, czekająca albo już zaakceptowana — błąd bez
+        zapisu. Wywołuje ją wyłącznie `resolve_step` bez kontekstu opiekuna (jawna decyzja z panelu karty)."""
+        ticket, wanted, after = (request.get(key) for key in ("ticket", "check", "after"))
+        if not all(isinstance(value, str) and value for value in (ticket, wanted, after)) or \
+                not mergecheck.SHA.fullmatch(after):
+            raise FlowError("bad-request", "accept-merge-check wymaga `ticket`, `check` i pełnego SHA `after`")
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            item = st.merge_checks.get(ticket)
+            requested = (item or {}).get("requested") or {}
+            state = mergecheck.status(item, st.step_decisions) if item else ""
+            if state not in mergecheck.PROBLEMS or wanted != requested.get("check") or \
+                    after != requested.get("after"):
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {wanted} na {after[:12]} nie czeka "
+                                               "na akceptację (nieaktualna, udana albo już rozstrzygnięta)")
+            made = self.journal.append(card, mergecheck.ACCEPTED, ticket=ticket, check=wanted, after=after, by="user")
+        return {"ok": True, "id": card, "choice": mergecheck.ACCEPT, "ticket": ticket, "check": wanted,
+                "after": after, "seq": made["seq"]}
 
     def _start_conflict(self, card: str, st: FlowState, review_step: dict, failure: dict) -> None:
         """Oddaje konflikt wykonawcy w worktree karty; wynik sprawdza _finish."""

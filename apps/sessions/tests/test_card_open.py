@@ -19,7 +19,8 @@ import unittest
 from . import APP_DIR, REPO
 from .test_window import QML_PROBLEMS, stage
 from apps.board.tests.boardfix import preview_data
-from apps.board.tests.decisionfix import CARD, full_c, full_d
+from apps.board.tests.decisionfix import (CARD, MERGE_AFTER, MERGE_CHECK, MERGE_TICKET, decisions, full_c, full_d,
+                                          journal_merge_check, scenario_f)
 
 import re
 
@@ -152,6 +153,33 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual(out["calls"][0][:2], ["ResolveCardReview", CARD])
         self.assertEqual(json.loads(out["calls"][0][2]), {"choice": "accept", "ticket": "PT-8", "round": 3})
         self.assertEqual(out["calls"][1], ["ResolveCardReview", CARD, "retry"])
+
+    def test_merge_check_problem_shows_both_exits_and_accept_sends_the_shown_check(self):
+        """PT-320: okno Sesji pokazuje „Ponów próbę” i „Akceptuj mimo porażki”, a akceptacja idzie do /Board
+        z `ticket`, `check` i `after` pytania, które okno pokazuje."""
+        snapshot = scenario_f(preview_data(os.path.join(self.tmp, "board-merge")),
+                              decisions(journal_merge_check("merge-check-failed")))
+        data = self.data_file("merge-check", snapshot)
+        out = self.probe(data, """
+OPTIONS = ("(function walk(it) { let out = []; for (const c of it.children) { "
+           "if (c.objectName === 'decisionOption' && c.visible) out.push(c); out = out.concat(walk(c)) } "
+           "return out })(decisionDialog).sort((a, b) => a.mapToItem(null, 0, 0).y - b.mapToItem(null, 0, 0).y)")
+click_entry(0)
+result['options'] = json.loads(js("JSON.stringify(" + OPTIONS + ".map(o => o.title))"))
+pos = json.loads(js("(function () { const o = " + OPTIONS + "[1]; const p = o.mapToItem(null, o.width / 2, 12); "
+                    "return JSON.stringify([Math.round(p.x), Math.round(p.y)]) })()"))
+QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(*pos))
+QTest.qWait(150)
+QTest.keyClick(window, Qt.Key.Key_Return)
+QTest.qWait(200)
+result['calls'] = calls()
+""")
+        self.assertEqual(out["options"], ["Ponów próbę", "Akceptuj mimo porażki"])
+        sent = [c for c in out["calls"] if c[0] == "ResolveCardStep"]
+        self.assertEqual(len(sent), 1, out)
+        self.assertEqual(sent[0][1], CARD)
+        self.assertEqual(json.loads(sent[0][2]), {"choice": "accept-merge-check", "ticket": MERGE_TICKET,
+                                                  "check": MERGE_CHECK, "after": MERGE_AFTER})
 
     def test_dialog_setting_reaches_the_backend(self):
         out = self.probe(self.waiting, "click_entry(0)\njs(\"decisionDialog.cardOpenRequested('full')\")\n"

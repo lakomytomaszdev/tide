@@ -16,9 +16,10 @@ import shutil
 import unittest
 
 from . import REPO
-from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, CARE_RECOMMENDATION, CARE_SUMMARY, FINDINGS_C, Q2, Q3,
-                          a1_journal, a1_one_journal, a2_journal, decisions, decisions_c, decisions_caretaker,
-                          full_card, journal, journal_c, journal_caretaker_card, scenario_b, scenario_c, scenario_f,
+from .decisionfix import (A1_STEP, A2_COMMAND, A2_STEP, CARE_RECOMMENDATION, CARE_SUMMARY, FINDINGS_C,
+                          MERGE_AFTER, MERGE_CHECK, MERGE_TICKET, Q2, Q3, a1_journal, a1_one_journal, a2_journal,
+                          decisions, decisions_c, decisions_caretaker, full_card, journal, journal_c,
+                          journal_caretaker_card, journal_merge_check, scenario_b, scenario_c, scenario_f,
                           without_options)
 from .test_view import ProbeCase
 
@@ -157,6 +158,31 @@ out["after"] = state()
                 self.assertEqual(json.loads(out["sent"][0][2]),
                                  {"choice": "answer", "step": "K-8-ticket-3-0", "baseDecision": choice})
                 self.assertEqual(out["after"]["open"], choice == "change")
+
+    def test_merge_check_problem_shows_both_exits_and_sends_the_shown_check(self):
+        """PT-320: problem bramki testów po scaleniu ma „Ponów próbę” i „Akceptuj mimo porażki”; akceptacja wysyła
+        `ticket`, `check` i `after` dokładnie z pokazanego pytania (porażka, odmowa zgody i brak polecenia)."""
+        for problem in ("merge-check-failed", "merge-check-denied", "merge-check-unavailable"):
+            for index, request in ((0, {"choice": "retry-merge-check", "ticket": MERGE_TICKET,
+                                        "check": MERGE_CHECK}),
+                                   (1, {"choice": "accept-merge-check", "ticket": MERGE_TICKET,
+                                        "check": MERGE_CHECK, "after": MERGE_AFTER})):
+                with self.subTest(problem=problem, choice=request["choice"]):
+                    out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["state"] = state()
+click(option(""" + str(index) + """))
+key(Qt.Key.Key_Return)
+out["sent"] = calls()
+""", scenario_f(self.data, decisions(journal_merge_check(problem))))
+                    self.assertEqual([o[0] for o in out["state"]["options"]],
+                                     ["Ponów próbę", "Akceptuj mimo porażki"])
+                    self.assertEqual([o[2] for o in out["state"]["options"]], [True, False],
+                                     "polecane jest ponowienie, nie akceptacja")
+                    self.assertIn(MERGE_CHECK, out["state"]["options"][1][1])
+                    self.assertEqual(len(out["sent"]), 1)
+                    self.assertEqual(out["sent"][0][:2], ["ResolveCardStep", "K-8"])
+                    self.assertEqual(json.loads(out["sent"][0][2]), request)
 
     def test_scenario_f_texts_order_buttons_enter_and_esc(self):
         out = self.probe(STATE_PY + """

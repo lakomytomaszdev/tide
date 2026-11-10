@@ -19,7 +19,12 @@ Zdarzenia (dziennik karty):
   odmowa jednej próby; ta sama ścieżka co prośba `outside` kroku (reguły projektu, `consent`, PT-311),
 - `merge.check-finished {ticket, check, exit, log}` — wynik próby (zapisuje go przebieg pod zgodą, PT-329);
   `exit: 0` bieżącej próby otwiera bramkę, każda inna wartość daje problem `merge-check-failed`, wynik
-  nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`.
+  nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`,
+- `merge.check-accepted {ticket, check, after, by}` — „Akceptuj mimo porażki” (PT-320): jawna decyzja człowieka
+  (`ResolveCardStep`, `choice: accept-merge-check`) o dokładnie tej próbie (`check`) na dokładnie tym wierzchołku
+  (`after`), przy problemie `merge-check-failed`, `merge-check-denied` albo `merge-check-unavailable`. Otwiera bramkę
+  tylko dla tej próby: kolejna próba ticketu (ponowienie) albo próba innego scalenia znowu ją trzyma. Akceptacja
+  nieaktualnej próby (inny `check` albo `after`) niczego nie zmienia także przy odczycie. Nie uruchamia polecenia.
 
 Polecenie jest stałym napisem Tide (bez łańcucha poleceń), z bazą = pełny SHA `start` (nie `before`):
 kontrakt testów projektu `tests.changed` (`{base}` → start, źródło `contract`), bez kontraktu cele `Makefile`
@@ -38,8 +43,11 @@ import shlex
 
 ARMED, REQUESTED, FINISHED = "merge.check-armed", "merge.check-requested", "merge.check-finished"
 STEP = "merge.check-step"
+ACCEPTED = "merge.check-accepted"
 UNAVAILABLE, FAILED, PENDING = "merge-check-unavailable", "merge-check-failed", "pending"
 DENIED = "merge-check-denied"
+PROBLEMS = (UNAVAILABLE, FAILED, DENIED)      # stany próby z wyjściem przez ponowienie albo akceptację
+ACCEPT = "accept-merge-check"
 KIND, STEP_PREFIX = "merge-check", "merge-check-"
 RUN = ("run", "run-always", "run-ticket")
 CONTRACT, MAKEFILE = "contract", "makefile"
@@ -195,7 +203,15 @@ def denied(decision) -> bool:
 
 
 def status(item: dict, decisions=None) -> str:
-    """Stan bieżącej próby ticketu: "" (bramka otwarta), `pending`, `merge-check-unavailable`, `merge-check-failed`,
+    """Stan bieżącej próby ticketu: "" (bramka otwarta — wynik 0 albo akceptacja tej próby, PT-320), `pending`,
+    `merge-check-unavailable`, `merge-check-failed`, `merge-check-denied`."""
+    if item.get("accepted"):
+        return ""
+    return problem(item, decisions)
+
+
+def problem(item: dict, decisions=None) -> str:
+    """Stan próby bez akceptacji: "" (wynik 0), `pending`, `merge-check-unavailable`, `merge-check-failed`,
     `merge-check-denied` (`decisions` — `st.step_decisions`; odmowa przed wynikiem)."""
     requested = item.get("requested") or {}
     finished = item.get("finished")
@@ -251,7 +267,8 @@ def fold_event(st, e: dict) -> None:
         ticket = e.get("ticket") or ""
         if not ticket:
             return
-        st.merge_checks[ticket] = {"requested": e, "finished": None}
+        # Nowa próba (ponowienie albo kolejne scalenie) zaczyna bez akceptacji — ta dotyczyła poprzedniej próby.
+        st.merge_checks[ticket] = {"requested": e, "finished": None, "accepted": None}
         st.merge_check_counts[ticket] = st.merge_check_counts.get(ticket, 0) + 1
         if e.get("mergeSeq") is not None:
             st.merge_check_merges.add((ticket, e.get("mergeSeq")))
@@ -264,3 +281,10 @@ def fold_event(st, e: dict) -> None:
         if item and item["finished"] is None and not item["requested"].get("unavailable") and \
                 e.get("check") == item["requested"].get("check"):
             item["finished"] = e
+    elif kind == ACCEPTED:
+        item = st.merge_checks.get(e.get("ticket") or "")
+        requested = (item or {}).get("requested") or {}
+        # Tylko bieżąca próba na swoim wierzchołku, raz; usługa sprawdza to samo przed zapisem (`accept_merge_check`).
+        if item and not item.get("accepted") and e.get("check") == requested.get("check") and \
+                e.get("after") == requested.get("after"):
+            item["accepted"] = e

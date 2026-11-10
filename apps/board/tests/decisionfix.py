@@ -411,3 +411,36 @@ def journal_caretaker_card(trigger="flow-error", limit=False) -> list[dict]:
         add("caretaker.escalated", problem=problem, step="K-8-care-1", target="", summary="Limit działań.",
             limit=True, failed=True, count=1)
     return items
+
+
+# --- Testy po scaleniu (K-88, PT-320): problem bramki z wyjściami „Ponów próbę” i „Akceptuj mimo porażki” -------
+
+MERGE_TICKET = "PT-2"
+MERGE_CHECK = "PT-2:1"
+MERGE_AFTER = "c0ffee" + "1" * 34
+
+
+def journal_merge_check(problem: str = "merge-check-failed") -> list[dict]:
+    """Bramka zamknięta próbą `PT-2:1` na wierzchołku `MERGE_AFTER`: porażka (wynik 1), odmowa zgody albo brak
+    polecenia. Decyzję liczy usługa (`build_decisions`) — okno dostaje ją tak, jak z dziennika karty."""
+    items = []
+
+    def add(kind, /, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": "2026-11-10T12:00:00+01:00", "card": CARD,
+                      "type": kind, **data})
+
+    add("card.started", entry="plan", executor="Sonnet", program="claude", provider="anthropic")
+    add("merge.check-armed")
+    request = {"ticket": MERGE_TICKET, "check": MERGE_CHECK, "start": "a" * 40, "before": "b" * 40,
+               "after": MERGE_AFTER, "mergeSeq": 2, "retryOf": ""}
+    if problem == "merge-check-unavailable":
+        add("merge.check-requested", **request, unavailable=True)
+        return items
+    command = "make test-changed BASE=" + "a" * 40
+    add("merge.check-requested", **request, command=command, source="makefile")
+    if problem == "merge-check-denied":
+        add("step.decision", step="merge-check-PT-2-1", ticket=MERGE_TICKET, kind="merge-check", check=MERGE_CHECK,
+            choice="deny", answer="", command=command, executor="")
+    else:
+        add("merge.check-finished", ticket=MERGE_TICKET, check=MERGE_CHECK, exit=1, log="/tmp/przebieg.log")
+    return items

@@ -326,6 +326,8 @@ EVENTS = MappingProxyType({
     # Zapis: przebieg pod zgodą (PT-329), razem z `outside.finished` pseudokroku próby.
     "merge.check-finished": _metadata("wynik próby testów po scaleniu (zapis: przebieg pod zgodą, PT-329)",
                                       "check", "exit", "log", "ticket"),
+    "merge.check-accepted": _metadata("akceptacja próby testów po scaleniu mimo porażki (PT-320); nie uruchamia "
+                                      "polecenia", "after", "by", "check", "ticket"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),
     "main-merge.abandoned": _metadata("porzucenie scalenia do głównej", "key", "reason"),
     "stage.retry": _metadata("ponowienie etapu przez opiekuna", "caretaker", "caretakerStep", "problem", "stage",

@@ -105,7 +105,8 @@ FIELD_SPEC = {
             "merge_check_armed", "merge_check_steps"),
 }
 NEW_RULES = ("new-box-wait", "new-box-env-deferred", "new-process-identities", "new-lifted", "new-merge-checks")
-MERGE_CHECK_EVENTS = ("merge.check-armed", "merge.check-requested", "merge.check-finished", "merge.check-step")
+MERGE_CHECK_EVENTS = ("merge.check-armed", "merge.check-requested", "merge.check-finished", "merge.check-step",
+                      "merge.check-accepted")
 DERIVED_SPEC = {"running": STEPS, "open_consoles": CONSOLES, "open_intents": STEPS, "merge_pending": RESULTS,
                 "busy_reason": STATES, "flow_error": STATES, "tracker_failures": RESULTS}
 # Pola wpisu kroku/zamiaru dokładane wyłącznie przez nakładkę tożsamości kandydata.

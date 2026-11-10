@@ -88,7 +88,8 @@ GENERIC = {
     "tracker": ("Operacja w YouTracku nie powiodła się.",
                 "Karta czeka, aż przyczyna zostanie usunięta i ponowisz operację."),
     "merge-check": ("Testy po scaleniu ticketu do gałęzi karty nie dały wyniku 0.",
-                    "Do wyniku 0 nie startują nowe tickety, kolejne scalenia ani domknięcie karty."),
+                    "Do wyniku 0 albo akceptacji tej próby nie startują nowe tickety, kolejne scalenia ani domknięcie "
+                    "karty."),
 }
 
 PROVIDERS = {"anthropic": "Claude", "openai": "Codex", "local": "modelu lokalnego"}
@@ -795,9 +796,10 @@ def _plan_decision(st: FlowState) -> dict | None:
 
 
 def _merge_check(entry: dict) -> dict:
-    """Problem karty z bramki testów po scaleniu (PT-318): brak polecenia albo wynik różny od 0. Wyjście z tego
-    ticketu — ponowienie (nowa próba na bieżącym wierzchołku z ponownym wyborem polecenia); akceptację mimo
-    porażki dokłada PT-320."""
+    """Problem karty z bramki testów po scaleniu (PT-318): brak polecenia, odmowa zgody albo wynik różny od 0. Dwa
+    wyjścia: ponowienie (nowa próba na bieżącym wierzchołku z ponownym wyborem polecenia) i „Akceptuj mimo porażki”
+    (PT-320) — opcja niesie dokładny identyfikator pokazanej próby (`ticket`, `check`, `after`), więc usługa
+    odrzuci ją, gdy w międzyczasie powstała nowa próba albo zmienił się jej wierzchołek."""
     requested, finished = entry["requested"], entry["finished"] or {}
     ticket, check = entry["ticket"], entry["check"]
     if entry["status"] == mergecheck.UNAVAILABLE and requested.get("reason") == mergecheck.CONTRACT_NOT_SINGLE:
@@ -821,6 +823,13 @@ def _merge_check(entry: dict) -> dict:
         effect = "Tide założy nową próbę na bieżącym wierzchołku gałęzi karty, z ponownym wyborem polecenia."
     options = [_option("retry-merge-check", "Ponów próbę", effect, RESOLVE_STEP,
                        {"choice": "retry-merge-check", "ticket": ticket, "check": check}, recommended=True)]
+    after = requested.get("after") or ""
+    if mergecheck.SHA.fullmatch(after):
+        options.append(_option(
+            mergecheck.ACCEPT, "Akceptuj mimo porażki",
+            f"Tide zapisze akceptację tylko tej próby ({check} na {after[:12]}) i otworzy bramkę bez uruchamiania "
+            "testów. Kolejne scalenie albo ponowienie założy nową próbę, która znowu zatrzyma kartę.",
+            RESOLVE_STEP, {"choice": mergecheck.ACCEPT, "ticket": ticket, "check": check, "after": after}))
     technical = {"problem": entry["status"], "check": check,
                  **{key: requested.get(key) for key in ("start", "before", "after", "command", "source", "fallback",
                                                         "reason")

@@ -5072,7 +5072,8 @@ taką samą próbę niedostępną z `source: contract, reason: contract-not-sing
 scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
 `"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.
 Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
-`<ticket>:<n+1>` na bieżącym wierzchołku z ponownym wyborem polecenia. Stan bramki liczy `fold`; brakującą próbę
+`<ticket>:<n+1>` na bieżącym wierzchołku z ponownym wyborem polecenia (drugie wyjście — akceptację — dokłada PT-320,
+niżej). Stan bramki liczy `fold`; brakującą próbę
 po restarcie (po `result`, przed zapisem próby) usługa dopisuje raz. Scalenia sprzed `merge.check-armed` (karty
 trwające w chwili wdrożenia) prób nie zakładają. Jedyny wyjątek od `before != start`: gdy `start..before` to wyłącznie
 commity stanu planu, które Tide sam zapisał na tej karcie (SHA z wyniku akcji `plan-commit` w dzienniku, każdy z
@@ -5099,6 +5100,18 @@ padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca
 startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
 Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
 `outside.finished` a `merge.check-finished` usługa dopisuje raz.
+
+**„Akceptuj mimo porażki” (K-88, PT-320).** Problem karty `merge-check-failed`, `merge-check-denied` albo
+`merge-check-unavailable` ma w panelu karty (Tablica i Sesje) dwa wyjścia: „Ponów próbę” (polecane, PT-318) i
+„Akceptuj mimo porażki”. Akceptacja to `ResolveCardStep {choice: "accept-merge-check", ticket, check, after}` —
+dokładny identyfikator próby z pytania (`after` — pełny SHA wierzchołka gałęzi karty z `merge.check-requested`).
+Usługa zapisuje `merge.check-accepted {ticket, check, after, by: "user"}` i otwiera bramkę tylko dla tej próby;
+niczego nie uruchamia. Nieaktualny identyfikator (inny `check`, inny `after`, inny ticket), próba udana, czekająca na
+przebieg albo już zaakceptowana, otwarta bramka oraz nieznane pola (`step`, `answer`, `auto`) dają błąd bez zapisu.
+Decyzję podejmuje wyłącznie jawne wywołanie: akcje opiekuna (`caretaker_problem`/`caretaker_step`) są odrzucane, a
+zgoda automatyczna jej nie obejmuje. Kolejna próba ticketu (ponowienie) albo próba po scaleniu innego ticketu
+zaczyna bez akceptacji i znowu trzyma bramkę; `fold` liczy akceptację tylko dla bieżącej próby z tym samym `after`,
+więc po restarcie usługi zaakceptowana próba nie zamyka bramki ponownie.
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
