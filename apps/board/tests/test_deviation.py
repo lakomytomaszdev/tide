@@ -76,7 +76,16 @@ class LibraryTest(unittest.TestCase):
         for phrase in ("przyjmuje odstępstwo od pełnych testów domknięcia", "„Wyjątki od testów”",
                        "pierwszy wynik", "przypiętej bazie", "gałęzi głównej", "obciążenie", "zakres odstępstwa",
                        "właściciela poprawki", "brak danych oznacz jawnie",
-                       "Wynik testu zostaje porażką", "Nie powtarzaj pełnego przebiegu na tym samym kodzie",
+                       "z zapisanymi SHA, poleceniami i warunkami porównania",
+                       "równoległe przebiegi i limit procesów", "Zachowaj logi przebiegów",
+                       "nie uznawaj bez dowodu",
+                       "Wynik testu zostaje porażką",
+                       "Nie powtarzaj nieudanego pełnego przebiegu na tym samym kodzie",
+                       "jeśli pełny przebieg nie został wykonany, wykonaj go raz według kartki",
+                       # MAJOR-1 (review PT-339 r1): kartka domknięcia mówi „nie zgłaszaj done” przy nieudanych
+                       # testach — instrukcja musi powiedzieć, jak wznowiony krok ma się skończyć.
+                       "dokończ domknięcie", "zakończ krok wynikiem done", "nie scalaj do gałęzi głównej",
+                       "nie rób push",
                        "Scalenie do gałęzi głównej wymaga osobnej zgody", "Uzasadnienie użytkownika: „"):
             self.assertIn(phrase, text)
         # Nie może sugerować, że testy przeszły, ani pozwalać na scalenie do głównej.
@@ -209,6 +218,8 @@ out["over"] = deviation()
         self.assertFalse(out["over"]["choose"])
 
     def test_no_deviation_for_ticket_error_or_close_error_without_retry(self):
+        """Decyzja „bez `retry`” jest syntetyczna (usługa zawsze dokłada `retry` do decyzji błędu) — sprawdza
+        sam warunek `offered()`, nie stan, który usługa dziś zwraca."""
         without_retry = close_decisions()
         without_retry[0]["options"] = [o for o in without_retry[0]["options"] if o["params"].get("choice") != "retry"]
         for name, items in (("ticket", close_decisions(kind="ticket", ticket="#3")), ("no-retry", without_retry)):

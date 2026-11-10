@@ -20,17 +20,25 @@ var EFFECT = "Wybór na niestabilny test z rozliczeniem. Krok domknięcia wznowi
              + "odstępstwa w podsumowaniu; wynik testów zostaje porażką, a scalenie do gałęzi głównej nadal wymaga "
              + "osobnej zgody."
 var FIELD_LABEL = "Uzasadnienie odstępstwa"
-var HINT = "Np. „test_x pada też na bazie i na głównej gałęzi przy obciążeniu; poprawka w osobnej karcie”."
+var HINT = "Np. „test_x padł też na bazie 1a2b3c i na master 4d5e6f (log w …); poprawka w karcie K-…”."
 
 // Stała instrukcja dla wznowionego kroku domknięcia — zgodna z „Rozliczeniem nieudanych przebiegów”
-// (docs/testing.md, „Wyjątki od testów”) i z kartką domknięcia (handoff.close_tests).
+// (docs/testing.md, „Wyjątki od testów”) i z kartką domknięcia (handoff.close_tests). Kartka mówi „przy nieudanych
+// testach nie zgłaszaj done”; instrukcja użytkownika ma pierwszeństwo, więc mówi wprost, jak krok ma się skończyć.
 var INSTRUCTION = "Użytkownik przyjmuje odstępstwo od pełnych testów domknięcia. "
     + "Zapisz w podsumowaniu rozliczenie według zasad „Wyjątki od testów” projektu: pierwszy wynik (polecenie, SHA, "
     + "nieudane testy, odnośnik do logu), porównanie tego samego testu na przypiętej bazie i na gałęzi głównej "
-    + "(z SHA i warunkami), obciążenie maszyny, dokładny zakres odstępstwa (które niepowodzenia obejmuje, a które "
-    + "nadal blokują) oraz właściciela poprawki i sposób jej śledzenia; brak danych oznacz jawnie. "
+    + "(z zapisanymi SHA, poleceniami i warunkami porównania), obciążenie maszyny przy niepowodzeniu i porównaniu "
+    + "(w tym równoległe przebiegi i limit procesów), dokładny zakres odstępstwa (które niepowodzenia obejmuje, "
+    + "a które nadal blokują) oraz właściciela poprawki i sposób jej śledzenia. Zachowaj logi przebiegów; "
+    + "brak danych oznacz jawnie i nie uznawaj bez dowodu, że problem występował już na bazie albo wynikał "
+    + "z obciążenia. "
     + "Wynik testu zostaje porażką — nie opisuj go jako udanego. "
-    + "Nie powtarzaj pełnego przebiegu na tym samym kodzie. "
+    + "Nie powtarzaj nieudanego pełnego przebiegu na tym samym kodzie; jeśli pełny przebieg nie został wykonany, "
+    + "wykonaj go raz według kartki. "
+    + "Po zapisaniu rozliczenia dokończ domknięcie: napisz podsumowanie i zakończ krok wynikiem done (to polecenie "
+    + "użytkownika ma pierwszeństwo przed zdaniem kartki o niezgłaszaniu done przy nieudanych testach); "
+    + "nie scalaj do gałęzi głównej i nie rób push. "
     + "Scalenie do gałęzi głównej wymaga osobnej zgody użytkownika; to odstępstwo jej nie daje. "
     + "Uzasadnienie użytkownika: „"
 var CLOSING = "”"
