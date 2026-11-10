@@ -420,6 +420,77 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertEqual([e["exit"] for e in self.finished()], [0])
         self.assertEqual(self.held(), [])
 
+    # --- commit planu a trwający przebieg (review r2 MAJOR-1) -----------------------------------
+
+    def plan_commits_now(self):
+        """Prawdziwe `_plan_next` na bieżącym stanie z zatwierdzonym planem bez wierszy; zwraca liczbę prób commita
+        planu (atrapa `_plan_commit`, gałąź karty = worktree próby)."""
+        st = self.state()
+        st.plan_approved = {"seq": 1, "rows": []}
+        calls = []
+        with mock.patch.object(self.engine, "_planning_branch",
+                               return_value={"branch": "master", "worktree": self.repo}), \
+                mock.patch.object(self.engine, "_plan_commit", side_effect=lambda *a: calls.append(a)):
+            self.engine._plan_next(self.card_id, st)
+        return len(calls)
+
+    def test_plan_is_not_committed_into_the_card_worktree_while_the_check_runs(self):
+        self.remember_rule()
+        with open(os.path.join(self.repo, "slow"), "w", encoding="utf-8") as fh:
+            fh.write("1")
+        self.assertEqual(self.plan_commits_now(), 1, "bez przebiegu plan jest commitowany jak dotąd")
+        self.tick()
+        name = self.name()
+        self.assertEqual(len(self.starts(name)), 1)
+        # Inny ticket karty pracuje w trakcie przebiegu: zmiana planu nie commituje go w worktree próby.
+        self.engine.journal.append(self.card_id, "step.started", step="K-1-PT-3-1", ticket="PT-3", kind="ticket",
+                                   executor="Sonnet", worktree=self.repo)
+        self.assertEqual(self.plan_commits_now(), 0, "trwający przebieg próby to praca w worktree karty")
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").strip(), self.starts(name)[0]["head"])
+        self.run_to_end()
+        self.assertEqual([e["exit"] for e in self.finished()], [0])
+        self.assertEqual(git(self.repo, "rev-parse", "HEAD").strip(), self.head)
+        self.assertEqual(self.plan_commits_now(), 1, "po wyniku commit planu wraca")
+
+    # --- „Zawsze w projekcie” (review r2 NIT-1) --------------------------------------------------
+
+    def test_run_always_remembers_the_family_and_the_retry_gets_auto_consent(self):
+        with open(os.path.join(self.repo, "fail"), "w", encoding="utf-8") as fh:
+            fh.write("1")
+        self.tick()
+        self.engine.resolve_step(self.card_id, {"choice": "run-always", "step": self.name()})
+        with open(self.settings, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["outsideCommands"], {"proj": [RULE]})
+        self.assertEqual([(d["choice"], d.get("auto")) for d in self.decisions(self.name())], [("run-always", None)])
+        self.run_to_end()
+        self.assertEqual(self.held(), [(f"{TICKET}:1", "merge-check-failed")])
+        os.remove(os.path.join(self.repo, "fail"))
+        self.engine.resolve_step(self.card_id, {"choice": "retry-merge-check", "ticket": TICKET,
+                                                "check": f"{TICKET}:1"})
+        second = self.name(2)
+
+        def second_done():
+            self.tick()
+            return [e for e in self.finished() if e["check"] == f"{TICKET}:2"]
+        self.assertTrue(wait_until(second_done, timeout=20), self.events())
+        self.assertEqual([(d["choice"], d.get("auto")) for d in self.decisions(second)], [("run", True)],
+                         "kolejna próba dostaje zgodę automatyczną z zapamiętanej reguły")
+        self.assertEqual(self.held(), [])
+
+    def test_run_always_is_refused_for_a_risky_command(self):
+        self.engine.journal.append(
+            self.card_id, mergecheck.REQUESTED, ticket="PT-5", check="PT-5:1", start=START, before="b" * 40,
+            after=self.head, command="sh tools/check.sh", source="contract", mergeSeq=None, retryOf="")
+        self.tick()
+        name = mergecheck.step_name("PT-5:1")
+        self.assertTrue(self.of(mergecheck.STEP))
+        with self.assertRaises(FlowError) as raised:
+            self.engine.resolve_step(self.card_id, {"choice": "run-always", "step": name})
+        self.assertEqual(raised.exception.code, "risky-command")
+        self.assertFalse(self.decisions(name))
+        with open(self.settings, encoding="utf-8") as fh:
+            self.assertNotIn("outsideCommands", json.load(fh))
+
     def test_restart_between_outside_finish_and_check_result_writes_the_result_once(self):
         self.remember_rule()
         self.tick()

@@ -3685,6 +3685,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
+        # Trwający przebieg próby testów po scaleniu (PT-329, review r2) biegnie w worktree gałęzi karty: commit planu
+        # przesunąłby HEAD w trakcie testów (przebieg stoi na `after`) albo padł na artefaktach testów w worktree.
+        card_work = card_work or any(name in st.merge_check_steps for name in st.outside_started)
         if not card_work:
             self._plan_commit(card, self.journal.state(card), project.repo, card_branch, card_worktree)
         if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):

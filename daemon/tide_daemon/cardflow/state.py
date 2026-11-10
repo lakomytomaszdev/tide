@@ -1264,7 +1264,7 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     asking = [i for i, entry in enumerate(held) if entry["status"] != mergecheck.PENDING or stages[i] == "consent"]
     if held and not attention and (asking or not st.running()) and not st.paused and column != "backlog":
         # Bramka testów po scaleniu (PT-318): karta stoi na wyniku albo na decyzji o próbie.
-        index = asking[0] if st.running() else 0
+        index = asking[0] if asking else 0
         first = held[index]
         stage = stages[index]
         text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu",
