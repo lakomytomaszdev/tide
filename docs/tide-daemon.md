@@ -2168,7 +2168,8 @@ biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, ko�
 
 **Odmowa wygrywa z automatyczną zgodą (PT-311).** Odmowa człowieka (`deny` z panelu albo od koordynatora,
 bez `auto`) jest ostateczna dla tego samego polecenia (porównanie bez różnic w białych znakach) w tym tickecie
-bieżącego zlecenia i wersji bazy (`orderSeq`, `baseVersion`). Kolejna prośba outside o to polecenie nie dostaje
+bieżącego zlecenia i wersji bazy (`orderSeq`, `baseVersion`) — także gdy krok z odmową opiekun odesłał do
+poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to polecenie nie dostaje
 automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
 sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
 według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`

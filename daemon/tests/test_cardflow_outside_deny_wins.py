@@ -97,6 +97,37 @@ class OutsideDenyWinsTest(FlowInProcess):
         self.assertEqual(self.skipped(card, "s6"), [])
         self.assertTrue(other)
 
+    def test_deny_of_step_returned_to_plan_fix_still_blocks_in_the_same_order_and_base(self):
+        """Review PT-311 r1 (M2): odesłanie kroku do poprawy planu (`plan.returned` opiekuna) oznacza krok jako
+        zastąpiony, ale nie zmienia zlecenia ani bazy — odmowa jego polecenia nadal wygrywa, także po wznowieniu."""
+        card, eng, steps = self.seeded()
+        self.recheck(card, steps[1])
+        granted = self.auto(card, "s2")[0]
+        eng.journal.append(card, "plan.returned", caretaker=True, caretakerFrom="s1")
+        self.assertIn("s1", self.state(card).plan_resumes)
+        self.assertTrue(self.call({"choice": "deny", "step": "s1", "answer": "nie"}, card)["ok"])
+        # Wznowienie s1 po poprawie planu zdejmuje wpis `plan_resumes`; s1 zostaje w `superseded`.
+        resumed = eng.journal.append(card, "step.started", step="s1r", ticket="PT-1", kind="ticket",
+                                     parentStep="s1", stepDir=str(Path(self.base, "s1r")),
+                                     worktree=self.repo, baseVersion=1)
+        st = self.state(card)
+        self.assertTrue(resumed)
+        self.assertIn("s1", st.superseded)
+        self.assertNotIn("s1", st.plan_resumes)
+        self.assertEqual((len(self.of(card, "card.started")), st.base_version), (1, 1))
+        later = self.request(card, "s4", "PT-1", finish=True)
+        self.recheck(card, later)
+        self.assertEqual(self.auto(card, "s4"), [])
+        self.assertEqual(self.skipped(card, "s4"), ["denied-before"])
+        # Zgoda zapisana przed odmową (s2) nie startuje: kontrola przed startem używa tej samej granicy.
+        with mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
+            eng._outside_ready(card, steps[1], st.finished["s2"], granted)
+            eng._outside_ready(card, later, self.state(card).finished["s4"], {"choice": "run", "auto": True})
+        self.assertEqual(popen.call_count, 0)
+        self.assertEqual(self.of(card, "outside.started"), [])
+        self.assertEqual([(e["step"], e["reason"]) for e in self.of(card, "outside.decision-invalidated")],
+                         [("s2", "denied-before")])
+
     def test_deny_from_previous_order_does_not_block(self):
         card, eng, steps = self.seeded()
         self.assertTrue(self.call({"choice": "deny", "step": "s1"}, card)["ok"])

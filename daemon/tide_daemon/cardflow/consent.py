@@ -67,8 +67,11 @@ def denied_before(events, st, step, command):
                 or e.get("caretaker") or e.get("ticket") != ticket or e.get("seq") in invalidated
                 or not isinstance(e.get("seq"), int) or e["seq"] <= order or _plain(e.get("command")) != wanted):
             continue
+        # Granica ważności odmowy to zlecenie (`seq` po `card.started`) i wersja bazy kroku — nie `superseded`:
+        # ten zbiór obejmuje także kroki odesłane przez opiekuna do poprawy planu w tym samym zleceniu i bazie
+        # (review PT-311 r1, M2), a ich odmowa nadal obowiązuje, również po wznowieniu następcą.
         denied = st.steps.get(e.get("step")) or {}
-        if e.get("step") not in st.superseded and denied.get("baseVersion", 0) == st.base_version:
+        if denied.get("baseVersion", 0) == st.base_version:
             return True
     return False
 
