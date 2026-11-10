@@ -1125,19 +1125,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
         preferred = preferred or selected.provider
         preferred_name = "Sonnet" if name == "Opus" else "Codex Astra" if name == "Codex mocny" else "Opus"
         reviewer_name = str(request.get("reviewer") or "").strip()
+        # Polityka projektu (PT-330, decyzja 97); ticket Od razu ma klasę `standard`. `free` — także ten sam model.
+        policy = reviewgate.project_policy(project, "standard")
 
         def resolve_reviewer(candidate: str):
             try:
                 found = execution.resolve(candidate, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError("unknown-reviewer" if exc.code == "unknown-executor" else exc.code, str(exc)) from None
-            if found.name == selected.name or not flow_plans.independent_reviewer(selected, found):
-                raise FlowError("bad-reviewer", "recenzent musi mieć inny model albo inną siłę myślenia niż autor")
+            if (policy != reviewgate.FREE and found.name == selected.name) or \
+                    not reviewgate.allows(selected, found, policy):
+                raise FlowError("bad-reviewer", f"{reviewgate.rule(policy)} (polityka projektu {policy})")
             if selected.local != found.local:
                 raise FlowError("bad-reviewer-provider", "praca lokalna wymaga lokalnego recenzenta")
             if preferred == "mixed" and found.provider == selected.provider:
                 raise FlowError("bad-reviewer-provider", "w trybie mieszanym recenzent musi być u innego dostawcy")
-            if preferred and preferred != "mixed" and found.provider != selected.provider:
+            # `other-family` wymaga recenzenta spoza rodziny autora, więc nie może trzymać go u tego samego dostawcy.
+            if preferred and preferred != "mixed" and found.provider != selected.provider and \
+                    policy != reviewgate.OTHER_FAMILY:
                 raise FlowError("bad-reviewer-provider", "recenzent musi należeć do wybranego dostawcy")
             return found
 
@@ -1145,16 +1150,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
             reviewer = resolve_reviewer(reviewer_name)
         else:
             reviewer = None
-            for candidate in [preferred_name, *(e.name for e in catalog.executors)]:
-                if candidate == selected.name:
-                    continue
+            # Domyślnie inny wykonawca; przy `free` ostatnią możliwością jest ten sam (nowa sesja recenzenta).
+            names = [preferred_name, *(e.name for e in catalog.executors)]
+            names = [n for n in names if n != selected.name] + ([selected.name] if policy == reviewgate.FREE else [])
+            for candidate in names:
                 try:
                     reviewer = resolve_reviewer(candidate)
                 except FlowError:
                     continue
                 break
             if reviewer is None:
-                raise FlowError("bad-reviewer", "brak dostępnego recenzenta z innym modelem")
+                raise FlowError("bad-reviewer", f"brak dostępnego recenzenta: {reviewgate.rule(policy)} "
+                                                f"(polityka projektu {policy}). Wybierz recenzenta, poczekaj na "
+                                                f"dostawcę albo poluzuj politykę w ustawieniach projektu")
         check = str(request.get("check") or card.check or "auto").strip().lower()
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
@@ -1297,7 +1305,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                        for row in source.rows]
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=(project.repo, self.store.root),
                                    tracker=source.tracker, imported=True,
-                                   existing_ids=[row["id"] for row in import_rows])
+                                   existing_ids=[row["id"] for row in import_rows],
+                                   review_policy=lambda slug, klass: reviewgate.project_policy(project, klass))
         _meta, body = source_plans.split_frontmatter(source_bytes.decode("utf-8"))
         loose_text = any(line.strip() and not line.lstrip().startswith("|") for line in body.splitlines())
         complete = (not proposal.errors and b"| Blokery |" in source_bytes and
@@ -2246,7 +2255,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                                  *[r["id"] for r in ((self.journal.state(card_id).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported),
                                    other_plans=self._other_plan_todos(project.repo, card_id),
-                                   projects=self._proposal_projects(order))
+                                   projects=self._proposal_projects(order),
+                                   review_policy=self._plan_review_policy(card_id))
         if imported:
             original = {row["id"]: row["title"] for row in imported.get("rows") or []}
             proposed = {row["workId"]: row["title"] for row in proposal.rows}
@@ -3728,8 +3738,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                              probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            if not flow_plans.independent_reviewer(selected, reviewer) or selected.local != reviewer.local:
-                raise FlowError("bad-reviewer", f"{ticket}: recenzent nie spełnia warunku innego modelu")
+            policy = self._review_policy(card, st, ticket)
+            if not reviewgate.allows(selected, reviewer, policy) or selected.local != reviewer.local:
+                raise FlowError("bad-reviewer", f"{ticket}: {reviewgate.rule(policy)} (polityka projektu {policy}) "
+                                                "i praca lokalna zostaje lokalna")
             slug = slug_from_prompt(row["title"], words=4, length=32)
             branch = f"ticket/{ticket.lower()}-{slug}"
             worktree = worktree_for(project.repo, branch)
@@ -4559,8 +4571,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
         if step.get("kind") == "plan-review":
             planner = catalog.get((st.plan_proposed or {}).get("reviewAuthor") or proposal_author_of(st, st.plan_proposed))
-            if not planner or not flow_plans.independent_reviewer(planner, selected):
-                raise FlowError("bad-executor", "review planu wymaga niezależnego recenzenta autora tej wersji")
+            policy = self._review_policy(card, klass=None)
+            if not planner or not reviewgate.allows(planner, selected, policy):
+                raise FlowError("bad-executor", f"review planu: {reviewgate.rule(policy)} tej wersji "
+                                                f"(polityka projektu {policy})")
         if changed and step.get("kind") not in ("ticket", "fix", "review"):
             if step.get("kind") not in ("conflict", "close") and selected.local != bool(step.get("local")):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
@@ -4967,6 +4981,45 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("no-project", f"{card}: nie ma karty albo projektu dla kroku")
         return item, project
 
+    def _review_policy(self, card: str, st: FlowState | None = None, ticket: str = "", *,
+                       klass: str | None = "", slug: str = "") -> str:
+        """Polityka niezależności review (K-88/PT-330, decyzja 97) z ustawienia projektu ticketu.
+
+        Czytana przy każdym wywołaniu z bieżącej Tablicy (bez restartu usługi). Projekt ticketu: kolumna Projekt
+        zatwierdzonego planu, inaczej projekt karty. Klasa: podana, inaczej klasa ticketu z planu (`standard`);
+        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`."""
+        if klass == "":
+            klass = self._ticket_class(st, ticket) if st is not None and ticket else "standard"
+        if not slug and st is not None and ticket:
+            row = next((r for r in (st.plan_approved or {}).get("rows") or []
+                        if str(r.get("id") or "") == ticket), {})
+            slug = row.get("project") or ""
+        try:
+            _, project = self._project(card)
+        except FlowError:
+            project = None
+        if slug and project is not None and slug != getattr(project, "slug", slug):
+            project = self.store.load().projects.get(slug)
+        return reviewgate.project_policy(project, klass)
+
+    def _plan_review_policy(self, card: str):
+        """`review_policy` dla `plans.read`: projekt wiersza (pusty — projekt karty) i klasa ticketu.
+        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz."""
+        try:
+            _, project = self._project(card)
+        except FlowError:
+            project = None
+        board = None
+
+        def policy(slug, klass):
+            nonlocal board
+            found = project
+            if slug and project is not None and slug != getattr(project, "slug", slug):
+                board = board or self.store.load()
+                found = board.projects.get(slug)
+            return reviewgate.project_policy(found, klass or "standard")
+        return policy
+
     def _note(self, card: str, step: dict) -> str:
         name = handoff.REVIEW_FILE if step.get("kind") == "review" else handoff.NOTE_FILE
         path = os.path.join(self.store.root, self.journal.rel_dir(card), "steps", step.get("step") or "", name)
@@ -5000,12 +5053,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return "\n\n".join(out)
 
     def _guard_review_launch(self, card: str, st: FlowState, ticket: str, round_no: int,
-                             selected, *, policy="other-model"):
+                             selected, *, policy=None):
         """Wspólna bramka startu review w tle i w Konsoli, także po wznowieniu/przekazaniu.
 
-        Nowa sesja jest bezwarunkowa. Model określa wyłącznie `reviewgate.permits` z polityką;
-        PT-330 podłączy ustawienie projektu. Do tego czasu działa tryb dotychczasowej reguły.
+        Nowa sesja jest bezwarunkowa. Model określa wyłącznie `reviewgate.permits` z polityką projektu
+        ticketu (PT-330; `policy` tylko dla testów i wywołań z jawną polityką). `free` przepuszcza każdego.
         """
+        if policy is None:
+            policy = self._review_policy(card, st, ticket)
         authored = reviewgate.authors(st, ticket, round_no)
         if not reviewgate.permits(selected, authored, policy):
             cfg = self.models_config() if self.models_config else None
@@ -5027,10 +5082,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     break
             if replacement is None:
                 rule = {"other-model": "innego modelu lub poziomu rozumowania",
-                        "other-family": "innej rodziny modeli"}.get(policy, policy)
+                        "other-family": "innej rodziny modeli (dostawca/program z katalogu)"}.get(policy, policy)
+                # Czytelny powód i trzy wyjścia (decyzja 97): zmień recenzenta, poczekaj, poluzuj politykę.
                 question = (f"{ticket}: nie ma dostępnego recenzenta spełniającego wymóg {rule} "
-                            "oraz wymagania klasy ticketu. Kogo wybrać do review? Wybierz innego recenzenta "
-                            "albo poczekaj na jego dostępność.")
+                            f"(polityka projektu reviewIndependence: {policy}) oraz wymagania klasy ticketu "
+                            f"— „{selected.name}” go nie spełnia, a zgodny wykonawca jest niedostępny "
+                            "(brak dostawcy lub programu w katalogu). Kogo wybrać do review? Wybierz innego "
+                            "recenzenta, poczekaj na jego dostępność albo poluzuj politykę w ustawieniach "
+                            "projektu (np. free) i ponów.")
                 key = (ticket, round_no)
                 if key not in st.review_questions or key in st.review_decisions:
                     self.journal.append(card, "review.question", ticket=ticket, round=round_no,
@@ -5162,7 +5221,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return override["executor"], "override", author
         author_name = author.get("executor") or assigned.get("executor") or ""
         if int(review_step.get("round") or 1) >= ESCALATE_FIX_ROUND:
-            escalated = self._escalated_fixer(st, ticket, assigned, author, {*reviewers, author_name}, catalog, cfg)
+            families = (self._reviewer_families(st, ticket, review_step, reviewers, catalog)
+                        if self._review_policy(card, st, ticket) == reviewgate.OTHER_FAMILY else set())
+            escalated = self._escalated_fixer(st, ticket, assigned, author, {*reviewers, author_name}, catalog, cfg,
+                                              families)
             if escalated is not None:
                 return escalated.name, "escalated", author
         return author_name, "author", author
@@ -5229,6 +5291,22 @@ class FlowEngine(CaretakerChat, PlanEditing):
         names.discard("")
         return names
 
+    def _reviewer_families(self, st: FlowState, ticket: str, review_step: dict, names: set, catalog) -> set:
+        """PT-330: rodziny (dostawca/program) recenzenta ocenianego i następnego review. Kroki dają zamrożoną
+        rodzinę z dziennika, przydział — zapisany program recenzenta, a nazwy bez kroku — wpis katalogu."""
+        assigned, previous = self._reviewer_context(st, ticket)
+        found = set()
+        for step in (review_step, previous):
+            if step.get("provider") and step.get("program"):
+                found.add((step["provider"], step["program"]))
+        if not previous.get("executor") and assigned.get("reviewerProvider") and assigned.get("reviewerProgram"):
+            found.add((assigned["reviewerProvider"], assigned["reviewerProgram"]))
+        for name in names:
+            entry = catalog.get(name) if catalog is not None else None
+            if entry is not None:
+                found.add(reviewgate.family(entry))
+        return found
+
     @staticmethod
     def _ticket_class(st: FlowState, ticket: str) -> str:
         """Klasa ticketu z zatwierdzonego planu; brak wiersza albo kolumny (Od razu, plan sześciokolumnowy) —
@@ -5236,10 +5314,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         row = next((r for r in (st.plan_approved or {}).get("rows") or [] if str(r.get("id") or "") == ticket), {})
         return row.get("class") or "standard"
 
-    def _escalated_fixer(self, st: FlowState, ticket: str, assigned: dict, author: dict, avoid: set, catalog, cfg):
+    def _escalated_fixer(self, st: FlowState, ticket: str, assigned: dict, author: dict, avoid: set, catalog, cfg,
+                         avoid_families: set = frozenset()):
         """K-88/PT-312: wykonawca poprawek od rundy ESCALATE_FIX_ROUND — klasa `mocny` preferowanego dostawcy
         zlecenia, inny niż recenzenci i autor; tylko dla ticketów spoza klas `mocny` i `lokalny`. `None` — poprawki
-        zostają u autora."""
+        zostają u autora. PT-330: `avoid_families` (polityka `other-family`) — rodziny recenzentów (dostawca/program
+        z katalogu), z których cel eskalacji nie może pochodzić."""
         if self._ticket_class(st, ticket) in ("mocny", "lokalny"):
             return None
         started = st.started or {}
@@ -5248,7 +5328,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # Tryb mieszany: autor i recenzent są u różnych dostawców — poprawki zostają u dostawcy autora.
             provider = author.get("provider") or assigned.get("provider") or started.get("provider") or ""
         for candidate in catalog.executors:
-            if candidate.provider != provider or "mocny" not in candidate.classes or candidate.name in avoid:
+            if candidate.provider != provider or "mocny" not in candidate.classes or candidate.name in avoid or \
+                    reviewgate.family(candidate) in avoid_families:
                 continue
             try:
                 return execution.resolve(candidate.name, catalog, config=cfg, probe=self.model_probe, which=self.which)

@@ -27,8 +27,9 @@ class ReviewGateTest(_FixJournal):
         engine = self.engine
         engine._process_check = lambda *args: engine.journal.state(CARD)
         engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
-        engine._project = lambda card: (SimpleNamespace(id=CARD, title="T", description="D"),
-                                       SimpleNamespace(repo="/r"))
+        # Testy PT-312 sprawdzają dotychczasową regułę: projekt z polityką `other-model` (PT-330).
+        self.project = SimpleNamespace(repo="/r", review_independence="other-model")
+        engine._project = lambda card: (SimpleNamespace(id=CARD, title="T", description="D"), self.project)
         engine.git = SimpleNamespace(clean_tip=lambda *args: "abc", review_diff=lambda *args: "")
         engine._rules = lambda repo: ""
         engine._trial_check = lambda *args: None
@@ -204,6 +205,75 @@ class ReviewGateTest(_FixJournal):
         self.assertEqual(st.review_questions[(TICKET, 1)]["reason"], "independence")
         self.assertFalse(st.verdicts)
         self.assertEqual(derived(st, {"column": "progress"})["column"], "waiting")
+
+    # --- PT-330: polityka projektu zamiast stałej reguły -------------------------------------------------
+
+    def test_project_without_setting_reviews_opus_with_opus_in_a_new_session(self):
+        self.project = SimpleNamespace(repo="/r")
+        fixed = self.history()
+        self.reassign_reviewer("Opus")
+        with self.assertRaises(_Captured):
+            self.engine._review(CARD, self.engine.journal.state(CARD), fixed, 4)
+        selected, kind = self.admitted[-1]
+        self.assertEqual((selected.name, kind), ("Opus", "review"))
+        self.assertFalse([e for e in self.events if e["type"] == "review.question"])
+
+    def test_policy_is_read_from_the_project_at_every_launch_without_restart(self):
+        self.history()
+        st = self.engine.journal.state(CARD)
+        self.project.review_independence = "free"
+        self.assertEqual(self.engine._guard_review_launch(CARD, st, TICKET, 4, self.selected("Opus"))[0].name,
+                         "Opus")
+        self.project.review_independence = "other-model"
+        self.assertNotEqual(self.engine._guard_review_launch(CARD, st, TICKET, 4,
+                                                             self.selected("Opus"))[0].model, "opus")
+
+    def test_unknown_value_falls_back_to_free_with_a_log_warning(self):
+        project = SimpleNamespace(slug="proj", path="/b/projects/proj.md", review_independence="strict")
+        with self.assertLogs("tide_daemon.cardflow.reviewgate", level="WARNING") as logs:
+            self.assertEqual(reviewgate.project_policy(project, "mocny"), "free")
+        self.assertIn("strict", logs.output[0])
+        self.assertEqual(reviewgate.project_policy(None), "free")
+        self.assertEqual(reviewgate.project_policy(SimpleNamespace(review_independence="")), "free")
+
+    def test_other_family_class_list_limits_the_policy_to_listed_classes(self):
+        project = SimpleNamespace(review_independence="other-family", review_independence_classes=["mocny"])
+        self.assertEqual(reviewgate.project_policy(project, "mocny"), "other-family")
+        self.assertEqual(reviewgate.project_policy(project, "standard"), "free")
+        self.assertEqual(reviewgate.project_policy(project, None), "other-family")  # review planu
+        self.project = project
+        self.card("Sonnet", "Opus", klass="standard")
+        self.add("step.finished", step="s-1", ticket=TICKET, result="done")
+        self.assertEqual(self.engine._guard_review_launch(CARD, self.engine.journal.state(CARD), TICKET, 1,
+                                                          self.selected("Sonnet"))[0].name, "Sonnet")
+
+    def test_other_family_without_candidate_gives_reason_and_owner_choices(self):
+        self.project = SimpleNamespace(repo="/r", review_independence="other-family")
+        self.card("Opus", "Sonnet", klass="mocny")
+        self.add("step.finished", step="s-1", ticket=TICKET, result="done")
+        self.engine.catalog = lambda: executors.Catalog(tuple(e for e in EXECUTORS.values()
+                                                              if e.provider == "anthropic"), {})
+        with self.assertRaises(FlowDeferred):
+            self.gate("Sonnet", policy=None, round_no=1)
+        st = self.engine.journal.state(CARD)
+        question = st.review_questions[(TICKET, 1)]
+        self.assertEqual((question["reason"], question["policy"]), ("independence", "other-family"))
+        for fragment in ("innej rodziny", "reviewIndependence: other-family", "„Sonnet”",
+                         "Wybierz innego recenzenta", "poczekaj", "poluzuj politykę"):
+            self.assertIn(fragment, question["question"])
+        self.assertEqual(derived(st, {"column": "progress"})["column"], "waiting")
+        # Właściciel poluzował politykę: następny przebieg rusza review bez restartu usługi.
+        self.project.review_independence = "free"
+        self.assertEqual(self.gate("Sonnet", policy=None, round_no=1)[0].name, "Sonnet")
+        self.assertEqual(self.engine.journal.state(CARD).review_decisions[(TICKET, 1)]["choice"], "review-ready")
+
+    def test_other_family_accepts_codex_for_an_opus_author(self):
+        self.project = SimpleNamespace(repo="/r", review_independence="other-family")
+        self.card("Opus", "Codex Astra", klass="mocny")
+        st = self.engine.journal.state(CARD)
+        self.assertEqual(self.gate("Codex Astra", policy=None, round_no=1)[0].name, "Codex Astra")
+        self.assertEqual(self.gate("Sonnet", policy=None, round_no=1)[0].provider, "openai")
+        self.assertFalse(st.review_questions)
 
     def test_local_review_does_not_fall_back_to_cloud(self):
         self.history()

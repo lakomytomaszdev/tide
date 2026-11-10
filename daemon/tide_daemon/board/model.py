@@ -75,6 +75,13 @@ PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode", "entry")
 # gdy ustawione; projekt bez klucza nie synchronizuje niczego, z kluczem — domyślnie tak (`youtrack-sync: off`).
 PROJECT_YOUTRACK_KEY = "youtrack"
 PROJECT_SYNC_KEY = "youtrack-sync"
+# Polityka niezależności review projektu (K-88/PT-330, decyzja 97): `free` (domyślne, także bez klucza),
+# `other-model`, `other-family`; lista klas zawęża `other-family`. W pliku tylko, gdy ustawione. Wartość
+# trzymamy surowo — nieznaną usługa traktuje jak `free` z ostrzeżeniem w logu (`cardflow.reviewgate`).
+REVIEW_POLICY_KEY = "review-independence"
+REVIEW_CLASSES_KEY = "review-independence-classes"
+REVIEW_POLICIES = ("free", "other-model", "other-family")
+REVIEW_CLASSES = ("lekki", "standard", "mocny", "lokalny")
 YOUTRACK_PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,19}$")
 ON_WORDS = ("on", "true", "yes", "tak", "1")
 OFF_WORDS = ("off", "false", "no", "nie", "0")
@@ -132,6 +139,8 @@ class Project:
     repo_missing: bool = False
     youtrack: str = ""        # klucz projektu YouTracka (PT-7), pusty — bez synchronizacji
     youtrack_sync: bool = True
+    review_independence: str = ""          # surowa wartość z pliku; pusta — `free`
+    review_independence_classes: list = field(default_factory=list)
     assignment_rules: str = ""
     allowed_commands: list = field(default_factory=list)
     denied_commands: list = field(default_factory=list)
@@ -335,6 +344,9 @@ def parse_project(doc: Document, path: str, slug: str, errors: list) -> Project:
     if sync and sync not in ON_WORDS + OFF_WORDS:
         errors.append(_err(path, f"{name}: nieznana wartość youtrack-sync „{sync}” (on, off) — włączona"))
     project.youtrack_sync = sync not in OFF_WORDS
+    project.review_independence = " ".join(doc.get(REVIEW_POLICY_KEY).lower().split())
+    project.review_independence_classes = [c for c in (part.strip().lower() for part in
+                                                       doc.get(REVIEW_CLASSES_KEY).split(",")) if c]
     default_allowed, default_denied = commands.defaults(slug, project.repo)
     project.allowed_commands = commands.read(doc.get(commands.ALLOWED_KEY), default_allowed,
                                              commands.ALLOWED_KEY, errors, path)

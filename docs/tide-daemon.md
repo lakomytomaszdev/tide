@@ -1195,6 +1195,16 @@ mode: full
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
+- `review-independence` (JSON `reviewIndependence`, K-88/PT-330, decyzja 97): polityka niezależności review projektu —
+  `free` (domyślnie, także bez klucza w pliku; zapis `free` nie dopisuje klucza), `other-model` (inny model albo inna
+  siła myślenia niż autor) albo `other-family` (inna rodzina: para dostawca/program z katalogu wykonawców, nie nazwa).
+  `review-independence-classes` (JSON `reviewIndependenceClasses`, lista klas `lekki`, `standard`, `mocny`, `lokalny`,
+  w pliku po przecinku) zawęża `other-family` do ticketów tych klas; pozostałe dostają `free`, a review planu
+  stosuje politykę bez zawężenia. `UpsertProject` odrzuca nieznaną wartość (`bad-request`); nieznaną wartość wpisaną
+  ręcznie do pliku migawka pokazuje bez zmian, a usługa stosuje `free` z ostrzeżeniem w dzienniku usługi
+  (`cardflow.reviewgate`, raz na wartość i plik). Usługa czyta ustawienie z bieżącej Tablicy przy każdym sprawdzeniu,
+  więc zmiana działa bez restartu. Okno Tablicy ustawia je w formularzu projektu („Recenzent”: Dowolny, Inny model,
+  Inna rodzina, z polem klas). Niezależnie od polityki recenzent zawsze startuje w nowej, osobnej sesji.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
 ### Katalogi danych projektu tylko do odczytu (PT-246)
@@ -2130,12 +2140,20 @@ review tej samej rundy nie usuwa tych autorów z kontroli.
 
 Warunek modelu jest skupiony w `reviewgate.permits(reviewer, authors, policy)`: `free` dopuszcza dowolny
 model, `other-model` stosuje dotychczasowe `plans.independent_reviewer` (inny model lub wysiłek),
-`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Bramka przyjmuje parametr
-`policy`, tymczasowo `other-model`; ustawienie projektu, domyślne `free` i podłączenie pozostałych miejsc
-wyboru wykonawców są zakresem PT-330 zgodnie z decyzją właściciela 97. Nie jest to nowa nadrzędna reguła Tide.
+`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Polityka pochodzi z ustawienia
+projektu ticketu `reviewIndependence` (PT-330, decyzja 97; kolumna Projekt planu, inaczej projekt karty; klasa
+ticketu z planu, Od razu — `standard`), domyślnie `free`. Nie jest to nadrzędna reguła Tide. Tę samą politykę
+stosują: sprawdzanie planu (`plans.read`, także domyślny recenzent pustej kolumny Review — przy `other-family`
+wykonawca innej rodziny), edycja ticketu w oknie (`EditCardPlan edit`), start Od razu (`StartCard`; przy `free`
+bez innego wykonawcy recenzentem może być sam autor, przy `other-family` recenzent innego dostawcy jest dozwolony
+także przy wybranym dostawcy zlecenia), start ticketu z planu, wybór i zmiana recenzenta planu oraz cel eskalacji
+poprawek. Reguła `ESCALATE_FIX_ROUND` się nie zmienia; przy `other-family` cel eskalacji nie należy do rodziny
+recenzenta ocenianego ani następnego review (rodzina z dziennika kroku, przydziału albo katalogu).
 Gdy wybrany recenzent nie spełnia polityki, bramka szuka wykonawcy klasy ticketu lub mocniejszej,
 z zachowaniem lokalnego/chmurowego zakresu. Przy braku kandydata zapisuje idempotentne `review.question`
 z `reason: independence`, `policy`, `ticket`, `round` oraz `step.waiting` z `cause: review-independence`.
+Pytanie podaje powód (wymóg polityki, odrzucony recenzent, brak zgodnego wykonawcy) i trzy wyjścia: wybierz
+innego recenzenta, poczekaj albo poluzuj politykę projektu. Poluzowanie działa w następnym przebiegu bez restartu.
 Panel pokazuje pytanie i wybór recenzenta przez istniejące `ResolveCardStep reassign-reviewer`.
 Pojawienie się zgodnego recenzenta zamyka pytanie zdarzeniem `review.decision` z `choice: review-ready`;
 start review usuwa je z projekcji, aby późniejsze pytanie po progu rund działało jak dotąd.

@@ -67,8 +67,12 @@ def _same_title(a: str, b: str) -> bool:
 
 
 def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local", existing_ids=(), imported=False,
-         other_plans=None, projects=None) -> Proposal:
-    """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów."""
+         other_plans=None, projects=None, review_policy=None) -> Proposal:
+    """Czyta plan i kartki wyłącznie z dozwolonych katalogów; nie rezerwuje numerów.
+
+    `review_policy(slug, klasa) -> polityka` — polityka niezależności review projektu wiersza (PT-330);
+    brak — `free` (domyślna polityka projektu bez ustawienia)."""
+    from . import reviewgate
     projects = dict(projects or {})
     main = next(iter(projects), "")
     errors: list[str] = []
@@ -150,21 +154,33 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
             errors.append(f"{ident}: nieznany wykonawca „{row.agent}”")
         elif klass == "lokalny" and author.provider != "local":
             errors.append(f"{ident}: klasa lokalny wymaga lokalnego wykonawcy")
+        policy = review_policy(slug, klass) if review_policy is not None else reviewgate.DEFAULT
         reviewer = (catalog.resolve(row.reviewer, klass, author.model if author is not None else "")
                     if catalog is not None and row.reviewer else None)
         if reviewer is None and author is not None and not row.reviewer:
             preferred = {"Haiku": "Sonnet", "Sonnet": "Opus", "Opus": "Sonnet",
                          "Codex mocny": "Codex Astra"}.get(author.name, "")
             options = ([catalog.get(preferred)] if preferred else []) + list(catalog.executors)
-            reviewer = next((e for e in options if e is not None and e.provider == author.provider and
-                             e.model.lower() != author.model.lower()), None)
+            if policy == reviewgate.OTHER_FAMILY:
+                # Domyślny recenzent spoza rodziny autora (dostawca/program z katalogu), w tym samym zakresie
+                # lokalnym; najpierw klasa ticketu, potem mocny, potem pozostali.
+                fitting = [e for e in options if e is not None and e.classes and
+                           reviewgate.allows(author, e, policy) and
+                           (e.provider == "local") == (author.provider == "local")]
+                fitting.sort(key=lambda e: (klass not in e.classes, "mocny" not in e.classes))
+                reviewer = fitting[0] if fitting else None
+            else:
+                reviewer = next((e for e in options if e is not None and e.provider == author.provider and
+                                 e.model.lower() != author.model.lower()), None)
         if reviewer is None:
             errors.append(f"{ident}: nieznany albo niedostępny recenzent „{row.reviewer}”")
-        elif author is not None and (not independent_reviewer(author, reviewer) or
+        elif author is not None and (not reviewgate.allows(author, reviewer, policy) or
                                      (author.provider == "local") != (reviewer.provider == "local")):
-            # Ta sama reguła co przy starcie Od razu i edycji ticketu (06.11, K-60: plan z Codex mocny → Codex standard
-            # był odrzucany, więc planujący wybrał recenzenta Claude przy wyczerpanym limicie).
-            errors.append(f"{ident}: recenzent musi mieć inny model albo inną siłę myślenia i zachować pracę lokalną")
+            # Ta sama reguła co przy starcie Od razu, edycji ticketu i starcie review: polityka projektu (PT-330,
+            # decyzja 97); `free` dopuszcza ten sam model. Praca lokalna zawsze zostaje lokalna.
+            errors.append(f"{ident}: {reviewgate.rule(policy)} (polityka projektu {policy}) "
+                          f"i musi zachować pracę lokalną" if policy != reviewgate.FREE else
+                          f"{ident}: recenzent musi zachować pracę lokalną")
         card_name = (work.group(1) if work else ident) + ".md"
         card_path = os.path.realpath(os.path.join(folder, card_name))
         if not _inside(card_path, folder):

@@ -2,7 +2,7 @@
 import json
 import os
 
-from . import execution, findings as review_findings, plans, planappend, planartifacts
+from . import execution, findings as review_findings, plans, planappend, planartifacts, reviewgate
 from .state import fold, ticket_of
 
 
@@ -63,13 +63,18 @@ class PlanEditing:
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg else self.catalog()
             author = catalog.get(proposal.get("reviewAuthor") or proposal_author_of(st, proposal))
-            options = [e for e in catalog.executors if author and e.name != author.name and plans.independent_reviewer(author, e)
+            policy = self._review_policy(card, klass=None)
+            options = [e for e in catalog.executors if author and reviewgate.allows(author, e, policy)
                        and (e.provider == "local") == (author.provider == "local")]
+            # Domyślnie inny wykonawca niż autor; przy `free` sam autor zostaje ostatnią możliwością (PT-330).
+            if policy != reviewgate.FREE:
+                options = [e for e in options if e.name != author.name]
             # Review planu to ocena całości, nie lekka praca: wykonawcy wyłącznie klasy „lekki” idą na koniec
             # (K-33, K-35: domyślnie brany Haiku łamał format wyniku i nie łapał rozmiaru ticketów).
             # Dostawca planisty ma pierwszeństwo (05.11: plan Codexa szedł do Claude bez limitu do soboty), a ten sam
             # model z inną siłą myślenia jest niezależny — jak przy ticketach.
-            options.sort(key=lambda e: (tuple(e.classes) == ("lekki",), e.provider != author.provider))
+            options.sort(key=lambda e: (e.name == author.name, tuple(e.classes) == ("lekki",),
+                                        e.provider != author.provider))
             if not options:
                 from .engine import FlowError
                 raise FlowError("no-plan-reviewer", "brak niezależnego recenzenta planu")
@@ -347,9 +352,11 @@ class PlanEditing:
             catalog = cfg.catalog if cfg else self.catalog()
             author = catalog.get(proposal.get("reviewAuthor") or proposal_author_of(st, proposal))
             selected = catalog.get(str(request.get("executor") or ""))
-            if not author or not selected or not plans.independent_reviewer(author, selected) or \
+            policy = self._review_policy(card, klass=None)
+            if not author or not selected or not reviewgate.allows(author, selected, policy) or \
                     (author.provider == "local") != (selected.provider == "local"):
-                raise FlowError("bad-reviewer", "wybierz niezależny model recenzenta planu")
+                raise FlowError("bad-reviewer", f"recenzent planu: {reviewgate.rule(policy)} "
+                                                f"(polityka projektu {policy})")
             execution.resolve(selected.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
             if review_steps:
                 previous = review_steps[-1]
@@ -425,10 +432,13 @@ class PlanEditing:
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg else self.catalog()
         author, reviewer = catalog.get(candidate["executor"]), catalog.get(candidate["reviewer"])
-        if not author or not reviewer or not plans.independent_reviewer(author, reviewer) or \
+        # Polityka projektu ticketu (PT-330): `free` przyjmuje ten sam model, np. Opus → Opus.
+        policy = self._review_policy(card, klass=candidate.get("class") or "standard",
+                                     slug=candidate.get("project") or "")
+        if not author or not reviewer or not reviewgate.allows(author, reviewer, policy) or \
                 (author.provider == "local") != (reviewer.provider == "local"):
-            raise FlowError("bad-assignment", "wybierz znanych wykonawców z różnym modelem albo siłą myślenia "
-                                              "w tym samym zakresie lokalnym")
+            raise FlowError("bad-assignment", "wybierz znanych wykonawców w tym samym zakresie lokalnym; "
+                                              f"{reviewgate.rule(policy)} (polityka projektu {policy})")
         if candidate["class"] not in ("lekki", "standard", "mocny", "lokalny") or (candidate["class"] == "lokalny" and author.provider != "local"):
             raise FlowError("bad-class", "nieprawidłowa klasa")
         if not isinstance(candidate.get("body"), str) or len(candidate["body"].encode()) > plans.plan_mod.MAX_BYTES or not plans.CRITERION.search(candidate["body"]):
@@ -525,7 +535,7 @@ class PlanEditing:
         existing += [r["id"] for r in (st.imported or {}).get("rows", [])]
         proposal = plans.read(path, card, catalog, allowed_roots=[os.path.dirname(path)], existing_ids=existing,
                               tracker="youtrack" if (st.started or {}).get("trackerProject") else "local",
-                              imported=bool(st.imported))
+                              imported=bool(st.imported), review_policy=self._plan_review_policy(card))
         # Istniejący ticket zatwierdzonego planu nie dostaje nowej kartki — zostaje jego kartka z planu bazowego.
         kept_bodies = {(r.get("id") or r["workId"]): r.get("body") or "" for r in revision["baseline"]}
         rows = [{**r, "body": proposal.cards.get(r["workId"]) or kept_bodies.get(r["workId"], "")} for r in proposal.rows]

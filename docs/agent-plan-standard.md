@@ -134,7 +134,7 @@ plany sześciokolumnowe zachowują dotychczasowe znaczenie.
 | Kolumna 1.2 | Opis |
 | --- | --- |
 | `Klasa` | `lekki`, `standard`, `mocny` albo `lokalny`; bez kolumny domyślnie `standard` przy zatwierdzaniu karty |
-| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy; sam dobór nie potwierdza spełnienia zasad recenzji według ryzyka (niżej) |
+| `Review` | nazwa recenzenta z katalogu wykonawców; gdy pusta, Tide dobiera inny model tego samego dostawcy (przy polityce projektu `other-family` — wykonawcę innej rodziny); sprawdzenie planu stosuje politykę projektu ticketu (recenzja według ryzyka, niżej) |
 | `Blokery` | ID ticketów z tego planu, oddzielone przecinkiem; przed zatwierdzeniem mogą mieć postać `#1`, `#2` |
 
 **Wersja 1.3:** po `Blokery` może dojść opcjonalna kolumna `Projekt` (10 kolumn). Parser czyta plany o 6, 7, 8, 9
@@ -354,12 +354,26 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
 
 ## Recenzja według ryzyka
 
-Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md).
-Niezależność oznacza nową sesję recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
-Dla zwykłych ticketów dopuszczalny jest ten sam model z inną siłą myślenia, np. Codex mocny ↔ standard.
-Sama zmiana siły myślenia nie oznacza zmiany rodziny modeli.
+Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md); od 10.11.2026
+(decyzja 97, K-88/PT-330) dobór recenzenta jest **polityką projektu, nie regułą Tide**.
+Stały warunek Tide to tylko nowa, osobna sesja recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
 
-Recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Codex) jest obowiązkowy dla:
+Polityka projektu Tablicy `reviewIndependence` (plik projektu: `review-independence`; opis pola
+w [tide-daemon.md](tide-daemon.md#tablica)):
+
+- `free` — **domyślna** (także projekt bez ustawienia): dowolny recenzent, również ten sam model i ta sama siła
+  myślenia (np. Opus → Opus), zawsze w nowej sesji;
+- `other-model` — inny model albo ten sam model z inną siłą myślenia, np. Codex mocny ↔ standard;
+- `other-family` — recenzent innej rodziny (dostawca/program z katalogu, nie nazwa wykonawcy) niż autor
+  i wykonawcy poprawek; opcjonalnie tylko dla klas z listy (`review-independence-classes`, np. `mocny`).
+
+Tide egzekwuje wyłącznie ustawioną politykę: przy sprawdzaniu planu, edycji ticketu w oknie, starcie Od razu,
+wyborze celu eskalacji poprawek i w bramce przed startem review. Sama zmiana siły myślenia nie oznacza zmiany
+rodziny modeli. Gdy polityka wymaga recenzenta, którego nie ma (brak dostawcy, limit), karta pokazuje powód
+i pyta właściciela: zmień recenzenta, poczekaj albo poluzuj politykę projektu.
+
+Lista niżej jest **zaleceniem dla projektów z polityką `other-family`**, nie regułą Tide. W takim projekcie
+recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Codex) jest zalecany dla:
 
 - granic uprawnień i bezpieczeństwa;
 - operacji destrukcyjnych;
@@ -369,10 +383,10 @@ Recenzent **innej rodziny modeli** niż autor (np. Astra / Claude dla autora Cod
 - zmian doboru testów i bramek akceptacji;
 - integracji zmieniających wspólny kontrakt kart.
 
-Przed scaleniem trzeba sprawdzić klasę ryzyka i dobór recenzenta; automatyczny wybór wykonawcy nie
-zwalnia z tego obowiązku. Przy braku dostępnego limitu wymaganego recenzenta ryzykowny ticket czeka.
-Wymaganie nie spada automatycznie do tego samego modelu z inną siłą myślenia ani do braku review.
-Review pozostaje obowiązkowe i kończy się `APPROVE` bez BLOCKER i MAJOR.
+W projekcie z taką polityką przed scaleniem sprawdza się klasę ryzyka i dobór recenzenta; automatyczny wybór
+wykonawcy nie zwalnia z tego obowiązku. Wymaganie polityki nie spada automatycznie do tego samego modelu z inną
+siłą myślenia ani do braku review — decyduje właściciel. W każdym projekcie review pozostaje obowiązkowe
+i kończy się `APPROVE` bez BLOCKER i MAJOR.
 
 ## Poprawki koordynatora poza kartą
 
