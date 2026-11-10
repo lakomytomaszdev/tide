@@ -43,7 +43,9 @@ Rectangle {
     readonly property var derived: card && card.derived ? card.derived : null
     readonly property var flow: derived && derived.flow ? derived.flow : null
     readonly property var decisions: flow && Array.isArray(flow.decisions) ? flow.decisions : []
-    readonly property var pending: decisions.filter(d => answeredIds.indexOf(d.id) < 0)
+    // Zgrupowane zgody (PT-338): ta sama prośba poza piaskownicą z kilku kroków to jedna pozycja (decision.js).
+    property var consent: Decision.consentStart()
+    readonly property var pending: Decision.consentItems(decisions, answeredIds, consent)
     readonly property var current: pending.length > 0 ? pending[0] : null
     readonly property var phases: derived && Array.isArray(derived.phases) ? derived.phases : []
     // Krycie paska etapu `now` (karta K-97): wspólna faza strony Tablicy; 1.0 = bez mrugania (Sesje nic nie przekazują).
@@ -286,6 +288,7 @@ Rectangle {
         transferSent = false
         consentError = ""
         answeredIds = []
+        consent = Decision.consentStart()
         confirming = null
         menuOpen = false
         settingError = ""
@@ -303,6 +306,13 @@ Rectangle {
             return
         }
         if (decisionId.indexOf("limit-transfer:") === 0) transferSent = false
+        // Krok z grupy zgód wraca sam, osobno i z powodem (`consent.reasons`, pokazany, gdy dojdzie na wierzch);
+        // pozostałe odpowiedzi grupy zostają przyjęte.
+        if (Decision.isSent(consent, decisionId)) {
+            consent = Decision.consentFailed(consent, decisionId, message)
+            if (current && current.id === decisionId) form.fail(message)
+            return
+        }
         answeredIds = answeredIds.filter(id => id !== decisionId)
         form.fail(message)
     }
@@ -771,10 +781,16 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: !!view.current
                         decision: view.current
+                        errors: view.consent.reasons
                         onInputNeeded: notice => view.panelRequested(notice)
                         onEscapePressed: view.backRequested()
                         onPreviewRequested: (decisionId, method, params) => view.previewRequested(decisionId, method, params)
+                        onGroupAnswered: ids => view.consent = Decision.consentSent(view.consent, ids)
                         onAnswered: (decisionId, method, params) => {
+                            if (Decision.isSent(view.consent, decisionId)) {
+                                view.answered(decisionId, method, params)
+                                return
+                            }
                             if (!Decision.keepsPending(params))
                                 view.answeredIds = view.answeredIds.concat([decisionId])
                             else form.reset()

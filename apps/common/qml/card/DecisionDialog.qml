@@ -26,6 +26,11 @@
 // `reply.preview` jest ustawione, pierwszy wybór wysyła `previewRequested(decisionId, method, params)`, strona
 // oddaje odpowiedź usługi przez `showPreview(decisionId, reply)` (karta z opisem i wycinkiem dziennika), a dopiero
 // drugi wybór („Zapisz i ponów”) wysyła `answered` z `reply.method`. Zmiana opisu unieważnia podgląd.
+//
+// Zgrupowane zgody (PT-338): ta sama prośba poza piaskownicą z kilku kroków to jedna pozycja (decision.js,
+// `consentGroups`) i licznik „1 z N” liczy ją raz. Wybór wysyła `answered` raz na każdą decyzję grupy (jej `step`),
+// a pozycja w tym samym miejscu pokazuje „Przyjęto · wysyłam N odpowiedzi”, dopóki usługa ma te decyzje w migawce.
+// `failed(id, tekst)` dla kroku z grupy przywraca tylko jego decyzję, osobno i z powodem.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
@@ -40,8 +45,11 @@ Rectangle {
     property string cardOpen: "decision"   // ustawienie okna Tide (PT-133); zapis robi strona, okno tylko prosi
     property var answeredIds: []
     property int index: 0
+    // Zgrupowane zgody (PT-338): wysłane odpowiedzi grup, odrzucone decyzje i ich powody (decision.consentStart).
+    property var consent: Decision.consentStart()
 
-    readonly property var pending: (decisions || []).filter(d => answeredIds.indexOf(d.id) < 0)
+    // Pozycje okna: decyzje bez odpowiedzi, grupy zgód jako jedna pozycja i znak przyjęcia wysłanej grupy.
+    readonly property var pending: Decision.consentItems(decisions, answeredIds, consent)
     readonly property var current: pending.length > 0 ? pending[Math.min(index, pending.length - 1)] : null
     readonly property string counter: pending.length > 1 ? (Math.min(index, pending.length - 1) + 1) + " z " + pending.length : ""
     readonly property alias answerField: form.answerField
@@ -56,6 +64,7 @@ Rectangle {
 
     function start() {
         answeredIds = []
+        consent = Decision.consentStart()
         index = 0
         form.reset()
         forceActiveFocus()
@@ -70,8 +79,10 @@ Rectangle {
         form.choose()
     }
 
-    // Usługa odrzuciła odpowiedź: decyzja wraca do listy i pokazuje błąd.
+    // Usługa odrzuciła odpowiedź: decyzja wraca do listy i pokazuje błąd. Odmowa dla kroku z grupy zgód przywraca
+    // tylko tę decyzję, osobno i z powodem; pozostałe odpowiedzi grupy zostają przyjęte.
     function failed(decisionId, message) {
+        if (Decision.isSent(consent, decisionId)) consent = Decision.consentFailed(consent, decisionId, message)
         answeredIds = answeredIds.filter(id => id !== decisionId)
         const at = pending.findIndex(d => d.id === decisionId)
         if (at >= 0) index = at
@@ -205,10 +216,17 @@ Rectangle {
                     objectName: "decisionForm"
                     Layout.fillWidth: true
                     decision: dialog.current
+                    errors: dialog.consent.reasons
                     onInputNeeded: notice => dialog.fullCardRequested(notice)
                     onEscapePressed: dialog.laterRequested()
                     onPreviewRequested: (decisionId, method, params) => dialog.previewRequested(decisionId, method, params)
+                    // Grupa zgód: pozycja od razu staje się znakiem przyjęcia (w tym samym miejscu listy).
+                    onGroupAnswered: ids => dialog.consent = Decision.consentSent(dialog.consent, ids)
                     onAnswered: (decisionId, method, params) => {
+                        if (Decision.isSent(dialog.consent, decisionId)) {
+                            dialog.answered(decisionId, method, params)
+                            return
+                        }
                         if (!Decision.keepsPending(params))
                             dialog.answeredIds = dialog.answeredIds.concat([decisionId])
                         else form.reset()
