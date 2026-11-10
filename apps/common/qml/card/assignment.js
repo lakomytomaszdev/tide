@@ -8,6 +8,7 @@
 // edycji nie sprawdza — okno wyszarza niedostępnych z powodem z usługi, ale wartość, która już jest w planie,
 // nie blokuje zapisu.
 .pragma library
+.import "decision.js" as Decision
 
 var CLASSES = [
     { value: "lekki", label: "lekki" },
@@ -188,4 +189,74 @@ function runningVerdict(status, field, chosen, current, cls) {
 // Żądanie `ResolveCardStep` dla pola trwającego ticketu.
 function reassignRequest(field, ticket, executor) {
     return { choice: field === "author" ? "reassign-author" : "reassign-reviewer", ticket: ticket, executor: executor }
+}
+
+// --- „Ponów innym wykonawcą” przy błędzie kroku ticketu (PT-341) -------------------------------------------
+//
+// Pole nie ma własnej logiki wysyłania: możliwość `change-executor` bierze się z decyzji `error` tego ticketu
+// (`flow.decisions[]`), a żądanie buduje `decision.js` (`optionRequest`) z `params` możliwości (`choice`, `step`),
+// do których okno dokłada wybranego wykonawcę — tak samo jak okno decyzji. Warunki odwzorowują
+// `FlowEngine.resolve_step` (engine.py, tylko odczyt):
+// - decyzja `error` kroku ticketu z `change-executor` na liście możliwości (usługa buduje ją tylko dla kroku
+//   zakończonego błędem po drugiej próbie, bez następcy i bez wcześniejszej decyzji) — bez niej pola nie ma;
+// - żaden inny krok tego ticketu nie trwa (`busy` → `no-step-question`; kroki opiekuna się nie liczą);
+// - `_resume_executor` (decyzja użytkownika, nie opiekuna): wykonawca z katalogu i dostępny, a praca lokalna
+//   nie miesza się z chmurową — względem recenzenta (krok autora i poprawek), autora (krok review) albo
+//   wykonawcy nieudanego kroku (pozostałe rodzaje). Niezależność autora i recenzenta to tylko rekomendacja.
+var LOCK_RETRY_WORKING = "Krok tego ticketu właśnie pracuje — ponowisz go, gdy skończy."
+var REASON_RETRY_SCOPE = "praca lokalna i chmurowa się nie mieszają"
+
+// Decyzja błędu ticketu z możliwością „Ponów innym wykonawcą”: {decision, option} albo null.
+function retryDecision(flow, ticket) {
+    var list = flowList(flow, "decisions")
+    for (var i = 0; i < list.length; i++) {
+        var d = list[i]
+        if (!d || d.kind !== "error" || d.ticket !== ticket || !Array.isArray(d.options)) continue
+        for (var j = 0; j < d.options.length; j++) {
+            var o = d.options[j]
+            if (o && o.id === "change-executor" && o.method === "ResolveCardStep" && o.params
+                    && o.params.choice === "change-executor" && o.params.step)
+                return { decision: d, option: o }
+        }
+    }
+    return null
+}
+
+// Powód zablokowania pola „Ponów innym wykonawcą” ("" — pole aktywne).
+function retryLock(flow, ticket) {
+    var busy = runningOf(flow, ticket).some(function (s) { return s.kind !== "caretaker" && s.kind !== "caretaker-chat" })
+    return busy ? LOCK_RETRY_WORKING : ""
+}
+
+// Wykonawca po drugiej stronie pary autor/recenzent, względem którego usługa pilnuje zakresu lokalny/chmura.
+function retryScopeRef(status, decision, current) {
+    var kind = decision.stepKind
+    var name = kind === "ticket" || kind === "fix" ? current.reviewer : kind === "review" ? current.author : decision.executor
+    return find(status, name)
+}
+
+function retryReason(status, executor, decision, current) {
+    var gone = unavailableReason(executor)
+    if (gone) return gone
+    var other = retryScopeRef(status, decision, current)
+    return other && isLocal(other) !== isLocal(executor) ? REASON_RETRY_SCOPE : ""
+}
+
+// Lista okna: wszystkie pozycje katalogu, niedozwolone z powodem. `current` = {author, reviewer} z kafelka.
+function retryOptions(status, decision, current) {
+    return catalog(status).map(function (e) { return option(e.name, retryReason(status, e, decision, current)) })
+}
+
+function retryVerdict(status, chosen, decision, current) {
+    var picked = find(status, chosen)
+    if (!picked) return { ok: false, reason: "Wybierz wykonawcę z katalogu." }
+    var why = retryReason(status, picked, decision, current)
+    return why ? { ok: false, reason: "Wykonawca „" + picked.name + "”: " + why + "." } : { ok: true, reason: "" }
+}
+
+// `ResolveCardStep` dla możliwości decyzji z wybranym wykonawcą: {method, params}.
+function retryRequest(choice, executor) {
+    var request = Decision.optionRequest(choice)
+    request.params.executor = executor
+    return request
 }

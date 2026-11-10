@@ -895,6 +895,10 @@ Rectangle {
                         visible: !!view.nowTicket
                         ticketId: view.nowTicket ? view.nowTicket.id : ""
                         item: view.nowTicket
+                        // PT-341: „Ustawienia” jedynego ticketu karty „Od razu” — tylko tam, gdzie okno ma katalog
+                        // wykonawców (Tablica); w Sesjach `ticketSettingsEnabled` zostaje false.
+                        ticketSettingsEnabled: view.ticketSettingsEnabled
+                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                     }
                     RowLayout {
                         Layout.fillWidth: true

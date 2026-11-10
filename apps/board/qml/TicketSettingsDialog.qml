@@ -6,13 +6,21 @@
 //   `ResolveCardStep`: „Autor kolejnych kroków” → `{choice: "reassign-author", ticket, executor}`, „Recenzent” →
 //   `{choice: "reassign-reviewer", ticket, executor}`. Pole jest wyszarzone ze zdaniem, gdy usługa by odmówiła
 //   (warunki: `Assignment.authorLock` / `reviewerLock`, liczone na bieżąco z `flow`);
-// - ticket scalony albo odrzucony (albo bez wiersza planu): samo zdanie bez pól zapisu (tryb tylko do odczytu — #10).
+// - gdy czeka decyzja `error` tego ticketu z możliwością `change-executor` (PT-341): trzecie pole „Ponów innym
+//   wykonawcą”. Idzie tą samą drogą co okno decyzji: `params` możliwości z `flow.decisions[]` (w tym `step`) i wybrany
+//   wykonawca, jedno `ResolveCardStep` (assignment.js, `retryRequest`). Bez takiej decyzji pola nie ma;
+// - ticket scalony albo odrzucony (PT-341): wykonawca, recenzent i klasa tylko do odczytu ze zdaniem dlaczego, bez
+//   żadnego zapisu; ticket bez wiersza planu i nieskończony: samo zdanie „już ruszył”;
+// - karta „Od razu” (PT-341): strona podaje wiersz zastępczy (`noPlanRow: true`) — klasa to domyślny „standard”,
+//   pokazany tylko do odczytu z dopiskiem, że karta nie ma wiersza planu.
 //
 // Umowa: `ticketId`, `row` (wiersz `derived.flow.plan.rows[]`), `flow` (`derived.flow`), `tickets`
 // (`derived.tickets[]`), `modelsStatus` (Status() z /Models). `open(id, row)` otwiera okno, `close()` zamyka.
 // Tryb nieruszony: `busy` i `error` ustawia strona; sygnał `saveRequested(request)`. Tryb trwający: sygnał
-// `reassignRequested(field, request)` (`field` — "author" albo "reviewer"), odpowiedź wraca przez
-// `fieldReplied(field, error, note)` przy tym polu, okno się nie zamyka. Esc i „Anuluj” niczego nie wysyłają.
+// `reassignRequested(field, request)` (`field` — "author", "reviewer" albo "retry"; dla "retry" `request` to
+// `params` do `ResolveCardStep`), odpowiedź wraca przez `fieldReplied(field, error, note)` przy tym polu
+// (sukces, `not-waiting`, `bad-executor`, `already-decided`, `no-step-question`…), okno się nie zamyka. Esc
+// i „Anuluj” niczego nie wysyłają.
 //
 // Reguły przydziału: apps/common/qml/card/assignment.js (czyste funkcje). Listy mają wszystkie pozycje katalogu;
 // niedozwolone są wyszarzone z powodem.
@@ -38,8 +46,10 @@ Rectangle {
     readonly property bool finished: !!ticket && (ticket.status === "merged" || ticket.status === "rejected")
     // Ticket trwający: ma wiersz planu, nie jest już edytowalny i nie jest scalony ani odrzucony.
     readonly property bool running: !!row && !editable && !finished
-    readonly property bool started: !editable && !running
-    readonly property string planClass: row && row["class"] ? row["class"] : ""
+    readonly property bool started: !editable && !running && !finished
+    // Karta „Od razu” nie ma wiersza planu z klasą: obowiązuje domyślny „standard” (założenie karty K-97).
+    readonly property bool defaultClass: !!row && row.noPlanRow === true
+    readonly property string planClass: row && row["class"] ? row["class"] : defaultClass ? "standard" : ""
 
     readonly property var lists: Assignment.options(modelsStatus, selection)
     readonly property var verdict: editable ? Assignment.verdict(modelsStatus, selection, {
@@ -50,12 +60,23 @@ Rectangle {
     readonly property var current: ({
         author: ticket && ticket.executor || row && row.executor || "",
         reviewer: ticket && ticket.reviewer || row && row.reviewer || "" })
-    property var runSelection: ({ author: "", reviewer: "" })
-    // Stan pól: {busy, error, note} osobno dla autora i recenzenta.
-    property var fields: ({ author: {}, reviewer: {} })
+    property var runSelection: ({ author: "", reviewer: "", retry: "" })
+    // Stan pól: {busy, error, note} osobno dla autora, recenzenta i „Ponów innym wykonawcą”.
+    property var fields: ({ author: {}, reviewer: {}, retry: {} })
     readonly property var runLists: Assignment.runningOptions(modelsStatus, current, planClass)
     readonly property string authorLock: running ? Assignment.authorLock(flow, ticketId) : ""
     readonly property string reviewerLock: running ? Assignment.reviewerLock(flow, ticketId) : ""
+    // „Ponów innym wykonawcą” (PT-341): decyzja błędu tego ticketu z możliwością `change-executor` albo null.
+    // Po zapisie decyzja znika z migawki; pole zostaje z odpowiedzią usługi, dopóki okno jest otwarte.
+    readonly property var liveRetry: running ? Assignment.retryDecision(flow, ticketId) : null
+    property var retryKept: null
+    onLiveRetryChanged: if (liveRetry) retryKept = liveRetry
+    readonly property var retry: liveRetry || (fields.retry && (fields.retry.note || fields.retry.busy) ? retryKept : null)
+    readonly property string retryLock: retry ? Assignment.retryLock(flow, ticketId) : ""
+    readonly property var retryList: retry ? Assignment.retryOptions(modelsStatus, retry.decision, current) : []
+    readonly property string finishedSentence: ticket && ticket.status === "rejected"
+        ? "Ticket został odrzucony — wszystkie pola są tylko do odczytu."
+        : "Ticket jest scalony do gałęzi karty — wszystkie pola są tylko do odczytu."
 
     signal saveRequested(var request)
     signal reassignRequested(string field, var request)
@@ -68,8 +89,9 @@ Rectangle {
         busy = false
         selection = { executor: planRow && planRow.executor || "", reviewer: planRow && planRow.reviewer || "",
                       "class": planRow && planRow["class"] || "" }
-        runSelection = { author: current.author, reviewer: current.reviewer }
-        fields = { author: {}, reviewer: {} }
+        runSelection = { author: current.author, reviewer: current.reviewer, retry: "" }
+        fields = { author: {}, reviewer: {}, retry: {} }
+        retryKept = liveRetry
         visible = true
         forceActiveFocus()
     }
@@ -79,7 +101,8 @@ Rectangle {
         visible = false
         busy = false
         error = ""
-        fields = { author: {}, reviewer: {} }
+        fields = { author: {}, reviewer: {}, retry: {} }
+        retryKept = null
         closed()
     }
 
@@ -100,15 +123,20 @@ Rectangle {
     }
 
     function lockOf(field) {
-        return field === "author" ? authorLock : reviewerLock
+        return field === "author" ? authorLock : field === "retry" ? retryLock : reviewerLock
     }
 
     function fieldVerdict(field) {
+        if (field === "retry")
+            return retry ? Assignment.retryVerdict(modelsStatus, runSelection.retry, retry.decision, current)
+                         : { ok: false, reason: "" }
         return Assignment.runningVerdict(modelsStatus, field, runSelection[field], current, planClass)
     }
 
+    // „Ponów” po udanym zapisie jest zużyte (decyzja już zapisana); autora i recenzenta wolno zapisać ponownie.
     function canReassign(field) {
-        return running && lockOf(field) === "" && !fields[field].busy && fieldVerdict(field).ok
+        return running && lockOf(field) === "" && !fields[field].busy && !(field === "retry" && fields.retry.note)
+            && fieldVerdict(field).ok
     }
 
     function setField(field, state) {
@@ -118,7 +146,7 @@ Rectangle {
     }
 
     function chooseRunning(field, value) {
-        if (fields[field].busy || lockOf(field) !== "") return
+        if (fields[field].busy || lockOf(field) !== "" || (field === "retry" && fields.retry.note)) return
         const next = Object.assign({}, runSelection)
         next[field] = value
         runSelection = next
@@ -128,7 +156,8 @@ Rectangle {
     function reassign(field) {
         if (!canReassign(field)) return
         setField(field, { busy: true, sent: runSelection[field] })
-        reassignRequested(field, Assignment.reassignRequest(field, ticketId, runSelection[field]))
+        reassignRequested(field, field === "retry" ? Assignment.retryRequest(retry.option, runSelection.retry).params
+                                                   : Assignment.reassignRequest(field, ticketId, runSelection[field]))
     }
 
     // Odpowiedź usługi przy polu: błąd (`not-waiting`, `bad-executor`, `already-decided`…) albo potwierdzenie
@@ -138,6 +167,7 @@ Rectangle {
         const who = name || fields[field].sent || ""
         setField(field, failure ? { error: failure } : { note: field === "author"
             ? "Zapisano: kolejne kroki autora poprowadzi " + who + "."
+            : field === "retry" ? "Zapisano: krok ponowi " + who + "."
             : "Zapisano: review poprowadzi " + who + "." })
     }
 
@@ -296,6 +326,7 @@ Rectangle {
                 Layout.fillWidth: true
                 visible: dialog.running
                 text: "Klasa: " + (dialog.planClass || "standard") + " — w trakcie ticketu się nie zmienia"
+                      + (dialog.defaultClass ? " (klasa domyślna: karta „Od razu” nie ma wiersza planu z klasą)" : "")
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textSecondary
                 font.family: Tide.Theme.uiFamily
@@ -305,9 +336,49 @@ Rectangle {
                 Accessible.name: text
             }
 
+            // Ticket scalony albo odrzucony (PT-341): wartości tylko do odczytu i zdanie dlaczego; nic się nie wysyła.
+            Text {
+                objectName: "ticketSettingsFinished"
+                Layout.fillWidth: true
+                visible: dialog.finished
+                text: dialog.finishedSentence
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                wrapMode: Text.Wrap
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: dialog.finished
+                spacing: 4
+                Repeater {
+                    model: dialog.finished ? [
+                        { label: "Wykonawca", value: dialog.current.author },
+                        { label: "Recenzent", value: dialog.current.reviewer },
+                        { label: "Klasa", value: dialog.planClass + (dialog.defaultClass ? " (klasa domyślna)" : "") }
+                    ] : []
+                    delegate: Text {
+                        required property var modelData
+                        objectName: "ticketSettingsReadonly"
+                        Layout.fillWidth: true
+                        text: modelData.label + ": " + (modelData.value || "—")
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.uiFamily
+                        font.pointSize: Tide.Tokens.fontSizePt
+                        wrapMode: Text.Wrap
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                    }
+                }
+            }
+
             Flickable {
                 id: scroller
-                visible: !dialog.started
+                visible: dialog.editable || dialog.running
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: (dialog.running ? runningGroups.implicitHeight : groups.implicitHeight)
@@ -351,7 +422,9 @@ Rectangle {
                         model: dialog.running ? [
                             { key: "author", title: "Autor kolejnych kroków", list: "authors", save: "Zapisz autora" },
                             { key: "reviewer", title: "Recenzent", list: "reviewers", save: "Zapisz recenzenta" }
-                        ] : []
+                        ].concat(dialog.retry ? [
+                            { key: "retry", title: "Ponów innym wykonawcą", list: "retry", save: "Ponów innym wykonawcą" }
+                        ] : []) : []
                         delegate: ColumnLayout {
                             id: field
                             required property var modelData
@@ -368,7 +441,8 @@ Rectangle {
                                 Layout.fillWidth: true
                                 groupKey: field.key
                                 title: field.modelData.title
-                                entries: dialog.runLists[field.modelData.list]
+                                entries: field.modelData.list === "retry" ? dialog.retryList
+                                                                          : dialog.runLists[field.modelData.list]
                                 selected: dialog.runSelection[field.key]
                                 locked: field.lock !== ""
                                 onPicked: value => dialog.chooseRunning(field.key, value)
