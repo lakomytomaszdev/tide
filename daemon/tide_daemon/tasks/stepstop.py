@@ -98,6 +98,17 @@ def unit_state(unit: str, timeout: float = 30) -> str:
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
 
 
+def unit_without_processes(unit: str, timeout: float = 30) -> bool:
+    """True tylko gdy jednostka nie ma już procesów: `inactive`/`failed` albo nieznana (kod 4). `deactivating` (scope w
+    `stop-sigterm` zaraz po `systemctl stop`, kod 3 jak `inactive`), `activating` i błąd samego systemctl → False
+    (PT-315): procesy polecenia mogą jeszcze żyć, więc nie rozliczamy wyniku ani nie zwalniamy miejsca w kolejce."""
+    run = _systemctl("is-active", unit + ".scope", timeout=timeout)
+    state = (run.stdout or b"").decode("utf-8", "replace").strip()
+    if run.returncode == 4:
+        return True
+    return run.returncode == 3 and state in ("inactive", "failed")
+
+
 def freeze_unit(unit: str, frozen: bool) -> bool:
     """Zamrożenie (`frozen`) albo odmrożenie całej cgroup kroku (`systemctl --user freeze|thaw`, systemd ≥ 246):
     procesy kroku z potomkami stoją, dopóki Tide nie skończy własnego działania (strażnik opiekuna, PT-158).

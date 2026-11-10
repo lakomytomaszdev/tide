@@ -6298,7 +6298,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         nieznany (błąd odczytu nie kończy polecenia); wtedy czekamy dalej do OUTSIDE_TIMEOUT."""
         if time.time() - _epoch(started.get("ts")) < OUTSIDE_STOP_GRACE:
             return None         # systemd-run rejestruje jednostkę chwilę po starcie procesu
-        if stepstop.unit_state(started.get("unit") or "", timeout=OUTSIDE_STATE_TIMEOUT) != "inactive":
+        if not stepstop.unit_without_processes(started.get("unit") or "", timeout=OUTSIDE_STATE_TIMEOUT):
             return None
         # Wrapper mógł skończyć zaraz po pierwszym odczycie (zmiana nazwy tmp → exit-code): najpierw plik docelowy.
         code = stepstop.read_exit_code(step_dir)

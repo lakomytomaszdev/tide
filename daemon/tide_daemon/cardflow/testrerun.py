@@ -21,7 +21,7 @@ VALUE = r"[A-Za-z0-9_./:@+-]+"
 FULL_TEST = re.compile(rf"^(?:[A-Z_]+={VALUE} )*make (?:test|test-changed)(?: (?:BASE|JOBS|TEST_OUTPUT)={VALUE})*$")
 OUTPUT_TOKEN = re.compile(rf"(?:^| )TEST_OUTPUT={VALUE}(?= |$)")
 # Ucięcie przez Tide (limit czasu, zatrzymanie jednostki): wtedy raport końcowy nie powstaje. Opis wyniku zamiast
-# kodu wpisuje silnik wyłącznie przy limicie czasu (engine.py, OUTSIDE_TIMEOUT); inne opisy nie są ucięciem.
+# kodu wpisuje silnik wyłącznie przy limicie czasu (OUTSIDE_TIMEOUT) i zatrzymanej jednostce (OUTSIDE_STOPPED); inne opisy nie są ucięciem.
 INTERRUPTED = {130, 137, 143}
 INTERRUPTED_TEXT = {"przekroczony czas", "zatrzymane"}     # drugi: zatrzymana jednostka (engine.py, OUTSIDE_STOPPED)
 PREFIX = re.compile(rf"^((?:[A-Z_]+={VALUE} )*)make ")
@@ -72,7 +72,7 @@ def scope(command: str) -> str:
 
 
 def interrupted(exit_code) -> bool:
-    """Wynik ucięty przez Tide: opis zamiast kodu (\"przekroczony czas\") albo kod sygnału zatrzymania."""
+    """Wynik ucięty przez Tide: opis zamiast kodu (\"przekroczony czas\", \"zatrzymane\") albo kod sygnału zatrzymania."""
     if isinstance(exit_code, bool):
         return False
     if isinstance(exit_code, str):

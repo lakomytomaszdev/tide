@@ -49,6 +49,7 @@ class OutsideStoppedTest(FlowInProcess):
             self.addCleanup(patcher.stop)
         self.calls = []
         self.state_code = 3                       # `systemctl is-active`: nieaktywna
+        self.state_text = {3: "inactive\n", 0: "active\n"}   # stdout `is-active` dla kodu
         patcher = mock.patch.object(stepstop, "_systemctl", self.fake_systemctl)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -59,7 +60,8 @@ class OutsideStoppedTest(FlowInProcess):
     def fake_systemctl(self, *args, timeout=30):
         self.calls.append((args, timeout))
         code = self.state_code if args[0] == "is-active" else 0
-        return subprocess.CompletedProcess(args, code, b"", b"")
+        out = self.state_text.get(code, "") if args[0] == "is-active" else ""
+        return subprocess.CompletedProcess(args, code, out.encode(), b"")
 
     def put(self, name, data, mode="w"):
         path = os.path.join(self.dir, "in", name)
@@ -129,6 +131,26 @@ class OutsideStoppedTest(FlowInProcess):
         with mock.patch.object(engine_mod, "OUTSIDE_TIMEOUT", 0):
             self.assertIn("Kod wyjścia: przekroczony czas", self.ready()["answer"])
         self.assertEqual([e["exit"] for e in self.finished()], ["przekroczony czas"])
+
+    def test_failed_unit_counts_as_stopped(self):
+        self.state_text[3] = "failed\n"
+        self.ready()
+        self.assertEqual([e["exit"] for e in self.finished()], ["zatrzymane"])
+
+    def test_deactivating_unit_waits_like_an_active_one(self):
+        # `systemctl stop` zostawia scope w `deactivating` (kod 3 jak `inactive`), a procesy jeszcze żyją.
+        self.state_text[3] = "deactivating\n"
+        self.put("exit-code.tmp", "143\n")
+        self.assertIsNone(self.ready())
+        self.assertEqual(self.finished(), [])
+        self.assertNotIn("stop", [args[0] for args, _ in self.calls])
+        self.state_text[3] = "activating\n"
+        self.assertIsNone(self.ready())
+        self.assertEqual(self.finished(), [])
+        self.state_text[3] = ""                   # pusty stdout przy kodzie 3 to nie dowód zatrzymania
+        self.assertIsNone(self.ready())
+        self.assertEqual(self.finished(), [])
+        self.assertNotIn("stop", [args[0] for args, _ in self.calls])
 
     def test_state_read_error_does_not_end_the_running_command(self):
         for code in (1, 255):
