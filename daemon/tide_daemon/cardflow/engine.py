@@ -6685,12 +6685,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return value if isinstance(value, str) and value else "/nonexistent/in/exit-code"
 
     def _outside_still_allowed(self, card: str, step: dict) -> bool:
-        """Świeża kontrola decyzji tuż przed startem (PT-311): odmowa albo unieważnienie zapisane po kontroli
-        kolejki kończy start bez błędu historii; krok wznowi się z odmową albo wróci do decyzji."""
+        """Świeża kontrola decyzji tuż przed startem (PT-311). Odmowa człowieka zapisana po kontroli kolejki
+        kończy start bez błędu (krok wznowi się z odmową); automatyczna zgoda przechodzi `before_start`
+        (odmowa w innym kroku ticketu ją unieważnia). Brak zgody nadal odrzuca `_outside_history` (FlowError),
+        a ręczna zgoda nie dostaje nowych kontroli."""
         name = step.get("step") or ""
         current = self.journal.state(card)
         decision = current.step_decisions.get(name) or {}
-        if decision.get("choice") not in consent.RUN or not consent.before_start(
+        refused = decision.get("choice") == "deny" and not decision.get("auto")
+        if refused or decision.get("auto") and decision.get("choice") in consent.RUN and not consent.before_start(
                 self, card, step, current.finished.get(name) or {}, decision):
             self._outside_waiting.pop(name, None)
             return False
