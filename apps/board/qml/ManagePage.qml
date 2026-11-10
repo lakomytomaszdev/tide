@@ -844,6 +844,7 @@ Rectangle {
         property string mode: ""
         property string entry: ""
         property bool youtrackSync: true
+        property string reviewIndependence: "free"
         property string allowedCommands: ""
         property string deniedCommands: ""
         property string readDirs: ""
@@ -862,6 +863,8 @@ Rectangle {
             descriptionField.text = project.description || ""
             youtrackField.text = project.youtrack || ""
             youtrackSync = project.youtrack ? !!project.youtrackSync : true
+            reviewIndependence = project.reviewIndependence || "free"
+            reviewClassesField.text = (project.reviewIndependenceClasses || []).join(", ")
             allowedCommands = (project.allowedCommands || []).join("\n")
             deniedCommands = (project.deniedCommands || []).join("\n")
             allowedCommandsArea.text = allowedCommands
@@ -889,6 +892,10 @@ Rectangle {
             const key = youtrackField.text.trim().toUpperCase()
             if (key !== (project.youtrack || "")) request.youtrack = key
             if (key && youtrackSync !== (project.youtrack ? !!project.youtrackSync : true)) request.youtrackSync = youtrackSync
+            if (reviewIndependence !== (project.reviewIndependence || "free")) request.reviewIndependence = reviewIndependence
+            const reviewClasses = reviewClassesField.text.split(",").map(s => s.trim().toLowerCase()).filter(s => s.length > 0)
+            if (JSON.stringify(reviewClasses) !== JSON.stringify(project.reviewIndependenceClasses || []))
+                request.reviewIndependenceClasses = reviewClasses
             const allowed = commandLines(allowedCommands)
             const denied = commandLines(deniedCommands)
             if (JSON.stringify(allowed) !== JSON.stringify(project.allowedCommands || [])) request.allowedCommands = allowed
@@ -1101,6 +1108,40 @@ Rectangle {
                         text: youtrackField.text.trim() === "" ? "bez klucza — karty i tickety nie zmieniają YouTracka"
                             : row.youtrackSync ? "stan kart i ticketów idzie do YouTracka"
                             : "tylko odnośniki, bez zmiany stanu"
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.uiFamily
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                    }
+                }
+                // Polityka niezależności review projektu (K-88/PT-330, decyzja 96 z 10.11); zawsze nowa sesja recenzenta.
+                FieldLabel { text: "Recenzent" }
+                Segmented {
+                    objectName: "projectReviewIndependence"
+                    itemHeight: 28
+                    options: [{ value: "free", label: "Dowolny" }, { value: "other-model", label: "Inny model" },
+                              { value: "other-family", label: "Inna rodzina" }]
+                    current: row.reviewIndependence
+                    onPicked: value => row.reviewIndependence = value
+                }
+                FieldLabel { text: "Klasy"; visible: row.reviewIndependence === "other-family" }
+                RowLayout {
+                    visible: row.reviewIndependence === "other-family"
+                    Layout.fillWidth: true
+                    spacing: 10
+                    LineInput {
+                        id: reviewClassesField
+                        objectName: "projectReviewClasses"
+                        implicitWidth: 180
+                        placeholder: "np. mocny"
+                        accessibleName: "Klasy ticketów z wymogiem innej rodziny recenzenta"
+                        onAccepted: row.save()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: reviewClassesField.text.trim() === "" ? "wymóg dla wszystkich klas ticketów"
+                            : "tylko te klasy; pozostałe — dowolny recenzent"
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily

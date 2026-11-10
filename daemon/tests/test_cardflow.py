@@ -206,6 +206,14 @@ class FlowInProcess(unittest.TestCase):
         self.board.start()
         self.assertTrue(json.loads(self.board.upsert_project(json.dumps({"repo": self.repo})))["ok"])
 
+    def review_policy(self, value, classes=None):
+        """Ustawienie projektu `reviewIndependence` (PT-330) tą samą drogą co okno Tablicy."""
+        slug = next(iter(self.store.load().projects))
+        data = {"slug": slug, "reviewIndependence": value,
+                **({"reviewIndependenceClasses": classes} if classes is not None else {})}
+        reply = json.loads(self.board.upsert_project(json.dumps(data)))
+        self.assertTrue(reply["ok"], reply)
+
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
         from tide_daemon.models import executors

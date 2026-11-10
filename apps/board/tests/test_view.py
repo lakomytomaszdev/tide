@@ -1043,6 +1043,32 @@ out["save"] = calls()[-1]
         self.assertEqual(out["planning"], ["planning", True, "light"])
         self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
 
+    def test_project_review_independence_in_manage_page(self):
+        # PT-330: projekt bez ustawienia pokazuje „Dowolny”; Inna rodzina z listą klas trafia do UpsertProject.
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].pop("reviewIndependence", None)
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["default"] = [js(find("projectReviewIndependence") + ".current"), js(find("projectReviewClasses") + ".visible")]
+js(find("projectReviewIndependence") + ".picked('other-family')")
+wait(50)
+out["family"] = js(find("projectReviewClasses") + ".visible")
+js(find("projectReviewClasses") + ".text = 'Mocny, standard'")
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
+click(at(find("projectSave")))
+wait(80)
+out["save"] = calls()[-1]
+""", data)
+        self.assertEqual(out["default"], ["free", False])
+        self.assertTrue(out["family"])
+        self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "reviewIndependence": "other-family",
+                                                       "reviewIndependenceClasses": ["mocny", "standard"]})
+
     def test_tags_and_projects(self):
         out = self.probe("""
 click(named("addTagChip"))

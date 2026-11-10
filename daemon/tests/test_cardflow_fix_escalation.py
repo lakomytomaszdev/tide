@@ -139,6 +139,56 @@ class FixExecutorTest(_FixJournal):
         self.card("Sonnet", "Haiku", klass="lokalny", preferred="anthropic")
         self.assertEqual(self.fix(self.rounds("Haiku", 3)), ("Sonnet", "author"))
 
+    # --- PT-330: cel eskalacji a polityka projektu ---------------------------------------------------------
+
+    def policy(self, value, classes=()):
+        project = SimpleNamespace(repo="/r", review_independence=value, review_independence_classes=list(classes))
+        self.engine._project = lambda card: (SimpleNamespace(title="T", description="D"), project)
+
+    def test_other_family_escalation_target_is_not_from_the_reviewers_family(self):
+        # Dostawca zlecenia openai, recenzent Codex: mocny wykonawca openai to ta sama rodzina co recenzent.
+        self.policy("other-family")
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="openai")
+        name, reason = self.fix(self.rounds("Codex standard", 3))
+        self.assertEqual((name, reason), ("Sonnet", "author"))
+
+    def test_free_keeps_the_escalation_rule_unchanged(self):
+        for value in ("free", ""):
+            with self.subTest(policy=value):
+                self.setUp()
+                self.policy(value)
+                self.card("Sonnet", "Codex standard", klass="standard", preferred="openai")
+                self.assertEqual(self.fix(self.rounds("Codex standard", 3)), ("Codex mocny", "escalated"))
+
+    def test_other_family_escalates_to_a_strong_executor_of_another_family(self):
+        self.policy("other-family")
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
+        name, reason = self.fix(self.rounds("Codex standard", 3))
+        self.assertEqual((name, reason), ("Opus", "escalated"))
+        self.assertNotEqual((EXECUTORS[name].provider, EXECUTORS[name].program), ("openai", "codex"))
+
+    def test_family_is_compared_by_provider_and_program_not_by_name(self):
+        # Recenzent Fable (claude/anthropic, bez klasy mocny): Opus ma inną nazwę, ale tę samą rodzinę.
+        for value, expected in (("other-family", ("Codex standard", "author")), ("free", ("Opus", "escalated"))):
+            with self.subTest(policy=value):
+                self.setUp()
+                self.policy(value)
+                self.card("Codex standard", "Fable", klass="standard", preferred="anthropic")
+                self.assertEqual(self.fix(self.rounds("Fable", 3)), expected)
+
+    def test_family_of_a_reassigned_next_reviewer_is_avoided_too(self):
+        self.policy("other-family")
+        self.card("Codex standard", "Codex Astra", klass="standard", preferred="anthropic")
+        review = self.rounds("Codex Astra", 3)
+        # Recenzent następnej rundy zmieniony ręcznie na Fable (rodzina claude/anthropic).
+        self.reassign_reviewer("Fable")
+        self.assertEqual(self.fix(review), ("Codex standard", "author"))
+
+    def test_class_list_outside_other_family_classes_keeps_free_escalation(self):
+        self.policy("other-family", classes=["mocny"])
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="openai")
+        self.assertEqual(self.fix(self.rounds("Codex standard", 3)), ("Codex mocny", "escalated"))
+
     def test_only_strong_executor_is_the_reviewer_so_the_author_fixes_without_error(self):
         # Domyślna para Anthropic: Sonnet pisze, Opus recenzuje — jedyny mocny Anthropic to recenzent.
         self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")

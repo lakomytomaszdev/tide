@@ -23,8 +23,9 @@ class PlanFixture(unittest.TestCase):
             with open(os.path.join(self.tmp.name, "tickets", name + ".md"), "w", encoding="utf-8") as fh:
                 fh.write(body)
 
-    def check(self):
-        return plans.read(self.path, "K-2", default_catalog(), allowed_roots=(self.tmp.name,))
+    def check(self, policy=None):
+        return plans.read(self.path, "K-2", default_catalog(), allowed_roots=(self.tmp.name,),
+                          review_policy=policy)
 
 class ProposalTest(PlanFixture):
     def test_valid_plan_has_stable_waves_and_cards(self):
@@ -81,9 +82,49 @@ class ProposalTest(PlanFixture):
         self.write("| #1 | X | todo | | Codex mocny | | mocny | Codex standard | |\n"
                    "| #2 | Y | todo | | Codex standard | | standard | Codex mocny | |\n"
                    "| #3 | Z | todo | | Codex mocny | | mocny | Codex mocny | |\n", cards)
-        errors = self.check().errors
+        errors = self.check(lambda slug, klass: "other-model").errors
         self.assertEqual([e for e in errors if "recenzent" in e],
-                         ["#3: recenzent musi mieć inny model albo inną siłę myślenia i zachować pracę lokalną"])
+                         ["#3: recenzent musi mieć inny model albo inną siłę myślenia niż autor "
+                          "(polityka projektu other-model) i musi zachować pracę lokalną"])
+
+    # --- PT-330: polityka projektu -------------------------------------------------------------------------
+
+    def test_project_without_setting_accepts_the_same_model_as_reviewer(self):
+        self.write("| #1 | X | todo | | Opus | | mocny | Opus | |\n"
+                   "| #2 | Y | todo | | Codex mocny | | mocny | Codex mocny | |\n",
+                   {n: "## Kryteria akceptacji\n- [ ] Działa\n" for n in ("1", "2")})
+        for policy in (None, lambda slug, klass: "free"):
+            with self.subTest(policy=policy):
+                got = self.check(policy)
+                self.assertEqual(got.errors, [])
+                self.assertEqual([r["reviewer"] for r in got.rows], ["Opus", "Codex mocny"])
+
+    def test_free_still_keeps_local_work_local(self):
+        self.write("| #1 | X | todo | | Lokalny | | lokalny | Opus | |\n", {"1": "- [ ] Działa\n"})
+        self.assertEqual(self.check().errors, ["#1: recenzent musi zachować pracę lokalną"])
+
+    def test_other_family_rejects_sonnet_and_accepts_codex_for_opus(self):
+        self.write("| #1 | X | todo | | Opus | | mocny | Sonnet | |\n"
+                   "| #2 | Y | todo | | Opus | | mocny | Codex Astra | |\n"
+                   "| #3 | Z | todo | | Opus | | mocny | | |\n",
+                   {n: "## Kryteria akceptacji\n- [ ] Działa\n" for n in ("1", "2", "3")})
+        got = self.check(lambda slug, klass: "other-family")
+        self.assertEqual(got.errors, ["#1: recenzent musi należeć do innej rodziny (dostawca/program z katalogu) "
+                                      "niż autor (polityka projektu other-family) i musi zachować pracę lokalną"])
+        # Domyślny recenzent przy `other-family` też pochodzi spoza rodziny autora.
+        self.assertEqual(got.rows[2]["reviewer"], "Codex mocny")
+
+    def test_policy_is_asked_per_row_project_and_class(self):
+        self.write("| #1 | X | todo | | Opus | | mocny | Sonnet | |\n"
+                   "| #2 | Y | todo | | Sonnet | | standard | Haiku | |\n",
+                   {n: "## Kryteria akceptacji\n- [ ] Działa\n" for n in ("1", "2")})
+        asked = []
+
+        def policy(slug, klass):
+            asked.append((slug, klass))
+            return "other-family" if klass == "mocny" else "free"
+        self.assertEqual([e[:3] for e in self.check(policy).errors], ["#1:"])
+        self.assertEqual(asked, [("", "mocny"), ("", "standard")])
 
     def test_card_identity_local_class_and_work_id_are_checked(self):
         self.write("| OTHER-1 | X | todo | | Sonnet | | lokalny | Opus | |\n",

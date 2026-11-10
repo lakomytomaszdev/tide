@@ -94,7 +94,9 @@ class PlanReviewEditingTest(FlowInProcess):
         self.assertEqual(len(self.of(card, "plan.ticket-edited")), 1)
 
     def test_same_model_with_different_effort_is_an_independent_reviewer(self):
-        # 05.11 (decyzja użytkownika): Codex mocny recenzuje Codexa standard; ten sam model i siła — odmowa.
+        # 05.11 (decyzja użytkownika): Codex mocny recenzuje Codexa standard; ten sam model i siła — odmowa
+        # przy polityce projektu `other-model` (PT-330).
+        self.review_policy("other-model")
         card = self.card()
         self.assertTrue(self.submit(card, self.proposal(card))["ok"])
         self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
@@ -105,6 +107,25 @@ class PlanReviewEditingTest(FlowInProcess):
         with self.assertRaises(FlowError):
             self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Codex mocny",
                                               "reviewer": "Codex mocny"})
+
+    def test_window_edit_follows_the_project_policy(self):
+        # PT-330: projekt bez ustawienia (free) przyjmuje Opus → Opus; `other-family` — tylko inną rodzinę.
+        from tide_daemon.cardflow.engine import FlowError
+        card = self.card()
+        self.assertTrue(self.submit(card, self.proposal(card))["ok"])
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.reviewed"), timeout=20))
+        ok = self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Opus",
+                                               "reviewer": "Opus"})
+        self.assertTrue(ok["ok"], ok)
+        self.review_policy("other-family")
+        with self.assertRaises(FlowError) as error:
+            self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Opus",
+                                              "reviewer": "Sonnet"})
+        self.assertEqual(error.exception.code, "bad-assignment")
+        self.assertIn("other-family", str(error.exception))
+        ok = self.flow.engine.edit_plan(card, {"action": "edit", "ticket": "#2", "executor": "Opus",
+                                               "reviewer": "Codex mocny"})
+        self.assertTrue(ok["ok"], ok)
 
     def test_started_ticket_cannot_be_edited(self):
         from tide_daemon.cardflow.engine import FlowError

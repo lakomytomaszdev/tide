@@ -169,6 +169,42 @@ class WritingTest(BoardCase):
         with self.assertRaises(BoardError):
             self.store.upsert_project({"slug": "dom", "mode": "turbo"})
 
+    def test_project_review_independence_setting(self):
+        # PT-330: bez klucza — `free` (i bez dopisywania do pliku); zapis, lista klas i walidacja.
+        path = os.path.join(self.root, "projects", "dom.md")
+        project = self.store.snapshot()["projects"][0]
+        self.assertEqual((project["reviewIndependence"], project["reviewIndependenceClasses"]), ("free", []))
+        self.store.upsert_project({"slug": "dom", "reviewIndependence": "free", "reviewIndependenceClasses": []})
+        self.assertNotIn("review-independence", read(path))
+        self.store.upsert_project({"slug": "dom", "reviewIndependence": "other-family",
+                                   "reviewIndependenceClasses": ["Mocny", "mocny", "standard"]})
+        self.assertIn("review-independence: other-family", read(path))
+        self.assertIn("review-independence-classes: mocny, standard", read(path))
+        project = self.store.snapshot()["projects"][0]
+        self.assertEqual((project["reviewIndependence"], project["reviewIndependenceClasses"]),
+                         ("other-family", ["mocny", "standard"]))
+        loaded = self.store.load().projects["dom"]
+        self.assertEqual((loaded.review_independence, loaded.review_independence_classes),
+                         ("other-family", ["mocny", "standard"]))
+        self.store.upsert_project({"slug": "dom", "reviewIndependence": "free", "reviewIndependenceClasses": []})
+        self.assertEqual(self.store.load().projects["dom"].review_independence, "free")
+        for bad in ({"reviewIndependence": "strict"}, {"reviewIndependenceClasses": ["turbo"]},
+                    {"reviewIndependenceClasses": "mocny"}):
+            with self.assertRaises(BoardError, msg=bad):
+                self.store.upsert_project({"slug": "dom", **bad})
+
+    def test_unknown_review_independence_in_the_file_is_kept_raw_and_read_as_free(self):
+        from tide_daemon.cardflow import reviewgate
+        path = os.path.join(self.root, "projects", "dom.md")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text.replace("---\n", "---\nreview-independence: Strict\n", 1))
+        project = self.store.load().projects["dom"]
+        self.assertEqual(project.review_independence, "strict")
+        with self.assertLogs("tide_daemon.cardflow.reviewgate", level="WARNING"):
+            self.assertEqual(reviewgate.project_policy(project, "mocny"), "free")
+
     def test_legacy_project_mode_spec_is_cleaned_only_when_the_user_changes_it(self):
         self.write("projects/dom.md", LEGACY_SPEC_PROJECT.format(repo=self.repo_dir))
         self.store.upsert_project({"slug": "dom", "tool": "codex"})

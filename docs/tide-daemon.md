@@ -961,7 +961,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules}` albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, reviewIndependence, reviewIndependenceClasses, assignmentRules}` (`reviewIndependence`: `free|other-model|other-family`, inna wartość — błąd; opis w sekcji pliku projektu) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}` |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
 | `RenderLaunch(s id, s request)` | `→ s` | to samo z wyborem z okna „Co ma zrobić agent?”: `{entry, mode, tool, branch, check, preferredProvider}` (wszystko opcjonalne; `entry`: `planning` albo `spec` — Tylko specyfikacja, domyślne wejście projektu; `mode`: `full` albo `light`, dotyczy tylko Planowania i przy `spec` jest pomijany; `mode: spec` bez `entry` to stare żądanie wejścia Tylko specyfikacja; `check`: `auto` — domyślnie, albo `manual`); polecenie z każdego wejścia i trybu jest takie jak przed PT-77; odpowiedź ma `entry` i `mode` (pusty przy `spec`); odpowiedź ma też `projects` (dodatkowe projekty), `extraRepos` (ich istniejące repozytoria) i `addDirs` (katalogi dla `/Tasks Start`: dokumenty w tablicy przy `ai-docs: tide` i `extraRepos`) |
@@ -1195,6 +1195,16 @@ mode: full
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
+- `review-independence` (JSON `reviewIndependence`, K-88/PT-330, decyzja 96 z 10.11): polityka niezależności review projektu —
+  `free` (domyślnie, także bez klucza w pliku; zapis `free` nie dopisuje klucza), `other-model` (inny model albo inna
+  siła myślenia niż autor) albo `other-family` (inna rodzina: para dostawca/program z katalogu wykonawców, nie nazwa).
+  `review-independence-classes` (JSON `reviewIndependenceClasses`, lista klas `lekki`, `standard`, `mocny`, `lokalny`,
+  w pliku po przecinku) zawęża `other-family` do ticketów tych klas; pozostałe dostają `free`, a review planu
+  stosuje politykę bez zawężenia. `UpsertProject` odrzuca nieznaną wartość (`bad-request`); nieznaną wartość wpisaną
+  ręcznie do pliku migawka pokazuje bez zmian, a usługa stosuje `free` z ostrzeżeniem w dzienniku usługi
+  (`cardflow.reviewgate`, raz na wartość i plik). Usługa czyta ustawienie z bieżącej Tablicy przy każdym sprawdzeniu,
+  więc zmiana działa bez restartu. Okno Tablicy ustawia je w formularzu projektu („Recenzent”: Dowolny, Inny model,
+  Inna rodzina, z polem klas). Niezależnie od polityki recenzent zawsze startuje w nowej, osobnej sesji.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
 ### Katalogi danych projektu tylko do odczytu (PT-246)
@@ -1350,7 +1360,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
 | `tools`, `entries`, `modes` | dozwolone narzędzia, wejścia (`planning`, `spec`) i tryby Planowania (`full`, `light`) |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
-| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync, reviewIndependence, reviewIndependenceClasses}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona; `reviewIndependence` — surowa wartość z pliku, nieznana czytana jako `free`) |
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
@@ -2123,19 +2133,31 @@ reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje ś
 pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
 
 Bramka startu review (PT-312, uzupełnienie właściciela 10.11): `_guard_review_launch` działa przed
-rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Każde uruchomienie
+rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Wejście do Konsoli
+(`EnterStep`) w review zakończonym bez werdyktu (błąd, pytanie, zatrzymanie) nie wznawia starej sesji: to nowe
+review przez `_launch_full_planning` z tą bramką i świeżą sesją (PT-330); przejęcie trwającego review i rozmowa
+po werdykcie (`interactive`) działają jak dotąd. Kroki `fix` w Konsoli (przekazanie i wejście) zapisują
+`executorReason` jak kroki w tle, więc ponowienie po ręcznym przekazaniu zachowuje `override`. Każde uruchomienie
 review, także wznowienie, zaczyna osobną sesję. `reviewgate.authors` bierze z dziennika autorów ticketu
 oraz wszystkich prób poprawek od poprzedniej rundy review; nieudany fix może zawierać WIP, a wznowienie
 review tej samej rundy nie usuwa tych autorów z kontroli.
 
 Warunek modelu jest skupiony w `reviewgate.permits(reviewer, authors, policy)`: `free` dopuszcza dowolny
 model, `other-model` stosuje dotychczasowe `plans.independent_reviewer` (inny model lub wysiłek),
-`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Bramka przyjmuje parametr
-`policy`, tymczasowo `other-model`; ustawienie projektu, domyślne `free` i podłączenie pozostałych miejsc
-wyboru wykonawców są zakresem PT-330 zgodnie z decyzją właściciela 97. Nie jest to nowa nadrzędna reguła Tide.
+`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Polityka pochodzi z ustawienia
+projektu ticketu `reviewIndependence` (PT-330, decyzja 96 z 10.11; kolumna Projekt planu, inaczej projekt karty; klasa
+ticketu z planu, Od razu — `standard`), domyślnie `free`. Nie jest to nadrzędna reguła Tide. Tę samą politykę
+stosują: sprawdzanie planu (`plans.read`, także domyślny recenzent pustej kolumny Review — przy `other-family`
+wykonawca innej rodziny), edycja ticketu w oknie (`EditCardPlan edit`), start Od razu (`StartCard`; przy `free`
+bez innego wykonawcy recenzentem może być sam autor, przy `other-family` recenzent innego dostawcy jest dozwolony
+także przy wybranym dostawcy zlecenia), start ticketu z planu, wybór i zmiana recenzenta planu oraz cel eskalacji
+poprawek. Reguła `ESCALATE_FIX_ROUND` się nie zmienia; przy `other-family` cel eskalacji nie należy do rodziny
+recenzenta ocenianego ani następnego review (rodzina z dziennika kroku, przydziału albo katalogu).
 Gdy wybrany recenzent nie spełnia polityki, bramka szuka wykonawcy klasy ticketu lub mocniejszej,
 z zachowaniem lokalnego/chmurowego zakresu. Przy braku kandydata zapisuje idempotentne `review.question`
 z `reason: independence`, `policy`, `ticket`, `round` oraz `step.waiting` z `cause: review-independence`.
+Pytanie podaje powód (wymóg polityki, odrzucony recenzent, brak zgodnego wykonawcy) i trzy wyjścia: wybierz
+innego recenzenta, poczekaj albo poluzuj politykę projektu. Poluzowanie działa w następnym przebiegu bez restartu.
 Panel pokazuje pytanie i wybór recenzenta przez istniejące `ResolveCardStep reassign-reviewer`.
 Pojawienie się zgodnego recenzenta zamyka pytanie zdarzeniem `review.decision` z `choice: review-ready`;
 start review usuwa je z projekcji, aby późniejsze pytanie po progu rund działało jak dotąd.

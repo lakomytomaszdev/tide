@@ -117,7 +117,8 @@ def append(engine, card, st, request):
                           "w", encoding="utf-8") as ticket:
                     ticket.write(row.get("body") or "")
         checked = plans.read(path, card, catalog, allowed_roots=[folder],
-                             existing_ids=[r["id"] for r in baseline])
+                             existing_ids=[r["id"] for r in baseline],
+                             review_policy=engine._plan_review_policy(card))
     if checked.errors:
         return {"ok": False, "id": card, "error": "invalid-plan", "errors": checked.errors,
                 "message": "; ".join(checked.errors)}

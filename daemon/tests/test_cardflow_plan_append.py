@@ -119,6 +119,8 @@ class AppendPlanTest(FlowInProcess):
         self.assertEqual(fold(self.events(card)).plan_approved, after.plan_approved)
 
     def test_shared_format_validation_rejects_bad_fields_unknown_blocker_and_cycle_without_events(self):
+        # Recenzent = autor jest błędem tylko przy polityce projektu `other-model` (PT-330; `free` go przyjmuje).
+        self.review_policy("other-model")
         card = self.prepared()
         engine = self.flow.engine
         count = len(self.events(card))

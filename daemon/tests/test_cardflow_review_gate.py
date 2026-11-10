@@ -1,4 +1,5 @@
 """PT-312: bramka na granicy uruchomienia review, niezależnie od drogi autora poprawek."""
+import os
 import unittest
 import tempfile
 from dataclasses import replace
@@ -27,8 +28,9 @@ class ReviewGateTest(_FixJournal):
         engine = self.engine
         engine._process_check = lambda *args: engine.journal.state(CARD)
         engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
-        engine._project = lambda card: (SimpleNamespace(id=CARD, title="T", description="D"),
-                                       SimpleNamespace(repo="/r"))
+        # Testy PT-312 sprawdzają dotychczasową regułę: projekt z polityką `other-model` (PT-330).
+        self.project = SimpleNamespace(repo="/r", review_independence="other-model")
+        engine._project = lambda card: (SimpleNamespace(id=CARD, title="T", description="D"), self.project)
         engine.git = SimpleNamespace(clean_tip=lambda *args: "abc", review_diff=lambda *args: "")
         engine._rules = lambda repo: ""
         engine._trial_check = lambda *args: None
@@ -204,6 +206,174 @@ class ReviewGateTest(_FixJournal):
         self.assertEqual(st.review_questions[(TICKET, 1)]["reason"], "independence")
         self.assertFalse(st.verdicts)
         self.assertEqual(derived(st, {"column": "progress"})["column"], "waiting")
+
+    # --- PT-330: polityka projektu zamiast stałej reguły -------------------------------------------------
+
+    def test_project_without_setting_reviews_opus_with_opus_in_a_new_session(self):
+        self.project = SimpleNamespace(repo="/r")
+        fixed = self.history()
+        self.reassign_reviewer("Opus")
+        with self.assertRaises(_Captured):
+            self.engine._review(CARD, self.engine.journal.state(CARD), fixed, 4)
+        selected, kind = self.admitted[-1]
+        self.assertEqual((selected.name, kind), ("Opus", "review"))
+        self.assertFalse([e for e in self.events if e["type"] == "review.question"])
+
+    def test_policy_is_read_from_the_project_at_every_launch_without_restart(self):
+        self.history()
+        st = self.engine.journal.state(CARD)
+        self.project.review_independence = "free"
+        self.assertEqual(self.engine._guard_review_launch(CARD, st, TICKET, 4, self.selected("Opus"))[0].name,
+                         "Opus")
+        self.project.review_independence = "other-model"
+        self.assertNotEqual(self.engine._guard_review_launch(CARD, st, TICKET, 4,
+                                                             self.selected("Opus"))[0].model, "opus")
+
+    def test_unknown_value_falls_back_to_free_with_a_log_warning(self):
+        project = SimpleNamespace(slug="proj", path="/b/projects/proj.md", review_independence="strict")
+        with self.assertLogs("tide_daemon.cardflow.reviewgate", level="WARNING") as logs:
+            self.assertEqual(reviewgate.project_policy(project, "mocny"), "free")
+        self.assertIn("strict", logs.output[0])
+        self.assertEqual(reviewgate.project_policy(None), "free")
+        self.assertEqual(reviewgate.project_policy(SimpleNamespace(review_independence="")), "free")
+
+    def test_other_family_class_list_limits_the_policy_to_listed_classes(self):
+        project = SimpleNamespace(review_independence="other-family", review_independence_classes=["mocny"])
+        self.assertEqual(reviewgate.project_policy(project, "mocny"), "other-family")
+        self.assertEqual(reviewgate.project_policy(project, "standard"), "free")
+        self.assertEqual(reviewgate.project_policy(project, None), "other-family")  # review planu
+        self.project = project
+        self.card("Sonnet", "Opus", klass="standard")
+        self.add("step.finished", step="s-1", ticket=TICKET, result="done")
+        self.assertEqual(self.engine._guard_review_launch(CARD, self.engine.journal.state(CARD), TICKET, 1,
+                                                          self.selected("Sonnet"))[0].name, "Sonnet")
+
+    def test_other_family_without_candidate_gives_reason_and_owner_choices(self):
+        self.project = SimpleNamespace(repo="/r", review_independence="other-family")
+        self.card("Opus", "Sonnet", klass="mocny")
+        self.add("step.finished", step="s-1", ticket=TICKET, result="done")
+        self.engine.catalog = lambda: executors.Catalog(tuple(e for e in EXECUTORS.values()
+                                                              if e.provider == "anthropic"), {})
+        with self.assertRaises(FlowDeferred):
+            self.gate("Sonnet", policy=None, round_no=1)
+        st = self.engine.journal.state(CARD)
+        question = st.review_questions[(TICKET, 1)]
+        self.assertEqual((question["reason"], question["policy"]), ("independence", "other-family"))
+        for fragment in ("innej rodziny", "reviewIndependence: other-family", "„Sonnet”",
+                         "Wybierz innego recenzenta", "poczekaj", "poluzuj politykę"):
+            self.assertIn(fragment, question["question"])
+        self.assertEqual(derived(st, {"column": "progress"})["column"], "waiting")
+        # Właściciel poluzował politykę: następny przebieg rusza review bez restartu usługi.
+        self.project.review_independence = "free"
+        self.assertEqual(self.gate("Sonnet", policy=None, round_no=1)[0].name, "Sonnet")
+        self.assertEqual(self.engine.journal.state(CARD).review_decisions[(TICKET, 1)]["choice"], "review-ready")
+
+    def test_other_family_accepts_codex_for_an_opus_author(self):
+        self.project = SimpleNamespace(repo="/r", review_independence="other-family")
+        self.card("Opus", "Codex Astra", klass="mocny")
+        st = self.engine.journal.state(CARD)
+        self.assertEqual(self.gate("Codex Astra", policy=None, round_no=1)[0].name, "Codex Astra")
+        self.assertEqual(self.gate("Sonnet", policy=None, round_no=1)[0].provider, "openai")
+        self.assertFalse(st.review_questions)
+
+    # --- PT-330 (review PT-312, MAJOR-2): wejście do Konsoli to nowe uruchomienie review ---------------------
+
+    def console_review_entry(self, policy):
+        """Historyczne review rundy 4 pisane przez Opusa, który napisał oceniane poprawki, zakończone błędem;
+        użytkownik wchodzi do niego w Konsoli publiczną ścieżką `enter`. Rzeczywiste `_launch_full_planning`."""
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.review_independence = policy
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.history()
+        step_dir = self.tmp.name + "/r-4.step"
+        os.makedirs(step_dir + "/in")
+        with open(step_dir + "/in/prompt.txt", "w", encoding="utf-8") as fh:
+            fh.write(f"Oceń poprawki. Wynik: {step_dir}/out")
+        self.step("r-4", "review", "Opus", 4, stepDir=step_dir, session="sess-r-4", worktree=self.tmp.name,
+                  branch="ticket/pt-1", reviewTip="abc")
+        self.add("step.finished", step="r-4", ticket=TICKET, result="error", reason="crash")
+        opened = self.console_stubs("console-review")
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""), \
+                patch.object(engine_mod.agentcmd, "resume_interactive",
+                             side_effect=AssertionError("review w Konsoli nie wznawia starej sesji")):
+            reply = self.engine.enter(CARD, "r-4")
+        started = self.engine.journal.state(CARD).steps["console-review"]
+        return reply, started, opened
+
+    def console_stubs(self, next_step):
+        """Atrapy otoczenia rzeczywistego `_launch_full_planning` (Konsola, pliki zadań, profil odczytu)."""
+        engine = self.engine
+        item = SimpleNamespace(id=CARD, title="T", description="D", projects=[])
+        engine._project = lambda card: (item, self.project)
+        engine._process_state = lambda card: engine.journal.state(card)
+        engine._next_step_id = lambda *args: next_step
+        engine._step_base_context = lambda *args: ("", {})
+        engine._configured_reads = lambda *args, **kw: []
+        engine._used_read_profile = lambda *args: False
+        engine.store = SimpleNamespace(load=lambda: SimpleNamespace(projects={}))
+        engine.task_files = SimpleNamespace(write=lambda payload: "task-file", cancel=lambda path: True)
+        opened = []
+        engine.terminal = SimpleNamespace(available=lambda: True,
+                                          open=lambda plan: opened.append(plan) or "tab",
+                                          launchers=SimpleNamespace(agents={}, codex_for=lambda source: "codex"))
+        engine.journal.lock = __import__("threading").RLock()
+        engine.systemd_run = "/usr/bin/systemd-run"
+        engine.clock = lambda: 1.0
+        return opened
+
+    def test_console_fix_transfer_keeps_the_manual_reason_through_error_and_retry(self):
+        # Review PT-312, MAJOR-3: klasa standard, autor Sonnet, recenzent Astra; poprawki rundy 3 w Konsoli,
+        # ręczne przekazanie innemu wykonawcy, błąd, ponowienie — eskalacja nie nadpisuje ręcznego wyboru.
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.card("Sonnet", "Codex Astra", klass="standard", preferred="anthropic")
+        for round_no in (1, 2, 3):
+            self.step(f"r-{round_no}", "review", "Codex Astra", round_no)
+        fix = self.fix_step("f-3", "Opus", 3, executorReason="escalated", mode="interactive",
+                            worktree=self.tmp.name, branch="ticket/pt-1")
+        self.add("step.finished", step="f-3", ticket=TICKET, result="error", reason="crash")
+        self.console_stubs("console-fix")
+        with open(fix["stepDir"] + "/in/prompt.txt", "a", encoding="utf-8") as fh:
+            fh.write("\nWynik: " + fix["stepDir"] + "/out")
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""):
+            self.engine._resume_step(CARD, self.engine.journal.state(CARD), self.engine.journal.state(CARD).steps["f-3"],
+                                     {"choice": "transfer", "executor": "Codex mocny"})
+        console = self.engine.journal.state(CARD).steps["console-fix"]
+        self.assertEqual((console["kind"], console["executor"], console.get("executorReason")),
+                         ("fix", "Codex mocny", "override"))
+        self.add("step.finished", step="console-fix", ticket=TICKET, result="error", reason="crash")
+        self.assertEqual(self.engine._resumed_fix_target(CARD, self.engine.journal.state(CARD), console)[:2],
+                         ("Codex mocny", "override"))
+
+    def test_console_entry_of_a_fix_keeps_its_executor_reason(self):
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.card("Sonnet", "Codex Astra", klass="standard", preferred="anthropic")
+        self.step("r-3", "review", "Codex Astra", 3)
+        self.fix_step("f-3", "Opus", 3, executorReason="override", worktree=self.tmp.name,
+                      branch="ticket/pt-1")
+        self.add("step.finished", step="f-3", ticket=TICKET, result="error", reason="crash")
+        self.console_stubs("unused")
+        self.engine._session = lambda step: ("0b6a9f0e-3c1d-4e8a-9b7f-2d5c6e7f8a90", "")
+        self.engine._ancestor_outs = lambda *args: []
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""):
+            reply = self.engine.enter(CARD, "f-3")
+        entered = self.engine.journal.state(CARD).steps[reply["step"]]
+        self.assertEqual((entered["kind"], entered.get("executorReason")), ("fix", "override"))
+
+    def test_console_entry_of_a_review_runs_the_gate_for_the_fixer_as_reviewer(self):
+        reply, started, opened = self.console_review_entry("other-model")
+        self.assertEqual((started["kind"], started["parentStep"]), ("review", "r-4"))
+        self.assertEqual(started["executor"], "Codex mocny")
+        self.assertNotEqual(started["session"], "sess-r-4")
+        self.assertEqual((reply["step"], reply["executor"]), ("console-review", "Codex mocny"))
+        self.assertEqual(len(opened), 1)
+
+    def test_console_entry_of_a_review_in_a_free_project_keeps_the_model_with_a_new_session(self):
+        reply, started, _ = self.console_review_entry("")
+        self.assertEqual((started["kind"], started["executor"]), ("review", "Opus"))
+        self.assertTrue(started["session"])
+        self.assertNotIn(started["session"], ("sess-r-4", "sess-f-3"))
 
     def test_local_review_does_not_fall_back_to_cloud(self):
         self.history()
