@@ -63,20 +63,27 @@ Rectangle {
     }
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
-    // Wspólna faza pulsowania segmentów „pracuje” (PT-325): jedna animacja na stronę, nie na segment. Biegnie tylko,
-    // gdy widok jest aktywny i okno widoczne (animationsActive od BoardView) oraz jest co pulsować.
+    // Wspólna faza mrugania segmentów „pracuje” (PT-325, PT-327): jeden Timer na stronę, nie na segment. Skacze co 500 ms
+    // po trzech poziomach krycia (K-70 pkt 7: „w toku” ma mrugać), zamiast animacji `opacity` z pełną częstotliwością klatek,
+    // która przerysowywała całe okno bez przerwy (≈ 206% CPU w pomiarze #5). Biegnie tylko, gdy widok jest aktywny
+    // i okno widoczne (animationsActive od BoardView) oraz jest co mrugać.
     property bool animationsActive: false
     property real workPulse: 1.0
+    property int workPulseStep: 0
+    readonly property var workPulseLevels: [1.0, 0.7, 0.45, 0.7]
     readonly property bool hasWorking: Logic.hasWorkingSegment(allCards)
-    readonly property alias workPulseAnimation: workPulseAnimation
-    SequentialAnimation {
-        id: workPulseAnimation
-        objectName: "workPulseAnimation"
+    readonly property alias workPulseTimer: workPulseTimer
+    Timer {
+        id: workPulseTimer
+        objectName: "workPulseTimer"
+        interval: 500
+        repeat: true
         running: page.animationsActive && page.hasWorking
-        loops: Animation.Infinite
-        NumberAnimation { target: page; property: "workPulse"; to: 0.45; duration: 900; easing.type: Easing.InOutSine }
-        NumberAnimation { target: page; property: "workPulse"; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
-        onRunningChanged: if (!running) page.workPulse = 1.0
+        onTriggered: {
+            page.workPulseStep = (page.workPulseStep + 1) % page.workPulseLevels.length
+            page.workPulse = page.workPulseLevels[page.workPulseStep]
+        }
+        onRunningChanged: if (!running) { page.workPulseStep = 0; page.workPulse = 1.0 }
     }
     property bool dragging: false
     property string dragId: ""
