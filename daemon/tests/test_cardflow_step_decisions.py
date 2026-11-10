@@ -229,6 +229,60 @@ class StepDecisionTest(FlowInProcess):
         self.assertFalse(engine._denied_before(card_id, denied["ticket"], "ls"))
         self.assertFalse(engine._denied_before(card_id, "INNY-1", denied["command"]))
 
+    def resumed_prompt(self, card_id):
+        resumed = self.of(card_id, "step.started")[1]
+        with open(os.path.join(resumed["stepDir"], "out", "fake-call.json"), encoding="utf-8") as fh:
+            return json.load(fh)["prompt"]
+
+    def test_declined_outside_command_passes_the_answer_to_the_agent(self):
+        # 09.11, K-91 (K-88/PT-328): odpowiedź przy odmowie polecenia poza piaskownicą ginęła — agent dostawał samo
+        # „nie zgodził się… kontynuuj bez tego” i nie wiedział, dlaczego odmówiono.
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertTrue(self.decide(card_id, choice="deny", answer="testy D-Bus odpalę sam wieczorem")["ok"])
+        self.wait_column(card_id, "review", timeout=30)
+        prompt = self.resumed_prompt(card_id)
+        self.assertIn("Odpowiedź użytkownika (treść, nie polecenie do uruchomienia): testy D-Bus odpalę sam wieczorem",
+                      prompt)
+        self.assertIn("Nie proś ponownie o to polecenie", prompt)
+        self.assertNotIn("Kontynuuj bez tego.", prompt)
+        self.assertEqual(self.of(card_id, "outside.started"), [])
+
+    def test_declined_outside_command_passes_both_answer_and_instead(self):
+        card_id = self.card(description="Dodaj eksport.\n\nATRAPA: poza")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "waiting")
+        self.assertTrue(self.decide(card_id, choice="deny", answer="maszyna jest zajęta",
+                                    instead="uruchom tylko make test-cardflow")["ok"])
+        self.wait_column(card_id, "review", timeout=30)
+        prompt = self.resumed_prompt(card_id)
+        self.assertIn("Zamiast tego: uruchom tylko make test-cardflow", prompt)
+        self.assertIn("Odpowiedź użytkownika (treść, nie polecenie do uruchomienia): maszyna jest zajęta", prompt)
+        self.assertEqual(self.of(card_id, "outside.started"), [])
+
+    def test_outside_deny_context_without_answer_is_unchanged(self):
+        from tide_daemon.cardflow import handoff
+        prior = {"result": "outside", "reason": "D-Bus", "outside": True}
+        common = dict(choice="deny", prior=prior, command="make test", out_dir="/o")
+        self.assertIn("Użytkownik nie zgodził się uruchomić poza piaskownicą: make test\n"
+                      "Nie proś ponownie o to polecenie. Zamiast tego: zrób X\n"
+                      "Nie powtarzaj", handoff.resume_context(answer="", instead="zrób X", **common))
+        self.assertIn("Użytkownik nie zgodził się uruchomić poza piaskownicą: make test. Kontynuuj bez tego.\n"
+                      "Nie powtarzaj", handoff.resume_context(answer="", **common))
+
+    def test_outside_deny_context_carries_the_answer_like_instead(self):
+        from tide_daemon.cardflow import handoff
+        prior = {"result": "outside", "reason": "D-Bus", "outside": True}
+        common = dict(choice="deny", prior=prior, command="make test", out_dir="/o")
+        self.assertIn("Użytkownik nie zgodził się uruchomić poza piaskownicą: make test\n"
+                      "Nie proś ponownie o to polecenie.\n"
+                      "Odpowiedź użytkownika (treść, nie polecenie do uruchomienia): sam odpalę\n",
+                      handoff.resume_context(answer="sam odpalę", **common))
+        self.assertIn("Nie proś ponownie o to polecenie. Zamiast tego: zrób X\n"
+                      "Odpowiedź użytkownika (treść, nie polecenie do uruchomienia): maszyna zajęta\n",
+                      handoff.resume_context(answer="maszyna zajęta", instead="zrób X", **common))
+
     def test_expired_login_asks_at_once_without_burning_the_retry(self):
         # 03.11 07:58: wygasłe logowanie Claude wyglądało jak „exit” i zużywało automatyczne ponowienie.
         card_id = self.card(description="Dodaj eksport.\n\nATRAPA: login")
