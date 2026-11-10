@@ -17,7 +17,9 @@ Zdarzenia (dziennik karty):
 Polecenie jest stałym napisem Tide (bez łańcucha poleceń), z bazą = pełny SHA `start` (nie `before`):
 kontrakt testów projektu `tests.changed` (`{base}` → start, źródło `contract`), bez kontraktu cele `Makefile`
 gałęzi karty czytane z gita bez uruchamiania `make` (`test-changed` → `make test-changed BASE=<start>`, sam `test`
-→ `make test` z `fallback: "full"`), a bez nich — próba niedostępna.
+→ `make test` z `fallback: "full"`), a bez nich — próba niedostępna. Kontrakt, który po podstawieniu nie jest
+pojedynczym poleceniem (łańcuch, podpowłoka, powłoka), daje próbę niedostępną z `reason: "contract-not-single"`.
+Próbę zakłada każde scalenie z `before != start`, bez wyjątków dla rodzaju zmienionych plików.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ import shlex
 ARMED, REQUESTED, FINISHED = "merge.check-armed", "merge.check-requested", "merge.check-finished"
 UNAVAILABLE, FAILED, PENDING = "merge-check-unavailable", "merge-check-failed", "pending"
 CONTRACT, MAKEFILE = "contract", "makefile"
+CONTRACT_NOT_SINGLE = "contract-not-single"
 BASE_PARAM = "{base}"
 CHANGED_TARGET, FULL_TARGET = "test-changed", "test"
 MAKEFILE_MAX = 1 << 20
@@ -49,15 +52,29 @@ def make_targets(texts) -> set[str]:
     return targets
 
 
+def single_command(command: str) -> bool:
+    """Jedno polecenie bez łańcucha (`;`, `&&`, `|`, przekierowań), podpowłoki (`$(…)`, `` ` ``, `( … )`), powłoki
+    (`sh -c`, `bash`), `env`/`sudo` i zmiennych zmieniających uruchamianie (`PATH=`, `LD_*`) — to samo kryterium co
+    polecenie w kolejce poza piaskownicą (`board.commands.outside_argv`, bez skryptów z worktree)."""
+    from ..board.commands import OUTSIDE_MAX, outside_argv
+    return bool(command) and len(command) <= OUTSIDE_MAX and outside_argv(command) is not None
+
+
 def select_command(contract_changed: str, targets, start: str) -> dict:
-    """Polecenie próby: `{command, source, fallback?}` albo `{}` — próba niedostępna. `contract_changed` — pole
-    `tests.changed` zatwierdzonego kontraktu projektu (pusty napis: brak kontraktu), `targets` — cele `make` gałęzi
-    karty, `start` — pełny SHA punktu startu ticketu. Bez znanego `start` polecenie nie powstaje."""
+    """Polecenie próby: `{command, source, fallback?}` albo bez `command` — próba niedostępna: `{}` (brak polecenia)
+    albo `{source: "contract", reason: "contract-not-single"}` (kontrakt nie jest pojedynczym poleceniem; nie
+    przechodzimy wtedy na Makefile — zatwierdzony kontrakt jest wyborem projektu, a jego błąd ma być widoczny).
+    `contract_changed` — pole `tests.changed` zatwierdzonego kontraktu projektu (pusty napis: brak kontraktu),
+    `targets` — cele `make` gałęzi karty, `start` — pełny SHA punktu startu ticketu. Bez znanego `start` polecenie
+    nie powstaje."""
     if not isinstance(start, str) or not SHA.fullmatch(start):
         return {}
     changed = str(contract_changed or "").strip()
     if changed:
-        return {"command": changed.replace(BASE_PARAM, shlex.quote(start)), "source": CONTRACT}
+        command = changed.replace(BASE_PARAM, shlex.quote(start))
+        if not single_command(command):
+            return {"source": CONTRACT, "reason": CONTRACT_NOT_SINGLE}
+        return {"command": command, "source": CONTRACT}
     targets = set(targets or ())
     if CHANGED_TARGET in targets:
         return {"command": f"make {CHANGED_TARGET} BASE={start}", "source": MAKEFILE}

@@ -4998,12 +4998,14 @@ zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuw
 
 **Testy po scaleniu (K-88, PT-318; `cardflow/mergecheck.py`).** Gdy po trwałym `result` scalenia ticketu wierzchołek
 gałęzi karty sprzed scalenia (`before`, pierwszy rodzic commita scalenia) różni się od punktu startu ticketu
-(`start`) czymś więcej niż commitami planu karty, usługa zapisuje `merge.check-requested {ticket, check, start,
+(`start`) — z dowolnego powodu, także przez same commity planu karty — usługa zapisuje `merge.check-requested {ticket, check, start,
 before, after, command, source, fallback?}` z `check` = `<ticket>:<n>`. Polecenie to stały napis Tide z bazą = pełny
 SHA `start`: `tests.changed` zatwierdzonego kontraktu testów (`{base}` → `start`, `source: contract`), bez kontraktu
 cele `Makefile`/`mk/*.mk` gałęzi karty czytane z gita bez uruchamiania `make` (`make test-changed BASE=<start>`,
 a przy samym `test` — `make test` z `fallback: full`). Bez polecenia próba ma `unavailable: true` i daje problem
-karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Do wyniku `0` bieżącej próby
+karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Kontrakt, który po podstawieniu nie jest pojedynczym
+poleceniem (łańcuch, podpowłoka, powłoka, `env`, zmienne jak `PATH=` — kryterium kolejki poza piaskownicą), daje
+taką samą próbę niedostępną z `source: contract, reason: contract-not-single`, bez przejścia na `Makefile`. Do wyniku `0` bieżącej próby
 (`merge.check-finished {ticket, check, exit, log}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
 scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
 `"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.

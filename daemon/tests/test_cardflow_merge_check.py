@@ -64,6 +64,28 @@ class SelectCommandTest(unittest.TestCase):
         self.assertEqual(mergecheck.select_command("make test-changed BASE={base}", {"test-changed"}, ""), {})
         self.assertEqual(mergecheck.select_command("", {"test-changed"}, "HEAD"), {})
 
+    def test_contract_that_is_not_a_single_command_never_gives_a_command(self):
+        """Review r1, MAJOR-3: łańcuch, podpowłoka ani powłoka z kontraktu nie tworzą wykonywalnej próby; brak
+        przejścia na Makefile — błąd zatwierdzonego kontraktu ma być widoczny jako próba niedostępna."""
+        for contract in ("echo {base} && make test", "make test-changed BASE={base}; rm -rf build",
+                         "make test-changed BASE={base} | tee log", "make test-changed BASE=$(git rev-parse HEAD)",
+                         "make test-changed BASE=`git rev-parse HEAD`", "(make test-changed BASE={base})",
+                         "bash -c 'make test-changed BASE={base}'", "sh -c 'make test'",
+                         "env X=1 make test", "PATH=/tmp make test", "make test > out.log",
+                         "make test-changed BASE={base}\nmake test"):
+            with self.subTest(contract=contract):
+                chosen = mergecheck.select_command(contract, {"test-changed", "test"}, START)
+                self.assertNotIn("command", chosen)
+                self.assertEqual(chosen, {"source": "contract", "reason": "contract-not-single"})
+
+    def test_single_contract_command_with_quoted_operators_and_variables_is_accepted(self):
+        for contract, command in (("make test-changed BASE={base} JOBS=4", f"make test-changed BASE={START} JOBS=4"),
+                                  ("LC_ALL=C.UTF-8 pytest -k 'a or b' --base {base}",
+                                   f"LC_ALL=C.UTF-8 pytest -k 'a or b' --base {START}")):
+            with self.subTest(contract=contract):
+                self.assertEqual(mergecheck.select_command(contract, set(), START),
+                                 {"command": command, "source": "contract"})
+
     def test_targets_ignore_assignments_and_comments(self):
         texts = ["TEST := x\ntest-changed ::= y\n# test:\nbuild test: deps\n", "test-changed:\n\t@true\n"]
         self.assertEqual(mergecheck.make_targets(texts), {"build", "test", "test-changed"})
@@ -153,6 +175,14 @@ class MergeCheckFoldTest(unittest.TestCase):
                 self.assertEqual((option["method"], option["params"]),
                                  ("ResolveCardStep", {"choice": "retry-merge-check", "ticket": "PT-2",
                                                       "check": "PT-2:1"}))
+        rejected = fold([STARTED, requested(unavailable=True, source="contract", reason="contract-not-single"),
+                         finished("PT-2:1", 0)])
+        self.assertEqual([h["status"] for h in mergecheck.gate(rejected)], ["merge-check-unavailable"],
+                         "odrzucony kontrakt nie otwiera bramki nawet po wyniku 0")
+        found = [d for d in build_decisions(rejected) if d["kind"] == "merge-check"]
+        self.assertEqual([d["id"] for d in found], ["merge-check-unavailable:PT-2:1"])
+        self.assertEqual(found[0]["technical"]["reason"], "contract-not-single")
+        self.assertEqual(found[0]["options"][0]["params"]["choice"], "retry-merge-check")
         pending = fold([STARTED, requested()])
         self.assertFalse([d for d in build_decisions(pending) if d["kind"] == "merge-check"],
                          "próba czekająca na przebieg nie jest decyzją użytkownika")
@@ -234,18 +264,41 @@ class MergeCheckFlowTest(FlowInProcess):
     def retry(self, card, ticket, check):
         return self.flow.engine.resolve_step(card, {"choice": "retry-merge-check", "ticket": ticket, "check": check})
 
-    def assert_one_check_for_second_merge(self, card):
-        self.assertTrue(wait_until(lambda: self.checks(card), timeout=60), self.events(card))
-        first, second = self.merges(card)[:2]
-        check = self.checks(card)[0]
-        self.assertEqual(check["ticket"], second["key"], "scalenie nie-FF zakłada próbę dla drugiego ticketu")
-        self.assertEqual(check["check"], f"{second['key']}:1")
-        start = next(r["base"] for r in self.results(card, "ticket-branch") if r.get("ticket") == second["key"])
+    def assert_check_for_merge(self, card, merge, check):
+        self.assertEqual(check["ticket"], merge["key"])
+        self.assertEqual(check["check"], f"{merge['key']}:1")
+        start = next(r["base"] for r in self.results(card, "ticket-branch") if r.get("ticket") == merge["key"])
         self.assertEqual(check["start"], start)
-        self.assertEqual(check["after"], second["commit"])
+        self.assertEqual(check["after"], merge["commit"])
         self.assertNotEqual(check["before"], check["start"])
-        git(self.repo, "merge-base", "--is-ancestor", first["commit"], check["before"])
         self.assertEqual(git(self.repo, "rev-parse", f"{check['after']}^1").strip(), check["before"])
+
+    def plan_only_check_for_first_merge(self, card):
+        """Review r1, MAJOR-2: pierwsze scalenie karty z planem jest nie-FF tylko przez commity planu Tide (stan
+        ticketu w planie zapisany po jego starcie) — i mimo to zakłada próbę (`before != start`, bez wyjątków)."""
+        self.assertTrue(wait_until(lambda: self.checks(card), timeout=60), self.events(card))
+        first = self.merges(card)[0]
+        check = self.checks(card)[0]
+        self.assert_check_for_merge(card, first, check)
+        changed = [name for name in git(self.repo, "diff", "--name-only", check["start"], check["before"]).split()
+                   if name]
+        self.assertTrue(changed)
+        self.assertTrue(all(name.startswith("docs/agents/") for name in changed),
+                        f"między startem a `before` tylko pliki planu: {changed}")
+        return first, check
+
+    def pass_first_and_check_second(self, card):
+        """Pierwsza próba (scalenie nie-FF przez same commity planu) trzyma bramkę — drugie scalenie czeka; po
+        wyniku 0 drugie scalenie (do którego po starcie wszedł pierwszy ticket) zakłada własną próbę."""
+        first, first_check = self.plan_only_check_for_first_merge(card)
+        self.settle()
+        self.assertEqual(len(self.merges(card)), 1, "zamknięta bramka wstrzymuje kolejne scalenie")
+        self.finish(card, first_check["check"], 0)
+        self.assertTrue(wait_until(lambda: len(self.checks(card)) == 2, timeout=60), self.events(card))
+        second = self.merges(card)[1]
+        check = self.checks(card)[1]
+        self.assert_check_for_merge(card, second, check)
+        git(self.repo, "merge-base", "--is-ancestor", first["commit"], check["before"])
         return first, second, check
 
     # --- scenariusze ----------------------------------------------------------------------------
@@ -254,9 +307,7 @@ class MergeCheckFlowTest(FlowInProcess):
         self.commit_files(self.repo, {"Makefile": "-include mk/*.mk\n" + FULL_MK, "mk/tests.mk": CHANGED_MK})
         card = self.card()
         mapping = self.run_plan(card, count=2, blocked=True)
-        first, second, check = self.assert_one_check_for_second_merge(card)
-        # Pierwsze scalenie było „fast-forward” względem punktu startu (po nim tylko commity planu Tide).
-        self.assertEqual(len(self.checks(card)), 1)
+        first, second, check = self.pass_first_and_check_second(card)
         self.assertEqual(check["command"], f"make test-changed BASE={check['start']}")
         self.assertEqual((check["source"], "fallback" in check, "unavailable" in check), ("makefile", False, False))
         # Bramka zamknięta: zablokowany ticket nie startuje, domknięcie też nie.
@@ -275,7 +326,7 @@ class MergeCheckFlowTest(FlowInProcess):
         self.assertFalse(self.ticket_starts(card, mapping["#3"]))
         with self.assertRaises(FlowError):
             self.retry(card, second["key"], f"{second['key']}:7")   # nieaktualna próba — błąd bez zapisu
-        self.assertEqual(len(self.checks(card)), 1)
+        self.assertEqual(len(self.checks(card)), 2)
         reply = self.retry(card, second["key"], check["check"])
         self.assertEqual(reply["check"], f"{second['key']}:2")
         again = self.checks(card)[-1]
@@ -300,12 +351,13 @@ class MergeCheckFlowTest(FlowInProcess):
         check = self.checks(card)[0]
         self.assertTrue(check["unavailable"])
         self.assertNotIn("command", check)
+        self.assertNotIn("reason", check)
         self.assertEqual(len(self.checks(card)), 1)
         self.assertFalse([e for e in self.events(card) if e["type"] == "merge.check-skipped"])
-        # Bramka zamknięta: trzeci ticket nie scala się (czeka po review albo nie startuje), domknięcie nie startuje.
+        # Bramka zamknięta: pozostałe tickety nie scalają się (czekają po review), domknięcie nie startuje.
         self.assertTrue(wait_until(lambda: self.flow_view(card) and self.shown(card)["derived"]["column"] == "waiting",
                                    timeout=40), self.shown(card).get("derived"))
-        self.assertEqual(len(self.merges(card)), 2, self.events(card))
+        self.assertEqual(len(self.merges(card)), 1, self.events(card))
         self.assertFalse([s for s in self.of(card, "step.started") if s.get("kind") == "close"])
         self.assertEqual([d["id"] for d in self.problems(card)], [f"merge-check-unavailable:{check['check']}"])
         # Ponowienie po dodaniu celu `test-changed` na gałęzi karty: nowe polecenie na bieżącym wierzchołku.
@@ -318,13 +370,15 @@ class MergeCheckFlowTest(FlowInProcess):
         self.assertEqual((again["command"], again["source"], again["retryOf"]),
                          (f"make test-changed BASE={check['start']}", "makefile", check["check"]))
         self.assertTrue(wait_until(lambda: not self.problems(card), timeout=10), "ponowienie zdejmuje problem")
-        self.assertEqual(len(self.merges(card)), 2)
+        self.assertEqual(len(self.merges(card)), 1)
         self.finish(card, again["check"], 0)
-        waiting = next(t for t in mapping.values() if t not in {m["key"] for m in self.merges(card)})
-        self.assertTrue(wait_until(lambda: any(m["key"] == waiting for m in self.merges(card)), timeout=60),
-                        self.events(card))
-        # Kolejne scalenie nie-FF znowu trzyma bramkę (własna próba trzeciego ticketu).
+        self.assertTrue(wait_until(lambda: len(self.merges(card)) == 2, timeout=60), self.events(card))
+        waiting = self.merges(card)[1]["key"]
+        self.assertIn(waiting, mapping.values())
+        # Kolejne scalenie nie-FF znowu trzyma bramkę (własna próba drugiego scalonego ticketu).
         self.assertTrue(wait_until(lambda: any(c["ticket"] == waiting for c in self.checks(card)), timeout=10))
+        self.settle(1.0)
+        self.assertEqual(len(self.merges(card)), 2)
         self.assertFalse([s for s in self.of(card, "step.started") if s.get("kind") == "close"])
 
     def test_contract_command_replaces_base_even_with_makefile_target(self):
@@ -332,9 +386,37 @@ class MergeCheckFlowTest(FlowInProcess):
         self.flow.engine._merge_check_contract = lambda card: "tools/run-tests --since {base}"
         card = self.card()
         self.run_plan(card, count=2, blocked=True)
-        _first, _second, check = self.assert_one_check_for_second_merge(card)
+        _first, check = self.plan_only_check_for_first_merge(card)
         self.assertEqual((check["command"], check["source"]), (f"tools/run-tests --since {check['start']}",
                                                                "contract"))
+
+    def test_contract_chain_gives_unavailable_check_without_command(self):
+        """Review r1, MAJOR-3: zatwierdzony kontrakt z łańcuchem nie tworzy wykonywalnej próby ani nie otwiera bramki;
+        Makefile z `test-changed` nie zastępuje błędnego kontraktu."""
+        self.commit_files(self.repo, {"Makefile": CHANGED_MK + FULL_MK})
+        self.flow.engine._merge_check_contract = lambda card: "echo {base} && make test"
+        card = self.card()
+        mapping = self.run_plan(card, count=2, blocked=True)
+        self.assertTrue(wait_until(lambda: self.checks(card), timeout=60), self.events(card))
+        check = self.checks(card)[0]
+        self.assertTrue(check["unavailable"])
+        self.assertNotIn("command", check)
+        self.assertEqual((check["source"], check["reason"]), ("contract", "contract-not-single"))
+        self.assertTrue(wait_until(lambda: [d["id"] for d in self.problems(card)]
+                                   == [f"merge-check-unavailable:{check['check']}"], timeout=10), self.flow_view(card))
+        self.finish(card, check["check"], 0)        # wynik niedostępnej próby niczego nie otwiera
+        self.settle()
+        self.assertEqual(len(self.merges(card)), 1)
+        self.assertFalse(self.ticket_starts(card, mapping["#3"]))
+        self.assertFalse([s for s in self.of(card, "step.started") if s.get("kind") == "close"])
+        # Ponowienie po poprawce kontraktu wybiera polecenie od nowa.
+        self.flow.engine._merge_check_contract = lambda card: "make test-changed BASE={base}"
+        reply = self.retry(card, check["ticket"], check["check"])
+        again = self.checks(card)[-1]
+        self.assertEqual(reply["check"], f"{check['ticket']}:2")
+        self.assertEqual((again["command"], again["source"]),
+                         (f"make test-changed BASE={check['start']}", "contract"))
+        self.assertFalse(os.path.exists(self.make_marker))
 
     def test_restart_between_merge_result_and_check_adds_exactly_one_check(self):
         self.commit_files(self.repo, {"Makefile": CHANGED_MK})
@@ -343,9 +425,10 @@ class MergeCheckFlowTest(FlowInProcess):
         crash = mock.patch.object(engine, "_append_merge_check", side_effect=RuntimeError("awaria przed zapisem"))
         crash.start()
         mapping = self.run_plan(card, count=2, blocked=True)
-        self.assertTrue(wait_until(lambda: len(self.merges(card)) == 2, timeout=60), self.events(card))
+        self.assertTrue(wait_until(lambda: len(self.merges(card)) == 1, timeout=60), self.events(card))
         self.settle()
         self.assertFalse(self.checks(card))
+        self.assertEqual(len(self.merges(card)), 1, "niezapisana próba nie przepuszcza kolejnego scalenia")
         self.assertFalse(self.ticket_starts(card, mapping["#3"]), "niezapisana próba nie przepuszcza karty")
         crash.stop()
         self.restart()
@@ -354,8 +437,14 @@ class MergeCheckFlowTest(FlowInProcess):
         self.restart()
         self.settle()
         self.assertEqual(len(self.checks(card)), 1, "restart nie dubluje próby")
+        self.assertEqual(self.checks(card)[0]["ticket"], self.merges(card)[0]["key"])
+        self.assertEqual(len(self.merges(card)), 1, "zamknięta bramka zostaje zamknięta po restarcie")
         self.assertFalse(self.ticket_starts(card, mapping["#3"]), "zamknięta bramka zostaje zamknięta po restarcie")
         self.finish(card, self.checks(card)[0]["check"], 0)
+        self.assertTrue(wait_until(lambda: len(self.checks(card)) == 2, timeout=60), self.events(card))
+        self.settle(1.0)
+        self.assertFalse(self.ticket_starts(card, mapping["#3"]), "próba drugiego scalenia znowu trzyma bramkę")
+        self.finish(card, self.checks(card)[1]["check"], 0)
         self.assertTrue(wait_until(lambda: self.ticket_starts(card, mapping["#3"]), timeout=20), self.events(card))
 
     def test_now_card_merge_is_fast_forward_and_closes(self):

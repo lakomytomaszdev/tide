@@ -781,7 +781,12 @@ def _merge_check(entry: dict) -> dict:
     porażki dokłada PT-320."""
     requested, finished = entry["requested"], entry["finished"] or {}
     ticket, check = entry["ticket"], entry["check"]
-    if entry["status"] == mergecheck.UNAVAILABLE:
+    if entry["status"] == mergecheck.UNAVAILABLE and requested.get("reason") == mergecheck.CONTRACT_NOT_SINGLE:
+        happened = (f"Po scaleniu {ticket} do gałęzi karty polecenie `tests.changed` z kontraktu testów projektu nie "
+                    "jest pojedynczym poleceniem (łańcuch, podpowłoka albo powłoka), więc Tide go nie użyje.")
+        effect = ("Tide jeszcze raz wybierze polecenie na bieżącym wierzchołku gałęzi karty (np. po poprawieniu "
+                  "kontraktu testów) i założy nową próbę.")
+    elif entry["status"] == mergecheck.UNAVAILABLE:
         happened = (f"Po scaleniu {ticket} do gałęzi karty Tide nie znalazł polecenia testów zmian: brak kontraktu "
                     "testów projektu i celów `test-changed` oraz `test` w Makefile gałęzi karty.")
         effect = ("Tide jeszcze raz wybierze polecenie na bieżącym wierzchołku gałęzi karty (np. po dodaniu "
@@ -793,7 +798,8 @@ def _merge_check(entry: dict) -> dict:
     options = [_option("retry-merge-check", "Ponów próbę", effect, RESOLVE_STEP,
                        {"choice": "retry-merge-check", "ticket": ticket, "check": check}, recommended=True)]
     technical = {"problem": entry["status"], "check": check,
-                 **{key: requested.get(key) for key in ("start", "before", "after", "command", "source", "fallback")
+                 **{key: requested.get(key) for key in ("start", "before", "after", "command", "source", "fallback",
+                                                        "reason")
                     if key in requested},
                  **({"exit": finished.get("exit"), "log": finished.get("log") or ""} if finished else {})}
     return {"id": f"{entry['status']}:{check}", "step": "", "stepKind": "", "ticket": ticket, "executor": "",

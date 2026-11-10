@@ -6187,7 +6187,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         start = ticket_of(st, ticket)["base"]
         after = merged.get("commit") or ""
         before = self._merge_before(repo, merged, intent)
-        if start and before and (before == start or self._plan_only(repo, st, card, start, before)):
+        # Ścisła reguła punktu 1 kartki: tylko `before == start` jest „fast-forward”. Wyjątku dla commitów samych
+        # plików planu nie ma (review PT-318 r1, MAJOR-2) — wymagałby osobnego zatwierdzenia zakresu.
+        if start and before and before == start:
             return None
         return self._append_merge_check(card, st, repo, ticket, start=start, before=before, after=after,
                                         merge_seq=merged.get("seq"), retry_of="")
@@ -6202,20 +6204,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if len(found) == 3 and found[2] == intent.get("expectedTip"):
                 return found[1]
         return intent.get("cardTip") or ""
-
-    def _plan_only(self, repo: str, st: FlowState, card: str, start: str, before: str) -> bool:
-        """Między punktem startu ticketu a `before` zmieniły się wyłącznie pliki planu karty zapisywane przez Tide
-        (`_plan_files`: plan, kartki ticketów `<karta>-flow/`, szkice `followups/`). Takie commity nie wnoszą kodu
-        innego ticketu, więc scalenie liczy się jak „fast-forward” — inaczej każdy commit stanu planu po starcie
-        ticketu zakładałby próbę."""
-        plan_file = (st.plan_approved or {}).get("planFile") or ""
-        if not plan_file:
-            return False
-        plans = os.path.dirname(plan_file)
-        prefixes = (f"{plans}/followups/", f"{plans.replace('/plans', '/tickets')}/{card.lower()}-flow/")
-        changed = self.git.run(repo, "diff", "--name-only", "-z", "--no-renames", start, before)
-        names = [name for name in changed.out.split("\0") if name] if changed.ok else []
-        return bool(names) and all(name == plan_file or name.startswith(prefixes) for name in names)
 
     def _merge_check_targets(self, repo: str, commit: str) -> set:
         """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""
@@ -6257,7 +6245,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         check = mergecheck.next_check(st, ticket)
         chosen = mergecheck.select_command(self._merge_check_contract(card),
                                            self._merge_check_targets(repo, after), start)
-        if not chosen:
+        if not chosen.get("command"):
+            # Brak polecenia albo kontrakt, który nie jest pojedynczym poleceniem: próba niedostępna (bez `command`),
+            # której żaden wynik nie otwiera — wyjście tylko przez ponowienie po poprawce albo akceptację (PT-320).
+            if chosen.get("reason"):
+                return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                           before=before, after=after, unavailable=True, source=chosen["source"],
+                                           reason=chosen["reason"], mergeSeq=merge_seq, retryOf=retry_of)
             return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
                                        before=before, after=after, unavailable=True, mergeSeq=merge_seq,
                                        retryOf=retry_of)
