@@ -19,7 +19,8 @@ kontrakt testów projektu `tests.changed` (`{base}` → start, źródło `contra
 gałęzi karty czytane z gita bez uruchamiania `make` (`test-changed` → `make test-changed BASE=<start>`, sam `test`
 → `make test` z `fallback: "full"`), a bez nich — próba niedostępna. Kontrakt, który po podstawieniu nie jest
 pojedynczym poleceniem (łańcuch, podpowłoka, powłoka), daje próbę niedostępną z `reason: "contract-not-single"`.
-Próbę zakłada każde scalenie z `before != start`, bez wyjątków dla rodzaju zmienionych plików.
+Próbę zakłada każde scalenie z `before != start`, z jednym wyjątkiem: `start..before` to wyłącznie commity planu
+zapisane przez Tide na tej karcie (`FlowEngine._only_tide_plan_commits`; nie nazwy plików).
 """
 from __future__ import annotations
 

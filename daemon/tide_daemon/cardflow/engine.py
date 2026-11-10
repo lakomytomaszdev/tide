@@ -6187,9 +6187,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         start = ticket_of(st, ticket)["base"]
         after = merged.get("commit") or ""
         before = self._merge_before(repo, merged, intent)
-        # Ścisła reguła punktu 1 kartki: tylko `before == start` jest „fast-forward”. Wyjątku dla commitów samych
-        # plików planu nie ma (review PT-318 r1, MAJOR-2) — wymagałby osobnego zatwierdzenia zakresu.
-        if start and before and before == start:
+        if start and before and (before == start or self._only_tide_plan_commits(repo, st, start, before)):
             return None
         return self._append_merge_check(card, st, repo, ticket, start=start, before=before, after=after,
                                         merge_seq=merged.get("seq"), retry_of="")
@@ -6204,6 +6202,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if len(found) == 3 and found[2] == intent.get("expectedTip"):
                 return found[1]
         return intent.get("cardTip") or ""
+
+    def _only_tide_plan_commits(self, repo: str, st: FlowState, start: str, before: str) -> bool:
+        """`start..before` to wyłącznie commity stanu planu, które Tide sam zrobił na tej karcie (wynik akcji
+        `plan-commit` z polem `commit` w dzienniku), każdy z jednym rodzicem, a `start` jest przodkiem `before`.
+        Tide commituje plan po każdej zmianie stanu ticketu, także po jego starcie, więc bez tego każde scalenie
+        karty z planem byłoby nie-FF. Wyjątek nie patrzy na nazwy plików (review r1, MAJOR-2): commit ręczny, commit
+        innego ticketu, scalenie albo commit planu spoza dziennika tej karty zakłada próbę."""
+        made = {r.get("commit") for (action, _key), r in st.results.items()
+                if action == "plan-commit" and r.get("ok") and r.get("commit") and not r.get("already")}
+        if not made or not self.git.run(repo, "merge-base", "--is-ancestor", start, before).ok:
+            return False
+        listed = self.git.run(repo, "rev-list", "--parents", f"{start}..{before}")
+        rows = [line.split() for line in listed.out.splitlines() if line.strip()] if listed.ok else []
+        return bool(rows) and all(len(row) == 2 and row[0] in made for row in rows)
 
     def _merge_check_targets(self, repo: str, commit: str) -> set:
         """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""

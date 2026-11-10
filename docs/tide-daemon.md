@@ -4998,7 +4998,7 @@ zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuw
 
 **Testy po scaleniu (K-88, PT-318; `cardflow/mergecheck.py`).** Gdy po trwałym `result` scalenia ticketu wierzchołek
 gałęzi karty sprzed scalenia (`before`, pierwszy rodzic commita scalenia) różni się od punktu startu ticketu
-(`start`) — z dowolnego powodu, także przez same commity planu karty — usługa zapisuje `merge.check-requested {ticket, check, start,
+(`start`), usługa zapisuje `merge.check-requested {ticket, check, start,
 before, after, command, source, fallback?}` z `check` = `<ticket>:<n>`. Polecenie to stały napis Tide z bazą = pełny
 SHA `start`: `tests.changed` zatwierdzonego kontraktu testów (`{base}` → `start`, `source: contract`), bez kontraktu
 cele `Makefile`/`mk/*.mk` gałęzi karty czytane z gita bez uruchamiania `make` (`make test-changed BASE=<start>`,
@@ -5012,7 +5012,11 @@ scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticket
 Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
 `<ticket>:<n+1>` na bieżącym wierzchołku z ponownym wyborem polecenia. Stan bramki liczy `fold`; brakującą próbę
 po restarcie (po `result`, przed zapisem próby) usługa dopisuje raz. Scalenia sprzed `merge.check-armed` (karty
-trwające w chwili wdrożenia) prób nie zakładają.
+trwające w chwili wdrożenia) prób nie zakładają. Jedyny wyjątek od `before != start`: gdy `start..before` to wyłącznie
+commity stanu planu, które Tide sam zapisał na tej karcie (SHA z wyniku akcji `plan-commit` w dzienniku, każdy z
+jednym rodzicem, `start` przodkiem `before`) — Tide commituje plan po starcie każdego ticketu, więc bez tego każde
+scalenie karty z planem byłoby nie-FF. Commit ręczny (także samej kartki), commit lub scalenie innego ticketu zakłada
+próbę; nazwy plików nie mają znaczenia.
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
