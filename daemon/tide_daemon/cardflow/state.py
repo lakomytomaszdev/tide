@@ -127,6 +127,7 @@ class FlowState:
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
+    lifted: bool = False                            # PT-313: ostatni ruch to zdjęcie z Backlogu, ruch okna jeszcze nie przyszedł
     rejected: set = field(default_factory=set)
     last_failed_action: str = ""
     # Błędy Tide (PT-147): etap → {event, persisted, repeated}. Teksty pamiętamy w obrębie etapu,
@@ -296,6 +297,7 @@ def fold(events: list[dict]) -> FlowState:
             st.merge_waiting = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
+            st.lifted = False
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
             st.plan_artifact_source = None
             st.imported = None
@@ -716,6 +718,7 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.moved":
             st.store_column = e.get("to") or ""
             st.store_move_id = e.get("moveId") or ""
+            st.lifted = e.get("from") == "backlog" and e.get("to") == "todo"
             # „Do poprawy” to przeniesienie z kolumny wyliczonej (Do sprawdzenia, Czeka na mnie); z Backlogu do Do
             # zrobienia to wznowienie albo kolejka po zleceniu z popupu — karta pokazuje dalej stan z dziennika.
             if e.get("from") not in ("backlog", "todo"):
@@ -724,6 +727,10 @@ def fold(events: list[dict]) -> FlowState:
                     st.closed = None
             if (e.get("to") or "") != "backlog":
                 st.paused = False
+        elif kind == "card.move-ignored":
+            # PT-313: zbędny ruch okna do „Do zrobienia” po zdjęciu z Backlogu; zużywa zdjęcie, nie zmienia stanu.
+            st.store_move_id = e.get("moveId") or st.store_move_id
+            st.lifted = False
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
         elif kind == "ticket.imported":

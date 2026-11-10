@@ -77,3 +77,26 @@ class StartColumnTest(FlowCase):
         self.assertEqual(stored(self, card_id)["column"], "todo")
         # Jedyny ruch w dzienniku to ten ze startu; ruch okna nie dopisuje „do poprawy”.
         self.assertEqual([(e["from"], e["to"]) for e in self.of(card_id, "card.moved")], [("backlog", "todo")])
+
+    def test_manual_move_to_todo_after_the_window_move_is_still_rework(self):
+        # Zdjęcie z Backlogu uzasadnia pominięcie tylko jednego, dublującego ruchu okna; kolejny ruch to „do poprawy”.
+        card_id = self.card(description="ATRAPA: czekaj", column="backlog")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "progress")
+        self.assertTrue(self.call("MoveCard", card_id, "todo", -1)["ok"])
+        wait_until(lambda: self.of(card_id, "card.move-ignored"), timeout=5.0)
+        self.assertEqual([(e["from"], e["to"]) for e in self.of(card_id, "card.moved")], [("backlog", "todo")])
+        self.assertTrue(self.call("MoveCard", card_id, "todo", 0)["ok"])
+        wait_until(lambda: len(self.of(card_id, "card.moved")) == 2, timeout=5.0)
+        self.assertEqual([(e["from"], e["to"]) for e in self.of(card_id, "card.moved")][-1], ("progress", "todo"))
+
+    def test_manual_move_to_todo_of_a_card_started_from_todo_is_rework(self):
+        # Karta wystartowana z „Do zrobienia” (bez zdjęcia z Backlogu): ręczny ruch „W toku” → „Do zrobienia”
+        # zapisuje card.moved z from: progress, jak przed PT-313.
+        card_id = self.card(description="ATRAPA: czekaj", column="todo")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.wait_column(card_id, "progress")
+        self.assertTrue(self.call("MoveCard", card_id, "todo", 0)["ok"])
+        wait_until(lambda: self.of(card_id, "card.moved"), timeout=5.0)
+        self.assertEqual([(e["from"], e["to"]) for e in self.of(card_id, "card.moved")], [("progress", "todo")])
+        self.assertFalse(self.of(card_id, "card.move-ignored"))

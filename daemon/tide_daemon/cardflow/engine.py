@@ -3030,9 +3030,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         if (move_id and st.store_move_id == move_id) or (not move_id and st.store_column == column):
             return
-        if column == st.store_column and shown == "progress":
-            # PT-313: ruch okna do „Do zrobienia” po udanym starcie (start sam zdjął kartę z Backlogu) trafia na kartę,
-            # która stoi tam zapisana i pracuje. To nie „do poprawy”: bez zdarzenia, żeby nie zmienić jej stanu.
+        if st.lifted and column == "todo" and st.store_column == "todo" and shown == "progress":
+            # PT-313: jedyny zbędny ruch okna po starcie, który sam zdjął kartę z Backlogu (zapisane „todo”, widać
+            # „W toku”). Znacznik zużywa zdjęcie i potwierdza ruch, ale nie jest `card.moved`: stan się nie zmienia.
+            # Każdy późniejszy ręczny ruch „W toku” → „Do zrobienia” to „do poprawy”, jak przed PT-313.
+            self.journal.append(card_id, "card.move-ignored", moveId=move_id)
             return
         self.journal.append(card_id, "card.moved", to=column, moveId=move_id,
                             **({"from": shown} if shown else {}))
