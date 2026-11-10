@@ -386,6 +386,36 @@ def journal_outside(requests: list[tuple] | None = None, extra: list[dict] | Non
     return items
 
 
+# --- Odstępstwo przy błędzie domknięcia (K-97, PT-339) ------------------------------------------------------------
+
+CLOSE_REASON = ("Pełny make test nie przeszedł: daemon/tests/test_cardflow_dbus.py i apps/board/tests/test_animations.py "
+                "padły; rozliczenie w podsumowaniu.")
+
+
+def journal_close_error(kind: str = "close", ticket: str = "", attempts: int = 2) -> list[dict]:
+    """Krok `kind` (domyślnie domknięcie karty) kończy się błędem `attempts` razy; Tide ponawia go sam po pierwszym
+    błędzie (`step.retry`). Przy `attempts=1` to pierwszy błąd przed automatycznym ponowieniem."""
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-10T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    add("card.started", "09:00:00", entry="now", executor="Opus", program="claude", provider="anthropic")
+    root = f"K-8-{kind}-1"
+    parent = ""
+    for attempt in range(attempts):
+        name = root if attempt == 0 else f"{root}-{attempt}"
+        add("step.started", f"1{attempt}:00:00", step=name, ticket=ticket, kind=kind, executor="Opus",
+            provider="anthropic", model="opus", attempt=attempt, parentStep=parent, stepDir=f"/wt/{name}.step",
+            worktree="/wt/k-8", branch="card/k-8")
+        add("step.finished", f"1{attempt}:30:00", step=name, ticket=ticket, result="error", reason=CLOSE_REASON)
+        if attempt + 1 < attempts:
+            add("step.retry", f"1{attempt}:30:01", step=name, ticket=ticket)
+        parent = name
+    return items
+
+
 def scenario_f(data: dict, items: list[dict] | None = None) -> dict:
     """Kopia danych podglądu z decyzjami scenariusza F w karcie K-8 (albo z podanymi `items`)."""
     data = json.loads(json.dumps(data))
