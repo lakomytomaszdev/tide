@@ -93,6 +93,34 @@ def plan_state_only(old: str, new: str) -> bool:
     return before is not None and after is not None and before[1] == after[1] and before[3] == after[3]
 
 
+def _interpreter_file_or_module(name: str, args: list[str]) -> bool:
+    """Dopuszczamy skrypt albo moduł Pythona, nie kod w argumencie ani wejście standardowe.
+
+    Rozpoznajemy tylko jawny podzbiór opcji Pythona. Ich wartości nie są nazwami skryptów: po `-W ignore`
+    i `-X dev` nadal sprawdzamy następne opcje. Nieznane opcje, klastry i postaci `--opcja=…` odrzucamy
+    zachowawczo; pozostałe interpretery obsługujemy wyłącznie jako `program plik argumenty`.
+    """
+    python = re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", name) is not None
+    at = 0
+    while at < len(args):
+        arg = args[at]
+        if arg and not arg.startswith("-"):
+            return True  # Reszta należy do skryptu, a nie do interpretera.
+        if not python:
+            return False
+        if arg in ("-m", "--"):
+            return at + 1 < len(args) and bool(args[at + 1]) and not args[at + 1].startswith("-")
+        if arg in ("-W", "-X"):
+            if at + 1 >= len(args) or not args[at + 1] or args[at + 1].startswith("-"):
+                return False
+            at += 2
+        elif arg in ("-B", "-E", "-I", "-s", "-S", "-u"):
+            at += 1
+        else:
+            return False
+    return False
+
+
 def single_command(command: str) -> bool:
     """Jedno polecenie bez łańcucha (`;`, `&&`, `|`, przekierowań), podpowłoki (`$(…)`, `` ` ``, `( … )`), powłoki
     (`sh -c`, `bash`, także wskazanej ścieżką: `/bin/sh`, `/usr/bin/env`), `env`/`sudo` i zmiennych zmieniających
@@ -107,14 +135,9 @@ def single_command(command: str) -> bool:
     name = argv[0].rsplit("/", 1)[-1]
     if not name or name in _LAUNCHERS:
         return False
-    # Interpreter z kodem w argumencie (`python3 -c '…os.system("a && b")'`, `node -e …`) to też łańcuch
-    # w przebraniu. Sprawdzamy tylko opcje interpretera — do skryptu albo `-m moduł` (`python3 -m pytest -p …` zostaje).
+    # Opcje wykonujące kod (także klastry i `--eval=…`) nie mogą ukrywać łańcucha w cytowanym argumencie.
     if name.startswith(_INTERPRETERS):
-        for arg in argv[1:]:
-            if arg == "-m" or not arg.startswith("-") or arg == "--":
-                break
-            if arg in ("-e", "-E", "--eval", "-p", "--print") or (not arg.startswith("--") and "c" in arg[1:]):
-                return False
+        return _interpreter_file_or_module(name, argv[1:])
     return True
 
 
