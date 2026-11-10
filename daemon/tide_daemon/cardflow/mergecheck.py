@@ -18,9 +18,11 @@ Polecenie jest stałym napisem Tide (bez łańcucha poleceń), z bazą = pełny 
 kontrakt testów projektu `tests.changed` (`{base}` → start, źródło `contract`), bez kontraktu cele `Makefile`
 gałęzi karty czytane z gita bez uruchamiania `make` (`test-changed` → `make test-changed BASE=<start>`, sam `test`
 → `make test` z `fallback: "full"`), a bez nich — próba niedostępna. Kontrakt, który po podstawieniu nie jest
-pojedynczym poleceniem (łańcuch, podpowłoka, powłoka), daje próbę niedostępną z `reason: "contract-not-single"`.
+pojedynczym poleceniem (łańcuch, podpowłoka, powłoka — także wskazana ścieżką), daje próbę niedostępną z
+`reason: "contract-not-single"`.
 Próbę zakłada każde scalenie z `before != start`, z jednym wyjątkiem: `start..before` to wyłącznie commity planu
-zapisane przez Tide na tej karcie (`FlowEngine._only_tide_plan_commits`; nie nazwy plików).
+zapisane przez Tide na tej karcie, z których każdy zmienia tylko nagłówek i tabelę stanu w pliku planu
+(`FlowEngine._only_tide_plan_commits`, `plan_state_only`; ręczny tekst albo dopisek kartki → próba).
 """
 from __future__ import annotations
 
@@ -53,12 +55,67 @@ def make_targets(texts) -> set[str]:
     return targets
 
 
+# Programy, które same uruchamiają inne polecenia (powłoki, przełączniki uruchamiania) — odrzucane po nazwie
+# pliku także wtedy, gdy kontrakt wskazuje je ścieżką (`/bin/sh -c …`, `/usr/bin/env sh -c …`; review r2, MAJOR-1).
+_LAUNCHERS = frozenset({
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "pdksh", "ash", "csh", "tcsh", "yash", "busybox", "toybox",
+    "eval", "exec", "env", "command", "builtin", "sudo", "doas", "su", "nohup", "setsid", "nice", "ionice",
+    "timeout", "stdbuf", "xargs", "chroot", "unshare", "nsenter", "runuser", "script", "flock",
+    "awk", "gawk", "mawk", "nawk",
+})
+_INTERPRETERS = ("python", "perl", "ruby", "node", "php", "lua", "tclsh")
+
+
+def _plan_parts(text: str):
+    """Plan Tide rozbity na (nagłówek, tekst przed tabelą, tabela, tekst po tabeli) albo None, gdy plik nie ma
+    nagłówka `---` i tabeli `| Ticket |` (ta sama budowa co `FlowEngine._plan_extra`)."""
+    lines = str(text or "").splitlines()
+    if len(lines) < 2 or lines[0].strip() != "---":
+        return None
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        return None
+    body = lines[end + 1:]
+    start = next((i for i, line in enumerate(body) if line.startswith("| Ticket |")), None)
+    if start is None:
+        return None
+    stop = start
+    while stop < len(body) and body[stop].startswith("|"):
+        stop += 1
+    return lines[:end + 1], body[:start], body[start:stop], body[stop:]
+
+
+def plan_state_only(old: str, new: str) -> bool:
+    """Commit planu zmienia tylko nagłówek i tabelę ticketów — części, które Tide generuje w całości ze stanu karty.
+    Tekst przed tabelą i po niej (ręczny, zachowywany przez `_plan_files`) musi być identyczny."""
+    before, after = _plan_parts(old), _plan_parts(new)
+    return before is not None and after is not None and before[1] == after[1] and before[3] == after[3]
+
+
 def single_command(command: str) -> bool:
     """Jedno polecenie bez łańcucha (`;`, `&&`, `|`, przekierowań), podpowłoki (`$(…)`, `` ` ``, `( … )`), powłoki
-    (`sh -c`, `bash`), `env`/`sudo` i zmiennych zmieniających uruchamianie (`PATH=`, `LD_*`) — to samo kryterium co
-    polecenie w kolejce poza piaskownicą (`board.commands.outside_argv`, bez skryptów z worktree)."""
+    (`sh -c`, `bash`, także wskazanej ścieżką: `/bin/sh`, `/usr/bin/env`), `env`/`sudo` i zmiennych zmieniających
+    uruchamianie (`PATH=`, `LD_*`) — kryterium polecenia w kolejce poza piaskownicą (`board.commands.outside_argv`,
+    bez skryptów z worktree), zaostrzone o nazwę pliku programu. Samej kolejki outside to nie zmienia."""
     from ..board.commands import OUTSIDE_MAX, outside_argv
-    return bool(command) and len(command) <= OUTSIDE_MAX and outside_argv(command) is not None
+    if not command or len(command) > OUTSIDE_MAX:
+        return False
+    argv = outside_argv(command)
+    if not argv:
+        return False
+    name = argv[0].rsplit("/", 1)[-1]
+    if not name or name in _LAUNCHERS:
+        return False
+    # Interpreter z kodem w argumencie (`python3 -c '…os.system("a && b")'`, `node -e …`) to też łańcuch
+    # w przebraniu. Sprawdzamy tylko opcje interpretera — do skryptu albo `-m moduł` (`python3 -m pytest -p …` zostaje).
+    if name.startswith(_INTERPRETERS):
+        for arg in argv[1:]:
+            if arg == "-m" or not arg.startswith("-") or arg == "--":
+                break
+            if arg in ("-e", "-E", "--eval", "-p", "--print") or (not arg.startswith("--") and "c" in arg[1:]):
+                return False
+    return True
 
 
 def select_command(contract_changed: str, targets, start: str) -> dict:

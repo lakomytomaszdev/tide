@@ -6208,14 +6208,32 @@ class FlowEngine(CaretakerChat, PlanEditing):
         `plan-commit` z polem `commit` w dzienniku), każdy z jednym rodzicem, a `start` jest przodkiem `before`.
         Tide commituje plan po każdej zmianie stanu ticketu, także po jego starcie, więc bez tego każde scalenie
         karty z planem byłoby nie-FF. Wyjątek nie patrzy na nazwy plików (review r1, MAJOR-2): commit ręczny, commit
-        innego ticketu, scalenie albo commit planu spoza dziennika tej karty zakłada próbę."""
+        innego ticketu, scalenie albo commit planu spoza dziennika tej karty zakłada próbę.
+
+        Samo pochodzenie SHA nie wystarcza (review r2, MAJOR-2): `commit_plan` zapisuje też ręczny tekst planu poza
+        tabelą i dopiski kartek przejęte z worktree karty. Każdy taki commit musi więc dowodzić samej automatycznej
+        aktualizacji stanu: zmienia wyłącznie plik planu (`planFile` zatwierdzonego planu), a tekst poza nagłówkiem
+        i tabelą ticketów — oba w całości generowane przez Tide — jest identyczny z rodzicem
+        (`mergecheck.plan_state_only`). Brak takiego dowodu (kartka, szkic, ręczny tekst, nieczytelny plik) → próba."""
         made = {r.get("commit") for (action, _key), r in st.results.items()
                 if action == "plan-commit" and r.get("ok") and r.get("commit") and not r.get("already")}
-        if not made or not self.git.run(repo, "merge-base", "--is-ancestor", start, before).ok:
+        plan_file = str((getattr(st, "plan_approved", None) or {}).get("planFile") or "")
+        if not made or not plan_file or not self.git.run(repo, "merge-base", "--is-ancestor", start, before).ok:
             return False
         listed = self.git.run(repo, "rev-list", "--parents", f"{start}..{before}")
         rows = [line.split() for line in listed.out.splitlines() if line.strip()] if listed.ok else []
-        return bool(rows) and all(len(row) == 2 and row[0] in made for row in rows)
+        if not rows or not all(len(row) == 2 and row[0] in made for row in rows):
+            return False
+        for commit, parent in rows:
+            touched = self.git.run(repo, "diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames",
+                                   parent, commit)
+            if not touched.ok or touched.out.splitlines() != [plan_file]:
+                return False
+            old = self.git.run(repo, "show", f"{parent}:{plan_file}")
+            new = self.git.run(repo, "show", f"{commit}:{plan_file}")
+            if not old.ok or not new.ok or not mergecheck.plan_state_only(old.out, new.out):
+                return False
+        return True
 
     def _merge_check_targets(self, repo: str, commit: str) -> set:
         """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""

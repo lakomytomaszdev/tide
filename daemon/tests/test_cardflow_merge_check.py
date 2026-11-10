@@ -72,7 +72,13 @@ class SelectCommandTest(unittest.TestCase):
                          "make test-changed BASE=`git rev-parse HEAD`", "(make test-changed BASE={base})",
                          "bash -c 'make test-changed BASE={base}'", "sh -c 'make test'",
                          "env X=1 make test", "PATH=/tmp make test", "make test > out.log",
-                         "make test-changed BASE={base}\nmake test"):
+                         "make test-changed BASE={base}\nmake test",
+                         # Review r2, MAJOR-1: powłoka i przełączniki wskazane ścieżką.
+                         "/bin/sh -c 'echo {base} && make test'", "/bin/bash -c 'make test-changed BASE={base}'",
+                         "/usr/bin/env sh -c 'echo {base} && make test'", "/usr/bin/env make test",
+                         "./sh -c 'make test'", "/usr/bin/sudo make test", "/usr/bin/timeout 60 sh -c 'make test'",
+                         "LC_ALL=C /bin/dash -c 'make test'", "python3 -c 'import os; os.system(\"a && b\")'",
+                         "/usr/bin/python3 -Sc 'print(1)'", "node -e 'x'", "awk 'BEGIN{system(\"make test\")}'"):
             with self.subTest(contract=contract):
                 chosen = mergecheck.select_command(contract, {"test-changed", "test"}, START)
                 self.assertNotIn("command", chosen)
@@ -81,7 +87,12 @@ class SelectCommandTest(unittest.TestCase):
     def test_single_contract_command_with_quoted_operators_and_variables_is_accepted(self):
         for contract, command in (("make test-changed BASE={base} JOBS=4", f"make test-changed BASE={START} JOBS=4"),
                                   ("LC_ALL=C.UTF-8 pytest -k 'a or b' --base {base}",
-                                   f"LC_ALL=C.UTF-8 pytest -k 'a or b' --base {START}")):
+                                   f"LC_ALL=C.UTF-8 pytest -k 'a or b' --base {START}"),
+                                  ("/usr/bin/make test-changed BASE={base}", f"/usr/bin/make test-changed BASE={START}"),
+                                  ("/usr/bin/python3 -m pytest -p no:cacheprovider --base {base}",
+                                   f"/usr/bin/python3 -m pytest -p no:cacheprovider --base {START}"),
+                                  ("python3 tools/test_runner.py -c fast --base {base}",
+                                   f"python3 tools/test_runner.py -c fast --base {START}")):
             with self.subTest(contract=contract):
                 self.assertEqual(mergecheck.select_command(contract, set(), START),
                                  {"command": command, "source": "contract"})
@@ -144,36 +155,62 @@ class MergeCheckPlanCommitsTest(MergeCheckGitTargetsTest):
     które Tide zapisał na tej karcie (wynik `plan-commit` w dzienniku). Nazwy plików niczego nie przesądzają."""
 
     PLAN = "docs/agents/plans/plan.md"
+    CARD = "docs/agents/tickets/k-1-flow/pt-1.md"
+
+    @staticmethod
+    def plan(state, before="Opis planu.", after=""):
+        text = f"---\ntide-plan: 1\nstatus: active\nupdated: {state}\n---\n\n{before}\n\n" \
+               "| Ticket | Tytuł | Stan |\n| --- | --- | --- |\n" f"| PT-1 | A | {state} |\n"
+        return text + (f"\n{after}\n" if after else "")
 
     def setUp(self):
         super().setUp()
         os.makedirs(os.path.join(self.repo, "docs", "agents", "plans"))
-        self.start = self.commit({"Makefile": FULL_MK})
+        os.makedirs(os.path.join(self.repo, "docs", "agents", "tickets", "k-1-flow"))
+        self.start = self.commit({"Makefile": FULL_MK, self.PLAN: self.plan("todo"), self.CARD: "# PT-1\n"})
 
-    def only_plan(self, before, *recorded, start=None, already=False):
+    def only_plan(self, before, *recorded, start=None, already=False, plan_file=PLAN):
         results = {("plan-commit", str(n)): {"ok": True, "commit": sha, **({"already": True} if already else {})}
                    for n, sha in enumerate(recorded)}
         results[("merge", "PT-1")] = {"ok": True, "commit": before}
-        return FlowEngine._only_tide_plan_commits(self.engine, self.repo, SimpleNamespace(results=results),
-                                                  start or self.start, before)
+        st = SimpleNamespace(results=results, plan_approved={"planFile": plan_file})
+        return FlowEngine._only_tide_plan_commits(self.engine, self.repo, st, start or self.start, before)
 
     def test_only_recorded_tide_plan_commits_count_as_fast_forward(self):
-        first = self.commit({self.PLAN: "stan 1\n"})
-        second = self.commit({self.PLAN: "stan 2\n"})
+        first = self.commit({self.PLAN: self.plan("w-toku")})
+        second = self.commit({self.PLAN: self.plan("review")})
         self.assertTrue(self.only_plan(second, first, second))
         self.assertFalse(self.only_plan(second, second), "jeden z commitów spoza dziennika karty")
         self.assertFalse(self.only_plan(second), "bez wyników plan-commit")
         self.assertFalse(self.only_plan(second, first, second, already=True),
                          "`already` to istniejący wierzchołek, nie commit Tide")
         self.assertFalse(self.only_plan(self.start, self.start), "pusty zakres to nie wyjątek, tylko FF")
+        self.assertFalse(self.only_plan(second, first, second, plan_file=""), "bez pliku planu nie ma dowodu")
+        self.assertFalse(self.only_plan(second, first, second, plan_file="docs/agents/plans/inny.md"))
 
     def test_manual_change_of_plan_files_requests_a_check(self):
-        tide = self.commit({self.PLAN: "stan 1\n"})
+        tide = self.commit({self.PLAN: self.plan("w-toku")})
         manual = self.commit({self.PLAN: "ręczna zmiana kartki\n"})
         self.assertFalse(self.only_plan(manual, tide))
 
+    def test_recorded_plan_commit_carrying_manual_text_requests_a_check(self):
+        """Review r2, MAJOR-2: commit Tide przejmuje ręczny tekst planu i dopiski kartek z worktree karty — sam SHA
+        z `plan-commit` nie dowodzi automatycznej aktualizacji stanu."""
+        cases = {"tekst po tabeli": {self.PLAN: self.plan("w-toku", after="Ręczny dopisek koordynatora.")},
+                 "tekst przed tabelą": {self.PLAN: self.plan("w-toku", before="Opis planu.\n\nRęczna uwaga.")},
+                 "dopisek kartki": {self.PLAN: self.plan("w-toku"), self.CARD: "# PT-1\n\nRęczny dopisek.\n"},
+                 "sama kartka": {self.CARD: "# PT-1\n\nRęczny dopisek.\n"},
+                 "plan bez tabeli": {self.PLAN: "---\nstatus: active\n---\n\nTabela zniknęła.\n"}}
+        for name, files in cases.items():
+            with self.subTest(name):
+                self.run_git("checkout", "-q", "--detach", self.start)
+                tide = self.commit({self.PLAN: self.plan("w-toku")})
+                carrying = self.commit(files)
+                self.assertFalse(self.only_plan(carrying, tide, carrying))
+                self.assertFalse(self.only_plan(carrying, carrying, start=tide))
+
     def test_merge_of_another_ticket_or_foreign_start_requests_a_check(self):
-        tide = self.commit({self.PLAN: "stan 1\n"})
+        tide = self.commit({self.PLAN: self.plan("w-toku")})
         self.run_git("checkout", "-qb", "ticket", self.start)
         other = self.commit({"a.txt": "kod innego ticketu\n"})
         self.run_git("checkout", "-q", "-")
@@ -457,6 +494,40 @@ class MergeCheckFlowTest(FlowInProcess):
         self.assertEqual((again["command"], again["source"]),
                          (f"make test-changed BASE={check['start']}", "contract"))
         self.assertFalse(os.path.exists(self.make_marker))
+
+    def test_manual_ticket_card_note_taken_by_tide_plan_commit_requests_a_check(self):
+        """Review r2, MAJOR-2: po starcie ticketów ktoś dopisuje treść do kartki w worktree karty, bez commita.
+        Następny zapis planu przez Tide przejmuje dopisek swoim commitem `plan-commit`. Pierwsze scalenie ma wtedy
+        w `start..before` wyłącznie zapisane commity planu Tide, ale jeden z nich niesie ręczną treść — próba."""
+        self.commit_files(self.repo, {"Makefile": CHANGED_MK})
+        card = self.card()
+        mapping = self.run_plan(card, count=2, blocked=True)
+        tickets = [mapping["#1"], mapping["#2"]]
+        self.assertTrue(wait_until(lambda: {r.get("ticket") for r in self.results(card, "ticket-branch")
+                                            if r.get("ok")} >= set(tickets), timeout=30), self.events(card))
+        worktree = ticket_of(self.state(card), tickets[1])["cardWorktree"]
+        found = [os.path.join(root, name) for root, _dirs, names in os.walk(os.path.join(worktree, "docs"))
+                 for name in names if root.endswith("-flow") and name == f"{tickets[1].lower()}.md"]
+        self.assertEqual(len(found), 1, found)
+        note = "\nRęczny dopisek po starcie ticketów (bez commita).\n"
+        with open(found[0], "a", encoding="utf-8") as fh:
+            fh.write(note)
+        self.assertTrue(wait_until(lambda: self.merges(card), timeout=60), self.events(card))
+        first = self.merges(card)[0]
+        start = next(r["base"] for r in self.results(card, "ticket-branch") if r.get("ticket") == first["key"])
+        before = git(self.repo, "rev-parse", f"{first['commit']}^1").strip()
+        rel = os.path.relpath(found[0], worktree)
+        self.assertIn(note.strip(), git(self.repo, "show", f"{before}:{rel}"), "dopisek przejęty przed scaleniem")
+        made = {r.get("commit") for r in self.results(card, "plan-commit") if r.get("ok") and not r.get("already")}
+        between = git(self.repo, "rev-list", f"{start}..{before}").split()
+        self.assertTrue(between and set(between) <= made, (between, made))
+        self.assertTrue(wait_until(lambda: any(c["ticket"] == first["key"] for c in self.checks(card)), timeout=10),
+                        self.events(card))
+        check = next(c for c in self.checks(card) if c["ticket"] == first["key"])
+        self.assertEqual((check["check"], check["start"], check["before"], check["command"]),
+                         (f"{first['key']}:1", start, before, f"make test-changed BASE={start}"))
+        self.settle()
+        self.assertFalse(self.ticket_starts(card, mapping["#3"]), "bramka zamknięta")
 
     def test_restart_between_merge_result_and_check_adds_exactly_one_check(self):
         self.commit_files(self.repo, {"Makefile": CHANGED_MK})
