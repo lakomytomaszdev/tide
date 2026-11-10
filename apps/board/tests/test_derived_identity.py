@@ -67,7 +67,7 @@ out["fieldDelegates"] = counter() - before
 out["fieldLanesChanged"] = hits("lanes")
 out["rowsAlive"] = rowsKept()
 out["title"] = js("page.cards.find(c => c.id === '%s').title" % snap["cards"][0]["id"])
-# ta sama kolejność kart po przemieszaniu innego wiersza nie dotyka reszty; nowy projekt dokłada wiersz
+# nowy projekt dokłada wiersz, a pozostałe wiersze i ich delegaty zostają
 extra = json.loads(json.dumps(snap["cards"][0]))
 extra.update(id="K-9999", title="nowy projekt", project="zzz-nowy", projectName="Zzz nowy")
 snap["cards"].append(extra)
@@ -102,6 +102,38 @@ out["rowsAliveAfterRemove"] = rowsKept()
         self.assertTrue(out["removedGone"])
         self.assertTrue(out["rowsAliveAfterRemove"])
 
+    def test_lane_rename_moves_row_and_keeps_delegate(self):
+        out = self.probe(SPIES + """
+js("page.layoutMode = 'lanes'")
+wait(300)
+snap = json.loads(backend.snapshotJson)
+keys = js("page.lanes.map(l => l.key)")
+first = next(c["project"] for c in snap["cards"] if c.get("project"))
+engine.rootContext().setContextProperty("lanesFlick", obj("boardLanes"))
+rowItems = "lanesFlick.contentItem.children[0].children.filter(c => String(c.objectName).indexOf('boardLane-') === 0)"
+rowOf = "(" + rowItems + ").find(c => c.objectName === 'boardLane-" + first + "')"
+engine.rootContext().setContextProperty("firstRow", js(rowOf))
+out["keys"] = keys
+out["first"] = first
+before = counter()
+for c in snap["cards"]:
+    if c.get("project") == first:
+        c["projectName"] = "Zzz przemianowany"
+set_snapshot(snap)
+wait(200)
+out["delegates"] = counter() - before
+out["afterKeys"] = js("page.lanes.map(l => l.key)")
+out["afterNames"] = js("page.lanes.map(l => l.name)")
+out["sameRow"] = js("firstRow === " + rowOf)
+out["rowName"] = js("firstRow.laneName")
+""")
+        self.assertIn(out["first"], out["keys"])
+        self.assertEqual(sorted(out["afterKeys"]), sorted(out["keys"]))
+        self.assertIn("Zzz przemianowany", out["afterNames"])
+        self.assertEqual(out["delegates"], 0, "zmiana nazwy projektu nie tworzy delegatów BoardCard")
+        self.assertTrue(out["sameRow"], "delegat wiersza żyje po zmianie nazwy i przesunięciu")
+        self.assertEqual(out["rowName"], "Zzz przemianowany")
+
     def test_lanes_follow_filters_and_return_to_together(self):
         out = self.probe(SPIES + """
 js("page.layoutMode = 'lanes'")
@@ -129,7 +161,7 @@ out["togetherCards"] = js("page.cards.length")
 js("page.layoutMode = 'lanes'")
 wait(200)
 out["back"] = js("page.lanes.map(l => l.key + ':' + l.cards.length)")
-""" % ([]))
+""")
         self.assertEqual(out["tagCards"], ["K-12", "K-7"])
         self.assertEqual(sum(int(x.split(":")[1]) for x in out["tag"]), 2)
         self.assertEqual(out["restored"], out["all"])
@@ -253,7 +285,11 @@ out["snapColumn"] = next(c for c in snap["cards"] if c["id"] == "K-15").get("boa
         self.assertGreaterEqual(out["changed"], 1)
         self.assertEqual(out["optimisticColumn"], "todo")
         self.assertEqual(out["optimisticCleared"], 0)
-        self.assertEqual(out["afterColumn"], out["snapColumn"] or out["afterColumn"])
+        # Optimistic zdjęte: kolumna wraca do tej z migawki, a gdy migawka jej nie podaje, nie zostaje „todo” z optimistic.
+        if out["snapColumn"]:
+            self.assertEqual(out["afterColumn"], out["snapColumn"])
+        else:
+            self.assertNotEqual(out["afterColumn"], "todo")
 
 
 class BackendParseOnceTest(unittest.TestCase):
