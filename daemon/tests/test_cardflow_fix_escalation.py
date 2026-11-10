@@ -3,6 +3,8 @@
 PT-261 i PT-277: od 3. rundy poprawki pisał recenzent i sam je potem oceniał. Testy budują dziennik karty
 i wołają `_fix` z przechwyconym `_launch`; wykonawcy pochodzą z domyślnego katalogu."""
 import json
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 
@@ -31,7 +33,9 @@ class _Journal:
         return fold(self.events)
 
 
-class FixExecutorTest(unittest.TestCase):
+class _FixJournal(unittest.TestCase):
+    """Dziennik karty w pamięci i silnik z przechwyconym `_launch` (bez scenariuszy)."""
+
     def setUp(self):
         self.events = []
         self.launched = []
@@ -99,7 +103,13 @@ class FixExecutorTest(unittest.TestCase):
         assigned, previous = self.engine._reviewer_context(self.engine.journal.state(CARD), TICKET)
         return previous.get("executor") or assigned.get("reviewer")
 
-    # --- scenariusze -----------------------------------------------------------------------------
+    def reassign_reviewer(self, name):
+        e = EXECUTORS[name]
+        self.add("reviewer.reassigned", ticket=TICKET, reviewer=name, reviewerProgram=e.program,
+                 reviewerModel=e.model, reviewerProvider=e.provider)
+
+
+class FixExecutorTest(_FixJournal):
 
     def test_strong_ticket_round_three_fix_stays_with_the_author_not_the_reviewer(self):
         # Odtworzenie PT-261/PT-277: autor Opus, recenzent Codex Astra, klasa mocny.
@@ -209,15 +219,91 @@ class FixExecutorTest(unittest.TestCase):
                 self.assertNotEqual(name, self.next_reviewer())
 
 
-class ResumeReasonTest(unittest.TestCase):
-    def test_resumed_fix_keeps_its_reason_and_a_new_executor_is_an_override(self):
-        reason = engine_mod.FlowEngine._resumed_fix_reason
-        self.assertEqual(reason({"kind": "fix", "executorReason": "escalated"}, False), "escalated")
-        self.assertEqual(reason({"kind": "fix", "executorReason": "author"}, False), "author")
-        self.assertEqual(reason({"kind": "fix", "executorReason": "escalated"}, True), "override")
-        self.assertEqual(reason({"kind": "fix"}, False), "")
-        self.assertEqual(reason({"kind": "ticket"}, True), "")
+    def test_old_reviewer_fix_after_a_reviewer_change_is_not_taken_for_the_author(self):
+        # Review r1, MAJOR-2: stary krok f-3 pisał Astra (recenzent rundy 3), potem recenzentem został Sonnet.
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.rounds("Codex Astra", 2)
+        self.step("r-3", "review", "Codex Astra", 3)
+        self.step("f-3", "fix", "Codex Astra", 3)
+        self.reassign_reviewer("Sonnet")
+        review = self.step("r-4", "review", "Sonnet", 4)
+        self.assertEqual(self.fix(review), ("Opus", "author"))
 
+
+class ResumeFixTest(_FixJournal):
+    """Rzeczywista ścieżka `_resume_step` dla kroku `fix` (review r1, MAJOR-1): kartka z katalogu kroku,
+    przechwycony `_launch`, bez uruchamiania agentów."""
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.engine._process_check = lambda card, step: self.engine.journal.state(card)
+        self.engine._next_step_id = lambda *args: f"resume-{len(self.launched) + 1}"
+
+    def fix_step(self, name, executor, round_no, **extra):
+        step_dir = os.path.join(self.tmp.name, name)
+        os.makedirs(os.path.join(step_dir, "in"))
+        with open(os.path.join(step_dir, "in", "prompt.txt"), "w", encoding="utf-8") as fh:
+            fh.write("Popraw ticket.")
+        return self.step(name, "fix", executor, round_no, stepDir=step_dir, session=f"sess-{name}", **extra)
+
+    def resume(self, step, choice="retry", **decision):
+        state = self.engine.journal.state(CARD)
+        self.engine._resume_step(CARD, state, state.steps[step["step"]], {"choice": choice, **decision})
+        selected, kw = self.launched[-1]
+        return selected.name, kw.get("executor_reason"), kw.get("resume_session")
+
+    def test_retry_of_an_old_reviewer_fix_goes_back_to_the_author_with_a_fresh_session(self):
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.rounds("Codex Astra", 2)
+        self.step("r-3", "review", "Codex Astra", 3)
+        step = self.fix_step("f-3", "Codex Astra", 3)        # stara historia: bez executorReason
+        self.assertEqual(self.resume(step), ("Opus", "author", ""))
+        self.assertEqual(self.next_reviewer(), "Codex Astra")
+
+    def test_retry_of_an_escalated_fix_whose_executor_became_the_reviewer_moves_to_the_author(self):
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
+        self.rounds("Codex standard", 3)
+        step = self.fix_step("f-3", "Opus", 3, executorReason="escalated")
+        self.reassign_reviewer("Opus")
+        self.assertEqual(self.resume(step), ("Sonnet", "author", ""))
+        self.assertEqual(self.next_reviewer(), "Opus")
+
+    def test_retry_of_a_valid_escalated_fix_keeps_the_executor_session_and_reason(self):
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
+        self.rounds("Codex standard", 3)
+        step = self.fix_step("f-3", "Opus", 3, executorReason="escalated")
+        self.assertEqual(self.resume(step), ("Opus", "escalated", "sess-f-3"))
+
+    def test_retry_of_an_old_author_fix_keeps_the_session_and_records_the_reason(self):
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.step("r-1", "review", "Codex Astra", 1)
+        step = self.fix_step("f-1", "Opus", 1)
+        self.assertEqual(self.resume(step), ("Opus", "author", "sess-f-1"))
+
+    def test_explicit_executor_change_is_an_override(self):
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
+        self.rounds("Codex standard", 3)
+        step = self.fix_step("f-3", "Opus", 3, executorReason="escalated")
+        self.assertEqual(self.resume(step, "change-executor", executor="Haiku"), ("Haiku", "override", ""))
+
+    def test_resumed_fix_never_runs_on_the_next_reviewer(self):
+        scenarios = [("Opus", "Codex Astra", "mocny", "mixed", "Codex Astra", None),
+                     ("Sonnet", "Codex standard", "standard", "anthropic", "Opus", "Opus")]
+        for author, reviewer, klass, preferred, fixer, new_reviewer in scenarios:
+            with self.subTest(author=author, fixer=fixer):
+                self.setUp()
+                self.card(author, reviewer, klass=klass, preferred=preferred)
+                self.rounds(reviewer, 3)
+                step = self.fix_step("f-3", fixer, 3, **({"executorReason": "escalated"} if new_reviewer else {}))
+                if new_reviewer:
+                    self.reassign_reviewer(new_reviewer)
+                name, _, _ = self.resume(step)
+                self.assertNotEqual(name, self.next_reviewer())
+
+
+class ThresholdTest(unittest.TestCase):
     def test_review_question_threshold_is_unchanged(self):
         self.assertEqual((engine_mod.REVIEW_ROUNDS, engine_mod.ESCALATE_FIX_ROUND), (6, 3))
 
@@ -228,7 +314,7 @@ class FixFlowTest(FlowInProcess):
         card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
         self.assertTrue(self.start(card)["ok"])
         self.wait_column(card, "waiting", timeout=50)
-        self.assertEqual(len(self.of(card, "review.question")), 1)
+        self.assertEqual(len(self.of(card, "review.question")), 1, self.events(card))
         replies = []
         self.board.resolve_card_review(card, "retry", replies.append)
         self.assertTrue(wait_until(lambda: replies, timeout=10))
