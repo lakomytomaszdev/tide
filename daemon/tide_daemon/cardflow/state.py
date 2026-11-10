@@ -835,7 +835,8 @@ def _valid_generation(st, event, base):
 
 
 # PT-147: zdarzenia, które nie są pracą karty — nie przesuwają `last_activity_ts` i nie zdejmują „stoi”.
-BOOKKEEPING = ("flow.error-persisted", "stage.retry")
+# `merge.check-armed` (PT-318) to jednorazowy znacznik uzbrojenia bramki, nie praca nad kartą.
+BOOKKEEPING = ("flow.error-persisted", "stage.retry", "merge.check-armed")
 
 
 def _bookkeeping(st: FlowState, e: dict) -> bool:

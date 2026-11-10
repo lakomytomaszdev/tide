@@ -57,6 +57,8 @@ PYTHON = "/usr/bin/python3"
 #   z ostatniego `box.wait` po ostatnim `card.started` (bez niego "" / False),
 # - `new-process-identities` — pole tylko w kandydacie (PT-288); oczekiwanie: każda tożsamość `state=ok`
 #   (inaczej read_process_history odrzuca historię) i nazwana krokiem obecnym w historii,
+# - `new-merge-checks` — pola bramki testów po scaleniu (PT-318); oczekiwanie: wartość pusta, gdy historia nie ma
+#   zdarzeń `merge.check-*`,
 # - `setup-only` — nie z dziennika (`caretaker_setup` dokłada silnik); oczekiwanie: pusty słownik w obu wersjach.
 PLAN, STATES, CLOSE, STEPS, RESULTS, DECISIONS, OUTSIDE, CONSOLES, BOX, PROJECT = (
     "plan/mapa ticketów", "stany", "pauza/domknięcie", "kroki/runner/tożsamość", "wyniki/werdykty",
@@ -96,8 +98,11 @@ FIELD_SPEC = {
     **_spec(OUTSIDE, "equal", "outside_started", "outside_launched"),
     **_spec(BOX, "new-box-wait", "box_wait"),
     **_spec(BOX, "new-box-env-deferred", "box_env_deferred"),
+    **_spec(RESULTS, "new-merge-checks", "merge_checks", "merge_check_counts", "merge_check_merges",
+            "merge_check_armed"),
 }
-NEW_RULES = ("new-box-wait", "new-box-env-deferred", "new-process-identities")
+NEW_RULES = ("new-box-wait", "new-box-env-deferred", "new-process-identities", "new-merge-checks")
+MERGE_CHECK_EVENTS = ("merge.check-armed", "merge.check-requested", "merge.check-finished")
 DERIVED_SPEC = {"running": STEPS, "open_consoles": CONSOLES, "open_intents": STEPS, "merge_pending": RESULTS,
                 "busy_reason": STATES, "flow_error": STATES, "tracker_failures": RESULTS}
 # Pola wpisu kroku/zamiaru dokładane wyłącznie przez nakładkę tożsamości kandydata.
@@ -486,6 +491,9 @@ def compare_state(card, events, ref, cand, start_fields, errors, coverage):
                 problems.append(f"box_wait {c!r}, oczekiwane {expected_box(events)[0]!r} z ostatniego box.wait")
             elif rule == "new-box-env-deferred" and c != expected_box(events)[1]:
                 problems.append(f"box_env_deferred {c!r}, oczekiwane {expected_box(events)[1]!r}")
+            elif rule == "new-merge-checks" and c not in (0, {}, [], {"__set__": []}) and \
+                    not any(e.get("type") in MERGE_CHECK_EVENTS for e in events):
+                problems.append(f"{name} {_short(c)} bez zdarzeń merge.check-* w historii")
             elif rule == "new-process-identities":
                 named = {e.get("step") for e in events} | {e.get("key") for e in events}
                 for ident, data in sorted((c or {}).items()):
