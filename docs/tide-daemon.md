@@ -2133,7 +2133,11 @@ reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje ś
 pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
 
 Bramka startu review (PT-312, uzupełnienie właściciela 10.11): `_guard_review_launch` działa przed
-rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Każde uruchomienie
+rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Wejście do Konsoli
+(`EnterStep`) w review zakończonym bez werdyktu (błąd, pytanie, zatrzymanie) nie wznawia starej sesji: to nowe
+review przez `_launch_full_planning` z tą bramką i świeżą sesją (PT-330); przejęcie trwającego review i rozmowa
+po werdykcie (`interactive`) działają jak dotąd. Kroki `fix` w Konsoli (przekazanie i wejście) zapisują
+`executorReason` jak kroki w tle, więc ponowienie po ręcznym przekazaniu zachowuje `override`. Każde uruchomienie
 review, także wznowienie, zaczyna osobną sesję. `reviewgate.authors` bierze z dziennika autorów ticketu
 oraz wszystkich prób poprawek od poprzedniej rundy review; nieudany fix może zawierać WIP, a wznowienie
 review tej samej rundy nie usuwa tych autorów z kontroli.

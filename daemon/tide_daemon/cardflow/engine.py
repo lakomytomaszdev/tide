@@ -1607,8 +1607,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
-                              ticket="", round_no=0, review_tip="", prepare=None):
-        """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
+                              ticket="", round_no=0, review_tip="", prepare=None, executor_reason=""):
+        """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku.
+        `executor_reason` — powód wykonawcy poprawek (K-88/PT-312, PT-330), zapisany jak przy kroku w tle."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(item.id, {"ticket": ticket, "step": step_id})
         context_state = self.journal.state(item.id)
@@ -1721,7 +1722,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             gitDir=git_dir,
                             readDirsProfile=read_profile,
                             parentStep=parent_step, attempt=attempt, reviewTip=review_tip,
-                            deliveredNoteIds=note_ids, **base_context, **interactive)
+                            deliveredNoteIds=note_ids, **base_context, **interactive,
+                            **({"executorReason": executor_reason} if executor_reason and kind == "fix" else {}))
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             deliveredNoteIds=note_ids,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
@@ -1988,6 +1990,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
                not item.get("consoleClosed")
                for item in st.steps.values()):
             raise FlowError("console-open", "karta Konsoli tego worktree jest jeszcze otwarta")
+        if source_step.get("kind") == "review" and step_id in st.finished and \
+                (st.finished.get(step_id) or {}).get("result") != "done":
+            # PT-330 (review PT-312, MAJOR-2): ponowne review w Konsoli to nowe uruchomienie review — przechodzi
+            # bramkę polityki projektu i zawsze zaczyna nową sesję recenzenta, nie wznawia starej.
+            if reopen:
+                raise FlowError("no-worktree", "katalog ticketu już nie istnieje; wznów review w tle")
+            return self._enter_review_console(card_id, st, source_step)
         session, source = self._session(source_step)
         if not session:
             raise FlowError("no-session", "nie znaleziono ID sesji kroku; spróbuj ponownie za chwilę")
@@ -2099,6 +2108,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
                                 parentStep=step_id, deliveredNoteIds=note_ids,
+                                # Wejście do Konsoli kontynuuje ten sam przydział poprawek (PT-330, MAJOR-3).
+                                **({"executorReason": current["executorReason"]}
+                                   if kind == "fix" and current.get("executorReason") else {}),
                                 baseVersion=current.get("baseVersion", 0),
                                 baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
@@ -2164,6 +2176,48 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except agentcmd.StepError:
                 return "unknown"
         return stepstop.unit_state(step.get("unit") or "")
+
+    def _enter_review_console(self, card_id: str, st: FlowState, source_step: dict) -> dict:
+        """Nowe review w Konsoli po nieukończonej próbie (błąd, pytanie, zatrzymanie): ta sama bramka co w tle
+        (`_launch_full_planning` → `_guard_review_launch`) i świeża sesja. Recenzent, który pisał oceniane
+        poprawki, przy polityce `other-model`/`other-family` dostaje zastępcę albo pytanie właściciela."""
+        ticket = source_step.get("ticket") or ""
+        round_no = int(source_step.get("round") or 0)
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("executor-unavailable", "katalog wykonawców jest niedostępny")
+        try:
+            selected = execution.resolve(source_step.get("executor") or "", catalog, config=cfg,
+                                         probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        try:
+            selected, _ = self._guard_review_launch(card_id, st, ticket, round_no, selected)
+        except FlowDeferred as exc:
+            raise FlowError("review-independence", str(exc)) from None
+        old_out = os.path.join(source_step.get("stepDir") or "", "out")
+        try:
+            with open(os.path.join(source_step.get("stepDir") or "", "in", "prompt.txt"), encoding="utf-8") as fh:
+                prompt = fh.read(OUTPUT_MAX)
+        except OSError:
+            raise FlowError("missing-step-input", f"{card_id}: nie ma kartki poprzedniego review") from None
+        step_id = self._next_step_id(card_id, ticket, st)
+        worktree = source_step.get("worktree") or ""
+        new_out = worktree + f".interactive-{step_id}.step/out"
+        prompt = prompt.replace(old_out, new_out)
+        prompt += (f"\n\nReview w Konsoli zaczyna nową sesję recenzenta ({selected.name}). Poprzednia próba "
+                   f"tego review i jej wynik: {old_out}.")
+        item, project = self._project(card_id)
+        self._launch_full_planning(item, project, selected,
+                                   {"branch": source_step.get("branch") or "", "worktree": worktree},
+                                   step_id, [], [], prompt, parent_step=source_step.get("step") or "",
+                                   attempt=int(source_step.get("attempt") or 0) + 1, include_context=False,
+                                   kind="review", ticket=ticket, round_no=round_no,
+                                   review_tip=source_step.get("reviewTip") or "")
+        started = self.journal.state(card_id).steps.get(step_id) or {}
+        return {"ok": True, "id": card_id, "step": step_id, "session": started.get("session") or "",
+                "mode": "review", "executor": started.get("executor") or selected.name}
 
     def _stop_for_enter(self, card: str, step: dict) -> bool:
         try:
@@ -4870,7 +4924,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                        attempt=attempt, include_context=False,
                                        kind=step.get("kind") or "ticket", ticket=resume_ticket,
                                        round_no=int(step.get("round") or 0),
-                                       review_tip=step.get("reviewTip") or "")
+                                       review_tip=step.get("reviewTip") or "", executor_reason=fix_reason)
             return
         self._launch(item, project, selected, resume_ticket,
                      {"branch": info["cardBranch"]},

@@ -619,6 +619,8 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._caretaker_resume"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine._cleanup"): "process-check",
     ("cardflow/engine.py", "FlowEngine._finish"): "console",
+    # PT-330: nowe review w Konsoli po nieukończonej próbie startuje przez _launch_full_planning.
+    ("cardflow/engine.py", "FlowEngine._enter_review_console"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._outside_behind"): "outside",
     ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",

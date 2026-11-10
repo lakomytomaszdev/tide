@@ -1,4 +1,5 @@
 """PT-312: bramka na granicy uruchomienia review, niezależnie od drogi autora poprawek."""
+import os
 import unittest
 import tempfile
 from dataclasses import replace
@@ -274,6 +275,105 @@ class ReviewGateTest(_FixJournal):
         self.assertEqual(self.gate("Codex Astra", policy=None, round_no=1)[0].name, "Codex Astra")
         self.assertEqual(self.gate("Sonnet", policy=None, round_no=1)[0].provider, "openai")
         self.assertFalse(st.review_questions)
+
+    # --- PT-330 (review PT-312, MAJOR-2): wejście do Konsoli to nowe uruchomienie review ---------------------
+
+    def console_review_entry(self, policy):
+        """Historyczne review rundy 4 pisane przez Opusa, który napisał oceniane poprawki, zakończone błędem;
+        użytkownik wchodzi do niego w Konsoli publiczną ścieżką `enter`. Rzeczywiste `_launch_full_planning`."""
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.review_independence = policy
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.history()
+        step_dir = self.tmp.name + "/r-4.step"
+        os.makedirs(step_dir + "/in")
+        with open(step_dir + "/in/prompt.txt", "w", encoding="utf-8") as fh:
+            fh.write(f"Oceń poprawki. Wynik: {step_dir}/out")
+        self.step("r-4", "review", "Opus", 4, stepDir=step_dir, session="sess-r-4", worktree=self.tmp.name,
+                  branch="ticket/pt-1", reviewTip="abc")
+        self.add("step.finished", step="r-4", ticket=TICKET, result="error", reason="crash")
+        opened = self.console_stubs("console-review")
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""), \
+                patch.object(engine_mod.agentcmd, "resume_interactive",
+                             side_effect=AssertionError("review w Konsoli nie wznawia starej sesji")):
+            reply = self.engine.enter(CARD, "r-4")
+        started = self.engine.journal.state(CARD).steps["console-review"]
+        return reply, started, opened
+
+    def console_stubs(self, next_step):
+        """Atrapy otoczenia rzeczywistego `_launch_full_planning` (Konsola, pliki zadań, profil odczytu)."""
+        engine = self.engine
+        item = SimpleNamespace(id=CARD, title="T", description="D", projects=[])
+        engine._project = lambda card: (item, self.project)
+        engine._process_state = lambda card: engine.journal.state(card)
+        engine._next_step_id = lambda *args: next_step
+        engine._step_base_context = lambda *args: ("", {})
+        engine._configured_reads = lambda *args, **kw: []
+        engine._used_read_profile = lambda *args: False
+        engine.store = SimpleNamespace(load=lambda: SimpleNamespace(projects={}))
+        engine.task_files = SimpleNamespace(write=lambda payload: "task-file", cancel=lambda path: True)
+        opened = []
+        engine.terminal = SimpleNamespace(available=lambda: True,
+                                          open=lambda plan: opened.append(plan) or "tab",
+                                          launchers=SimpleNamespace(agents={}, codex_for=lambda source: "codex"))
+        engine.journal.lock = __import__("threading").RLock()
+        engine.systemd_run = "/usr/bin/systemd-run"
+        engine.clock = lambda: 1.0
+        return opened
+
+    def test_console_fix_transfer_keeps_the_manual_reason_through_error_and_retry(self):
+        # Review PT-312, MAJOR-3: klasa standard, autor Sonnet, recenzent Astra; poprawki rundy 3 w Konsoli,
+        # ręczne przekazanie innemu wykonawcy, błąd, ponowienie — eskalacja nie nadpisuje ręcznego wyboru.
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.card("Sonnet", "Codex Astra", klass="standard", preferred="anthropic")
+        for round_no in (1, 2, 3):
+            self.step(f"r-{round_no}", "review", "Codex Astra", round_no)
+        fix = self.fix_step("f-3", "Opus", 3, executorReason="escalated", mode="interactive",
+                            worktree=self.tmp.name, branch="ticket/pt-1")
+        self.add("step.finished", step="f-3", ticket=TICKET, result="error", reason="crash")
+        self.console_stubs("console-fix")
+        with open(fix["stepDir"] + "/in/prompt.txt", "a", encoding="utf-8") as fh:
+            fh.write("\nWynik: " + fix["stepDir"] + "/out")
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""):
+            self.engine._resume_step(CARD, self.engine.journal.state(CARD), self.engine.journal.state(CARD).steps["f-3"],
+                                     {"choice": "transfer", "executor": "Codex mocny"})
+        console = self.engine.journal.state(CARD).steps["console-fix"]
+        self.assertEqual((console["kind"], console["executor"], console.get("executorReason")),
+                         ("fix", "Codex mocny", "override"))
+        self.add("step.finished", step="console-fix", ticket=TICKET, result="error", reason="crash")
+        self.assertEqual(self.engine._resumed_fix_target(CARD, self.engine.journal.state(CARD), console)[:2],
+                         ("Codex mocny", "override"))
+
+    def test_console_entry_of_a_fix_keeps_its_executor_reason(self):
+        from tide_daemon.cardflow import engine as engine_mod
+        self.project.name, self.project.allowed_commands, self.project.denied_commands = "proj", [], []
+        self.card("Sonnet", "Codex Astra", klass="standard", preferred="anthropic")
+        self.step("r-3", "review", "Codex Astra", 3)
+        self.fix_step("f-3", "Opus", 3, executorReason="override", worktree=self.tmp.name,
+                      branch="ticket/pt-1")
+        self.add("step.finished", step="f-3", ticket=TICKET, result="error", reason="crash")
+        self.console_stubs("unused")
+        self.engine._session = lambda step: ("0b6a9f0e-3c1d-4e8a-9b7f-2d5c6e7f8a90", "")
+        self.engine._ancestor_outs = lambda *args: []
+        with patch.object(engine_mod.agentcmd, "resolve_git_dir", return_value=""):
+            reply = self.engine.enter(CARD, "f-3")
+        entered = self.engine.journal.state(CARD).steps[reply["step"]]
+        self.assertEqual((entered["kind"], entered.get("executorReason")), ("fix", "override"))
+
+    def test_console_entry_of_a_review_runs_the_gate_for_the_fixer_as_reviewer(self):
+        reply, started, opened = self.console_review_entry("other-model")
+        self.assertEqual((started["kind"], started["parentStep"]), ("review", "r-4"))
+        self.assertEqual(started["executor"], "Codex mocny")
+        self.assertNotEqual(started["session"], "sess-r-4")
+        self.assertEqual((reply["step"], reply["executor"]), ("console-review", "Codex mocny"))
+        self.assertEqual(len(opened), 1)
+
+    def test_console_entry_of_a_review_in_a_free_project_keeps_the_model_with_a_new_session(self):
+        reply, started, _ = self.console_review_entry("")
+        self.assertEqual((started["kind"], started["executor"]), ("review", "Opus"))
+        self.assertTrue(started["session"])
+        self.assertNotIn(started["session"], ("sess-r-4", "sess-f-3"))
 
     def test_local_review_does_not_fall_back_to_cloud(self):
         self.history()
