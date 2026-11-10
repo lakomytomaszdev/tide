@@ -45,6 +45,9 @@ Rectangle {
     readonly property var pending: decisions.filter(d => answeredIds.indexOf(d.id) < 0)
     readonly property var current: pending.length > 0 ? pending[0] : null
     readonly property var phases: derived && Array.isArray(derived.phases) ? derived.phases : []
+    // Krycie paska etapu `now` (karta K-97): wspólna faza strony Tablicy; 1.0 = bez mrugania (Sesje nic nie przekazują).
+    property real workPulse: 1.0
+    readonly property bool hasNowPhase: phases.some(p => p.state === "now")
     readonly property var tickets: derived && Array.isArray(derived.tickets) ? derived.tickets : []
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
@@ -589,6 +592,8 @@ Rectangle {
                             color: phaseItem.phaseState === "todo" || phaseItem.phaseState === "skipped"
                                    ? Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
                                    : view.phaseTone(phaseItem.phaseState)
+                            objectName: "fullPhaseBar"
+                            opacity: phaseItem.phaseState === "now" ? view.workPulse : 1
                         }
                         Text {
                             Layout.fillWidth: true
