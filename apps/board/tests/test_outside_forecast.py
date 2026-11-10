@@ -46,7 +46,9 @@ def service_journal(card, tickets, running=0, queued=0):
             tail.append({"type": "outside.started", "step": outside_step(ticket), "ticket": ticket,
                          "command": "make test-changed BASE=1"})
     out = []
-    for event in events[:1] + plan + events[1:] + tail:
+    # Tickety w `derived.tickets` usługa liczy tylko dla wejścia z planem (`plan`/`planning`) — jak w dzienniku journal_d.
+    head = [dict(events[0], entry="planning")]
+    for event in head + plan + events[1:] + tail:
         event = dict(event, v=1, seq=len(out) + 1, card=card)
         event.setdefault("ts", "2026-11-10T12:00:00+01:00")
         out.append(event)
