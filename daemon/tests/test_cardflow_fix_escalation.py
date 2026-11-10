@@ -412,6 +412,15 @@ class ResumeFixTest(_FixJournal):
         self.assertEqual(self.resume(step, "transfer", executor="Codex standard"),
                          ("Codex standard", "override", ""))
 
+    def test_automatic_resume_preserves_manual_author_provider_exception(self):
+        self.card("Sonnet", "Codex Astra", preferred="mixed")
+        self.rounds("Codex Astra", 3)
+        step = self.fix_step("f-3", "Sonnet", 3, executorReason="author")
+        self.add("author.reassigned", ticket=TICKET, executor="Codex standard")
+        self.assertEqual(self.resume(step, "change-executor", executor="Opus", auto=True, escalated=True),
+                         ("Codex standard", "override", ""))
+        self.assertNotEqual("Codex standard", self.next_reviewer())
+
     def test_resumed_fix_never_runs_on_the_next_reviewer(self):
         scenarios = [("Opus", "Codex Astra", "mocny", "mixed", "Codex Astra", None),
                      ("Sonnet", "Codex standard", "standard", "anthropic", "Opus", "Opus")]

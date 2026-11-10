@@ -4708,11 +4708,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
                     moved = target != step.get("executor")
                     name, reassigned, fresh = target, moved, moved
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
+        # Przydział użytkownika zachowuje swój wyjątek także przy automatycznym wznowieniu.
+        automatic_executor = (automated and fix_reason != "override" if kind == "fix"
+                              else bool(decision.get("caretaker")))
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=fresh,
                                              transfer=choice == "transfer",
-                                             automated=bool(decision.get("caretaker")) or (kind == "fix" and automated))
+                                             automated=automatic_executor)
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
