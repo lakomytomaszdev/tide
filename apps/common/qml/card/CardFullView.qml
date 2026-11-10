@@ -28,6 +28,7 @@ import QtQuick.Controls as QQC2
 import "../tide" as Tide
 import "decision.js" as Decision
 import "settings.js" as Settings
+import "ticket.js" as TicketLib
 
 Rectangle {
     id: view
@@ -46,6 +47,8 @@ Rectangle {
     readonly property var current: pending.length > 0 ? pending[0] : null
     readonly property var phases: derived && Array.isArray(derived.phases) ? derived.phases : []
     readonly property var tickets: derived && Array.isArray(derived.tickets) ? derived.tickets : []
+    // Karta „Od razu” (bez planu): jeden kafelek jej ticketu, bez nagłówka fali (PT-333).
+    readonly property var nowTicket: TicketLib.tileModel(card, answeredIds)
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
     readonly property string headline: flow && flow.headline ? flow.headline : ""
@@ -872,13 +875,19 @@ Rectangle {
                     Text {
                         objectName: "fullPlanEmpty"
                         Layout.fillWidth: true
-                        visible: view.tickets.length === 0
+                        visible: view.tickets.length === 0 && !view.nowTicket
                         text: "Karta bez planu: jeden ticket, bez fal."
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pointSize: Tide.Tokens.fontSizePt
                         wrapMode: Text.Wrap
+                    }
+                    TicketTile {
+                        Layout.fillWidth: true
+                        visible: !!view.nowTicket
+                        ticketId: view.nowTicket ? view.nowTicket.id : ""
+                        item: view.nowTicket
                     }
                     RowLayout {
                         Layout.fillWidth: true
