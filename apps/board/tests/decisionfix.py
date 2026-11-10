@@ -345,6 +345,47 @@ def a2_journal() -> list[dict]:
     ]
 
 
+# --- Zgrupowane zgody (K-97, PT-338): 10.11, K-88 — siedem ticketów prosi o to samo polecenie poza piaskownicą ------
+
+OUTSIDE_COMMAND = "make test-changed BASE=7fc9ea88f36d5ed3f10f0df63e9512bffc7120e5"
+OUTSIDE_PATTERN = "make test-changed *"
+OUTSIDE_TICKETS = tuple(f"PT-{n}" for n in range(1, 8))
+
+
+def outside_step(ticket: str) -> str:
+    return f"K-8-ticket-{ticket.split('-')[1]}-0"
+
+
+def journal_outside(requests: list[tuple] | None = None, extra: list[dict] | None = None) -> list[dict]:
+    """Dziennik karty: każdy ticket z `requests` (ticket, polecenie[, pola zdarzenia]) prosi o polecenie poza
+    piaskownicą (`result: denied`, `outside: true`) — jak usługa zapisuje wynik kroku. Domyślnie siedem ticketów
+    z tym samym `make test-changed`. Worktree ticketu: /wt/<ticket>. `extra` — zdarzenia dopisane na końcu."""
+    if requests is None:
+        requests = [(ticket, OUTSIDE_COMMAND) for ticket in OUTSIDE_TICKETS]
+    items = []
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-10T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    add("card.started", "09:00:00", entry="now", executor="Sonnet", program="claude", provider="anthropic")
+    for index, request in enumerate(requests):
+        ticket = request[0]
+        add("step.started", f"10:{index:02d}:00", step=outside_step(ticket), ticket=ticket, kind="ticket",
+            executor="Sonnet", provider="anthropic", model="sonnet", attempt=0, parentStep="",
+            stepDir=f"/wt/{ticket}.step", worktree=f"/wt/{ticket}", branch=f"ticket/{ticket.lower()}")
+    for index, request in enumerate(requests):
+        ticket, command = request[0], request[1]
+        fields = {"pattern": OUTSIDE_PATTERN if command.startswith("make test-changed") else "", "canAllow": True,
+                  "reason": f"Testy ticketu {ticket}: pełny przebieg nie działa w piaskownicy.",
+                  **(request[2] if len(request) > 2 else {})}
+        add("step.finished", f"11:{index:02d}:00", step=outside_step(ticket), ticket=ticket, result="denied",
+            outside=True, command=command, **fields)
+    for event in extra or []:
+        add(event.pop("type"), "12:00:00", **event)
+    return items
+
+
 def scenario_f(data: dict, items: list[dict] | None = None) -> dict:
     """Kopia danych podglądu z decyzjami scenariusza F w karcie K-8 (albo z podanymi `items`)."""
     data = json.loads(json.dumps(data))

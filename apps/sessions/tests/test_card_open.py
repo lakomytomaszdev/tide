@@ -166,6 +166,27 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual(json.loads(out["calls"][1][2]), {"step": "s1", "option": 1})
         self.assertTrue(out["state"]["decisionOpen"], "podgląd z pliku odrzuca zapis — decyzja wraca do okna")
 
+    def test_consent_group_answers_each_step_from_sessions(self):
+        # PT-338: ta sama grupa zgód w oknie decyzji Sesji (wspólny DecisionDialog i decision.js).
+        from apps.board.tests.decisionfix import OUTSIDE_COMMAND, OUTSIDE_TICKETS, journal_outside, outside_step
+        base = preview_data(os.path.join(self.tmp, "board-consent"))
+        data = self.data_file("consent-group", full_card(base, journal_outside()))
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "result['items'] = json.loads(js(\"JSON.stringify(decisionDialog.pending.map(d => d.happened))\"))\n"
+                               "js(\"decisionDialog.form.pick('run-always')\")\njs('decisionDialog.choose()')\n"
+                               "QTest.qWait(300)\nresult['calls'] = calls()\n"
+                               "result['after'] = json.loads(js(\"JSON.stringify(decisionDialog.pending.map(d => "
+                               "[!!d.group, d.ticket]))\"))\n"
+                               "result['error'] = js('decisionDialog.form.error')")
+        self.assertTrue(out["open"]["dialog"])
+        self.assertEqual(out["items"], [OUTSIDE_COMMAND + " · 7 ticketów"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["ResolveCardStep", CARD]] * 7)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]],
+                         [{"choice": "run-always", "step": outside_step(t)} for t in OUTSIDE_TICKETS])
+        # Podgląd z pliku odrzuca każdy zapis od razu (w trakcie wysyłki): każda decyzja wraca osobno, z powodem.
+        self.assertEqual(out["after"], [[False, t] for t in OUTSIDE_TICKETS])
+        self.assertIn("Podgląd z pliku", out["error"])
+
     def test_dialog_setting_reaches_the_backend(self):
         out = self.probe(self.waiting, "click_entry(0)\njs(\"decisionDialog.cardOpenRequested('full')\")\n"
                                        "QTest.qWait(100)\nresult['cardOpen'] = backend.cardOpen\n"
