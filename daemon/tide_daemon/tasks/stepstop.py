@@ -84,18 +84,29 @@ def _alive(proc) -> bool:
         return False
 
 
-def _systemctl(*args: str) -> subprocess.CompletedProcess:
+def _systemctl(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["systemctl", "--user", *args], capture_output=True, timeout=30)
+        return subprocess.run(["systemctl", "--user", *args], capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return subprocess.CompletedProcess(args, 1, b"", b"")
 
 
-def unit_state(unit: str) -> str:
+def unit_state(unit: str, timeout: float = 30) -> str:
     """"active", "inactive" (jednostki nie ma albo jest nieaktywna: kody 3 i 4 `systemctl is-active`) albo "unknown"
     (błąd samego systemctl, np. brak magistrali, timeout) — z "unknown" nie wolno wnosić, że krok się zatrzymał."""
-    code = _systemctl("is-active", "--quiet", unit + ".scope").returncode
+    code = _systemctl("is-active", "--quiet", unit + ".scope", timeout=timeout).returncode
     return "active" if code == 0 else "inactive" if code in (3, 4) else "unknown"
+
+
+def unit_without_processes(unit: str, timeout: float = 30) -> bool:
+    """True tylko gdy jednostka nie ma już procesów: `inactive`/`failed` albo nieznana (kod 4). `deactivating` (scope w
+    `stop-sigterm` zaraz po `systemctl stop`, kod 3 jak `inactive`), `activating` i błąd samego systemctl → False
+    (PT-315): procesy polecenia mogą jeszcze żyć, więc nie rozliczamy wyniku ani nie zwalniamy miejsca w kolejce."""
+    run = _systemctl("is-active", unit + ".scope", timeout=timeout)
+    state = (run.stdout or b"").decode("utf-8", "replace").strip()
+    if run.returncode == 4:
+        return True
+    return run.returncode == 3 and state in ("inactive", "failed")
 
 
 def freeze_unit(unit: str, frozen: bool) -> bool:
@@ -122,8 +133,9 @@ def unit_cpu_bucket(unit: str) -> int | None:
         return None
 
 
-def read_exit_code(step_dir: str) -> int | None:
+def read_exit_code(step_dir: str, name: str = EXIT_CODE_FILE) -> int | None:
     """Kod zakończenia zapisany przez zaufany wrapper jednostki, dostępny także po restarcie usługi.
+    `name`: `exit-code` albo `exit-code.tmp` (kompletny zapis zatrzymanej jednostki, PT-315) — ta sama walidacja.
 
     Brak, niepełny zapis lub dowiązanie nie dowodzą sukcesu kroku. Katalog `in` i sam plik otwieramy bez
     podążania za dowiązaniami; agent ma tam tylko odczyt, a plik powstaje po jego zakończeniu.
@@ -132,7 +144,7 @@ def read_exit_code(step_dir: str) -> int | None:
     status = None
     try:
         folder = os.open(os.path.join(step_dir, "in"), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        status = os.open(EXIT_CODE_FILE, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+        status = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)   # FIFO nie blokuje pętli usługi
         info = os.fstat(status)
         if not stat.S_ISREG(info.st_mode) or info.st_size > 4:
             return None

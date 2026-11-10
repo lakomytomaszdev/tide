@@ -92,7 +92,10 @@ SETTINGS_FILE = "cardflow.json"
 DEFAULT_PROVIDER_SLOTS = 3      # kroki naraz u jednego dostawcy chmurowego (providerSlots w ustawieniach)
 MAX_PROVIDER_SLOTS = 12
 RESULTS = ("done", "question", "denied", "error", "outside")
-OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
+OUTSIDE_STOPPED = "zatrzymane"  # `exit` w outside.finished, gdy jednostkę zatrzymano bez kodu wyjścia (PT-315)
+OUTSIDE_STOP_GRACE = 5          # tyle sekund od startu jednostka może jeszcze nie istnieć w systemd (s)
+OUTSIDE_STATE_TIMEOUT = 3       # limit jednego odczytu stanu jednostki, żeby nie blokować pętli usługi (s)
+OUTSIDE_TIMEOUT = 3600         # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
 ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
                           r"playwright|\bport(?:u|y|em)?\b|:\d{4}\b|\bsieci\b|\bsieć\b|network|środowisk|"
@@ -6319,9 +6322,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return None
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
-        code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
+        step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
+        code = stepstop.read_exit_code(step_dir)
         if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
-            return None
+            code = self._outside_stopped(started, step_dir)
+            if code is None:
+                return None
         if code is None:
             stepstop._systemctl("stop", started["unit"] + ".scope")
             code = "przekroczony czas"
@@ -6342,6 +6348,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
         return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
                                       f"Koniec wyniku:\n{tail}"}
+
+    def _outside_stopped(self, started: dict, step_dir: str):
+        """Zatrzymana jednostka outside bez `exit-code` (PT-315: `systemctl --user stop …scope` zostawia `exit-code.tmp`
+        bez zmiany nazwy): kod z kompletnego pliku tymczasowego albo "zatrzymane". None — jednostka działa albo stan
+        nieznany (błąd odczytu nie kończy polecenia); wtedy czekamy dalej do OUTSIDE_TIMEOUT."""
+        if time.time() - _epoch(started.get("ts")) < OUTSIDE_STOP_GRACE:
+            return None         # systemd-run rejestruje jednostkę chwilę po starcie procesu
+        if not stepstop.unit_without_processes(started.get("unit") or "", timeout=OUTSIDE_STATE_TIMEOUT):
+            return None
+        # Wrapper mógł skończyć zaraz po pierwszym odczycie (zmiana nazwy tmp → exit-code): najpierw plik docelowy.
+        code = stepstop.read_exit_code(step_dir)
+        if code is None:
+            code = stepstop.read_exit_code(step_dir, stepstop.EXIT_CODE_FILE + ".tmp")
+        return code if code is not None else OUTSIDE_STOPPED
 
     def _review_rounds(self) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
