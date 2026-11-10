@@ -13,6 +13,15 @@ Stan (`snapshot`) to:
   zapis, zmiana nazwy, praw czy dowiązania twardego i nie da się go cofnąć bez roota (`touch` ustawia tylko
   `mtime`/`atime`), więc wykrywa także zapis tej samej treści i podmianę z przywróconym `mtime` — mocniej niż suma
   treści, a bez czytania plików (worktree z `node_modules` liczy się w ułamku sekundy). Dowiązania nie są śledzone.
+  Jedyny wyjątek (PT-317, K-88): `.claude/.cc-writes` w katalogu głównym worktree — plik albo katalog (z całą
+  zawartością), który zapisuje sam Claude Code, nie model. Drzewo liczy się tak, jakby tej ścieżki nie było:
+  sam katalog `.claude` nie ma rekordu (jego rozmiar, `mtime` i `ctime` zmieniają powstanie i usunięcie `.cc-writes`,
+  a w świeżym worktree tworzy go dopiero pierwszy zapis `.cc-writes` — review PT-317 MAJOR-1), więc klucz `.claude`
+  w drzewie powstaje wyłącznie z rekordów dzieci innych niż `.cc-writes`: `.claude` zawierający tylko `.cc-writes`
+  liczy się jak jego brak. Każdy inny wpis w `.claude` ma pełny rekord — nowy, usunięty, przemianowany i zmieniony
+  plik obok `.cc-writes` nadal jest zmianą. Niewidoczne są tylko pusty katalog `.claude` i zmiana jego praw
+  (ignorowany przez gita, bez treści). Dowiązanie o tej nazwie nie jest wyjątkiem (rekord z celem), a `.claude` będący dowiązaniem —
+  jak każde dowiązanie — nie jest przeglądany.
 - `head` — treść `<gitDir>/HEAD` worktree (gałąź albo odłączony commit),
 - `refs` — sha `refs/heads/<gałąź>` gałęzi worktree kroku i gałęzi karty, czytane w repozytorium projektu.
 
@@ -34,11 +43,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 
 from .caretaker import WROTE  # noqa: F401 — kod nieudanego działania (jedna definicja w rejestrze opiekuna)
 
 EVENT = "caretaker.guard"
 FIELDS = ("repo", "worktrees", "branches", "refs")
+# Ścieżka zapisywana przez Claude Code, nie przez model (PT-317) — jedyny wyjątek strażnika, względem worktree.
+CLAUDE_DIR, CC_WRITES = ".claude", ".claude/.cc-writes"
 
 
 def tree(worktree: str) -> dict:
@@ -65,10 +77,14 @@ def tree(worktree: str) -> dict:
             except OSError as exc:
                 _add(digests, name, f"{name}\0!{exc.errno}")
                 continue
-            _add(digests, name, f"{name}\0{info.st_mode:o}\0{info.st_size}\0{info.st_mtime_ns}\0"
-                                f"{info.st_ctime_ns}\0{info.st_ino}\0{link}")
+            if name == CC_WRITES and (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                continue                                # zapis Claude Code, nie modelu (PT-317)
             if entry.is_dir(follow_symlinks=False):
                 stack.append(name)
+            if name == CLAUDE_DIR and stat.S_ISDIR(info.st_mode):
+                continue                                # klucz `.claude` tylko z dzieci innych niż `.cc-writes`
+            _add(digests, name, f"{name}\0{info.st_mode:o}\0{info.st_size}\0{info.st_mtime_ns}\0"
+                                f"{info.st_ctime_ns}\0{info.st_ino}\0{link}")
     return {top: h.hexdigest() for top, h in sorted(digests.items())}
 
 
