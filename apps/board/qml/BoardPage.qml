@@ -173,8 +173,9 @@ Rectangle {
     signal resolveRequested(string tag, string ident, string choice)    // /Board ResolveYouTrack
 
     readonly property var filters: ({ tag: tagFilter, project: projectFilter, query: query })
-    readonly property var cards: Logic.visible(snapshot, filters, optimistic)
+    // Bez filtrów `cards` to dokładnie `allCards` (jedno przeliczenie `Logic.visible` na zmianę migawki, nie dwa).
     readonly property var allCards: Logic.visible(snapshot, null, optimistic)
+    readonly property var cards: filtered ? Logic.visible(snapshot, filters, optimistic) : allCards
     // Kolumny jako model Repeaterów: nowa tablica przebudowałaby je wszystkie, więc tożsamość zmienia się tylko
     // wtedy, gdy zmieniła się ich treść (PT-324).
     property var columnSpecs: Logic.columns(null)
@@ -182,27 +183,64 @@ Rectangle {
         const next = Logic.columns(snapshot)
         if (!Logic.sameValue(next, columnSpecs)) columnSpecs = next
     }
-    Component.onCompleted: refreshColumnSpecs()
+    Component.onCompleted: { refreshColumnSpecs(); refreshDerived() }
     readonly property bool exists: !!snapshot && snapshot.exists === true
     readonly property bool filtered: tagFilter !== "" || projectFilter !== "" || query.trim() !== ""
-    readonly property var panelCard: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
-    readonly property var decisionCard: decisionCardId ? (snapshot && snapshot.cards || []).find(c => c.id === decisionCardId) || null : null
-    readonly property var fullCard: fullCardId ? (snapshot && snapshot.cards || []).find(c => c.id === fullCardId) || null : null
-    readonly property var errorLines: Logic.errorLines(snapshot, 3)
-    readonly property var youtrackNotes: Logic.youtrackNotes(snapshot)
-    readonly property var lanes: {
-        const groups = []
-        const index = {}
-        for (const card of cards) {
-            const key = card.project || Logic.NO_PROJECT
-            if (index[key] === undefined) {
-                index[key] = groups.length
-                groups.push({ key: key, name: card.projectName || (card.project ? card.project : "Bez projektu"), cards: [] })
+
+    // Wartości pochodne o stabilnej tożsamości (PT-326): każda jest liczona raz na zmianę migawki (wersja „Raw”),
+    // a właściwość, którą widzą wiązania, dostaje nową wartość tylko wtedy, gdy zmieniła się jej treść. Niezmieniona
+    // karta panelu, notki YouTracka czy wiersze nie odpalają więc zależnych wiązań ani nie przebudowują Repeaterów.
+    readonly property var panelCardRaw: panelCardId ? (snapshot && snapshot.cards || []).find(c => c.id === panelCardId) || null : null
+    readonly property var decisionCardRaw: decisionCardId ? (snapshot && snapshot.cards || []).find(c => c.id === decisionCardId) || null : null
+    readonly property var fullCardRaw: fullCardId ? (snapshot && snapshot.cards || []).find(c => c.id === fullCardId) || null : null
+    readonly property var errorLinesRaw: Logic.errorLines(snapshot, 3)
+    readonly property var youtrackNotesRaw: Logic.youtrackNotes(snapshot)
+    // Wiersze projektów liczone tylko w widoku wierszy; w „Razem” nikt ich nie czyta.
+    readonly property var lanesRaw: layoutMode === "lanes" ? Logic.groupLanes(cards) : []
+    property var panelCard: null
+    property var decisionCard: null
+    property var fullCard: null
+    property var errorLines: []
+    property var youtrackNotes: []
+    property var lanes: []
+    property var lanesByKey: ({})     // klucz wiersza → wiersz (te same obiekty co w `lanes`)
+    // Model Repeatera wierszy: tylko {laneKey, laneName}, więc zmiana kart w wierszu nie niszczy jego delegata.
+    ListModel { id: laneModel }
+    onPanelCardRawChanged: panelCard = Logic.stable(panelCardRaw, panelCard)
+    onDecisionCardRawChanged: decisionCard = Logic.stable(decisionCardRaw, decisionCard)
+    onFullCardRawChanged: fullCard = Logic.stable(fullCardRaw, fullCard)
+    onErrorLinesRawChanged: errorLines = Logic.stable(errorLinesRaw, errorLines)
+    onYoutrackNotesRawChanged: youtrackNotes = Logic.stable(youtrackNotesRaw, youtrackNotes)
+    onLanesRawChanged: refreshLanes()
+    function refreshDerived() {
+        panelCard = Logic.stable(panelCardRaw, panelCard)
+        decisionCard = Logic.stable(decisionCardRaw, decisionCard)
+        fullCard = Logic.stable(fullCardRaw, fullCard)
+        errorLines = Logic.stable(errorLinesRaw, errorLines)
+        youtrackNotes = Logic.stable(youtrackNotesRaw, youtrackNotes)
+        refreshLanes()
+    }
+    function refreshLanes() {
+        const next = Logic.stableLanes(lanesRaw, lanes)
+        if (next === lanes) return
+        lanes = next
+        const byKey = {}
+        for (const lane of next) byKey[lane.key] = lane
+        lanesByKey = byKey
+        // Model wierszy zmienia się tylko tam, gdzie wiersz doszedł, zniknął, zmienił miejsce albo nazwę.
+        for (let i = 0; i < next.length; i++) {
+            const lane = next[i]
+            let at = -1
+            for (let j = i; j < laneModel.count; j++) {
+                if (laneModel.get(j).laneKey === lane.key) { at = j; break }
             }
-            groups[index[key]].cards.push(card)
+            if (at < 0) laneModel.insert(i, { laneKey: lane.key, laneName: lane.name })
+            else {
+                if (at !== i) laneModel.move(at, i, 1)
+                if (laneModel.get(i).laneName !== lane.name) laneModel.setProperty(i, "laneName", lane.name)
+            }
         }
-        return groups.sort((a, b) => a.key === Logic.NO_PROJECT ? 1 : b.key === Logic.NO_PROJECT ? -1
-                                                                       : a.name.localeCompare(b.name))
+        if (laneModel.count > next.length) laneModel.remove(next.length, laneModel.count - next.length)
     }
     readonly property alias cardPanel: cardPanel
     readonly property alias launchDialog: launchDialog
@@ -1564,17 +1602,21 @@ Rectangle {
                         width: lanesFlick.width
                         spacing: 14
                         Repeater {
-                            model: page.layoutMode === "lanes" ? page.lanes : []
+                            model: laneModel
                             ColumnLayout {
                                 id: lane
-                                required property var modelData
+                                objectName: "boardLane-" + laneKey
+                                required property string laneKey
+                                required property string laneName
+                                // Karty wiersza: ta sama tablica, dopóki treść wiersza się nie zmieni (PT-326).
+                                readonly property var laneCards: (page.lanesByKey[laneKey] || { cards: [] }).cards
                                 Layout.fillWidth: true
                                 spacing: 6
                                 RowLayout {
                                     Layout.leftMargin: 4
                                     spacing: 8
                                     Text {
-                                        text: lane.modelData.name
+                                        text: lane.laneName
                                         textFormat: Text.PlainText
                                         color: Tide.Tokens.textSecondary
                                         font.family: Tide.Theme.uiFamily
@@ -1583,7 +1625,7 @@ Rectangle {
                                         Accessible.role: Accessible.Heading
                                     }
                                     Text {
-                                        text: Logic.cards(Logic.counts(lane.modelData.cards).total)
+                                        text: Logic.cards(Logic.counts(lane.laneCards).total)
                                         textFormat: Text.PlainText
                                         color: Tide.Tokens.textMuted
                                         font.family: Tide.Theme.uiFamily
@@ -1606,7 +1648,7 @@ Rectangle {
                                             showHeader: false
                                             showAdd: false
                                             spec: modelData
-                                            cards: Logic.column(lane.modelData.cards, modelData.id)
+                                            cards: Logic.column(lane.laneCards, modelData.id)
                                             selectedId: page.selectedId
                                             canLaunch: page.canLaunch
                                             canDiff: page.canDiff

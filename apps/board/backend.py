@@ -228,6 +228,9 @@ class Backend(QObject):
             app.aboutToQuit.connect(self.discardImages)   # okno Tide zamknięte z otwartym oknem uruchomienia
         self.bus = bus
         self._snapshot = "{}"
+        self._parsed_for = None         # napis migawki, z którego pochodzi _parsed (porównanie tożsamości)
+        self._parsed: dict = {}
+        self.parse_count = 0            # ile razy naprawdę sparsowano JSON migawki (diagnostyka, testy)
         self._available = False
         self._badge = ("", "muted")
         self._calls: list = []
@@ -631,7 +634,7 @@ class Backend(QObject):
     def _plan_card_path(self, path: str) -> bool:
         """Kartka musi pochodzić z aktualnej migawki otwartej karty."""
         try:
-            snapshot = json.loads(self._snapshot)
+            snapshot = self._parsed_snapshot()
             for card in snapshot.get("cards") or []:
                 if card.get("id") != self._current_doc_card:
                     continue
@@ -812,11 +815,20 @@ class Backend(QObject):
             self.availableChanged.emit()
             self._update_badge()
 
+    def _parsed_snapshot(self) -> dict:
+        """Migawka jako słownik, parsowana raz na napis: odznaka i sprawdzenie ścieżek dzielą ten sam wynik.
+        Wywołujący nie zmieniają zwróconej struktury."""
+        if self._parsed_for is not self._snapshot:
+            try:
+                parsed = json.loads(self._snapshot or "{}")
+            except ValueError:
+                parsed = {}
+            self.parse_count += 1
+            self._parsed, self._parsed_for = parsed, self._snapshot
+        return self._parsed
+
     def _update_badge(self) -> None:
-        try:
-            snapshot = json.loads(self._snapshot or "{}")
-        except ValueError:
-            snapshot = {}
+        snapshot = self._parsed_snapshot()
         value = badge(snapshot) if self._available else ("", "muted")
         if value != self._badge:
             self._badge = value

@@ -240,6 +240,36 @@ function sameValue(a, b) {
     return a === b || JSON.stringify(a) === JSON.stringify(b)
 }
 
+// Wartość pochodna o stabilnej tożsamości (PT-326): poprzednia, gdy treść się nie zmieniła, inaczej nowa.
+function stable(next, prev) {
+    return sameValue(next, prev) ? prev : next
+}
+
+// Wiersze projektów: karty pogrupowane po projekcie, „Bez projektu” na końcu, reszta alfabetycznie.
+function groupLanes(cards) {
+    const groups = []
+    const index = {}
+    for (const card of cards) {
+        const key = card.project || NO_PROJECT
+        if (index[key] === undefined) {
+            index[key] = groups.length
+            groups.push({ key: key, name: card.projectName || (card.project ? card.project : "Bez projektu"), cards: [] })
+        }
+        groups[index[key]].cards.push(card)
+    }
+    return groups.sort((a, b) => a.key === NO_PROJECT ? 1 : b.key === NO_PROJECT ? -1 : a.name.localeCompare(b.name))
+}
+
+// Nowe wiersze z zachowaniem tożsamości: wiersz o tym samym kluczu i treści to ten sam obiekt, a gdy wszystkie
+// wiersze i ich kolejność są te same, zwracana jest poprzednia tablica.
+function stableLanes(next, prev) {
+    const old = {}
+    for (const lane of prev || []) old[lane.key] = lane
+    const out = next.map(lane => old[lane.key] && sameValue(old[lane.key], lane) ? old[lane.key] : lane)
+    const same = out.length === (prev || []).length && out.every((lane, i) => lane === prev[i])
+    return same ? prev : out
+}
+
 // Karty bez powtórzeń `id` (pierwsze wystąpienie wygrywa) — model o stabilnej tożsamości nie znosi duplikatów.
 function uniqueCards(list) {
     const seen = {}
