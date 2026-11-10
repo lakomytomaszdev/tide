@@ -27,7 +27,9 @@ import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "../tide" as Tide
 import "decision.js" as Decision
+import "move.js" as Move
 import "settings.js" as Settings
+import "ticket.js" as TicketLib
 
 Rectangle {
     id: view
@@ -42,13 +44,23 @@ Rectangle {
     readonly property var derived: card && card.derived ? card.derived : null
     readonly property var flow: derived && derived.flow ? derived.flow : null
     readonly property var decisions: flow && Array.isArray(flow.decisions) ? flow.decisions : []
-    readonly property var pending: decisions.filter(d => answeredIds.indexOf(d.id) < 0)
+    // Zgrupowane zgody (PT-338): ta sama prośba poza piaskownicą z kilku kroków to jedna pozycja (decision.js).
+    property var consent: Decision.consentStart()
+    // Obciążenie poleceniami poza piaskownicą (decision.outsideLoad) dla prognozy grupy zgód; `null` — bez prognozy (Sesje).
+    property var outsideLoad: null
+    readonly property var pending: Decision.consentItems(decisions, answeredIds, consent, outsideLoad)
     readonly property var current: pending.length > 0 ? pending[0] : null
     readonly property var phases: derived && Array.isArray(derived.phases) ? derived.phases : []
+    // Krycie paska etapu `now` (karta K-97): wspólna faza strony Tablicy; 1.0 = bez mrugania (Sesje nic nie przekazują).
+    property real workPulse: 1.0
+    readonly property bool hasNowPhase: phases.some(p => p.state === "now")
     readonly property var tickets: derived && Array.isArray(derived.tickets) ? derived.tickets : []
+    // Karta „Od razu” (bez planu): jeden kafelek jej ticketu, bez nagłówka fali (PT-333).
+    readonly property var nowTicket: TicketLib.tileModel(card, answeredIds)
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
-    readonly property string headline: flow && flow.headline ? flow.headline : ""
+    // Zdanie usługi (`flow.headline`) albo nazwany trwający krok (move.js, PT-337).
+    readonly property string headline: Move.moveHeadline(flow, phases, tickets)
     readonly property var history: flow && Array.isArray(flow.history) ? flow.history : []
     readonly property var stepNotes: flow && Array.isArray(flow.stepNotes) ? flow.stepNotes : []
     readonly property var noteSteps: flow && Array.isArray(flow.steps) ? flow.steps.filter(
@@ -103,6 +115,9 @@ Rectangle {
     // kind: move {column} | update {field, value} | pause {paused} | archive {}; params.effect — zdanie o skutku.
     signal settingRequested(string kind, var params)
     signal enterStepRequested(string stepId)
+    // Ustawienia ticketu (PT-332): kafelek przekazuje prośbę dalej; przycisk na kafelku dodaje kolejny ticket karty.
+    property bool ticketSettingsEnabled: false
+    signal ticketSettingsRequested(string ticketId)
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
     signal previewMergeRequested(string target)
@@ -278,6 +293,7 @@ Rectangle {
         transferSent = false
         consentError = ""
         answeredIds = []
+        consent = Decision.consentStart()
         confirming = null
         menuOpen = false
         settingError = ""
@@ -295,6 +311,13 @@ Rectangle {
             return
         }
         if (decisionId.indexOf("limit-transfer:") === 0) transferSent = false
+        // Krok z grupy zgód wraca sam, osobno i z powodem (`consent.reasons`, pokazany, gdy dojdzie na wierzch);
+        // pozostałe odpowiedzi grupy zostają przyjęte.
+        if (Decision.isSent(consent, decisionId)) {
+            consent = Decision.consentFailed(consent, decisionId, message)
+            if (current && current.id === decisionId) form.fail(message)
+            return
+        }
         answeredIds = answeredIds.filter(id => id !== decisionId)
         form.fail(message)
     }
@@ -312,12 +335,6 @@ Rectangle {
     function phaseTone(state) {
         return state === "done" ? Tide.Tokens.mint : state === "now" ? Tide.Tokens.teal
              : state === "you" ? Tide.Tokens.peach : state === "hold" ? Tide.Tokens.butter : Tide.Tokens.textMuted
-    }
-
-    function statusTone(status) {
-        return status === "merged" ? Tide.Tokens.mint : status === "running" || status === "fix" ? Tide.Tokens.teal
-             : status === "review" || status === "merging" ? Tide.Tokens.lavender : status === "you" ? Tide.Tokens.peach
-             : status === "limit" ? Tide.Tokens.butter : status === "rejected" ? Tide.Tokens.rose : Tide.Tokens.textMuted
     }
 
     function clock(value) {
@@ -592,6 +609,8 @@ Rectangle {
                             color: phaseItem.phaseState === "todo" || phaseItem.phaseState === "skipped"
                                    ? Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
                                    : view.phaseTone(phaseItem.phaseState)
+                            objectName: "fullPhaseBar"
+                            opacity: phaseItem.phaseState === "now" ? view.workPulse : 1
                         }
                         Text {
                             Layout.fillWidth: true
@@ -767,10 +786,16 @@ Rectangle {
                         Layout.fillWidth: true
                         visible: !!view.current
                         decision: view.current
+                        errors: view.consent.reasons
                         onInputNeeded: notice => view.panelRequested(notice)
                         onEscapePressed: view.backRequested()
                         onPreviewRequested: (decisionId, method, params) => view.previewRequested(decisionId, method, params)
+                        onGroupAnswered: ids => view.consent = Decision.consentSent(view.consent, ids)
                         onAnswered: (decisionId, method, params) => {
+                            if (Decision.isSent(view.consent, decisionId)) {
+                                view.answered(decisionId, method, params)
+                                return
+                            }
                             if (!Decision.keepsPending(params))
                                 view.answeredIds = view.answeredIds.concat([decisionId])
                             else form.reset()
@@ -875,13 +900,23 @@ Rectangle {
                     Text {
                         objectName: "fullPlanEmpty"
                         Layout.fillWidth: true
-                        visible: view.tickets.length === 0
+                        visible: view.tickets.length === 0 && !view.nowTicket
                         text: "Karta bez planu: jeden ticket, bez fal."
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pointSize: Tide.Tokens.fontSizePt
                         wrapMode: Text.Wrap
+                    }
+                    TicketTile {
+                        Layout.fillWidth: true
+                        visible: !!view.nowTicket
+                        ticketId: view.nowTicket ? view.nowTicket.id : ""
+                        item: view.nowTicket
+                        // PT-341: „Ustawienia” jedynego ticketu karty „Od razu” — tylko tam, gdzie okno ma katalog
+                        // wykonawców (Tablica); w Sesjach `ticketSettingsEnabled` zostaje false.
+                        ticketSettingsEnabled: view.ticketSettingsEnabled
+                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -907,72 +942,13 @@ Rectangle {
                                 }
                                 Repeater {
                                     model: wave.modelData
-                                    delegate: Rectangle {
-                                        id: tile
+                                    delegate: TicketTile {
                                         required property var modelData
-                                        readonly property var item: view.ticket(modelData)
-                                        readonly property string ticketId: modelData
-                                        readonly property string status: item ? item.status || "" : ""
-                                        readonly property string statusLabel: item ? item.statusLabel || "" : ""
-                                        objectName: "fullTicket"
                                         Layout.fillWidth: true
-                                        implicitHeight: tileColumn.implicitHeight + 18
-                                        radius: Tide.Tokens.radiusTile
-                                        color: Tide.Tokens.backgroundCard
-                                        border.width: 1
-                                        border.color: status === "you" ? Tide.Theme.alpha(Tide.Tokens.peach, 0.45)
-                                                                       : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-                                        Accessible.role: Accessible.ListItem
-                                        Accessible.name: ticketId + ": " + (item ? item.title : "") + " — " + statusLabel
-                                        ColumnLayout {
-                                            id: tileColumn
-                                            anchors.left: parent.left
-                                            anchors.right: parent.right
-                                            anchors.top: parent.top
-                                            anchors.margins: 9
-                                            anchors.leftMargin: 11
-                                            spacing: 4
-                                            Text {
-                                                text: tile.ticketId
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.sky
-                                                font.family: Tide.Theme.monoFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                                                font.weight: Font.DemiBold
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: tile.item ? tile.item.title : ""
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.textPrimary
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                                                wrapMode: Text.Wrap
-                                                maximumLineCount: 3
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                objectName: "fullTicketStatus"
-                                                Layout.fillWidth: true
-                                                text: tile.statusLabel
-                                                textFormat: Text.PlainText
-                                                color: view.statusTone(tile.status)
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                                                font.weight: Font.Medium
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                visible: text !== ""
-                                                text: tile.item ? [tile.item.executor, tile.item.reviewer].filter(x => !!x).join(" → ") : ""
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.textMuted
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.8
-                                                elide: Text.ElideRight
-                                            }
-                                        }
+                                        ticketId: modelData
+                                        item: view.ticket(modelData)
+                                        ticketSettingsEnabled: view.ticketSettingsEnabled
+                                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                                     }
                                 }
                             }

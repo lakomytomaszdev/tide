@@ -19,10 +19,22 @@
 // Zgoda na łańcuch poleceń (PT-124): lista `commands[]` z flagami i powodem blokady, pole wyboru tylko przy
 // poleceniach z `canAllow`, zaznaczenie początkowe z `preselected`; możliwość z `params.allow` wysyła indeksy
 // zaznaczonych (`checks`), bez zaznaczenia nie da się wybrać. Podpis pola własnej odpowiedzi — `otherTitle`.
+//
+// Grupa zgód (PT-338, `decision.group` z decision.consentGroups): ta sama prośba poza piaskownicą z N kroków.
+// Rozwijana lista ticketów i kroków grupy, możliwości z usługi z opisem dla N kroków, prognoza „ruszy od razu /
+// poczeka” (`decision.forecast`, PT-340; pusta bez `outsideLoad` — wtedy zostaje sama liczba ticketów). Wybór emituje `groupAnswered(ids)`, a potem `answered` raz na każdą decyzję grupy (jej
+// `method` i `params` z jej `step`). Pozycja `decision.receipt` to znak przyjęcia („Przyjęto · wysyłam N odpowiedzi”)
+// bez możliwości. `errors` — powody odmowy usługi przy decyzjach, które wróciły z grupy osobno.
+//
+// Odstępstwo przy błędzie domknięcia (PT-339, deviation.js): gdy decyzja to błąd kroku `close` z możliwością `retry`
+// usługi, po możliwościach usługi stoi własna możliwość okna „Przyjmij odstępstwo…” — niepolecona, niezaznaczona,
+// z polem uzasadnienia i licznikiem. Bez uzasadnienia albo ponad limit „Wybierz” jest nieaktywne ze zdaniem dlaczego;
+// wybór wysyła jedno `answered` z `retry` tej decyzji i `answer` ze stałą instrukcją i uzasadnieniem.
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide
 import "decision.js" as Decision
+import "deviation.js" as Deviation
 
 ColumnLayout {
     id: form
@@ -41,8 +53,14 @@ ColumnLayout {
     property bool previewing: false
     // Zgoda na polecenia z łańcucha (PT-124): indeksy zaznaczonych poleceń z `decision.commands`.
     property var checks: []
+    // Grupa zgód (PT-338): rozwinięta lista ticketów; powody odmowy usługi przy decyzjach odłączonych od grupy.
+    property bool membersOpen: false
+    property var errors: ({})
 
     readonly property string decisionId: decision ? decision.id : ""
+    readonly property bool isGroup: !!decision && decision.group === true
+    readonly property bool isReceipt: isGroup && decision.receipt === true
+    readonly property var members: isGroup && Array.isArray(decision.members) ? decision.members : []
     readonly property var options: decision ? decision.options || [] : []
     readonly property bool freeText: !!decision && decision.freeText === true && !!decision.reply
     readonly property bool onlyText: freeText && options.length === 0
@@ -60,13 +78,19 @@ ColumnLayout {
                                         : "Odpowiedz własnymi słowami, jak w czacie z agentem."
     // Pole „Opisz problem i ponów” (błąd Tide): przed zapisem formularz pokazuje podgląd karty z usługi.
     readonly property bool needsPreview: choice === otherId && Decision.previewMethod(decision) !== ""
+    // Odstępstwo przy błędzie domknięcia (PT-339): możliwość okna i zdanie, dlaczego jeszcze nie można jej wybrać.
+    readonly property bool deviationOffered: Deviation.offered(decision)
+    readonly property bool deviationChosen: deviationOffered && choice === Deviation.OPTION_ID
+    readonly property string deviationBlocker: deviationChosen ? Deviation.blocker(deviationReason.text) : ""
     readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== ""
-                                                                         : choice !== "" && (!picksCommands || checks.length > 0))
+                                                      : deviationChosen ? deviationBlocker === ""
+                                                      : choice !== "" && (!picksCommands || checks.length > 0))
     // Napis przycisku wyboru w oknie i w pełnej karcie.
     readonly property string chooseLabel: needsPreview ? (preview ? (decision.reply.confirmLabel || "Zapisz i ponów") : "Pokaż podgląd") : "Wybierz"
     readonly property alias answerField: answer
 
     signal answered(string decisionId, string method, var params)
+    signal groupAnswered(var ids)
     signal previewRequested(string decisionId, string method, var params)
     signal inputNeeded(string notice)
     signal escapePressed()
@@ -75,10 +99,12 @@ ColumnLayout {
         selected = ""
         techOpen = false
         triedOpen = false
-        error = ""
+        membersOpen = false
+        error = errors && errors[decisionId] ? String(errors[decisionId]) : ""
         preview = null
         previewing = false
         answer.text = ""
+        deviationReason.text = ""
         checkedIds = Decision.defaultChecked(decision)
         checks = Decision.preselectedIndexes(decision)
     }
@@ -117,6 +143,7 @@ ColumnLayout {
         selected = id
         error = ""
         if (id === otherId) answer.forceActiveFocus()
+        else if (id === Deviation.OPTION_ID) deviationReason.forceActiveFocus()
     }
 
     // „Wybierz” i Enter: bez zaznaczenia (albo z pustą własną odpowiedzią) nic się nie dzieje.
@@ -132,12 +159,23 @@ ColumnLayout {
                 previewRequested(decision.id, Decision.previewMethod(decision), request.params)
                 return false
             }
+        } else if (deviationChosen) {
+            // Jedno `retry` tej decyzji ze stałą instrukcją i uzasadnieniem (deviation.js).
+            request = Deviation.request(decision, deviationReason.text)
         } else {
             const option = options.find(o => o.id === choice)
             if (!option) return false
             if (Decision.needsInput(option)) {
                 inputNeeded("„" + option.title + "”: wybierz wykonawcę w panelu karty.")
                 return false
+            }
+            if (isGroup) {
+                // Jedna odpowiedź na każdą decyzję grupy — żądanie z jej własnej możliwości (ten sam `id`).
+                const requests = Decision.groupRequests(decision, option.id)
+                if (requests.length === 0) return false
+                groupAnswered(requests.map(r => r.id))
+                for (const r of requests) answered(r.id, r.method, r.params)
+                return true
             }
             request = Decision.optionRequest(option, checks)
         }
@@ -238,6 +276,80 @@ ColumnLayout {
         Connections {
             target: form
             function onDecisionIdChanged() { commandCopy.copied = false }
+        }
+    }
+
+    // Grupa zgód (PT-338): znak przyjęcia po wyborze, miejsce na prognozę (#9) i rozwijana lista ticketów i kroków.
+    Text {
+        objectName: "decisionReceipt"
+        Layout.fillWidth: true
+        visible: form.isReceipt
+        text: form.isReceipt ? Decision.text(form.decision.receiptText) : ""
+        textFormat: Text.PlainText
+        color: Tide.Tokens.mint
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt * 1.05
+        font.weight: Font.DemiBold
+        wrapMode: Text.Wrap
+        Accessible.role: Accessible.StaticText
+        Accessible.name: text
+    }
+    Text {
+        objectName: "decisionGroupForecast"
+        Layout.fillWidth: true
+        visible: form.isGroup && text !== ""
+        text: form.isGroup ? Decision.text(form.decision.forecast) : ""
+        textFormat: Text.PlainText
+        color: Tide.Tokens.textSecondary
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
+    }
+    Tide.TextButton {
+        objectName: "decisionGroupToggle"
+        visible: form.members.length > 0
+        text: (form.membersOpen ? "▾ " : "▸ ") + "Tickety i kroki (" + form.members.length + ")"
+        accent: Tide.Tokens.textMuted
+        onClicked: form.membersOpen = !form.membersOpen
+    }
+    ColumnLayout {
+        objectName: "decisionGroupMembers"
+        Layout.fillWidth: true
+        visible: form.membersOpen && form.members.length > 0
+        spacing: 4
+        Accessible.role: Accessible.List
+        Accessible.name: "Tickety i kroki grupy"
+        Repeater {
+            model: form.membersOpen ? form.members : []
+            delegate: ColumnLayout {
+                id: memberRow
+                objectName: "decisionGroupMember"
+                required property var modelData
+                readonly property string label: [modelData.ticket, modelData.step, modelData.executor]
+                                                .filter(x => !!x).join(" · ")
+                readonly property string reason: modelData.reason || ""
+                Layout.fillWidth: true
+                spacing: 0
+                Text {
+                    Layout.fillWidth: true
+                    text: memberRow.label
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.95
+                    wrapMode: Text.Wrap
+                }
+                Text {
+                    Layout.fillWidth: true
+                    visible: memberRow.reason !== ""
+                    text: memberRow.reason
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textSecondary
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                    wrapMode: Text.Wrap
+                }
+            }
         }
     }
 
@@ -582,6 +694,84 @@ ColumnLayout {
             }
         }
 
+        // „Przyjmij odstępstwo…” (PT-339): po możliwościach usługi, przed „Inną odpowiedzią…”; nigdy nie polecona.
+        DecisionOption {
+            objectName: "decisionDeviation"
+            Layout.fillWidth: true
+            visible: form.deviationOffered
+            title: Deviation.TITLE
+            effect: Deviation.EFFECT
+            checked: form.deviationChosen
+            onPicked: form.pick(Deviation.OPTION_ID)
+        }
+        ColumnLayout {
+            objectName: "decisionDeviationBox"
+            Layout.fillWidth: true
+            Layout.leftMargin: 23
+            visible: form.deviationChosen
+            spacing: 4
+            Text {
+                Layout.fillWidth: true
+                text: Deviation.FIELD_LABEL
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                font.weight: Font.Medium
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: Math.max(64, deviationReason.implicitHeight + 16)
+                radius: Tide.Tokens.radiusFrame
+                color: Tide.Tokens.backgroundView
+                border.width: 1
+                border.color: form.deviationChosen && Deviation.tooLong(deviationReason.text)
+                              ? Tide.Theme.alpha(Tide.Tokens.negative, 0.6)
+                              : deviationReason.activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+                              : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
+                TextEdit {
+                    id: deviationReason
+                    objectName: "decisionDeviationReason"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.Wrap
+                    color: Tide.Tokens.textPrimary
+                    selectionColor: Tide.Theme.alpha(Tide.Tokens.accent, 0.4)
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.05
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.EditableText
+                    Accessible.name: Deviation.FIELD_LABEL
+                    // Enter dodaje linię (uzasadnienie bywa dłuższe); wybór tylko przyciskiem. Esc oddaje do okna.
+                    Keys.onEscapePressed: event => {
+                        form.escapePressed()
+                        event.accepted = true
+                    }
+                    Text {
+                        anchors.fill: parent
+                        visible: deviationReason.text === ""
+                        text: Deviation.HINT
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font: deviationReason.font
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+            Text {
+                objectName: "decisionDeviationCounter"
+                Layout.fillWidth: true
+                text: form.deviationChosen ? Deviation.counter(deviationReason.text) : ""
+                textFormat: Text.PlainText
+                color: form.deviationChosen && Deviation.tooLong(deviationReason.text) ? Tide.Tokens.negative
+                                                                                     : Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+
         Rectangle {
             id: other
             objectName: "decisionOther"
@@ -716,6 +906,19 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: form.picksCommands && form.checks.length === 0
         text: "Zaznacz co najmniej jedno polecenie powyżej, na które zezwalasz."
+        textFormat: Text.PlainText
+        color: Tide.Tokens.waiting
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
+    }
+
+    // „Przyjmij odstępstwo…” bez uzasadnienia albo ponad limit: „Wybierz” jest nieaktywne, więc mówimy dlaczego.
+    Text {
+        objectName: "decisionDeviationHint"
+        Layout.fillWidth: true
+        visible: form.deviationBlocker !== ""
+        text: form.deviationBlocker
         textFormat: Text.PlainText
         color: Tide.Tokens.waiting
         font.family: Tide.Theme.uiFamily

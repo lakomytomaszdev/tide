@@ -19,8 +19,8 @@ import unittest
 from . import APP_DIR, REPO
 from .test_window import QML_PROBLEMS, stage
 from apps.board.tests.boardfix import preview_data
-from apps.board.tests.decisionfix import (CARD, MERGE_AFTER, MERGE_CHECK, MERGE_TICKET, decisions, full_c, full_d,
-                                          journal_merge_check, scenario_f)
+from apps.board.tests.decisionfix import (CARD, MERGE_AFTER, MERGE_CHECK, MERGE_TICKET, TICKETS_D, decisions, full_c,
+                                          full_card, full_d, journal_merge_check, journal_move, scenario_f)
 
 import re
 
@@ -133,6 +133,46 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual((out["open"]["fullOpen"], out["open"]["decisionOpen"], out["open"]["dialog"]),
                          (True, False, False))
 
+    def test_ticket_settings_button_is_hidden_in_sessions(self):
+        """PT-334: przycisk „Ustawienia” ticketu jest tylko w Tablicy (Sesje nie mają katalogu wykonawców)."""
+        out = self.probe(self.working, "click_entry(0)\n"
+                         "result['tiles'] = json.loads(js(\"JSON.stringify((function walk(it) { let out = []; "
+                         "for (const c of it.children) { if (c.objectName === 'fullTicket') out.push(c); "
+                         "out = out.concat(walk(c)) } return out })(cardFullView).map(t => "
+                         "[t.ticketId, t.ticketSettingsEnabled, (function find(it) { for (const c of it.children) { "
+                         "if (c.objectName === 'fullTicketSettings') return c.visible; const r = find(c); "
+                         "if (r !== undefined) return r } return undefined })(t)]))\"))")
+        self.assertTrue(out["tiles"], "pełna karta ma kafelki ticketów")
+        for ticket, enabled, visible in out["tiles"]:
+            self.assertFalse(enabled, ticket)
+            self.assertFalse(visible, ticket)
+
+    def test_now_card_ticket_tile_has_no_settings_button_in_sessions(self):
+        """PT-341: kafelek jedynego ticketu karty „Od razu” ma „Ustawienia” tylko w pełnej karcie Tablicy."""
+        from apps.board.tests.test_now_ticket_tile import now_journal
+        path = self.data_file("now", full_card(preview_data(os.path.join(self.tmp, "now")), now_journal("ticket")))
+        out = self.probe(path, "click_entry(0)\n"
+                         "result['tiles'] = json.loads(js(\"JSON.stringify((function walk(it) { let out = []; "
+                         "for (const c of it.children) { if (c.objectName === 'fullTicket') out.push(c); "
+                         "out = out.concat(walk(c)) } return out })(cardFullView).map(t => "
+                         "[t.ticketId, t.ticketSettingsEnabled, (function find(it) { for (const c of it.children) { "
+                         "if (c.objectName === 'fullTicketSettings') return c.visible; const r = find(c); "
+                         "if (r !== undefined) return r } return undefined })(t)]))\"))")
+        self.assertEqual([t[0] for t in out["tiles"]], ["PT-7"], "kafelek karty „Od razu” jest w pełnej karcie Sesji")
+        for ticket, enabled, visible in out["tiles"]:
+            self.assertFalse(enabled, ticket)
+            self.assertFalse(visible, ticket)
+
+    def test_running_close_sentence_is_the_same_in_the_sessions_full_card(self):
+        # PT-337: to samo zdanie „Twój ruch” co na Tablicy (wspólny CardFullView i move.js).
+        events = journal_move([("K-8-close-1", "", "close", "Opus", [])], tuple(row[0] for row in TICKETS_D))
+        base = preview_data(os.path.join(self.tmp, "board-move"))
+        data = self.data_file("closing", full_card(base, events))
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "result['headline'] = js('cardFullView.headline')")
+        self.assertTrue(out["open"]["full"])
+        self.assertTrue(out["headline"].startswith("Domknięcie pracuje w tle (Opus);"), out["headline"])
+
     def test_answer_goes_to_board_with_method_and_params_from_the_decision(self):
         out = self.probe(self.waiting, "click_entry(0)\n"
                          "js(\"decisionDialog.answered('d1', 'ApproveCardPlan', {})\")\n"
@@ -180,6 +220,50 @@ result['calls'] = calls()
         self.assertEqual(sent[0][1], CARD)
         self.assertEqual(json.loads(sent[0][2]), {"choice": "accept-merge-check", "ticket": MERGE_TICKET,
                                                   "check": MERGE_CHECK, "after": MERGE_AFTER})
+
+    def test_consent_group_answers_each_step_from_sessions(self):
+        # PT-338: ta sama grupa zgód w oknie decyzji Sesji (wspólny DecisionDialog i decision.js).
+        from apps.board.tests.decisionfix import OUTSIDE_COMMAND, OUTSIDE_TICKETS, journal_outside, outside_step
+        base = preview_data(os.path.join(self.tmp, "board-consent"))
+        data = self.data_file("consent-group", full_card(base, journal_outside()))
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "result['items'] = json.loads(js(\"JSON.stringify(decisionDialog.pending.map(d => d.happened))\"))\n"
+                               "js(\"decisionDialog.form.pick('run-always')\")\njs('decisionDialog.choose()')\n"
+                               "QTest.qWait(300)\nresult['calls'] = calls()\n"
+                               "result['after'] = json.loads(js(\"JSON.stringify(decisionDialog.pending.map(d => "
+                               "[!!d.group, d.ticket]))\"))\n"
+                               "result['error'] = js('decisionDialog.form.error')")
+        self.assertTrue(out["open"]["dialog"])
+        self.assertEqual(out["items"], [OUTSIDE_COMMAND + " · 7 ticketów"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["ResolveCardStep", CARD]] * 7)
+        self.assertEqual([json.loads(c[2]) for c in out["calls"]],
+                         [{"choice": "run-always", "step": outside_step(t)} for t in OUTSIDE_TICKETS])
+        # Podgląd z pliku odrzuca każdy zapis od razu (w trakcie wysyłki): każda decyzja wraca osobno, z powodem.
+        self.assertEqual(out["after"], [[False, t] for t in OUTSIDE_TICKETS])
+        self.assertIn("Podgląd z pliku", out["error"])
+
+    def test_close_deviation_sends_one_retry_from_sessions(self):
+        # PT-339: „Przyjmij odstępstwo…” w oknie decyzji Sesji (wspólny DecisionForm i deviation.js).
+        from apps.board.tests.decisionfix import journal_close_error
+        base = preview_data(os.path.join(self.tmp, "board-deviation"))
+        data = self.data_file("close-deviation", full_card(base, journal_close_error()))
+        field = ("(function find(it) { for (const c of it.children) { if (c.objectName === 'decisionDeviationReason') "
+                 "return c; const r = find(c); if (r) return r } return null })(decisionDialog)")
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "js(\"decisionDialog.form.pick('__deviation__')\")\n"
+                               "result['empty'] = js('decisionDialog.form.canChoose')\n"
+                               "result['hint'] = js('decisionDialog.form.deviationBlocker')\n"
+                               "js(" + repr(field + ".text = 'pada też na master'") + ")\n"
+                               "result['ready'] = js('decisionDialog.form.canChoose')\n"
+                               "js('decisionDialog.choose()')\nQTest.qWait(300)\nresult['calls'] = calls()")
+        self.assertTrue(out["open"]["dialog"])
+        self.assertFalse(out["empty"])
+        self.assertIn("Wpisz uzasadnienie", out["hint"])
+        self.assertTrue(out["ready"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["ResolveCardStep", CARD]])
+        params = json.loads(out["calls"][0][2])
+        self.assertEqual((params["choice"], params["step"]), ("retry", "K-8-close-1-1"))
+        self.assertTrue(params["answer"].endswith("Uzasadnienie użytkownika: „pada też na master”"))
 
     def test_dialog_setting_reaches_the_backend(self):
         out = self.probe(self.waiting, "click_entry(0)\njs(\"decisionDialog.cardOpenRequested('full')\")\n"
@@ -347,7 +431,8 @@ class SharedComponentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tide-sess-shared-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
             source = os.path.join(REPO, "apps", "common", "qml", "card")
-            for name in ("DecisionDialog.qml", "CardFullView.qml", "DecisionForm.qml", "decision.js"):
+            for name in ("DecisionDialog.qml", "CardFullView.qml", "DecisionForm.qml", "decision.js",
+                         "TicketTile.qml", "ticket.js"):
                 with open(os.path.join(source, name), "rb") as fh:
                     expected = fh.read()
                 for view in ("board", "sessions"):

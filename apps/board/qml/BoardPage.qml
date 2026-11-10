@@ -12,6 +12,7 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
 import "board.js" as Logic
+import "card/decision.js" as Decision
 
 Rectangle {
     id: page
@@ -48,6 +49,7 @@ Rectangle {
     property string decisionCardId: ""
     // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
     property bool fullOpen: false
+    onFullOpenChanged: if (!fullOpen) ticketSettings.close()
     property string fullCardId: ""
     // Szuflada opisu (PT-134): panel karty tylko z opisem i „Zapisz opis”, otwierany z pełnej karty.
     property bool descriptionDrawer: false
@@ -72,13 +74,15 @@ Rectangle {
     property int workPulseStep: 0
     readonly property var workPulseLevels: [1.0, 0.7, 0.45, 0.7]
     readonly property bool hasWorking: Logic.hasWorkingSegment(allCards)
+    // Pełna karta otwarta, widoczna i z etapem `now` na pasku przebiegu (karta K-97).
+    readonly property bool fullNowActive: fullOpen && cardFullView.visible && cardFullView.hasNowPhase
     readonly property alias workPulseTimer: workPulseTimer
     Timer {
         id: workPulseTimer
         objectName: "workPulseTimer"
         interval: 500
         repeat: true
-        running: page.animationsActive && page.hasWorking
+        running: page.animationsActive && (page.hasWorking || page.fullNowActive)
         onTriggered: {
             page.workPulseStep = (page.workPulseStep + 1) % page.workPulseLevels.length
             page.workPulse = page.workPulseLevels[page.workPulseStep]
@@ -407,6 +411,25 @@ Rectangle {
     function setCardOpen(value) {
         if (value === cardOpen) return
         cardOpenRequested(value)
+    }
+
+    // --- ustawienia ticketu (PT-334) ------------------------------------------------------------
+
+    property string ticketSettingsTag: ""
+    // Tagi ostatnich przepięć trwającego ticketu (PT-335) osobno dla pól „author” i „reviewer”.
+    property var ticketReassignTags: ({})
+
+    // Wiersz planu ticketu z migawki pełnej karty (`editable` liczy usługa).
+    function openTicketSettings(ticketId) {
+        const plan = cardFullView.flow && cardFullView.flow.plan
+        let row = plan && Array.isArray(plan.rows) ? plan.rows.find(r => (r.id || r.workId) === ticketId) : null
+        // Karta „Od razu” (PT-341) nie ma wiersza planu: okno dostaje wiersz zastępczy z kafelka ticketu. `noPlanRow`
+        // mówi mu, że klasa to domyślny „standard” (tylko do odczytu), a `editable: false` — że ticket już jest w toku.
+        const now = cardFullView.nowTicket
+        if (!row && now && now.id === ticketId)
+            row = { id: now.id, workId: now.id, title: now.title, executor: now.executor, reviewer: now.reviewer,
+                    editable: false, noPlanRow: true }
+        ticketSettings.open(ticketId, row || null)
     }
 
     // --- okno decyzji (PT-132) ------------------------------------------------------------------
@@ -771,6 +794,28 @@ Rectangle {
         if (settingNote !== null && settingNote !== "") {
             if (!error) showToast(settingNote, "mint")
             else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
+        }
+        if (tag.indexOf("ticket-settings:") === 0) {
+            // Błąd usługi (np. ticket-started, bad-assignment) zostaje w oknie; sukces zamyka je z potwierdzeniem.
+            if (tag !== ticketSettingsTag || !ticketSettings.visible) return
+            if (error) {
+                ticketSettings.busy = false
+                ticketSettings.error = error
+            } else {
+                const id = ticketSettings.ticketId
+                ticketSettings.close()
+                showToast("Ustawienia ticketu " + id + " zapisane.", "mint")
+            }
+            return
+        }
+        if (tag.indexOf("ticket-reassign:") === 0) {
+            // Odpowiedź wraca do okna przy polu, które ją wysłało; okno się nie zamyka.
+            const field = tag.split(":")[1]
+            if (ticketReassignTags[field] !== tag) return
+            // „retry” (PT-341): odpowiedź ResolveCardStep nie niesie nazwy wykonawcy — okno użyje wysłanej.
+            ticketSettings.fieldReplied(field, error, reply && (field === "author" ? reply.executor
+                                                                  : field === "reviewer" ? reply.reviewer : "") || "")
+            return
         }
         if (tag.indexOf("base-change:") === 0) {
             if (baseChangePreview.requestTag !== tag) return
@@ -1983,6 +2028,8 @@ Rectangle {
         visible: page.decisionOpen && !page.managing
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
+        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+                                          page.decisionCardRaw ? page.decisionCardRaw.project : "")
         cardOpen: page.cardOpen
         onCardOpenRequested: value => page.setCardOpen(value)
         onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
@@ -2012,15 +2059,22 @@ Rectangle {
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
         mergePreviewAvailable: true
+        // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
+        ticketSettingsEnabled: true
+        onTicketSettingsRequested: id => page.openTicketSettings(id)
         baseChangeAvailable: true
         onBaseChangeRequested: page.openBaseChange(page.fullCardId)
         anchors.fill: parent
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
+        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340): obciążenie z migawki wszystkich kart.
+        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+                                                          page.fullCardRaw ? page.fullCardRaw.project : "") : null
         moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
         canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
         columnLabels: page.columnLabelMap
+        workPulse: page.workPulse
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
@@ -2034,6 +2088,30 @@ Rectangle {
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
+    }
+
+    // Okno ustawień ticketu nieruszonego (PT-334); odpowiedź na „Zapisz” wraca przez tag „ticket-settings:”.
+    TicketSettingsDialog {
+        id: ticketSettings
+        objectName: "ticketSettingsDialog"
+        anchors.fill: parent
+        z: 45
+        modelsStatus: page.modelsStatus
+        // Ticket trwający (PT-335): blokady pól liczą się na bieżąco z migawki pełnej karty.
+        flow: cardFullView.flow
+        // Karta „Od razu” nie ma `derived.tickets`: jedyny ticket jest kafelkiem (`nowTicket`).
+        tickets: cardFullView.tickets.length > 0 ? cardFullView.tickets
+                                                 : (cardFullView.nowTicket ? [cardFullView.nowTicket] : [])
+        onSaveRequested: request => {
+            ticketSettingsTag = page.nextTag("ticket-settings:" + page.fullCardId)
+            page.planEditRequested(ticketSettingsTag, page.fullCardId, JSON.stringify(request))
+        }
+        onReassignRequested: (field, request) => {
+            const tag = page.nextTag("ticket-reassign:" + field + ":" + page.fullCardId)
+            page.ticketReassignTags = Object.assign({}, page.ticketReassignTags, { [field]: tag })
+            page.stepResolveRequested(tag, page.fullCardId, JSON.stringify(request))
+        }
+        onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
 
     MergePreview {
