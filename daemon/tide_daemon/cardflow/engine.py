@@ -7003,21 +7003,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return True
 
     def _merge_check_targets(self, repo: str, commit: str) -> set:
-        """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""
+        """Cele `make` gałęzi karty w commicie `commit`: pliki `make` z obiektów gita (nie z drzewa roboczego),
+        bez uruchamiania `make`. Wybór plików, limit i parser — `testpolicy.commit_make_targets`."""
         if not commit:
             return set()
-        texts = []
-        shown = self.git.run(repo, "show", f"{commit}:Makefile")
-        if shown.ok:
-            texts.append(shown.out[:mergecheck.MAKEFILE_MAX])
-        listed = self.git.run(repo, "ls-tree", "--name-only", commit, "mk/")
-        for path in (listed.out.splitlines() if listed.ok else []):
-            name = os.path.basename(path)
-            if path.startswith("mk/") and name.endswith(".mk") and not name.startswith("."):
-                one = self.git.run(repo, "show", f"{commit}:{path}")
-                if one.ok:
-                    texts.append(one.out[:mergecheck.MAKEFILE_MAX])
-        return mergecheck.make_targets(texts)
+
+        def show(path: str):
+            shown = self.git.run(repo, "show", f"{commit}:{path}")
+            return shown.out if shown.ok else None
+
+        def listing(directory: str) -> list:
+            listed = self.git.run(repo, "ls-tree", "--name-only", commit, directory + "/")
+            return listed.out.splitlines() if listed.ok else []
+
+        return testpolicy.commit_make_targets(show, listing)
 
     def _merge_check_contract(self, card: str) -> str:
         """`tests.changed` zatwierdzonego kontraktu testów projektu (K-69) albo "" — kontrakt nieobecny,

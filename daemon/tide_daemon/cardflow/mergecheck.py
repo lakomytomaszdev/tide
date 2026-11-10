@@ -41,6 +41,8 @@ from __future__ import annotations
 import re
 import shlex
 
+from . import testpolicy
+
 ARMED, REQUESTED, FINISHED = "merge.check-armed", "merge.check-requested", "merge.check-finished"
 STEP = "merge.check-step"
 ACCEPTED = "merge.check-accepted"
@@ -54,24 +56,12 @@ CONTRACT, MAKEFILE = "contract", "makefile"
 CONTRACT_NOT_SINGLE = "contract-not-single"
 BASE_PARAM = "{base}"
 CHANGED_TARGET, FULL_TARGET = "test-changed", "test"
-MAKEFILE_MAX = 1 << 20
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
-# Ta sama reguła celów co wykrycie testów kroku (K-69): `cel:` albo `cel::`, bez przypisań `X := …`.
-_RULE = re.compile(r"^([^\s:#=][^:#=]*?)[ \t]*(:{1,2})(.*)$")
-_NAME = re.compile(r"^[A-Za-z0-9_.+/-]+$")
-
-
 def make_targets(texts) -> set[str]:
-    """Cele reguł z tekstów `Makefile` i `mk/*.mk` (tylko tekst — nic nie uruchamia)."""
-    targets = set()
-    for text in texts:
-        for line in str(text or "").splitlines():
-            match = _RULE.match(line)
-            if not match or match.group(3).startswith("="):
-                continue
-            targets.update(name for name in match.group(1).split() if _NAME.match(name))
-    return targets
+    """Cele reguł z tekstów `Makefile` i `mk/*.mk` — ten sam parser co wykrycie testów kroku (K-69): jedynym
+    czytnikiem plików `make` w przepływie karty jest `testpolicy`."""
+    return testpolicy.text_targets(texts)
 
 
 # Programy, które same uruchamiają inne polecenia (powłoki, przełączniki uruchamiania) — odrzucane po nazwie

@@ -99,16 +99,37 @@ def make_targets(directory: str) -> list[str]:
         except OSError:
             names = []
         paths += [os.path.join(mk, name) for name in names if name.endswith(".mk") and not name.startswith(".")]
+    return sorted(text_targets(_read(path) for path in paths if os.path.isfile(path) and _inside(root, path)))
+
+
+def text_targets(texts) -> set[str]:
+    """Cele reguł z tekstów `Makefile` i `mk/*.mk` (tylko tekst — nic nie uruchamia). Wspólny parser
+    `make_targets` (worktree) i `commit_make_targets` (obiekty gita commita, sprawdzenie scalenia K-88)."""
     targets = set()
-    for path in paths:
-        if not os.path.isfile(path) or not _inside(root, path):
-            continue
-        for line in _read(path).splitlines():
+    for text in texts:
+        for line in str(text or "").splitlines():
             match = _RULE.match(line)
             if not match or match.group(3).startswith("="):  # `X := …`, `X ::= …` to przypisania, nie reguły
                 continue
             targets.update(name for name in match.group(1).split() if _NAME.match(name))
-    return sorted(targets)
+    return targets
+
+
+def commit_make_targets(show, listing) -> set[str]:
+    """Cele `make` z plików commita, bez drzewa roboczego i bez uruchamiania `make` (sprawdzenie scalenia,
+    K-88/PT-318). `show(path) -> str | None` — tekst pliku w commicie (None: brak pliku),
+    `listing(directory) -> list[str]` — ścieżki plików katalogu w commicie. Każdy tekst ucięty do `MAKEFILE_MAX`."""
+    texts = []
+    shown = show("Makefile")
+    if shown is not None:
+        texts.append(shown[:MAKEFILE_MAX])
+    for path in listing("mk"):
+        name = os.path.basename(path)
+        if path.startswith("mk/") and name.endswith(".mk") and not name.startswith("."):
+            one = show(path)
+            if one is not None:
+                texts.append(one[:MAKEFILE_MAX])
+    return text_targets(texts)
 
 
 def make_target(command: str) -> str:
