@@ -203,6 +203,29 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual(out["after"], [[False, t] for t in OUTSIDE_TICKETS])
         self.assertIn("Podgląd z pliku", out["error"])
 
+    def test_close_deviation_sends_one_retry_from_sessions(self):
+        # PT-339: „Przyjmij odstępstwo…” w oknie decyzji Sesji (wspólny DecisionForm i deviation.js).
+        from apps.board.tests.decisionfix import journal_close_error
+        base = preview_data(os.path.join(self.tmp, "board-deviation"))
+        data = self.data_file("close-deviation", full_card(base, journal_close_error()))
+        field = ("(function find(it) { for (const c of it.children) { if (c.objectName === 'decisionDeviationReason') "
+                 "return c; const r = find(c); if (r) return r } return null })(decisionDialog)")
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "js(\"decisionDialog.form.pick('__deviation__')\")\n"
+                               "result['empty'] = js('decisionDialog.form.canChoose')\n"
+                               "result['hint'] = js('decisionDialog.form.deviationBlocker')\n"
+                               "js(" + repr(field + ".text = 'pada też na master'") + ")\n"
+                               "result['ready'] = js('decisionDialog.form.canChoose')\n"
+                               "js('decisionDialog.choose()')\nQTest.qWait(300)\nresult['calls'] = calls()")
+        self.assertTrue(out["open"]["dialog"])
+        self.assertFalse(out["empty"])
+        self.assertIn("Wpisz uzasadnienie", out["hint"])
+        self.assertTrue(out["ready"])
+        self.assertEqual([c[:2] for c in out["calls"]], [["ResolveCardStep", CARD]])
+        params = json.loads(out["calls"][0][2])
+        self.assertEqual((params["choice"], params["step"]), ("retry", "K-8-close-1-1"))
+        self.assertTrue(params["answer"].endswith("Uzasadnienie użytkownika: „pada też na master”"))
+
     def test_dialog_setting_reaches_the_backend(self):
         out = self.probe(self.waiting, "click_entry(0)\njs(\"decisionDialog.cardOpenRequested('full')\")\n"
                                        "QTest.qWait(100)\nresult['cardOpen'] = backend.cardOpen\n"

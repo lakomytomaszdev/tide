@@ -25,10 +25,16 @@
 // poczeka” (`decision.forecast`, PT-340; pusta bez `outsideLoad` — wtedy zostaje sama liczba ticketów). Wybór emituje `groupAnswered(ids)`, a potem `answered` raz na każdą decyzję grupy (jej
 // `method` i `params` z jej `step`). Pozycja `decision.receipt` to znak przyjęcia („Przyjęto · wysyłam N odpowiedzi”)
 // bez możliwości. `errors` — powody odmowy usługi przy decyzjach, które wróciły z grupy osobno.
+//
+// Odstępstwo przy błędzie domknięcia (PT-339, deviation.js): gdy decyzja to błąd kroku `close` z możliwością `retry`
+// usługi, po możliwościach usługi stoi własna możliwość okna „Przyjmij odstępstwo…” — niepolecona, niezaznaczona,
+// z polem uzasadnienia i licznikiem. Bez uzasadnienia albo ponad limit „Wybierz” jest nieaktywne ze zdaniem dlaczego;
+// wybór wysyła jedno `answered` z `retry` tej decyzji i `answer` ze stałą instrukcją i uzasadnieniem.
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide
 import "decision.js" as Decision
+import "deviation.js" as Deviation
 
 ColumnLayout {
     id: form
@@ -72,8 +78,13 @@ ColumnLayout {
                                         : "Odpowiedz własnymi słowami, jak w czacie z agentem."
     // Pole „Opisz problem i ponów” (błąd Tide): przed zapisem formularz pokazuje podgląd karty z usługi.
     readonly property bool needsPreview: choice === otherId && Decision.previewMethod(decision) !== ""
+    // Odstępstwo przy błędzie domknięcia (PT-339): możliwość okna i zdanie, dlaczego jeszcze nie można jej wybrać.
+    readonly property bool deviationOffered: Deviation.offered(decision)
+    readonly property bool deviationChosen: deviationOffered && choice === Deviation.OPTION_ID
+    readonly property string deviationBlocker: deviationChosen ? Deviation.blocker(deviationReason.text) : ""
     readonly property bool canChoose: !previewing && (choice === otherId ? answer.text.trim() !== ""
-                                                                         : choice !== "" && (!picksCommands || checks.length > 0))
+                                                      : deviationChosen ? deviationBlocker === ""
+                                                      : choice !== "" && (!picksCommands || checks.length > 0))
     // Napis przycisku wyboru w oknie i w pełnej karcie.
     readonly property string chooseLabel: needsPreview ? (preview ? (decision.reply.confirmLabel || "Zapisz i ponów") : "Pokaż podgląd") : "Wybierz"
     readonly property alias answerField: answer
@@ -93,6 +104,7 @@ ColumnLayout {
         preview = null
         previewing = false
         answer.text = ""
+        deviationReason.text = ""
         checkedIds = Decision.defaultChecked(decision)
         checks = Decision.preselectedIndexes(decision)
     }
@@ -131,6 +143,7 @@ ColumnLayout {
         selected = id
         error = ""
         if (id === otherId) answer.forceActiveFocus()
+        else if (id === Deviation.OPTION_ID) deviationReason.forceActiveFocus()
     }
 
     // „Wybierz” i Enter: bez zaznaczenia (albo z pustą własną odpowiedzią) nic się nie dzieje.
@@ -146,6 +159,9 @@ ColumnLayout {
                 previewRequested(decision.id, Decision.previewMethod(decision), request.params)
                 return false
             }
+        } else if (deviationChosen) {
+            // Jedno `retry` tej decyzji ze stałą instrukcją i uzasadnieniem (deviation.js).
+            request = Deviation.request(decision, deviationReason.text)
         } else {
             const option = options.find(o => o.id === choice)
             if (!option) return false
@@ -678,6 +694,84 @@ ColumnLayout {
             }
         }
 
+        // „Przyjmij odstępstwo…” (PT-339): po możliwościach usługi, przed „Inną odpowiedzią…”; nigdy nie polecona.
+        DecisionOption {
+            objectName: "decisionDeviation"
+            Layout.fillWidth: true
+            visible: form.deviationOffered
+            title: Deviation.TITLE
+            effect: Deviation.EFFECT
+            checked: form.deviationChosen
+            onPicked: form.pick(Deviation.OPTION_ID)
+        }
+        ColumnLayout {
+            objectName: "decisionDeviationBox"
+            Layout.fillWidth: true
+            Layout.leftMargin: 23
+            visible: form.deviationChosen
+            spacing: 4
+            Text {
+                Layout.fillWidth: true
+                text: Deviation.FIELD_LABEL
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textSecondary
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt
+                font.weight: Font.Medium
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: Math.max(64, deviationReason.implicitHeight + 16)
+                radius: Tide.Tokens.radiusFrame
+                color: Tide.Tokens.backgroundView
+                border.width: 1
+                border.color: form.deviationChosen && Deviation.tooLong(deviationReason.text)
+                              ? Tide.Theme.alpha(Tide.Tokens.negative, 0.6)
+                              : deviationReason.activeFocus ? Tide.Theme.alpha(Tide.Tokens.accent, 0.6)
+                              : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityOutline)
+                TextEdit {
+                    id: deviationReason
+                    objectName: "decisionDeviationReason"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.Wrap
+                    color: Tide.Tokens.textPrimary
+                    selectionColor: Tide.Theme.alpha(Tide.Tokens.accent, 0.4)
+                    font.family: Tide.Theme.uiFamily
+                    font.pointSize: Tide.Tokens.fontSizePt * 1.05
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.EditableText
+                    Accessible.name: Deviation.FIELD_LABEL
+                    // Enter dodaje linię (uzasadnienie bywa dłuższe); wybór tylko przyciskiem. Esc oddaje do okna.
+                    Keys.onEscapePressed: event => {
+                        form.escapePressed()
+                        event.accepted = true
+                    }
+                    Text {
+                        anchors.fill: parent
+                        visible: deviationReason.text === ""
+                        text: Deviation.HINT
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font: deviationReason.font
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+            Text {
+                objectName: "decisionDeviationCounter"
+                Layout.fillWidth: true
+                text: form.deviationChosen ? Deviation.counter(deviationReason.text) : ""
+                textFormat: Text.PlainText
+                color: form.deviationChosen && Deviation.tooLong(deviationReason.text) ? Tide.Tokens.negative
+                                                                                     : Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pointSize: Tide.Tokens.fontSizePt * 0.9
+                horizontalAlignment: Text.AlignRight
+            }
+        }
+
         Rectangle {
             id: other
             objectName: "decisionOther"
@@ -812,6 +906,19 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: form.picksCommands && form.checks.length === 0
         text: "Zaznacz co najmniej jedno polecenie powyżej, na które zezwalasz."
+        textFormat: Text.PlainText
+        color: Tide.Tokens.waiting
+        font.family: Tide.Theme.uiFamily
+        font.pointSize: Tide.Tokens.fontSizePt
+        wrapMode: Text.Wrap
+    }
+
+    // „Przyjmij odstępstwo…” bez uzasadnienia albo ponad limit: „Wybierz” jest nieaktywne, więc mówimy dlaczego.
+    Text {
+        objectName: "decisionDeviationHint"
+        Layout.fillWidth: true
+        visible: form.deviationBlocker !== ""
+        text: form.deviationBlocker
         textFormat: Text.PlainText
         color: Tide.Tokens.waiting
         font.family: Tide.Theme.uiFamily
