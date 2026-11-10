@@ -309,6 +309,13 @@ EVENTS = MappingProxyType({
                                      "reason"),
     "main-merge.checkpoint": _dynamic("punkt kontrolny scalenia do głównej", "key", "stage"),
     "main-merge.waiting": _metadata("oczekiwanie scalenia do głównej", "key", "reason"),
+    "merge.check-armed": _metadata("uzbrojenie bramki testów po scaleniu (PT-318); nie jest startem procesu"),
+    "merge.check-requested": _metadata("próba testów po scaleniu ticketu (PT-318); nie jest startem procesu",
+                                       "after", "before", "check", "command", "fallback", "mergeSeq", "reason",
+                                       "retryOf", "source", "start", "ticket", "unavailable"),
+    # Zapis dokłada ticket przebiegu pod zgodą (PT-329); do tego czasu zdarzenie bywa wyłącznie wpisane z zewnątrz.
+    "merge.check-finished": _metadata("wynik próby testów po scaleniu (zapis: przebieg pod zgodą, PT-329)",
+                                      "check", "exit", "log", "ticket", source="historical"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),
     "main-merge.abandoned": _metadata("porzucenie scalenia do głównej", "key", "reason"),
     "stage.retry": _metadata("ponowienie etapu przez opiekuna", "caretaker", "caretakerStep", "problem", "stage",

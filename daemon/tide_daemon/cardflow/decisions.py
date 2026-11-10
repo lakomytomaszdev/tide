@@ -44,6 +44,7 @@ import re
 
 from . import caretaker
 from . import faults
+from . import mergecheck
 from . import baseproposal
 from . import findings as review_findings
 from .labels import kind_label
@@ -52,7 +53,7 @@ from .state import PLAN_WORK_KINDS, REASON_LABELS, FlowState, base_of
 # Limit dostawcy nie jest decyzją (D3, PT-125): Tide czeka na odnowienie albo przenosi krok według ustawień.
 KINDS = ("question", "permission", "error", "transfer", "stopped", "review",
          "plan-approval", "plan-revision", "plan-revision-failed", "plan-fix-failed", "plan-reviewer", "tracker",
-         "caretaker")
+         "caretaker", "merge-check")
 
 RESOLVE_STEP, RESOLVE_REVIEW = "ResolveCardStep", "ResolveCardReview"
 APPROVE_PLAN, EDIT_PLAN, ENTER_STEP = "ApproveCardPlan", "EditCardPlan", "EnterStep"
@@ -86,6 +87,8 @@ GENERIC = {
                       "Bez review plan nie trafi do zatwierdzenia."),
     "tracker": ("Operacja w YouTracku nie powiodła się.",
                 "Karta czeka, aż przyczyna zostanie usunięta i ponowisz operację."),
+    "merge-check": ("Testy po scaleniu ticketu do gałęzi karty nie dały wyniku 0.",
+                    "Do wyniku 0 nie startują nowe tickety, kolejne scalenia ani domknięcie karty."),
 }
 
 PROVIDERS = {"anthropic": "Claude", "openai": "Codex", "local": "modelu lokalnego"}
@@ -141,6 +144,9 @@ def build_decisions(st: FlowState) -> list[dict]:
     for event in caretaker.escalations(st):
         if (event.get("problem") or "").startswith(("flow-error:", "stalled:")):
             add(0, event.get("seq"), _caretaker(st, event))
+    for entry in mergecheck.gate(st):
+        if entry["status"] in (mergecheck.UNAVAILABLE, mergecheck.FAILED):
+            add(0, (entry["finished"] or entry["requested"]).get("seq"), _merge_check(entry))
     found.sort(key=lambda item: (item[0], item[1]))
     # `findings[]` (uwagi recenzenta z wagą i ticketami) ma tylko zatwierdzenie planu; reszta — pusta lista.
     return [{**decision, "findings": decision.get("findings", [])} for _group, _seq, decision in found]
@@ -768,6 +774,38 @@ def _plan_decision(st: FlowState) -> dict | None:
             "findings": [{"id": f"f{n}", **f, "selected": review_findings.default_selected(f)}
                          for n, f in enumerate(listed, 1)],
             "technical": technical}
+
+
+def _merge_check(entry: dict) -> dict:
+    """Problem karty z bramki testów po scaleniu (PT-318): brak polecenia albo wynik różny od 0. Wyjście z tego
+    ticketu — ponowienie (nowa próba na bieżącym wierzchołku z ponownym wyborem polecenia); akceptację mimo
+    porażki dokłada PT-320."""
+    requested, finished = entry["requested"], entry["finished"] or {}
+    ticket, check = entry["ticket"], entry["check"]
+    if entry["status"] == mergecheck.UNAVAILABLE and requested.get("reason") == mergecheck.CONTRACT_NOT_SINGLE:
+        happened = (f"Po scaleniu {ticket} do gałęzi karty polecenie `tests.changed` z kontraktu testów projektu nie "
+                    "jest pojedynczym poleceniem (łańcuch, podpowłoka albo powłoka), więc Tide go nie użyje.")
+        effect = ("Tide jeszcze raz wybierze polecenie na bieżącym wierzchołku gałęzi karty (np. po poprawieniu "
+                  "kontraktu testów) i założy nową próbę.")
+    elif entry["status"] == mergecheck.UNAVAILABLE:
+        happened = (f"Po scaleniu {ticket} do gałęzi karty Tide nie znalazł polecenia testów zmian: brak kontraktu "
+                    "testów projektu i celów `test-changed` oraz `test` w Makefile gałęzi karty.")
+        effect = ("Tide jeszcze raz wybierze polecenie na bieżącym wierzchołku gałęzi karty (np. po dodaniu "
+                  "kontraktu testów albo celu w Makefile) i założy nową próbę.")
+    else:
+        happened = (f"Testy po scaleniu {ticket} ({requested.get('command') or 'polecenie'}) zakończyły się "
+                    f"wynikiem {finished.get('exit')!s}.")
+        effect = "Tide założy nową próbę na bieżącym wierzchołku gałęzi karty, z ponownym wyborem polecenia."
+    options = [_option("retry-merge-check", "Ponów próbę", effect, RESOLVE_STEP,
+                       {"choice": "retry-merge-check", "ticket": ticket, "check": check}, recommended=True)]
+    technical = {"problem": entry["status"], "check": check,
+                 **{key: requested.get(key) for key in ("start", "before", "after", "command", "source", "fallback",
+                                                        "reason")
+                    if key in requested},
+                 **({"exit": finished.get("exit"), "log": finished.get("log") or ""} if finished else {})}
+    return {"id": f"{entry['status']}:{check}", "step": "", "stepKind": "", "ticket": ticket, "executor": "",
+            "kind": "merge-check", **_sentences("merge-check", happened, ""), "options": options,
+            "freeText": False, "reply": None, "fault": "", "technical": technical}
 
 
 def _tracker(failure: dict) -> dict:
