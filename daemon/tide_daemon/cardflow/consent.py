@@ -70,7 +70,8 @@ def denied_before(events, st, step, command):
         # Granica ważności odmowy to zlecenie (`seq` po `card.started`) i wersja bazy kroku — nie `superseded`:
         # ten zbiór obejmuje także kroki odesłane przez opiekuna do poprawy planu w tym samym zleceniu i bazie
         # (review PT-311 r1, M2), a ich odmowa nadal obowiązuje, również po wznowieniu następcą.
-        denied = st.steps.get(e.get("step")) or {}
+        # Pseudokrok próby testów po scaleniu (PT-329) nie jest krokiem karty, ale ma ten sam zapis wersji bazy.
+        denied = st.steps.get(e.get("step")) or (getattr(st, "merge_check_steps", None) or {}).get(e.get("step")) or {}
         if denied.get("baseVersion", 0) == st.base_version:
             return True
     return False
@@ -86,10 +87,11 @@ def skip_reason(engine, card, step, command):
     return DENIED_BEFORE if denied_before(events, st, step, command) else ""
 
 
-def record_automatic(engine, card, step, command):
+def record_automatic(engine, card, step, command, **extra):
     """Zapis automatycznej zgody outside (wynik kroku, recheck): reguły, odmowa człowieka i pauza sprawdzone pod
     tą samą blokadą dziennika co zapis — odmowa ani wstrzymanie nie wejdą pomiędzy kontrolę a decyzję.
-    Pominięcie zapisuje powód raz na krok i powód (recheck biegnie przy każdym przebiegu)."""
+    Pominięcie zapisuje powód raz na krok i powód (recheck biegnie przy każdym przebiegu). `extra` — pola decyzji
+    pseudokroku (`check` próby testów po scaleniu, PT-329)."""
     name = step.get("step") or ""
     with engine.journal.lock:
         if not automatic(engine, card, step, command):
@@ -104,7 +106,7 @@ def record_automatic(engine, card, step, command):
             return False
         engine.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
                               kind=step.get("kind") or "", choice="run", answer="", command=command,
-                              executor="", auto=True)
+                              executor="", auto=True, **extra)
         return True
 
 

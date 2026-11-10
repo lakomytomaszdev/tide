@@ -5044,6 +5044,26 @@ jednym rodzicem, `start` przodkiem `before`) — Tide commituje plan po starcie 
 scalenie karty z planem byłoby nie-FF. Commit ręczny (także samej kartki), commit lub scalenie innego ticketu zakłada
 próbę; nazwy plików nie mają znaczenia.
 
+**Przebieg próby pod zgodą (K-88, PT-329).** Próba z poleceniem dostaje pseudokrok `merge-check-<ticket>-<n>`
+(`merge.check-step {step, ticket, kind: merge-check, check, command, after, branch, worktree, stepDir, baseVersion,
+canAllow}`) — start procesu w modelu tożsamości, więc jej decyzja i uruchomienie są zwykłym śladem procesu outside;
+krokiem karty nie jest (nie pracuje, nie ma review ani wznowienia). Tide nie zatwierdza przebiegu z góry, bo
+`Makefile`, kontrakt testów i testy na gałęzi karty pisze agent: zgoda to `step.decision` pseudokroku z `check`,
+automatyczna (`auto: true`) tylko z tych samych reguł co prośba `outside` kroku — zapamiętana rodzina poleceń projektu,
+zgoda ticketu, `outsideAuto` bez polecenia ryzykownego — i z regułami PT-311: odmowa człowieka tego polecenia w tym
+tickecie i wstrzymana karta odbierają zgodę automatyczną (`outside.auto-skipped`). Bez pasującej reguły panel karty
+pokazuje zwykłe pytanie o zgodę (`permission`: „Zawsze w projekcie”, „Uruchom raz”, „Nie uruchamiaj”, odpowiedź
+`ResolveCardStep {choice, step}`); zgoda dotyczy tylko tej próby, a ponowienie z PT-318 ma nowy pseudokrok i wymaga
+nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, jednostka `tide-outside-…`,
+plik kodu wyjścia, rozliczenie zatrzymanej jednostki z PT-315, limit czasu) w worktree gałęzi karty, gdy jego HEAD to
+`after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości, bez ponowienia samych
+padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje
+`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba,
+`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed
+startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
+Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
+`outside.finished` a `merge.check-finished` usługa dopisuje raz.
+
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
 przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,

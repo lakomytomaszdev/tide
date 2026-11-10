@@ -163,6 +163,8 @@ class FlowState:
     merge_check_counts: dict = field(default_factory=dict)
     merge_check_merges: set = field(default_factory=set)
     merge_check_armed: int = 0
+    # Pseudokroki prób z poleceniem (PT-329): nazwa `merge-check-<ticket>-<n>` → `merge.check-step`.
+    merge_check_steps: dict = field(default_factory=dict)
 
     @property
     def flow_error_event(self) -> dict:
@@ -421,7 +423,7 @@ def fold(events: list[dict]) -> FlowState:
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":
                 st.caretaker_escalations[e.get("problem")] = e
-        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED):
+        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED, mergecheck.STEP):
             mergecheck.fold_event(st, e)
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
@@ -1252,16 +1254,24 @@ def _derived(st: FlowState, card: dict) -> dict | None:
     held = mergecheck.gate(st)
     out["flow"]["mergeChecks"] = [
         {"ticket": entry["ticket"], "check": entry["check"], "status": entry["status"],
-         "command": entry["requested"].get("command") or "", "after": entry["requested"].get("after") or ""}
+         "command": entry["requested"].get("command") or "", "after": entry["requested"].get("after") or "",
+         "phase": mergecheck.phase(st, entry) if entry["status"] == mergecheck.PENDING else ""}
         for entry in held]
     if held and not attention and not st.running() and not st.paused and column != "backlog":
         # Bramka testów po scaleniu (PT-318): nic innego nie pracuje, a karta stoi na wyniku próby.
         first = held[0]
+        stage = mergecheck.phase(st, first) if first["status"] == mergecheck.PENDING else ""
         text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu",
                 mergecheck.FAILED: "testy po scaleniu nie przeszły",
-                mergecheck.PENDING: "testy po scaleniu czekają na przebieg"}[first["status"]]
-        return _fill(out, "progress" if first["status"] == mergecheck.PENDING else "waiting",
-                     f"{first['ticket']}: {text}")
+                mergecheck.DENIED: "odmowa zgody na testy po scaleniu — ponów albo zaakceptuj",
+                mergecheck.PENDING: {"consent": "testy po scaleniu czekają na zgodę na polecenie poza piaskownicą",
+                                     "queued": "testy po scaleniu w kolejce poza piaskownicą",
+                                     "running": "trwają testy po scaleniu poza piaskownicą"}.get(
+                    stage, "testy po scaleniu czekają na przebieg")}[first["status"]]
+        waiting = first["status"] != mergecheck.PENDING or stage == "consent"
+        if stage == "consent":
+            out["question"] = f"Uruchomić testy po scaleniu {first['ticket']}: {first['requested'].get('command')}?"
+        return _fill(out, "waiting" if waiting else "progress", f"{first['ticket']}: {text}")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

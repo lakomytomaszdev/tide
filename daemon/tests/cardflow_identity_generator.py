@@ -111,7 +111,16 @@ def base(kind, ticket):
                                            "orderSeq": 3}
     if kind == "card.started":
         return [], _card()
+    if kind == "merge.check-step":
+        return [_card()], _merge_check_step(ticket)
     raise KeyError(kind)
+
+
+def _merge_check_step(ticket):
+    """PT-329: start pseudokroku próby testów po scaleniu (proces outside ticketu bez kroku agenta, na hoście)."""
+    return {"type": "merge.check-step", "step": STEP, "ticket": ticket, "kind": "merge-check",
+            "branch": "card/k-1", "worktree": "/work", "stepDir": "/step", "check": f"{ticket}:1",
+            "command": "make test", "after": "a" * 40, "baseVersion": 1, "canAllow": True}
 
 
 def model_kinds():
@@ -131,7 +140,7 @@ def fields_of(kind):
 
 
 def is_start(kind):
-    return kind in ("step.started", "intent:step-start")
+    return kind in ("step.started", "intent:step-start", "merge.check-step")
 
 
 def mutate(event, field, variant):

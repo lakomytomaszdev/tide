@@ -145,8 +145,12 @@ def build_decisions(st: FlowState) -> list[dict]:
         if (event.get("problem") or "").startswith(("flow-error:", "stalled:")):
             add(0, event.get("seq"), _caretaker(st, event))
     for entry in mergecheck.gate(st):
-        if entry["status"] in (mergecheck.UNAVAILABLE, mergecheck.FAILED):
-            add(0, (entry["finished"] or entry["requested"]).get("seq"), _merge_check(entry))
+        if entry["status"] in (mergecheck.UNAVAILABLE, mergecheck.FAILED, mergecheck.DENIED):
+            decided = st.step_decisions.get(mergecheck.step_name(entry["check"])) or {}
+            add(0, (entry["finished"] or decided or entry["requested"]).get("seq"), _merge_check(entry))
+        elif entry["status"] == mergecheck.PENDING and mergecheck.phase(st, entry) == "consent":
+            event = st.merge_check_steps[mergecheck.step_name(entry["check"])]
+            add(1, event.get("seq"), _merge_check_consent(st, entry, event))
     found.sort(key=lambda item: (item[0], item[1]))
     # `findings[]` (uwagi recenzenta z wagą i ticketami) ma tylko zatwierdzenie planu; reszta — pusta lista.
     return [{**decision, "findings": decision.get("findings", [])} for _group, _seq, decision in found]
@@ -792,6 +796,11 @@ def _merge_check(entry: dict) -> dict:
                     "testów projektu i celów `test-changed` oraz `test` w Makefile gałęzi karty.")
         effect = ("Tide jeszcze raz wybierze polecenie na bieżącym wierzchołku gałęzi karty (np. po dodaniu "
                   "kontraktu testów albo celu w Makefile) i założy nową próbę.")
+    elif entry["status"] == mergecheck.DENIED:
+        happened = (f"Odmówiono zgody na testy po scaleniu {ticket} ({requested.get('command') or 'polecenie'}), "
+                    "więc nie ma wyniku 0.")
+        effect = ("Tide założy nową próbę na bieżącym wierzchołku gałęzi karty; jej uruchomienie wymaga nowej "
+                  "decyzji o zgodzie.")
     else:
         happened = (f"Testy po scaleniu {ticket} ({requested.get('command') or 'polecenie'}) zakończyły się "
                     f"wynikiem {finished.get('exit')!s}.")
@@ -806,6 +815,51 @@ def _merge_check(entry: dict) -> dict:
     return {"id": f"{entry['status']}:{check}", "step": "", "stepKind": "", "ticket": ticket, "executor": "",
             "kind": "merge-check", **_sentences("merge-check", happened, ""), "options": options,
             "freeText": False, "reply": None, "fault": "", "technical": technical}
+
+
+def _merge_check_consent(st, entry: dict, event: dict) -> dict:
+    """Zwykłe pytanie o zgodę na polecenie poza piaskownicą dla próby testów po scaleniu (PT-329), gdy żadna reguła
+    projektu nie dała zgody automatycznej. Zgoda dotyczy tej jednej próby (`check`)."""
+    from ..board.commands import outside_allowed, outside_pattern, outside_risky
+    name, ticket = event.get("step") or "", entry["ticket"]
+    command = _text(event.get("command"))
+    roots = (event.get("worktree") or "", ((getattr(st, "started", None) or {}).get("repo") or ""),
+             event.get("stepDir") or "")
+    # `canAllow` — zakazy projektu sprawdzone przez usługę przy zapisie pseudokroku; tu dochodzi kryterium kolejki.
+    allowed = bool(command) and event.get("canAllow", True) is not False and outside_allowed(command, (), roots)
+    risk = outside_risky(command, roots) if allowed else ""
+    happened = (f"Po scaleniu {ticket} do gałęzi karty Tide chce uruchomić testy zmian ticketu poza piaskownicą, "
+                f"w worktree gałęzi karty: {command}" if len(command) <= SHORT_COMMAND else
+                f"Po scaleniu {ticket} do gałęzi karty Tide chce uruchomić testy zmian ticketu poza piaskownicą.")
+    why = ("Polecenie pochodzi z Makefile albo kontraktu testów gałęzi karty, które piszą agenci, więc Tide nie "
+           "uruchomi go bez zgody. Do wyniku 0 nie startują nowe tickety, kolejne scalenia ani domknięcie karty. "
+           "Zgoda dotyczy tylko tej próby.")
+    deny = _option("deny", "Nie uruchamiaj",
+                   "Bramka zostanie zamknięta z problemem odmowy; wyjściem jest nowa próba albo akceptacja.",
+                   RESOLVE_STEP, {"choice": "deny", "step": name})
+    once = _option("run", "Uruchom raz", "Tide uruchomi tę próbę w kolejce poza piaskownicą i zapisze jej wynik.",
+                   RESOLVE_STEP, {"choice": "run", "step": name})
+    if not allowed:
+        options = [{**deny, "recommended": True}]
+        why = "Tide nie uruchomi tego polecenia: to łańcuch, operator powłoki albo zakaz projektu. " + why
+    elif risk:
+        options = [once, deny]
+        why = f"Uwaga: {risk}. " + why
+    else:
+        pattern = outside_pattern(command)
+        options = [_option("run-always", f"Zawsze w projekcie: {pattern}",
+                           "Ta próba ruszy teraz, a kolejne próby z tą rodziną poleceń dostaną zgodę z reguły projektu.",
+                           RESOLVE_STEP, {"choice": "run-always", "step": name}), once, deny]
+    technical = {"step": name, "stepKind": mergecheck.KIND, "ticket": ticket, "check": entry["check"],
+                 "command": command, "worktree": event.get("worktree") or "", "stepDir": event.get("stepDir") or "",
+                 "after": event.get("after") or "", "canAllow": allowed}
+    made = {"id": f"step:{name}", "step": name, "stepKind": mergecheck.KIND, "ticket": ticket, "executor": "",
+            "kind": "permission", **_sentences("permission", happened, why), "options": options,
+            "freeText": True, "reply": {"method": RESOLVE_STEP, "params": {"choice": "deny", "step": name},
+                                        "field": "instead"},
+            "fault": "", "technical": technical, "commands": []}
+    made["otherTitle"], made["otherHint"] = OTHER_PERMISSION
+    return made
 
 
 def _tracker(failure: dict) -> dict:

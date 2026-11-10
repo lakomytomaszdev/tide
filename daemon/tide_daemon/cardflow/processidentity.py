@@ -21,6 +21,8 @@ CARD_STEP_KINDS = frozenset({"planning", "plan-fix", "plan-import", "plan-review
                              "plan-amend", "plan-revise", "close", "interactive",
                              "caretaker", "caretaker-chat"})
 TICKET_STEP_KINDS = frozenset({"ticket", "fix", "review", "conflict"})
+# Pseudokrok próby testów po scaleniu (PT-329): proces outside ticketu bez kroku agenta (`merge.check-step`).
+MERGE_CHECK_KINDS = frozenset({"merge-check"})
 OUTSIDE_CHOICES = frozenset({"run", "run-always", "run-ticket"})
 
 
@@ -178,6 +180,14 @@ EVENTS = MappingProxyType({
         "step": NAME_STEP, **START_IDENTITY, "consoleUnit": CONSOLE_UNIT, "processFile": PROCESS_FILE,
         "attempt": ATTEMPT, **_neutral(*START_NEUTRAL),
     })),
+    # PT-329: start pseudokroku próby testów po scaleniu — poprzednik jej decyzji i uruchomienia outside.
+    "merge.check-step": Event("step-start", MappingProxyType({
+        # Bez `runner`/`box`: próba biegnie wyłącznie na hoście (brak zasobu pudełka = host).
+        "step": NAME_STEP, **{name: START_IDENTITY[name] for name in ("ticket", "kind", "branch", "worktree",
+                                                                      "stepDir")},
+        **_neutral("after", "baseVersion", "canAllow", "check", "command",
+                   note="próba (PT-318), polecenie i wierzchołek gałęzi karty; bez roli dowodowej"),
+    })),
     "step.entered": Event("console-enter", _trace(
         writer=(), neutral=("closeFile", "deliveredNoteIds", "enteredAt", "readDirsProfile", "session", "source",
                             "taskFile"),
@@ -191,8 +201,8 @@ EVENTS = MappingProxyType({
         neutral=("cancelledNoteIds",), extra={"consoleUnit": CONSOLE_INHERITED, "processFile": CONSOLE_INHERITED})),
     "step.decision": Event("step-trace", _trace(
         writer=("ticket", "kind"),
-        neutral=("allow", "answer", "auto", "automatic", "baseDecision", "caretaker", "caretakerStep", "command",
-                 "commands", "envAnswer", "escalated", "executor", "instead", "refusal", "resetTs", "skipped",
+        neutral=("allow", "answer", "auto", "automatic", "baseDecision", "caretaker", "caretakerStep", "check",
+                 "command", "commands", "envAnswer", "escalated", "executor", "instead", "refusal", "resetTs", "skipped",
                  "waitCard", "waitTicket"),
         extra={"choice": Field("discriminator", "str", domain="outside",
                                note="run/run-always/run-ticket to zgoda outside; inna wartość to zwykły ślad")})),
@@ -313,9 +323,9 @@ EVENTS = MappingProxyType({
     "merge.check-requested": _metadata("próba testów po scaleniu ticketu (PT-318); nie jest startem procesu",
                                        "after", "before", "check", "command", "fallback", "mergeSeq", "reason",
                                        "retryOf", "source", "start", "ticket", "unavailable"),
-    # Zapis dokłada ticket przebiegu pod zgodą (PT-329); do tego czasu zdarzenie bywa wyłącznie wpisane z zewnątrz.
+    # Zapis: przebieg pod zgodą (PT-329), razem z `outside.finished` pseudokroku próby.
     "merge.check-finished": _metadata("wynik próby testów po scaleniu (zapis: przebieg pod zgodą, PT-329)",
-                                      "check", "exit", "log", "ticket", source="historical"),
+                                      "check", "exit", "log", "ticket"),
     "main-merge.resumed": _metadata("wznowienie scalenia do głównej", "key"),
     "main-merge.abandoned": _metadata("porzucenie scalenia do głównej", "key", "reason"),
     "stage.retry": _metadata("ponowienie etapu przez opiekuna", "caretaker", "caretakerStep", "problem", "stage",
@@ -571,7 +581,8 @@ def start_error(event):
     if any(key in event and not isinstance(event[key], str) for key in START_FIELDS):
         return "nieznana tożsamość procesu w dzienniku karty"
     kind = event.get("kind")
-    if "kind" in event and (not isinstance(kind, str) or kind not in CARD_STEP_KINDS | TICKET_STEP_KINDS):
+    if "kind" in event and (not isinstance(kind, str) or
+                            kind not in CARD_STEP_KINDS | TICKET_STEP_KINDS | MERGE_CHECK_KINDS):
         return "nieznany rodzaj kroku w dzienniku karty"
     if not (event.get("ticket") or "").strip() and kind not in CARD_STEP_KINDS:
         return "brak ticketu procesu w dzienniku karty"
