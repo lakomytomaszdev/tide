@@ -237,7 +237,7 @@ function column(list, columnId) {
 // Równość treści (karty z migawki to dane JSON): zmiana kolejności kluczy też liczy się jako zmiana, co jest
 // bezpieczne (najwyżej jedna zbędna aktualizacja karty).
 function sameValue(a, b) {
-    return JSON.stringify(a) === JSON.stringify(b)
+    return a === b || JSON.stringify(a) === JSON.stringify(b)
 }
 
 // Karty bez powtórzeń `id` (pierwsze wystąpienie wygrywa) — model o stabilnej tożsamości nie znosi duplikatów.

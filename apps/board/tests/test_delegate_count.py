@@ -174,6 +174,100 @@ out["specsAfter"] = js("page.columnSpecs.length")
         self.assertTrue(out["existsAgain"])
         self.assertEqual(out["specsAfter"], 6)
 
+    def test_snapshot_mid_drag_keeps_gesture_and_drop(self):
+        # Historia 7: nowa migawka (zmiana INNEJ karty) w połowie przeciągania nie przerywa gestu, a puszczenie
+        # daje MoveCard na cel, bez duplikatu przeciąganej karty.
+        out = self.probe("""
+wait(300)
+snap = json.loads(backend.snapshotJson)
+start, end = card("K-15"), column("todo", fy=0.75)
+QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+wait(30)
+steps = 12
+for i in range(1, steps + 1):
+    QTest.mouseMove(window, QPoint(start.x() + (end.x() - start.x()) * i // steps, start.y() + (end.y() - start.y()) * i // steps))
+    wait(15)
+    if i == 6:
+        out["draggingBefore"] = js("page.columnItems()[0].dragging")
+        other = next(c for c in snap["cards"] if c["id"] == "K-14")
+        other["title"] = "zmiana w trakcie gestu"
+        backend.set_snapshot(snap)
+        wait(200)
+        out["draggingAfter"] = js("page.columnItems()[0].dragging")
+wait(80)
+QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+wait(150)
+out["drop"] = calls()[-1] if calls() else None
+out["copies"] = js("page.columnItems().filter(c => c.cardItem('K-15') !== null).length")
+out["title"] = js("page.findCard('K-14').card.title")
+""")
+        self.assertTrue(out["draggingBefore"])
+        self.assertTrue(out["draggingAfter"], "migawka nie przerywa gestu")
+        self.assertEqual(out["drop"], ["MoveCard", "K-15", "todo", -1])
+        self.assertEqual(out["copies"], 1, "bez duplikatu")
+        self.assertEqual(out["title"], "zmiana w trakcie gestu")
+
+    def test_refresh_keeps_selection_focus_scroll_and_unchanged_cards_get_no_signal(self):
+        out = self.probe("""
+wait(300)
+snap = json.loads(backend.snapshotJson)
+click(card("K-12"))
+out["panelBefore"] = js("page.panelOpen && page.panelCardId")
+engine.rootContext().setContextProperty("probeTarget", obj("cardTitle"))
+js("probeTarget.forceActiveFocus()")
+out["fieldFocusBefore"] = obj("cardTitle").property("activeFocus")
+js("page.columnItems()[0].flick.contentY = 7")
+wait(50)
+out["scrollBefore"] = js("page.columnItems()[0].flick.contentY")
+from PyQt6.QtCore import QObject, pyqtSlot
+class Spy(QObject):
+    hits = 0
+    @pyqtSlot()
+    def hit(self):
+        self.hits += 1
+spy = Spy()
+engine.rootContext().setContextProperty("spy", spy)
+js("page.findCard('K-11').cardChanged.connect(spy.hit)")
+changed = Spy()
+engine.rootContext().setContextProperty("spyChanged", changed)
+js("page.findCard('K-14').cardChanged.connect(spyChanged.hit)")  # kontrola: spy naprawdę łapie zmiany
+out["selectedBefore"] = js("page.selectedId")
+# odświeżenie: identyczna migawka, potem zmiana innej karty
+set_snapshot(snap)
+other = next(c for c in snap["cards"] if c["id"] == "K-14")
+other["title"] += " (zmiana)"
+set_snapshot(snap)
+out["panel"] = js("page.panelOpen && page.panelCardId")
+out["selected"] = js("page.selectedId")
+out["fieldFocus"] = obj("cardTitle").property("activeFocus")
+out["scroll"] = js("page.columnItems()[0].flick.contentY")
+out["signals"] = spy.hits
+out["changedSignals"] = changed.hits
+""")
+        self.assertEqual(out["panelBefore"], "K-12")
+        self.assertEqual(out["panel"], "K-12", "panel karty zostaje otwarty")
+        self.assertEqual(out["selected"], out["selectedBefore"], "zaznaczenie zostaje")
+        self.assertEqual(out["fieldFocus"], out["fieldFocusBefore"], "fokus pola zostaje")
+        self.assertEqual(out["scroll"], out["scrollBefore"], "przewinięcie kolumny zostaje")
+        self.assertEqual(out["signals"], 0, "niezmieniona karta nie dostaje cardChanged")
+        self.assertGreaterEqual(out["changedSignals"], 1, "zmieniona karta dostaje cardChanged")
+
+    def test_service_unavailable_and_back(self):
+        out = self.probe("""
+wait(300)
+snap = json.loads(backend.snapshotJson)
+n = lambda: js("page.columnItems().reduce((n, c) => n + c.cards.length, 0)")
+out["before"] = n()
+js("page.available = false")
+wait(100)
+out["during"] = n()
+js("page.available = true")
+set_snapshot(snap)
+out["after"] = n()
+""")
+        self.assertGreater(out["before"], 0)
+        self.assertEqual(out["after"], out["before"], "powrót usługi przywraca te same karty")
+
 
 if __name__ == "__main__":
     unittest.main()
