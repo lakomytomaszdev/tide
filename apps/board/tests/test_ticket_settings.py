@@ -11,7 +11,7 @@ i katalogu wykonawców z dwoma dostawcami (Anthropic, OpenAI), dwoma lokalnymi i
   „Zapisz” nieaktywne i okno mówi dlaczego,
 - „Zapisz” wysyła dokładnie jedno `EditCardPlan` z `action: edit` i niezmienioną kartką; błąd usługi zostaje w oknie,
   sukces zamyka je z potwierdzeniem; Esc i „Anuluj” niczego nie wysyłają,
-- ticket, który już ruszył, pokazuje tylko zdanie bez pól zapisu.
+- ticket, który już ruszył, nie ma zapisu EditCardPlan (jego pola sprawdza test_ticket_settings_running, PT-335).
 """
 import json
 import shutil
@@ -287,7 +287,9 @@ out["edits"] = edits()
         self.assertEqual(out["afterCancel"], [False, True])
         self.assertEqual(out["edits"], [])
 
-    def test_started_ticket_shows_only_a_sentence(self):
+    def test_started_ticket_has_no_plan_edit(self):
+        """Ticket, który ruszył, nie ma zapisu EditCardPlan ani wyboru klasy; jego pola (autor, recenzent przez
+        ResolveCardStep) sprawdza test_ticket_settings_running (PT-335)."""
         out = self.probe_settings("""
 open_settings("#2")
 out["dlg"] = dlg()
@@ -296,9 +298,8 @@ out["edits"] = edits()
 """)
         dlg = out["dlg"]
         self.assertTrue(dlg["open"])
-        self.assertEqual(dlg["started"], "Ticket już ruszył — zmiana w następnym kroku")
-        self.assertEqual(dlg["options"], [])
         self.assertIsNone(dlg["save"])
+        self.assertEqual(sorted({o[0] for o in dlg["options"]}), ["author", "reviewer"])
         self.assertEqual(out["edits"], [])
 
 

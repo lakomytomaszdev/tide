@@ -413,6 +413,8 @@ Rectangle {
     // --- ustawienia ticketu (PT-334) ------------------------------------------------------------
 
     property string ticketSettingsTag: ""
+    // Tagi ostatnich przepięć trwającego ticketu (PT-335) osobno dla pól „author” i „reviewer”.
+    property var ticketReassignTags: ({})
 
     // Wiersz planu ticketu z migawki pełnej karty (`editable` liczy usługa).
     function openTicketSettings(ticketId) {
@@ -787,6 +789,14 @@ Rectangle {
                 ticketSettings.close()
                 showToast("Ustawienia ticketu " + id + " zapisane.", "mint")
             }
+            return
+        }
+        if (tag.indexOf("ticket-reassign:") === 0) {
+            // Odpowiedź wraca do okna przy polu, które ją wysłało; okno się nie zamyka.
+            const field = tag.split(":")[1]
+            if (ticketReassignTags[field] !== tag) return
+            ticketSettings.fieldReplied(field, error,
+                                        reply && (field === "author" ? reply.executor : reply.reviewer) || "")
             return
         }
         if (tag.indexOf("base-change:") === 0) {
@@ -2063,9 +2073,17 @@ Rectangle {
         anchors.fill: parent
         z: 45
         modelsStatus: page.modelsStatus
+        // Ticket trwający (PT-335): blokady pól liczą się na bieżąco z migawki pełnej karty.
+        flow: cardFullView.flow
+        tickets: cardFullView.tickets
         onSaveRequested: request => {
             ticketSettingsTag = page.nextTag("ticket-settings:" + page.fullCardId)
             page.planEditRequested(ticketSettingsTag, page.fullCardId, JSON.stringify(request))
+        }
+        onReassignRequested: (field, request) => {
+            const tag = page.nextTag("ticket-reassign:" + field + ":" + page.fullCardId)
+            page.ticketReassignTags = Object.assign({}, page.ticketReassignTags, { [field]: tag })
+            page.stepResolveRequested(tag, page.fullCardId, JSON.stringify(request))
         }
         onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
