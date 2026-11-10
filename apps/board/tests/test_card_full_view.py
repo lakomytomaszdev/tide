@@ -203,6 +203,9 @@ out["opened"] = full()
         out = self.probe(STATE_PY + """
 click(card("K-8"))
 out["opened"] = full()
+out["tiles"] = json.loads(js("JSON.stringify((" + ALL + ")(page.cardFullView, 'fullTicket').map(t => "
+    "[t.ticketId, t.status, t.statusLabel, t.Accessible.name, "
+    "(" + ALL + ")(t, 'fullTicketStatus')[0].text]))"))
 click(at("(" + ALL + ")(page.cardFullView, 'fullNowEnter')[0]"))
 out["enter"] = calls()
 key(Qt.Key.Key_Escape)
@@ -211,6 +214,12 @@ click(card("K-8"))
 click(named("fullBack"))
 out["afterBack"] = js("page.fullOpen")
 """, full_d(self.data))
+        tiles = {t[0]: t for t in out["tiles"]}
+        self.assertEqual(tiles["#1"][1:3], ["merged", "scalony do gałęzi karty"], "migawka z dziennika usługi")
+        self.assertEqual(tiles["#1"][4], "scalony do gałęzi karty")
+        self.assertTrue(tiles["#1"][3].endswith(" — scalony do gałęzi karty"), tiles["#1"][3])
+        self.assertEqual(tiles["#2"][3].rsplit(" — ", 1)[1], "pracuje", "inne stany: etykieta usługi bez zmian")
+        self.assertEqual(tiles["#3"][4], "review")
         state = out["opened"]
         self.assertTrue(state["open"], "karta z „W toku” otwiera pełną kartę")
         self.assertEqual((state["card"], state["panel"], state["dialog"]), ("K-8", False, False))
@@ -223,7 +232,7 @@ out["afterBack"] = js("page.fullOpen")
         self.assertIsNone(state["kind"], "bez decyzji nie ma plakietki ani możliwości")
         self.assertEqual(state["options"], [])
         self.assertEqual(state["waves"], [
-            [["#1", "scalony"]],
+            [["#1", "scalony do gałęzi karty"]],
             [["#2", "pracuje"], ["#3", "review"], ["#4", "poprawki"]],
             [["PT-42", "czeka na #3"], ["#5", "czeka na #4"], ["#7", "czeka na #4"], ["#8", "czeka na #4"]],
             [["#6", "czeka na #5"]]])

@@ -103,6 +103,9 @@ Rectangle {
     // kind: move {column} | update {field, value} | pause {paused} | archive {}; params.effect — zdanie o skutku.
     signal settingRequested(string kind, var params)
     signal enterStepRequested(string stepId)
+    // Ustawienia ticketu (PT-332): kafelek przekazuje prośbę dalej; przycisk na kafelku dodaje kolejny ticket karty.
+    property bool ticketSettingsEnabled: false
+    signal ticketSettingsRequested(string ticketId)
     // Scalenie domkniętej karty do gałęzi głównej i podgląd zmian (03.11: po K-35 akcja była tylko w starym panelu).
     signal mergeMainRequested()
     signal previewMergeRequested(string target)
@@ -312,12 +315,6 @@ Rectangle {
     function phaseTone(state) {
         return state === "done" ? Tide.Tokens.mint : state === "now" ? Tide.Tokens.teal
              : state === "you" ? Tide.Tokens.peach : state === "hold" ? Tide.Tokens.butter : Tide.Tokens.textMuted
-    }
-
-    function statusTone(status) {
-        return status === "merged" ? Tide.Tokens.mint : status === "running" || status === "fix" ? Tide.Tokens.teal
-             : status === "review" || status === "merging" ? Tide.Tokens.lavender : status === "you" ? Tide.Tokens.peach
-             : status === "limit" ? Tide.Tokens.butter : status === "rejected" ? Tide.Tokens.rose : Tide.Tokens.textMuted
     }
 
     function clock(value) {
@@ -907,72 +904,13 @@ Rectangle {
                                 }
                                 Repeater {
                                     model: wave.modelData
-                                    delegate: Rectangle {
-                                        id: tile
+                                    delegate: TicketTile {
                                         required property var modelData
-                                        readonly property var item: view.ticket(modelData)
-                                        readonly property string ticketId: modelData
-                                        readonly property string status: item ? item.status || "" : ""
-                                        readonly property string statusLabel: item ? item.statusLabel || "" : ""
-                                        objectName: "fullTicket"
                                         Layout.fillWidth: true
-                                        implicitHeight: tileColumn.implicitHeight + 18
-                                        radius: Tide.Tokens.radiusTile
-                                        color: Tide.Tokens.backgroundCard
-                                        border.width: 1
-                                        border.color: status === "you" ? Tide.Theme.alpha(Tide.Tokens.peach, 0.45)
-                                                                       : Tide.Theme.alpha(Tide.Tokens.textPrimary, Tide.Tokens.opacityBorder)
-                                        Accessible.role: Accessible.ListItem
-                                        Accessible.name: ticketId + ": " + (item ? item.title : "") + " — " + statusLabel
-                                        ColumnLayout {
-                                            id: tileColumn
-                                            anchors.left: parent.left
-                                            anchors.right: parent.right
-                                            anchors.top: parent.top
-                                            anchors.margins: 9
-                                            anchors.leftMargin: 11
-                                            spacing: 4
-                                            Text {
-                                                text: tile.ticketId
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.sky
-                                                font.family: Tide.Theme.monoFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                                                font.weight: Font.DemiBold
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                text: tile.item ? tile.item.title : ""
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.textPrimary
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.95
-                                                wrapMode: Text.Wrap
-                                                maximumLineCount: 3
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                objectName: "fullTicketStatus"
-                                                Layout.fillWidth: true
-                                                text: tile.statusLabel
-                                                textFormat: Text.PlainText
-                                                color: view.statusTone(tile.status)
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.85
-                                                font.weight: Font.Medium
-                                                elide: Text.ElideRight
-                                            }
-                                            Text {
-                                                Layout.fillWidth: true
-                                                visible: text !== ""
-                                                text: tile.item ? [tile.item.executor, tile.item.reviewer].filter(x => !!x).join(" → ") : ""
-                                                textFormat: Text.PlainText
-                                                color: Tide.Tokens.textMuted
-                                                font.family: Tide.Theme.uiFamily
-                                                font.pointSize: Tide.Tokens.fontSizePt * 0.8
-                                                elide: Text.ElideRight
-                                            }
-                                        }
+                                        ticketId: modelData
+                                        item: view.ticket(modelData)
+                                        ticketSettingsEnabled: view.ticketSettingsEnabled
+                                        onTicketSettingsRequested: id => view.ticketSettingsRequested(id)
                                     }
                                 }
                             }

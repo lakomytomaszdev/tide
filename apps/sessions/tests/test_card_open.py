@@ -308,7 +308,8 @@ class SharedComponentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tide-sess-shared-") as tmp:
             pkg = stage(os.path.join(tmp, "pkg"))
             source = os.path.join(REPO, "apps", "common", "qml", "card")
-            for name in ("DecisionDialog.qml", "CardFullView.qml", "DecisionForm.qml", "decision.js"):
+            for name in ("DecisionDialog.qml", "CardFullView.qml", "DecisionForm.qml", "decision.js",
+                         "TicketTile.qml", "ticket.js"):
                 with open(os.path.join(source, name), "rb") as fh:
                     expected = fh.read()
                 for view in ("board", "sessions"):

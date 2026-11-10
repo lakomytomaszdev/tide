@@ -95,7 +95,7 @@ class PackageTest(unittest.TestCase):
             files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "board"))
         for name in ("qml/card/DecisionDialog.qml", "qml/card/DecisionOption.qml", "qml/card/DecisionFinding.qml",
                      "qml/card/DecisionForm.qml", "qml/card/DecisionKind.qml", "qml/card/CardFullView.qml",
-                     "qml/card/decision.js",
+                     "qml/card/TicketTile.qml", "qml/card/ticket.js", "qml/card/decision.js",
                      "qml/tide/Tokens.qml"):
             self.assertIn(name, files)
 
