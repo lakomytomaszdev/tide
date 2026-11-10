@@ -358,6 +358,19 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
     [rejestr poprawek koordynatora](agents/coordinator-fixes.md).
     Jest to zmiana dokumentacji i zasad, bez zmiany automatyki doboru recenzenta ani bramek w kodzie.
 
+97. **Niezależność review to polityka projektu, nie reguła Tide (10.11.2026, właściciel, K-88).**
+    Zmienia decyzję 96 w części doboru recenzenta. Tide nie narzuca, kto pisze i kto sprawdza: przestrzega tylko
+    reguł ustalonych dla projektu albo w planie. Słowa właściciela: „to nie ma prawa być jakaś naczelna reguła
+    tide […] jeśli jest DLA PROJEKTU ustalone że muszą być inne rodziny — spoko, niech ktoś tego pilnuje […]
+    jeśli to nie jest ustalone — DOWOLNOŚĆ”. Powód: użytkownik z jedną subskrypcją jednego dostawcy nie może
+    utknąć na wymogu recenzenta innej rodziny; review tym samym modelem w nowej, izolowanej sesji to wymiana
+    kosztu na pewność, nie błąd. Zawsze obowiązuje tylko nowa, osobna sesja recenzenta. Ustawienie projektu
+    `reviewIndependence`: `free` (domyślne), `other-model` (dzisiejsze `independent_reviewer`), `other-family`
+    (opcjonalnie dla wybranych klas). Lista obszarów ryzyka z decyzji 96 zostaje jako zalecenie dla projektów
+    z `other-family`. Brak wymaganego recenzenta: czytelny powód i pytanie do właściciela zamiast cichego czekania.
+    Wdrożenie: K-88 PT-330 (przepisany 10.11) z bramką z PT-312. Do czasu wdrożenia w plasma-tide recenzenci
+    Codex w nierozpoczętych ticketach zastąpieni modelem Anthropic (limit GPT 11% do 12.11 08:00).
+
 ## Później
 
 - Tryb skupienia.
