@@ -72,13 +72,15 @@ Rectangle {
     property int workPulseStep: 0
     readonly property var workPulseLevels: [1.0, 0.7, 0.45, 0.7]
     readonly property bool hasWorking: Logic.hasWorkingSegment(allCards)
+    // Pełna karta otwarta, widoczna i z etapem `now` na pasku przebiegu (karta K-97).
+    readonly property bool fullNowActive: fullOpen && cardFullView.visible && cardFullView.hasNowPhase
     readonly property alias workPulseTimer: workPulseTimer
     Timer {
         id: workPulseTimer
         objectName: "workPulseTimer"
         interval: 500
         repeat: true
-        running: page.animationsActive && page.hasWorking
+        running: page.animationsActive && (page.hasWorking || page.fullNowActive)
         onTriggered: {
             page.workPulseStep = (page.workPulseStep + 1) % page.workPulseLevels.length
             page.workPulse = page.workPulseLevels[page.workPulseStep]
@@ -2013,6 +2015,7 @@ Rectangle {
         moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
         canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
         columnLabels: page.columnLabelMap
+        workPulse: page.workPulse
         onBackRequested: page.closeFull()
         onAnswered: (decisionId, method, params) => page.sendDecision(page.fullCardId, decisionId, method, params)
         onPreviewRequested: (decisionId, method, params) => page.previewFault(page.fullCardId, decisionId, method, params)
