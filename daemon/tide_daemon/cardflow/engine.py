@@ -3399,8 +3399,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if not self._wip_safe(wip):
                     return True
                 try:
-                    target = self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
-                    reviewer = self._transfer_reviewer(st, step, target)
+                    # PT-312: odrzucona przez regułę poprawek propozycja nie może przepiąć recenzenta.
+                    # _resume_step rozstrzyga ją ponownie przed startem; dotąd zostawiamy parę bez zmian.
+                    fix_target = (self._resumed_fix_target(card, st, step)[0]
+                                  if step.get("kind") == "fix" else settings["executor"])
+                    reviewer = None
+                    if fix_target == settings["executor"]:
+                        target = self._resume_executor(card, st, step, settings["executor"],
+                                                       changed=True, transfer=True)
+                        reviewer = self._transfer_reviewer(st, step, target)
                 except FlowError:
                     return True
                 self._save_transfer_reviewer(card, step, reviewer)

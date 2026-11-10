@@ -374,6 +374,67 @@ class ResumeFixTest(_FixJournal):
                     self.assertNotEqual(name, self.next_reviewer())
                     self.assertEqual(session, "sess-f-3" if name == "Sonnet" else "")
 
+    def test_rejected_limit_transfer_keeps_next_review_independent_also_after_retry(self):
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.assertEqual(self.fix(self.rounds("Codex Astra", 3)), ("Opus", "author"))
+        step = self.fix_step("limited-fix", "Opus", 3, executorReason="author")
+        engine = self.engine
+        engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
+        engine.get_flow_settings = lambda: {
+            "limitTransfer": {"mode": "auto", "executor": "Codex standard"}}
+        engine._repair_wip_due = lambda *args: {"stopped": True, "files": 0}
+        engine.git = SimpleNamespace(clean_tip=lambda *args: "abc", review_diff=lambda *args: "")
+        engine._rules = lambda repo: ""
+
+        # Dwie pełne próby: propozycja transferu, wznowienie i ponowny limit tego samego fix.
+        for attempt in range(2):
+            self.add("step.finished", step=step["step"], ticket=TICKET, result="error", reason="limit")
+            self.assertTrue(engine._advance_limit(CARD, engine.journal.state(CARD)))
+            decision = engine.journal.state(CARD).step_decisions[step["step"]]
+            self.assertEqual((decision["choice"], decision["automatic"]), ("transfer", True))
+            self.assertTrue(engine._advance_limit(CARD, engine.journal.state(CARD)))
+            fixer, kw = self.launched[-1]
+            self.assertEqual((fixer.name, kw["executor_reason"]), ("Opus", "author"))
+            self.assertEqual(kw["resume_session"], step["session"])
+            step = self.fix_step(f"resumed-fix-{attempt}", fixer.name, 3,
+                                 executorReason=kw["executor_reason"], parentStep=step["step"])
+
+        self.add("step.finished", step=step["step"], ticket=TICKET, result="done")
+        engine._review(CARD, engine.journal.state(CARD), step, 4)
+        reviewer, kw = self.launched[-1]
+        self.assertEqual(kw["kind"], "review")
+        self.assertNotEqual(step["executor"], reviewer.name)
+        self.assertEqual(reviewer.name, "Codex Astra")
+        self.assertFalse(any(e["type"] == "reviewer.reassigned" for e in self.events))
+
+    def test_limit_transfer_matching_manual_author_still_reassigns_reviewer(self):
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.rounds("Codex Astra", 3)
+        step = self.fix_step("limited-fix", "Opus", 3, executorReason="author")
+        self.add("author.reassigned", ticket=TICKET, executor="Codex standard")
+        self.add("step.finished", step=step["step"], ticket=TICKET, result="error", reason="limit")
+        engine = self.engine
+        engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
+        engine.get_flow_settings = lambda: {
+            "limitTransfer": {"mode": "auto", "executor": "Codex standard"}}
+        engine._repair_wip_due = lambda *args: {"stopped": True, "files": 0}
+        engine.git = SimpleNamespace(clean_tip=lambda *args: "abc", review_diff=lambda *args: "")
+        engine._rules = lambda repo: ""
+
+        self.assertTrue(engine._advance_limit(CARD, engine.journal.state(CARD)))
+        self.assertEqual(self.next_reviewer(), "Opus")
+        self.assertTrue(engine._advance_limit(CARD, engine.journal.state(CARD)))
+        fixer, kw = self.launched[-1]
+        self.assertEqual((fixer.name, kw["executor_reason"], kw["resume_session"]),
+                         ("Codex standard", "override", ""))
+        fixed = self.fix_step("transferred-fix", fixer.name, 3, executorReason=kw["executor_reason"],
+                              parentStep=step["step"])
+        self.add("step.finished", step=fixed["step"], ticket=TICKET, result="done")
+        engine._review(CARD, engine.journal.state(CARD), fixed, 4)
+        reviewer, kw = self.launched[-1]
+        self.assertEqual((reviewer.name, kw["kind"]), ("Opus", "review"))
+        self.assertNotEqual(fixer.name, reviewer.name)
+
     def test_automatic_change_does_not_accept_changed_author_identity(self):
         self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")
         self.rounds("Opus", 3)
