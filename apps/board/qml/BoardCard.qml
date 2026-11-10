@@ -306,6 +306,8 @@ Rectangle {
                         border.width: segment.phase === "kolejka" ? 1 : 0
                         border.color: Tide.Theme.alpha(Tide.Tokens.sky, 0.75)
                         // Pulsowanie z jednej wspólnej fazy strony (PT-325), bez animacji na segment; w tle faza stoi na 1.
+                        // Puls bierzemy ze wspólnej fazy strony; duch przeciąganej karty nie ma dragHost, więc jego segment
+                        // „pracuje” ma stałe krycie 1 i odróżnia się samym kolorem.
                         opacity: segment.phase === "pracuje" && root.dragHost ? root.dragHost.workPulse : 1
                     }
                     HoverHandler { id: segmentHover }
