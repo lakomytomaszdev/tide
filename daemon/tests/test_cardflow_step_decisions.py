@@ -693,7 +693,7 @@ class ReviewerRuleTest(unittest.TestCase):
 class ReviewRoundsTest(FlowInProcess):
     def test_default_rounds_before_question_and_escalation(self):
         # 03.11: po 3 rundach karta stawała i czekała na „Ponów poprawki”; teraz domyślnie 6, a od 3. rundy
-        # poprawki robi mocny wykonawca spoza recenzentów (K-88/PT-312; wcześniej sam recenzent).
+        # poprawki robi wykonawca recenzji.
         from tide_daemon.cardflow import engine as engine_mod
         with open(self.settings, "w", encoding="utf-8") as fh:
             json.dump({"stepGuardMinutes": 15.0}, fh)

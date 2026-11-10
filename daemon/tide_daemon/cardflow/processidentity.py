@@ -145,7 +145,7 @@ START_IDENTITY = {"ticket": TICKET_START, "kind": KIND, "branch": BRANCH, "workt
                   "unit": STEP_UNIT}
 START_NEUTRAL = ("baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "boxPortOwner",
                  "closeFile", "consoleClosed", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
-                 "executor", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
+                 "executor", "executorReason", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
                  "readDirsProfile", "repo", "reviewTip", "round", "routeKind", "routeTokenFile", "routeUrl",
                  "session", "taskFile", "toolingKind")
 CONSOLE_INHERITED = Field(

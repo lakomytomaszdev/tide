@@ -185,12 +185,6 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual([v["round"] for v in self.of(card, "review.verdict")], [1, 2, 3, 4])
         self.assertEqual([d["choice"] for d in self.of(card, "review.decision")], ["retry"])
         self.assertEqual(len(self.results(card, "merge")), 1)
-        # K-88/PT-312: poprawki rundy 3 nie pisze recenzent, który potem ocenia je w rundzie 4.
-        started = self.of(card, "step.started")
-        fix = next(s for s in started if s["kind"] == "fix" and s["round"] == 3)
-        review = next(s for s in started if s["kind"] == "review" and s["round"] == 4)
-        self.assertNotEqual(fix["executor"], review["executor"])
-        self.assertIn(fix.get("executorReason"), ("author", "escalated"))
 
     def test_accept_after_three_rounds_merges_the_last_reviewed_commit(self):
         # 03.11, K-33/PT-108: uwagi dotyczyły testów niewykonalnych w piaskownicy — użytkownik scala mimo uwag.

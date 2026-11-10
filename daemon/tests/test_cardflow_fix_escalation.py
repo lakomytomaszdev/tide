@@ -2,8 +2,12 @@
 
 PT-261 i PT-277: od 3. rundy poprawki pisał recenzent i sam je potem oceniał. Testy budują dziennik karty
 i wołają `_fix` z przechwyconym `_launch`; wykonawcy pochodzą z domyślnego katalogu."""
+import json
 import unittest
 from types import SimpleNamespace
+
+from .privatebus import wait_until
+from .test_cardflow import FlowInProcess
 
 from tide_daemon.cardflow import engine as engine_mod
 from tide_daemon.cardflow.engine import FlowError
@@ -216,6 +220,29 @@ class ResumeReasonTest(unittest.TestCase):
 
     def test_review_question_threshold_is_unchanged(self):
         self.assertEqual((engine_mod.REVIEW_ROUNDS, engine_mod.ESCALATE_FIX_ROUND), (6, 3))
+
+
+class FixFlowTest(FlowInProcess):
+    def test_question_after_the_threshold_and_retry_fix_is_not_written_by_the_next_reviewer(self):
+        # Przepływ z atrapami: 3 rundy REQUEST_CHANGES → review.question (próg z ustawień, 3) → „Ponów poprawki”.
+        card = self.card(description="Dodaj eksport.\n\nATRAPA: review-requests 3")
+        self.assertTrue(self.start(card)["ok"])
+        self.wait_column(card, "waiting", timeout=50)
+        self.assertEqual(len(self.of(card, "review.question")), 1)
+        replies = []
+        self.board.resolve_card_review(card, "retry", replies.append)
+        self.assertTrue(wait_until(lambda: replies, timeout=10))
+        self.assertTrue(json.loads(replies[0])["ok"])
+        self.assertTrue(wait_until(lambda: any(s["kind"] == "review" and s["round"] == 4
+                                               for s in self.of(card, "step.started")), timeout=30),
+                        self.events(card))
+        started = self.of(card, "step.started")
+        fixes = [s for s in started if s["kind"] == "fix"]
+        self.assertEqual([s.get("executorReason") for s in fixes[:2]], ["author", "author"])
+        fix = next(s for s in fixes if s["round"] == 3)
+        review = next(s for s in started if s["kind"] == "review" and s["round"] == 4)
+        self.assertIn(fix.get("executorReason"), ("author", "escalated"))
+        self.assertNotEqual(fix["executor"], review["executor"])
 
 
 if __name__ == "__main__":
