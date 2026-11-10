@@ -1257,10 +1257,16 @@ def _derived(st: FlowState, card: dict) -> dict | None:
          "command": entry["requested"].get("command") or "", "after": entry["requested"].get("after") or "",
          "phase": mergecheck.phase(st, entry) if entry["status"] == mergecheck.PENDING else ""}
         for entry in held]
-    if held and not attention and not st.running() and not st.paused and column != "backlog":
-        # Bramka testów po scaleniu (PT-318): nic innego nie pracuje, a karta stoi na wyniku próby.
-        first = held[0]
-        stage = mergecheck.phase(st, first) if first["status"] == mergecheck.PENDING else ""
+    stages = [mergecheck.phase(st, entry) if entry["status"] == mergecheck.PENDING else "" for entry in held]
+    # Pytanie o zgodę i problem próby (odmowa, porażka, brak polecenia) to decyzje karty bez kroku dla
+    # attention_step: jak decyzja opiekuna idą do „Czeka na mnie” także wtedy, gdy inne tickety pracują (PT-329,
+    # review r1). Próba w kolejce albo w toku zostaje „W toku” — przy pracujących krokach liczą je dalsze reguły.
+    asking = [i for i, entry in enumerate(held) if entry["status"] != mergecheck.PENDING or stages[i] == "consent"]
+    if held and not attention and (asking or not st.running()) and not st.paused and column != "backlog":
+        # Bramka testów po scaleniu (PT-318): karta stoi na wyniku albo na decyzji o próbie.
+        index = asking[0] if st.running() else 0
+        first = held[index]
+        stage = stages[index]
         text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu",
                 mergecheck.FAILED: "testy po scaleniu nie przeszły",
                 mergecheck.DENIED: "odmowa zgody na testy po scaleniu — ponów albo zaakceptuj",

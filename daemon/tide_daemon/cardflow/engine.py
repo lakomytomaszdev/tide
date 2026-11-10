@@ -7177,6 +7177,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             resumed = {s.get("parentStep") for s in current.steps.values() if s.get("parentStep")}
             outside = {name for name, identity in identities.items() if isinstance(name, str)
                        and identity.has_outside_request}
+            # Pseudokrok bieżącej próby testów po scaleniu (PT-329) prosi o polecenie bez `step.finished.outside`:
+            # jego zgoda sprzed restartu też wraca do kolejki z czasem zgody (review r1, NIT-1).
+            outside |= {mergecheck.step_name(entry["check"]) for entry in mergecheck.gate(current)
+                        if entry["status"] == mergecheck.PENDING}
             for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now

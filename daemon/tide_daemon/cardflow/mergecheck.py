@@ -10,7 +10,7 @@ Zdarzenia (dziennik karty):
 - `merge.check-requested {ticket, check, start, before, after, command, source, fallback?, mergeSeq}` — próba
   `check` = `<ticket>:<n>`; próba bez polecenia ma `unavailable: true` zamiast `command` (problem karty
   `merge-check-unavailable`). Zdarzenia „pominięto” nie ma: brak polecenia nigdy nie przepuszcza karty,
-- `merge.check-step {step, ticket, kind, check, command, after, branch, worktree, stepDir, runner, baseVersion}` —
+- `merge.check-step {step, ticket, kind, check, command, after, branch, worktree, stepDir, baseVersion}` —
   pseudokrok próby z poleceniem (PT-329): `step` = `merge-check-<ticket>-<n>` (`step_name`), start procesu w modelu
   tożsamości (processidentity), więc decyzja `step.decision` i uruchomienie `outside.started`/`outside.finished`
   tej nazwy są zwykłym śladem procesu, a nie wpisem bez startu. Nie jest krokiem karty (`st.steps`): nie pracuje,

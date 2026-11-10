@@ -26,7 +26,7 @@ from tide_daemon.tasks import stepstop
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess
 from .test_cardflow_dbus import git
-from . import test_cardflow_merge_check as gate_tests     # bez nazwy klasy w module: testy PT-318 biegną raz
+from . import test_cardflow_merge_check as gate_tests     # klasa PT-318 tylko przez moduł: jej testy biegną raz
 
 START = "a" * 40
 TICKET = "PT-2"
@@ -168,6 +168,50 @@ class MergeCheckRunTest(FlowInProcess):
             self.assertIn(f"przebieg BASE={START}", fh.read())
         self.assertEqual(self.held(), [], "wynik 0 otwiera bramkę")
         self.assert_history_ok()
+
+    def test_consent_question_and_denial_wait_for_me_while_another_ticket_works(self):
+        """Review r1 MAJOR-1: pytanie o zgodę i odmowa to decyzje karty — „Czeka na mnie” mimo pracującego ticketu
+        (jak decyzja opiekuna); próba w kolejce zostaje „W toku”, a pauza i ręczny Backlog mają pierwszeństwo."""
+        self.tick()
+        name = self.name()
+        self.engine.journal.append(self.card_id, "step.started", step="K-1-PT-3-1", ticket="PT-3", kind="ticket",
+                                   executor="Sonnet", worktree=self.repo)
+        self.assertTrue(self.state().running())
+        view = self.view_without_plan()
+        self.assertEqual(view["column"], "waiting", view)
+        self.assertEqual(view["question"], f"Uruchomić testy po scaleniu {TICKET}: make test-changed BASE={START}?")
+        self.assertEqual(view["note"], f"{TICKET}: testy po scaleniu czekają na zgodę na polecenie poza piaskownicą")
+        self.assertIsNone(self.view_without_plan("backlog"), "ręczny Backlog wygrywa")
+        self.engine.journal.append(self.card_id, "card.paused")
+        self.assertEqual(self.view_without_plan()["column"], "progress", "pauza wygrywa")
+        self.engine.journal.append(self.card_id, "card.resumed")
+        self.engine.resolve_step(self.card_id, {"choice": "deny", "step": name})
+        view = self.view_without_plan()
+        self.assertEqual(view["column"], "waiting", view)
+        self.assertEqual(view["note"], f"{TICKET}: odmowa zgody na testy po scaleniu — ponów albo zaakceptuj")
+        self.assertEqual([c["status"] for c in view["flow"]["mergeChecks"]], ["merge-check-denied"])
+        # Ten sam stan na karcie z planem (fixture bez propozycji planu): pytanie o zgodę wygrywa z resztą reguł.
+        self.assertEqual(derived(self.state(), {"column": "progress"})["note"], view["note"])
+
+    def view_without_plan(self, column="progress"):
+        """Widok tego samego dziennika z wejściem `now` (fixture nie ma propozycji planu, a reguły karty z planem
+        zwracają wtedy „propozycja planu wymaga poprawy” — tu sprawdzamy kolejność reguł bramki i pracy)."""
+        events = [{**e, "entry": "now"} if e["type"] == "card.started" else e for e in self.events()]
+        return derived(fold(events), {"column": column})
+
+    def test_queued_check_stays_in_progress_while_another_ticket_works(self):
+        self.remember_rule()
+        with mock.patch.object(engine_mod, "OUTSIDE_PER_PROJECT", 1):
+            self.engine._outside_active = {"K-1-PT-9-1": (self.card_id, "tide-outside-K-1-PT-9-1")}
+            self.tick()
+            self.engine.journal.append(self.card_id, "step.started", step="K-1-PT-3-1", ticket="PT-3",
+                                       kind="ticket", executor="Sonnet", worktree=self.repo)
+            view = self.view_without_plan()
+            self.engine._outside_active = {}
+        self.assertEqual([c["phase"] for c in view["flow"]["mergeChecks"]], ["queued"])
+        self.assertEqual(view["column"], "progress", view)
+        self.assertNotIn("testy po scaleniu", view["note"], "próba w kolejce nie zasłania pracy innego ticketu")
+        self.assertFalse(view.get("question"))
 
     def test_project_rule_gives_auto_decision_and_a_failing_run_keeps_the_gate_closed(self):
         self.remember_rule()
@@ -346,6 +390,16 @@ class MergeCheckRunTest(FlowInProcess):
         self.assertEqual(self.held(), [(f"{TICKET}:1", "pending")])
         self.assertEqual(len(self.consent_decisions(name)), 1)
 
+    def test_restart_seeds_the_queue_with_the_consent_of_the_check(self):
+        """Review r1 NIT-1: zgoda próby zapisana przed restartem wraca do zasiewu kolejki z czasem zgody."""
+        self.tick()
+        name = self.name()
+        self.engine.resolve_step(self.card_id, {"choice": "run", "step": name})
+        engine = self.fresh_engine()
+        engine._seed_outside_waiting(engine_mod.time.time())
+        self.assertIn(name, engine._outside_waiting)
+        self.assertEqual(engine._outside_waiting[name][0], self.card_id)
+
     def test_restart_during_the_run_neither_starts_it_again_nor_loses_the_result(self):
         self.remember_rule()
         with open(os.path.join(self.repo, "slow"), "w", encoding="utf-8") as fh:
@@ -412,13 +466,12 @@ class MergeCheckStatusTest(unittest.TestCase):
         self.assertEqual(mergecheck.step_name("PT-12:3"), "merge-check-PT-12-3")
 
 
-_GATE = gate_tests.MergeCheckFlowTest
-
-
 class MergeCheckRunFlowTest(FlowInProcess):
     """Pełny przepływ z prawdziwym gitem i prawdziwym `make` (bez atrapy `make` z testów PT-318). Pomocnicze
     metody z testów bramki (PT-318), bez dziedziczenia ich scenariuszy."""
     merge_checks_pass = False
+    # Klasa PT-318 tylko w ciele klasy (nie jako nazwa modułu): loader `unittest` nie zbiera jej testów drugi raz.
+    _GATE = gate_tests.MergeCheckFlowTest
     proposal, submit, approve = _GATE.proposal, _GATE.submit, _GATE.approve
     commit_files, parallel_plan, run_plan = _GATE.commit_files, _GATE.parallel_plan, _GATE.run_plan
     merges, checks, ticket_starts, state, settle = _GATE.merges, _GATE.checks, _GATE.ticket_starts, _GATE.state, \
@@ -427,6 +480,7 @@ class MergeCheckRunFlowTest(FlowInProcess):
     assert_check_for_merge = _GATE.assert_check_for_merge
     assert_first_merge_only_after_tide_plan_commits = _GATE.assert_first_merge_only_after_tide_plan_commits
     assert_one_check_for_second_merge = _GATE.assert_one_check_for_second_merge
+    del _GATE
 
     CHECK_SCRIPT = (
         "#!/bin/sh\n"
