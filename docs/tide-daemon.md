@@ -2111,9 +2111,13 @@ ticketu, którego klasa w zatwierdzonym planie nie jest `mocny` ani `lokalny` (b
 pierwszy dostępny wykonawca klasy `mocny` preferowanego dostawcy zlecenia (w trybie mieszanym — dostawcy autora),
 inny niż recenzent ocenianego i następnego review oraz inny niż autor; bez takiego poprawki robi autor, a zmiana
 autora w katalogu nadal kończy krok błędem `changed-executor`. Autor to ostatni krok autora ticketu, który nie był
-eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Wznowienie poprawek tym
-samym wykonawcą zachowuje `executorReason`; nowy wykonawca wznowienia zapisuje `override`. Próg pytania o review
-(`reviewRoundsBeforeQuestion`) się nie zmienia.
+eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Ręczna zmiana autora
+z panelu (`author.reassigned`) obowiązuje we wszystkich kolejnych rundach poprawek ticketu, aż do następnej takiej
+zmiany. Wznowienie kroku `fix`: jawna zmiana wykonawcy (`change-executor`, `transfer`) albo nowszy przepięty autor
+zapisują `override`; zwykłe wznowienie przelicza tę samą regułę — ten sam wykonawca zachowuje sesję i powód, a gdy
+reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje świeżą sesją z powodem `author` albo
+`escalated`. Automatyczny powrót do autora przechodzi tę samą kontrolę `changed-executor` co zwykłe poprawki. Próg
+pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie

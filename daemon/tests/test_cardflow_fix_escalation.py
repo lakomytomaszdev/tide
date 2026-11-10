@@ -161,6 +161,18 @@ class FixExecutorTest(_FixJournal):
         self.assertEqual((name, reason), ("Haiku", "override"))
         self.assertNotEqual(name, self.next_reviewer())
 
+    def test_manual_author_change_keeps_winning_in_later_rounds(self):
+        # Review r2, MAJOR-3: po kroku nowego autora wpis author.reassigned jest starszy, a eskalacja nie może
+        # samoczynnie zastąpić wyboru użytkownika.
+        self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
+        review = self.rounds("Codex standard", 3)
+        self.add("author.reassigned", ticket=TICKET, executor="Haiku")
+        self.assertEqual(self.fix(review), ("Haiku", "override"))
+        for round_no in (4, 5):
+            review = self.step(f"r-{round_no}", "review", "Codex standard", round_no)
+            self.assertEqual(self.fix(review), ("Haiku", "override"))
+            self.assertNotEqual("Haiku", self.next_reviewer())
+
     def test_rounds_before_escalation_stay_with_the_author(self):
         self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")
         self.rounds("Codex standard", 3)
@@ -261,6 +273,22 @@ class ResumeFixTest(_FixJournal):
         step = self.fix_step("f-3", "Codex Astra", 3)        # stara historia: bez executorReason
         self.assertEqual(self.resume(step), ("Opus", "author", ""))
         self.assertEqual(self.next_reviewer(), "Codex Astra")
+
+    def test_automatic_return_to_a_changed_author_stops_with_changed_executor(self):
+        # Review r2, MAJOR-2: autor Opus zapisany z innym modelem niż dziś w katalogu; stary `fix` rundy 3 pisała
+        # Astra. Automatyczny powrót do autora nie jest ręczną zgodą na zmianę modelu.
+        self.card("Opus", "Codex Astra", klass="mocny", preferred="mixed")
+        self.rounds("Codex Astra", 2)
+        self.step("r-3", "review", "Codex Astra", 3)
+        step = self.fix_step("f-3", "Codex Astra", 3)
+        for e in self.events:
+            if e["type"] == "step.started" and e["kind"] in ("ticket", "fix") and e["executor"] == "Opus":
+                e["model"] = "opus-stary"
+        launched = len(self.launched)
+        with self.assertRaises(FlowError) as ctx:
+            self.resume(step)
+        self.assertEqual(ctx.exception.code, "changed-executor")
+        self.assertEqual(len(self.launched), launched)
 
     def test_retry_of_an_escalated_fix_whose_executor_became_the_reviewer_moves_to_the_author(self):
         self.card("Sonnet", "Codex standard", klass="standard", preferred="anthropic")

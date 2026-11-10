@@ -4692,16 +4692,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if override:
             name, reassigned = override, True
         fresh = choice in ("change-executor", "transfer") or reassigned
-        fix_reason = ""
+        fix_reason, fix_author, moved = "", {}, False
         if kind == "fix":
             # K-88/PT-312: jawna zmiana wykonawcy albo przepięty autor — `override`; zwykłe wznowienie przechodzi
             # przez regułę niezależności review (recenzent nie wznawia poprawek, które potem oceni).
             if fresh:
                 fix_reason = "override"
             else:
-                target, fix_reason = self._resumed_fix_target(card, st, step)
+                target, fix_reason, fix_author = self._resumed_fix_target(card, st, step)
                 if target and target != name:
-                    name, reassigned, fresh = target, True, True
+                    name, reassigned, fresh, moved = target, True, True, True
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
@@ -4728,6 +4728,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
                                 kept=[], exit=None)
             return
+        if moved and fix_reason == "author":
+            # Automatyczny powrót do autora nie jest ręczną zgodą na zmianę jego modelu: ta sama kontrola
+            # tożsamości autora co w `_fix` (review r2, MAJOR-2).
+            self._check_author_identity(card, selected, fix_author,
+                                        st.assignments.get(step.get("ticket") or "") or st.started or {})
         old_prompt = os.path.join(step.get("stepDir") or "", "in", "prompt.txt")
         try:
             with open(old_prompt, encoding="utf-8") as fh:
@@ -4947,16 +4952,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             executor = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if reason != "author":
-            pass
-        elif executor.tool != (author.get("program") or assigned.get("program")) or \
-                executor.model != (author.get("model") or assigned.get("model")) or \
-                executor.provider != (author.get("provider") or assigned.get("provider")) or \
-                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
-                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
-                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
-                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
-            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
+        if reason == "author":
+            self._check_author_identity(card, executor, author, assigned)
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -4983,8 +4980,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             (own[-1] if own else authored[0] if authored else None)
         if author is None:
             raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
+        # Ręczna zmiana autora z panelu dotyczy wszystkich kolejnych poprawek ticketu (`_reassign_fix_author`),
+        # więc wygrywa z eskalacją także w rundach po pierwszym kroku nowego autora (review r2, MAJOR-3).
         override = st.author_overrides.get(ticket) or {}
-        if override and override.get("seq", 0) > max(s.get("seq", 0) for s in authored):
+        if override.get("executor"):
             return override["executor"], "override", author
         author_name = author.get("executor") or assigned.get("executor") or ""
         if int(review_step.get("round") or 1) >= ESCALATE_FIX_ROUND:
@@ -4992,6 +4991,20 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if escalated is not None:
                 return escalated.name, "escalated", author
         return author_name, "author", author
+
+    @staticmethod
+    def _check_author_identity(card: str, executor, author: dict, assigned: dict) -> None:
+        """Gałąź „autor”: wykonawca z katalogu musi być tym samym autorem (program, model, dostawca, effort, route),
+        który pisał ticket — inaczej `changed-executor`. Wspólne dla `_fix` i automatycznego powrotu do autora
+        przy wznowieniu poprawek (review r2, MAJOR-2)."""
+        if executor.tool != (author.get("program") or assigned.get("program")) or \
+                executor.model != (author.get("model") or assigned.get("model")) or \
+                executor.provider != (author.get("provider") or assigned.get("provider")) or \
+                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
+                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
+                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
+                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
+            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
 
     @staticmethod
     def _reviewer_fixes(st: FlowState, ticket: str) -> set:
@@ -5009,16 +5022,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 taken.add(s.get("step"))
         return taken
 
-    def _resumed_fix_target(self, card: str, st: FlowState, step: dict) -> tuple[str, str]:
+    def _resumed_fix_target(self, card: str, st: FlowState, step: dict) -> tuple[str, str, dict]:
         """Wznowienie kroku `fix` bez jawnej zmiany wykonawcy: ta sama reguła co `_fix`, licząc od review, które
         krok poprawia. Inny wynik niż wykonawca kroku (recenzent łatał w starej historii, recenzentem został
-        eskalowany wykonawca) przenosi wznowienie na nowego wykonawcę świeżą sesją. Ręczny wybór autora zostaje."""
+        eskalowany wykonawca) przenosi wznowienie na nowego wykonawcę świeżą sesją. Ręczny wybór autora zostaje.
+        Zwraca `(nazwa, powód, krok autora)`; krok autora (pusty poza regułą) służy kontroli `changed-executor`."""
         current = step.get("executor") or ""
         ticket = step.get("ticket") or ""
         override = st.author_overrides.get(ticket) or {}
         if step.get("executorReason") == "override" or (
                 override.get("executor") == current and override.get("seq", 0) < step.get("seq", 0)):
-            return current, "override"
+            return current, "override", {}
         cfg = self.models_config() if self.models_config else None
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         reviews = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") == "review"
@@ -5026,9 +5040,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         review = next((r for r in reversed(reviews) if int(r.get("round") or 0) == int(step.get("round") or 0)),
                       reviews[-1] if reviews else None)
         if catalog is None or review is None:
-            return current, step.get("executorReason") or ""
-        name, reason, _ = self._fix_target(card, st, ticket, review, catalog, cfg)
-        return name, reason
+            return current, step.get("executorReason") or "", {}
+        return self._fix_target(card, st, ticket, review, catalog, cfg)
 
     def _fix_reviewers(self, st: FlowState, ticket: str, review_step: dict) -> set:
         """Nazwy recenzentów, którym nie wolno pisać poprawek: autor ocenianego review i recenzent następnego
