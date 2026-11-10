@@ -3700,6 +3700,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
+        # Trwający przebieg próby testów po scaleniu (PT-329, review r2) biegnie w worktree gałęzi karty: commit planu
+        # przesunąłby HEAD w trakcie testów (przebieg stoi na `after`) albo padł na artefaktach testów w worktree.
+        card_work = card_work or any(name in st.merge_check_steps for name in st.outside_started)
         if not card_work:
             self._plan_commit(card, self.journal.state(card), project.repo, card_branch, card_worktree)
         if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
@@ -4111,6 +4114,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 raise FlowError("bad-request", "retry-merge-check przyjmuje tylko `ticket` i `check`")
             self._require_base_context(card)
             return self.retry_merge_check(card, request)
+        if mergecheck.is_step(request.get("step")):
+            # Zgoda albo odmowa próby testów po scaleniu (PT-329) — tylko decyzja człowieka z panelu karty.
+            if caretaker_problem or request.get("auto") or set(request) - {"choice", "step", "answer", "instead"}:
+                raise FlowError("bad-request", "próba testów po scaleniu przyjmuje tylko choice, step, answer i instead")
+            self._require_base_context(card)
+            return self.resolve_merge_check(card, request)
         if str(request.get("step") or "").startswith("k38-diagnostic-"):
             return self._resolve_trial_diagnostic(card, request)
         if "allow" in request and request.get("choice") != "allow" or \
@@ -6453,8 +6462,208 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return mergecheck.gate(self.journal.state(card)) if held else held
 
     def _merge_check_waiting(self, card: str, entry: dict) -> None:
-        """Próba z poleceniem czeka na przebieg. Uruchomienie pod zgodą w kolejce outside i zapis
-        `merge.check-finished` należą do ticketu przebiegu pod zgodą (PT-329); tu bramka tylko czeka."""
+        """Próba z poleceniem czeka na przebieg (PT-329): pseudokrok `merge-check-<ticket>-<n>`, zgoda tą samą
+        ścieżką co prośba `outside` kroku (bez zgody Tide „z urzędu”), start w kolejce outside i zapis
+        `merge.check-finished`. Niepewna historia albo tożsamość wstrzymuje przebieg (bramka zostaje zamknięta)."""
+        command = str(entry["requested"].get("command") or "")
+        name = mergecheck.step_name(entry["check"])
+        if not command:
+            return
+        try:
+            step = self._merge_check_step(card, entry)
+            if step is None:
+                return
+            decision = self.journal.state(card).step_decisions.get(name)
+            if decision is None:
+                # Automatyczna zgoda tylko z reguł projektu (dozwolone rodziny, zgoda ticketu, `outsideAuto`) i bez
+                # odmowy człowieka tego polecenia w tym tickecie ani wstrzymania karty (PT-311). Inaczej panel karty
+                # pokazuje zwykłe pytanie o zgodę (decisions.py).
+                consent.record_automatic(self, card, step, command, check=entry["check"])
+                decision = self.journal.state(card).step_decisions.get(name)
+            if (decision or {}).get("choice") in consent.RUN:
+                self._merge_check_run(card, step, entry, decision)
+        except FlowError as exc:
+            self._outside_log(name, f"wstrzymane: {exc}")
+
+    def _merge_check_step(self, card: str, entry: dict) -> dict | None:
+        """Pseudokrok próby: zapisany `merge.check-step` (raz na próbę, także po restarcie) jako słownik kroku dla
+        wspólnych reguł zgody i kolejki. None — brak worktree gałęzi karty."""
+        name = mergecheck.step_name(entry["check"])
+        with self.journal.lock:
+            st = self.journal.state(card)
+            found = st.merge_check_steps.get(name)
+            if found is None:
+                requested = entry["requested"]
+                info = ticket_of(st, entry["ticket"])
+                worktree = info["cardWorktree"]
+                if not worktree:
+                    return None
+                from ..board.commands import outside_allowed
+                command, step_dir = requested.get("command") or "", worktree + f".{name}.step"
+                project = self._project(card)[1]
+                allowed = outside_allowed(command, project.denied_commands, (worktree, project.repo, step_dir))
+                found = self.journal.append(
+                    card, mergecheck.STEP, step=name, ticket=entry["ticket"], kind=mergecheck.KIND,
+                    check=entry["check"], command=command, after=requested.get("after") or "",
+                    branch=info["cardBranch"], worktree=worktree, stepDir=step_dir,
+                    baseVersion=st.base_version, canAllow=allowed)
+        # Bez `runner`: próba biegnie wyłącznie na hoście, w worktree gałęzi karty.
+        return {key: found.get(key) for key in ("step", "ticket", "kind", "check", "command", "after", "branch",
+                                                "worktree", "stepDir", "baseVersion")}
+
+    def _merge_check_history(self, card: str) -> list:
+        try:
+            return trialhold.read_process_history(self.journal, card)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
+
+    def _merge_check_run(self, card: str, step: dict, entry: dict, decision: dict) -> None:
+        """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
+        `outside.finished` pseudokroku i `merge.check-finished` z tym samym `exit` (liczba, „zatrzymane”,
+        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku."""
+        self._trial_check(step)
+        name = step["step"]
+        state, started, finished = processidentity.outside_run(self._merge_check_history(card), name)
+        if state != "ok":
+            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+        if finished:
+            # Restart między `outside.finished` a wynikiem próby: wynik z zapisanego zakończenia, dokładnie raz.
+            self._merge_check_finish(card, step, entry, finished.get("exit"), (started or {}).get("log") or "")
+            return
+        if started is None:
+            if self.journal.state(card).paused:
+                # Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce; po wznowieniu wraca do niej.
+                self._outside_waiting.pop(name, None)
+                return
+            if not consent.before_start(self, card, step, {"command": step["command"]}, decision):
+                return
+            if self._outside_busy(card):
+                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
+                return
+            if self._outside_behind(card, name, decision):
+                return
+            self._outside_waiting.pop(name, None)
+            self._outside_log(name, "start")
+            self._merge_check_start(card, step, entry)
+            return
+        collected = self._outside_collect(card, name, started)
+        if collected is not None:
+            code, tail = collected
+            with self.journal.lock:
+                self.journal.append(card, "outside.finished", step=name, ticket=step["ticket"],
+                                    command=started.get("command") or "", exit=code, tail=tail)
+                self._merge_check_finish(card, step, entry, code, started.get("log") or "")
+
+    def _merge_check_finish(self, card: str, step: dict, entry: dict, code, log: str) -> None:
+        with self.journal.lock:
+            item = self.journal.state(card).merge_checks.get(step["ticket"]) or {}
+            if (item.get("requested") or {}).get("check") == entry["check"] and item.get("finished") is None:
+                self.journal.append(card, mergecheck.FINISHED, ticket=step["ticket"], check=entry["check"], exit=code,
+                                    log=log)
+
+    def _merge_check_still_allowed(self, card: str, step: dict) -> bool:
+        """Świeża kontrola tuż przed startem, pod blokadą dziennika: bieżąca próba nadal czeka, jej decyzja to zgoda,
+        a zgoda automatyczna nadal spełnia reguły (odmowa człowieka i cofnięcie wygrywają — PT-311)."""
+        current = self.journal.state(card)
+        name = step["step"]
+        item = current.merge_checks.get(step["ticket"]) or {}
+        decision = current.step_decisions.get(name) or {}
+        if (item.get("requested") or {}).get("check") != step["check"] or item.get("finished") is not None or \
+                name in current.outside_launched or current.paused or current.card_finished or \
+                decision.get("choice") not in consent.RUN:
+            self._outside_waiting.pop(name, None)
+            return False
+        if decision.get("auto") and not consent.before_start(self, card, step, {"command": step["command"]}, decision):
+            return False
+        return True
+
+    def _merge_check_head(self, card: str, step: dict) -> str:
+        """HEAD worktree gałęzi karty, gdy to wierzchołek `after` próby (albo `after` z samymi commitami stanu planu
+        zapisanymi przez Tide); pusty napis — inny kod niż ten, który próba ma sprawdzić."""
+        worktree, after = step.get("worktree") or "", step.get("after") or ""
+        found = self.git.run(worktree, "rev-parse", "HEAD") if worktree and after else None
+        head = found.out.strip() if found is not None and found.ok else ""
+        if not head:
+            return ""
+        if head == after:
+            return head
+        st = self.journal.state(card)
+        repo = self._merge_check_repo(card, st, step["ticket"])
+        return head if self._only_tide_plan_commits(repo, st, after, head) else ""
+
+    def _merge_check_start(self, card: str, step: dict, entry: dict) -> None:
+        name, command, worktree = step["step"], step["command"], step["worktree"]
+        head = self._merge_check_head(card, step)
+        if not head:
+            self._outside_log(name, f"worktree gałęzi karty nie stoi na {step.get('after') or '?'} — czekam")
+            return
+        # Pełne polecenie zawsze w całości: ponowienie samych padniętych modułów (testrerun) nie dotyczy próby,
+        # bo udane ponowienie nie może zastąpić porażki (zasady wyjątków od testów).
+        unit, log, exit_file, argv, env = self._outside_launch(name, step["stepDir"], worktree, command)
+        with open(log, "ab") as out, self.journal.lock:
+            self._merge_check_history(card)
+            if not self._merge_check_still_allowed(card, step):
+                return
+            subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+            self.journal.append(card, "outside.started", step=name, ticket=step["ticket"], command=command,
+                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head)
+        if self._outside_active is None:
+            self._outside_active = {}
+        self._outside_active[name] = (card, unit)
+
+    def resolve_merge_check(self, card: str, request: dict) -> dict:
+        """Decyzja użytkownika o próbie testów po scaleniu (pytanie o zgodę w panelu): `run`, `run-always` (zapamiętuje
+        rodzinę polecenia w projekcie) albo `deny`. Dotyczy wyłącznie tej próby (`check`): ponowienie ma nowy
+        pseudokrok i wymaga nowej decyzji. Odmowa po zgodzie automatycznej, przed startem, unieważnia zgodę (PT-311)."""
+        name = str(request.get("step") or "")
+        choice = str(request.get("choice") or "")
+        if choice not in ("run", "run-always", "deny"):
+            raise FlowError("bad-choice", "próba testów po scaleniu przyjmuje run, run-always albo deny")
+        answer = str(request.get("answer") or "").strip()
+        instead = str(request.get("instead") or "").strip()
+        if len(answer) > 4000 or len(instead) > 4000:
+            raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
+        from ..board.commands import outside_allowed, outside_pattern, outside_risky
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            entry = next((e for e in mergecheck.gate(st) if mergecheck.step_name(e["check"]) == name), None)
+            event = st.merge_check_steps.get(name)
+            if entry is None or event is None or entry["status"] != mergecheck.PENDING:
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {name} nie czeka na zgodę")
+            step = self._merge_check_step(card, entry)
+            self._trial_check(step)
+            command = step["command"]
+            prior = st.step_decisions.get(name)
+            if prior is not None:
+                if name in st.outside_launched:
+                    raise FlowError("already-started", "testy po scaleniu już się uruchomiły — działają dalej")
+                if prior.get("choice") == choice and not prior.get("auto"):
+                    return {"ok": True, "id": card, "step": name, "choice": choice, "already": True}
+                if not (choice == "deny" and prior.get("auto") and prior.get("choice") in consent.RUN):
+                    raise FlowError("already-decided", f"{card}: odpowiedź na tę próbę jest już zapisana")
+                self.journal.append(card, consent.INVALIDATED, step=name, ticket=step["ticket"],
+                                    decisionSeq=prior.get("seq"), reason="denied")
+            _, project = self._project(card)
+            roots = (step["worktree"], project.repo, step["stepDir"])
+            if choice in consent.RUN:
+                if not outside_allowed(command, project.denied_commands, roots):
+                    raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
+                if choice == "run-always":
+                    if outside_risky(command, roots, self._extra_repos(card)):
+                        raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
+                    self._remember_outside(project.slug, outside_pattern(command))
+            made = self.journal.append(card, "step.decision", step=name, ticket=step["ticket"], kind=mergecheck.KIND,
+                                       check=step["check"], choice=choice, answer=answer if choice == "deny" else "",
+                                       command=command, executor="", **({"instead": instead} if instead else {}))
+        if choice == "deny":
+            self._outside_waiting.pop(name, None)
+        return {"ok": True, "id": card, "step": name, "choice": choice, "seq": made["seq"]}
 
     def _merge_check_repo(self, card: str, st: FlowState, ticket: str) -> str:
         return next((s.get("repo") for s in st.steps.values() if s.get("ticket") == ticket and s.get("repo")), "") \
@@ -6575,7 +6784,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    mergeSeq=merge_seq, retryOf=retry_of)
 
     def retry_merge_check(self, card: str, request: dict) -> dict:
-        """Ponowienie próby przy problemie `merge-check-unavailable` albo `merge-check-failed`: nowa próba
+        """Ponowienie próby przy problemie `merge-check-unavailable`, `merge-check-failed` albo `merge-check-denied`
+        (PT-329): nowa próba
         `<ticket>:<n+1>` na bieżącym wierzchołku gałęzi karty, z ponownym wyborem polecenia. Inna próba niż bieżąca
         (`check`) albo próba bez problemu — błąd bez zapisu."""
         ticket = str(request.get("ticket") or "")
@@ -6587,9 +6797,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if st.card_finished:
                 raise FlowError("no-flow", "karta została zakończona")
             item = st.merge_checks.get(ticket)
-            state = mergecheck.status(item) if item else ""
+            state = mergecheck.status(item, st.step_decisions) if item else ""
             current = (item or {}).get("requested", {}).get("check") or ""
-            if state not in (mergecheck.UNAVAILABLE, mergecheck.FAILED) or (wanted and wanted != current):
+            # Odmowa zgody (PT-329) ma te same wyjścia co porażka; nowa próba to nowy pseudokrok i nowa decyzja.
+            if state not in (mergecheck.UNAVAILABLE, mergecheck.FAILED, mergecheck.DENIED) or \
+                    (wanted and wanted != current):
                 raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {wanted or ticket} nie czeka "
                                                "na ponowienie")
             old = item["requested"]
@@ -6733,6 +6945,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
+        collected = self._outside_collect(card, name, started)
+        if collected is None:
+            return None
+        code, tail = collected
+        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+                            command=started.get("command") or "", exit=code, tail=tail)
+        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                      f"Koniec wyniku:\n{tail}"}
+
+    def _outside_collect(self, card: str, name: str, started: dict):
+        """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
+        wyjścia, zatrzymana jednostka bez kodu (PT-315, `_outside_stopped`) albo przekroczony czas. Wspólne dla prośby
+        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego."""
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
         step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
@@ -6755,12 +6982,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._outside_active.pop(name, None)
         # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
         stepstop._systemctl("stop", started["unit"] + ".scope")
-        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
-                            command=started.get("command") or "", exit=code, tail=tail)
-        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
-        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
-        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
-                                      f"Koniec wyniku:\n{tail}"}
+        return code, tail
 
     def _outside_stopped(self, started: dict, step_dir: str):
         """Zatrzymana jednostka outside bez `exit-code` (PT-315: `systemctl --user stop …scope` zostawia `exit-code.tmp`
@@ -7149,6 +7371,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             resumed = {s.get("parentStep") for s in current.steps.values() if s.get("parentStep")}
             outside = {name for name, identity in identities.items() if isinstance(name, str)
                        and identity.has_outside_request}
+            # Pseudokrok bieżącej próby testów po scaleniu (PT-329) prosi o polecenie bez `step.finished.outside`:
+            # jego zgoda sprzed restartu też wraca do kolejki z czasem zgody (review r1, NIT-1).
+            outside |= {mergecheck.step_name(entry["check"]) for entry in mergecheck.gate(current)
+                        if entry["status"] == mergecheck.PENDING}
             for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now
@@ -7183,22 +7409,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return False
         return True
 
-    def _start_outside(self, card: str, step: dict, command: str) -> None:
-        self._trial_check(step)
-        if card == "K-38" and not step.get("ticket"):
-            raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
-        if step.get("runner") == boxstep.RUNNER:
-            raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
-        name = step.get("step") or ""
-        self._outside_history(card, step)       # nieznana historia i tożsamość nadal zatrzymują wykonanie
-        if not self._outside_still_allowed(card, step):
-            return
-        self._outside_history(card, step, command=command)
-        worktree = step.get("worktree") or ""
-        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
-        requested_command = command
-        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
-        folder = os.path.join(step.get("stepDir") or "", "outside")
+    def _outside_launch(self, name: str, step_dir: str, worktree: str, command: str):
+        """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko polecenia poza piaskownicą (jednostka
+        `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`). Wspólne dla prośby kroku i próby testów po
+        scaleniu (PT-329); start i jego zapis należą do wywołującego."""
+        folder = os.path.join(step_dir, "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
         exit_file = os.path.join(folder, "in", "exit-code")
         log = os.path.join(folder, "outside.log")
@@ -7214,7 +7429,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         env.setdefault("QML_DISABLE_DISK_CACHE", "1")
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
-        if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
+        if not env.get("JOBS") and not test_pool_available(worktree):
             # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
             # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
             env["JOBS"] = str(OLD_RUNNER_JOBS)
@@ -7222,6 +7437,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
                 exit_file, "/bin/sh", "-c", command]
+        return unit, log, exit_file, argv, env
+
+    def _start_outside(self, card: str, step: dict, command: str) -> None:
+        self._trial_check(step)
+        if card == "K-38" and not step.get("ticket"):
+            raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
+        if step.get("runner") == boxstep.RUNNER:
+            raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
+        name = step.get("step") or ""
+        self._outside_history(card, step)       # nieznana historia i tożsamość nadal zatrzymują wykonanie
+        if not self._outside_still_allowed(card, step):
+            return
+        self._outside_history(card, step, command=command)
+        worktree = step.get("worktree") or ""
+        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
+        requested_command = command
+        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
+        unit, log, exit_file, argv, env = self._outside_launch(name, step.get("stepDir") or "", worktree, command)
         # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
         # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
         with open(log, "ab") as out, self.journal.lock:

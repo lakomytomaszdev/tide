@@ -10,9 +10,16 @@ Zdarzenia (dziennik karty):
 - `merge.check-requested {ticket, check, start, before, after, command, source, fallback?, mergeSeq}` — próba
   `check` = `<ticket>:<n>`; próba bez polecenia ma `unavailable: true` zamiast `command` (problem karty
   `merge-check-unavailable`). Zdarzenia „pominięto” nie ma: brak polecenia nigdy nie przepuszcza karty,
+- `merge.check-step {step, ticket, kind, check, command, after, branch, worktree, stepDir, baseVersion}` —
+  pseudokrok próby z poleceniem (PT-329): `step` = `merge-check-<ticket>-<n>` (`step_name`), start procesu w modelu
+  tożsamości (processidentity), więc decyzja `step.decision` i uruchomienie `outside.started`/`outside.finished`
+  tej nazwy są zwykłym śladem procesu, a nie wpisem bez startu. Nie jest krokiem karty (`st.steps`): nie pracuje,
+  nie wznawia się i nie dostaje review,
+- `step.decision {step: merge-check-…, ticket, kind: "merge-check", check, choice, command, auto?}` — zgoda albo
+  odmowa jednej próby; ta sama ścieżka co prośba `outside` kroku (reguły projektu, `consent`, PT-311),
 - `merge.check-finished {ticket, check, exit, log}` — wynik próby (zapisuje go przebieg pod zgodą, PT-329);
   `exit: 0` bieżącej próby otwiera bramkę, każda inna wartość daje problem `merge-check-failed`, wynik
-  nieaktualnej próby nic nie zmienia.
+  nieaktualnej próby nic nie zmienia. Odmowa zgody bieżącej próby daje `merge-check-denied`.
 
 Polecenie jest stałym napisem Tide (bez łańcucha poleceń), z bazą = pełny SHA `start` (nie `before`):
 kontrakt testów projektu `tests.changed` (`{base}` → start, źródło `contract`), bez kontraktu cele `Makefile`
@@ -30,7 +37,11 @@ import re
 import shlex
 
 ARMED, REQUESTED, FINISHED = "merge.check-armed", "merge.check-requested", "merge.check-finished"
+STEP = "merge.check-step"
 UNAVAILABLE, FAILED, PENDING = "merge-check-unavailable", "merge-check-failed", "pending"
+DENIED = "merge-check-denied"
+KIND, STEP_PREFIX = "merge-check", "merge-check-"
+RUN = ("run", "run-always", "run-ticket")
 CONTRACT, MAKEFILE = "contract", "makefile"
 CONTRACT_NOT_SINGLE = "contract-not-single"
 BASE_PARAM = "{base}"
@@ -169,13 +180,30 @@ def is_pass(exit_code) -> bool:
     return type(exit_code) is int and exit_code == 0
 
 
-def status(item: dict) -> str:
-    """Stan bieżącej próby ticketu: "" (bramka otwarta), `pending`, `merge-check-unavailable`, `merge-check-failed`."""
+def step_name(check: str) -> str:
+    """Nazwa pseudokroku próby: `PT-2:1` → `merge-check-PT-2-1` (jedna próba — jedna nazwa i jedna decyzja)."""
+    return STEP_PREFIX + str(check or "").replace(":", "-")
+
+
+def is_step(name) -> bool:
+    return isinstance(name, str) and name.startswith(STEP_PREFIX)
+
+
+def denied(decision) -> bool:
+    """Bieżąca decyzja pseudokroku to odmowa (człowieka; Tide nie odmawia próbie sam)."""
+    return (decision or {}).get("choice") == "deny"
+
+
+def status(item: dict, decisions=None) -> str:
+    """Stan bieżącej próby ticketu: "" (bramka otwarta), `pending`, `merge-check-unavailable`, `merge-check-failed`,
+    `merge-check-denied` (`decisions` — `st.step_decisions`; odmowa przed wynikiem)."""
     requested = item.get("requested") or {}
     finished = item.get("finished")
     if requested.get("unavailable"):
         return UNAVAILABLE
     if finished is None:
+        if denied((decisions or {}).get(step_name(requested.get("check")))):
+            return DENIED
         return PENDING
     return "" if is_pass(finished.get("exit")) else FAILED
 
@@ -184,13 +212,25 @@ def gate(st) -> list[dict]:
     """Próby, które trzymają bramkę karty (w kolejności zapisu): `{ticket, check, status, requested, finished}`.
     Pusta lista — bramka otwarta."""
     out = []
+    decisions = getattr(st, "step_decisions", None) or {}
     for ticket, item in (getattr(st, "merge_checks", None) or {}).items():
-        state = status(item)
+        state = status(item, decisions)
         if state:
             out.append({"ticket": ticket, "check": item["requested"].get("check") or "", "status": state,
                         "requested": item["requested"], "finished": item.get("finished")})
     out.sort(key=lambda entry: int(entry["requested"].get("seq") or 0))
     return out
+
+
+def phase(st, entry: dict) -> str:
+    """Etap czekającej próby z poleceniem: `consent` (pytanie o zgodę w panelu), `queued` (zgoda, przed startem
+    w kolejce outside), `running` (polecenie trwa) albo "" (pseudokrok jeszcze niezapisany)."""
+    name = step_name(entry.get("check"))
+    if name in (getattr(st, "outside_launched", None) or ()):
+        return "running"
+    if (st.step_decisions.get(name) or {}).get("choice") in RUN:
+        return "queued"
+    return "consent" if name in (getattr(st, "merge_check_steps", None) or {}) else ""
 
 
 def closed(st) -> bool:
@@ -215,6 +255,9 @@ def fold_event(st, e: dict) -> None:
         st.merge_check_counts[ticket] = st.merge_check_counts.get(ticket, 0) + 1
         if e.get("mergeSeq") is not None:
             st.merge_check_merges.add((ticket, e.get("mergeSeq")))
+    elif kind == STEP:
+        if is_step(e.get("step")):
+            st.merge_check_steps.setdefault(e["step"], e)
     elif kind == FINISHED:
         item = st.merge_checks.get(e.get("ticket") or "")
         # Wynik nieaktualnej próby (inny `check`) i powtórny wynik tej samej próby niczego nie zmieniają.
