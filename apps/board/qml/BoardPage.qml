@@ -63,6 +63,21 @@ Rectangle {
     }
     property var decisionTags: ({})          // tag zapisu → [karta, id decyzji]
     // Przeciąganie.
+    // Wspólna faza pulsowania segmentów „pracuje” (PT-325): jedna animacja na stronę, nie na segment. Biegnie tylko,
+    // gdy widok jest aktywny i okno widoczne (animationsActive od BoardView) oraz jest co pulsować.
+    property bool animationsActive: false
+    property real workPulse: 1.0
+    readonly property bool hasWorking: Logic.hasWorkingSegment(allCards)
+    readonly property alias workPulseAnimation: workPulseAnimation
+    SequentialAnimation {
+        id: workPulseAnimation
+        objectName: "workPulseAnimation"
+        running: page.animationsActive && page.hasWorking
+        loops: Animation.Infinite
+        NumberAnimation { target: page; property: "workPulse"; to: 0.45; duration: 900; easing.type: Easing.InOutSine }
+        NumberAnimation { target: page; property: "workPulse"; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
+        onRunningChanged: if (!running) page.workPulse = 1.0
+    }
     property bool dragging: false
     property string dragId: ""
     readonly property alias ghost: ghost

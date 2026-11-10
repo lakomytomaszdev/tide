@@ -291,9 +291,7 @@ Rectangle {
                     readonly property bool gap: index > 0 && root.derived.tickets[index - 1].wave !== wave
                     // Stan od usługi (05.11): pracuje / kolejka (ruszy sam) / ty (bez Ciebie nie ruszy) / review /
                     // gotowe / todo. Starsza usługa bez `phase` — dawne stany.
-                    readonly property string phase: modelData.phase
-                        || ({"gotowe": "gotowe", "review": "review", "w-toku": "pracuje", "czeka": "ty",
-                             "odrzucone": "odrzucone"})[modelData.state] || "todo"
+                    readonly property string phase: Logic.ticketPhase(modelData)
                     Rectangle {
                         objectName: "ticketSegment"
                         anchors.fill: parent
@@ -307,13 +305,8 @@ Rectangle {
                              : Tide.Theme.alpha(Tide.Tokens.textMuted, 0.3)
                         border.width: segment.phase === "kolejka" ? 1 : 0
                         border.color: Tide.Theme.alpha(Tide.Tokens.sky, 0.75)
-                        SequentialAnimation on opacity {
-                            running: segment.phase === "pracuje" && root.visible
-                            loops: Animation.Infinite
-                            alwaysRunToEnd: true
-                            NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutSine }
-                        }
+                        // Pulsowanie z jednej wspólnej fazy strony (PT-325), bez animacji na segment; w tle faza stoi na 1.
+                        opacity: segment.phase === "pracuje" && root.dragHost ? root.dragHost.workPulse : 1
                     }
                     HoverHandler { id: segmentHover }
                     QQC2.ToolTip.visible: segmentHover.hovered && !root.ghost

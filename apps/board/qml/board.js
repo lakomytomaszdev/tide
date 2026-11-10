@@ -85,6 +85,24 @@ function cardDelegates() {
     return cardDelegatesCreated
 }
 
+// Faza segmentu ticketu na pasku karty: `phase` od usługi, a starsza usługa (bez `phase`) — dawne stany.
+function ticketPhase(ticket) {
+    const t = ticket || {}
+    return t.phase || ({"gotowe": "gotowe", "review": "review", "w-toku": "pracuje", "czeka": "ty",
+                        "odrzucone": "odrzucone"})[t.state] || "todo"
+}
+
+// Czy któraś z kart ma na pasku segment w fazie „pracuje” (pasek widać tylko przy flow z waveLabel).
+function hasWorkingSegment(cards) {
+    for (const card of cards || []) {
+        const d = card && card.derived
+        if (!d || !d.flow || !d.flow.waveLabel) continue
+        for (const t of d.tickets || [])
+            if (ticketPhase(t) === "pracuje") return true
+    }
+    return false
+}
+
 function displayColumn(card) {
     return card.boardColumn || card.column || "backlog"
 }
