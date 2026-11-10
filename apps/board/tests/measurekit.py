@@ -143,13 +143,14 @@ def stage(out_dir: str) -> str:
 
 
 def strip_animations(pkg: str) -> None:
-    """Eksperyment „bez animacji”: w KOPII pakietu (nie w repozytorium) animacja pracujących segmentów nie startuje."""
-    path = os.path.join(pkg, "views", "board", "qml", "BoardCard.qml")
+    """Eksperyment „bez animacji”: w KOPII pakietu (nie w repozytorium) wspólna animacja pulsu (BoardPage.qml,
+    PT-325) nie startuje."""
+    path = os.path.join(pkg, "views", "board", "qml", "BoardPage.qml")
     with open(path, encoding="utf-8") as fh:
         source = fh.read()
-    needle = 'running: segment.phase === "pracuje" && root.visible'
+    needle = 'running: page.animationsActive && page.hasWorking'
     if needle not in source:
-        raise SystemExit("measurekit: nie znaleziono animacji w BoardCard.qml (zmieniła się?)")
+        raise SystemExit("measurekit: nie znaleziono wspólnej animacji w BoardPage.qml (zmieniła się?)")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(source.replace(needle, "running: false"))
 
