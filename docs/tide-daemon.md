@@ -4996,6 +4996,22 @@ ticketu i rozwiązuje pliki; usługa przyjmuje wynik tylko wtedy, gdy dokładny 
 commit karty są przodkami czystej gałęzi karty. Pytanie albo błąd kroku trafia do panelu; nieudanej próby usługa nie
 zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuwany.
 
+**Testy po scaleniu (K-88, PT-318; `cardflow/mergecheck.py`).** Gdy po trwałym `result` scalenia ticketu wierzchołek
+gałęzi karty sprzed scalenia (`before`, pierwszy rodzic commita scalenia) różni się od punktu startu ticketu
+(`start`) czymś więcej niż commitami planu karty, usługa zapisuje `merge.check-requested {ticket, check, start,
+before, after, command, source, fallback?}` z `check` = `<ticket>:<n>`. Polecenie to stały napis Tide z bazą = pełny
+SHA `start`: `tests.changed` zatwierdzonego kontraktu testów (`{base}` → `start`, `source: contract`), bez kontraktu
+cele `Makefile`/`mk/*.mk` gałęzi karty czytane z gita bez uruchamiania `make` (`make test-changed BASE=<start>`,
+a przy samym `test` — `make test` z `fallback: full`). Bez polecenia próba ma `unavailable: true` i daje problem
+karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Do wyniku `0` bieżącej próby
+(`merge.check-finished {ticket, check, exit, log}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
+scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
+`"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.
+Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
+`<ticket>:<n+1>` na bieżącym wierzchołku z ponownym wyborem polecenia. Stan bramki liczy `fold`; brakującą próbę
+po restarcie (po `result`, przed zapisem próby) usługa dopisuje raz. Scalenia sprzed `merge.check-armed` (karty
+trwające w chwili wdrożenia) prób nie zakładają.
+
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;
 przy `check: auto` pomija tę listę. **„Do sprawdzenia na pulpicie” (PT-183):** notka kroku (ticket, review,

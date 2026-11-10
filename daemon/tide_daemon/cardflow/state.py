@@ -9,6 +9,8 @@ Typy zdarzeń (schemat 1, PT-58):
   ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
 - `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,
 - `main-merge.abandoned` — porzucenie zamiaru po decyzji użytkownika, bez cofania materializacji,
+- `merge.check-armed` / `merge.check-requested` / `merge.check-finished` — bramka testów po scaleniu ticketu do gałęzi
+  karty (PT-318, opis w mergecheck.py),
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
@@ -33,6 +35,7 @@ import re
 
 from .baseproposal import pending
 from . import consent
+from . import mergecheck
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -153,6 +156,12 @@ class FlowState:
     # Nie z dziennika (PT-151): ustawienia opiekuna przy tej karcie (`caretaker.setup`), które silnik dokłada przed
     # widokami (`derived`); pusty — wartości domyślne bez katalogu wykonawców.
     caretaker_setup: dict = field(default_factory=dict)
+    # Testy po scaleniu (PT-318, mergecheck.py): ticket → bieżąca próba {requested, finished}, liczba prób ticketu,
+    # scalenia z założoną próbą (ticket, seq wyniku) i seq `merge.check-armed` (0 — bramka jeszcze nieuzbrojona).
+    merge_checks: dict = field(default_factory=dict)
+    merge_check_counts: dict = field(default_factory=dict)
+    merge_check_merges: set = field(default_factory=set)
+    merge_check_armed: int = 0
 
     @property
     def flow_error_event(self) -> dict:
@@ -410,6 +419,8 @@ def fold(events: list[dict]) -> FlowState:
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":
                 st.caretaker_escalations[e.get("problem")] = e
+        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED):
+            mergecheck.fold_event(st, e)
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -1002,6 +1013,10 @@ def guard_reason(st: FlowState) -> str | None:
         return "pytanie, zgoda albo błąd kroku"
     if attention_step(st):
         return "limit dostawcy"
+    held = mergecheck.gate(st)
+    if held:
+        # PT-318: bramka testów po scaleniu to nazwany powód — nie postój dla strażnika ani opiekuna.
+        return "; ".join(f"{entry['check']}: testy po scaleniu ({entry['status']})" for entry in held)
     if (st.plan_revision or {}).get("failed"):
         return "decyzja po nieudanej poprawie planu"
     if (st.plan_revision or {}).get("pending") and st.plan_reviewed:
@@ -1226,6 +1241,19 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         if column == "backlog":
             return None
         return _fill(out, "waiting", note)
+    held = mergecheck.gate(st)
+    out["flow"]["mergeChecks"] = [
+        {"ticket": entry["ticket"], "check": entry["check"], "status": entry["status"],
+         "command": entry["requested"].get("command") or "", "after": entry["requested"].get("after") or ""}
+        for entry in held]
+    if held and not attention and not st.running() and not st.paused and column != "backlog":
+        # Bramka testów po scaleniu (PT-318): nic innego nie pracuje, a karta stoi na wyniku próby.
+        first = held[0]
+        text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu",
+                mergecheck.FAILED: "testy po scaleniu nie przeszły",
+                mergecheck.PENDING: "testy po scaleniu czekają na przebieg"}[first["status"]]
+        return _fill(out, "progress" if first["status"] == mergecheck.PENDING else "waiting",
+                     f"{first['ticket']}: {text}")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}

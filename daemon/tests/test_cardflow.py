@@ -144,10 +144,22 @@ class MonitorFixtureTest(unittest.TestCase):
         self.assertTrue(finished.is_set(), "stary tick nie może modyfikować dziennika po zatrzymaniu monitora testu")
 
 
+def pass_merge_checks(engine):
+    """Testy po scaleniu (PT-318) w testach przepływu, które ich nie dotyczą: każda próba ma polecenie z kontraktu
+    i od razu wynik 0 — w miejscu przebiegu pod zgodą (PT-329), którego te testy nie sprawdzają."""
+    engine._merge_check_contract = lambda card: "true {base}"
+
+    def finished(card, entry):
+        engine.journal.append(card, "merge.check-finished", ticket=entry["ticket"], check=entry["check"],
+                              exit=0, log="")
+    engine._merge_check_waiting = finished
+
+
 class FlowInProcess(unittest.TestCase):
     guard_minutes = 15.0
     auto_consent = False
     escalate_errors = False
+    merge_checks_pass = True    # PT-318: testy bramki ustawiają False
 
     def setUp(self):
         app()
@@ -202,6 +214,8 @@ class FlowInProcess(unittest.TestCase):
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
+        if self.merge_checks_pass:
+            pass_merge_checks(engine)
         flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         stop = flow.stop

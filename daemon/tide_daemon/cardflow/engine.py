@@ -51,6 +51,7 @@ from ..tasks.runner import HostRunner, Runner
 from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import testrerun
+from . import mergecheck
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -498,6 +499,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
+        self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
         self._preview_secret = os.urandom(32)  # token sprzed restartu nie uprawnia do nowej operacji
@@ -3615,6 +3617,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         retry_merge = bool(previous_merge) and not previous_merge.get("ok") and \
             "konflikt" not in (previous_merge.get("error") or "").lower() and \
             self.clock() - _epoch(previous_merge.get("ts")) >= 60
+        if (previous_merge is None or retry_merge) and self._merge_checks(card):
+            return  # bramka testów po scaleniu (PT-318): kolejne scalenie czeka na wynik bieżącej próby
         if previous_merge is None or retry_merge:
             source = next((s for name, s in st.steps.items() if name not in st.superseded and
                            s.get("ticket") == ticket and
@@ -3652,6 +3656,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._plan_commit(card, self.journal.state(card), project.repo, card_branch, card_worktree)
         if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
             return
+        if self._merge_checks(card):
+            return  # bramka testów po scaleniu (PT-318): nowe tickety czekają na wynik bieżącej próby
         for row in rows:
             ticket = row["id"]
             if trialgate.blocked(ticket):
@@ -4047,8 +4053,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
                                                             "card", "ticket", "baseDecision", "baseRef", "baseCommit",
-                                                            "previewId", "waitTicket"}:
+                                                            "previewId", "waitTicket", "check"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
+        if "check" in request and request.get("choice") != "retry-merge-check":
+            raise FlowError("bad-request", "`check` idzie tylko z choice=retry-merge-check")
+        if request.get("choice") == "retry-merge-check":
+            # Ponowienie próby testów po scaleniu (PT-318) — decyzja karty, nie kroku; tylko jawne wywołanie.
+            if caretaker_problem or set(request) - {"choice", "ticket", "check", "card"}:
+                raise FlowError("bad-request", "retry-merge-check przyjmuje tylko `ticket` i `check`")
+            self._require_base_context(card)
+            return self.retry_merge_check(card, request)
         if str(request.get("step") or "").startswith("k38-diagnostic-"):
             return self._resolve_trial_diagnostic(card, request)
         if "allow" in request and request.get("choice") != "allow" or \
@@ -6130,6 +6144,161 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except FlowError as exc:
             print(f"tide-daemon: przepływ karty {card}: scalenie {ticket}: {exc}", flush=True)
 
+    # --- testy po scaleniu (K-88, PT-318; model i zdarzenia: mergecheck.py) ------------------------
+
+    def _merge_checks(self, card: str) -> list[dict]:
+        """Bramka testów po scaleniu: uzbraja ją (raz na kartę), zakłada brakujące próby po trwałych wynikach scaleń
+        (także po restarcie między `result` scalenia a zapisem próby — dokładnie raz, bo próba pamięta `mergeSeq`)
+        i zwraca próby, które trzymają bramkę. Pusta lista — bramka otwarta."""
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if st.started is None:
+                return []
+            if not st.merge_check_armed:
+                # Scalenia zapisane przed uzbrojeniem (karty trwające w chwili wdrożenia) nie zakładają prób wstecz.
+                self.journal.append(card, mergecheck.ARMED)
+                st = self.journal.state(card)
+            for (action, ticket), merged in list(st.results.items()):
+                seq = merged.get("seq")
+                if action != "merge" or not merged.get("ok") or int(seq or 0) < st.merge_check_armed or \
+                        (ticket, seq) in st.merge_check_merges or (card, ticket, seq) in self._merge_check_ff:
+                    continue
+                if self._request_merge_check(card, st, ticket, merged) is None:
+                    self._merge_check_ff.add((card, ticket, seq))
+                st = self.journal.state(card)
+            held = mergecheck.gate(st)
+        for entry in held:
+            if entry["status"] == mergecheck.PENDING:
+                self._merge_check_waiting(card, entry)
+        return mergecheck.gate(self.journal.state(card)) if held else held
+
+    def _merge_check_waiting(self, card: str, entry: dict) -> None:
+        """Próba z poleceniem czeka na przebieg. Uruchomienie pod zgodą w kolejce outside i zapis
+        `merge.check-finished` należą do ticketu przebiegu pod zgodą (PT-329); tu bramka tylko czeka."""
+
+    def _merge_check_repo(self, card: str, st: FlowState, ticket: str) -> str:
+        return next((s.get("repo") for s in st.steps.values() if s.get("ticket") == ticket and s.get("repo")), "") \
+            or self._repo(card)
+
+    def _request_merge_check(self, card: str, st: FlowState, ticket: str, merged: dict) -> dict | None:
+        """Próba po scaleniu `merged` albo None, gdy scalenie jest „fast-forward” względem punktu startu ticketu."""
+        repo = self._merge_check_repo(card, st, ticket)
+        intent = st.intents.get(("merge", ticket)) or {}
+        start = ticket_of(st, ticket)["base"]
+        after = merged.get("commit") or ""
+        before = self._merge_before(repo, merged, intent)
+        if start and before and (before == start or self._plan_only(repo, st, card, start, before)):
+            return None
+        return self._append_merge_check(card, st, repo, ticket, start=start, before=before, after=after,
+                                        merge_seq=merged.get("seq"), retry_of="")
+
+    def _merge_before(self, repo: str, merged: dict, intent: dict) -> str:
+        """Wierzchołek gałęzi karty tuż przed scaleniem: pierwszy rodzic commita scalenia Tide (drugi rodzic to
+        zatwierdzony commit ticketu); po rozwiązanym konflikcie i przy scaleniu już obecnym — `cardTip` zamiaru."""
+        after = merged.get("commit") or ""
+        if after and not merged.get("resolved"):
+            parents = self.git.run(repo, "rev-list", "--parents", "-n", "1", after)
+            found = parents.out.split() if parents.ok else []
+            if len(found) == 3 and found[2] == intent.get("expectedTip"):
+                return found[1]
+        return intent.get("cardTip") or ""
+
+    def _plan_only(self, repo: str, st: FlowState, card: str, start: str, before: str) -> bool:
+        """Między punktem startu ticketu a `before` zmieniły się wyłącznie pliki planu karty zapisywane przez Tide
+        (`_plan_files`: plan, kartki ticketów `<karta>-flow/`, szkice `followups/`). Takie commity nie wnoszą kodu
+        innego ticketu, więc scalenie liczy się jak „fast-forward” — inaczej każdy commit stanu planu po starcie
+        ticketu zakładałby próbę."""
+        plan_file = (st.plan_approved or {}).get("planFile") or ""
+        if not plan_file:
+            return False
+        plans = os.path.dirname(plan_file)
+        prefixes = (f"{plans}/followups/", f"{plans.replace('/plans', '/tickets')}/{card.lower()}-flow/")
+        changed = self.git.run(repo, "diff", "--name-only", "-z", "--no-renames", start, before)
+        names = [name for name in changed.out.split("\0") if name] if changed.ok else []
+        return bool(names) and all(name == plan_file or name.startswith(prefixes) for name in names)
+
+    def _merge_check_targets(self, repo: str, commit: str) -> set:
+        """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""
+        if not commit:
+            return set()
+        texts = []
+        shown = self.git.run(repo, "show", f"{commit}:Makefile")
+        if shown.ok:
+            texts.append(shown.out[:mergecheck.MAKEFILE_MAX])
+        listed = self.git.run(repo, "ls-tree", "--name-only", commit, "mk/")
+        for path in (listed.out.splitlines() if listed.ok else []):
+            name = os.path.basename(path)
+            if path.startswith("mk/") and name.endswith(".mk") and not name.startswith("."):
+                one = self.git.run(repo, "show", f"{commit}:{path}")
+                if one.ok:
+                    texts.append(one.out[:mergecheck.MAKEFILE_MAX])
+        return mergecheck.make_targets(texts)
+
+    def _merge_check_contract(self, card: str) -> str:
+        """`tests.changed` zatwierdzonego kontraktu testów projektu (K-69) albo "" — kontrakt nieobecny,
+        niezatwierdzony, uszkodzony albo Tablica bez kontraktów (gałąź sprzed K-69). Każda niepewność → ""."""
+        try:
+            _, project = self._project(card)
+            tests = getattr(project, "tests", None)
+            if not isinstance(tests, dict) or getattr(project, "tests_error", ""):
+                return ""
+            changed = str(tests.get("changed") or "").strip()
+            if not changed:
+                return ""
+            from ..board import contract_approval  # K-69; na gałęzi bez kontraktów — ImportError
+            ok = contract_approval.approved(self.store.root, project.slug, tests,
+                                            getattr(self.store, "approvals_path", None))
+        except Exception:
+            return ""
+        return changed if ok is True else ""
+
+    def _append_merge_check(self, card: str, st: FlowState, repo: str, ticket: str, *, start: str, before: str,
+                            after: str, merge_seq, retry_of: str) -> dict:
+        check = mergecheck.next_check(st, ticket)
+        chosen = mergecheck.select_command(self._merge_check_contract(card),
+                                           self._merge_check_targets(repo, after), start)
+        if not chosen:
+            return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                       before=before, after=after, unavailable=True, mergeSeq=merge_seq,
+                                       retryOf=retry_of)
+        if chosen.get("fallback"):
+            return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                       before=before, after=after, command=chosen["command"],
+                                       source=chosen["source"], fallback=chosen["fallback"], mergeSeq=merge_seq,
+                                       retryOf=retry_of)
+        return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                   before=before, after=after, command=chosen["command"], source=chosen["source"],
+                                   mergeSeq=merge_seq, retryOf=retry_of)
+
+    def retry_merge_check(self, card: str, request: dict) -> dict:
+        """Ponowienie próby przy problemie `merge-check-unavailable` albo `merge-check-failed`: nowa próba
+        `<ticket>:<n+1>` na bieżącym wierzchołku gałęzi karty, z ponownym wyborem polecenia. Inna próba niż bieżąca
+        (`check`) albo próba bez problemu — błąd bez zapisu."""
+        ticket = str(request.get("ticket") or "")
+        wanted = str(request.get("check") or "")
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            item = st.merge_checks.get(ticket)
+            state = mergecheck.status(item) if item else ""
+            current = (item or {}).get("requested", {}).get("check") or ""
+            if state not in (mergecheck.UNAVAILABLE, mergecheck.FAILED) or (wanted and wanted != current):
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {wanted or ticket} nie czeka "
+                                               "na ponowienie")
+            old = item["requested"]
+            repo = self._merge_check_repo(card, st, ticket)
+            branch = ticket_of(st, ticket)["cardBranch"]
+            after = self.git.sha(repo, f"refs/heads/{branch}") if branch else ""
+            if not after:
+                raise FlowError("no-card-branch", "nie można odczytać wierzchołka gałęzi karty")
+            made = self._append_merge_check(card, st, repo, ticket, start=old.get("start") or "",
+                                            before=old.get("before") or "", after=after,
+                                            merge_seq=old.get("mergeSeq"), retry_of=current)
+        return {"ok": True, "id": card, "choice": "retry-merge-check", "ticket": ticket, "check": made["check"]}
+
     def _start_conflict(self, card: str, st: FlowState, review_step: dict, failure: dict) -> None:
         """Oddaje konflikt wykonawcy w worktree karty; wynik sprawdza _finish."""
         item, project = self._project(card)
@@ -7517,6 +7686,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return False
         if st.running():
             return False
+        if self._merge_checks(card):
+            return False    # bramka testów po scaleniu (PT-318): domknięcie czeka na wynik bieżącej próby
         item, project = self._project(card)
         info = ticket_of(st)
         if not info["cardWorktree"]:
