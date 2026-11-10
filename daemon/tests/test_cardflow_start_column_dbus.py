@@ -32,7 +32,8 @@ class StartColumnTest(FlowCase):
         card = stored(self, card_id)
         self.assertEqual(card["column"], "todo")
         todo = sorted((c for c in self.call("Snapshot")["cards"] if c["column"] == "todo"), key=lambda c: c["order"])
-        self.assertEqual([c["id"] for c in todo], [first, second, card_id])
+        # Nowe karty trafiają na górę kolumny (CreateCard), więc „Druga” stoi przed „Pierwszą”; startowana — na końcu.
+        self.assertEqual([c["id"] for c in todo], [second, first, card_id])
         moved = self.of(card_id, "card.moved")
         self.assertEqual([(e["from"], e["to"]) for e in moved], [("backlog", "todo")], self.events(card_id))
         self.assertFalse(self.of(card_id, "card.paused"))

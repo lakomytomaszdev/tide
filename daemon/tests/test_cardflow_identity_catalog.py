@@ -630,6 +630,8 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._review"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
+    # PT-313: udany start zdejmuje kartę z Backlogu przez moved(), jak wznowienie w set_paused.
+    ("cardflow/engine.py", "FlowEngine._lift_from_backlog"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine.moved"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine.report_step_fault"): "console",
     ("cardflow/engine.py", "FlowEngine.resolve_caretaker"): "advance-resume",
