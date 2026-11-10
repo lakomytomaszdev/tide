@@ -111,6 +111,43 @@ class ResolveReviewTicketTest(EngineOnJournal):
         self.assertEqual(raised.exception.code, "no-review-question")
         self.assertTrue(self.engine.resolve_review("K-1", json.dumps({"choice": "retry", "ticket": "PT-8"}))["ok"])
 
+    def monitor_reply(self, choice):
+        """Odpowiedź D-Bus monitora (JSON) na ResolveCardReview; zlecenie wykonane od razu, bez Qt."""
+        from concurrent.futures import Future
+        from tide_daemon.cardflow_monitor import CardFlowMonitor
+
+        monitor = CardFlowMonitor.__new__(CardFlowMonitor)
+        monitor.engine = self.engine
+
+        def submit(work, then):
+            future = Future()
+            try:
+                future.set_result(work())
+            except Exception as exc:
+                future.set_exception(exc)
+            then(future)
+            return True
+
+        monitor._submit = submit
+        replies = []
+        monitor.resolve_review("K-1", choice, replies.append)
+        return json.loads(replies[0])
+
+    def test_monitor_reply_carries_reviews_of_ambiguous_review(self):
+        self.two()
+        before = self.count()
+        reply = self.monitor_reply("retry")
+        self.assertEqual((reply["ok"], reply["error"]), (False, "ambiguous-review"))
+        self.assertEqual(reply["reviews"], [{"ticket": "PT-7", "round": 3}, {"ticket": "PT-8", "round": 3}])
+        self.assertEqual(self.count(), before)
+
+    def test_monitor_reply_for_ticket_and_missing_question(self):
+        self.two()
+        ok = self.monitor_reply(json.dumps({"choice": "accept", "ticket": "PT-7"}))
+        self.assertEqual((ok["ok"], ok["ticket"], ok["round"]), (True, "PT-7", 3))
+        missing = self.monitor_reply(json.dumps({"choice": "retry", "ticket": "PT-9"}))
+        self.assertEqual((missing["ok"], missing["error"]), (False, "no-review-question"))
+
 
 if __name__ == "__main__":
     unittest.main()
