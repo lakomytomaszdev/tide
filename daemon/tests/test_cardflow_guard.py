@@ -270,6 +270,128 @@ class SnapshotTest(GuardRepo):
             fh.write("zapis przez dowiązanie\n")
         self.assertEqual(guard.changes(before, self.snap()), [f"zmienione pliki w worktree {self.wt}: README.md"])
 
+    def changed(self, change):
+        before = self.snap()
+        change()
+        return guard.changes(before, self.snap())
+
+    def test_cc_writes_symlink_scope(self):
+        """PT-331: dowiązanie `.claude/.cc-writes` nie ukrywa zapisu — strażnik nie podąża za dowiązaniem; zmiana
+        treści celu w worktree, zmiana celu dowiązania i samo pojawienie się dowiązania (do pliku albo katalogu,
+        w worktree albo poza nim) dają zmianę (`caretaker-wrote`)."""
+        claude, outside = os.path.join(self.wt, ".claude"), os.path.join(self.root, "poza-cc")
+        link = os.path.join(claude, ".cc-writes")
+        inner = os.path.join(self.wt, "wewn")
+        os.makedirs(outside)
+        os.makedirs(inner)
+        with open(os.path.join(outside, "plik"), "w", encoding="utf-8") as fh:
+            fh.write("poza\n")
+
+        def fresh(target=None):
+            shutil.rmtree(claude, ignore_errors=True)
+            os.makedirs(claude)
+            if target:
+                os.symlink(target, link)
+
+        cases = {
+            # Krok opiekuna zmienia treść pliku worktree wskazanego przez dowiązanie — rekord celu.
+            "tresc-celu-pliku": (os.path.join(self.wt, "README.md"),
+                                 lambda: self.append(link), "README.md"),
+            # Nowy plik w katalogu worktree wskazanym przez dowiązanie — rekord katalogu celu.
+            "tresc-celu-katalogu": (inner, lambda: self.append(os.path.join(link, "nowy")), "wewn"),
+            # Przestawienie dowiązania na inny cel — rekord dowiązania ma cel.
+            "zmiana-celu": (os.path.join(self.wt, "README.md"),
+                            lambda: (os.unlink(link), os.symlink(outside, link)), ".claude"),
+            # Dowiązanie utworzone w trakcie kroku: do katalogu poza worktree, do pliku poza worktree, do worktree.
+            "nowe-do-katalogu-poza": (None, lambda: os.symlink(outside, link), ".claude"),
+            "nowe-do-pliku-poza": (None, lambda: os.symlink(os.path.join(outside, "plik"), link), ".claude"),
+            "nowe-do-worktree": (None, lambda: os.symlink(inner, link), ".claude"),
+        }
+        for case, (target, change, top) in cases.items():
+            with self.subTest(case=case):
+                fresh(target)
+                self.assertEqual(self.changed(change), [f"zmienione pliki w worktree {self.wt}: {top}"])
+        for kind in ("dir", "file"):
+            with self.subTest(case="wyjatek-podmieniony-na-dowiazanie", kind=kind):
+                fresh()
+                self.write_cc(link, kind, "przed krokiem\n")       # `.cc-writes` (wyjątek) przed krokiem
+
+                def swap():
+                    if kind == "dir":
+                        shutil.rmtree(link)
+                    else:
+                        os.unlink(link)
+                    os.symlink(outside, link)
+
+                self.assertEqual(self.changed(swap), [f"zmienione pliki w worktree {self.wt}: .claude"])
+        # Dowiązanie do katalogu poza worktree nie jest przeglądane, ale też nie jest ukrytym wyjątkiem:
+        # zapis po drugiej stronie dowiązania nie należy do worktree (jak każde dowiązanie).
+        fresh(outside)
+        self.assertEqual(self.changed(lambda: self.append(os.path.join(outside, "plik"))), [])
+        shutil.rmtree(claude)
+
+    def append(self, path, text="zapis\n"):
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_cc_writes_directory_is_skipped_with_its_content(self):
+        """PT-331: `.claude/.cc-writes` jako katalog — nowe pliki, podkatalogi i usunięcia w środku nie są zmianą."""
+        path = self.cc_writes(kind="dir")
+
+        def inside():
+            os.makedirs(os.path.join(path, "a", "b"))
+            self.append(os.path.join(path, "a", "b", "nowy"))
+            self.append(os.path.join(path, "drugi"))
+            os.unlink(os.path.join(path, "zapis"))
+
+        self.assertEqual(self.changed(inside), [])
+
+    def test_other_claude_entries_next_to_a_cc_writes_change_are_a_change(self):
+        """PT-331: przy jednoczesnej zmianie `.cc-writes` każdy inny wpis w `.claude` — hak, skill, ustawienia,
+        nazwa zaczynająca się od `.cc-writes` — nadal jest zmianą (dokładna ścieżka, bez dopasowania prefiksu)."""
+        claude = os.path.join(self.wt, ".claude")
+        others = (os.path.join("hooks", "x"), os.path.join("skills", "s", "SKILL.md"), "settings.local.json",
+                  ".cc-writes2", ".cc-writes.bak", ".cc-writesx")
+        for kind in ("dir", "file"):
+            for other in others:
+                with self.subTest(kind=kind, other=other):
+                    path = self.cc_writes(kind=kind)
+                    for extra in ("hooks", "skills"):
+                        shutil.rmtree(os.path.join(claude, extra), ignore_errors=True)
+                    for extra in (".cc-writes2", ".cc-writes.bak", ".cc-writesx"):
+                        if os.path.lexists(os.path.join(claude, extra)):
+                            os.unlink(os.path.join(claude, extra))
+
+                    def change():
+                        self.write_cc(path, kind, "zapis w trakcie kroku\n")
+                        target = os.path.join(claude, other)
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        self.append(target)
+
+                    self.assertEqual(self.changed(change), [f"zmienione pliki w worktree {self.wt}: .claude"])
+
+    def test_cc_writes_outside_the_root_claude_dir_is_a_change(self):
+        """PT-331: `.cc-writes` poza `.claude` katalogu głównego — w katalogu głównym bez `.claude`, w podkatalogu
+        worktree (`sub/.claude/.cc-writes`) i w `.claude/sub/` — nie jest pomijany (plik i katalog)."""
+        places = {"korzen": (".cc-writes", ".cc-writes"), "sub-claude": ("sub/.claude/.cc-writes", "sub"),
+                  "claude-sub": (".claude/sub/.cc-writes", ".claude"), "sub": ("sub/.cc-writes", "sub")}
+        for kind in ("dir", "file"):
+            for place, (rel, top) in places.items():
+                with self.subTest(kind=kind, place=place):
+                    for name in (".claude", "sub", ".cc-writes"):
+                        target = os.path.join(self.wt, name)
+                        if os.path.isdir(target):
+                            shutil.rmtree(target)
+                        elif os.path.lexists(target):
+                            os.unlink(target)
+                    path = os.path.join(self.wt, rel)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+                    def change():
+                        self.write_cc(path, kind, "zapis\n")
+
+                    self.assertEqual(self.changed(change), [f"zmienione pliki w worktree {self.wt}: {top}"])
+
     def test_symlinks_are_not_followed(self):
         outside = os.path.join(self.root, "poza")
         os.makedirs(outside)
