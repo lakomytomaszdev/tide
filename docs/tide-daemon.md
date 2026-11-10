@@ -2104,6 +2104,42 @@ karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `ret
 na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
 Jeżeli restart rozdzieli te dwa zdarzenia, usługa dopisuje brakujące odrzucenie przy następnym przebiegu; ta sama
 odpowiedź `reject` może być bezpiecznie ponowiona.
+
+Wykonawcę poprawek (K-88/PT-312) wybiera kolejno: ręczna zmiana autora z panelu (`executorReason: override`),
+eskalacja od rundy `ESCALATE_FIX_ROUND` (3; `escalated`) i dotychczasowy autor (`author`). Eskalacja dotyczy tylko
+ticketu, którego klasa w zatwierdzonym planie nie jest `mocny` ani `lokalny` (brak klasy = `standard`). Jej cel to
+pierwszy dostępny wykonawca klasy `mocny` preferowanego dostawcy zlecenia (w trybie mieszanym — dostawcy autora),
+inny niż recenzent ocenianego i następnego review oraz inny niż autor; bez takiego poprawki robi autor, a zmiana
+autora w katalogu nadal kończy krok błędem `changed-executor`. Autor to ostatni krok autora ticketu, który nie był
+eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Ręczna zmiana autora
+z panelu (`author.reassigned`) obowiązuje we wszystkich kolejnych rundach poprawek ticketu, aż do następnej takiej
+zmiany. Wznowienie kroku `fix`: ręczna zmiana wykonawcy (`change-executor`, `transfer`) albo nowszy przepięty autor
+zapisują `override`. Decyzje automatyczne (`auto`, `automatic`, `caretaker`), także po błędzie ponowienia lub
+odmowie dostawcy, podlegają regule poprawek; sam wybór `change-executor` nie jest ręczną zgodą. Jeśli reguła
+odrzuci proponowanego wykonawcę, krok wraca do zwykłego wznowienia. Wznowienie przelicza tę samą regułę —
+ten sam wykonawca zachowuje sesję i powód, a gdy
+reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje świeżą sesją z powodem `author` albo
+`escalated`. Automatyczny powrót do autora przechodzi tę samą kontrolę `changed-executor` co zwykłe poprawki. Próg
+pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
+
+Bramka startu review (PT-312, uzupełnienie właściciela 10.11): `_guard_review_launch` działa przed
+rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Każde uruchomienie
+review, także wznowienie, zaczyna osobną sesję. `reviewgate.authors` bierze z dziennika autorów ticketu
+oraz wszystkich prób poprawek od poprzedniej rundy review; nieudany fix może zawierać WIP, a wznowienie
+review tej samej rundy nie usuwa tych autorów z kontroli.
+
+Warunek modelu jest skupiony w `reviewgate.permits(reviewer, authors, policy)`: `free` dopuszcza dowolny
+model, `other-model` stosuje dotychczasowe `plans.independent_reviewer` (inny model lub wysiłek),
+`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Bramka przyjmuje parametr
+`policy`, tymczasowo `other-model`; ustawienie projektu, domyślne `free` i podłączenie pozostałych miejsc
+wyboru wykonawców są zakresem PT-330 zgodnie z decyzją właściciela 97. Nie jest to nowa nadrzędna reguła Tide.
+Gdy wybrany recenzent nie spełnia polityki, bramka szuka wykonawcy klasy ticketu lub mocniejszej,
+z zachowaniem lokalnego/chmurowego zakresu. Przy braku kandydata zapisuje idempotentne `review.question`
+z `reason: independence`, `policy`, `ticket`, `round` oraz `step.waiting` z `cause: review-independence`.
+Panel pokazuje pytanie i wybór recenzenta przez istniejące `ResolveCardStep reassign-reviewer`.
+Pojawienie się zgodnego recenzenta zamyka pytanie zdarzeniem `review.decision` z `choice: review-ready`;
+start review usuwa je z projekcji, aby późniejsze pytanie po progu rund działało jak dotąd.
+
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie

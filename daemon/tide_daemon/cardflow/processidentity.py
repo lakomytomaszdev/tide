@@ -145,7 +145,7 @@ START_IDENTITY = {"ticket": TICKET_START, "kind": KIND, "branch": BRANCH, "workt
                   "unit": STEP_UNIT}
 START_NEUTRAL = ("baseCommit", "baseRef", "baseVersion", "boxAccess", "boxIp", "boxPortOwner",
                  "closeFile", "consoleClosed", "consoleOpened", "deliveredNoteIds", "effort", "enteredAt",
-                 "executor", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
+                 "executor", "executorReason", "gitDir", "local", "mode", "model", "parentStep", "program", "provider",
                  "readDirsProfile", "repo", "reviewTip", "round", "routeKind", "routeTokenFile", "routeUrl",
                  "session", "taskFile", "toolingKind")
 CONSOLE_INHERITED = Field(
@@ -265,10 +265,10 @@ EVENTS = MappingProxyType({
     "author.reassigned": _metadata("zmiana autora", "executor", "ticket"),
     "review.verdict": _dynamic("werdykt review (ładunek wyniku recenzenta)", "baseVersion", "reviewTip", "reviewer",
                                "round", "step", "ticket"),
-    "review.question": _metadata("pytanie po review", "question", "round", "ticket"),
-    "review.decision": _metadata("decyzja po review", "auto", "choice", "round", "ticket"),
+    "review.question": _metadata("pytanie dotyczące review", "policy", "question", "reason", "round", "ticket"),
+    "review.decision": _metadata("decyzja dotycząca review", "auto", "automatic", "choice", "round", "ticket"),
     "review.reviewer-note": _metadata("notka recenzenta", "author", "reviewer", "round", "ticket"),
-    "step.waiting": _metadata("oczekiwanie przed startem (brak procesu)", "cause", "kind", "provider", "reason",
+    "step.waiting": _metadata("oczekiwanie przed startem (brak procesu)", "cause", "executor", "kind", "provider", "reason",
                               "ticket", "until"),
     "step.retry": _metadata("prośba o ponowienie (proces startuje osobnym step.started)", "caretaker",
                             "caretakerStep", "instruction", "reason", "step", "ticket", "user"),

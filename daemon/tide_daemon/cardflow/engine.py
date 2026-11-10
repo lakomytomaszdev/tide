@@ -73,6 +73,7 @@ from . import ticketentry
 from . import guard
 from . import limits as flow_limits
 from . import planning
+from . import reviewgate
 from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
@@ -109,7 +110,7 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "uruchomić, zakończ wynikiem error z przyczyną. Jeśli pytanie dotyczyło jednak zakresu albo decyzji "
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
-ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
+ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi mocny wykonawca spoza recenzentów (K-88/PT-312)
 # PT-181 (#18): rodzaje kroków, które uruchamiają kod projektu — w projekcie z gotowym pudełkiem idą do `BoxRunner`.
 # Planowanie w każdej odmianie (`planning`, `plan-fix`, `plan-amend`, `plan-revise`, `plan-review`, pełne planowanie
 # w Konsoli) czyta repozytorium i Tablicę, więc zostaje na hoście w bwrap; `conflict` też (scalenie gałęzi).
@@ -1602,6 +1603,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(item.id, {"ticket": ticket, "step": step_id})
         context_state = self.journal.state(item.id)
+        if kind == "review":
+            selected, _ = self._guard_review_launch(item.id, context_state, ticket, round_no, selected)
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         self._require_safe_evidence_console(selected.tool, source_evidence)
@@ -2626,13 +2629,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", review_tip="", parent_step="",
-                attempt=0, resume_session="", make_prompt=None, evidence=None) -> dict:
+                attempt=0, resume_session="", make_prompt=None, evidence=None, executor_reason="") -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153).
         `evidence` — wpis kroku autora dla review: spis jego artefaktów dostaje tylko review w pudełku (PT-291)."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
         evidence_state = self.journal.state(card.id)
+        if kind == "review":
+            selected, resume_session = self._guard_review_launch(
+                card.id, evidence_state, ticket, round_no, selected)
         source_evidence = self._issue_evidence(card, started=evidence_state.started)
         if source_evidence and parent_step:
             # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
@@ -2799,6 +2805,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return {"unit": bg.unit, "gitDir": bg.git_dir, "readDirsProfile": read_profile, **placement.entry()}
 
         box_fields = placement.entry() if placement is not None else {}
+        # K-88/PT-312: dlaczego ten wykonawca robi poprawki (override | escalated | author).
+        reason_field = {"executorReason": executor_reason} if executor_reason else {}
         if kind == "review":
             # Nieśledzone pliki sprzed review: nowe po review to pliki recenzenta (wynik pomiaru, notatki) — Tide
             # przenosi je do katalogu kroku zamiast unieważniać review (04.11, K-43/BO-9).
@@ -2829,7 +2837,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                   routeTokenFile=selected.route.token_file if selected.route else "",
                                   local=selected.local, branch=made_ticket["branch"],
                                   reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                                  deliveredNoteIds=note_ids, **base_context)
+                                  deliveredNoteIds=note_ids, **reason_field, **base_context)
         except boxstep.BoxWaiting as exc:
             boxstep.release_ports(placement.entry())
             self._release_local(step_id)
@@ -2860,7 +2868,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    routeKind=selected.route.kind if selected.route else "",
                                    routeTokenFile=selected.route.token_file if selected.route else "",
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                                   deliveredNoteIds=note_ids,
+                                   deliveredNoteIds=note_ids, **reason_field,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    readDirsProfile=begun.get("readDirsProfile", False),
@@ -3432,8 +3440,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if not self._wip_safe(wip):
                     return True
                 try:
-                    target = self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
-                    reviewer = self._transfer_reviewer(st, step, target)
+                    # PT-312: odrzucona przez regułę poprawek propozycja nie może przepiąć recenzenta.
+                    # _resume_step rozstrzyga ją ponownie przed startem; dotąd zostawiamy parę bez zmian.
+                    fix_target = (self._resumed_fix_target(card, st, step)[0]
+                                  if step.get("kind") == "fix" else settings["executor"])
+                    reviewer = None
+                    if fix_target == settings["executor"]:
+                        target = self._resume_executor(card, st, step, settings["executor"],
+                                                       changed=True, transfer=True)
+                        reviewer = self._transfer_reviewer(st, step, target)
                 except FlowError:
                     return True
                 self._save_transfer_reviewer(card, step, reviewer)
@@ -4727,6 +4742,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
+        automated = bool(decision.get("auto") or decision.get("automatic") or decision.get("caretaker") or
+                         choice == "auto")
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
         # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
         kind = step.get("kind")
@@ -4743,11 +4760,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if override:
             name, reassigned = override, True
         fresh = choice in ("change-executor", "transfer") or reassigned
+        fix_reason, fix_author, moved = "", {}, False
+        if kind == "fix":
+            # K-88/PT-312: tylko ręczna decyzja daje `override`. Automatyczna zmiana (błąd, odmowa dostawcy,
+            # opiekun) przechodzi tę samą regułę co poprawki, nawet gdy proponuje nowego wykonawcę.
+            if fresh and not automated:
+                fix_reason = "override"
+            else:
+                target, fix_reason, fix_author = self._resumed_fix_target(card, st, step)
+                if target:
+                    if automated and choice in ("change-executor", "transfer") and target != name:
+                        choice = "retry"   # Reguła poprawek odrzuciła proponowaną zmianę/przekazanie.
+                    moved = target != step.get("executor")
+                    name, reassigned, fresh = target, moved, moved
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
+        # Przydział użytkownika zachowuje swój wyjątek także przy automatycznym wznowieniu.
+        automatic_executor = (automated and fix_reason != "override" if kind == "fix"
+                              else bool(decision.get("caretaker")))
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=fresh,
-                                             transfer=choice == "transfer", automated=bool(decision.get("caretaker")))
+                                             transfer=choice == "transfer",
+                                             automated=automatic_executor)
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
@@ -4763,11 +4797,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 baseRef=step.get("baseRef") or "", baseCommit=step.get("baseCommit") or "",
                                 baseVersion=step.get("baseVersion", 0),
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "",
-                                **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step})
+                                **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step},
+                                **({"executorReason": fix_reason} if fix_reason else {}))
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
                                 kept=[], exit=None)
             return
+        if moved and fix_reason == "author":
+            # Automatyczny powrót do autora nie jest ręczną zgodą na zmianę jego modelu: ta sama kontrola
+            # tożsamości autora co w `_fix` (review r2, MAJOR-2).
+            self._check_author_identity(card, selected, fix_author,
+                                        st.assignments.get(step.get("ticket") or "") or st.started or {})
         old_prompt = os.path.join(step.get("stepDir") or "", "in", "prompt.txt")
         try:
             with open(old_prompt, encoding="utf-8") as fh:
@@ -4823,7 +4863,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                      {"branch": resume_branch, "worktree": resume_worktree},
                      step_id, [], kind=step.get("kind") or "ticket", round_no=int(step.get("round") or 0),
                      prompt_text=prompt, review_tip=step.get("reviewTip") or "",
-                     parent_step=step.get("step") or "", attempt=attempt, resume_session=session)
+                     parent_step=step.get("step") or "", attempt=attempt, resume_session=session,
+                     executor_reason=fix_reason)
 
     @staticmethod
     def _review_request(choice) -> tuple[str, str, int | None]:
@@ -4958,6 +4999,57 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 pass
         return "\n\n".join(out)
 
+    def _guard_review_launch(self, card: str, st: FlowState, ticket: str, round_no: int,
+                             selected, *, policy="other-model"):
+        """Wspólna bramka startu review w tle i w Konsoli, także po wznowieniu/przekazaniu.
+
+        Nowa sesja jest bezwarunkowa. Model określa wyłącznie `reviewgate.permits` z polityką;
+        PT-330 podłączy ustawienie projektu. Do tego czasu działa tryb dotychczasowej reguły.
+        """
+        authored = reviewgate.authors(st, ticket, round_no)
+        if not reviewgate.permits(selected, authored, policy):
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+            klass = self._ticket_class(st, ticket)
+            levels = ("lekki", "standard", "mocny")
+            allowed_classes = set(levels[levels.index(klass):]) if klass in levels else {klass}
+            replacement = None
+            for entry in catalog.executors if catalog else ():
+                if not allowed_classes.intersection(entry.classes):
+                    continue
+                try:
+                    candidate = execution.resolve(entry.name, catalog, config=cfg,
+                                                  probe=self.model_probe, which=self.which)
+                except execution.ExecutionError:
+                    continue
+                if candidate.local == selected.local and reviewgate.permits(candidate, authored, policy):
+                    replacement = candidate
+                    break
+            if replacement is None:
+                rule = {"other-model": "innego modelu lub poziomu rozumowania",
+                        "other-family": "innej rodziny modeli"}.get(policy, policy)
+                question = (f"{ticket}: nie ma dostępnego recenzenta spełniającego wymóg {rule} "
+                            "oraz wymagania klasy ticketu. Kogo wybrać do review? Wybierz innego recenzenta "
+                            "albo poczekaj na jego dostępność.")
+                key = (ticket, round_no)
+                if key not in st.review_questions or key in st.review_decisions:
+                    self.journal.append(card, "review.question", ticket=ticket, round=round_no,
+                                        reason="independence", policy=policy, question=question)
+                waiting = st.waiting.get((ticket, "review")) or {}
+                if waiting.get("cause") != "review-independence":
+                    self.journal.append(card, "step.waiting", ticket=ticket, kind="review",
+                                        executor=selected.name, provider=selected.provider,
+                                        reason=question, cause="review-independence")
+                raise FlowDeferred(question)
+            selected = replacement
+        key = (ticket, round_no)
+        question = st.review_questions.get(key) or {}
+        if question.get("reason") == "independence" and key not in st.review_decisions:
+            self.journal.append(card, "review.decision", ticket=ticket, round=round_no,
+                                choice="review-ready", automatic=True)
+        # Nie przenosimy sesji nawet przy tym samym modelu i wznowieniu review.
+        return selected, ""
+
     def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
         item, project = self._project(card)
         ticket = source["ticket"]
@@ -4978,14 +5070,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
         # Przeniesienie przy limicie i ręczna zmiana wykonawcy (K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet)
-        # zwalniają z reguły dostawców planu; recenzent nadal musi być innym modelem niż autor.
+        # zwalniają z reguły dostawców planu; politykę niezależności sprawdzi bramka przy starcie procesu.
         transferred = any((st.step_decisions.get(name) or {}).get("choice") in ("transfer", "change-executor") and
                           (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
         if reviewer_changed(reviewer, expected, source, assigned, transferred) and \
                 not any(e.get("type") == "review.reviewer-note" and e.get("ticket") == ticket and
                         e.get("round") == round_no for e in self.journal.read(card)):
-            # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
-            # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
+            # Odstępstwo od przydziału zostaje w historii. Sama notka nie zastępuje bramki startu review.
             self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
                                 reviewer=reviewer.name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
@@ -5030,31 +5121,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("no-executor", f"{card}: katalog wykonawców jest niedostępny")
-        author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
-                       s.get("kind") in ("ticket", "fix")), None)
-        if author is None:
-            raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
         round_no = int(review_step.get("round") or 1)
-        escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
-        override = st.author_overrides.get(ticket) or {}
-        reassigned = bool(override) and override.get("seq", 0) > author.get("seq", 0)
+        name, reason, author = self._fix_target(card, st, ticket, review_step, catalog, cfg)
         try:
-            executor = execution.resolve(override["executor"] if reassigned else
-                                         (review_step.get("executor") if escalate else None) or
-                                         author.get("executor") or assigned.get("executor") or "", catalog,
-                                         config=cfg, probe=self.model_probe, which=self.which)
+            executor = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if escalate or reassigned:
-            pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
-        elif executor.tool != (author.get("program") or assigned.get("program")) or \
-                executor.model != (author.get("model") or assigned.get("model")) or \
-                executor.provider != (author.get("provider") or assigned.get("provider")) or \
-                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
-                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
-                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
-                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
-            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
+        if reason == "author":
+            self._check_author_identity(card, executor, author, assigned)
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -5064,7 +5138,123 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._launch(item, project, executor, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": info["worktree"]},
-                     step_id, [], kind="fix", round_no=round_no, prompt_text=prompt)
+                     step_id, [], kind="fix", round_no=round_no, prompt_text=prompt, executor_reason=reason)
+
+    def _fix_target(self, card: str, st: FlowState, ticket: str, review_step: dict, catalog, cfg) -> tuple:
+        """K-88/PT-312: recenzent nie ocenia własnych poprawek. Zwraca `(nazwa wykonawcy, powód, krok autora)`.
+        Kolejność: ręczna zmiana autora (`override`), eskalacja do mocnego wykonawcy spoza recenzentów i autora
+        (`escalated`), dotychczasowy autor (`author`). Autor = ostatni krok autora, który nie był eskalacją ani
+        pracą recenzenta — ani bieżącego, ani recenzenta tamtej rundy (stara historia: od 3. rundy łatał recenzent,
+        który mógł potem zostać zmieniony)."""
+        assigned = st.assignments.get(ticket) or st.started or {}
+        reviewers = self._fix_reviewers(st, ticket, review_step)
+        authored = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix")]
+        taken = self._reviewer_fixes(st, ticket)
+        own = [s for s in authored if s.get("executorReason") != "escalated" and s.get("step") not in taken]
+        author = next((s for s in reversed(own) if s.get("executor") not in reviewers), None) or \
+            (own[-1] if own else authored[0] if authored else None)
+        if author is None:
+            raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
+        # Ręczna zmiana autora z panelu dotyczy wszystkich kolejnych poprawek ticketu (`_reassign_fix_author`),
+        # więc wygrywa z eskalacją także w rundach po pierwszym kroku nowego autora (review r2, MAJOR-3).
+        override = st.author_overrides.get(ticket) or {}
+        if override.get("executor"):
+            return override["executor"], "override", author
+        author_name = author.get("executor") or assigned.get("executor") or ""
+        if int(review_step.get("round") or 1) >= ESCALATE_FIX_ROUND:
+            escalated = self._escalated_fixer(st, ticket, assigned, author, {*reviewers, author_name}, catalog, cfg)
+            if escalated is not None:
+                return escalated.name, "escalated", author
+        return author_name, "author", author
+
+    @staticmethod
+    def _check_author_identity(card: str, executor, author: dict, assigned: dict) -> None:
+        """Gałąź „autor”: wykonawca z katalogu musi być tym samym autorem (program, model, dostawca, effort, route),
+        który pisał ticket — inaczej `changed-executor`. Wspólne dla `_fix` i automatycznego powrotu do autora
+        przy wznowieniu poprawek (review r2, MAJOR-2)."""
+        if executor.tool != (author.get("program") or assigned.get("program")) or \
+                executor.model != (author.get("model") or assigned.get("model")) or \
+                executor.provider != (author.get("provider") or assigned.get("provider")) or \
+                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
+                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
+                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
+                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
+            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
+
+    @staticmethod
+    def _reviewer_fixes(st: FlowState, ticket: str) -> set:
+        """Kroki poprawek ze starej historii (bez `executorReason`), które pisał recenzent tej samej rundy —
+        praca recenzenta, nie autora, także gdy recenzent ticketu został potem zmieniony."""
+        reviews = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") == "review"]
+        taken = set()
+        for s in st.steps.values():
+            if s.get("ticket") != ticket or s.get("kind") != "fix" or s.get("executorReason"):
+                continue
+            earlier = [r for r in reviews if r.get("seq", 0) < s.get("seq", 0)]
+            paired = next((r for r in reversed(earlier) if int(r.get("round") or 0) == int(s.get("round") or 0)),
+                          earlier[-1] if earlier else None)
+            if paired is not None and paired.get("executor") == s.get("executor"):
+                taken.add(s.get("step"))
+        return taken
+
+    def _resumed_fix_target(self, card: str, st: FlowState, step: dict) -> tuple[str, str, dict]:
+        """Wznowienie kroku `fix` bez ręcznej zmiany wykonawcy: ta sama reguła co `_fix`, licząc od review, które
+        krok poprawia. Inny wynik niż wykonawca kroku (recenzent łatał w starej historii, recenzentem został
+        eskalowany wykonawca) przenosi wznowienie na nowego wykonawcę świeżą sesją. Ręczny wybór autora zostaje.
+        Zwraca `(nazwa, powód, krok autora)`; krok autora (pusty poza regułą) służy kontroli `changed-executor`."""
+        current = step.get("executor") or ""
+        ticket = step.get("ticket") or ""
+        override = st.author_overrides.get(ticket) or {}
+        if override.get("executor") and override.get("seq", 0) > step.get("seq", 0):
+            return override["executor"], "override", {}
+        if step.get("executorReason") == "override" or (
+                override.get("executor") == current and override.get("seq", 0) < step.get("seq", 0)):
+            return current, "override", {}
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        reviews = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") == "review"
+                   and s.get("seq", 0) < step.get("seq", 0)]
+        review = next((r for r in reversed(reviews) if int(r.get("round") or 0) == int(step.get("round") or 0)),
+                      reviews[-1] if reviews else None)
+        if catalog is None or review is None:
+            return current, step.get("executorReason") or "", {}
+        return self._fix_target(card, st, ticket, review, catalog, cfg)
+
+    def _fix_reviewers(self, st: FlowState, ticket: str, review_step: dict) -> set:
+        """Nazwy recenzentów, którym nie wolno pisać poprawek: autor ocenianego review i recenzent następnego
+        (ręczna zmiana recenzenta po review wskazuje nowego)."""
+        names = {review_step.get("executor") or ""}
+        assigned, previous = self._reviewer_context(st, ticket)
+        names.add(previous.get("executor") or assigned.get("reviewer") or "")
+        names.discard("")
+        return names
+
+    @staticmethod
+    def _ticket_class(st: FlowState, ticket: str) -> str:
+        """Klasa ticketu z zatwierdzonego planu; brak wiersza albo kolumny (Od razu, plan sześciokolumnowy) —
+        `standard`, jak w standardzie planu."""
+        row = next((r for r in (st.plan_approved or {}).get("rows") or [] if str(r.get("id") or "") == ticket), {})
+        return row.get("class") or "standard"
+
+    def _escalated_fixer(self, st: FlowState, ticket: str, assigned: dict, author: dict, avoid: set, catalog, cfg):
+        """K-88/PT-312: wykonawca poprawek od rundy ESCALATE_FIX_ROUND — klasa `mocny` preferowanego dostawcy
+        zlecenia, inny niż recenzenci i autor; tylko dla ticketów spoza klas `mocny` i `lokalny`. `None` — poprawki
+        zostają u autora."""
+        if self._ticket_class(st, ticket) in ("mocny", "lokalny"):
+            return None
+        started = st.started or {}
+        provider = assigned.get("preferredProvider") or started.get("preferredProvider") or ""
+        if provider in ("", "mixed"):
+            # Tryb mieszany: autor i recenzent są u różnych dostawców — poprawki zostają u dostawcy autora.
+            provider = author.get("provider") or assigned.get("provider") or started.get("provider") or ""
+        for candidate in catalog.executors:
+            if candidate.provider != provider or "mocny" not in candidate.classes or candidate.name in avoid:
+                continue
+            try:
+                return execution.resolve(candidate.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            except execution.ExecutionError:
+                continue
+        return None
 
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         self._trial_check(ticket)
@@ -5229,6 +5419,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
                                 deliveredNoteIds=intent.get("deliveredNoteIds") or [],
+                                **({"executorReason": intent["executorReason"]} if intent.get("executorReason") else {}),
                                 readDirsProfile=bool(result.get("readDirsProfile")),
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 baseVersion=intent.get("baseVersion", 0),
