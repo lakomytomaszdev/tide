@@ -132,6 +132,20 @@ class CardOpenTest(unittest.TestCase):
         self.assertEqual((out["open"]["fullOpen"], out["open"]["decisionOpen"], out["open"]["dialog"]),
                          (True, False, False))
 
+    def test_ticket_settings_button_is_hidden_in_sessions(self):
+        """PT-334: przycisk „Ustawienia” ticketu jest tylko w Tablicy (Sesje nie mają katalogu wykonawców)."""
+        out = self.probe(self.working, "click_entry(0)\n"
+                         "result['tiles'] = json.loads(js(\"JSON.stringify((function walk(it) { let out = []; "
+                         "for (const c of it.children) { if (c.objectName === 'fullTicket') out.push(c); "
+                         "out = out.concat(walk(c)) } return out })(cardFullView).map(t => "
+                         "[t.ticketId, t.ticketSettingsEnabled, (function find(it) { for (const c of it.children) { "
+                         "if (c.objectName === 'fullTicketSettings') return c.visible; const r = find(c); "
+                         "if (r !== undefined) return r } return undefined })(t)]))\"))")
+        self.assertTrue(out["tiles"], "pełna karta ma kafelki ticketów")
+        for ticket, enabled, visible in out["tiles"]:
+            self.assertFalse(enabled, ticket)
+            self.assertFalse(visible, ticket)
+
     def test_answer_goes_to_board_with_method_and_params_from_the_decision(self):
         out = self.probe(self.waiting, "click_entry(0)\n"
                          "js(\"decisionDialog.answered('d1', 'ApproveCardPlan', {})\")\n"

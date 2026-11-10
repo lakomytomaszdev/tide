@@ -48,6 +48,7 @@ Rectangle {
     property string decisionCardId: ""
     // Pełna karta (PT-128, apps/common/qml/card/CardFullView.qml) na całą stronę.
     property bool fullOpen: false
+    onFullOpenChanged: if (!fullOpen) ticketSettings.close()
     property string fullCardId: ""
     // Szuflada opisu (PT-134): panel karty tylko z opisem i „Zapisz opis”, otwierany z pełnej karty.
     property bool descriptionDrawer: false
@@ -409,6 +410,17 @@ Rectangle {
         cardOpenRequested(value)
     }
 
+    // --- ustawienia ticketu (PT-334) ------------------------------------------------------------
+
+    property string ticketSettingsTag: ""
+
+    // Wiersz planu ticketu z migawki pełnej karty (`editable` liczy usługa).
+    function openTicketSettings(ticketId) {
+        const plan = cardFullView.flow && cardFullView.flow.plan
+        const row = plan && Array.isArray(plan.rows) ? plan.rows.find(r => (r.id || r.workId) === ticketId) : null
+        ticketSettings.open(ticketId, row || null)
+    }
+
     // --- okno decyzji (PT-132) ------------------------------------------------------------------
 
     function openDecisions(id) {
@@ -763,6 +775,19 @@ Rectangle {
         if (settingNote !== null && settingNote !== "") {
             if (!error) showToast(settingNote, "mint")
             else if (tag.indexOf("move:") !== 0) showToast("Nie zapisano: " + error, "rose")
+        }
+        if (tag.indexOf("ticket-settings:") === 0) {
+            // Błąd usługi (np. ticket-started, bad-assignment) zostaje w oknie; sukces zamyka je z potwierdzeniem.
+            if (tag !== ticketSettingsTag || !ticketSettings.visible) return
+            if (error) {
+                ticketSettings.busy = false
+                ticketSettings.error = error
+            } else {
+                const id = ticketSettings.ticketId
+                ticketSettings.close()
+                showToast("Ustawienia ticketu " + id + " zapisane.", "mint")
+            }
+            return
         }
         if (tag.indexOf("base-change:") === 0) {
             if (baseChangePreview.requestTag !== tag) return
@@ -2004,6 +2029,9 @@ Rectangle {
                                                              page.fullCardId, "{}")
         objectName: "cardFullView"
         mergePreviewAvailable: true
+        // Ustawienia ticketu (PT-334): tylko Tablica zna katalog wykonawców; w Sesjach przycisk jest ukryty.
+        ticketSettingsEnabled: true
+        onTicketSettingsRequested: id => page.openTicketSettings(id)
         baseChangeAvailable: true
         onBaseChangeRequested: page.openBaseChange(page.fullCardId)
         anchors.fill: parent
@@ -2026,6 +2054,20 @@ Rectangle {
         onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
+    }
+
+    // Okno ustawień ticketu nieruszonego (PT-334); odpowiedź na „Zapisz” wraca przez tag „ticket-settings:”.
+    TicketSettingsDialog {
+        id: ticketSettings
+        objectName: "ticketSettingsDialog"
+        anchors.fill: parent
+        z: 45
+        modelsStatus: page.modelsStatus
+        onSaveRequested: request => {
+            ticketSettingsTag = page.nextTag("ticket-settings:" + page.fullCardId)
+            page.planEditRequested(ticketSettingsTag, page.fullCardId, JSON.stringify(request))
+        }
+        onClosed: if (page.fullOpen) cardFullView.forceActiveFocus()
     }
 
     MergePreview {
