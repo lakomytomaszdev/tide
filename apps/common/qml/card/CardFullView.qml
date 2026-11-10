@@ -46,7 +46,9 @@ Rectangle {
     readonly property var decisions: flow && Array.isArray(flow.decisions) ? flow.decisions : []
     // Zgrupowane zgody (PT-338): ta sama prośba poza piaskownicą z kilku kroków to jedna pozycja (decision.js).
     property var consent: Decision.consentStart()
-    readonly property var pending: Decision.consentItems(decisions, answeredIds, consent)
+    // Obciążenie poleceniami poza piaskownicą (decision.outsideLoad) dla prognozy grupy zgód; `null` — bez prognozy (Sesje).
+    property var outsideLoad: null
+    readonly property var pending: Decision.consentItems(decisions, answeredIds, consent, outsideLoad)
     readonly property var current: pending.length > 0 ? pending[0] : null
     readonly property var phases: derived && Array.isArray(derived.phases) ? derived.phases : []
     // Krycie paska etapu `now` (karta K-97): wspólna faza strony Tablicy; 1.0 = bez mrugania (Sesje nic nie przekazują).

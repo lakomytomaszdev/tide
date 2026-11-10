@@ -21,8 +21,8 @@
 // zaznaczonych (`checks`), bez zaznaczenia nie da się wybrać. Podpis pola własnej odpowiedzi — `otherTitle`.
 //
 // Grupa zgód (PT-338, `decision.group` z decision.consentGroups): ta sama prośba poza piaskownicą z N kroków.
-// Rozwijana lista ticketów i kroków grupy, możliwości z usługi z opisem dla N kroków, puste miejsce na prognozę
-// (`decision.forecast`). Wybór emituje `groupAnswered(ids)`, a potem `answered` raz na każdą decyzję grupy (jej
+// Rozwijana lista ticketów i kroków grupy, możliwości z usługi z opisem dla N kroków, prognoza „ruszy od razu /
+// poczeka” (`decision.forecast`, PT-340; pusta bez `outsideLoad` — wtedy zostaje sama liczba ticketów). Wybór emituje `groupAnswered(ids)`, a potem `answered` raz na każdą decyzję grupy (jej
 // `method` i `params` z jej `step`). Pozycja `decision.receipt` to znak przyjęcia („Przyjęto · wysyłam N odpowiedzi”)
 // bez możliwości. `errors` — powody odmowy usługi przy decyzjach, które wróciły z grupy osobno.
 import QtQuick

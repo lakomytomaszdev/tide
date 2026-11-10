@@ -61,7 +61,7 @@ class ConsentGroupsLogicTest(unittest.TestCase):
         self.assertEqual(self.js("who('K-8', G)", G=group), "K-8 · 7 ticketów")
         self.assertEqual([(m["ticket"], m["step"]) for m in group["members"]], list(zip(OUTSIDE_TICKETS, STEPS)))
         self.assertTrue(all(m["reason"].startswith("Testy ticketu") for m in group["members"]))
-        self.assertEqual(group["forecast"], "", "prognoza należy do #9 — miejsce puste")
+        self.assertEqual(group["forecast"], "", "bez obciążenia (Sesje, migawka nierozpoznana) nie ma prognozy (PT-340)")
         self.assertFalse(group["freeText"])
         # Możliwości z usługi w tej samej kolejności, polecona tylko przekazana (bez zmian).
         service = items[0]["options"]
@@ -231,7 +231,7 @@ out["expanded"] = group()
         self.assertEqual(out["enter"], [0, False], "Enter bez wyboru nic nie wysyła")
         self.assertEqual(out["group"]["toggle"], "▸ Tickety i kroki (7)")
         self.assertEqual(out["group"]["members"], [], "lista zwinięta po otwarciu")
-        self.assertFalse(out["group"]["forecast"], "prognoza (#9) — miejsce puste i ukryte")
+        self.assertFalse(out["group"]["forecast"], "bez outsideLoad prognoza jest ukryta (PT-340)")
         self.assertEqual([m[0] for m in out["expanded"]["members"]],
                          [f"{t} · {s} · Sonnet" for t, s in zip(OUTSIDE_TICKETS, STEPS)])
         self.assertTrue(all(m[1].startswith("Testy ticketu") for m in out["expanded"]["members"]))

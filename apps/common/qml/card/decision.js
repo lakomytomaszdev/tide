@@ -341,7 +341,69 @@ function groupHead(command, label) {
     return (command.length <= SHORT_COMMAND ? command : "To samo polecenie poza piaskownicą") + " · " + label
 }
 
-function makeGroup(members) {
+// --- Prognoza „ruszy od razu / poczeka” (K-97, PT-340) -----------------------------------------------------------
+// Obciążenie liczy strona Tablicy z migawki wszystkich kart. Usługa nie daje pól strukturalnych, tylko napisy
+// wyświetlane — rozpoznawane tu, w jednym miejscu; test okna buduje migawkę prawdziwym kodem usługi (`fold` →
+// `derived`) i łamie się, gdy napis się zmieni (zamiast po cichu fałszować licznik).
+var OUTSIDE_RUNNING_LABEL = "polecenie poza piaskownicą"   // `kindLabel` wpisu `flow.running[]` (fullcard.running_steps)
+var OUTSIDE_QUEUED_PREFIX = "w kolejce: "                    // `statusLabel` ticketu ze zgodą w kolejce (fullcard.ticket_status)
+// Lustro limitów usługi (OUTSIDE_PER_PROJECT, OUTSIDE_TOTAL w tide_daemon.cardflow.engine) — test okna je porównuje.
+var OUTSIDE_PER_PROJECT = 6
+var OUTSIDE_TOTAL = 7
+
+// Obciążenie poleceniami poza piaskownicą z migawki kart: {projectRunning, totalRunning, projectQueued, totalQueued}
+// albo null, gdy migawki nie da się rozpoznać (brak listy kart, wpis bez `kindLabel`, ticket bez `statusLabel`).
+function outsideLoad(cards, projectSlug) {
+    if (!Array.isArray(cards)) return null
+    var load = { projectRunning: 0, totalRunning: 0, projectQueued: 0, totalQueued: 0 }
+    for (var i = 0; i < cards.length; i++) {
+        var card = cards[i]
+        var flow = card && card.derived && card.derived.flow
+        if (!flow) continue
+        var mine = !!projectSlug && card.project === projectSlug
+        var running = flow.running
+        if (running !== undefined && !Array.isArray(running)) return null
+        for (var r = 0; running && r < running.length; r++) {
+            var label = running[r] && running[r].kindLabel
+            if (typeof label !== "string" || label === "") return null
+            if (label === OUTSIDE_RUNNING_LABEL) {
+                load.totalRunning++
+                if (mine) load.projectRunning++
+            }
+        }
+        var tickets = card.derived.tickets
+        if (tickets !== undefined && !Array.isArray(tickets)) return null
+        for (var t = 0; tickets && t < tickets.length; t++) {
+            var status = tickets[t] && tickets[t].statusLabel
+            if (typeof status !== "string") return null
+            if (status.indexOf(OUTSIDE_QUEUED_PREFIX) === 0) {
+                load.totalQueued++
+                if (mine) load.projectQueued++
+            }
+        }
+    }
+    return load
+}
+
+// Ile z `n` zgód ruszy od razu, a ile poczeka: wolne miejsca to mniejsza z reszt limitu projektu i limitu łącznego,
+// po odjęciu trwających i już czekających w kolejce. To szacunek ze stanu migawki, nie kolejność startu.
+function outsideForecast(load, n) {
+    if (!load) return null
+    var free = Math.min(OUTSIDE_PER_PROJECT - load.projectRunning - load.projectQueued,
+                        OUTSIDE_TOTAL - load.totalRunning - load.totalQueued)
+    var now = Math.max(0, Math.min(n, free))
+    return { now: now, wait: n - now }
+}
+
+function forecastText(load, n) {
+    var forecast = outsideForecast(load, n)
+    if (!forecast) return ""
+    return "Ruszy od razu: " + forecast.now + ", poczeka w kolejce: " + forecast.wait + " (w projekcie biegnie teraz "
+           + load.projectRunning + " z " + OUTSIDE_PER_PROJECT + ", łącznie " + load.totalRunning + " z "
+           + OUTSIDE_TOTAL + ") — według stanu sprzed chwili. To szacunek, nie obietnica kolejności startu."
+}
+
+function makeGroup(members, load) {
     var first = members[0]
     var command = first.technical.command
     var label = membersLabel(members)
@@ -358,12 +420,12 @@ function makeGroup(members) {
              ticket: label, executor: "", step: "", happened: groupHead(command, label), why: firstLine(first.why),
              technical: { command: command }, options: options, freeText: false, reply: null, commands: [],
              findings: [], copyCommands: [], members: members.map(memberRow), sources: members,
-             count: members.length, receiptText: "", forecast: "" }
+             count: members.length, receiptText: "", forecast: forecastText(load, members.length) }
 }
 
 // Pozycje okna z listy decyzji usługi: pojedyncze decyzje i grupy zgód (grupa stoi w miejscu swojej pierwszej
 // decyzji). `loose` — id decyzji trzymanych osobno (np. po odmowie usługi dla jednego kroku grupy).
-function consentGroups(decisions, loose) {
+function consentGroups(decisions, loose, load) {
     var list = decisions || []
     var apart = loose || []
     var keys = []
@@ -380,7 +442,7 @@ function consentGroups(decisions, loose) {
         if (k === "" || byKey[k].length < 2) out.push(list[j])
         else if (!placed[k]) {
             placed[k] = true
-            out.push(makeGroup(byKey[k]))
+            out.push(makeGroup(byKey[k], load))
         }
     }
     return out
@@ -445,12 +507,12 @@ function receiptText(sentCount, failedCount) {
 
 // Pozycje do pokazania: decyzje bez odpowiedzi (bez `hidden`), zgrupowane, oraz znak przyjęcia każdej wysłanej
 // grupy w miejscu jej pierwszej decyzji, dopóki usługa jeszcze pokazuje te decyzje w migawce.
-function consentItems(decisions, hidden, state) {
+function consentItems(decisions, hidden, state, load) {
     var list = decisions || []
     var skip = hidden || []
     var st = state || consentStart()
     var open = list.filter(function (d) { return skip.indexOf(d.id) < 0 && !isSent(st, d.id) })
-    var items = consentGroups(open, st.loose)
+    var items = consentGroups(open, st.loose, load)
     var receipts = {}
     var order = []
     for (var i = 0; i < list.length; i++) {
