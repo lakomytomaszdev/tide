@@ -201,6 +201,29 @@ def journal_d() -> list[dict]:
     return items
 
 
+def journal_move(steps: list[tuple], merged: tuple = ("#1",)) -> list[dict]:
+    """Dziennik do zdania „Twój ruch” (PT-337): plan K-33 zatwierdzony, tickety `merged` scalone do gałęzi karty,
+    potem kroki `steps` — krotki (nazwa, ticket, rodzaj, wykonawca, zdarzenia po starcie jako lista (typ, pola)).
+    Każdy krok bez zdarzeń końcowych trwa."""
+    full = journal_d()
+    approved = next(i for i, e in enumerate(full) if e["type"] == "plan.approved")
+    items = full[:approved + 1]
+
+    def add(event_type, ts, **data):
+        items.append({"v": 1, "seq": len(items) + 1, "ts": f"2026-11-03T{ts}+01:00", "card": CARD,
+                      "type": event_type, **data})
+
+    for ticket in merged:
+        add("result", "10:04:00", action="merge", key=ticket, ok=True)
+    for index, (name, ticket, kind, executor, after) in enumerate(steps):
+        add("step.started", f"11:{index:02d}:00", step=name, ticket=ticket, kind=kind, executor=executor,
+            provider="anthropic", model=executor.lower(), attempt=0, parentStep="", stepDir=f"/wt/{name}.step",
+            worktree=f"/wt/{ticket or 'card'}", branch=f"ticket/{ticket.strip('#').lower() or 'card'}")
+        for event_type, data in after:
+            add(event_type, f"11:{index:02d}:30", step=name, ticket=ticket, **data)
+    return items
+
+
 # --- Scenariusz E (PT-130): limit Claude, #2 i #4 zatrzymane, Codex ma 91% limitu ---------------------
 
 def journal_e() -> list[dict]:

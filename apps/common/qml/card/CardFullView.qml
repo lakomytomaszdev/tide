@@ -27,6 +27,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "../tide" as Tide
 import "decision.js" as Decision
+import "move.js" as Move
 import "settings.js" as Settings
 
 Rectangle {
@@ -51,7 +52,8 @@ Rectangle {
     readonly property var tickets: derived && Array.isArray(derived.tickets) ? derived.tickets : []
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
-    readonly property string headline: flow && flow.headline ? flow.headline : ""
+    // Zdanie usługi (`flow.headline`) albo nazwany trwający krok (move.js, PT-337).
+    readonly property string headline: Move.moveHeadline(flow, phases, tickets)
     readonly property var history: flow && Array.isArray(flow.history) ? flow.history : []
     readonly property var stepNotes: flow && Array.isArray(flow.stepNotes) ? flow.stepNotes : []
     readonly property var noteSteps: flow && Array.isArray(flow.steps) ? flow.steps.filter(
