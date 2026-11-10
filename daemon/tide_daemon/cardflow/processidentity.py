@@ -220,6 +220,7 @@ EVENTS = MappingProxyType({
     "card.closed": _metadata("podsumowanie domknięcia", "baseCommit", "baseVersion", "check", "step", "summary"),
     "card.main-merged": _metadata("dawny zapis scalenia do głównej", source="historical"),
     "card.moved": _metadata("przeniesienie karty na Tablicy", "from", "moveId", "to"),
+    "card.move-ignored": _metadata("zbędny ruch okna po zdjęciu karty z Backlogu przy starcie", "moveId"),
     "card.stalled": _metadata("diagnoza zatrzymania przepływu", "reason"),
     "card.base-requested": _metadata("decyzja o bazie karty", "baseProposal", "decision"),
     "card.base-kept": _metadata("zachowanie bazy karty", "decision"),
