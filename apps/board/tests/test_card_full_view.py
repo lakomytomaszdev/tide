@@ -58,7 +58,9 @@ def full_option(i):
 MOVE_TAIL = "; następna decyzja będzie Twoja przy domknięciu karty, chyba że któryś krok o coś zapyta."
 ALL_TICKETS = tuple(row[0] for row in TICKETS_D)
 CLOSE_STEP = ("K-8-close-1", "", "close", "Opus")
-OUTSIDE = [("step.finished", {"result": "denied", "command": "make test"}),
+# Odmowa polecenia, zgoda użytkownika („uruchom”) i start polecenia poza piaskownicą: bez zgody byłaby to decyzja.
+OUTSIDE = [("step.finished", {"result": "denied", "command": "make test", "outside": True}),
+           ("step.decision", {"kind": "close", "choice": "run"}),
            ("outside.started", {"command": "make test"})]
 
 PHASE_IDS = ["order", "planning", "plan-review", "plan-approval", "tickets", "closing", "main-merge"]
