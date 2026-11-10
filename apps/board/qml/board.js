@@ -73,6 +73,36 @@ function isManual(column) {
     return MANUAL.indexOf(column) >= 0
 }
 
+// Licznik utworzonych delegatów BoardCard (PT-323: pomiar przebudów modeli). Biblioteka `.pragma library` jest
+// jedna na silnik, więc liczy karty wszystkich kolumn; nic nie czyta i niczego nie zmienia w oknie.
+var cardDelegatesCreated = 0
+
+function noteCardDelegate() {
+    cardDelegatesCreated++
+}
+
+function cardDelegates() {
+    return cardDelegatesCreated
+}
+
+// Faza segmentu ticketu na pasku karty: `phase` od usługi, a starsza usługa (bez `phase`) — dawne stany.
+function ticketPhase(ticket) {
+    const t = ticket || {}
+    return t.phase || ({"gotowe": "gotowe", "review": "review", "w-toku": "pracuje", "czeka": "ty",
+                        "odrzucone": "odrzucone"})[t.state] || "todo"
+}
+
+// Czy któraś z kart ma na pasku segment w fazie „pracuje” (pasek widać tylko przy flow z waveLabel).
+function hasWorkingSegment(cards) {
+    for (const card of cards || []) {
+        const d = card && card.derived
+        if (!d || !d.flow || !d.flow.waveLabel) continue
+        for (const t of d.tickets || [])
+            if (ticketPhase(t) === "pracuje") return true
+    }
+    return false
+}
+
 function displayColumn(card) {
     return card.boardColumn || card.column || "backlog"
 }
@@ -220,6 +250,89 @@ function applyMove(list, move) {
 
 function column(list, columnId) {
     return list.filter(c => displayColumn(c) === columnId)
+}
+
+// Równość treści (karty z migawki to dane JSON): zmiana kolejności kluczy też liczy się jako zmiana, co jest
+// bezpieczne (najwyżej jedna zbędna aktualizacja karty).
+function sameValue(a, b) {
+    return a === b || JSON.stringify(a) === JSON.stringify(b)
+}
+
+// Wartość pochodna o stabilnej tożsamości (PT-326): poprzednia, gdy treść się nie zmieniła, inaczej nowa.
+function stable(next, prev) {
+    return sameValue(next, prev) ? prev : next
+}
+
+// Wiersze projektów: karty pogrupowane po projekcie, „Bez projektu” na końcu, reszta alfabetycznie.
+function groupLanes(cards) {
+    const groups = []
+    const index = {}
+    for (const card of cards) {
+        const key = card.project || NO_PROJECT
+        if (index[key] === undefined) {
+            index[key] = groups.length
+            groups.push({ key: key, name: card.projectName || (card.project ? card.project : "Bez projektu"), cards: [] })
+        }
+        groups[index[key]].cards.push(card)
+    }
+    return groups.sort((a, b) => a.key === NO_PROJECT ? 1 : b.key === NO_PROJECT ? -1 : a.name.localeCompare(b.name))
+}
+
+// Nowe wiersze z zachowaniem tożsamości: wiersz o tym samym kluczu i treści to ten sam obiekt, a gdy wszystkie
+// wiersze i ich kolejność są te same, zwracana jest poprzednia tablica.
+function stableLanes(next, prev) {
+    const old = {}
+    for (const lane of prev || []) old[lane.key] = lane
+    const out = next.map(lane => old[lane.key] && sameValue(old[lane.key], lane) ? old[lane.key] : lane)
+    const same = out.length === (prev || []).length && out.every((lane, i) => lane === prev[i])
+    return same ? prev : out
+}
+
+// Karty bez powtórzeń `id` (pierwsze wystąpienie wygrywa) — model o stabilnej tożsamości nie znosi duplikatów.
+function uniqueCards(list) {
+    const seen = {}
+    const out = []
+    for (const card of list || []) {
+        if (!card || card.id === undefined || card.id === null || seen[card.id]) continue
+        seen[card.id] = true
+        out.push(card)
+    }
+    return out
+}
+
+// Operacje przerabiające poprzednią listę kart na nową (model kolumny, PT-324). Operacje stosuje się po kolei,
+// każda działa na liście po poprzednich: {op: "remove", index, id} | {op: "insert", index, id, card} |
+// {op: "move", from, to, id} | {op: "set", id, card}. Karta o niezmienionej treści i miejscu nie daje operacji.
+function diffCards(prev, next) {
+    const before = uniqueCards(prev)
+    const after = uniqueCards(next)
+    const old = {}
+    for (const card of before) old[card.id] = card
+    const wanted = {}
+    for (const card of after) wanted[card.id] = true
+    const order = before.map(card => card.id)
+    const ops = []
+    for (let i = order.length - 1; i >= 0; i--) {
+        if (wanted[order[i]]) continue
+        ops.push({ op: "remove", index: i, id: order[i] })
+        order.splice(i, 1)
+    }
+    for (let i = 0; i < after.length; i++) {
+        const card = after[i]
+        if (order[i] !== card.id) {
+            const from = order.indexOf(card.id, i)
+            if (from < 0) {
+                order.splice(i, 0, card.id)
+                ops.push({ op: "insert", index: i, id: card.id, card: card })
+                continue
+            }
+            order.splice(from, 1)
+            order.splice(i, 0, card.id)
+            ops.push({ op: "move", from: from, to: i, id: card.id })
+        }
+        if (!sameValue(old[card.id], card)) ops.push({ op: "set", id: card.id, card: card })
+    }
+    return ops
 }
 
 // Pozycja dla MoveCard: miejsce wśród kart zapisanych w kolumnie docelowej (bez przenoszonej),

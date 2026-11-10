@@ -27,6 +27,11 @@ Item {
     property real nowTs: Date.now() / 1000
     property int captureVisibility: Window.Windowed   // stan okna sprzed schowania na „Zrób zrzut”
     readonly property alias page: page
+    // Okno nieukryte i niezminimalizowane (PT-325). `root.visible` zostaje true po minimalizacji, więc patrzymy na
+    // visibility okna: Hidden (hide()) i Minimized zatrzymują animacje tła.
+    readonly property bool windowShown: Window.window ? Window.window.visible
+                                                        && Window.window.visibility !== Window.Minimized
+                                                        && Window.window.visibility !== Window.Hidden : true
     readonly property var snapshot: backend ? Logic.parse(backend.snapshotJson, null) : null
     readonly property bool available: backend ? backend.available : false
     readonly property var railInfo: ({
@@ -87,6 +92,7 @@ Item {
         onNavigateRequested: (viewId, item) => view.navigateRequested(viewId, item)
         id: page
         anchors.fill: parent
+        animationsActive: view.active && view.windowShown && view.visible
         snapshot: view.snapshot
         available: view.available
         preview: view.backend ? view.backend.preview : false

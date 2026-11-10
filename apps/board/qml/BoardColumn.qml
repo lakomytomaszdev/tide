@@ -42,6 +42,39 @@ Rectangle {
     readonly property alias flick: flick
     readonly property bool hintVisible: dropHint.visible
 
+    // Model kart o stabilnej tożsamości (PT-324): lista samych `id` w ListModel, a treść karty w mapie `cardMap`.
+    // Nowa migawka zmienia model tylko tam, gdzie karta doszła, zniknęła, zmieniła miejsce albo treść; karta
+    // o niezmienionej treści zostaje tym samym obiektem, więc jej delegat nic nie przelicza.
+    property var cardMap: ({})
+    ListModel { id: cardIds }
+    onShownChanged: syncCards()
+    Component.onCompleted: syncCards()
+
+    function syncCards() {
+        const prev = []
+        for (let i = 0; i < cardIds.count; i++) prev.push(cardMap[cardIds.get(i).cardId])
+        const ops = Logic.diffCards(prev, shown)
+        if (ops.length === 0) return
+        // Karty usuwane zostają w mapie do końca operacji, żeby ich delegaty nie zobaczyły pustej karty.
+        const map = Object.assign({}, cardMap)
+        let removed = false
+        for (const op of ops) {
+            if (op.card) map[op.id] = op.card
+            else if (op.op === "remove") removed = true
+        }
+        cardMap = map
+        for (const op of ops) {
+            if (op.op === "remove") cardIds.remove(op.index)
+            else if (op.op === "insert") cardIds.insert(op.index, { cardId: op.id })
+            else if (op.op === "move") cardIds.move(op.from, op.to, 1)
+        }
+        if (removed) {
+            const kept = {}
+            for (let i = 0; i < cardIds.count; i++) kept[cardIds.get(i).cardId] = map[cardIds.get(i).cardId]
+            cardMap = kept
+        }
+    }
+
     // Karta pod pozycją y (we współrzędnych kolumny), przed którą wstawić upuszczaną: pierwsza,
     // której środek jest niżej; pusty — na koniec.
     function beforeAt(y) {
@@ -172,24 +205,24 @@ Rectangle {
 
                 Repeater {
                     id: repeater
-                    model: columnRoot.shown
+                    model: cardIds
                     BoardCard {
-                        required property var modelData
+                        required property string cardId
                         Layout.fillWidth: true
-                        card: modelData
+                        card: columnRoot.cardMap[cardId]
                         compact: columnRoot.compact
-                        selected: modelData.id === columnRoot.selectedId
+                        selected: cardId === columnRoot.selectedId
                         canLaunch: columnRoot.canLaunch
                         canDiff: columnRoot.canDiff
                         tagTone: columnRoot.tagTone
                         dragHost: columnRoot.dragHost
-                        onClicked: columnRoot.cardClicked(modelData.id)
-                        onMoveRequested: target => columnRoot.moveRequested(modelData.id, target)
+                        onClicked: columnRoot.cardClicked(cardId)
+                        onMoveRequested: target => columnRoot.moveRequested(cardId, target)
                         onSessionRequested: session => columnRoot.sessionRequested(session)
                         onAgentRequested: session => columnRoot.agentRequested(session)
-                        onLaunchRequested: columnRoot.launchRequested(modelData.id)
-                        onKeyNavigation: (dx, dy) => columnRoot.keyNavigation(modelData.id, dx, dy)
-                        onKeyMove: (dx, dy) => columnRoot.keyMove(modelData.id, dx, dy)
+                        onLaunchRequested: columnRoot.launchRequested(cardId)
+                        onKeyNavigation: (dx, dy) => columnRoot.keyNavigation(cardId, dx, dy)
+                        onKeyMove: (dx, dy) => columnRoot.keyMove(cardId, dx, dy)
                     }
                 }
 
