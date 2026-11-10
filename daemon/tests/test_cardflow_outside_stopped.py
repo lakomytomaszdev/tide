@@ -172,13 +172,13 @@ class OutsideStoppedTest(FlowInProcess):
 
     def test_finished_between_reads_prefers_the_final_exit_code(self):
         # Wrapper zdążył zmienić nazwę pliku po pierwszym odczycie: bez tmp, jest exit-code.
-        real = stepstop.unit_state
+        real = stepstop.unit_without_processes
 
         def late(unit, timeout=30):
             self.put("exit-code", "0\n")
             return real(unit, timeout=timeout)
 
-        with mock.patch.object(stepstop, "unit_state", late):
+        with mock.patch.object(stepstop, "unit_without_processes", late):
             self.ready()
         self.assertEqual([e["exit"] for e in self.finished()], [0])
 
