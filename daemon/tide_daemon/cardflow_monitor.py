@@ -169,7 +169,7 @@ class CardFlowMonitor(QObject):
             try:
                 result = future.result()
             except (FlowError, ResourceError) as exc:
-                result = _failure(exc.code, str(exc))
+                result = {**_failure(exc.code, str(exc)), **getattr(exc, "data", {})}
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty: ResolveCardReview: {exc!r}", flush=True)
                 result = _failure("internal", "błąd usługi — szczegóły w dzienniku")

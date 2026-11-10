@@ -1852,7 +1852,20 @@ click(at(FIND + "(page.cardPanel, 'cardReviewRetry')"))
 out["call"] = calls()[-1]
 """, data=data)
         self.assertEqual(out["visible"], [True, True])
-        self.assertEqual(out["call"], ["ResolveCardReview", "K-6", "retry"])
+        # PT-316: panel wysyła ticket i rundę pokazanego pytania.
+        self.assertEqual(out["call"][:2], ["ResolveCardReview", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "retry", "ticket": "PT-7", "round": 3})
+
+    def test_review_decision_from_the_dialog_sends_ticket_and_round(self):
+        # PT-316: odpowiedź z okna decyzji niesie ticket i rundę; bez nich (stare dane) idzie goły napis.
+        out = self.probe(FIND_PY + """
+js("page.sendDecision('K-6', 'review:PT-8:3', 'ResolveCardReview', {choice: 'reject', ticket: 'PT-8', round: 3})")
+js("page.sendDecision('K-6', 'review:PT-8:3', 'ResolveCardReview', {choice: 'retry'})")
+out["calls"] = calls()
+""", data=self.data)
+        self.assertEqual(out["calls"][0][:2], ["ResolveCardReview", "K-6"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"choice": "reject", "ticket": "PT-8", "round": 3})
+        self.assertEqual(out["calls"][1], ["ResolveCardReview", "K-6", "retry"])
 
     def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
         data = json.loads(json.dumps(self.data))

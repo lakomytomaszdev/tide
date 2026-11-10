@@ -100,6 +100,15 @@ Rectangle {
                                                  && (mergeBase.baseRef || "").indexOf("refs/heads/") === 0
                                                  ? mergeBase.baseRef.substring(11) : ""
 
+    // PT-316: decyzja dotyczy pytania pokazanego w panelu — ticket i runda idą razem z wyborem (JSON dla usługi).
+    function reviewChoice(choice) {
+        const flow = card && card.derived ? card.derived.flow : null
+        if (!flow || !flow.ticket) return choice
+        const request = {choice: choice, ticket: flow.ticket}
+        if (flow.round) request.round = flow.round
+        return JSON.stringify(request)
+    }
+
     function eventLabel(event) {
         const words = {"card.started": "zlecenie", "plan.approved": "plan zatwierdzony", "step.started": "start kroku",
                        "step.finished": "koniec kroku", "step.waiting": "czeka", "review.verdict": "review",
@@ -1136,7 +1145,7 @@ Rectangle {
                             enabled: !panel.busy
                             onClicked: {
                                 panel.busy = true
-                                panel.reviewResolveRequested(panel.card.id, "retry")
+                                panel.reviewResolveRequested(panel.card.id, panel.reviewChoice("retry"))
                             }
                         }
                         PillButton {
@@ -1147,7 +1156,7 @@ Rectangle {
                             enabled: !panel.busy
                             onClicked: {
                                 panel.busy = true
-                                panel.reviewResolveRequested(panel.card.id, "accept")
+                                panel.reviewResolveRequested(panel.card.id, panel.reviewChoice("accept"))
                             }
                         }
                         PillButton {
@@ -1157,7 +1166,7 @@ Rectangle {
                             enabled: !panel.busy
                             onClicked: {
                                 panel.busy = true
-                                panel.reviewResolveRequested(panel.card.id, "reject")
+                                panel.reviewResolveRequested(panel.card.id, panel.reviewChoice("reject"))
                             }
                         }
                         Item { Layout.fillWidth: true }

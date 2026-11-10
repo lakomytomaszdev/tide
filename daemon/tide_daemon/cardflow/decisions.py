@@ -593,15 +593,16 @@ def _review(st, ticket, round_no, question) -> dict:
         (s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and s.get("kind") == "review"), {})
     happened = (f"Review {ticket} po {round_no} rundach nadal wskazuje ważne uwagi."
                 if ticket and round_no else "")
+    target = {"ticket": ticket, "round": round_no}      # PT-316: okno odpowiada na to pytanie, nie na „ostatnie”
     options = [
         _option("retry", "Ponów poprawki", "Autor dostanie kolejną rundę poprawek, a recenzent sprawdzi je znowu.",
-                RESOLVE_REVIEW, {"choice": "retry"}, recommended=True),
+                RESOLVE_REVIEW, {"choice": "retry", **target}, recommended=True),
         # Przywrócone po K-35 (04.11): usługa przyjmuje „accept”, a okno decyzji nie miało tej opcji. Dla uwag, które
         # są środowiskowe albo drobne — ticket trafia na gałąź karty mimo werdyktu recenzenta.
         _option("accept", "Scal mimo uwag", "Ticket trafi na gałąź karty mimo uwag recenzenta; użyj, gdy uwagi dotyczą "
-                "środowiska albo są drobne.", RESOLVE_REVIEW, {"choice": "accept"}),
+                "środowiska albo są drobne.", RESOLVE_REVIEW, {"choice": "accept", **target}),
         _option("reject", "Odrzuć ticket", "Ticket nie trafi na gałąź karty; jego gałąź zostaje do wglądu.",
-                RESOLVE_REVIEW, {"choice": "reject"}),
+                RESOLVE_REVIEW, {"choice": "reject", **target}),
     ]
     technical = {"ticket": ticket, "round": round_no, "question": _text(question.get("question")),
                  **{key: verdict.get(key) for key in ("verdict", "blockers", "majors", "nits") if key in verdict}}
