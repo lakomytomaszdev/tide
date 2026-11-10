@@ -4676,6 +4676,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
+        automated = bool(decision.get("auto") or decision.get("automatic") or decision.get("caretaker") or
+                         choice == "auto")
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
         # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
         kind = step.get("kind")
@@ -4694,19 +4696,23 @@ class FlowEngine(CaretakerChat, PlanEditing):
         fresh = choice in ("change-executor", "transfer") or reassigned
         fix_reason, fix_author, moved = "", {}, False
         if kind == "fix":
-            # K-88/PT-312: jawna zmiana wykonawcy albo przepięty autor — `override`; zwykłe wznowienie przechodzi
-            # przez regułę niezależności review (recenzent nie wznawia poprawek, które potem oceni).
-            if fresh:
+            # K-88/PT-312: tylko ręczna decyzja daje `override`. Automatyczna zmiana (błąd, odmowa dostawcy,
+            # opiekun) przechodzi tę samą regułę co poprawki, nawet gdy proponuje nowego wykonawcę.
+            if fresh and not automated:
                 fix_reason = "override"
             else:
                 target, fix_reason, fix_author = self._resumed_fix_target(card, st, step)
-                if target and target != name:
-                    name, reassigned, fresh, moved = target, True, True, True
+                if target:
+                    if automated and choice in ("change-executor", "transfer") and target != name:
+                        choice = "retry"   # Reguła poprawek odrzuciła proponowaną zmianę/przekazanie.
+                    moved = target != step.get("executor")
+                    name, reassigned, fresh = target, moved, moved
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=fresh,
-                                             transfer=choice == "transfer", automated=bool(decision.get("caretaker")))
+                                             transfer=choice == "transfer",
+                                             automated=bool(decision.get("caretaker")) or (kind == "fix" and automated))
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
@@ -5023,13 +5029,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return taken
 
     def _resumed_fix_target(self, card: str, st: FlowState, step: dict) -> tuple[str, str, dict]:
-        """Wznowienie kroku `fix` bez jawnej zmiany wykonawcy: ta sama reguła co `_fix`, licząc od review, które
+        """Wznowienie kroku `fix` bez ręcznej zmiany wykonawcy: ta sama reguła co `_fix`, licząc od review, które
         krok poprawia. Inny wynik niż wykonawca kroku (recenzent łatał w starej historii, recenzentem został
         eskalowany wykonawca) przenosi wznowienie na nowego wykonawcę świeżą sesją. Ręczny wybór autora zostaje.
         Zwraca `(nazwa, powód, krok autora)`; krok autora (pusty poza regułą) służy kontroli `changed-executor`."""
         current = step.get("executor") or ""
         ticket = step.get("ticket") or ""
         override = st.author_overrides.get(ticket) or {}
+        if override.get("executor") and override.get("seq", 0) > step.get("seq", 0):
+            return override["executor"], "override", {}
         if step.get("executorReason") == "override" or (
                 override.get("executor") == current and override.get("seq", 0) < step.get("seq", 0)):
             return current, "override", {}

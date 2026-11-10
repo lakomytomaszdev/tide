@@ -70,7 +70,7 @@ class _FixJournal(unittest.TestCase):
 
     def card(self, author, reviewer, klass=None, preferred=None):
         a, r = EXECUTORS[author], EXECUTORS[reviewer]
-        self.add("card.started", entry="now", executor=author, program=a.program, model=a.model,
+        self.add("card.started", project="proj", entry="now", executor=author, program=a.program, model=a.model,
                  provider=a.provider, reviewer=reviewer, reviewerProgram=r.program, reviewerModel=r.model,
                  reviewerProvider=r.provider, preferredProvider=preferred or a.provider)
         if klass is not None:
@@ -315,6 +315,102 @@ class ResumeFixTest(_FixJournal):
         self.rounds("Codex standard", 3)
         step = self.fix_step("f-3", "Opus", 3, executorReason="escalated")
         self.assertEqual(self.resume(step, "change-executor", executor="Haiku"), ("Haiku", "override", ""))
+
+    def test_error_retry_and_automatic_escalation_keep_fix_separate_from_next_review(self):
+        self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")
+        self.assertEqual(self.fix(self.rounds("Opus", 3)), ("Sonnet", "author"))
+        step = self.fix_step("failed-fix", "Sonnet", 3, executorReason="author")
+        engine = self.engine
+        # Rzeczywista pętla błędu i doboru wykonawcy; porty procesu, planowania i gita są atrapami.
+        engine._settings_data = lambda: {"escalateErrors": True}
+        engine._process_state = lambda card: engine.journal.state(card)
+        engine._advance_limit = lambda *args: False
+        engine._advance_plan_review = lambda *args: False
+        engine._advance_planning = lambda *args: False
+        engine._caretaker_takes_over = lambda *args: False
+        engine._codex_broken_mcp = lambda *args: False
+        engine.journal.append = lambda card, event, **fields: self.add(event, **fields)
+        engine.git = SimpleNamespace(clean_tip=lambda *args: "abc", review_diff=lambda *args: "")
+        engine._rules = lambda repo: ""
+
+        self.add("step.finished", step=step["step"], ticket=TICKET, result="error", reason="exit", exit=1)
+        engine._advance(CARD, engine.journal.state(CARD))
+        selected, kw = self.launched[-1]
+        self.assertEqual((selected.name, kw["executor_reason"], kw["attempt"]), ("Sonnet", "author", 1))
+        self.assertIn(step["step"], engine.journal.state(CARD).step_retries)
+        retry = self.fix_step("failed-retry", selected.name, 3, executorReason=kw["executor_reason"],
+                              attempt=kw["attempt"], parentStep=step["step"])
+        self.add("step.finished", step=retry["step"], ticket=TICKET, result="error", reason="exit", exit=1)
+        engine._advance(CARD, engine.journal.state(CARD))
+        decision = engine.journal.state(CARD).step_decisions[retry["step"]]
+        self.assertEqual((decision["choice"], decision["executor"], decision["auto"], decision["escalated"]),
+                         ("change-executor", "Opus", True, True))
+        engine._advance(CARD, engine.journal.state(CARD))
+        selected, kw = self.launched[-1]
+        self.assertEqual((selected.name, kw["executor_reason"]), ("Sonnet", "author"))
+        fixed = self.fix_step("fixed", selected.name, 3, executorReason=kw["executor_reason"],
+                              parentStep=retry["step"])
+        self.add("step.finished", step=fixed["step"], ticket=TICKET, result="done")
+        engine._advance(CARD, engine.journal.state(CARD))
+        reviewer, kw = self.launched[-1]
+        self.assertEqual((reviewer.name, kw["kind"], kw["round_no"]), ("Opus", "review", 4))
+        self.assertNotEqual(fixed["executor"], reviewer.name)
+
+    def test_automatic_changes_use_fix_rules_regardless_of_source(self):
+        sources = (("change-executor", {"auto": True, "escalated": True}),
+                   ("change-executor", {"auto": True, "refusal": True}),
+                   ("change-executor", {"caretaker": "error:f-3"}),
+                   ("change-executor", {"automatic": True}), ("transfer", {"automatic": True}))
+        for choice, source in sources:
+            for reviewer, expected in (("Opus", ("Sonnet", "author")),
+                                       ("Codex standard", ("Opus", "escalated"))):
+                with self.subTest(choice=choice, source=source, reviewer=reviewer):
+                    self.setUp()
+                    self.card("Sonnet", reviewer, klass="standard", preferred="anthropic")
+                    self.rounds(reviewer, 3)
+                    step = self.fix_step("f-3", "Sonnet", 3, executorReason="author")
+                    name, reason, session = self.resume(step, choice, executor=reviewer, **source)
+                    self.assertEqual((name, reason), expected)
+                    self.assertNotEqual(name, self.next_reviewer())
+                    self.assertEqual(session, "sess-f-3" if name == "Sonnet" else "")
+
+    def test_automatic_change_does_not_accept_changed_author_identity(self):
+        self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")
+        self.rounds("Opus", 3)
+        step = self.fix_step("f-3", "Sonnet", 3, executorReason="author")
+        step["model"] = "sonnet-stary"
+        with self.assertRaises(FlowError) as ctx:
+            self.resume(step, "change-executor", executor="Opus", auto=True, escalated=True)
+        self.assertEqual(ctx.exception.code, "changed-executor")
+
+    def test_manual_author_assignment_wins_over_automatic_change(self):
+        self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")
+        self.rounds("Opus", 3)
+        step = self.fix_step("f-3", "Sonnet", 3, executorReason="author")
+        self.add("author.reassigned", ticket=TICKET, executor="Haiku")
+        self.assertEqual(self.resume(step, "change-executor", executor="Opus", auto=True, escalated=True),
+                         ("Haiku", "override", ""))
+        step = self.fix_step("f-3-override", "Haiku", 3, executorReason="override")
+        self.add("author.reassigned", ticket=TICKET, executor="Sonnet")
+        self.assertEqual(self.resume(step, "change-executor", executor="Opus", auto=True, escalated=True),
+                         ("Sonnet", "override", ""))
+
+    def test_automatic_change_respects_class_and_round_limits(self):
+        for klass, round_no in (("standard", 2), ("mocny", 3), ("lokalny", 3)):
+            with self.subTest(klass=klass, round_no=round_no):
+                self.setUp()
+                self.card("Sonnet", "Codex standard", klass=klass, preferred="anthropic")
+                self.rounds("Codex standard", round_no)
+                step = self.fix_step("failed-fix", "Sonnet", round_no, executorReason="author")
+                self.assertEqual(self.resume(step, "change-executor", executor="Opus", auto=True, escalated=True),
+                                 ("Sonnet", "author", "sess-failed-fix"))
+
+    def test_manual_transfer_remains_an_override(self):
+        self.card("Sonnet", "Opus", klass="standard", preferred="anthropic")
+        self.rounds("Opus", 3)
+        step = self.fix_step("f-3", "Sonnet", 3, executorReason="author")
+        self.assertEqual(self.resume(step, "transfer", executor="Codex standard"),
+                         ("Codex standard", "override", ""))
 
     def test_resumed_fix_never_runs_on_the_next_reviewer(self):
         scenarios = [("Opus", "Codex Astra", "mocny", "mixed", "Codex Astra", None),

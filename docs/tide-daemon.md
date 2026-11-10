@@ -2113,8 +2113,11 @@ inny niż recenzent ocenianego i następnego review oraz inny niż autor; bez ta
 autora w katalogu nadal kończy krok błędem `changed-executor`. Autor to ostatni krok autora ticketu, który nie był
 eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Ręczna zmiana autora
 z panelu (`author.reassigned`) obowiązuje we wszystkich kolejnych rundach poprawek ticketu, aż do następnej takiej
-zmiany. Wznowienie kroku `fix`: jawna zmiana wykonawcy (`change-executor`, `transfer`) albo nowszy przepięty autor
-zapisują `override`; zwykłe wznowienie przelicza tę samą regułę — ten sam wykonawca zachowuje sesję i powód, a gdy
+zmiany. Wznowienie kroku `fix`: ręczna zmiana wykonawcy (`change-executor`, `transfer`) albo nowszy przepięty autor
+zapisują `override`. Decyzje automatyczne (`auto`, `automatic`, `caretaker`), także po błędzie ponowienia lub
+odmowie dostawcy, podlegają regule poprawek; sam wybór `change-executor` nie jest ręczną zgodą. Jeśli reguła
+odrzuci proponowanego wykonawcę, krok wraca do zwykłego wznowienia. Wznowienie przelicza tę samą regułę —
+ten sam wykonawca zachowuje sesję i powód, a gdy
 reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje świeżą sesją z powodem `author` albo
 `escalated`. Automatyczny powrót do autora przechodzi tę samą kontrolę `changed-executor` co zwykłe poprawki. Próg
 pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
