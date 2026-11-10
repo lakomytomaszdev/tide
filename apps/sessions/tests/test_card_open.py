@@ -19,7 +19,7 @@ import unittest
 from . import APP_DIR, REPO
 from .test_window import QML_PROBLEMS, stage
 from apps.board.tests.boardfix import preview_data
-from apps.board.tests.decisionfix import CARD, full_c, full_d
+from apps.board.tests.decisionfix import CARD, TICKETS_D, full_c, full_card, full_d, journal_move
 
 import re
 
@@ -131,6 +131,16 @@ class CardOpenTest(unittest.TestCase):
         out = self.probe(self.working, "click_entry(0)\nresult['open'] = state()")
         self.assertEqual((out["open"]["fullOpen"], out["open"]["decisionOpen"], out["open"]["dialog"]),
                          (True, False, False))
+
+    def test_running_close_sentence_is_the_same_in_the_sessions_full_card(self):
+        # PT-337: to samo zdanie „Twój ruch” co na Tablicy (wspólny CardFullView i move.js).
+        events = journal_move([("K-8-close-1", "", "close", "Opus", [])], tuple(row[0] for row in TICKETS_D))
+        base = preview_data(os.path.join(self.tmp, "board-move"))
+        data = self.data_file("closing", full_card(base, events))
+        out = self.probe(data, "click_entry(0)\nresult['open'] = state()\n"
+                               "result['headline'] = js('cardFullView.headline')")
+        self.assertTrue(out["open"]["full"])
+        self.assertTrue(out["headline"].startswith("Domknięcie pracuje w tle (Opus);"), out["headline"])
 
     def test_answer_goes_to_board_with_method_and_params_from_the_decision(self):
         out = self.probe(self.waiting, "click_entry(0)\n"

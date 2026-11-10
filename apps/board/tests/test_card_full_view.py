@@ -12,8 +12,8 @@ import shutil
 import unittest
 from datetime import datetime, timedelta
 
-from .decisionfix import (FINDINGS_C, derived, fold, full_c, full_card, full_d, full_e, journal_c, journal_d,
-                         journal_e)
+from .decisionfix import (FINDINGS_C, TICKETS_D, derived, fold, full_c, full_card, full_d, full_e, journal_c,
+                         journal_d, journal_e, journal_move)
 from .test_decision_dialog import STATE_PY as DIALOG_STATE_PY
 from .test_view import ProbeCase
 
@@ -54,6 +54,12 @@ def full_option(i):
               "return all(v, 'decisionOption').sort((a, b) => a.mapToItem(v, 0, 0).y - b.mapToItem(v, 0, 0).y)["
               + str(i) + "] })()")
 '''
+
+MOVE_TAIL = "; następna decyzja będzie Twoja przy domknięciu karty, chyba że któryś krok o coś zapyta."
+ALL_TICKETS = tuple(row[0] for row in TICKETS_D)
+CLOSE_STEP = ("K-8-close-1", "", "close", "Opus")
+OUTSIDE = [("step.finished", {"result": "denied", "command": "make test"}),
+           ("outside.started", {"command": "make test"})]
 
 PHASE_IDS = ["order", "planning", "plan-review", "plan-approval", "tickets", "closing", "main-merge"]
 
@@ -228,7 +234,9 @@ out["afterBack"] = js("page.fullOpen")
         self.assertEqual(state["phases"][4][2].split(" · ")[-1], "fala 2 z 4")
         self.assertTrue(state["phases"][3][2].startswith("ty · "), "zatwierdzenie planu — faza użytkownika")
         self.assertTrue(state["phases"][1][2].startswith("Opus · "), "planowanie z wykonawcą i czasem")
-        self.assertTrue(state["headline"].startswith("3 kroki pracują w tle (fala 2 z 4)"), state["headline"])
+        # PT-337: fala ma review i poprawki, więc „Twój ruch” je nazywa; zwykły ticket liczy się do „+ N innych”.
+        self.assertEqual(state["headline"], "#3: review (Opus), #4: poprawki po review (Opus) + 1 inny"
+                                            + MOVE_TAIL)
         self.assertIsNone(state["kind"], "bez decyzji nie ma plakietki ani możliwości")
         self.assertEqual(state["options"], [])
         self.assertEqual(state["waves"], [
@@ -703,6 +711,74 @@ out["calls"] = calls()
             self.assertIn(path, out["texts"][0])
         self.assertIn("Lokalne kolizje: 0", out["texts"][1])
         self.assertIn("Odczyt nie wykazał blokad", out["texts"][1])
+
+
+@unittest.skipUnless(shutil.which("qml6") or os.path.exists("/usr/lib/qt6/bin/qml"), "brak Qt Quick")
+class MoveHeadlineTest(ProbeCase):
+    """PT-337: „Twój ruch” nazywa trwający krok (move.js); scenariusze to dzienniki usługi (`fold` + `derived`)."""
+
+    def headline(self, events, service=False):
+        out = self.probe(STATE_PY + """
+click(card("K-8"))
+out["state"] = full()
+out["service"] = js("page.cardFullView.flow.headline")
+""", full_card(self.data, events))
+        return (out["service"] if service else out["state"]["headline"]), out["state"]
+
+    def test_running_close_names_the_executor_and_not_the_generic_sentence(self):
+        text, state = self.headline(journal_move([CLOSE_STEP + ([],)], ALL_TICKETS))
+        self.assertTrue(text.startswith("Domknięcie pracuje w tle (Opus);"), text)
+        self.assertNotIn("krok pracuje w tle", text)
+        self.assertNotIn("Teraz:", text)
+        self.assertEqual(state["options"], [])
+
+    def test_full_tests_outside_the_sandbox_are_named(self):
+        events = journal_move([CLOSE_STEP + (OUTSIDE,)], ALL_TICKETS)
+        text, _ = self.headline(events)
+        self.assertEqual(text, "Pełne testy domknięcia biegną poza piaskownicą; następna decyzja będzie Twoja przy "
+                               "scaleniu karty, chyba że testy padną.")
+
+    def test_fix_and_retry_name_the_ticket_and_the_kind(self):
+        text, _ = self.headline(journal_move([("K-8-fix-4-1", "#4", "fix", "Opus", [])]))
+        self.assertEqual(text, "#4: poprawki po review (Opus)" + MOVE_TAIL)
+        text, _ = self.headline(journal_move([("K-8-review-3-1", "#3", "review", "Sonnet", [])]))
+        self.assertEqual(text, "#3: review (Sonnet)" + MOVE_TAIL)
+        retry = ("K-8-ticket-2-0", "#2", "ticket", "Opus", [("step.finished", {"result": "error", "reason": "exit"})])
+        events = journal_move([retry, ("K-8-review-3-1", "#3", "review", "Sonnet", [])])
+        self.assertEqual(self.headline(events)[0], "#3: review (Sonnet), #2: ponowienie po błędzie" + MOVE_TAIL)
+
+    def test_three_named_steps_show_two_and_one_other(self):
+        steps = [("K-8-fix-2-1", "#2", "fix", "Opus", []), ("K-8-review-3-1", "#3", "review", "Opus", []),
+                 ("K-8-fix-4-1", "#4", "fix", "Opus", [])]
+        text, _ = self.headline(journal_move(steps))
+        self.assertEqual(text, "#2: poprawki po review (Opus), #3: review (Opus) + 1 inny" + MOVE_TAIL)
+
+    def test_polish_forms_of_the_remaining_steps(self):
+        def steps(n):
+            return [(f"K-8-review-{i}-1", f"#{i}", "review", "Opus", []) for i in range(2, 2 + n)]
+        for n, form in ((4, "+ 2 inne"), (7, "+ 5 innych")):
+            text, _ = self.headline(journal_move(steps(n)))
+            self.assertIn(f"#2: review (Opus), #3: review (Opus) {form}; ", text)
+
+    def test_plain_wave_tickets_keep_the_service_sentence(self):
+        steps = [(f"K-8-ticket-{i}-0", f"#{i}", "ticket", "Opus", []) for i in (2, 3, 4)]
+        text, _ = self.headline(journal_move(steps))
+        self.assertTrue(text.startswith("3 kroki pracują w tle ("), text)
+        self.assertEqual(text, self.headline(journal_move(steps), service=True)[0])
+
+    def test_important_service_sentences_are_never_replaced(self):
+        close = [CLOSE_STEP + ([],)]
+        paused = journal_move(close, ALL_TICKETS)
+        paused.append({"v": 1, "seq": len(paused) + 1, "ts": "2026-11-03T12:00:00+01:00", "card": "K-8",
+                       "type": "card.paused"})
+        text, _ = self.headline(paused)
+        self.assertTrue(text.startswith("Karta jest wstrzymana"), text)
+        limit = journal_e()
+        text, _ = self.headline(limit)
+        self.assertTrue(text.startswith("Kroki czekają na limit dostawcy"), text)
+        waiting = journal_move([], ("#1",))
+        self.assertEqual(self.headline(waiting)[0], self.headline(waiting, service=True)[0])
+
 
 
 if __name__ == "__main__":
