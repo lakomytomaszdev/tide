@@ -447,18 +447,12 @@ class BoxRunner:
         if self._pack_specs() or (step.exposure_inputs is not None and step.exposure_inputs.snapshot_ids):
             deny.remove("/packs")  # zatwierdzone kopie mają być czytelne; zapis blokuje Incus
         settings = {k: v for k, v in host.items() if k != "sandbox"}
-        token = os.path.join(inp, LOCAL_TOKEN_FILE)
         if step.local is not None and step.local.token_file:
             # apiKeyHelper hosta czyta plik spoza pudełka — w pudełku czyta kopię 0600 w `in/` (poza zasięgiem
             # poleceń agenta przez denyRead).
+            token = os.path.join(inp, LOCAL_TOKEN_FILE)
             settings["apiKeyHelper"] = f"cat -- {token}"
             deny.append(token)
-        # denyRead piaskownicy dotyczy poleceń, nie narzędzia Read; krok opiekuna czyta własny `in/**` (PT-314),
-        # a zwykły krok w pudełku ma ogólne `Read` — zakaz Read wygrywa ze zgodą.
-        permissions = dict(settings.get("permissions") or {})
-        permissions["deny"] = list(dict.fromkeys([*permissions.get("deny", []),
-                                                  *(f"Read(/{p})" for p in (os.path.join(inp, ENV_FILE), token))]))
-        settings["permissions"] = permissions
         filesystem = dict(host.get("sandbox", {}).get("filesystem", {}))
         filesystem.update(denyRead=deny, allowWrite=[out, os.path.join(step.repo, ".git")])
         if step.exposure_inputs is not None:
