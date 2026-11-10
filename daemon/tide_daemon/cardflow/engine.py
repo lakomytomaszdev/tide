@@ -4096,6 +4096,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         focus = decision_step(st)
         if wanted in st.superseded and wanted not in st.plan_resumes:
             raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy; zgody utraciły ważność.")
+        if (choice == "deny" and wanted and not request.get("auto") and not caretaker_problem
+                and (st.finished.get(wanted) or {}).get("outside")
+                and (st.step_decisions.get(wanted) or {}).get("choice") in consent.RUN):
+            # Odmowa człowieka po zgodzie na polecenie poza piaskownicą (PT-311): przed startem wygrywa z
+            # automatyczną zgodą, po starcie `already-started`; zgoda ręczna zostaje zapisaną odpowiedzią.
+            return consent.deny_queued(self, card, wanted, request)
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
             # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
@@ -5532,7 +5538,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 extra["pattern"] = outside_pattern(command)
                 roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
                 data["canAllow"] = step.get("runner") != boxstep.RUNNER and outside_allowed(command, project.denied_commands, roots)
-                remembered = data["canAllow"] and consent.automatic(self, card, step, command)
+                # Reguły automatycznej zgody, odmowa i pauza sprawdzane przy zapisie, po step.finished (PT-311).
+                remembered = bool(data["canAllow"])
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -5576,10 +5583,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 except FlowError:
                     pass
         elif remembered:
-            # Polecenie zapamiętane przez użytkownika albo bezpieczne przy automatycznych zgodach — bez pytania.
-            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
-                                kind=step.get("kind") or "", choice="run", answer="",
-                                command=data.get("command") or "", executor="", auto=True)
+            # Polecenie zapamiętane przez użytkownika albo bezpieczne przy automatycznych zgodach — bez pytania,
+            # chyba że człowiek odmówił go już w tym tickecie albo karta jest wstrzymana (08.11, K-38/PT-264).
+            consent.record_automatic(self, card, step, data.get("command") or "")
         # Agent konfliktu już scalił w worktree karty. Utrwalamy potwierdzony stan także podczas
         # decyzji o bazie; blokada nadal odracza sprzątanie i kolejne scalenia w _tick_card/_act.
         if merged_tip:
@@ -6390,10 +6396,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
-        if allowed and consent.automatic(self, card, step, command):
-            self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
-                                kind=step.get("kind") or "", choice="run", answer="", command=command,
-                                executor="", auto=True)
+        if allowed:
+            consent.record_automatic(self, card, step, command)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
 
@@ -6680,14 +6684,32 @@ class FlowEngine(CaretakerChat, PlanEditing):
         value = found.get("exitFile")
         return value if isinstance(value, str) and value else "/nonexistent/in/exit-code"
 
+    def _outside_still_allowed(self, card: str, step: dict) -> bool:
+        """Świeża kontrola decyzji tuż przed startem (PT-311). Odmowa człowieka zapisana po kontroli kolejki
+        kończy start bez błędu (krok wznowi się z odmową); automatyczna zgoda przechodzi `before_start`
+        (odmowa w innym kroku ticketu ją unieważnia). Brak zgody nadal odrzuca `_outside_history` (FlowError),
+        a ręczna zgoda nie dostaje nowych kontroli."""
+        name = step.get("step") or ""
+        current = self.journal.state(card)
+        decision = current.step_decisions.get(name) or {}
+        refused = decision.get("choice") == "deny" and not decision.get("auto")
+        if refused or decision.get("auto") and decision.get("choice") in consent.RUN and not consent.before_start(
+                self, card, step, current.finished.get(name) or {}, decision):
+            self._outside_waiting.pop(name, None)
+            return False
+        return True
+
     def _start_outside(self, card: str, step: dict, command: str) -> None:
         self._trial_check(step)
         if card == "K-38" and not step.get("ticket"):
             raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
         if step.get("runner") == boxstep.RUNNER:
             raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
-        self._outside_history(card, step, command=command)
         name = step.get("step") or ""
+        self._outside_history(card, step)       # nieznana historia i tożsamość nadal zatrzymują wykonanie
+        if not self._outside_still_allowed(card, step):
+            return
+        self._outside_history(card, step, command=command)
         worktree = step.get("worktree") or ""
         # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
         requested_command = command
@@ -6719,6 +6741,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
         # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
         with open(log, "ab") as out, self.journal.lock:
+            # Odmowa człowieka albo cofnięcie zapisane po kontroli kolejki wygrywa ze startem (PT-311).
+            self._outside_history(card, step)
+            if not self._outside_still_allowed(card, step):
+                return
             self._outside_history(card, step, command=requested_command)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)

@@ -2166,6 +2166,22 @@ oczekujące decyzje automatyczne i decyzję `run-ticket`; odrębna ręczna zgoda
 Kontrola bezpośrednio przed startem kolejki podlega aktualnym zakazom. Operacja cofnięcia i start
 biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, kończy się normalnie.
 
+**Odmowa wygrywa z automatyczną zgodą (PT-311).** Odmowa człowieka (`deny` z panelu albo od koordynatora,
+bez `auto`) jest ostateczna dla tego samego polecenia (porównanie bez różnic w białych znakach) w tym tickecie
+bieżącego zlecenia i wersji bazy (`orderSeq`, `baseVersion`) — także gdy krok z odmową opiekun odesłał do
+poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to polecenie nie dostaje
+automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
+sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
+według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`
+`denied-before` albo `paused`. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
+kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` z `reason: denied-before`).
+`ResolveCardStep` z `deny` na kroku z automatyczną zgodą przed `outside.started` zapisuje
+`outside.decision-invalidated` (`reason: denied`) i odmowę, a proces nie startuje; po starcie zwraca
+`already-started`, a polecenie działa dalej. Ręczna zgoda (`run`, `run-ticket`, `run-always`) pozostaje
+zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej odmowie. Kontrola decyzji tuż przed
+startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
+Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
