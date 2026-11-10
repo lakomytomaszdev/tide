@@ -20,7 +20,11 @@ def plan():
         "  empty: !!empty && empty.visible, cardTitle: v.card.title, "
         "  phases: all(v, 'fullPhase').map(p => [p.phaseId, p.phaseState]) }) })()"))
 '''
-OPEN_PLAN = TILES_PY + 'click(card("K-8"))\nout["plan"] = plan()\n'
+# Karta z decyzją otwiera najpierw okno decyzji; pełną kartę otwiera z niego „Otwórz całą kartę”.
+OPEN_PLAN = TILES_PY + ('click(card("K-8"))\n'
+                        'if js("page.decisionOpen"):\n'
+                        '    click(named("decisionFullCard"))\n'
+                        'out["plan"] = plan()\n')
 
 
 def now_journal(stage: str, numbered: bool = True) -> list[dict]:
