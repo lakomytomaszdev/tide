@@ -421,7 +421,13 @@ Rectangle {
     // Wiersz planu ticketu z migawki pełnej karty (`editable` liczy usługa).
     function openTicketSettings(ticketId) {
         const plan = cardFullView.flow && cardFullView.flow.plan
-        const row = plan && Array.isArray(plan.rows) ? plan.rows.find(r => (r.id || r.workId) === ticketId) : null
+        let row = plan && Array.isArray(plan.rows) ? plan.rows.find(r => (r.id || r.workId) === ticketId) : null
+        // Karta „Od razu” (PT-341) nie ma wiersza planu: okno dostaje wiersz zastępczy z kafelka ticketu. `noPlanRow`
+        // mówi mu, że klasa to domyślny „standard” (tylko do odczytu), a `editable: false` — że ticket już jest w toku.
+        const now = cardFullView.nowTicket
+        if (!row && now && now.id === ticketId)
+            row = { id: now.id, workId: now.id, title: now.title, executor: now.executor, reviewer: now.reviewer,
+                    editable: false, noPlanRow: true }
         ticketSettings.open(ticketId, row || null)
     }
 
@@ -797,8 +803,9 @@ Rectangle {
             // Odpowiedź wraca do okna przy polu, które ją wysłało; okno się nie zamyka.
             const field = tag.split(":")[1]
             if (ticketReassignTags[field] !== tag) return
-            ticketSettings.fieldReplied(field, error,
-                                        reply && (field === "author" ? reply.executor : reply.reviewer) || "")
+            // „retry” (PT-341): odpowiedź ResolveCardStep nie niesie nazwy wykonawcy — okno użyje wysłanej.
+            ticketSettings.fieldReplied(field, error, reply && (field === "author" ? reply.executor
+                                                                  : field === "reviewer" ? reply.reviewer : "") || "")
             return
         }
         if (tag.indexOf("base-change:") === 0) {
@@ -2078,7 +2085,9 @@ Rectangle {
         modelsStatus: page.modelsStatus
         // Ticket trwający (PT-335): blokady pól liczą się na bieżąco z migawki pełnej karty.
         flow: cardFullView.flow
-        tickets: cardFullView.tickets
+        // Karta „Od razu” nie ma `derived.tickets`: jedyny ticket jest kafelkiem (`nowTicket`).
+        tickets: cardFullView.tickets.length > 0 ? cardFullView.tickets
+                                                 : (cardFullView.nowTicket ? [cardFullView.nowTicket] : [])
         onSaveRequested: request => {
             ticketSettingsTag = page.nextTag("ticket-settings:" + page.fullCardId)
             page.planEditRequested(ticketSettingsTag, page.fullCardId, JSON.stringify(request))

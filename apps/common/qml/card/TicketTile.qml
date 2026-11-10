@@ -5,8 +5,9 @@
 //
 // Umowa: `item` (`derived.tickets[]` albo null), `ticketId`; `ticketSettingsEnabled` (domyślnie false; true tylko
 // w Tablicy, w Sesjach nie ma katalogu wykonawców) pokazuje przycisk „Ustawienia” i sygnał
-// `ticketSettingsRequested(ticketId)`. Przycisk jest na każdym kafelku; co okno z nim zrobi (ticket nieruszony
-// albo już ruszył), rozstrzyga okno ustawień na podstawie wiersza planu.
+// `ticketSettingsRequested(ticketId)`. Przycisk jest na każdym kafelku, także na kafelku jedynego ticketu karty
+// „Od razu” (PT-341); co okno z nim zrobi (ticket nieruszony, trwający, scalony albo odrzucony), rozstrzyga okno
+// ustawień na podstawie wiersza planu.
 import QtQuick
 import QtQuick.Layouts
 import "../tide" as Tide

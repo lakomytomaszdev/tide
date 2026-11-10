@@ -146,6 +146,22 @@ class CardOpenTest(unittest.TestCase):
             self.assertFalse(enabled, ticket)
             self.assertFalse(visible, ticket)
 
+    def test_now_card_ticket_tile_has_no_settings_button_in_sessions(self):
+        """PT-341: kafelek jedynego ticketu karty „Od razu” ma „Ustawienia” tylko w pełnej karcie Tablicy."""
+        from apps.board.tests.test_now_ticket_tile import now_journal
+        path = self.data_file("now", full_card(preview_data(os.path.join(self.tmp, "now")), now_journal("ticket")))
+        out = self.probe(path, "click_entry(0)\n"
+                         "result['tiles'] = json.loads(js(\"JSON.stringify((function walk(it) { let out = []; "
+                         "for (const c of it.children) { if (c.objectName === 'fullTicket') out.push(c); "
+                         "out = out.concat(walk(c)) } return out })(cardFullView).map(t => "
+                         "[t.ticketId, t.ticketSettingsEnabled, (function find(it) { for (const c of it.children) { "
+                         "if (c.objectName === 'fullTicketSettings') return c.visible; const r = find(c); "
+                         "if (r !== undefined) return r } return undefined })(t)]))\"))")
+        self.assertEqual([t[0] for t in out["tiles"]], ["PT-7"], "kafelek karty „Od razu” jest w pełnej karcie Sesji")
+        for ticket, enabled, visible in out["tiles"]:
+            self.assertFalse(enabled, ticket)
+            self.assertFalse(visible, ticket)
+
     def test_running_close_sentence_is_the_same_in_the_sessions_full_card(self):
         # PT-337: to samo zdanie „Twój ruch” co na Tablicy (wspólny CardFullView i move.js).
         events = journal_move([("K-8-close-1", "", "close", "Opus", [])], tuple(row[0] for row in TICKETS_D))

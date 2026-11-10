@@ -6,7 +6,7 @@ Sonda offscreen na migawce z dziennika usługi (`fold` + `derived`), w której k
 - #2 — review czeka na start (`step.waiting` kind review), klasa „mocny”: recenzent aktywny, wyszarzenia według klasy,
 - #3 — krok autora trwa (`flow.running[]` z krokiem `ticket`): pole autora wyszarzone,
 - #4 — review biegnie (`flow.running[]` z krokiem `review`): pole recenzenta wyszarzone,
-- #5 — scalony: samo zdanie bez pól (tryb tylko do odczytu robi #10).
+- #5 — scalony: bez pól zapisu (tryb tylko do odczytu, PT-341: test_ticket_settings_retry).
 
 Warunki okna odwzorowują `_reassign_fix_author` i `_reassign_waiting_reviewer` w daemon/tide_daemon/cardflow/engine.py
 (tabela w notce PT-335). Każde pole zapisuje się osobno jednym `ResolveCardStep`; odpowiedź usługi wraca przy polu,
@@ -289,13 +289,14 @@ out["calls"] = [c for c in calls() if c[0] in ("ResolveCardStep", "EditCardPlan"
         self.assertEqual(out["afterCancel"], [False, True])
         self.assertEqual(out["calls"], [])
 
-    def test_merged_ticket_keeps_the_sentence_without_fields(self):
+    def test_merged_ticket_has_no_fields_to_change(self):
+        """Ticket scalony: bez pól zapisu (wartości tylko do odczytu i zdanie sprawdza test_ticket_settings_retry)."""
         out = self.probe_settings("""
 open_settings("#5")
 out["dlg"] = dlg()
 out["fields"] = fields()
 """)
-        self.assertEqual(out["dlg"]["started"], "Ticket już ruszył — zmiana w następnym kroku")
+        self.assertIsNone(out["dlg"]["started"], "scalony ma własne zdanie, nie „już ruszył”")
         self.assertEqual(out["dlg"]["options"], [])
         self.assertEqual(out["fields"], {"fields": {}, "cls": None})
 
