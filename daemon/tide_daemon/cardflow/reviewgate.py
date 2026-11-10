@@ -1,4 +1,4 @@
-"""Polityka recenzenta projektu i autorzy ocenianej pracy (PT-312, PT-330, decyzja 97).
+"""Polityka recenzenta projektu i autorzy ocenianej pracy (PT-312, PT-330, decyzja 96 z 10.11).
 
 Osobna sesja jest obowiązkiem startu review, niezależnym od polityki modelu.
 Tożsamości autorów pochodzą z dziennika, nie z obecnych nazw w katalogu.

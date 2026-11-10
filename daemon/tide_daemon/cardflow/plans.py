@@ -177,7 +177,7 @@ def read(path: str, card_id: str, catalog, *, allowed_roots=(), tracker="local",
         elif author is not None and (not reviewgate.allows(author, reviewer, policy) or
                                      (author.provider == "local") != (reviewer.provider == "local")):
             # Ta sama reguła co przy starcie Od razu, edycji ticketu i starcie review: polityka projektu (PT-330,
-            # decyzja 97); `free` dopuszcza ten sam model. Praca lokalna zawsze zostaje lokalna.
+            # decyzja 96 z 10.11); `free` dopuszcza ten sam model. Praca lokalna zawsze zostaje lokalna.
             errors.append(f"{ident}: {reviewgate.rule(policy)} (polityka projektu {policy}) "
                           f"i musi zachować pracę lokalną" if policy != reviewgate.FREE else
                           f"{ident}: recenzent musi zachować pracę lokalną")

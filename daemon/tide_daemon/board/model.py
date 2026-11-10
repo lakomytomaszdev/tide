@@ -75,7 +75,7 @@ PROJECT_KEYS = ("name", "repo", "tags", "ai-docs", "tool", "mode", "entry")
 # gdy ustawione; projekt bez klucza nie synchronizuje niczego, z kluczem — domyślnie tak (`youtrack-sync: off`).
 PROJECT_YOUTRACK_KEY = "youtrack"
 PROJECT_SYNC_KEY = "youtrack-sync"
-# Polityka niezależności review projektu (K-88/PT-330, decyzja 97): `free` (domyślne, także bez klucza),
+# Polityka niezależności review projektu (K-88/PT-330, decyzja 96 z 10.11): `free` (domyślne, także bez klucza),
 # `other-model`, `other-family`; lista klas zawęża `other-family`. W pliku tylko, gdy ustawione. Wartość
 # trzymamy surowo — nieznaną usługa traktuje jak `free` z ostrzeżeniem w logu (`cardflow.reviewgate`).
 REVIEW_POLICY_KEY = "review-independence"

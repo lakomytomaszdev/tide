@@ -1125,7 +1125,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         preferred = preferred or selected.provider
         preferred_name = "Sonnet" if name == "Opus" else "Codex Astra" if name == "Codex mocny" else "Opus"
         reviewer_name = str(request.get("reviewer") or "").strip()
-        # Polityka projektu (PT-330, decyzja 97); ticket Od razu ma klasę `standard`. `free` — także ten sam model.
+        # Polityka projektu (PT-330, decyzja 96); ticket Od razu ma klasę `standard`. `free` — także ten sam model.
         policy = reviewgate.project_policy(project, "standard")
 
         def resolve_reviewer(candidate: str):
@@ -5037,7 +5037,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _review_policy(self, card: str, st: FlowState | None = None, ticket: str = "", *,
                        klass: str | None = "", slug: str = "") -> str:
-        """Polityka niezależności review (K-88/PT-330, decyzja 97) z ustawienia projektu ticketu.
+        """Polityka niezależności review (K-88/PT-330, decyzja 96 z 10.11) z ustawienia projektu ticketu.
 
         Czytana przy każdym wywołaniu z bieżącej Tablicy (bez restartu usługi). Projekt ticketu: kolumna Projekt
         zatwierdzonego planu, inaczej projekt karty. Klasa: podana, inaczej klasa ticketu z planu (`standard`);
@@ -5137,7 +5137,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if replacement is None:
                 rule = {"other-model": "innego modelu lub poziomu rozumowania",
                         "other-family": "innej rodziny modeli (dostawca/program z katalogu)"}.get(policy, policy)
-                # Czytelny powód i trzy wyjścia (decyzja 97): zmień recenzenta, poczekaj, poluzuj politykę.
+                # Czytelny powód i trzy wyjścia (decyzja 96 z 10.11): zmień recenzenta, poczekaj, poluzuj politykę.
                 question = (f"{ticket}: nie ma dostępnego recenzenta spełniającego wymóg {rule} "
                             f"(polityka projektu reviewIndependence: {policy}) oraz wymagania klasy ticketu "
                             f"— „{selected.name}” go nie spełnia, a zgodny wykonawca jest niedostępny "

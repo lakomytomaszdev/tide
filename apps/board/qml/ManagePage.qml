@@ -865,7 +865,7 @@ Rectangle {
             youtrackSync = project.youtrack ? !!project.youtrackSync : true
             reviewIndependence = project.reviewIndependence || "free"
             reviewClassesField.text = (project.reviewIndependenceClasses || []).join(", ")
-            allowedCommands =(project.allowedCommands || []).join("\n")
+            allowedCommands = (project.allowedCommands || []).join("\n")
             deniedCommands = (project.deniedCommands || []).join("\n")
             allowedCommandsArea.text = allowedCommands
             deniedCommandsArea.text = deniedCommands
@@ -1115,7 +1115,7 @@ Rectangle {
                         wrapMode: Text.Wrap
                     }
                 }
-                // Polityka niezależności review projektu (K-88/PT-330, decyzja 97); zawsze nowa sesja recenzenta.
+                // Polityka niezależności review projektu (K-88/PT-330, decyzja 96 z 10.11); zawsze nowa sesja recenzenta.
                 FieldLabel { text: "Recenzent" }
                 Segmented {
                     objectName: "projectReviewIndependence"

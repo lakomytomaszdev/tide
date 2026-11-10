@@ -355,7 +355,7 @@ Tide łączy pracę podagentów z ticketami po ID, więc:
 ## Recenzja według ryzyka
 
 Zasady uzgodnione 6.11.2026 (K-71, PT-259), decyzja 96 w [rejestrze decyzji](decisions.md); od 10.11.2026
-(decyzja 97, K-88/PT-330) dobór recenzenta jest **polityką projektu, nie regułą Tide**.
+(decyzja 96 z 10.11, K-88/PT-330) dobór recenzenta jest **polityką projektu, nie regułą Tide**.
 Stały warunek Tide to tylko nowa, osobna sesja recenzenta; autor nie recenzuje własnej pracy w tej samej sesji.
 
 Polityka projektu Tablicy `reviewIndependence` (plik projektu: `review-independence`; opis pola
