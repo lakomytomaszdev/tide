@@ -75,3 +75,5 @@ class StartColumnTest(FlowCase):
         self.assertEqual(order(), [other, card_id])
         self.assertFalse(self.of(card_id, "card.paused") or self.of(card_id, "card.finished"))
         self.assertEqual(stored(self, card_id)["column"], "todo")
+        # Jedyny ruch w dzienniku to ten ze startu; ruch okna nie dopisuje „do poprawy”.
+        self.assertEqual([(e["from"], e["to"]) for e in self.of(card_id, "card.moved")], [("backlog", "todo")])
