@@ -12,6 +12,7 @@ import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
 import "board.js" as Logic
+import "card/decision.js" as Decision
 
 Rectangle {
     id: page
@@ -2019,6 +2020,8 @@ Rectangle {
         visible: page.decisionOpen && !page.managing
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
+        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+                                          page.decisionCardRaw ? page.decisionCardRaw.project : "")
         cardOpen: page.cardOpen
         onCardOpenRequested: value => page.setCardOpen(value)
         onAnswered: (decisionId, method, params) => page.sendDecision(page.decisionCardId, decisionId, method, params)
@@ -2057,6 +2060,9 @@ Rectangle {
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
+        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340): obciążenie z migawki wszystkich kart.
+        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+                                                          page.fullCardRaw ? page.fullCardRaw.project : "") : null
         moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
         canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false
         columnLabels: page.columnLabelMap
