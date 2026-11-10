@@ -696,11 +696,14 @@ class CaretakerFlowTest(FlowInProcess):
     def test_claude_code_cc_writes_is_not_caretaker_wrote_but_other_claude_files_are(self):
         """PT-317 (K-70, 08–09.11): `.claude/.cc-writes` w worktree, który w trakcie kroku opiekuna zapisuje Claude
         Code, nie daje `caretaker-wrote` — `escalate` przechodzi jak zwykle. Zmiana `.claude/settings.local.json`
-        i nowy plik obok `.cc-writes` nadal dają `caretaker-wrote`."""
-        cases = {"cc-writes": "", "cc-ustawienia": ".claude", "cc-obok": ".claude"}
-        for care, part in cases.items():
-            with self.subTest(care=care):
-                card_id = self.failing_card(care, extra="ATRAPA-CLAUDE-DIR ")
+        i nowy plik obok `.cc-writes` nadal dają `caretaker-wrote`. Review MAJOR-1: także gdy worktree nie miał
+        `.claude` (ticket autorstwa Codex, opiekun Claude) — pierwszy `.cc-writes` tworzy katalog."""
+        cases = [("cc-writes", "ATRAPA-CLAUDE-DIR ", ""), ("cc-writes", "", ""),
+                 ("cc-ustawienia", "ATRAPA-CLAUDE-DIR ", ".claude"), ("cc-obok", "ATRAPA-CLAUDE-DIR ", ".claude"),
+                 ("cc-obok", "", ".claude")]
+        for care, extra, part in cases:
+            with self.subTest(care=care, claude_dir=bool(extra)):
+                card_id = self.failing_card(care, extra=extra)
                 self.assertTrue(self.start(card_id)["ok"])
                 self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40),
                                 self.events(card_id))

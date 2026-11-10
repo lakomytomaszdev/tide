@@ -15,9 +15,12 @@ Stan (`snapshot`) to:
   treści, a bez czytania plików (worktree z `node_modules` liczy się w ułamku sekundy). Dowiązania nie są śledzone.
   Jedyny wyjątek (PT-317, K-88): `.claude/.cc-writes` w katalogu głównym worktree — plik albo katalog (z całą
   zawartością), który zapisuje sam Claude Code, nie model. Drzewo liczy się tak, jakby tej ścieżki nie było:
-  rekord katalogu `.claude` nie ma rozmiaru, `mtime` ani `ctime` (zmieniają je powstanie i usunięcie `.cc-writes`),
-  a każdy inny wpis w `.claude` ma pełny rekord — nowy, usunięty, przemianowany i zmieniony plik obok `.cc-writes`
-  nadal jest zmianą. Dowiązanie o tej nazwie nie jest wyjątkiem (rekord z celem), a `.claude` będący dowiązaniem —
+  sam katalog `.claude` nie ma rekordu (jego rozmiar, `mtime` i `ctime` zmieniają powstanie i usunięcie `.cc-writes`,
+  a w świeżym worktree tworzy go dopiero pierwszy zapis `.cc-writes` — review PT-317 MAJOR-1), więc klucz `.claude`
+  w drzewie powstaje wyłącznie z rekordów dzieci innych niż `.cc-writes`: `.claude` zawierający tylko `.cc-writes`
+  liczy się jak jego brak. Każdy inny wpis w `.claude` ma pełny rekord — nowy, usunięty, przemianowany i zmieniony
+  plik obok `.cc-writes` nadal jest zmianą. Niewidoczne są tylko pusty katalog `.claude` i zmiana jego praw
+  (ignorowany przez gita, bez treści). Dowiązanie o tej nazwie nie jest wyjątkiem (rekord z celem), a `.claude` będący dowiązaniem —
   jak każde dowiązanie — nie jest przeglądany.
 - `head` — treść `<gitDir>/HEAD` worktree (gałąź albo odłączony commit),
 - `refs` — sha `refs/heads/<gałąź>` gałęzi worktree kroku i gałęzi karty, czytane w repozytorium projektu.
@@ -76,13 +79,12 @@ def tree(worktree: str) -> dict:
                 continue
             if name == CC_WRITES and (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                 continue                                # zapis Claude Code, nie modelu (PT-317)
-            if name == CLAUDE_DIR and stat.S_ISDIR(info.st_mode):
-                _add(digests, name, f"{name}\0{info.st_mode:o}\0{info.st_ino}")
-            else:
-                _add(digests, name, f"{name}\0{info.st_mode:o}\0{info.st_size}\0{info.st_mtime_ns}\0"
-                                    f"{info.st_ctime_ns}\0{info.st_ino}\0{link}")
             if entry.is_dir(follow_symlinks=False):
                 stack.append(name)
+            if name == CLAUDE_DIR and stat.S_ISDIR(info.st_mode):
+                continue                                # klucz `.claude` tylko z dzieci innych niż `.cc-writes`
+            _add(digests, name, f"{name}\0{info.st_mode:o}\0{info.st_size}\0{info.st_mtime_ns}\0"
+                                f"{info.st_ctime_ns}\0{info.st_ino}\0{link}")
     return {top: h.hexdigest() for top, h in sorted(digests.items())}
 
 

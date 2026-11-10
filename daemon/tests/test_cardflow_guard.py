@@ -162,6 +162,47 @@ class SnapshotTest(GuardRepo):
                         os.unlink(path)
                     self.assertEqual(guard.changes(before, self.snap()), [])
 
+    def test_claude_dir_created_with_cc_writes_only_is_not_a_change(self):
+        """Review PT-317 MAJOR-1: świeży worktree bez `.claude` (ticket autorstwa Codex, opiekun Claude) — pierwszy
+        zapis `.cc-writes` tworzy katalog `.claude`; to nie jest zmiana. Nowy `.claude` z innym plikiem nadal jest."""
+        claude = os.path.join(self.wt, ".claude")
+        for kind in ("dir", "file"):
+            with self.subTest(kind=kind):
+                shutil.rmtree(claude, ignore_errors=True)
+                before = self.snap()
+                os.makedirs(claude)
+                self.write_cc(os.path.join(claude, ".cc-writes"), kind, "pierwszy zapis\n")
+                self.assertEqual(guard.changes(before, self.snap()), [])
+                shutil.rmtree(claude)
+                self.assertEqual(guard.changes(before, self.snap()), [])
+        for other in ("x", "settings.local.json"):
+            with self.subTest(other=other):
+                shutil.rmtree(claude, ignore_errors=True)
+                before = self.snap()
+                os.makedirs(claude)
+                self.write_cc(os.path.join(claude, ".cc-writes"), "dir", "zapis\n")
+                with open(os.path.join(claude, other), "w", encoding="utf-8") as fh:
+                    fh.write("model pisze\n")
+                self.assertEqual(guard.changes(before, self.snap()),
+                                 [f"zmienione pliki w worktree {self.wt}: .claude"])
+        shutil.rmtree(claude)
+
+    def test_hard_link_cc_writes_to_a_worktree_file_is_a_change(self):
+        """Review PT-317 NIT-2: dowiązanie twarde `.claude/.cc-writes` → plik worktree zmienia `ctime` (`nlink`) celu,
+        a zapis przez nie — rekord celu; oba widać w rekordzie celu."""
+        claude = os.path.join(self.wt, ".claude")
+        os.makedirs(claude)
+        target, link = os.path.join(self.wt, "README.md"), os.path.join(claude, ".cc-writes")
+        before = self.snap()
+        os.link(target, link)
+        self.assertEqual(guard.changes(before, self.snap()), [f"zmienione pliki w worktree {self.wt}: README.md"])
+        os.unlink(link)
+        os.link(target, link)
+        before = self.snap()
+        with open(link, "a", encoding="utf-8") as fh:
+            fh.write("zapis przez dowiązanie twarde\n")
+        self.assertEqual(guard.changes(before, self.snap()), [f"zmienione pliki w worktree {self.wt}: README.md"])
+
     def test_other_changes_in_claude_dir_are_still_a_change(self):
         """PT-317: wyjątek to dokładnie jedna ścieżka — inny plik w `.claude`, nowy plik obok `.cc-writes`, usunięcie,
         zmiana nazwy, `.cc-writes` jako dowiązanie i `.cc-writes` poza katalogiem głównym nadal są zmianą."""
@@ -206,6 +247,7 @@ class SnapshotTest(GuardRepo):
         for case, (change, top) in cases.items():
             with self.subTest(case=case):
                 shutil.rmtree(os.path.join(self.wt, ".claude"), ignore_errors=True)
+                shutil.rmtree(os.path.join(self.wt, "pod"), ignore_errors=True)    # NIT-1: bez zależności od kolejności
                 if not os.path.exists(os.path.join(self.wt, "brudny.txt")):
                     with open(os.path.join(self.wt, "brudny.txt"), "w", encoding="utf-8") as fh:
                         fh.write("x\n")
