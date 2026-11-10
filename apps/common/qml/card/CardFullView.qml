@@ -29,6 +29,7 @@ import "../tide" as Tide
 import "decision.js" as Decision
 import "move.js" as Move
 import "settings.js" as Settings
+import "ticket.js" as TicketLib
 
 Rectangle {
     id: view
@@ -50,6 +51,8 @@ Rectangle {
     property real workPulse: 1.0
     readonly property bool hasNowPhase: phases.some(p => p.state === "now")
     readonly property var tickets: derived && Array.isArray(derived.tickets) ? derived.tickets : []
+    // Karta „Od razu” (bez planu): jeden kafelek jej ticketu, bez nagłówka fali (PT-333).
+    readonly property var nowTicket: TicketLib.tileModel(card, answeredIds)
     readonly property var waves: flow && flow.plan && Array.isArray(flow.plan.waves) ? flow.plan.waves : []
     readonly property var running: flow && Array.isArray(flow.running) ? flow.running : []
     // Zdanie usługi (`flow.headline`) albo nazwany trwający krok (move.js, PT-337).
@@ -879,13 +882,19 @@ Rectangle {
                     Text {
                         objectName: "fullPlanEmpty"
                         Layout.fillWidth: true
-                        visible: view.tickets.length === 0
+                        visible: view.tickets.length === 0 && !view.nowTicket
                         text: "Karta bez planu: jeden ticket, bez fal."
                         textFormat: Text.PlainText
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pointSize: Tide.Tokens.fontSizePt
                         wrapMode: Text.Wrap
+                    }
+                    TicketTile {
+                        Layout.fillWidth: true
+                        visible: !!view.nowTicket
+                        ticketId: view.nowTicket ? view.nowTicket.id : ""
+                        item: view.nowTicket
                     }
                     RowLayout {
                         Layout.fillWidth: true
