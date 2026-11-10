@@ -72,6 +72,7 @@ from . import ticketentry
 from . import guard
 from . import limits as flow_limits
 from . import planning
+from . import reviewgate
 from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
@@ -1573,6 +1574,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(item.id, {"ticket": ticket, "step": step_id})
         context_state = self.journal.state(item.id)
+        if kind == "review":
+            selected, _ = self._guard_review_launch(item.id, context_state, ticket, round_no, selected)
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         self._require_safe_evidence_console(selected.tool, source_evidence)
@@ -2604,6 +2607,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
         evidence_state = self.journal.state(card.id)
+        if kind == "review":
+            selected, resume_session = self._guard_review_launch(
+                card.id, evidence_state, ticket, round_no, selected)
         source_evidence = self._issue_evidence(card, started=evidence_state.started)
         if source_evidence and parent_step:
             # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
@@ -4890,6 +4896,57 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 pass
         return "\n\n".join(out)
 
+    def _guard_review_launch(self, card: str, st: FlowState, ticket: str, round_no: int,
+                             selected, *, policy="other-model"):
+        """Wspólna bramka startu review w tle i w Konsoli, także po wznowieniu/przekazaniu.
+
+        Nowa sesja jest bezwarunkowa. Model określa wyłącznie `reviewgate.permits` z polityką;
+        PT-330 podłączy ustawienie projektu. Do tego czasu działa tryb dotychczasowej reguły.
+        """
+        authored = reviewgate.authors(st, ticket, round_no)
+        if not reviewgate.permits(selected, authored, policy):
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+            klass = self._ticket_class(st, ticket)
+            levels = ("lekki", "standard", "mocny")
+            allowed_classes = set(levels[levels.index(klass):]) if klass in levels else {klass}
+            replacement = None
+            for entry in catalog.executors if catalog else ():
+                if not allowed_classes.intersection(entry.classes):
+                    continue
+                try:
+                    candidate = execution.resolve(entry.name, catalog, config=cfg,
+                                                  probe=self.model_probe, which=self.which)
+                except execution.ExecutionError:
+                    continue
+                if candidate.local == selected.local and reviewgate.permits(candidate, authored, policy):
+                    replacement = candidate
+                    break
+            if replacement is None:
+                rule = {"other-model": "innego modelu lub poziomu rozumowania",
+                        "other-family": "innej rodziny modeli"}.get(policy, policy)
+                question = (f"{ticket}: nie ma dostępnego recenzenta spełniającego wymóg {rule} "
+                            "oraz wymagania klasy ticketu. Kogo wybrać do review? Wybierz innego recenzenta "
+                            "albo poczekaj na jego dostępność.")
+                key = (ticket, round_no)
+                if key not in st.review_questions or key in st.review_decisions:
+                    self.journal.append(card, "review.question", ticket=ticket, round=round_no,
+                                        reason="independence", policy=policy, question=question)
+                waiting = st.waiting.get((ticket, "review")) or {}
+                if waiting.get("cause") != "review-independence":
+                    self.journal.append(card, "step.waiting", ticket=ticket, kind="review",
+                                        executor=selected.name, provider=selected.provider,
+                                        reason=question, cause="review-independence")
+                raise FlowDeferred(question)
+            selected = replacement
+        key = (ticket, round_no)
+        question = st.review_questions.get(key) or {}
+        if question.get("reason") == "independence" and key not in st.review_decisions:
+            self.journal.append(card, "review.decision", ticket=ticket, round=round_no,
+                                choice="review-ready", automatic=True)
+        # Nie przenosimy sesji nawet przy tym samym modelu i wznowieniu review.
+        return selected, ""
+
     def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
         item, project = self._project(card)
         ticket = source["ticket"]
@@ -4910,14 +4967,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
         # Przeniesienie przy limicie i ręczna zmiana wykonawcy (K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet)
-        # zwalniają z reguły dostawców planu; recenzent nadal musi być innym modelem niż autor.
+        # zwalniają z reguły dostawców planu; politykę niezależności sprawdzi bramka przy starcie procesu.
         transferred = any((st.step_decisions.get(name) or {}).get("choice") in ("transfer", "change-executor") and
                           (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
         if reviewer_changed(reviewer, expected, source, assigned, transferred) and \
                 not any(e.get("type") == "review.reviewer-note" and e.get("ticket") == ticket and
                         e.get("round") == round_no for e in self.journal.read(card)):
-            # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
-            # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
+            # Odstępstwo od przydziału zostaje w historii. Sama notka nie zastępuje bramki startu review.
             self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
                                 reviewer=reviewer.name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]

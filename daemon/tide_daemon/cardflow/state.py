@@ -462,6 +462,12 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.started":
             st.plan_resumes.pop(e.get("parentStep"), None)
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            review_key = (e.get("ticket"), e.get("round"))
+            if e.get("kind") == "review" and \
+                    (st.review_questions.get(review_key) or {}).get("reason") == "independence":
+                # Pytanie przed startem nie zastępuje późniejszej decyzji po werdykcie tej rundy.
+                st.review_questions.pop(review_key, None)
+                st.review_decisions.pop(review_key, None)
             if e.get("ticket") and e.get("kind") in ("ticket", "fix"):
                 # Krok autora ruszył — każde inne czekanie autora tego ticketu jest nieaktualne (05.11, K-37/PT-147:
                 # poprawki szły na Codexie, a kafelek dalej pisał „czeka na limit” z wpisu sprzed przepięcia).
@@ -522,6 +528,8 @@ def fold(events: list[dict]) -> FlowState:
                 st.verdicts[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.question":
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
+            if e.get("reason") == "independence":
+                st.review_decisions.pop((e.get("ticket"), e.get("round")), None)
         elif kind == "review.decision":
             st.review_decisions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "step.retry":
@@ -1209,6 +1217,12 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             item["canEnter"] = False
             item["canTransfer"] = False
         return _fill(out, "waiting", "Decyzja o bazie karty; wyniki pozostają niescalone")
+    review_gate = next((d for d in decisions if d["kind"] == "review" and
+                        d.get("technical", {}).get("policy")), None)
+    if review_gate:
+        out["question"] = review_gate["why"]
+        return _fill(out, "backlog" if st.paused and column == "backlog" else "waiting",
+                     f"{review_gate['ticket']}: review wymaga wyboru recenzenta")
     caretaker_decision = next((d for d in decisions if d["kind"] == "caretaker"), None)
     if caretaker_decision:
         # Decyzja samej karty nie ma kroku dla attention_step; inne tickety mogą nadal pracować.

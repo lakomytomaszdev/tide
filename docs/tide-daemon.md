@@ -2121,6 +2121,25 @@ ten sam wykonawca zachowuje sesję i powód, a gdy
 reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje świeżą sesją z powodem `author` albo
 `escalated`. Automatyczny powrót do autora przechodzi tę samą kontrolę `changed-executor` co zwykłe poprawki. Próg
 pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
+
+Bramka startu review (PT-312, uzupełnienie właściciela 10.11): `_guard_review_launch` działa przed
+rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Każde uruchomienie
+review, także wznowienie, zaczyna osobną sesję. `reviewgate.authors` bierze z dziennika autorów ticketu
+oraz wszystkich prób poprawek od poprzedniej rundy review; nieudany fix może zawierać WIP, a wznowienie
+review tej samej rundy nie usuwa tych autorów z kontroli.
+
+Warunek modelu jest skupiony w `reviewgate.permits(reviewer, authors, policy)`: `free` dopuszcza dowolny
+model, `other-model` stosuje dotychczasowe `plans.independent_reviewer` (inny model lub wysiłek),
+`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Bramka przyjmuje parametr
+`policy`, tymczasowo `other-model`; ustawienie projektu, domyślne `free` i podłączenie pozostałych miejsc
+wyboru wykonawców są zakresem PT-330 zgodnie z decyzją właściciela 97. Nie jest to nowa nadrzędna reguła Tide.
+Gdy wybrany recenzent nie spełnia polityki, bramka szuka wykonawcy klasy ticketu lub mocniejszej,
+z zachowaniem lokalnego/chmurowego zakresu. Przy braku kandydata zapisuje idempotentne `review.question`
+z `reason: independence`, `policy`, `ticket`, `round` oraz `step.waiting` z `cause: review-independence`.
+Panel pokazuje pytanie i wybór recenzenta przez istniejące `ResolveCardStep reassign-reviewer`.
+Pojawienie się zgodnego recenzenta zamyka pytanie zdarzeniem `review.decision` z `choice: review-ready`;
+start review usuwa je z projekcji, aby późniejsze pytanie po progu rund działało jak dotąd.
+
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie

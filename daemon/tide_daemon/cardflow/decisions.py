@@ -588,6 +588,20 @@ def _stopped(st, name, step, done) -> dict:
 # --- review, plan, YouTrack ----------------------------------------------------------------------
 
 def _review(st, ticket, round_no, question) -> dict:
+    if question.get("reason") == "independence":
+        return {"id": f"review:{ticket}:{round_no}", "step": "", "stepKind": "review",
+                "ticket": ticket, "executor": "", "kind": "review",
+                "happened": "Review czeka na recenzenta zgodnego z polityką.",
+                "why": question.get("question") or "Wybierz recenzenta albo poczekaj na jego dostępność.",
+                "options": [_option("reviewer", "Wybierz recenzenta…",
+                                     "Tide sprawdzi wybranego recenzenta przed rozpoczęciem review.",
+                                     RESOLVE_STEP, {"choice": "reassign-reviewer", "ticket": ticket,
+                                                    "executor": ""}, recommended=True)],
+                "freeText": True,
+                "reply": {"method": RESOLVE_STEP, "params": {"choice": "reassign-reviewer", "ticket": ticket},
+                          "field": "executor", "label": "Nazwa recenzenta z katalogu",
+                          "effect": "Tide sprawdzi wybranego recenzenta przed startem review."}, "fault": "",
+                "technical": {"ticket": ticket, "round": round_no, "policy": question.get("policy")}}
     verdict = st.verdicts.get((ticket, round_no)) or {}
     step = st.steps.get(verdict.get("step") or "") or next(
         (s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and s.get("kind") == "review"), {})
