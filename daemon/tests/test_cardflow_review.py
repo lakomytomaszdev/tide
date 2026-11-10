@@ -24,10 +24,43 @@ class ReviewFlowTest(FlowInProcess):
             (executors.Executor("Inny", "codex", "model-inny", "other"),),
             {"other": executors.Provider("other", "Inny", "https://example.test/v1", "openai")})
         self.flow.engine.catalog = lambda: catalog
+        self.review_policy("other-model")
         card = self.card()
         reply = self.start(card, executor="Inny")
         self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
         self.assertEqual(self.events(card), [])
+
+    def test_od_razu_follows_the_project_review_policy(self):
+        # PT-330: bez ustawienia (free) Od razu przyjmuje Opus → Opus, a bez innego wykonawcy wybiera tego samego.
+        card = self.card()
+        reply = self.start(card, executor="Opus", reviewer="Opus")
+        self.assertTrue(reply["ok"], reply)
+        started = self.of(card, "card.started")[0]
+        self.assertEqual((started["executor"], started["reviewer"]), ("Opus", "Opus"))
+        from tide_daemon.models import executors
+        only = executors.Catalog((executors.DEFAULT_EXECUTORS[2],), {})
+        self.flow.engine.catalog = lambda: only
+        other = self.card()
+        reply = self.start(other, executor="Opus")
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(self.of(other, "card.started")[0]["reviewer"], "Opus")
+        # other-family: Opus → Sonnet odrzucone, Opus → Codex przyjęte także przy dostawcy anthropic.
+        self.flow.engine.catalog = executors.default_catalog
+        self.review_policy("other-family")
+        third = self.card()
+        reply = self.start(third, executor="Opus", reviewer="Sonnet")
+        self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
+        self.assertIn("other-family", reply["message"])
+        reply = self.start(third, executor="Opus", reviewer="Codex Astra", preferredProvider="anthropic")
+        self.assertTrue(reply["ok"], reply)
+        self.assertEqual(self.of(third, "card.started")[0]["reviewerProvider"], "openai")
+        # Brak recenzenta innej rodziny: czytelny powód z wyjściami zamiast startu bez słowa.
+        self.flow.engine.catalog = lambda: only
+        fourth = self.card()
+        reply = self.start(fourth, executor="Opus")
+        self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
+        for fragment in ("innej rodziny", "poluzuj politykę"):
+            self.assertIn(fragment, reply["message"])
 
     def test_mixed_provider_review_uses_other_provider_and_codex_route(self):
         card = self.card()
@@ -48,6 +81,7 @@ class ReviewFlowTest(FlowInProcess):
         self.flow.engine.models_config = lambda: models_config.load(path)
         self.flow.engine.model_probe = lambda endpoint: {"online": True, "kind": "ollama",
                                                          "models": [{"name": "qwen3-coder:30b"}]}
+        self.review_policy("other-model")
         card = self.card()
         reply = self.start(card, executor="Lokalny", preferredProvider="local")
         self.assertEqual((reply["ok"], reply["error"]), (False, "bad-reviewer"), reply)
@@ -259,7 +293,22 @@ class ReviewFlowTest(FlowInProcess):
         self.assertEqual(len(self.of(card, "ticket.rejected")), 1)
         self.assertTrue(self.flow.engine.resolve_review(card, "reject")["already"])
 
+    def test_free_project_reviews_with_the_same_model_in_a_new_session(self):
+        # PT-330: projekt bez ustawienia — review tym samym modelem, zawsze w osobnej sesji recenzenta.
+        card = self.card()
+        reply = self.start(card, reviewer="Sonnet")
+        self.assertTrue(reply["ok"], reply)
+        self.wait_column(card, "review")
+        started = self.of(card, "step.started")
+        ticket = next(s for s in started if s["kind"] == "ticket")
+        review = next(s for s in started if s["kind"] == "review")
+        self.assertEqual((ticket["executor"], review["executor"]), ("Sonnet", "Sonnet"))
+        self.assertTrue(review.get("session"))
+        self.assertNotEqual(review.get("session"), ticket.get("session"))
+        self.assertFalse(self.of(card, "review.question"))
+
     def test_explicit_reviewer_and_same_model_validation(self):
+        self.review_policy("other-model")
         card = self.card()
         bad = self.start(card, reviewer="Sonnet")
         self.assertEqual((bad["ok"], bad["error"]), (False, "bad-reviewer"), bad)

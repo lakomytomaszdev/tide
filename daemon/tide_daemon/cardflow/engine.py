@@ -53,6 +53,7 @@ from ..tasks.core import Plan, TaskFiles
 from ..worktrees.naming import slug_from_prompt
 from . import testrerun
 from . import testpolicy
+from . import mergecheck
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -74,6 +75,7 @@ from . import ticketentry
 from . import guard
 from . import limits as flow_limits
 from . import planning
+from . import reviewgate
 from .planediting import PLAN_AUTHOR, PlanEditing, proposal_author_of
 from .caretakerchat import CaretakerChat
 from . import plans as flow_plans
@@ -100,6 +102,9 @@ TEST_POLICY_KINDS = ("ticket", "fix", "review", "close", "conflict")
 # Planowanie Lekkie i review planu (PT-284): jedna linia informacyjna o efektywnym kontrakcie, bez bazy i bez
 # `testPolicy` w zdarzeniu (polityka nie jest tu wymogiem kroku ani źródłem zgód).
 PLAN_TESTS_KINDS = ("planning", "plan-fix", "plan-review")
+OUTSIDE_STOPPED = "zatrzymane"  # `exit` w outside.finished, gdy jednostkę zatrzymano bez kodu wyjścia (PT-315)
+OUTSIDE_STOP_GRACE = 5          # tyle sekund od startu jednostka może jeszcze nie istnieć w systemd (s)
+OUTSIDE_STATE_TIMEOUT = 3       # limit jednego odczytu stanu jednostki, żeby nie blokować pętli usługi (s)
 OUTSIDE_TIMEOUT = 3600          # najdłużej działające polecenie uruchomione poza piaskownicą (s)
 OUTSIDE_TAIL = 12_000           # tyle końcowych znaków wyniku dostaje wznowiony krok
 ENV_QUESTION = re.compile(r"piaskownic|sandbox|docker|testcontainers|\boutside\b|ng serve|\bnpm\b|\bnpx\b|dotnet test|"
@@ -113,7 +118,7 @@ ENV_ANSWER = ("Odpowiedź Tide (automatyczna — pytanie dotyczy środowiska, ni
               "uruchomić, zakończ wynikiem error z przyczyną. Jeśli pytanie dotyczyło jednak zakresu albo decyzji "
               "biznesowej, zadaj je ponownie: krótko, z opcjami i rekomendacją.")
 REVIEW_ROUNDS = 6              # rundy review przed pytaniem użytkownika
-ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi wykonawca recenzji (mocniejszy, zna uwagi)
+ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi mocny wykonawca spoza recenzentów (K-88/PT-312)
 # PT-181 (#18): rodzaje kroków, które uruchamiają kod projektu — w projekcie z gotowym pudełkiem idą do `BoxRunner`.
 # Planowanie w każdej odmianie (`planning`, `plan-fix`, `plan-amend`, `plan-revise`, `plan-review`, pełne planowanie
 # w Konsoli) czyta repozytorium i Tablicę, więc zostaje na hoście w bwrap; `conflict` też (scalenie gałęzi).
@@ -334,9 +339,10 @@ def review_question(ticket: str, round_no: int, review_md: str) -> str:
             "(np. testów niewykonalnych w piaskownicy). „Odrzuć ticket”, gdy ticketu nie chcesz.")
 
 class FlowError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, data: dict | None = None):
         super().__init__(message)
         self.code = code
+        self.data = data or {}     # dodatkowe pola odpowiedzi (np. `reviews` przy `ambiguous-review`)
 
 
 class _CaretakerPort:
@@ -506,6 +512,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
+        self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
         self._preview_secret = os.urandom(32)  # token sprzed restartu nie uprawnia do nowej operacji
@@ -1045,7 +1052,30 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         with self.journal.lock, self.store.transaction():
             from . import startorder
-            return startorder.start(self, card_id, request, resume=_resume, order=_order)
+            begun = (self.journal.state(card_id).started or {}).get("seq")
+            result = startorder.start(self, card_id, request, resume=_resume, order=_order)
+            # Ruch w tej samej blokadzie co zapis zlecenia: okno nie wciśnie się między start a przeniesienie.
+            if not _resume and self._lift_from_backlog(card_id, begun) and isinstance(result, dict) \
+                    and result.get("ok"):
+                result = {**result, "column": "todo"}
+            return result
+
+    def _lift_from_backlog(self, card_id: str, begun) -> bool:
+        """Udany start zdejmuje kartę z Backlogu do „Do zrobienia” (na koniec) tym samym mechanizmem co MoveCard
+        (PT-313; wcześniej robiło to tylko okno, a karta uruchomiona przez D-Bus — `tide go`, skrypty koordynatora —
+        stała w Backlogu z niewidocznym stanem). Tylko świeżo zapisany `card.started`: nieudany start i ponowienie
+        (resume) niczego nie ruszają, karta w innej kolumnie zostaje na miejscu. Ruch okna po odpowiedzi trafia
+        na kartę już stojącą w „Do zrobienia” na końcu — bez skutku dla kolejności."""
+        st = self.journal.state(card_id)
+        if st.started is None or st.started.get("seq") == begun or st.card_finished or st.paused:
+            return False
+        stored = self.store.load().cards.get(card_num(card_id))
+        if stored is None or stored.column != "backlog":
+            return False
+        self.store.move_card(card_id, "todo", -1, from_column="backlog")
+        moved = self.store.load().cards.get(card_num(card_id))
+        self.moved(card_id, "todo", "backlog", getattr(moved, "move_id", "") or "")
+        return True
 
     def _start(self, card_id: str, request: dict, *, _resume=False, _prepare=None, _order=None) -> dict:
         try:
@@ -1103,19 +1133,24 @@ class FlowEngine(CaretakerChat, PlanEditing):
         preferred = preferred or selected.provider
         preferred_name = "Sonnet" if name == "Opus" else "Codex Astra" if name == "Codex mocny" else "Opus"
         reviewer_name = str(request.get("reviewer") or "").strip()
+        # Polityka projektu (PT-330, decyzja 96); ticket Od razu ma klasę `standard`. `free` — także ten sam model.
+        policy = reviewgate.project_policy(project, "standard")
 
         def resolve_reviewer(candidate: str):
             try:
                 found = execution.resolve(candidate, catalog, config=cfg, probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError("unknown-reviewer" if exc.code == "unknown-executor" else exc.code, str(exc)) from None
-            if found.name == selected.name or not flow_plans.independent_reviewer(selected, found):
-                raise FlowError("bad-reviewer", "recenzent musi mieć inny model albo inną siłę myślenia niż autor")
+            if (policy != reviewgate.FREE and found.name == selected.name) or \
+                    not reviewgate.allows(selected, found, policy):
+                raise FlowError("bad-reviewer", f"{reviewgate.rule(policy)} (polityka projektu {policy})")
             if selected.local != found.local:
                 raise FlowError("bad-reviewer-provider", "praca lokalna wymaga lokalnego recenzenta")
             if preferred == "mixed" and found.provider == selected.provider:
                 raise FlowError("bad-reviewer-provider", "w trybie mieszanym recenzent musi być u innego dostawcy")
-            if preferred and preferred != "mixed" and found.provider != selected.provider:
+            # `other-family` wymaga recenzenta spoza rodziny autora, więc nie może trzymać go u tego samego dostawcy.
+            if preferred and preferred != "mixed" and found.provider != selected.provider and \
+                    policy != reviewgate.OTHER_FAMILY:
                 raise FlowError("bad-reviewer-provider", "recenzent musi należeć do wybranego dostawcy")
             return found
 
@@ -1123,16 +1158,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
             reviewer = resolve_reviewer(reviewer_name)
         else:
             reviewer = None
-            for candidate in [preferred_name, *(e.name for e in catalog.executors)]:
-                if candidate == selected.name:
-                    continue
+            # Domyślnie inny wykonawca; przy `free` ostatnią możliwością jest ten sam (nowa sesja recenzenta).
+            names = [preferred_name, *(e.name for e in catalog.executors)]
+            names = [n for n in names if n != selected.name] + ([selected.name] if policy == reviewgate.FREE else [])
+            for candidate in names:
                 try:
                     reviewer = resolve_reviewer(candidate)
                 except FlowError:
                     continue
                 break
             if reviewer is None:
-                raise FlowError("bad-reviewer", "brak dostępnego recenzenta z innym modelem")
+                raise FlowError("bad-reviewer", f"brak dostępnego recenzenta: {reviewgate.rule(policy)} "
+                                                f"(polityka projektu {policy}). Wybierz recenzenta, poczekaj na "
+                                                f"dostawcę albo poluzuj politykę w ustawieniach projektu")
         check = str(request.get("check") or card.check or "auto").strip().lower()
         if check not in ("auto", "manual"):
             raise FlowError("bad-request", "sprawdzenie musi być auto albo manual")
@@ -1275,7 +1313,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                        for row in source.rows]
         proposal = flow_plans.read(path, card_id, catalog, allowed_roots=(project.repo, self.store.root),
                                    tracker=source.tracker, imported=True,
-                                   existing_ids=[row["id"] for row in import_rows])
+                                   existing_ids=[row["id"] for row in import_rows],
+                                   review_policy=lambda slug, klass: reviewgate.project_policy(project, klass))
         _meta, body = source_plans.split_frontmatter(source_bytes.decode("utf-8"))
         loose_text = any(line.strip() and not line.lstrip().startswith("|") for line in body.splitlines())
         complete = (not proposal.errors and b"| Blokery |" in source_bytes and
@@ -1576,11 +1615,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch_full_planning(self, item, project, selected, made, step_id, images, shots, prompt,
                               *, parent_step="", attempt=0, include_context=True, kind="planning",
-                              ticket="", round_no=0, review_tip="", prepare=None):
-        """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku."""
+                              ticket="", round_no=0, review_tip="", prepare=None, executor_reason=""):
+        """Otwiera nadzorowaną kartę Konsoli dla planowania albo interaktywnej kontynuacji kroku.
+        `executor_reason` — powód wykonawcy poprawek (K-88/PT-312, PT-330), zapisany jak przy kroku w tle."""
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(item.id, {"ticket": ticket, "step": step_id})
         context_state = self.journal.state(item.id)
+        if kind == "review":
+            selected, _ = self._guard_review_launch(item.id, context_state, ticket, round_no, selected)
         # Gotowa rozmowa opiekuna ma własny, zamknięty kontekst i uprawnienia wejścia.
         source_evidence = None if prepare else self._issue_evidence(item, started=context_state.started)
         self._require_safe_evidence_console(selected.tool, source_evidence)
@@ -1688,7 +1730,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             gitDir=git_dir,
                             readDirsProfile=read_profile,
                             parentStep=parent_step, attempt=attempt, reviewTip=review_tip,
-                            deliveredNoteIds=note_ids, **base_context, **interactive)
+                            deliveredNoteIds=note_ids, **base_context, **interactive,
+                            **({"executorReason": executor_reason} if executor_reason and kind == "fix" else {}))
         self.journal.append(item.id, "step.entered", step=step_id, session=session, source="",
                             deliveredNoteIds=note_ids,
                             closeFile=closed, processFile=process_file, consoleUnit=console_unit,
@@ -1955,6 +1998,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
                not item.get("consoleClosed")
                for item in st.steps.values()):
             raise FlowError("console-open", "karta Konsoli tego worktree jest jeszcze otwarta")
+        if source_step.get("kind") == "review" and step_id in st.finished and \
+                (st.finished.get(step_id) or {}).get("result") != "done":
+            # PT-330 (review PT-312, MAJOR-2): ponowne review w Konsoli to nowe uruchomienie review — przechodzi
+            # bramkę polityki projektu i zawsze zaczyna nową sesję recenzenta, nie wznawia starej.
+            if reopen:
+                raise FlowError("no-worktree", "katalog ticketu już nie istnieje; wznów review w tle")
+            return self._enter_review_console(card_id, st, source_step)
         session, source = self._session(source_step)
         if not session:
             raise FlowError("no-session", "nie znaleziono ID sesji kroku; spróbuj ponownie za chwilę")
@@ -2066,6 +2116,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                         if reopen else current.get("gitDir") or ""),
                                 round=current.get("round") or 0, reviewTip=current.get("reviewTip") or "",
                                 parentStep=step_id, deliveredNoteIds=note_ids,
+                                # Wejście do Konsoli kontynuuje ten sam przydział poprawek (PT-330, MAJOR-3).
+                                **({"executorReason": current["executorReason"]}
+                                   if kind == "fix" and current.get("executorReason") else {}),
                                 baseVersion=current.get("baseVersion", 0),
                                 baseRef=current.get("baseRef") or "", baseCommit=current.get("baseCommit") or "",
                                 repo=current.get("repo") or self._repo(card_id))
@@ -2131,6 +2184,48 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except agentcmd.StepError:
                 return "unknown"
         return stepstop.unit_state(step.get("unit") or "")
+
+    def _enter_review_console(self, card_id: str, st: FlowState, source_step: dict) -> dict:
+        """Nowe review w Konsoli po nieukończonej próbie (błąd, pytanie, zatrzymanie): ta sama bramka co w tle
+        (`_launch_full_planning` → `_guard_review_launch`) i świeża sesja. Recenzent, który pisał oceniane
+        poprawki, przy polityce `other-model`/`other-family` dostaje zastępcę albo pytanie właściciela."""
+        ticket = source_step.get("ticket") or ""
+        round_no = int(source_step.get("round") or 0)
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        if catalog is None:
+            raise FlowError("executor-unavailable", "katalog wykonawców jest niedostępny")
+        try:
+            selected = execution.resolve(source_step.get("executor") or "", catalog, config=cfg,
+                                         probe=self.model_probe, which=self.which)
+        except execution.ExecutionError as exc:
+            raise FlowError(exc.code, str(exc)) from None
+        try:
+            selected, _ = self._guard_review_launch(card_id, st, ticket, round_no, selected)
+        except FlowDeferred as exc:
+            raise FlowError("review-independence", str(exc)) from None
+        old_out = os.path.join(source_step.get("stepDir") or "", "out")
+        try:
+            with open(os.path.join(source_step.get("stepDir") or "", "in", "prompt.txt"), encoding="utf-8") as fh:
+                prompt = fh.read(OUTPUT_MAX)
+        except OSError:
+            raise FlowError("missing-step-input", f"{card_id}: nie ma kartki poprzedniego review") from None
+        step_id = self._next_step_id(card_id, ticket, st)
+        worktree = source_step.get("worktree") or ""
+        new_out = worktree + f".interactive-{step_id}.step/out"
+        prompt = prompt.replace(old_out, new_out)
+        prompt += (f"\n\nReview w Konsoli zaczyna nową sesję recenzenta ({selected.name}). Poprzednia próba "
+                   f"tego review i jej wynik: {old_out}.")
+        item, project = self._project(card_id)
+        self._launch_full_planning(item, project, selected,
+                                   {"branch": source_step.get("branch") or "", "worktree": worktree},
+                                   step_id, [], [], prompt, parent_step=source_step.get("step") or "",
+                                   attempt=int(source_step.get("attempt") or 0) + 1, include_context=False,
+                                   kind="review", ticket=ticket, round_no=round_no,
+                                   review_tip=source_step.get("reviewTip") or "")
+        started = self.journal.state(card_id).steps.get(step_id) or {}
+        return {"ok": True, "id": card_id, "step": step_id, "session": started.get("session") or "",
+                "mode": "review", "executor": started.get("executor") or selected.name}
 
     def _stop_for_enter(self, card: str, step: dict) -> bool:
         try:
@@ -2222,7 +2317,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                                  *[r["id"] for r in ((self.journal.state(card_id).plan_approved or {}).get("rows") or [])]],
                                    imported=bool(imported),
                                    other_plans=self._other_plan_todos(project.repo, card_id),
-                                   projects=self._proposal_projects(order))
+                                   projects=self._proposal_projects(order),
+                                   review_policy=self._plan_review_policy(card_id))
         if imported:
             original = {row["id"]: row["title"] for row in imported.get("rows") or []}
             proposed = {row["workId"]: row["title"] for row in proposal.rows}
@@ -2659,7 +2755,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def _launch(self, card, project, selected, ticket, made, made_ticket, step_id, images,
                 *, kind="ticket", round_no=0, prompt_text="", card_prompt=None, review_tip="", parent_step="",
-                attempt=0, resume_session="", make_prompt=None, evidence=None) -> dict:
+                attempt=0, resume_session="", make_prompt=None, evidence=None, executor_reason="") -> dict:
         """`make_prompt(step_dir) -> str` — kartka składana dopiero przy starcie (po przyjęciu przez `_admit`, w parze
         „zamiar → wynik”): krok opiekuna buduje wtedy `<krok>/in/context/` (PT-153).
         `card_prompt(policy) -> str` — kartka kroku z polityką testów policzoną tu przez `step_test_policy` (PT-287);
@@ -2669,6 +2765,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._trial_check({"ticket": ticket, "step": step_id})
         self._process_check(card.id, {"ticket": ticket, "step": step_id})
         evidence_state = self.journal.state(card.id)
+        if kind == "review":
+            selected, resume_session = self._guard_review_launch(
+                card.id, evidence_state, ticket, round_no, selected)
         source_evidence = self._issue_evidence(card, started=evidence_state.started)
         if source_evidence and parent_step:
             # Kartka i historia wznowionej sesji zachowują dawne ścieżki. Sprawdzamy wszystkie
@@ -2876,6 +2975,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return {"unit": bg.unit, "gitDir": bg.git_dir, "readDirsProfile": read_profile, **placement.entry()}
 
         box_fields = placement.entry() if placement is not None else {}
+        # K-88/PT-312: dlaczego ten wykonawca robi poprawki (override | escalated | author).
+        reason_field = {"executorReason": executor_reason} if executor_reason else {}
         if kind == "review":
             # Nieśledzone pliki sprzed review: nowe po review to pliki recenzenta (wynik pomiaru, notatki) — Tide
             # przenosi je do katalogu kroku zamiast unieważniać review (04.11, K-43/BO-9).
@@ -2906,7 +3007,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                   routeTokenFile=selected.route.token_file if selected.route else "",
                                   local=selected.local, branch=made_ticket["branch"],
                                   reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                                  deliveredNoteIds=note_ids, **base_context, **policy_fields)
+                                  deliveredNoteIds=note_ids, **reason_field, **base_context, **policy_fields)
         except boxstep.BoxWaiting as exc:
             boxstep.release_ports(placement.entry())
             self._release_local(step_id)
@@ -2937,7 +3038,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                    routeKind=selected.route.kind if selected.route else "",
                                    routeTokenFile=selected.route.token_file if selected.route else "",
                                    reviewTip=review_tip, parentStep=parent_step, attempt=attempt,
-                                   deliveredNoteIds=note_ids,
+                                   deliveredNoteIds=note_ids, **reason_field,
                                    unit=begun["unit"], session=session, worktree=worktree,
                                    branch=made_ticket["branch"], stepDir=step_dir, gitDir=begun["gitDir"],
                                    readDirsProfile=begun.get("readDirsProfile", False),
@@ -3112,6 +3213,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if st.started is None or st.card_finished:
             return
         if (move_id and st.store_move_id == move_id) or (not move_id and st.store_column == column):
+            return
+        if st.lifted and column == "todo" and st.store_column == "todo" and shown == "progress":
+            # PT-313: jedyny zbędny ruch okna po starcie, który sam zdjął kartę z Backlogu (zapisane „todo”, widać
+            # „W toku”). Znacznik zużywa zdjęcie i potwierdza ruch, ale nie jest `card.moved`: stan się nie zmienia.
+            # Każdy późniejszy ręczny ruch „W toku” → „Do zrobienia” to „do poprawy”, jak przed PT-313.
+            self.journal.append(card_id, "card.move-ignored", moveId=move_id)
             return
         self.journal.append(card_id, "card.moved", to=column, moveId=move_id,
                             **({"from": shown} if shown else {}))
@@ -3503,8 +3610,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if not self._wip_safe(wip):
                     return True
                 try:
-                    target = self._resume_executor(card, st, step, settings["executor"], changed=True, transfer=True)
-                    reviewer = self._transfer_reviewer(st, step, target)
+                    # PT-312: odrzucona przez regułę poprawek propozycja nie może przepiąć recenzenta.
+                    # _resume_step rozstrzyga ją ponownie przed startem; dotąd zostawiamy parę bez zmian.
+                    fix_target = (self._resumed_fix_target(card, st, step)[0]
+                                  if step.get("kind") == "fix" else settings["executor"])
+                    reviewer = None
+                    if fix_target == settings["executor"]:
+                        target = self._resume_executor(card, st, step, settings["executor"],
+                                                       changed=True, transfer=True)
+                        reviewer = self._transfer_reviewer(st, step, target)
                 except FlowError:
                     return True
                 self._save_transfer_reviewer(card, step, reviewer)
@@ -3721,6 +3835,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         retry_merge = bool(previous_merge) and not previous_merge.get("ok") and \
             "konflikt" not in (previous_merge.get("error") or "").lower() and \
             self.clock() - _epoch(previous_merge.get("ts")) >= 60
+        if (previous_merge is None or retry_merge) and self._merge_checks(card):
+            return  # bramka testów po scaleniu (PT-318): kolejne scalenie czeka na wynik bieżącej próby
         if previous_merge is None or retry_merge:
             source = next((s for name, s in st.steps.items() if name not in st.superseded and
                            s.get("ticket") == ticket and
@@ -3754,10 +3870,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
                          (s.get("kind") == "conflict" and s.get("ticket") not in st.rejected and
                           not (st.results.get(("merge", s.get("ticket"))) or {}).get("ok")))
                         for s in st.steps.values())
+        # Trwający przebieg próby testów po scaleniu (PT-329, review r2) biegnie w worktree gałęzi karty: commit planu
+        # przesunąłby HEAD w trakcie testów (przebieg stoi na `after`) albo padł na artefaktach testów w worktree.
+        card_work = card_work or any(name in st.merge_check_steps for name in st.outside_started)
         if not card_work:
             self._plan_commit(card, self.journal.state(card), project.repo, card_branch, card_worktree)
         if st.plan_finished or len((merged | st.rejected) & {row["id"] for row in rows}) == len(rows):
             return
+        if self._merge_checks(card):
+            return  # bramka testów po scaleniu (PT-318): nowe tickety czekają na wynik bieżącej próby
         for row in rows:
             ticket = row["id"]
             if trialgate.blocked(ticket):
@@ -3780,8 +3901,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                              probe=self.model_probe, which=self.which)
             except execution.ExecutionError as exc:
                 raise FlowError(exc.code, str(exc)) from None
-            if not flow_plans.independent_reviewer(selected, reviewer) or selected.local != reviewer.local:
-                raise FlowError("bad-reviewer", f"{ticket}: recenzent nie spełnia warunku innego modelu")
+            policy = self._review_policy(card, st, ticket)
+            if not reviewgate.allows(selected, reviewer, policy) or selected.local != reviewer.local:
+                raise FlowError("bad-reviewer", f"{ticket}: {reviewgate.rule(policy)} (polityka projektu {policy}) "
+                                                "i praca lokalna zostaje lokalna")
             slug = slug_from_prompt(row["title"], words=4, length=32)
             branch = f"ticket/{ticket.lower()}-{slug}"
             worktree = worktree_for(project.repo, branch)
@@ -4177,8 +4300,31 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
         if not isinstance(request, dict) or set(request) - {"choice", "answer", "executor", "step", "allow", "instead", "auto",
                                                             "card", "ticket", "baseDecision", "baseRef", "baseCommit",
-                                                            "previewId", "waitTicket"}:
+                                                            "previewId", "waitTicket", "check", "after"}:
             raise FlowError("bad-request", "oczekiwano wyboru i ewentualnie odpowiedzi lub wykonawcy")
+        if request.get("choice") == mergecheck.ACCEPT:
+            # „Akceptuj mimo porażki” (PT-320) — decyzja karty o dokładnej próbie; tylko jawne wywołanie człowieka
+            # (D-Bus z panelu karty), nigdy opiekun ani decyzja automatyczna.
+            if caretaker_problem or caretaker_step or set(request) - {"choice", "ticket", "check", "after", "card"}:
+                raise FlowError("bad-request", "accept-merge-check przyjmuje tylko `ticket`, `check` i `after`")
+            self._require_base_context(card)
+            return self.accept_merge_check(card, request)
+        if "after" in request:
+            raise FlowError("bad-request", "`after` idzie tylko z choice=accept-merge-check")
+        if "check" in request and request.get("choice") != "retry-merge-check":
+            raise FlowError("bad-request", "`check` idzie tylko z choice=retry-merge-check albo accept-merge-check")
+        if request.get("choice") == "retry-merge-check":
+            # Ponowienie próby testów po scaleniu (PT-318) — decyzja karty, nie kroku; tylko jawne wywołanie.
+            if caretaker_problem or set(request) - {"choice", "ticket", "check", "card"}:
+                raise FlowError("bad-request", "retry-merge-check przyjmuje tylko `ticket` i `check`")
+            self._require_base_context(card)
+            return self.retry_merge_check(card, request)
+        if mergecheck.is_step(request.get("step")):
+            # Zgoda albo odmowa próby testów po scaleniu (PT-329) — tylko decyzja człowieka z panelu karty.
+            if caretaker_problem or request.get("auto") or set(request) - {"choice", "step", "answer", "instead"}:
+                raise FlowError("bad-request", "próba testów po scaleniu przyjmuje tylko choice, step, answer i instead")
+            self._require_base_context(card)
+            return self.resolve_merge_check(card, request)
         if str(request.get("step") or "").startswith("k38-diagnostic-"):
             return self._resolve_trial_diagnostic(card, request)
         if "allow" in request and request.get("choice") != "allow" or \
@@ -4226,6 +4372,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         focus = decision_step(st)
         if wanted in st.superseded and wanted not in st.plan_resumes:
             raise FlowError("stale-context", "Krok należy do poprzedniego kontekstu bazy; zgody utraciły ważność.")
+        if (choice == "deny" and wanted and not request.get("auto") and not caretaker_problem
+                and (st.finished.get(wanted) or {}).get("outside")
+                and (st.step_decisions.get(wanted) or {}).get("choice") in consent.RUN):
+            # Odmowa człowieka po zgodzie na polecenie poza piaskownicą (PT-311): przed startem wygrywa z
+            # automatyczną zgodą, po starcie `already-started`; zgoda ręczna zostaje zapisaną odpowiedzią.
+            return consent.deny_queued(self, card, wanted, request)
         if wanted and wanted != focus:
             # Kilka decyzji naraz (K-15: pytanie LEGAL-60 i LEGAL-62): wskazany krok musi sam czekać na decyzję —
             # zakończony pytaniem, odmową albo błędem, bez kroku-następcy i bez wcześniejszej decyzji.
@@ -4621,8 +4773,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError("changed-executor", f"{card}: wykonawca zmienił się od startu kroku")
         if step.get("kind") == "plan-review":
             planner = catalog.get((st.plan_proposed or {}).get("reviewAuthor") or proposal_author_of(st, st.plan_proposed))
-            if not planner or not flow_plans.independent_reviewer(planner, selected):
-                raise FlowError("bad-executor", "review planu wymaga niezależnego recenzenta autora tej wersji")
+            policy = self._review_policy(card, klass=None)
+            if not planner or not reviewgate.allows(planner, selected, policy):
+                raise FlowError("bad-executor", f"review planu: {reviewgate.rule(policy)} tej wersji "
+                                                f"(polityka projektu {policy})")
         if changed and step.get("kind") not in ("ticket", "fix", "review"):
             if step.get("kind") not in ("conflict", "close") and selected.local != bool(step.get("local")):
                 raise FlowError("bad-executor-provider", "zachowaj lokalny albo chmurowy zakres planowania")
@@ -4804,6 +4958,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
         resume_ticket = step.get("ticket") or ("" if step.get("kind") == "close" or
                                                str(step.get("kind") or "").startswith("plan") else info["id"])
         choice = decision.get("choice") or ""
+        automated = bool(decision.get("auto") or decision.get("automatic") or decision.get("caretaker") or
+                         choice == "auto")
         name = decision.get("executor") if choice in ("change-executor", "transfer") else step.get("executor") or ""
         # Przepięty autor ticketu (05.11, limit Claude) wznawia krok autora świeżą sesją, jak przy zmianie wykonawcy.
         kind = step.get("kind")
@@ -4820,11 +4976,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if override:
             name, reassigned = override, True
         fresh = choice in ("change-executor", "transfer") or reassigned
+        fix_reason, fix_author, moved = "", {}, False
+        if kind == "fix":
+            # K-88/PT-312: tylko ręczna decyzja daje `override`. Automatyczna zmiana (błąd, odmowa dostawcy,
+            # opiekun) przechodzi tę samą regułę co poprawki, nawet gdy proponuje nowego wykonawcę.
+            if fresh and not automated:
+                fix_reason = "override"
+            else:
+                target, fix_reason, fix_author = self._resumed_fix_target(card, st, step)
+                if target:
+                    if automated and choice in ("change-executor", "transfer") and target != name:
+                        choice = "retry"   # Reguła poprawek odrzuciła proponowaną zmianę/przekazanie.
+                    moved = target != step.get("executor")
+                    name, reassigned, fresh = target, moved, moved
         step_id = self._next_step_id(card, resume_ticket or "plan", st)
+        # Przydział użytkownika zachowuje swój wyjątek także przy automatycznym wznowieniu.
+        automatic_executor = (automated and fix_reason != "override" if kind == "fix"
+                              else bool(decision.get("caretaker")))
         try:
             selected = self._resume_executor(card, st, step, name,
                                              changed=fresh,
-                                             transfer=choice == "transfer", automated=bool(decision.get("caretaker")))
+                                             transfer=choice == "transfer",
+                                             automated=automatic_executor)
         except FlowError as exc:
             if exc.code != "local-unavailable" or choice in ("change-executor", "transfer"):
                 raise
@@ -4840,11 +5013,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 baseRef=step.get("baseRef") or "", baseCommit=step.get("baseCommit") or "",
                                 baseVersion=step.get("baseVersion", 0),
                                 stepDir=step.get("stepDir") or "", reviewTip=step.get("reviewTip") or "",
-                                **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step})
+                                **{k: step[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess") if k in step},
+                                **({"executorReason": fix_reason} if fix_reason else {}))
             self.journal.append(card, "step.finished", step=step_id, ticket=resume_ticket,
                                 result="error", reason="local-unavailable", question="", command="", notes=[],
                                 kept=[], exit=None)
             return
+        if moved and fix_reason == "author":
+            # Automatyczny powrót do autora nie jest ręczną zgodą na zmianę jego modelu: ta sama kontrola
+            # tożsamości autora co w `_fix` (review r2, MAJOR-2).
+            self._check_author_identity(card, selected, fix_author,
+                                        st.assignments.get(step.get("ticket") or "") or st.started or {})
         old_prompt = os.path.join(step.get("stepDir") or "", "in", "prompt.txt")
         try:
             with open(old_prompt, encoding="utf-8") as fh:
@@ -4893,38 +5072,89 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                        attempt=attempt, include_context=False,
                                        kind=step.get("kind") or "ticket", ticket=resume_ticket,
                                        round_no=int(step.get("round") or 0),
-                                       review_tip=step.get("reviewTip") or "")
+                                       review_tip=step.get("reviewTip") or "", executor_reason=fix_reason)
             return
         self._launch(item, project, selected, resume_ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": resume_branch, "worktree": resume_worktree},
                      step_id, [], kind=step.get("kind") or "ticket", round_no=int(step.get("round") or 0),
                      prompt_text=prompt, review_tip=step.get("reviewTip") or "",
-                     parent_step=step.get("step") or "", attempt=attempt, resume_session=session)
+                     parent_step=step.get("step") or "", attempt=attempt, resume_session=session,
+                     executor_reason=fix_reason)
+
+    @staticmethod
+    def _review_request(choice) -> tuple[str, str, int | None]:
+        """`choice` to dawny napis (`retry` | `reject` | `accept`) albo JSON `{"choice", "ticket", "round"?}`."""
+        text = choice.strip() if isinstance(choice, str) else ""
+        ticket, round_no = "", None
+        if text.startswith(("{", "[")):
+            try:
+                data = json.loads(text)
+            except ValueError:
+                raise FlowError("bad-choice", "decyzja o review nie jest poprawnym JSON-em") from None
+            if not isinstance(data, dict):
+                raise FlowError("bad-choice", "decyzja o review w JSON-ie musi być obiektem {choice, ticket, round}")
+            text, ticket, round_no = data.get("choice"), data.get("ticket") or "", data.get("round")
+            if not isinstance(text, str) or not isinstance(ticket, str) or \
+                    (round_no is not None and (isinstance(round_no, bool) or not isinstance(round_no, int))):
+                raise FlowError("bad-choice", "decyzja o review: choice i ticket to napisy, round to liczba")
+        if text not in ("retry", "reject", "accept"):
+            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
+        return text, ticket.strip(), round_no
+
+    @staticmethod
+    def _open_reviews(st) -> list[tuple[str, int]]:
+        """Otwarte pytania o review (ticket, runda), które da się rozstrzygnąć, w kolejności zapisu pytań."""
+        if st.card_finished:
+            return []
+        latest = {}
+        for item in st.steps.values():
+            latest[item.get("ticket")] = item
+        running = {s.get("ticket") for s in st.running() if s.get("kind") != "caretaker"}
+        found = []
+        for (ticket, round_no) in st.review_questions:
+            step = latest.get(ticket) or {}
+            if (ticket, round_no) in st.review_decisions or ticket in st.rejected or ticket in running or \
+                    step.get("kind") != "review" or int(step.get("round") or 0) != round_no or round_no < 3 or \
+                    (st.verdicts.get((ticket, round_no)) or {}).get("verdict") != "REQUEST_CHANGES":
+                continue
+            found.append((ticket, round_no))
+        return found
 
     def resolve_review(self, card_id: str, choice: str) -> dict:
-        """Jawna decyzja po trzecim i każdym następnym nieudanym review."""
+        """Jawna decyzja po trzecim i każdym następnym nieudanym review. `choice`: napis albo JSON z ticketem (PT-316)."""
         try:
             card = f"K-{card_num(card_id)}"
         except BoardError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if choice not in ("retry", "reject", "accept"):
-            raise FlowError("bad-choice", "wybierz ponowne poprawki, scalenie mimo uwag albo odrzucenie ticketu")
+        choice, want_ticket, want_round = self._review_request(choice)
         st = self.journal.state(card)
         self._require_base_context(card)
-        st.last_step = attention_step(st) or st.last_step
-        step = st.steps.get(st.last_step) or {}
+        if want_ticket:
+            step = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == want_ticket), {})
+        else:
+            opened = self._open_reviews(st)
+            if len(opened) > 1:
+                raise FlowError("ambiguous-review",
+                                f"{card}: kilka pytań o review czeka na decyzję — wskaż ticket",
+                                {"reviews": [{"ticket": t, "round": r} for t, r in opened]})
+            st.last_step = attention_step(st) or st.last_step
+            step = st.steps.get(st.last_step) or {}
         if step.get("kind") != "review" and choice == "reject":
             # Po odrzuceniu karta może już mieć nowszy krok domknięcia. Zachowaj
             # idempotencję decyzji, gdy nie ma kolejnego pytania o review.
             rejected = next((decision for decision in reversed(list(st.review_decisions.values()))
                              if decision.get("choice") == "reject" and
-                             decision.get("ticket") in st.rejected), None)
-            if rejected and not attention_step(st):
+                             decision.get("ticket") in st.rejected and
+                             (not want_ticket or decision.get("ticket") == want_ticket)), None)
+            if rejected and (want_ticket or not attention_step(st)):
                 step = next((candidate for candidate in reversed(list(st.steps.values()))
                              if candidate.get("kind") == "review" and
                              candidate.get("ticket") == rejected.get("ticket") and
                              candidate.get("round") == rejected.get("round")), step)
+        if want_round is not None and int(step.get("round") or 0) != want_round:
+            raise FlowError("no-review-question", f"{card}: nieaktualna runda review {want_round} ticketu "
+                                                   f"{want_ticket or step.get('ticket') or '?'}")
         ticket, round_no = step.get("ticket") or "", int(step.get("round") or 0)
         verdict = st.verdicts.get((ticket, round_no)) or {}
         previous = st.review_decisions.get((ticket, round_no)) or {}
@@ -4952,6 +5182,45 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if item is None or project is None:
             raise FlowError("no-project", f"{card}: nie ma karty albo projektu dla kroku")
         return item, project
+
+    def _review_policy(self, card: str, st: FlowState | None = None, ticket: str = "", *,
+                       klass: str | None = "", slug: str = "") -> str:
+        """Polityka niezależności review (K-88/PT-330, decyzja 96 z 10.11) z ustawienia projektu ticketu.
+
+        Czytana przy każdym wywołaniu z bieżącej Tablicy (bez restartu usługi). Projekt ticketu: kolumna Projekt
+        zatwierdzonego planu, inaczej projekt karty. Klasa: podana, inaczej klasa ticketu z planu (`standard`);
+        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`."""
+        if klass == "":
+            klass = self._ticket_class(st, ticket) if st is not None and ticket else "standard"
+        if not slug and st is not None and ticket:
+            row = next((r for r in (st.plan_approved or {}).get("rows") or []
+                        if str(r.get("id") or "") == ticket), {})
+            slug = row.get("project") or ""
+        try:
+            _, project = self._project(card)
+        except FlowError:
+            project = None
+        if slug and project is not None and slug != getattr(project, "slug", slug):
+            project = self.store.load().projects.get(slug)
+        return reviewgate.project_policy(project, klass)
+
+    def _plan_review_policy(self, card: str):
+        """`review_policy` dla `plans.read`: projekt wiersza (pusty — projekt karty) i klasa ticketu.
+        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz."""
+        try:
+            _, project = self._project(card)
+        except FlowError:
+            project = None
+        board = None
+
+        def policy(slug, klass):
+            nonlocal board
+            found = project
+            if slug and project is not None and slug != getattr(project, "slug", slug):
+                board = board or self.store.load()
+                found = board.projects.get(slug)
+            return reviewgate.project_policy(found, klass or "standard")
+        return policy
 
     def _note(self, card: str, step: dict) -> str:
         name = handoff.REVIEW_FILE if step.get("kind") == "review" else handoff.NOTE_FILE
@@ -4985,6 +5254,63 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 pass
         return "\n\n".join(out)
 
+    def _guard_review_launch(self, card: str, st: FlowState, ticket: str, round_no: int,
+                             selected, *, policy=None):
+        """Wspólna bramka startu review w tle i w Konsoli, także po wznowieniu/przekazaniu.
+
+        Nowa sesja jest bezwarunkowa. Model określa wyłącznie `reviewgate.permits` z polityką projektu
+        ticketu (PT-330; `policy` tylko dla testów i wywołań z jawną polityką). `free` przepuszcza każdego.
+        """
+        if policy is None:
+            policy = self._review_policy(card, st, ticket)
+        authored = reviewgate.authors(st, ticket, round_no)
+        if not reviewgate.permits(selected, authored, policy):
+            cfg = self.models_config() if self.models_config else None
+            catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+            klass = self._ticket_class(st, ticket)
+            levels = ("lekki", "standard", "mocny")
+            allowed_classes = set(levels[levels.index(klass):]) if klass in levels else {klass}
+            replacement = None
+            for entry in catalog.executors if catalog else ():
+                if not allowed_classes.intersection(entry.classes):
+                    continue
+                try:
+                    candidate = execution.resolve(entry.name, catalog, config=cfg,
+                                                  probe=self.model_probe, which=self.which)
+                except execution.ExecutionError:
+                    continue
+                if candidate.local == selected.local and reviewgate.permits(candidate, authored, policy):
+                    replacement = candidate
+                    break
+            if replacement is None:
+                rule = {"other-model": "innego modelu lub poziomu rozumowania",
+                        "other-family": "innej rodziny modeli (dostawca/program z katalogu)"}.get(policy, policy)
+                # Czytelny powód i trzy wyjścia (decyzja 96 z 10.11): zmień recenzenta, poczekaj, poluzuj politykę.
+                question = (f"{ticket}: nie ma dostępnego recenzenta spełniającego wymóg {rule} "
+                            f"(polityka projektu reviewIndependence: {policy}) oraz wymagania klasy ticketu "
+                            f"— „{selected.name}” go nie spełnia, a zgodny wykonawca jest niedostępny "
+                            "(brak dostawcy lub programu w katalogu). Kogo wybrać do review? Wybierz innego "
+                            "recenzenta, poczekaj na jego dostępność albo poluzuj politykę w ustawieniach "
+                            "projektu (np. free) i ponów.")
+                key = (ticket, round_no)
+                if key not in st.review_questions or key in st.review_decisions:
+                    self.journal.append(card, "review.question", ticket=ticket, round=round_no,
+                                        reason="independence", policy=policy, question=question)
+                waiting = st.waiting.get((ticket, "review")) or {}
+                if waiting.get("cause") != "review-independence":
+                    self.journal.append(card, "step.waiting", ticket=ticket, kind="review",
+                                        executor=selected.name, provider=selected.provider,
+                                        reason=question, cause="review-independence")
+                raise FlowDeferred(question)
+            selected = replacement
+        key = (ticket, round_no)
+        question = st.review_questions.get(key) or {}
+        if question.get("reason") == "independence" and key not in st.review_decisions:
+            self.journal.append(card, "review.decision", ticket=ticket, round=round_no,
+                                choice="review-ready", automatic=True)
+        # Nie przenosimy sesji nawet przy tym samym modelu i wznowieniu review.
+        return selected, ""
+
     def _review(self, card: str, st: FlowState, source: dict, round_no: int) -> None:
         item, project = self._project(card)
         ticket = source["ticket"]
@@ -5005,14 +5331,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             "routeTokenFile": previous.get("routeTokenFile", assigned.get("reviewerRouteTokenFile", "")),
         }
         # Przeniesienie przy limicie i ręczna zmiana wykonawcy (K-16/LEGAL-66: Codex padł, użytkownik wybrał Sonnet)
-        # zwalniają z reguły dostawców planu; recenzent nadal musi być innym modelem niż autor.
+        # zwalniają z reguły dostawców planu; politykę niezależności sprawdzi bramka przy starcie procesu.
         transferred = any((st.step_decisions.get(name) or {}).get("choice") in ("transfer", "change-executor") and
                           (st.steps.get(name) or {}).get("ticket") == ticket for name in st.step_decisions)
         if reviewer_changed(reviewer, expected, source, assigned, transferred) and \
                 not any(e.get("type") == "review.reviewer-note" and e.get("ticket") == ticket and
                         e.get("round") == round_no for e in self.journal.read(card)):
-            # 03.11: niezależny recenzent to rekomendacja planu, nie blokada — karta stała na „katalog zmienił
-            # recenzenta”, a użytkownik nie miał czego wybrać. Review rusza, w historii zostaje notka.
+            # Odstępstwo od przydziału zostaje w historii. Sama notka nie zastępuje bramki startu review.
             self.journal.append(card, "review.reviewer-note", ticket=ticket, round=round_no,
                                 reviewer=reviewer.name, author=source.get("executor") or source.get("model") or "")
         path = info["worktree"]
@@ -5057,31 +5382,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
         if catalog is None:
             raise FlowError("no-executor", f"{card}: katalog wykonawców jest niedostępny")
-        author = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket and
-                       s.get("kind") in ("ticket", "fix")), None)
-        if author is None:
-            raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
         round_no = int(review_step.get("round") or 1)
-        escalate = round_no >= ESCALATE_FIX_ROUND and bool(review_step.get("executor"))
-        override = st.author_overrides.get(ticket) or {}
-        reassigned = bool(override) and override.get("seq", 0) > author.get("seq", 0)
+        name, reason, author = self._fix_target(card, st, ticket, review_step, catalog, cfg)
         try:
-            executor = execution.resolve(override["executor"] if reassigned else
-                                         (review_step.get("executor") if escalate else None) or
-                                         author.get("executor") or assigned.get("executor") or "", catalog,
-                                         config=cfg, probe=self.model_probe, which=self.which)
+            executor = execution.resolve(name, catalog, config=cfg, probe=self.model_probe, which=self.which)
         except execution.ExecutionError as exc:
             raise FlowError(exc.code, str(exc)) from None
-        if escalate or reassigned:
-            pass        # 03.11: po dwóch nieudanych rundach poprawki przejmuje recenzent, który zna uwagi
-        elif executor.tool != (author.get("program") or assigned.get("program")) or \
-                executor.model != (author.get("model") or assigned.get("model")) or \
-                executor.provider != (author.get("provider") or assigned.get("provider")) or \
-                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
-                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
-                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
-                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
-            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
+        if reason == "author":
+            self._check_author_identity(card, executor, author, assigned)
         step_id = self._next_step_id(card, ticket, st)
         out = info["worktree"] + f".fix-{round_no}.step/out"
         title, description = self._ticket_text(card, st, ticket, item)
@@ -5091,7 +5399,146 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._launch(item, project, executor, ticket,
                      {"branch": info["cardBranch"]},
                      {"branch": info["branch"], "worktree": info["worktree"], "base": info["base"]},
-                     step_id, [], kind="fix", round_no=round_no, card_prompt=lambda policy: prompt(policy=policy))
+                     step_id, [], kind="fix", round_no=round_no, card_prompt=lambda policy: prompt(policy=policy),
+                     executor_reason=reason)
+
+    def _fix_target(self, card: str, st: FlowState, ticket: str, review_step: dict, catalog, cfg) -> tuple:
+        """K-88/PT-312: recenzent nie ocenia własnych poprawek. Zwraca `(nazwa wykonawcy, powód, krok autora)`.
+        Kolejność: ręczna zmiana autora (`override`), eskalacja do mocnego wykonawcy spoza recenzentów i autora
+        (`escalated`), dotychczasowy autor (`author`). Autor = ostatni krok autora, który nie był eskalacją ani
+        pracą recenzenta — ani bieżącego, ani recenzenta tamtej rundy (stara historia: od 3. rundy łatał recenzent,
+        który mógł potem zostać zmieniony)."""
+        assigned = st.assignments.get(ticket) or st.started or {}
+        reviewers = self._fix_reviewers(st, ticket, review_step)
+        authored = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") in ("ticket", "fix")]
+        taken = self._reviewer_fixes(st, ticket)
+        own = [s for s in authored if s.get("executorReason") != "escalated" and s.get("step") not in taken]
+        author = next((s for s in reversed(own) if s.get("executor") not in reviewers), None) or \
+            (own[-1] if own else authored[0] if authored else None)
+        if author is None:
+            raise FlowError("no-executor", f"{card}: nie ma kroku autora do poprawienia")
+        # Ręczna zmiana autora z panelu dotyczy wszystkich kolejnych poprawek ticketu (`_reassign_fix_author`),
+        # więc wygrywa z eskalacją także w rundach po pierwszym kroku nowego autora (review r2, MAJOR-3).
+        override = st.author_overrides.get(ticket) or {}
+        if override.get("executor"):
+            return override["executor"], "override", author
+        author_name = author.get("executor") or assigned.get("executor") or ""
+        if int(review_step.get("round") or 1) >= ESCALATE_FIX_ROUND:
+            families = (self._reviewer_families(st, ticket, review_step, reviewers, catalog)
+                        if self._review_policy(card, st, ticket) == reviewgate.OTHER_FAMILY else set())
+            escalated = self._escalated_fixer(st, ticket, assigned, author, {*reviewers, author_name}, catalog, cfg,
+                                              families)
+            if escalated is not None:
+                return escalated.name, "escalated", author
+        return author_name, "author", author
+
+    @staticmethod
+    def _check_author_identity(card: str, executor, author: dict, assigned: dict) -> None:
+        """Gałąź „autor”: wykonawca z katalogu musi być tym samym autorem (program, model, dostawca, effort, route),
+        który pisał ticket — inaczej `changed-executor`. Wspólne dla `_fix` i automatycznego powrotu do autora
+        przy wznowieniu poprawek (review r2, MAJOR-2)."""
+        if executor.tool != (author.get("program") or assigned.get("program")) or \
+                executor.model != (author.get("model") or assigned.get("model")) or \
+                executor.provider != (author.get("provider") or assigned.get("provider")) or \
+                executor.effort != author.get("effort", assigned.get("executorEffort", "")) or \
+                (executor.route.url if executor.route else "") != author.get("routeUrl", assigned.get("executorRouteUrl", "")) or \
+                (executor.route.kind if executor.route else "") != author.get("routeKind", assigned.get("executorRouteKind", "")) or \
+                (executor.route.token_file if executor.route else "") != author.get("routeTokenFile", assigned.get("executorRouteTokenFile", "")):
+            raise FlowError("changed-executor", f"{card}: katalog zmienił wykonawcę poprawek")
+
+    @staticmethod
+    def _reviewer_fixes(st: FlowState, ticket: str) -> set:
+        """Kroki poprawek ze starej historii (bez `executorReason`), które pisał recenzent tej samej rundy —
+        praca recenzenta, nie autora, także gdy recenzent ticketu został potem zmieniony."""
+        reviews = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") == "review"]
+        taken = set()
+        for s in st.steps.values():
+            if s.get("ticket") != ticket or s.get("kind") != "fix" or s.get("executorReason"):
+                continue
+            earlier = [r for r in reviews if r.get("seq", 0) < s.get("seq", 0)]
+            paired = next((r for r in reversed(earlier) if int(r.get("round") or 0) == int(s.get("round") or 0)),
+                          earlier[-1] if earlier else None)
+            if paired is not None and paired.get("executor") == s.get("executor"):
+                taken.add(s.get("step"))
+        return taken
+
+    def _resumed_fix_target(self, card: str, st: FlowState, step: dict) -> tuple[str, str, dict]:
+        """Wznowienie kroku `fix` bez ręcznej zmiany wykonawcy: ta sama reguła co `_fix`, licząc od review, które
+        krok poprawia. Inny wynik niż wykonawca kroku (recenzent łatał w starej historii, recenzentem został
+        eskalowany wykonawca) przenosi wznowienie na nowego wykonawcę świeżą sesją. Ręczny wybór autora zostaje.
+        Zwraca `(nazwa, powód, krok autora)`; krok autora (pusty poza regułą) służy kontroli `changed-executor`."""
+        current = step.get("executor") or ""
+        ticket = step.get("ticket") or ""
+        override = st.author_overrides.get(ticket) or {}
+        if override.get("executor") and override.get("seq", 0) > step.get("seq", 0):
+            return override["executor"], "override", {}
+        if step.get("executorReason") == "override" or (
+                override.get("executor") == current and override.get("seq", 0) < step.get("seq", 0)):
+            return current, "override", {}
+        cfg = self.models_config() if self.models_config else None
+        catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
+        reviews = [s for s in st.steps.values() if s.get("ticket") == ticket and s.get("kind") == "review"
+                   and s.get("seq", 0) < step.get("seq", 0)]
+        review = next((r for r in reversed(reviews) if int(r.get("round") or 0) == int(step.get("round") or 0)),
+                      reviews[-1] if reviews else None)
+        if catalog is None or review is None:
+            return current, step.get("executorReason") or "", {}
+        return self._fix_target(card, st, ticket, review, catalog, cfg)
+
+    def _fix_reviewers(self, st: FlowState, ticket: str, review_step: dict) -> set:
+        """Nazwy recenzentów, którym nie wolno pisać poprawek: autor ocenianego review i recenzent następnego
+        (ręczna zmiana recenzenta po review wskazuje nowego)."""
+        names = {review_step.get("executor") or ""}
+        assigned, previous = self._reviewer_context(st, ticket)
+        names.add(previous.get("executor") or assigned.get("reviewer") or "")
+        names.discard("")
+        return names
+
+    def _reviewer_families(self, st: FlowState, ticket: str, review_step: dict, names: set, catalog) -> set:
+        """PT-330: rodziny (dostawca/program) recenzenta ocenianego i następnego review. Kroki dają zamrożoną
+        rodzinę z dziennika, przydział — zapisany program recenzenta, a nazwy bez kroku — wpis katalogu."""
+        assigned, previous = self._reviewer_context(st, ticket)
+        found = set()
+        for step in (review_step, previous):
+            if step.get("provider") and step.get("program"):
+                found.add((step["provider"], step["program"]))
+        if not previous.get("executor") and assigned.get("reviewerProvider") and assigned.get("reviewerProgram"):
+            found.add((assigned["reviewerProvider"], assigned["reviewerProgram"]))
+        for name in names:
+            entry = catalog.get(name) if catalog is not None else None
+            if entry is not None:
+                found.add(reviewgate.family(entry))
+        return found
+
+    @staticmethod
+    def _ticket_class(st: FlowState, ticket: str) -> str:
+        """Klasa ticketu z zatwierdzonego planu; brak wiersza albo kolumny (Od razu, plan sześciokolumnowy) —
+        `standard`, jak w standardzie planu."""
+        row = next((r for r in (st.plan_approved or {}).get("rows") or [] if str(r.get("id") or "") == ticket), {})
+        return row.get("class") or "standard"
+
+    def _escalated_fixer(self, st: FlowState, ticket: str, assigned: dict, author: dict, avoid: set, catalog, cfg,
+                         avoid_families: set = frozenset()):
+        """K-88/PT-312: wykonawca poprawek od rundy ESCALATE_FIX_ROUND — klasa `mocny` preferowanego dostawcy
+        zlecenia, inny niż recenzenci i autor; tylko dla ticketów spoza klas `mocny` i `lokalny`. `None` — poprawki
+        zostają u autora. PT-330: `avoid_families` (polityka `other-family`) — rodziny recenzentów (dostawca/program
+        z katalogu), z których cel eskalacji nie może pochodzić."""
+        if self._ticket_class(st, ticket) in ("mocny", "lokalny"):
+            return None
+        started = st.started or {}
+        provider = assigned.get("preferredProvider") or started.get("preferredProvider") or ""
+        if provider in ("", "mixed"):
+            # Tryb mieszany: autor i recenzent są u różnych dostawców — poprawki zostają u dostawcy autora.
+            provider = author.get("provider") or assigned.get("provider") or started.get("provider") or ""
+        for candidate in catalog.executors:
+            if candidate.provider != provider or "mocny" not in candidate.classes or candidate.name in avoid or \
+                    reviewgate.family(candidate) in avoid_families:
+                continue
+            try:
+                return execution.resolve(candidate.name, catalog, config=cfg, probe=self.model_probe, which=self.which)
+            except execution.ExecutionError:
+                continue
+        return None
 
     def _cleanup(self, card: str, st: FlowState, ticket: str, rounds: int) -> None:
         self._trial_check(ticket)
@@ -5256,6 +5703,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                                 reviewTip=intent.get("reviewTip") or "",
                                 parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
                                 deliveredNoteIds=intent.get("deliveredNoteIds") or [],
+                                **({"executorReason": intent["executorReason"]} if intent.get("executorReason") else {}),
                                 readDirsProfile=bool(result.get("readDirsProfile")),
                                 gitDir=result.get("gitDir") or "", repo=self._repo(card),
                                 baseVersion=intent.get("baseVersion", 0),
@@ -5664,7 +6112,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 extra["pattern"] = outside_pattern(command)
                 roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
                 data["canAllow"] = step.get("runner") != boxstep.RUNNER and outside_allowed(command, project.denied_commands, roots)
-                remembered = data["canAllow"] and consent.automatic(self, card, step, command)
+                # Reguły automatycznej zgody, odmowa i pauza sprawdzane przy zapisie, po step.finished (PT-311).
+                remembered = bool(data["canAllow"])
             else:
                 # PT-124: łańcuch rozłożony na pojedyncze polecenia z flagami i powodem blokady (dla okna decyzji).
                 extra["commands"] = chain.describe(command, denied=project.denied_commands,
@@ -5708,10 +6157,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 except FlowError:
                     pass
         elif remembered:
-            # Polecenie zapamiętane przez użytkownika albo bezpieczne przy automatycznych zgodach — bez pytania.
-            self.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
-                                kind=step.get("kind") or "", choice="run", answer="",
-                                command=data.get("command") or "", executor="", auto=True)
+            # Polecenie zapamiętane przez użytkownika albo bezpieczne przy automatycznych zgodach — bez pytania,
+            # chyba że człowiek odmówił go już w tym tickecie albo karta jest wstrzymana (08.11, K-38/PT-264).
+            consent.record_automatic(self, card, step, data.get("command") or "")
         # Agent konfliktu już scalił w worktree karty. Utrwalamy potwierdzony stan także podczas
         # decyzji o bazie; blokada nadal odracza sprzątanie i kolejne scalenia w _tick_card/_act.
         if merged_tip:
@@ -6263,6 +6711,415 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except FlowError as exc:
             print(f"tide-daemon: przepływ karty {card}: scalenie {ticket}: {exc}", flush=True)
 
+    # --- testy po scaleniu (K-88, PT-318; model i zdarzenia: mergecheck.py) ------------------------
+
+    def _merge_checks(self, card: str) -> list[dict]:
+        """Bramka testów po scaleniu: uzbraja ją (raz na kartę), zakłada brakujące próby po trwałych wynikach scaleń
+        (także po restarcie między `result` scalenia a zapisem próby — dokładnie raz, bo próba pamięta `mergeSeq`)
+        i zwraca próby, które trzymają bramkę. Pusta lista — bramka otwarta."""
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if st.started is None:
+                return []
+            if not st.merge_check_armed:
+                # Scalenia zapisane przed uzbrojeniem (karty trwające w chwili wdrożenia) nie zakładają prób wstecz.
+                self.journal.append(card, mergecheck.ARMED)
+                st = self.journal.state(card)
+            for (action, ticket), merged in list(st.results.items()):
+                seq = merged.get("seq")
+                if action != "merge" or not merged.get("ok") or int(seq or 0) < st.merge_check_armed or \
+                        (ticket, seq) in st.merge_check_merges or (card, ticket, seq) in self._merge_check_ff:
+                    continue
+                if self._request_merge_check(card, st, ticket, merged) is None:
+                    self._merge_check_ff.add((card, ticket, seq))
+                st = self.journal.state(card)
+            held = mergecheck.gate(st)
+        for entry in held:
+            if entry["status"] == mergecheck.PENDING:
+                self._merge_check_waiting(card, entry)
+        return mergecheck.gate(self.journal.state(card)) if held else held
+
+    def _merge_check_waiting(self, card: str, entry: dict) -> None:
+        """Próba z poleceniem czeka na przebieg (PT-329): pseudokrok `merge-check-<ticket>-<n>`, zgoda tą samą
+        ścieżką co prośba `outside` kroku (bez zgody Tide „z urzędu”), start w kolejce outside i zapis
+        `merge.check-finished`. Niepewna historia albo tożsamość wstrzymuje przebieg (bramka zostaje zamknięta)."""
+        command = str(entry["requested"].get("command") or "")
+        name = mergecheck.step_name(entry["check"])
+        if not command:
+            return
+        try:
+            step = self._merge_check_step(card, entry)
+            if step is None:
+                return
+            decision = self.journal.state(card).step_decisions.get(name)
+            if decision is None:
+                # Automatyczna zgoda tylko z reguł projektu (dozwolone rodziny, zgoda ticketu, `outsideAuto`) i bez
+                # odmowy człowieka tego polecenia w tym tickecie ani wstrzymania karty (PT-311). Inaczej panel karty
+                # pokazuje zwykłe pytanie o zgodę (decisions.py).
+                consent.record_automatic(self, card, step, command, check=entry["check"])
+                decision = self.journal.state(card).step_decisions.get(name)
+            if (decision or {}).get("choice") in consent.RUN:
+                self._merge_check_run(card, step, entry, decision)
+        except FlowError as exc:
+            self._outside_log(name, f"wstrzymane: {exc}")
+
+    def _merge_check_step(self, card: str, entry: dict) -> dict | None:
+        """Pseudokrok próby: zapisany `merge.check-step` (raz na próbę, także po restarcie) jako słownik kroku dla
+        wspólnych reguł zgody i kolejki. None — brak worktree gałęzi karty."""
+        name = mergecheck.step_name(entry["check"])
+        with self.journal.lock:
+            st = self.journal.state(card)
+            found = st.merge_check_steps.get(name)
+            if found is None:
+                requested = entry["requested"]
+                info = ticket_of(st, entry["ticket"])
+                worktree = info["cardWorktree"]
+                if not worktree:
+                    return None
+                from ..board.commands import outside_allowed
+                command, step_dir = requested.get("command") or "", worktree + f".{name}.step"
+                project = self._project(card)[1]
+                allowed = outside_allowed(command, project.denied_commands, (worktree, project.repo, step_dir))
+                found = self.journal.append(
+                    card, mergecheck.STEP, step=name, ticket=entry["ticket"], kind=mergecheck.KIND,
+                    check=entry["check"], command=command, after=requested.get("after") or "",
+                    branch=info["cardBranch"], worktree=worktree, stepDir=step_dir,
+                    baseVersion=st.base_version, canAllow=allowed)
+        # Bez `runner`: próba biegnie wyłącznie na hoście, w worktree gałęzi karty.
+        return {key: found.get(key) for key in ("step", "ticket", "kind", "check", "command", "after", "branch",
+                                                "worktree", "stepDir", "baseVersion")}
+
+    def _merge_check_history(self, card: str) -> list:
+        try:
+            return trialhold.read_process_history(self.journal, card)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
+
+    def _merge_check_run(self, card: str, step: dict, entry: dict, decision: dict) -> None:
+        """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
+        `outside.finished` pseudokroku i `merge.check-finished` z tym samym `exit` (liczba, „zatrzymane”,
+        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku."""
+        self._trial_check(step)
+        name = step["step"]
+        state, started, finished = processidentity.outside_run(self._merge_check_history(card), name)
+        if state != "ok":
+            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+        if finished:
+            # Restart między `outside.finished` a wynikiem próby: wynik z zapisanego zakończenia, dokładnie raz.
+            self._merge_check_finish(card, step, entry, finished.get("exit"), (started or {}).get("log") or "")
+            return
+        if started is None:
+            if self.journal.state(card).paused:
+                # Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce; po wznowieniu wraca do niej.
+                self._outside_waiting.pop(name, None)
+                return
+            if not consent.before_start(self, card, step, {"command": step["command"]}, decision):
+                return
+            if self._outside_busy(card):
+                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
+                return
+            if self._outside_behind(card, name, decision):
+                return
+            self._outside_waiting.pop(name, None)
+            self._outside_log(name, "start")
+            self._merge_check_start(card, step, entry)
+            return
+        collected = self._outside_collect(card, name, started)
+        if collected is not None:
+            code, tail = collected
+            with self.journal.lock:
+                self.journal.append(card, "outside.finished", step=name, ticket=step["ticket"],
+                                    command=started.get("command") or "", exit=code, tail=tail)
+                self._merge_check_finish(card, step, entry, code, started.get("log") or "")
+
+    def _merge_check_finish(self, card: str, step: dict, entry: dict, code, log: str) -> None:
+        with self.journal.lock:
+            item = self.journal.state(card).merge_checks.get(step["ticket"]) or {}
+            if (item.get("requested") or {}).get("check") == entry["check"] and item.get("finished") is None:
+                self.journal.append(card, mergecheck.FINISHED, ticket=step["ticket"], check=entry["check"], exit=code,
+                                    log=log)
+
+    def _merge_check_still_allowed(self, card: str, step: dict) -> bool:
+        """Świeża kontrola tuż przed startem, pod blokadą dziennika: bieżąca próba nadal czeka, jej decyzja to zgoda,
+        a zgoda automatyczna nadal spełnia reguły (odmowa człowieka i cofnięcie wygrywają — PT-311)."""
+        current = self.journal.state(card)
+        name = step["step"]
+        item = current.merge_checks.get(step["ticket"]) or {}
+        decision = current.step_decisions.get(name) or {}
+        if (item.get("requested") or {}).get("check") != step["check"] or item.get("finished") is not None or \
+                name in current.outside_launched or current.paused or current.card_finished or \
+                decision.get("choice") not in consent.RUN:
+            self._outside_waiting.pop(name, None)
+            return False
+        if decision.get("auto") and not consent.before_start(self, card, step, {"command": step["command"]}, decision):
+            return False
+        return True
+
+    def _merge_check_head(self, card: str, step: dict) -> str:
+        """HEAD worktree gałęzi karty, gdy to wierzchołek `after` próby (albo `after` z samymi commitami stanu planu
+        zapisanymi przez Tide); pusty napis — inny kod niż ten, który próba ma sprawdzić."""
+        worktree, after = step.get("worktree") or "", step.get("after") or ""
+        found = self.git.run(worktree, "rev-parse", "HEAD") if worktree and after else None
+        head = found.out.strip() if found is not None and found.ok else ""
+        if not head:
+            return ""
+        if head == after:
+            return head
+        st = self.journal.state(card)
+        repo = self._merge_check_repo(card, st, step["ticket"])
+        return head if self._only_tide_plan_commits(repo, st, after, head) else ""
+
+    def _merge_check_start(self, card: str, step: dict, entry: dict) -> None:
+        name, command, worktree = step["step"], step["command"], step["worktree"]
+        head = self._merge_check_head(card, step)
+        if not head:
+            self._outside_log(name, f"worktree gałęzi karty nie stoi na {step.get('after') or '?'} — czekam")
+            return
+        # Pełne polecenie zawsze w całości: ponowienie samych padniętych modułów (testrerun) nie dotyczy próby,
+        # bo udane ponowienie nie może zastąpić porażki (zasady wyjątków od testów).
+        unit, log, exit_file, argv, env = self._outside_launch(name, step["stepDir"], worktree, command)
+        with open(log, "ab") as out, self.journal.lock:
+            self._merge_check_history(card)
+            if not self._merge_check_still_allowed(card, step):
+                return
+            subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+            self.journal.append(card, "outside.started", step=name, ticket=step["ticket"], command=command,
+                                unit=unit, log=log, exitFile=exit_file, worktree=worktree, head=head)
+        if self._outside_active is None:
+            self._outside_active = {}
+        self._outside_active[name] = (card, unit)
+
+    def resolve_merge_check(self, card: str, request: dict) -> dict:
+        """Decyzja użytkownika o próbie testów po scaleniu (pytanie o zgodę w panelu): `run`, `run-always` (zapamiętuje
+        rodzinę polecenia w projekcie) albo `deny`. Dotyczy wyłącznie tej próby (`check`): ponowienie ma nowy
+        pseudokrok i wymaga nowej decyzji. Odmowa po zgodzie automatycznej, przed startem, unieważnia zgodę (PT-311)."""
+        name = str(request.get("step") or "")
+        choice = str(request.get("choice") or "")
+        if choice not in ("run", "run-always", "deny"):
+            raise FlowError("bad-choice", "próba testów po scaleniu przyjmuje run, run-always albo deny")
+        answer = str(request.get("answer") or "").strip()
+        instead = str(request.get("instead") or "").strip()
+        if len(answer) > 4000 or len(instead) > 4000:
+            raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
+        from ..board.commands import outside_allowed, outside_pattern, outside_risky
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            entry = next((e for e in mergecheck.gate(st) if mergecheck.step_name(e["check"]) == name), None)
+            event = st.merge_check_steps.get(name)
+            if entry is None or event is None or entry["status"] != mergecheck.PENDING:
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {name} nie czeka na zgodę")
+            step = self._merge_check_step(card, entry)
+            self._trial_check(step)
+            command = step["command"]
+            prior = st.step_decisions.get(name)
+            if prior is not None:
+                if name in st.outside_launched:
+                    raise FlowError("already-started", "testy po scaleniu już się uruchomiły — działają dalej")
+                if prior.get("choice") == choice and not prior.get("auto"):
+                    return {"ok": True, "id": card, "step": name, "choice": choice, "already": True}
+                if not (choice == "deny" and prior.get("auto") and prior.get("choice") in consent.RUN):
+                    raise FlowError("already-decided", f"{card}: odpowiedź na tę próbę jest już zapisana")
+                self.journal.append(card, consent.INVALIDATED, step=name, ticket=step["ticket"],
+                                    decisionSeq=prior.get("seq"), reason="denied")
+            _, project = self._project(card)
+            roots = (step["worktree"], project.repo, step["stepDir"])
+            if choice in consent.RUN:
+                if not outside_allowed(command, project.denied_commands, roots):
+                    raise FlowError("forbidden-command", f"polecenia „{command}” nie można uruchomić poza piaskownicą")
+                if choice == "run-always":
+                    if outside_risky(command, roots, self._extra_repos(card)):
+                        raise FlowError("risky-command", "ryzykownego polecenia nie można zapamiętać — uruchom je raz")
+                    self._remember_outside(project.slug, outside_pattern(command))
+            made = self.journal.append(card, "step.decision", step=name, ticket=step["ticket"], kind=mergecheck.KIND,
+                                       check=step["check"], choice=choice, answer=answer if choice == "deny" else "",
+                                       command=command, executor="", **({"instead": instead} if instead else {}))
+        if choice == "deny":
+            self._outside_waiting.pop(name, None)
+        return {"ok": True, "id": card, "step": name, "choice": choice, "seq": made["seq"]}
+
+    def _merge_check_repo(self, card: str, st: FlowState, ticket: str) -> str:
+        return next((s.get("repo") for s in st.steps.values() if s.get("ticket") == ticket and s.get("repo")), "") \
+            or self._repo(card)
+
+    def _request_merge_check(self, card: str, st: FlowState, ticket: str, merged: dict) -> dict | None:
+        """Próba po scaleniu `merged` albo None, gdy scalenie jest „fast-forward” względem punktu startu ticketu."""
+        repo = self._merge_check_repo(card, st, ticket)
+        intent = st.intents.get(("merge", ticket)) or {}
+        start = ticket_of(st, ticket)["base"]
+        after = merged.get("commit") or ""
+        before = self._merge_before(repo, merged, intent)
+        if start and before and (before == start or self._only_tide_plan_commits(repo, st, start, before)):
+            return None
+        return self._append_merge_check(card, st, repo, ticket, start=start, before=before, after=after,
+                                        merge_seq=merged.get("seq"), retry_of="")
+
+    def _merge_before(self, repo: str, merged: dict, intent: dict) -> str:
+        """Wierzchołek gałęzi karty tuż przed scaleniem: pierwszy rodzic commita scalenia Tide (drugi rodzic to
+        zatwierdzony commit ticketu); po rozwiązanym konflikcie i przy scaleniu już obecnym — `cardTip` zamiaru."""
+        after = merged.get("commit") or ""
+        if after and not merged.get("resolved"):
+            parents = self.git.run(repo, "rev-list", "--parents", "-n", "1", after)
+            found = parents.out.split() if parents.ok else []
+            if len(found) == 3 and found[2] == intent.get("expectedTip"):
+                return found[1]
+        return intent.get("cardTip") or ""
+
+    def _only_tide_plan_commits(self, repo: str, st: FlowState, start: str, before: str) -> bool:
+        """`start..before` to wyłącznie commity stanu planu, które Tide sam zrobił na tej karcie (wynik akcji
+        `plan-commit` z polem `commit` w dzienniku), każdy z jednym rodzicem, a `start` jest przodkiem `before`.
+        Tide commituje plan po każdej zmianie stanu ticketu, także po jego starcie, więc bez tego każde scalenie
+        karty z planem byłoby nie-FF. Wyjątek nie patrzy na nazwy plików (review r1, MAJOR-2): commit ręczny, commit
+        innego ticketu, scalenie albo commit planu spoza dziennika tej karty zakłada próbę.
+
+        Samo pochodzenie SHA nie wystarcza (review r2, MAJOR-2): `commit_plan` zapisuje też ręczny tekst planu poza
+        tabelą i dopiski kartek przejęte z worktree karty. Każdy taki commit musi więc dowodzić samej automatycznej
+        aktualizacji stanu: zmienia wyłącznie plik planu (`planFile` zatwierdzonego planu), a tekst poza nagłówkiem
+        i tabelą ticketów — oba w całości generowane przez Tide — jest identyczny z rodzicem
+        (`mergecheck.plan_state_only`). Brak takiego dowodu (kartka, szkic, ręczny tekst, nieczytelny plik) → próba."""
+        made = {r.get("commit") for (action, _key), r in st.results.items()
+                if action == "plan-commit" and r.get("ok") and r.get("commit") and not r.get("already")}
+        plan_file = str((getattr(st, "plan_approved", None) or {}).get("planFile") or "")
+        if not made or not plan_file or not self.git.run(repo, "merge-base", "--is-ancestor", start, before).ok:
+            return False
+        listed = self.git.run(repo, "rev-list", "--parents", f"{start}..{before}")
+        rows = [line.split() for line in listed.out.splitlines() if line.strip()] if listed.ok else []
+        if not rows or not all(len(row) == 2 and row[0] in made for row in rows):
+            return False
+        for commit, parent in rows:
+            touched = self.git.run(repo, "diff-tree", "--no-commit-id", "-r", "--name-only", "--no-renames",
+                                   parent, commit)
+            if not touched.ok or touched.out.splitlines() != [plan_file]:
+                return False
+            old = self.git.run(repo, "show", f"{parent}:{plan_file}")
+            new = self.git.run(repo, "show", f"{commit}:{plan_file}")
+            if not old.ok or not new.ok or not mergecheck.plan_state_only(old.out, new.out):
+                return False
+        return True
+
+    def _merge_check_targets(self, repo: str, commit: str) -> set:
+        """Cele `make` gałęzi karty w commicie `commit`: tekst `Makefile` i `mk/*.mk` z gita, bez uruchamiania `make`."""
+        if not commit:
+            return set()
+        texts = []
+        shown = self.git.run(repo, "show", f"{commit}:Makefile")
+        if shown.ok:
+            texts.append(shown.out[:mergecheck.MAKEFILE_MAX])
+        listed = self.git.run(repo, "ls-tree", "--name-only", commit, "mk/")
+        for path in (listed.out.splitlines() if listed.ok else []):
+            name = os.path.basename(path)
+            if path.startswith("mk/") and name.endswith(".mk") and not name.startswith("."):
+                one = self.git.run(repo, "show", f"{commit}:{path}")
+                if one.ok:
+                    texts.append(one.out[:mergecheck.MAKEFILE_MAX])
+        return mergecheck.make_targets(texts)
+
+    def _merge_check_contract(self, card: str) -> str:
+        """`tests.changed` zatwierdzonego kontraktu testów projektu (K-69) albo "" — kontrakt nieobecny,
+        niezatwierdzony, uszkodzony albo Tablica bez kontraktów (gałąź sprzed K-69). Każda niepewność → ""."""
+        try:
+            _, project = self._project(card)
+            tests = getattr(project, "tests", None)
+            if not isinstance(tests, dict) or getattr(project, "tests_error", ""):
+                return ""
+            changed = str(tests.get("changed") or "").strip()
+            if not changed:
+                return ""
+            from ..board import contract_approval  # K-69; na gałęzi bez kontraktów — ImportError
+            ok = contract_approval.approved(self.store.root, project.slug, tests,
+                                            getattr(self.store, "approvals_path", None))
+        except Exception:
+            return ""
+        return changed if ok is True else ""
+
+    def _append_merge_check(self, card: str, st: FlowState, repo: str, ticket: str, *, start: str, before: str,
+                            after: str, merge_seq, retry_of: str) -> dict:
+        check = mergecheck.next_check(st, ticket)
+        chosen = mergecheck.select_command(self._merge_check_contract(card),
+                                           self._merge_check_targets(repo, after), start)
+        if not chosen.get("command"):
+            # Brak polecenia albo kontrakt, który nie jest pojedynczym poleceniem: próba niedostępna (bez `command`),
+            # której żaden wynik nie otwiera — wyjście tylko przez ponowienie po poprawce albo akceptację (PT-320).
+            if chosen.get("reason"):
+                return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                           before=before, after=after, unavailable=True, source=chosen["source"],
+                                           reason=chosen["reason"], mergeSeq=merge_seq, retryOf=retry_of)
+            return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                       before=before, after=after, unavailable=True, mergeSeq=merge_seq,
+                                       retryOf=retry_of)
+        if chosen.get("fallback"):
+            return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                       before=before, after=after, command=chosen["command"],
+                                       source=chosen["source"], fallback=chosen["fallback"], mergeSeq=merge_seq,
+                                       retryOf=retry_of)
+        return self.journal.append(card, mergecheck.REQUESTED, ticket=ticket, check=check, start=start,
+                                   before=before, after=after, command=chosen["command"], source=chosen["source"],
+                                   mergeSeq=merge_seq, retryOf=retry_of)
+
+    def retry_merge_check(self, card: str, request: dict) -> dict:
+        """Ponowienie próby przy problemie `merge-check-unavailable`, `merge-check-failed` albo `merge-check-denied`
+        (PT-329): nowa próba
+        `<ticket>:<n+1>` na bieżącym wierzchołku gałęzi karty, z ponownym wyborem polecenia. Inna próba niż bieżąca
+        (`check`) albo próba bez problemu — błąd bez zapisu."""
+        ticket = str(request.get("ticket") or "")
+        wanted = str(request.get("check") or "")
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            item = st.merge_checks.get(ticket)
+            state = mergecheck.status(item, st.step_decisions) if item else ""
+            current = (item or {}).get("requested", {}).get("check") or ""
+            # Odmowa zgody (PT-329) ma te same wyjścia co porażka; nowa próba to nowy pseudokrok i nowa decyzja.
+            if state not in (mergecheck.UNAVAILABLE, mergecheck.FAILED, mergecheck.DENIED) or \
+                    (wanted and wanted != current):
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {wanted or ticket} nie czeka "
+                                               "na ponowienie")
+            old = item["requested"]
+            repo = self._merge_check_repo(card, st, ticket)
+            branch = ticket_of(st, ticket)["cardBranch"]
+            after = self.git.sha(repo, f"refs/heads/{branch}") if branch else ""
+            if not after:
+                raise FlowError("no-card-branch", "nie można odczytać wierzchołka gałęzi karty")
+            made = self._append_merge_check(card, st, repo, ticket, start=old.get("start") or "",
+                                            before=old.get("before") or "", after=after,
+                                            merge_seq=old.get("mergeSeq"), retry_of=current)
+        return {"ok": True, "id": card, "choice": "retry-merge-check", "ticket": ticket, "check": made["check"]}
+
+    def accept_merge_check(self, card: str, request: dict) -> dict:
+        """„Akceptuj mimo porażki” (PT-320): zapis `merge.check-accepted {ticket, check, after, by}` dla bieżącej próby
+        ticketu w stanie `merge-check-failed`, `merge-check-denied` albo `merge-check-unavailable`, gdy `check` i SHA
+        `after` z pytania są dokładnie tymi z próby. Otwiera bramkę tylko dla tej próby; niczego nie uruchamia.
+        Nieaktualna próba (inny `check`, inny wierzchołek), próba udana, czekająca albo już zaakceptowana — błąd bez
+        zapisu. Wywołuje ją wyłącznie `resolve_step` bez kontekstu opiekuna (jawna decyzja z panelu karty)."""
+        ticket, wanted, after = (request.get(key) for key in ("ticket", "check", "after"))
+        if not all(isinstance(value, str) and value for value in (ticket, wanted, after)) or \
+                not mergecheck.SHA.fullmatch(after):
+            raise FlowError("bad-request", "accept-merge-check wymaga `ticket`, `check` i pełnego SHA `after`")
+        with self.journal.lock:
+            st = self.journal.state(card)
+            if baseproposal.blocked(st):
+                raise FlowError("base-decision", "najpierw rozstrzygnij pytanie o bazę karty")
+            if st.card_finished:
+                raise FlowError("no-flow", "karta została zakończona")
+            item = st.merge_checks.get(ticket)
+            requested = (item or {}).get("requested") or {}
+            state = mergecheck.status(item, st.step_decisions) if item else ""
+            if state not in mergecheck.PROBLEMS or wanted != requested.get("check") or \
+                    after != requested.get("after"):
+                raise FlowError("not-waiting", f"{card}: próba testów po scaleniu {wanted} na {after[:12]} nie czeka "
+                                               "na akceptację (nieaktualna, udana albo już rozstrzygnięta)")
+            made = self.journal.append(card, mergecheck.ACCEPTED, ticket=ticket, check=wanted, after=after, by="user")
+        return {"ok": True, "id": card, "choice": mergecheck.ACCEPT, "ticket": ticket, "check": wanted,
+                "after": after, "seq": made["seq"]}
+
     def _start_conflict(self, card: str, st: FlowState, review_step: dict, failure: dict) -> None:
         """Oddaje konflikt wykonawcy w worktree karty; wynik sprawdza _finish."""
         item, project = self._project(card)
@@ -6402,11 +7259,29 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
+        collected = self._outside_collect(card, name, started)
+        if collected is None:
+            return None
+        code, tail = collected
+        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
+                            command=started.get("command") or "", exit=code, tail=tail)
+        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
+        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
+        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
+                                      f"Koniec wyniku:\n{tail}"}
+
+    def _outside_collect(self, card: str, name: str, started: dict):
+        """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
+        wyjścia, zatrzymana jednostka bez kodu (PT-315, `_outside_stopped`) albo przekroczony czas. Wspólne dla prośby
+        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego."""
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
-        code = stepstop.read_exit_code(os.path.dirname(os.path.dirname(started["exitFile"])))
+        step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
+        code = stepstop.read_exit_code(step_dir)
         if code is None and time.time() - _epoch(started.get("ts")) < OUTSIDE_TIMEOUT:
-            return None
+            code = self._outside_stopped(started, step_dir)
+            if code is None:
+                return None
         if code is None:
             stepstop._systemctl("stop", started["unit"] + ".scope")
             code = "przekroczony czas"
@@ -6421,12 +7296,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._outside_active.pop(name, None)
         # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
         stepstop._systemctl("stop", started["unit"] + ".scope")
-        self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
-                            command=started.get("command") or "", exit=code, tail=tail)
-        # Długi wynik (np. pełne testy) nie mieści się w końcówce — krok czyta całość z pliku (04.11, K-46/KAMP-31:
-        # z obciętego wyniku zniknęły wyniki testów i krok prosił o ten sam przebieg drugi raz).
-        return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
-                                      f"Koniec wyniku:\n{tail}"}
+        return code, tail
+
+    def _outside_stopped(self, started: dict, step_dir: str):
+        """Zatrzymana jednostka outside bez `exit-code` (PT-315: `systemctl --user stop …scope` zostawia `exit-code.tmp`
+        bez zmiany nazwy): kod z kompletnego pliku tymczasowego albo "zatrzymane". None — jednostka działa albo stan
+        nieznany (błąd odczytu nie kończy polecenia); wtedy czekamy dalej do OUTSIDE_TIMEOUT."""
+        if time.time() - _epoch(started.get("ts")) < OUTSIDE_STOP_GRACE:
+            return None         # systemd-run rejestruje jednostkę chwilę po starcie procesu
+        if not stepstop.unit_without_processes(started.get("unit") or "", timeout=OUTSIDE_STATE_TIMEOUT):
+            return None
+        # Wrapper mógł skończyć zaraz po pierwszym odczycie (zmiana nazwy tmp → exit-code): najpierw plik docelowy.
+        code = stepstop.read_exit_code(step_dir)
+        if code is None:
+            code = stepstop.read_exit_code(step_dir, stepstop.EXIT_CODE_FILE + ".tmp")
+        return code if code is not None else OUTSIDE_STOPPED
 
     def _review_rounds(self) -> int:
         """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
@@ -6532,10 +7416,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # w oknie ma pokazać dzisiejszy stan, inaczej użytkownik nie ma czego wybrać.
             self.journal.append(card, "permission.rechecked", step=step.get("step") or "",
                                 ticket=step.get("ticket") or "", canAllow=allowed)
-        if allowed and consent.automatic(self, card, step, command):
-            self.journal.append(card, "step.decision", step=step.get("step") or "", ticket=step.get("ticket") or "",
-                                kind=step.get("kind") or "", choice="run", answer="", command=command,
-                                executor="", auto=True)
+        if allowed:
+            consent.record_automatic(self, card, step, command)
 
     CLASS_RANK = {"lekki": 0, "standard": 1, "mocny": 2}
 
@@ -6803,6 +7685,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
             resumed = {s.get("parentStep") for s in current.steps.values() if s.get("parentStep")}
             outside = {name for name, identity in identities.items() if isinstance(name, str)
                        and identity.has_outside_request}
+            # Pseudokrok bieżącej próby testów po scaleniu (PT-329) prosi o polecenie bez `step.finished.outside`:
+            # jego zgoda sprzed restartu też wraca do kolejki z czasem zgody (review r1, NIT-1).
+            outside |= {mergecheck.step_name(entry["check"]) for entry in mergecheck.gate(current)
+                        if entry["status"] == mergecheck.PENDING}
             for e in current.step_decisions.values():
                 name = e.get("step")
                 queued = _epoch(e.get("ts")) if e.get("ts") else now
@@ -6822,19 +7708,26 @@ class FlowEngine(CaretakerChat, PlanEditing):
         value = found.get("exitFile")
         return value if isinstance(value, str) and value else "/nonexistent/in/exit-code"
 
-    def _start_outside(self, card: str, step: dict, command: str) -> None:
-        self._trial_check(step)
-        if card == "K-38" and not step.get("ticket"):
-            raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
-        if step.get("runner") == boxstep.RUNNER:
-            raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
-        self._outside_history(card, step, command=command)
+    def _outside_still_allowed(self, card: str, step: dict) -> bool:
+        """Świeża kontrola decyzji tuż przed startem (PT-311). Odmowa człowieka zapisana po kontroli kolejki
+        kończy start bez błędu (krok wznowi się z odmową); automatyczna zgoda przechodzi `before_start`
+        (odmowa w innym kroku ticketu ją unieważnia). Brak zgody nadal odrzuca `_outside_history` (FlowError),
+        a ręczna zgoda nie dostaje nowych kontroli."""
         name = step.get("step") or ""
-        worktree = step.get("worktree") or ""
-        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
-        requested_command = command
-        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
-        folder = os.path.join(step.get("stepDir") or "", "outside")
+        current = self.journal.state(card)
+        decision = current.step_decisions.get(name) or {}
+        refused = decision.get("choice") == "deny" and not decision.get("auto")
+        if refused or decision.get("auto") and decision.get("choice") in consent.RUN and not consent.before_start(
+                self, card, step, current.finished.get(name) or {}, decision):
+            self._outside_waiting.pop(name, None)
+            return False
+        return True
+
+    def _outside_launch(self, name: str, step_dir: str, worktree: str, command: str):
+        """Jednostka, plik wyniku, plik kodu wyjścia, argv i środowisko polecenia poza piaskownicą (jednostka
+        `systemd-run --scope`, kod wyjścia przez `EXIT_WRAPPER`). Wspólne dla prośby kroku i próby testów po
+        scaleniu (PT-329); start i jego zapis należą do wywołującego."""
+        folder = os.path.join(step_dir, "outside")
         os.makedirs(os.path.join(folder, "in"), exist_ok=True)
         exit_file = os.path.join(folder, "in", "exit-code")
         log = os.path.join(folder, "outside.log")
@@ -6850,7 +7743,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         env.setdefault("QML_DISABLE_DISK_CACHE", "1")
         if chrome and not env.get("CHROME_BIN"):
             env["CHROME_BIN"] = chrome
-        if not env.get("JOBS") and not test_pool_available(step.get("worktree") or ""):
+        if not env.get("JOBS") and not test_pool_available(worktree):
             # Gałąź sprzed wspólnej puli testów (06.11: PT-173/PT-186/PT-220 po 14 procesów każdy, obciążenie 65):
             # `make` czyta JOBS ze środowiska, więc przebieg bierze najwyżej OLD_RUNNER_JOBS procesów.
             env["JOBS"] = str(OLD_RUNNER_JOBS)
@@ -6858,9 +7751,31 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "-p", f"CPUWeight={STEP_CPU_WEIGHT}", "-p", f"IOWeight={STEP_CPU_WEIGHT}", "--",
                 "/usr/bin/env", "-u", "INVOCATION_ID", "/bin/sh", "-c", agentcmd.EXIT_WRAPPER, "tide-outside",
                 exit_file, "/bin/sh", "-c", command]
+        return unit, log, exit_file, argv, env
+
+    def _start_outside(self, card: str, step: dict, command: str) -> None:
+        self._trial_check(step)
+        if card == "K-38" and not step.get("ticket"):
+            raise FlowError("k38-trial-held", "K-38 v1: nieznana tożsamość kroku")
+        if step.get("runner") == boxstep.RUNNER:
+            raise FlowError("box-outside", "krok w pudełku nie może uruchamiać poleceń na hoście")
+        name = step.get("step") or ""
+        self._outside_history(card, step)       # nieznana historia i tożsamość nadal zatrzymują wykonanie
+        if not self._outside_still_allowed(card, step):
+            return
+        self._outside_history(card, step, command=command)
+        worktree = step.get("worktree") or ""
+        # Pełny przebieg testów na niezmienionym kodzie po porażce: tylko padnięte moduły (cardflow/testrerun.py).
+        requested_command = command
+        command, head, rerun_of = testrerun.substitute(self.journal.read(card), worktree, command)
+        unit, log, exit_file, argv, env = self._outside_launch(name, step.get("stepDir") or "", worktree, command)
         # Ta sama blokada obejmuje świeży odczyt, proces i zapis startu: decyzja
         # ani historia nie mogą zmienić się pomiędzy kontrolą a Popen.
         with open(log, "ab") as out, self.journal.lock:
+            # Odmowa człowieka albo cofnięcie zapisane po kontroli kolejki wygrywa ze startem (PT-311).
+            self._outside_history(card, step)
+            if not self._outside_still_allowed(card, step):
+                return
             self._outside_history(card, step, command=requested_command)
             subprocess.Popen(argv, cwd=step.get("worktree") or None, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
@@ -7662,6 +8577,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return False
         if st.running():
             return False
+        if self._merge_checks(card):
+            return False    # bramka testów po scaleniu (PT-318): domknięcie czeka na wynik bieżącej próby
         item, project = self._project(card)
         info = ticket_of(st)
         if not info["cardWorktree"]:

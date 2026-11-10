@@ -41,6 +41,7 @@ from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUM
                     DEFAULT_ENTRY, DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, ENTRIES, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, LEGACY_SPEC_MODE, MANUAL_COLUMNS,
                     MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
                     PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
+                    REVIEW_CLASSES, REVIEW_CLASSES_KEY, REVIEW_POLICIES, REVIEW_POLICY_KEY,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
                     order_value, parse_card, parse_project, parse_tag, slugify, split_tags)
@@ -79,7 +80,7 @@ CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "n
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
-                  "tests")
+                  "tests", "reviewIndependence", "reviewIndependenceClasses")
 TAG_FIELDS = ("name", "newName", "color", "description")
 _CONTRACT_KEY = "_testsContract"   # wewnętrzny klucz wyniku planu projektu: kontrakt po zapisie (nie trafia do D-Bus)
 NO_TESTS_SUGGESTION = "brak podpowiedzi — kartki odeślą do zasad projektu (CLAUDE.md, AGENTS.md)"
@@ -913,6 +914,11 @@ class BoardStore:
                 _doc_set(doc, key, json.dumps(v[field_name], ensure_ascii=False))
         if "assignmentRules" in v:
             _doc_set(doc, "assignment-rules", json.dumps(v["assignmentRules"], ensure_ascii=False))
+        # Polityka review (PT-330): `free` bez klucza w pliku zostaje domyślną, nie dopisujemy jej.
+        if "reviewIndependence" in v and (doc.has(REVIEW_POLICY_KEY) or v["reviewIndependence"] != "free"):
+            _doc_set(doc, REVIEW_POLICY_KEY, v["reviewIndependence"])
+        if "reviewIndependenceClasses" in v and (doc.has(REVIEW_CLASSES_KEY) or v["reviewIndependenceClasses"]):
+            _doc_set(doc, REVIEW_CLASSES_KEY, ", ".join(v["reviewIndependenceClasses"]))
         if "readDirs" in v:
             from ..tasks import readaccess
             try:
@@ -1348,7 +1354,10 @@ def _project_json(project: Project, docs_dir: str, cards: int) -> dict:
             "testsApproved": project.tests_approved,
             "testsGrantNote": {name: project_tests.grant_note(project.tests.get(name, ""))
                                for name in project_tests.FIELDS},
-            "assignmentRules": project.assignment_rules}
+            "assignmentRules": project.assignment_rules,
+            # Wartość jak w pliku (pusta → `free`); nieznaną pokazujemy, usługa i tak stosuje `free` (PT-330).
+            "reviewIndependence": project.review_independence or "free",
+            "reviewIndependenceClasses": list(project.review_independence_classes)}
 
 
 def _column_index(column: str) -> int:
@@ -1617,6 +1626,21 @@ def _project_values(data: dict, board_root: str) -> dict:
         if not isinstance(data["youtrackSync"], bool):
             raise BoardError("youtrackSync to true albo false")
         out["youtrackSync"] = data["youtrackSync"]
+    if "reviewIndependence" in data:
+        out["reviewIndependence"] = _enum(data["reviewIndependence"], REVIEW_POLICIES, "reviewIndependence")
+    if "reviewIndependenceClasses" in data:
+        value = data["reviewIndependenceClasses"]
+        if not isinstance(value, list) or not all(isinstance(c, str) for c in value):
+            raise BoardError("reviewIndependenceClasses to lista klas, np. [\"mocny\"]")
+        classes = []
+        for item in value:
+            klass = item.strip().lower()
+            if klass not in REVIEW_CLASSES:
+                raise BoardError(f"nieznana klasa „{klass}” w reviewIndependenceClasses "
+                                 f"({', '.join(REVIEW_CLASSES)})")
+            if klass not in classes:
+                classes.append(klass)
+        out["reviewIndependenceClasses"] = classes
     for field_name, label in (("allowedCommands", commands.ALLOWED_KEY),
                               ("deniedCommands", commands.DENIED_KEY)):
         if field_name in data:

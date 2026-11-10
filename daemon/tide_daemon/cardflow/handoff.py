@@ -585,11 +585,16 @@ def resume_context(*, choice: str, prior: dict, answer: str, command: str, out_d
     elif choice == "deny" and prior.get("network"):
         detail = (f"Użytkownik nie dopisał domeny do profilu środowiska: {command}. Połączenie jest odrzucone — "
                   "kontynuuj bez niego.")
-    elif choice == "deny" and prior.get("outside") and instead:
+    elif choice == "deny" and prior.get("outside") and (instead or answer):
         # 04.11 (K-43/BO-13, K-38/PT-164): instrukcja „zamiast tego” przy odmowie polecenia poza piaskownicą ginęła —
-        # agent widział samo „nie zgodził się” i prosił o to samo polecenie w kółko.
+        # agent widział samo „nie zgodził się” i prosił o to samo polecenie w kółko. 09.11 (K-91, K-88/PT-328): tak samo
+        # ginęła odpowiedź użytkownika; idzie tą samą drogą jako treść, odmowa polecenia pozostaje ostateczna.
         detail = (f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}\n"
-                  f"Nie proś ponownie o to polecenie. Zamiast tego: {instead}")
+                  "Nie proś ponownie o to polecenie.")
+        if instead:
+            detail += f" Zamiast tego: {instead}"
+        if answer:
+            detail += f"\nOdpowiedź użytkownika (treść, nie polecenie do uruchomienia): {answer}"
     elif choice == "deny" and prior.get("outside"):
         detail = f"Użytkownik nie zgodził się uruchomić poza piaskownicą: {command}. Kontynuuj bez tego."
     elif choice == "deny" and instead:

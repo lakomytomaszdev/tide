@@ -82,6 +82,14 @@ Item {
         }
     }
 
+    // PT-316: opcja decyzji o review niesie ticket i rundę pytania; usługa dostaje je w JSON-ie w `choice`.
+    function reviewChoice(params) {
+        if (!params.ticket) return params.choice || ""
+        const request = {choice: params.choice || "", ticket: params.ticket}
+        if (params.round) request.round = params.round
+        return JSON.stringify(request)
+    }
+
     // Metoda /Board i parametry przychodzą z decyzji gotowe; tu tylko trafiają do właściwego wywołania backendu.
     function sendCardRequest(tag, cardId, method, params) {
         const b = view.backend
@@ -90,7 +98,7 @@ Item {
         else if (method === "RevokeTicketConsent") b.revokeTicketConsent(tag, cardId, JSON.stringify(params))
         else if (method === "AddCardStepNote") b.addCardStepNote(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardCaretaker") b.resolveCardCaretaker(tag, cardId, JSON.stringify(params))
-        else if (method === "ResolveCardReview") b.resolveCardReview(tag, cardId, params.choice || "")
+        else if (method === "ResolveCardReview") b.resolveCardReview(tag, cardId, reviewChoice(params))
         else if (method === "ApproveCardPlan") b.approveCardPlan(tag, cardId)
         else if (method === "EditCardPlan") b.editCardPlan(tag, cardId, JSON.stringify(params))
         else if (method === "EnterStep") b.enterStep(tag, cardId, params.step || "")

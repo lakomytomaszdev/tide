@@ -961,7 +961,7 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `CreateCard(s request)` | `→ s` | nowa karta z JSON `{title, description, project \| repo, projects, tags, column, note, youtrack, spec, session, branch, check}` → `{ok, id, commitError}` |
 | `UpdateCard(s id, s request)` | `→ s` | zmiana podanych pól (te same co wyżej bez `column`) → `{ok, id, changed, commitError}` |
 | `MoveCard(s id, s column, i order)` | `→ s` | ręczna kolumna (`backlog`, `todo`, `done`, `archived`) i pozycja w niej od 0; `-1` albo poza zakresem — na koniec → `{ok, id, changed, commitError}`. Każde wywołanie to jawne przeniesienie: stempluje `moved` także w tej samej kolumnie i na tym samym miejscu (wtedy `changed: true` i commit „K-12: move to todo”) — karta pokazana w Do sprawdzenia ma zwykle zapisane `todo`, a „do poprawy” do Do zrobienia musi być widać |
-| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, assignmentRules, tests}` (`tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
+| `UpsertProject(s request)` | `→ s` | projekt `{slug, name, repo, tags, aiDocs, tool, entry, mode, description, youtrack, youtrackSync, reviewIndependence, reviewIndependenceClasses, assignmentRules, tests}` (`reviewIndependence`: `free|other-model|other-family`, inna wartość — błąd; opis w sekcji pliku projektu; `tests`: kontrakt testów, niżej „Kontrakt testów projektu”) albo oddzielny zapis wspólnych zasad `{globalAssignmentRules}` (`entry`: `planning` albo `spec`; sam `mode: full|light` bez `entry` znaczy Planowanie, a `mode: spec` — wejście `spec`, tak samo w UpdateCard, CreateCard, RenderLaunch i RenderFlow): istniejący (po `slug`, `repo` albo tej samej nazwie) — zmiana podanych pól, inaczej nowy → `{ok, slug, changed, commitError}`; z polem `tests` to także zatwierdzenie kontraktu (niżej „Zatwierdzenie kontraktu testów”) i odpowiedź ma dodatkowo `testsApproved` oraz `approvalError`; nadawca z jednostki kroku `tide-step-*` albo nieustalony → `{ok: false, error: "forbidden"}` bez zmian (niżej „Ochrona zatwierdzenia przed krokiem agenta”) |
 | `SuggestProjectTests(s request)` | `→ s` | podpowiedź kontraktu testów `{slug}` albo `{repo}` → `{ok, changed, full, source, facts, message}`, dla `slug` także `effectiveSource` (`profile`/`detected`/`rules`), `unapproved`, `testsApproved`; tylko odczyt (niżej „Podpowiedź i źródło kontraktu”) |
 | `UpsertTag(s request)` | `→ s` | tag `{name, color, description, newName}`; `newName` zmienia nazwę także w kartach i projektach (również tagu bez pliku — wtedy powstaje jego plik) → `{ok, name, changed, commitError}` |
 | `RenderFlow(s id, s mode)` | `→ s` | polecenie dla karty (pusty `mode` — domyślne wejście i tryb projektu; `spec` to dawny zapis wejścia Tylko specyfikacja) → `{ok, text, entry, mode, tool, branch, check, docsDir, aiDocs, repo, repoMissing, project, projectName, specFile, template}`; katalog `docsDir` w tablicy zakłada od razu |
@@ -974,8 +974,8 @@ zgłoszeń YouTracka i import zgłoszeń jako kart — „Synchronizacja z YouTr
 | `ResolveYouTrack(s id, s choice)` | `→ s` | konflikt ze zmianą ręczną w YouTracku: karta (`K-16`) albo klucz zgłoszenia, `choice`: `youtrack` (Tide przyjmuje stan z YouTracka) albo `tide` (zapis stanu Tide mimo zmiany) → `{ok, issue, choice}`; bez konfliktu — `not-found` |
 | `ListCardBranches(s id, s request)` | `→ s` | bazy lokalne i znane lokalnie zdalne albo wyłącznie lokalne cele scalenia: `{purpose: "base"\|"merge", text?: "", limit?: 50}`; limit 1–100, filtr po całym zbiorze przed limitem; wynik `{ok, branches, mainRef, recentBases, recentTargets, warnings, hasMore}`; bez kursora, sieci i dowolnej ścieżki repozytorium od klienta |
 | `SuggestCardBase(s id, s request)` | `→ s` | podpowiedzi bazy: `{text, revision: int, scope: "text"\|"files"\|"links"}`; wynik `{ok, revision, card, project, repo, candidates, warnings}`; tekst i historia plików lokalnie, linki PR/MR przez CLI; files/links wyłącznie na żądanie |
-| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; walidacja i przebieg opisane poniżej |
-| `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika |
+| `StartCard(s id, s request)` | `→ s` | zlecenie w przepływie karty: wejście „Od razu” `{entry: "now", executor, reviewer?, preferredProvider?, images?, baseRef?, baseCommit?, cardBranch?}` albo Planowanie `{entry: "planning", mode: "light"\|"full", executor, preferredProvider?, images?, check?, projects?}` (`projects` — projekty zlecenia, PT-115), albo propozycja planu `{entry: "plan", planPath}`; wynik zawiera `ok` i dane zlecenia albo `error`/`errors`; udany start karty z Backlogu przenosi ją do „Do zrobienia” (na koniec, jak `MoveCard`, w tej samej blokadzie co zapis zlecenia; odpowiedź ma wtedy `column: "todo"`) — także z `tide go` i skryptów koordynatora, a karta w innej kolumnie zostaje na miejscu; walidacja i przebieg opisane poniżej |
+| `ResolveCardReview(s id, s choice)` | `→ s` | odpowiedź na pytanie po trzeciej lub kolejnej nieudanej rundzie review: `retry` uruchamia kolejne poprawki i review, `reject` odrzuca ticket bez scalenia, zachowując gałąź i worktree do wglądu; decyzja trafia do dziennika. `choice` to goły napis (`retry`, `reject`, `accept`) albo JSON `{"choice", "ticket", "round"?}`. Goły napis: przy jednym otwartym pytaniu o review działa jak dawniej; przy kilku zwraca `{ok: false, error: "ambiguous-review", reviews: [{ticket, round}, …]}` i niczego nie zapisuje. Z `ticket` rozstrzyga pytanie tego ticketu (najnowsza runda albo wskazana `round`); brak takiego pytania albo nieaktualna runda → `no-review-question`, bez zapisu. Błędny JSON, zły typ pól albo nieznany `choice` → `bad-choice`, bez zapisu. Odpowiedź sukcesu zawiera `ticket` i `round` rozstrzygniętego pytania. Okna Tablicy i Sesji wysyłają ticket i rundę pokazywanego pytania |
 | `SetCardPaused(s id, b paused)` | `→ s` | wstrzymuje lub wznawia nowe kroki karty; trwające kończą się normalnie; stan w dzienniku jako `card.paused` / `card.resumed` |
 | `EditCardPlan(s id, s request)` | `→ s` | zmiana nieruszonego ticketu (`action: edit`), propozycja jednego nowego ticketu (`action: append`), odesłanie z uwagami (`action: return`) albo wejście do planującego w Konsoli (`action: enter`) |
 | `ApproveCardPlan(s id)` | `→ s` | zatwierdza poprawną propozycję planu karty: rezerwuje lokalne ID, zapisuje mapę `#n → ID` w dzienniku i uruchamia tickety po blokerach |
@@ -1196,6 +1196,16 @@ mode: full
 - `ai-docs`: `repo` (plany i specyfikacje agentów w `docs/agents/` repozytorium) albo `tide` (w `tide-board/docs/<projekt>/`, nic nie trafia do repozytorium projektu). Przy zakładaniu: `repo`, gdy repozytorium ma już `docs/agents/`, inaczej `tide`; bez klucza w pliku — to samo wyliczane przy odczycie (`aiDocsDefault: true`).
 - `tool`: `claude` albo `codex`, `entry`: `planning` albo `spec` (Tylko specyfikacja), `mode`: `full` albo `light` — domyślne dla uruchomień z kart projektu (domyślnie `claude`, `planning` i `full`; tryb dotyczy tylko Planowania). PT-77: „Tylko specyfikacja” jest wejściem, nie trybem — projekt ze starym `mode: spec` czytamy jako `entry: spec` (tryb `full`), bez błędu i bez przepisywania pliku; stary zapis znika dopiero, gdy użytkownik zmieni wejście albo tryb projektu. Kolejne wejścia (Mam plan, Od razu) dojdą do `entry` bez zmiany formatu.
 - `youtrack`: klucz projektu YouTracka (`LOG`, `LEGAL`; wielkie litery i cyfry, unikalny na tablicy — drugi projekt z tym samym kluczem to `exists`), `youtrack-sync`: `on` (domyślnie, bez klucza w pliku) albo `off` — PT-7, „Synchronizacja z YouTrackiem” niżej. Projekt bez klucza nie synchronizuje niczego. Klucz z importu przypisuje też zaimportowane karty do projektu.
+- `review-independence` (JSON `reviewIndependence`, K-88/PT-330, decyzja 96 z 10.11): polityka niezależności review projektu —
+  `free` (domyślnie, także bez klucza w pliku; zapis `free` nie dopisuje klucza), `other-model` (inny model albo inna
+  siła myślenia niż autor) albo `other-family` (inna rodzina: para dostawca/program z katalogu wykonawców, nie nazwa).
+  `review-independence-classes` (JSON `reviewIndependenceClasses`, lista klas `lekki`, `standard`, `mocny`, `lokalny`,
+  w pliku po przecinku) zawęża `other-family` do ticketów tych klas; pozostałe dostają `free`, a review planu
+  stosuje politykę bez zawężenia. `UpsertProject` odrzuca nieznaną wartość (`bad-request`); nieznaną wartość wpisaną
+  ręcznie do pliku migawka pokazuje bez zmian, a usługa stosuje `free` z ostrzeżeniem w dzienniku usługi
+  (`cardflow.reviewgate`, raz na wartość i plik). Usługa czyta ustawienie z bieżącej Tablicy przy każdym sprawdzeniu,
+  więc zmiana działa bez restartu. Okno Tablicy ustawia je w formularzu projektu („Recenzent”: Dowolny, Inny model,
+  Inna rodzina, z polem klas). Niezależnie od polityki recenzent zawsze startuje w nowej, osobnej sesji.
 - Projekty powstają jawnie (`UpsertProject`; ta sama nazwa drugi raz to ten sam projekt, nie `foo-2`) albo przy pierwszej karcie dla repozytorium (`CreateCard` z `repo`) — osobnym commitem. Usługa nie zakłada wpisów dla wszystkich repozytoriów z katalogu projektów; migawka podaje je w `repos` jako kandydatów.
 
 ### Kontrakt testów projektu (K-69, PT-278)
@@ -1649,7 +1659,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `colors` | pastele z palety `{nazwa: "#rrggbb"}` |
 | `tools`, `entries`, `modes` | dozwolone narzędzia, wejścia (`planning`, `spec`) i tryby Planowania (`full`, `light`) |
 | `tags` | `[{name, slug, color, description, defined, cards}]` (`cards` — karty z tym tagiem po dziedziczeniu) |
-| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona) |
+| `projects` | `[{slug, name, repo, repoMissing, tags, aiDocs, aiDocsDefault, tool, entry, mode, description, docsDir, cards, path, youtrack, youtrackSync, reviewIndependence, reviewIndependenceClasses}]` (`youtrackSync` — klucz ustawiony i synchronizacja włączona; `reviewIndependence` — surowa wartość z pliku, nieznana czytana jako `free`) |
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
@@ -2403,6 +2413,54 @@ karta zapisuje `review.question` i czeka na decyzję użytkownika w panelu. `ret
 na jedną dalszą rundę; następna nieudana runda ponownie pyta. `reject` zapisuje decyzję i `ticket.rejected`, bez scalenia.
 Jeżeli restart rozdzieli te dwa zdarzenia, usługa dopisuje brakujące odrzucenie przy następnym przebiegu; ta sama
 odpowiedź `reject` może być bezpiecznie ponowiona.
+
+Wykonawcę poprawek (K-88/PT-312) wybiera kolejno: ręczna zmiana autora z panelu (`executorReason: override`),
+eskalacja od rundy `ESCALATE_FIX_ROUND` (3; `escalated`) i dotychczasowy autor (`author`). Eskalacja dotyczy tylko
+ticketu, którego klasa w zatwierdzonym planie nie jest `mocny` ani `lokalny` (brak klasy = `standard`). Jej cel to
+pierwszy dostępny wykonawca klasy `mocny` preferowanego dostawcy zlecenia (w trybie mieszanym — dostawcy autora),
+inny niż recenzent ocenianego i następnego review oraz inny niż autor; bez takiego poprawki robi autor, a zmiana
+autora w katalogu nadal kończy krok błędem `changed-executor`. Autor to ostatni krok autora ticketu, który nie był
+eskalacją ani pracą recenzenta, więc recenzent nie ocenia poprawek napisanych przez siebie. Ręczna zmiana autora
+z panelu (`author.reassigned`) obowiązuje we wszystkich kolejnych rundach poprawek ticketu, aż do następnej takiej
+zmiany. Wznowienie kroku `fix`: ręczna zmiana wykonawcy (`change-executor`, `transfer`) albo nowszy przepięty autor
+zapisują `override`. Decyzje automatyczne (`auto`, `automatic`, `caretaker`), także po błędzie ponowienia lub
+odmowie dostawcy, podlegają regule poprawek; sam wybór `change-executor` nie jest ręczną zgodą. Jeśli reguła
+odrzuci proponowanego wykonawcę, krok wraca do zwykłego wznowienia. Wznowienie przelicza tę samą regułę —
+ten sam wykonawca zachowuje sesję i powód, a gdy
+reguła wskaże innego (np. stary krok pisał recenzent), wznowienie startuje świeżą sesją z powodem `author` albo
+`escalated`. Automatyczny powrót do autora przechodzi tę samą kontrolę `changed-executor` co zwykłe poprawki. Próg
+pytania o review (`reviewRoundsBeforeQuestion`) się nie zmienia.
+
+Bramka startu review (PT-312, uzupełnienie właściciela 10.11): `_guard_review_launch` działa przed
+rezerwacją kroku w `_launch` oraz przed uruchomieniem Konsoli w `_launch_full_planning`. Wejście do Konsoli
+(`EnterStep`) w review zakończonym bez werdyktu (błąd, pytanie, zatrzymanie) nie wznawia starej sesji: to nowe
+review przez `_launch_full_planning` z tą bramką i świeżą sesją (PT-330); przejęcie trwającego review i rozmowa
+po werdykcie (`interactive`) działają jak dotąd. Kroki `fix` w Konsoli (przekazanie i wejście) zapisują
+`executorReason` jak kroki w tle, więc ponowienie po ręcznym przekazaniu zachowuje `override`. Każde uruchomienie
+review, także wznowienie, zaczyna osobną sesję. `reviewgate.authors` bierze z dziennika autorów ticketu
+oraz wszystkich prób poprawek od poprzedniej rundy review; nieudany fix może zawierać WIP, a wznowienie
+review tej samej rundy nie usuwa tych autorów z kontroli.
+
+Warunek modelu jest skupiony w `reviewgate.permits(reviewer, authors, policy)`: `free` dopuszcza dowolny
+model, `other-model` stosuje dotychczasowe `plans.independent_reviewer` (inny model lub wysiłek),
+`other-family` porównuje parę dostawca/program z katalogu i zapisanych kroków. Polityka pochodzi z ustawienia
+projektu ticketu `reviewIndependence` (PT-330, decyzja 96 z 10.11; kolumna Projekt planu, inaczej projekt karty; klasa
+ticketu z planu, Od razu — `standard`), domyślnie `free`. Nie jest to nadrzędna reguła Tide. Tę samą politykę
+stosują: sprawdzanie planu (`plans.read`, także domyślny recenzent pustej kolumny Review — przy `other-family`
+wykonawca innej rodziny), edycja ticketu w oknie (`EditCardPlan edit`), start Od razu (`StartCard`; przy `free`
+bez innego wykonawcy recenzentem może być sam autor, przy `other-family` recenzent innego dostawcy jest dozwolony
+także przy wybranym dostawcy zlecenia), start ticketu z planu, wybór i zmiana recenzenta planu oraz cel eskalacji
+poprawek. Reguła `ESCALATE_FIX_ROUND` się nie zmienia; przy `other-family` cel eskalacji nie należy do rodziny
+recenzenta ocenianego ani następnego review (rodzina z dziennika kroku, przydziału albo katalogu).
+Gdy wybrany recenzent nie spełnia polityki, bramka szuka wykonawcy klasy ticketu lub mocniejszej,
+z zachowaniem lokalnego/chmurowego zakresu. Przy braku kandydata zapisuje idempotentne `review.question`
+z `reason: independence`, `policy`, `ticket`, `round` oraz `step.waiting` z `cause: review-independence`.
+Pytanie podaje powód (wymóg polityki, odrzucony recenzent, brak zgodnego wykonawcy) i trzy wyjścia: wybierz
+innego recenzenta, poczekaj albo poluzuj politykę projektu. Poluzowanie działa w następnym przebiegu bez restartu.
+Panel pokazuje pytanie i wybór recenzenta przez istniejące `ResolveCardStep reassign-reviewer`.
+Pojawienie się zgodnego recenzenta zamyka pytanie zdarzeniem `review.decision` z `choice: review-ready`;
+start review usuwa je z projekcji, aby późniejsze pytanie po progu rund działało jak dotąd.
+
 APPROVE uruchamia scalenie tylko zatwierdzonego commita ticketu (ref jest sprawdzany pod blokadą gita repozytorium)
 i usuwa worktree ticketu
 pod tą samą blokadą. Katalogi wejścia i wyniku kroków leżą obok worktree i zostają w repozytorium tablicy jako kopie
@@ -2464,6 +2522,22 @@ swojego polecenia; nowe „Uruchamiaj dla ticketu” przywraca automatyzację. C
 oczekujące decyzje automatyczne i decyzję `run-ticket`; odrębna ręczna zgoda na polecenie pozostaje.
 Kontrola bezpośrednio przed startem kolejki podlega aktualnym zakazom. Operacja cofnięcia i start
 biegną w tym samym szeregowym wątku; polecenie, które już wystartowało, kończy się normalnie.
+
+**Odmowa wygrywa z automatyczną zgodą (PT-311).** Odmowa człowieka (`deny` z panelu albo od koordynatora,
+bez `auto`) jest ostateczna dla tego samego polecenia (porównanie bez różnic w białych znakach) w tym tickecie
+bieżącego zlecenia i wersji bazy (`orderSeq`, `baseVersion`) — także gdy krok z odmową opiekun odesłał do
+poprawy planu (to nie zmienia zlecenia ani bazy). Kolejna prośba outside o to polecenie nie dostaje
+automatycznej zgody (zapamiętana rodzina, `outsideAuto`, zgoda ticketu) ani przy wyniku kroku, ani w ponownym
+sprawdzeniu reguł; wstrzymana karta także nie dostaje nowych automatycznych zgód (po wznowieniu zgoda powstaje
+według aktualnych reguł). Pominięcie zapisuje raz na krok i powód `outside.auto-skipped` z `reason`
+`denied-before` albo `paused`. Automatyczna zgoda w kolejce, której polecenie człowiek odmówił później w innym
+kroku ticketu, jest unieważniana przed startem (`outside.decision-invalidated` z `reason: denied-before`).
+`ResolveCardStep` z `deny` na kroku z automatyczną zgodą przed `outside.started` zapisuje
+`outside.decision-invalidated` (`reason: denied`) i odmowę, a proces nie startuje; po starcie zwraca
+`already-started`, a polecenie działa dalej. Ręczna zgoda (`run`, `run-ticket`, `run-always`) pozostaje
+zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej odmowie. Kontrola decyzji tuż przed
+startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
+Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
 
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
@@ -3421,6 +3495,16 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   czytania plików. Git nie jest uruchamiany w worktree (haki, `core.fsmonitor`): drzewo czyta Python bez
   podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez usługę, gałęzie — `FlowGit.sha`
   w repozytorium.
+- Jedyny wyjątek (PT-317): `.claude/.cc-writes` w katalogu głównym worktree — plik albo katalog z zawartością,
+  który zapisuje sam Claude Code, a nie model. Strażnik liczy drzewo tak, jakby tej ścieżki nie było: pomija ją,
+  a sam katalog `.claude` nie ma rekordu (jego rozmiar, `mtime` i `ctime` zmienia powstanie `.cc-writes`) — wpis
+  `.claude` w drzewie tworzą wyłącznie pozostałe wpisy w nim. Dzięki temu powstanie `.claude` razem z pierwszym
+  `.cc-writes` (świeży worktree, np. ticket autorstwa Codex z opiekunem Claude) nie jest zmianą; niewidoczne są
+  tylko pusty katalog `.claude` i zmiana jego praw. Każdy inny wpis w `.claude` ma pełny rekord, więc zmiana
+  `settings.local.json`, nowy,
+  usunięty albo przeniesiony plik obok `.cc-writes` nadal dają `caretaker-wrote`. Dowiązanie o nazwie
+  `.cc-writes` nie jest wyjątkiem (rekord z celem), a zapis przez nie do pliku worktree widać w rekordzie celu;
+  `.cc-writes` w podkatalogu też nie jest wyjątkiem. Nowy `.claude` z czymkolwiek poza `.cc-writes` jest zmianą.
 - Stan bazowy: `caretaker.guard` z `cause: start` tuż przed startem programu (po przygotowaniu katalogów kroku,
   przed `step.started`) — `{step, repo, worktrees: [{worktree, gitDir, tree, head}], branches, refs, cause,
   wrote}`.
@@ -5296,6 +5380,61 @@ Konflikt `merge-tree` uruchamia krok `conflict` w worktree karty. Agent scala za
 ticketu i rozwiązuje pliki; usługa przyjmuje wynik tylko wtedy, gdy dokładny commit ticketu i wcześniejszy
 commit karty są przodkami czystej gałęzi karty. Pytanie albo błąd kroku trafia do panelu; nieudanej próby usługa nie
 zgaduje ani nie scala ponownie sama. Worktree z lokalnymi zmianami nie jest usuwany.
+
+**Testy po scaleniu (K-88, PT-318; `cardflow/mergecheck.py`).** Gdy po trwałym `result` scalenia ticketu wierzchołek
+gałęzi karty sprzed scalenia (`before`, pierwszy rodzic commita scalenia) różni się od punktu startu ticketu
+(`start`), usługa zapisuje `merge.check-requested {ticket, check, start,
+before, after, command, source, fallback?}` z `check` = `<ticket>:<n>`. Polecenie to stały napis Tide z bazą = pełny
+SHA `start`: `tests.changed` zatwierdzonego kontraktu testów (`{base}` → `start`, `source: contract`), bez kontraktu
+cele `Makefile`/`mk/*.mk` gałęzi karty czytane z gita bez uruchamiania `make` (`make test-changed BASE=<start>`,
+a przy samym `test` — `make test` z `fallback: full`). Bez polecenia próba ma `unavailable: true` i daje problem
+karty `merge-check-unavailable`; zdarzenia „pominięto” nie ma. Kontrakt, który po podstawieniu nie jest pojedynczym
+poleceniem (łańcuch, podpowłoka, powłoka, `env`, zmienne jak `PATH=` — kryterium kolejki poza piaskownicą), daje
+taką samą próbę niedostępną z `source: contract, reason: contract-not-single`, bez przejścia na `Makefile`. Do wyniku `0` bieżącej próby
+(`merge.check-finished {ticket, check, exit, log}`, zapis: przebieg pod zgodą) nie startują nowe tickety, kolejne
+scalenia czekają, a `close` nie startuje; sprzątanie worktree scalonego ticketu biegnie. Inny `exit` (także
+`"zatrzymane"`, `"przekroczony czas"`) daje `merge-check-failed`, a wynik nieaktualnej próby nic nie zmienia.
+Wyjście z bramki w tym tickecie: `ResolveCardStep {choice: "retry-merge-check", ticket, check}` — nowa próba
+`<ticket>:<n+1>` na bieżącym wierzchołku z ponownym wyborem polecenia (drugie wyjście — akceptację — dokłada PT-320,
+niżej). Stan bramki liczy `fold`; brakującą próbę
+po restarcie (po `result`, przed zapisem próby) usługa dopisuje raz. Scalenia sprzed `merge.check-armed` (karty
+trwające w chwili wdrożenia) prób nie zakładają. Jedyny wyjątek od `before != start`: gdy `start..before` to wyłącznie
+commity stanu planu, które Tide sam zapisał na tej karcie (SHA z wyniku akcji `plan-commit` w dzienniku, każdy z
+jednym rodzicem, `start` przodkiem `before`) — Tide commituje plan po starcie każdego ticketu, więc bez tego każde
+scalenie karty z planem byłoby nie-FF. Commit ręczny (także samej kartki), commit lub scalenie innego ticketu zakłada
+próbę; nazwy plików nie mają znaczenia.
+
+**Przebieg próby pod zgodą (K-88, PT-329).** Próba z poleceniem dostaje pseudokrok `merge-check-<ticket>-<n>`
+(`merge.check-step {step, ticket, kind: merge-check, check, command, after, branch, worktree, stepDir, baseVersion,
+canAllow}`) — start procesu w modelu tożsamości, więc jej decyzja i uruchomienie są zwykłym śladem procesu outside;
+krokiem karty nie jest (nie pracuje, nie ma review ani wznowienia). Tide nie zatwierdza przebiegu z góry, bo
+`Makefile`, kontrakt testów i testy na gałęzi karty pisze agent: zgoda to `step.decision` pseudokroku z `check`,
+automatyczna (`auto: true`) tylko z tych samych reguł co prośba `outside` kroku — zapamiętana rodzina poleceń projektu,
+zgoda ticketu, `outsideAuto` bez polecenia ryzykownego — i z regułami PT-311: odmowa człowieka tego polecenia w tym
+tickecie i wstrzymana karta odbierają zgodę automatyczną (`outside.auto-skipped`). Bez pasującej reguły panel karty
+pokazuje zwykłe pytanie o zgodę (`permission`: „Zawsze w projekcie”, „Uruchom raz”, „Nie uruchamiaj”, odpowiedź
+`ResolveCardStep {choice, step}`); zgoda dotyczy tylko tej próby, a ponowienie z PT-318 ma nowy pseudokrok i wymaga
+nowej decyzji. Po zgodzie przebieg idzie kolejką outside (limit miejsc, kolejność zgód, jednostka `tide-outside-…`,
+plik kodu wyjścia, rozliczenie zatrzymanej jednostki z PT-315, limit czasu) w worktree gałęzi karty, gdy jego HEAD to
+`after` (albo `after` z samymi commitami stanu planu Tide); polecenie biegnie w całości, bez ponowienia samych
+padniętych modułów. Wstrzymana karta nie startuje próby i nie trzyma miejsca w kolejce. Koniec zapisuje
+`outside.finished` pseudokroku i `merge.check-finished {ticket, check, exit, log}` z tym samym `exit` (liczba,
+`"zatrzymane"`, `"przekroczony czas"`; `log` — pełny wynik). Odmowa zgody (także po zgodzie automatycznej, przed
+startem — unieważnia ją) daje problem karty `merge-check-denied` z tym samym wyjściem co porażka (ponowienie).
+Po restarcie usługi próba nie startuje drugi raz (start i koniec z dziennika), a wynik zapisany między
+`outside.finished` a `merge.check-finished` usługa dopisuje raz.
+
+**„Akceptuj mimo porażki” (K-88, PT-320).** Problem karty `merge-check-failed`, `merge-check-denied` albo
+`merge-check-unavailable` ma w panelu karty (Tablica i Sesje) dwa wyjścia: „Ponów próbę” (polecane, PT-318) i
+„Akceptuj mimo porażki”. Akceptacja to `ResolveCardStep {choice: "accept-merge-check", ticket, check, after}` —
+dokładny identyfikator próby z pytania (`after` — pełny SHA wierzchołka gałęzi karty z `merge.check-requested`).
+Usługa zapisuje `merge.check-accepted {ticket, check, after, by: "user"}` i otwiera bramkę tylko dla tej próby;
+niczego nie uruchamia. Nieaktualny identyfikator (inny `check`, inny `after`, inny ticket), próba udana, czekająca na
+przebieg albo już zaakceptowana, otwarta bramka oraz nieznane pola (`step`, `answer`, `auto`) dają błąd bez zapisu.
+Decyzję podejmuje wyłącznie jawne wywołanie: akcje opiekuna (`caretaker_problem`/`caretaker_step`) są odrzucane, a
+zgoda automatyczna jej nie obejmuje. Kolejna próba ticketu (ponowienie) albo próba po scaleniu innego ticketu
+zaczyna bez akceptacji i znowu trzyma bramkę; `fold` liczy akceptację tylko dla bieżącej próby z tym samym `after`,
+więc po restarcie usługi zaakceptowana próba nie zamyka bramki ponownie.
 
 Po scaleniu albo odrzuceniu wszystkich ticketów i sprzątnięciu worktree scalonych ticketów krok
 `close` zapisuje `summary.md`. Przy `check: manual` wymaga sekcji „Co przetestować ręcznie i jak”;

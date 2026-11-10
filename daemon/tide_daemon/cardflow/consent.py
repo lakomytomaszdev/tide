@@ -2,6 +2,12 @@
 
 GRANTED = "outside.ticket-consent"
 REVOKED = "outside.ticket-consent-revoked"
+INVALIDATED = "outside.decision-invalidated"
+SKIPPED = "outside.auto-skipped"
+RUN = ("run", "run-always", "run-ticket")
+# Powody pominięcia automatycznej zgody outside (PT-311): odmowa człowieka i wstrzymana karta.
+DENIED_BEFORE = "denied-before"
+PAUSED = "paused"
 
 
 def apply(st, event):
@@ -43,11 +49,103 @@ def automatic(engine, card, step, command):
         or engine._auto_outside(card) and not outside_risky(command, roots, engine._extra_repos(card)))
 
 
+def _plain(command):
+    return " ".join(str(command or "").split())
+
+
+def denied_before(events, st, step, command):
+    """Człowiek (panel albo koordynator, bez `auto`) odmówił już tego polecenia w tym tickecie bieżącego zlecenia
+    i wersji bazy (PT-311). Automatyczna odmowa Tide, opiekun i inny ticket nie blokują zgody."""
+    ticket = step.get("ticket") or ""
+    wanted = _plain(command)
+    order = (st.started or {}).get("seq")
+    if not ticket or not wanted or order is None:
+        return False
+    invalidated = {e.get("decisionSeq") for e in events if e.get("type") == INVALIDATED}
+    for e in events:
+        if (e.get("type") != "step.decision" or e.get("choice") != "deny" or e.get("auto")
+                or e.get("caretaker") or e.get("ticket") != ticket or e.get("seq") in invalidated
+                or not isinstance(e.get("seq"), int) or e["seq"] <= order or _plain(e.get("command")) != wanted):
+            continue
+        # Granica ważności odmowy to zlecenie (`seq` po `card.started`) i wersja bazy kroku — nie `superseded`:
+        # ten zbiór obejmuje także kroki odesłane przez opiekuna do poprawy planu w tym samym zleceniu i bazie
+        # (review PT-311 r1, M2), a ich odmowa nadal obowiązuje, również po wznowieniu następcą.
+        # Pseudokrok próby testów po scaleniu (PT-329) nie jest krokiem karty, ale ma ten sam zapis wersji bazy.
+        denied = st.steps.get(e.get("step")) or (getattr(st, "merge_check_steps", None) or {}).get(e.get("step")) or {}
+        if denied.get("baseVersion", 0) == st.base_version:
+            return True
+    return False
+
+
+def skip_reason(engine, card, step, command):
+    """Powód, dla którego automatyczna zgoda outside nie powstaje mimo reguł (`paused`, `denied-before`), albo ""."""
+    events = engine.journal.read(card)
+    from .state import fold
+    st = fold(events)
+    if st.paused:
+        return PAUSED
+    return DENIED_BEFORE if denied_before(events, st, step, command) else ""
+
+
+def record_automatic(engine, card, step, command, **extra):
+    """Zapis automatycznej zgody outside (wynik kroku, recheck): reguły, odmowa człowieka i pauza sprawdzone pod
+    tą samą blokadą dziennika co zapis — odmowa ani wstrzymanie nie wejdą pomiędzy kontrolę a decyzję.
+    Pominięcie zapisuje powód raz na krok i powód (recheck biegnie przy każdym przebiegu). `extra` — pola decyzji
+    pseudokroku (`check` próby testów po scaleniu, PT-329)."""
+    name = step.get("step") or ""
+    with engine.journal.lock:
+        if not automatic(engine, card, step, command):
+            return False
+        reason = skip_reason(engine, card, step, command)
+        if reason:
+            last = next((e for e in reversed(engine.journal.read(card))
+                         if e.get("type") == SKIPPED and e.get("step") == name), None)
+            if (last or {}).get("reason") != reason:
+                engine.journal.append(card, "outside.auto-skipped", step=name, ticket=step.get("ticket") or "",
+                                      command=command, reason=reason)
+            return False
+        engine.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                              kind=step.get("kind") or "", choice="run", answer="", command=command,
+                              executor="", auto=True, **extra)
+        return True
+
+
+def deny_queued(engine, card, name, request):
+    """Odmowa człowieka po automatycznej zgodzie outside (PT-311): przed `outside.started` unieważnia zgodę
+    i zapisuje odmowę; po starcie `already-started`, a proces działa dalej. Kontrola i zapis są pod blokadą
+    dziennika, pod którą `_start_outside` sprawdza decyzję i zapisuje start."""
+    from .engine import FlowError
+    answer = str(request.get("answer") or "").strip()
+    instead = str(request.get("instead") or "").strip()
+    if len(answer) > 4000 or len(instead) > 4000:
+        raise FlowError("bad-answer", "odpowiedź musi mieć do 4000 znaków")
+    with engine.journal.lock:
+        st = engine.journal.state(card)
+        step = st.steps.get(name) or {}
+        prior = st.step_decisions.get(name) or {}
+        if st.card_finished or not step:
+            raise FlowError("no-step-question", f"{card}: ten krok nie czeka na taką decyzję")
+        if name in st.outside_launched:
+            raise FlowError("already-started", "polecenie poza piaskownicą już się uruchomiło — działa dalej")
+        if prior.get("choice") not in RUN or not prior.get("auto"):
+            raise FlowError("already-decided", f"{card}: odpowiedź na ten krok jest już zapisana")
+        engine._trial_check(step)
+        done = st.finished.get(name) or {}
+        engine.journal.append(card, "outside.decision-invalidated", step=name, ticket=step.get("ticket") or "",
+                              decisionSeq=prior.get("seq"), reason="denied")
+        event = engine.journal.append(card, "step.decision", step=name, ticket=step.get("ticket") or "",
+                                      choice="deny", answer=answer, command=done.get("command") or "",
+                                      executor="", **({"instead": instead} if instead else {}))
+    engine._outside_waiting.pop(name, None)
+    return {"ok": True, "id": card, "step": name, "choice": "deny", "seq": event["seq"], "invalidated": True}
+
+
 def before_start(engine, card, step, done, decision):
     """Wywoływane tylko przed startem: proces już uruchomiony zachowuje swoją zgodę."""
     from .state import fold
     from ..board.commands import outside_allowed
-    st = fold(engine.journal.read(card))
+    events = engine.journal.read(card)
+    st = fold(events)
     name = step.get("step") or ""
     if (name in st.superseded or st.base_change and step.get("baseVersion", 0) != st.base_version
             or decision.get("seq") is not None
@@ -59,13 +157,17 @@ def before_start(engine, card, step, done, decision):
     roots = (step.get("worktree") or "", project.repo, step.get("stepDir") or "")
     allowed = outside_allowed(done.get("command") or "", project.denied_commands, roots)
     revoked = consent.get("type") == REVOKED and dependent(decision)
+    reason = ""
     if decision.get("auto"):
         allowed = allowed and automatic(engine, card, step, done.get("command") or "")
+        # Zgoda zapisana przed odmową człowieka (np. w innym kroku ticketu) nie startuje (PT-311).
+        if allowed and denied_before(events, st, step, done.get("command") or ""):
+            allowed, reason = False, DENIED_BEFORE
     if allowed and not revoked:
         return True
     if name in st.step_decisions:
-        engine.journal.append(card, "outside.decision-invalidated", step=name,
-                              ticket=step.get("ticket") or "", decisionSeq=decision.get("seq"))
+        engine.journal.append(card, "outside.decision-invalidated", step=name, ticket=step.get("ticket") or "",
+                              decisionSeq=decision.get("seq"), **({"reason": reason} if reason else {}))
     engine._outside_waiting.pop(name, None)
     return False
 

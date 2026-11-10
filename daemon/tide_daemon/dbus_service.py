@@ -160,7 +160,9 @@ Obiekt /Board, interfejs org.tide.Daemon.Board (tablica pracy w repozytorium git
                              {entry: "now", executor: <nazwa wykonawcy Claude z katalogu>, images?} → {ok, ticket, branch,
                              worktree, cardBranch, cardWorktree, step, session, executor} albo {ok: false, error, message};
                              rezerwacja numeru, gałąź i worktree karty i ticketu, krok ticketu w tle (bez Konsoli); stan
-                             karty z dziennika `flow/<id>/journal.jsonl` (odpowiedź po starcie kroku),
+                             karty z dziennika `flow/<id>/journal.jsonl` (odpowiedź po starcie kroku); udany start
+                             karty z Backlogu przenosi ją do „Do zrobienia” (na koniec, jak MoveCard; odpowiedź ma
+                             wtedy `column: "todo"`), karta w innej kolumnie zostaje, nieudany start niczego nie rusza,
 - sygnał Changed()           migawka tablicy się zmieniła (nasz zapis, zmiana z zewnątrz, stan kart z pracy agentów),
 - sygnał WorkChanged()       lista „Praca” się zmieniła (sama ostatnia czynność agenta — najwyżej co 10 s).
 Każda zmiana to commit w repozytorium tablicy (nieudany commit: ok z opisem w commitError, commit

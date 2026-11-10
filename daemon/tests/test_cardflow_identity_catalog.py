@@ -409,7 +409,11 @@ BARRIERS = {
                    ("cardflow/engine.py", "FlowEngine._outside_ready"),
                    ("cardflow/engine.py", "FlowEngine._outside_busy"),
                    ("cardflow/engine.py", "FlowEngine._outside_exit"),
-                   ("cardflow/engine.py", "FlowEngine._seed_outside_waiting")],
+                   ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
+                   # PT-329: przebieg próby testów po scaleniu (pseudokrok `merge-check-…`) — ta sama historia
+                   # i ten sam wspólny wynik redukcji co prośba outside kroku.
+                   ("cardflow/engine.py", "FlowEngine._merge_check_history"),
+                   ("cardflow/engine.py", "FlowEngine._merge_check_run")],
         denial="_outside_history pod journal.lock przed Popen; _outside_ready: stan outside_run ≠ ok → FlowError",
         effect="Popen niezależnego outside; zaakceptowanie zakończenia bieżącej próby; zajętość i kolejka miejsc",
         negative=NEG + [f"{M}:Review10OutsideCompletionUnit.test_explicit_wrong_completion_unit_denies_every_barrier_across_restart",
@@ -493,6 +497,8 @@ BARRIERS = {
 _LOCK = True
 EFFECT_SCOPE = {
     ("cardflow/engine.py", "FlowEngine._start_outside", "Popen"): ("outside", "direct", {"_outside_history"}, _LOCK),
+    ("cardflow/engine.py", "FlowEngine._merge_check_start", "Popen"):
+        ("outside", "direct", {"_merge_check_history"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch_full_planning", "Konsola"): ("step-launch", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._enter_step", "Konsola"): ("console", "direct", {"_process_check"}, _LOCK),
     ("cardflow/engine.py", "FlowEngine._launch.launch", "start kroku"): ("step-launch", "direct", {"_process_check"}, _LOCK),
@@ -602,6 +608,8 @@ DELEGATIONS = {
     ("cardflow/boxstep.py", "check_mounts"): "box-lifecycle",
     ("cardflow/boxstep.py", "place"): "box-lifecycle",
     ("cardflow/boxstep.py", "prepare_runner"): "box-lifecycle",
+    # PT-311: odmowa po automatycznej zgodzie outside — część ResolveCardStep (_trial_check przed zapisem).
+    ("cardflow/consent.py", "deny_queued"): "process-check",
     ("cardflow/caretaker.py", "_answer"): "console",
     ("cardflow/caretaker.py", "_change_executor"): "console",
     ("cardflow/caretaker.py", "_resolve_action"): "console",
@@ -617,6 +625,8 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._caretaker_resume"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine._cleanup"): "process-check",
     ("cardflow/engine.py", "FlowEngine._finish"): "console",
+    # PT-330: nowe review w Konsoli po nieukończonej próbie startuje przez _launch_full_planning.
+    ("cardflow/engine.py", "FlowEngine._enter_review_console"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._fix"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._outside_behind"): "outside",
     ("cardflow/engine.py", "FlowEngine._plan_next"): "step-launch",
@@ -630,6 +640,14 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._review"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
+    # PT-329: przebieg pod zgodą próby testów po scaleniu (kolejka outside, wynik) i decyzja z panelu.
+    ("cardflow/engine.py", "FlowEngine._merge_checks"): "outside",
+    ("cardflow/engine.py", "FlowEngine._merge_check_waiting"): "outside",
+    ("cardflow/engine.py", "FlowEngine._merge_check_start"): "outside",
+    ("cardflow/engine.py", "FlowEngine._outside_collect"): "outside",
+    ("cardflow/engine.py", "FlowEngine.resolve_merge_check"): "process-check",
+    # PT-313: udany start zdejmuje kartę z Backlogu przez moved(), jak wznowienie w set_paused.
+    ("cardflow/engine.py", "FlowEngine._lift_from_backlog"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine.moved"): "advance-resume",
     ("cardflow/engine.py", "FlowEngine.report_step_fault"): "console",
     ("cardflow/engine.py", "FlowEngine.resolve_caretaker"): "advance-resume",
@@ -689,6 +707,9 @@ RAW_READS = {
     ("cardflow/consent.py", "automatic"):
         "sprawdzenie zgody na polecenie, bez uruchomienia; skutek zawsze przez _start_outside "
         "z _outside_history pod journal.lock (bariera outside)",
+    ("cardflow/consent.py", "denied_before"):
+        "PT-311: odczyt odmów człowieka i unieważnień decyzji outside; wynik tylko odbiera automatyczną "
+        "zgodę (pominięcie albo unieważnienie), nigdy nie uruchamia procesu ani nie zastępuje _outside_history",
     ("cardflow/consent.py", "view"):
         "projekcja zgód ticketu dla fullcard/UI; zwraca dane active/canRevoke bez skutku procesu",
     ("cardflow/engine.py", "FlowEngine._ticket_consent"):

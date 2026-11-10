@@ -514,6 +514,32 @@ class CaretakerFlowTest(FlowInProcess):
         self.assertEqual([e["target"] for e in card["derived"]["flow"]["caretaker"]["escalated"]],
                          [decision["step"]])
 
+    def test_escalation_after_the_users_decision_during_the_caretakers_work_is_stale(self):
+        """PT-317 (K-70, 08–09.11): opiekun startuje przy problemie z decyzją, użytkownik rozstrzyga ją w trakcie,
+        opiekun kończy `escalate` — eskalacja nieaktualna: `caretaker.action` ze `stale`, bez `caretaker.escalated`,
+        bez powiadomienia, bez znacznika „czeka na mnie” i bez liczenia do limitu działań."""
+        card_id = self.failing_card("powoli")
+        self.assertTrue(self.start(card_id)["ok"])
+        self.assertTrue(wait_until(lambda: self.caretaker_steps(card_id), timeout=30), self.events(card_id))
+        run = self.of(card_id, "caretaker.started")[0]
+        self.assertTrue(run["decision"], "problem z decyzją")
+        reply = self.flow.engine.resolve_step(card_id, {"choice": "reject", "step": run["target"]})
+        self.assertTrue(reply["ok"], reply)
+        self.assertTrue(wait_until(lambda: run["step"] in fold(self.events(card_id)).caretaker_outcomes, timeout=40),
+                        self.events(card_id))
+        wait_until(lambda: False, timeout=1.0)          # kilka obrotów pętli po wyniku opiekuna
+        late = self.of(card_id, "caretaker.action")
+        self.assertEqual([(a["ok"], a["error"], a["stale"]) for a in late], [(False, "stale", True)], late)
+        self.assertTrue(late[0]["detail"].startswith("użytkownik już zdecydował"), late[0])
+        self.assertEqual(self.of(card_id, "caretaker.escalated"), [])
+        self.assertEqual(self.of(card_id, "step.notice"), [])
+        self.assertFalse([n for n in self.flow.engine._notices if n["card"] == card_id], self.flow.engine._notices)
+        st = fold(self.events(card_id))
+        self.assertEqual(caretaker.owned(st, run["problem"])["count"], 0)
+        self.assertEqual(caretaker.view(st)["escalated"], [])
+        self.assertFalse([d for d in decisions.build_decisions(st) if d.get("caretaker")])
+        self.assertEqual(len(self.caretaker_steps(card_id)), 1)
+
     def test_caretaker_waiting_for_a_provider_slot_does_not_notify_before_escalation(self):
         """Review PT-143/P1: opiekun w kolejce do dostawcy (zajęte sloty) — decyzja ukryta, bez `step.notice`
         i bez `flow.notice` o limicie; po zwolnieniu slotu i eskalacji jedno powiadomienie."""
@@ -666,6 +692,31 @@ class CaretakerFlowTest(FlowInProcess):
                 st = fold(self.events(card_id))
                 self.assertEqual(caretaker.owned(st, escalated[0]["problem"])["count"], 1)
                 self.assertEqual(len(self.caretaker_steps(card_id)), 1)
+
+    def test_claude_code_cc_writes_is_not_caretaker_wrote_but_other_claude_files_are(self):
+        """PT-317 (K-70, 08–09.11): `.claude/.cc-writes` w worktree, który w trakcie kroku opiekuna zapisuje Claude
+        Code, nie daje `caretaker-wrote` — `escalate` przechodzi jak zwykle. Zmiana `.claude/settings.local.json`
+        i nowy plik obok `.cc-writes` nadal dają `caretaker-wrote`. Review MAJOR-1: także gdy worktree nie miał
+        `.claude` (ticket autorstwa Codex, opiekun Claude) — pierwszy `.cc-writes` tworzy katalog."""
+        cases = [("cc-writes", "ATRAPA-CLAUDE-DIR ", ""), ("cc-writes", "", ""),
+                 ("cc-ustawienia", "ATRAPA-CLAUDE-DIR ", ".claude"), ("cc-obok", "ATRAPA-CLAUDE-DIR ", ".claude"),
+                 ("cc-obok", "", ".claude")]
+        for care, extra, part in cases:
+            with self.subTest(care=care, claude_dir=bool(extra)):
+                card_id = self.failing_card(care, extra=extra)
+                self.assertTrue(self.start(card_id)["ok"])
+                self.assertTrue(wait_until(lambda: self.of(card_id, "caretaker.escalated"), timeout=40),
+                                self.events(card_id))
+                [escalated] = self.of(card_id, "caretaker.escalated")
+                if not part:
+                    self.assertEqual((escalated["failed"], escalated["code"]), (False, ""), escalated)
+                    self.assertEqual(escalated["summary"], "Krok dwa razy padł na tym samym teście.")
+                    guards = [g for g in self.of(card_id, "caretaker.guard") if g["step"] == escalated["step"]]
+                    self.assertFalse([w for g in guards for w in g.get("wrote") or []], guards)
+                else:
+                    self.assertEqual((escalated["failed"], escalated["code"]), (True, "caretaker-wrote"))
+                    self.assertIn(f"zmienione pliki w worktree", escalated["error"])
+                    self.assertIn(part, escalated["error"])
 
     def test_problem_without_a_step_starts_the_caretaker_from_a_registry_entry_alone(self):
         """Review PT-143/A1: wyzwalacz bez kroku (`stalled:card`) dopisany tylko do `TRIGGERS` uruchamia opiekuna

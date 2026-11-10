@@ -344,8 +344,8 @@ class ContractTest(unittest.TestCase):
         self.assert_contract(decision)
         self.assertEqual((decision["kind"], decision["ticket"]), ("review", "PT-1"))
         self.assertEqual([(o["method"], o["params"]) for o in decision["options"]],
-                         [("ResolveCardReview", {"choice": "retry"}), ("ResolveCardReview", {"choice": "accept"}),
-                          ("ResolveCardReview", {"choice": "reject"})])
+                         [("ResolveCardReview", {"choice": c, "ticket": "PT-1", "round": 3})
+                          for c in ("retry", "accept", "reject")])
         self.assertEqual(decision["technical"]["majors"], 2)
 
 
@@ -396,6 +396,8 @@ class GenericSentenceTest(unittest.TestCase):
             "plan-reviewer": Events(entry="plan").add("plan.proposed", planner="", rows=[])
                                                  .add("step.waiting", ticket="", kind="plan-review", reason=""),
             "tracker": tracker,
+            # PT-318: problem karty z bramki testów po scaleniu zawsze nazywa ticket; „dlaczego” jest ogólne.
+            "merge-check": Events().add("merge.check-requested", ticket="PT-1", check="PT-1:1", unavailable=True),
         }
 
     def test_closed_console_recommends_resuming_in_the_background(self):
@@ -414,7 +416,9 @@ class GenericSentenceTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 [decision] = events.decisions()
                 self.assertEqual(decision["kind"], kind)
-                if kind != "caretaker":
+                if kind == "merge-check":
+                    self.assertEqual(decision["why"], GENERIC[kind][1])
+                elif kind != "caretaker":
                     self.assertEqual((decision["happened"], decision["why"]), GENERIC[kind])
                 self.assertTrue(decision["happened"] and decision["why"])
                 self.assertTrue(all(GENERIC[kind]))
@@ -632,7 +636,7 @@ class ReviewRoundsOptionsTest(unittest.TestCase):
         decision = _review(fold(Events().items), "PT-1", 6, {"question": "Co dalej?"})
         options = {o["id"]: o for o in decision["options"]}
         self.assertEqual(list(options), ["retry", "accept", "reject"])
-        self.assertEqual(options["accept"]["params"], {"choice": "accept"})
+        self.assertEqual(options["accept"]["params"], {"choice": "accept", "ticket": "PT-1", "round": 6})
         self.assertTrue(options["retry"]["recommended"])
 
 

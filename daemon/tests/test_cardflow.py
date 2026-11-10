@@ -144,10 +144,22 @@ class MonitorFixtureTest(unittest.TestCase):
         self.assertTrue(finished.is_set(), "stary tick nie może modyfikować dziennika po zatrzymaniu monitora testu")
 
 
+def pass_merge_checks(engine):
+    """Testy po scaleniu (PT-318) w testach przepływu, które ich nie dotyczą: każda próba ma polecenie z kontraktu
+    i od razu wynik 0 — w miejscu przebiegu pod zgodą (PT-329), którego te testy nie sprawdzają."""
+    engine._merge_check_contract = lambda card: "true {base}"
+
+    def finished(card, entry):
+        engine.journal.append(card, "merge.check-finished", ticket=entry["ticket"], check=entry["check"],
+                              exit=0, log="")
+    engine._merge_check_waiting = finished
+
+
 class FlowInProcess(unittest.TestCase):
     guard_minutes = 15.0
     auto_consent = False
     escalate_errors = False
+    merge_checks_pass = True    # PT-318: testy bramki ustawiają False
 
     def setUp(self):
         app()
@@ -194,6 +206,14 @@ class FlowInProcess(unittest.TestCase):
         self.board.start()
         self.assertTrue(json.loads(self.board.upsert_project(json.dumps({"repo": self.repo})))["ok"])
 
+    def review_policy(self, value, classes=None):
+        """Ustawienie projektu `reviewIndependence` (PT-330) tą samą drogą co okno Tablicy."""
+        slug = next(iter(self.store.load().projects))
+        data = {"slug": slug, "reviewIndependence": value,
+                **({"reviewIndependenceClasses": classes} if classes is not None else {})}
+        reply = json.loads(self.board.upsert_project(json.dumps(data)))
+        self.assertTrue(reply["ok"], reply)
+
     def make_flow(self):
         from tide_daemon.cardflow.engine import FlowEngine
         from tide_daemon.models import executors
@@ -202,6 +222,8 @@ class FlowInProcess(unittest.TestCase):
                             systemd_run=self.fakes["systemd-run"], catalog=executors.default_catalog,
                             tmp_root=os.path.join(self.base, "tmp"), settings=self.settings,
                             which=lambda name: self.fakes.get(name), grace=5.0)
+        if self.merge_checks_pass:
+            pass_merge_checks(engine)
         flow = _FlowMonitor(engine, self.board, poll_ms=150)
         self.board.flow = flow
         stop = flow.stop
@@ -976,8 +998,7 @@ class ManualColumnsInProcessTest(FlowInProcess):
 
     def test_started_from_backlog_reaches_review_and_back_to_todo_is_rework(self):
         card_id = self.card(column="backlog")
-        self.assertTrue(self.start(card_id)["ok"])
-        self.assertTrue(json.loads(self.board.move_card(card_id, "todo", -1))["ok"])   # jak okno po starcie z popupu
+        self.assertTrue(self.start(card_id)["ok"])   # PT-313: start sam zdejmuje kartę z Backlogu (card.moved)
         self.wait_column(card_id, "review")
         self.assertTrue(json.loads(self.board.move_card(card_id, "todo", 0))["ok"])    # „do poprawy” z Do sprawdzenia
         card = self.wait_column(card_id, "todo")

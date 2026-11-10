@@ -8,6 +8,7 @@ worktree ticketu przed review), a co odpowiada atrapa opiekuna, mówi „ATRAPA-
 cytuje) albo w sekcji kartki dopisanej w teście. Karta, która stoi, to luka w przepływie: `_advance` bez skutku po
 pierwszym kroku i zegar silnika przesunięty o 3 minuty.
 """
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -292,7 +293,8 @@ class StageObservationTest(unittest.TestCase):
         self.engine.journal = SimpleNamespace(read=lambda card: self.j.events,
                                              read_complete=lambda card: self.j.events,
                                              state=lambda card: fold(self.j.events),
-                                             append=lambda card, kind, **fields: self.j.add(kind, **fields))
+                                             append=lambda card, kind, **fields: self.j.add(kind, **fields),
+                                             lock=threading.RLock())
         self.engine.clock = mock.Mock(return_value=100.0)
         self.engine.git = mock.Mock()
         self.engine.git.commit_plan.return_value = {"commit": "abc"}

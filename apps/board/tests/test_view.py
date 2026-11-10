@@ -1103,6 +1103,32 @@ out["save"] = calls()[-1]
         self.assertEqual(out["planning"], ["planning", True, "light"])
         self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "entry": "planning"})
 
+    def test_project_review_independence_in_manage_page(self):
+        # PT-330: projekt bez ustawienia pokazuje „Dowolny”; Inna rodzina z listą klas trafia do UpsertProject.
+        data = json.loads(json.dumps(self.data))
+        data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
+        data["projects"][0].pop("reviewIndependence", None)
+        out = self.probe(FIND_PY + """
+find = lambda name: FIND + f"(page.managePage, '{name}')"
+js("page.managing = true")
+js("page.managePage.openProject = 'plasma-tide'")
+wait(100)
+out["default"] = [js(find("projectReviewIndependence") + ".current"), js(find("projectReviewClasses") + ".visible")]
+js(find("projectReviewIndependence") + ".picked('other-family')")
+wait(50)
+out["family"] = js(find("projectReviewClasses") + ".visible")
+js(find("projectReviewClasses") + ".text = 'Mocny, standard'")
+js(find("manageProjectsFlick") + ".contentY = Math.max(0, " + find("manageProjectsFlick") + ".contentHeight - " + find("manageProjectsFlick") + ".height)")
+wait(60)
+click(at(find("projectSave")))
+wait(80)
+out["save"] = calls()[-1]
+""", data)
+        self.assertEqual(out["default"], ["free", False])
+        self.assertTrue(out["family"])
+        self.assertEqual(json.loads(out["save"][-1]), {"slug": "plasma-tide", "reviewIndependence": "other-family",
+                                                       "reviewIndependenceClasses": ["mocny", "standard"]})
+
     def test_tags_and_projects(self):
         out = self.probe("""
 click(named("addTagChip"))
@@ -1912,7 +1938,20 @@ click(at(FIND + "(page.cardPanel, 'cardReviewRetry')"))
 out["call"] = calls()[-1]
 """, data=data)
         self.assertEqual(out["visible"], [True, True])
-        self.assertEqual(out["call"], ["ResolveCardReview", "K-6", "retry"])
+        # PT-316: panel wysyła ticket i rundę pokazanego pytania.
+        self.assertEqual(out["call"][:2], ["ResolveCardReview", "K-6"])
+        self.assertEqual(json.loads(out["call"][2]), {"choice": "retry", "ticket": "PT-7", "round": 3})
+
+    def test_review_decision_from_the_dialog_sends_ticket_and_round(self):
+        # PT-316: odpowiedź z okna decyzji niesie ticket i rundę; bez nich (stare dane) idzie goły napis.
+        out = self.probe(FIND_PY + """
+js("page.sendDecision('K-6', 'review:PT-8:3', 'ResolveCardReview', {choice: 'reject', ticket: 'PT-8', round: 3})")
+js("page.sendDecision('K-6', 'review:PT-8:3', 'ResolveCardReview', {choice: 'retry'})")
+out["calls"] = calls()
+""", data=self.data)
+        self.assertEqual(out["calls"][0][:2], ["ResolveCardReview", "K-6"])
+        self.assertEqual(json.loads(out["calls"][0][2]), {"choice": "reject", "ticket": "PT-8", "round": 3})
+        self.assertEqual(out["calls"][1], ["ResolveCardReview", "K-6", "retry"])
 
     def test_working_flow_card_drags_to_backlog_and_done_but_a_coordinator_card_does_not(self):
         data = json.loads(json.dumps(self.data))

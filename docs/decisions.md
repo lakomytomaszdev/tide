@@ -338,7 +338,11 @@ Ustalenia z sesji projektowej (grilling) z 26.10.2026. Każda decyzja ma krótki
     operacji destrukcyjnych, migracji trwałego stanu, historycznych wznowień i ważności zgód,
     współbieżnych operacji git/blokad/odtwarzania po awarii, zmian doboru testów i bramek akceptacji
     oraz integracji zmieniających wspólny kontrakt kart. Brak dostępnego limitu takiego recenzenta
-    oznacza oczekiwanie; wymaganie nie spada automatycznie.
+    oznacza oczekiwanie; wymaganie nie spada automatycznie. **Zmiana 10.11.2026 (K-88/PT-330):**
+    dobór recenzenta to polityka projektu `reviewIndependence` (`free` domyślnie, `other-model`, `other-family`
+    z opcjonalną listą klas), nie reguła Tide; stała zostaje tylko nowa sesja recenzenta. Lista obszarów
+    ryzyka jest **zaleceniem dla projektów z polityką `other-family`**; przy braku wymaganego recenzenta karta
+    podaje powód i pyta właściciela (zmień recenzenta, poczekaj, poluzuj politykę) zamiast czekać bez słowa.
 
     Poprawka koordynatora poza kartą służy tylko pilnemu odblokowaniu albo regresji: jedna przyczyna,
     najwyżej 150 linii kodu produkcyjnego w 3 plikach łącznie, bez dzielenia na commity. Wymaga testu

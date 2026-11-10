@@ -55,8 +55,12 @@ PYTHON = "/usr/bin/python3"
 #   moved_to=todo nie domyka); sprawdzana przebiegiem samej kolumny po zdarzeniach,
 # - `new-box-wait` / `new-box-env-deferred` — pole tylko w kandydacie (PT-172/PT-290); oczekiwanie: wartość
 #   z ostatniego `box.wait` po ostatnim `card.started` (bez niego "" / False),
+# - `new-lifted` — pole tylko w kandydacie (PT-313); oczekiwanie: ostatni ruch po `card.started` to zdjęcie z Backlogu
+#   (`card.moved` backlog → todo) bez późniejszego `card.move-ignored`,
 # - `new-process-identities` — pole tylko w kandydacie (PT-288); oczekiwanie: każda tożsamość `state=ok`
 #   (inaczej read_process_history odrzuca historię) i nazwana krokiem obecnym w historii,
+# - `new-merge-checks` — pola bramki testów po scaleniu (PT-318); oczekiwanie: wartość pusta, gdy historia nie ma
+#   zdarzeń `merge.check-*`,
 # - `setup-only` — nie z dziennika (`caretaker_setup` dokłada silnik); oczekiwanie: pusty słownik w obu wersjach.
 PLAN, STATES, CLOSE, STEPS, RESULTS, DECISIONS, OUTSIDE, CONSOLES, BOX, PROJECT = (
     "plan/mapa ticketów", "stany", "pauza/domknięcie", "kroki/runner/tożsamość", "wyniki/werdykty",
@@ -96,8 +100,13 @@ FIELD_SPEC = {
     **_spec(OUTSIDE, "equal", "outside_started", "outside_launched"),
     **_spec(BOX, "new-box-wait", "box_wait"),
     **_spec(BOX, "new-box-env-deferred", "box_env_deferred"),
+    **_spec(STATES, "new-lifted", "lifted"),
+    **_spec(RESULTS, "new-merge-checks", "merge_checks", "merge_check_counts", "merge_check_merges",
+            "merge_check_armed", "merge_check_steps"),
 }
-NEW_RULES = ("new-box-wait", "new-box-env-deferred", "new-process-identities")
+NEW_RULES = ("new-box-wait", "new-box-env-deferred", "new-process-identities", "new-lifted", "new-merge-checks")
+MERGE_CHECK_EVENTS = ("merge.check-armed", "merge.check-requested", "merge.check-finished", "merge.check-step",
+                      "merge.check-accepted")
 DERIVED_SPEC = {"running": STEPS, "open_consoles": CONSOLES, "open_intents": STEPS, "merge_pending": RESULTS,
                 "busy_reason": STATES, "flow_error": STATES, "tracker_failures": RESULTS}
 # Pola wpisu kroku/zamiaru dokładane wyłącznie przez nakładkę tożsamości kandydata.
@@ -385,6 +394,18 @@ def _last_card_started_index(events):
     return max((i for i, e in enumerate(events) if e.get("type") == "card.started"), default=-1)
 
 
+def expected_lifted(events):
+    """Reguła nowego pola `lifted` (PT-313): ostatnie zdarzenie ruchu po ostatnim `card.started` to zdjęcie z Backlogu
+    (`card.moved` backlog → todo), a nie inny ruch ani `card.move-ignored`."""
+    lifted = False
+    for e in events[_last_card_started_index(events) + 1:]:
+        if e.get("type") == "card.moved":
+            lifted = e.get("from") == "backlog" and e.get("to") == "todo"
+        elif e.get("type") == "card.move-ignored":
+            lifted = False
+    return lifted
+
+
 def expected_box(events):
     """Reguła nowych pól pudełka: ostatnie box.wait po ostatnim card.started."""
     start = _last_card_started_index(events)
@@ -486,6 +507,12 @@ def compare_state(card, events, ref, cand, start_fields, errors, coverage):
                 problems.append(f"box_wait {c!r}, oczekiwane {expected_box(events)[0]!r} z ostatniego box.wait")
             elif rule == "new-box-env-deferred" and c != expected_box(events)[1]:
                 problems.append(f"box_env_deferred {c!r}, oczekiwane {expected_box(events)[1]!r}")
+            elif rule == "new-lifted":
+                if c != expected_lifted(events):
+                    problems.append(f"lifted {c!r}, oczekiwane {expected_lifted(events)!r} z ruchów po card.started")
+            elif rule == "new-merge-checks" and c not in (0, {}, [], {"__set__": []}) and \
+                    not any(e.get("type") in MERGE_CHECK_EVENTS for e in events):
+                problems.append(f"{name} {_short(c)} bez zdarzeń merge.check-* w historii")
             elif rule == "new-process-identities":
                 named = {e.get("step") for e in events} | {e.get("key") for e in events}
                 for ident, data in sorted((c or {}).items()):

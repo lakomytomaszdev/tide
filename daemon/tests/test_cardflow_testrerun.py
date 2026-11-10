@@ -211,7 +211,7 @@ class SubstituteTest(unittest.TestCase):
                 {"type": "outside.finished", "step": "K-1-PT-1-5", "exit": exit_code}]
 
     def test_interrupted_run_reruns_failed_and_unfinished_modules_only(self):
-        for exit_code in ("przekroczony czas", 143):
+        for exit_code in ("przekroczony czas", "zatrzymane", 143):
             command, _, rerun_of = testrerun.substitute(self.interrupted_run(exit_code=exit_code), self.repo,
                                                         "make test-changed BASE=abc")
             self.assertEqual(rerun_of, "K-1-PT-1-5", exit_code)

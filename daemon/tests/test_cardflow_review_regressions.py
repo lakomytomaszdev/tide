@@ -23,6 +23,8 @@ class ReviewRegressionsTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.store = SimpleNamespace(root=str(self.root / "board"))
         self.journal = Journal(self.store.root, mirror=str(self.root / "mirror"))
+        # Projekt bez ustawienia polityki review (PT-330: `free`); testy reguły ustawiają `other-model`.
+        self.project = SimpleNamespace(repo=str(self.root), review_independence="")
         self.engine = self.new_engine()
         self.journal.append("K-1", "card.started", project="proj", entry="now", executor="Sonnet",
                             repo=str(self.root), cardBranch="card/k-1", cardWorktree=str(self.root),
@@ -35,8 +37,7 @@ class ReviewRegressionsTest(unittest.TestCase):
     def new_engine(self):
         engine = FlowEngine(self.store, journal=self.journal, catalog=default_catalog,
                             which=lambda name: "/bin/true", tmp_root=str(self.root / "tmp"))
-        engine._project = mock.Mock(return_value=(SimpleNamespace(description="Test"),
-                                                  SimpleNamespace(repo=str(self.root))))
+        engine._project = mock.Mock(return_value=(SimpleNamespace(description="Test"), self.project))
         engine._repo = mock.Mock(return_value=str(self.root))
         engine._queue_notices = mock.Mock()
         return engine
@@ -200,7 +201,9 @@ class ReviewRegressionsTest(unittest.TestCase):
                         self.assertNotIn("plan", self.state().author_overrides)
 
     def test_reassigning_future_planner_does_not_change_proposal_author(self):
-        # Nowa propozycja wymaga review i nie jest jeszcze zatwierdzona.
+        # Nowa propozycja wymaga review i nie jest jeszcze zatwierdzona. Reguła innego modelu: polityka
+        # projektu `other-model` (PT-330).
+        self.project.review_independence = "other-model"
         self.journal.append("K-1", "plan.proposed", planner="Sonnet", rows=self.rows)
         self.journal.append("K-1", "plan.revision-ready", pending=True)
         self.engine.resolve_step("K-1", {"choice": "reassign-author", "ticket": "plan", "executor": "Codex standard"})
@@ -215,6 +218,7 @@ class ReviewRegressionsTest(unittest.TestCase):
             self.engine.edit_plan("K-1", {"action": "review-executor", "executor": "Sonnet"})
 
     def test_selected_reviewer_is_checked_against_actual_author_at_launch(self):
+        self.project.review_independence = "other-model"
         self.journal.append("K-1", "plan.proposed", planner="Sonnet", rows=self.rows)
         self.journal.append("K-1", "plan.revision-ready", pending=True)
         self.journal.append("K-1", "plan.reviewer-selected", executor="Sonnet")
@@ -229,12 +233,39 @@ class ReviewRegressionsTest(unittest.TestCase):
             self.engine.resolve_step("K-1", {"choice": "reassign-author", "ticket": "plan", "executor": "Codex standard"})
 
     def test_resuming_review_still_checks_the_proposal_author(self):
+        self.project.review_independence = "other-model"
         review = self.step("review", "", "plan-review")
         self.journal.append("K-1", "step.finished", step="review", result="error")
         self.engine.resolve_step("K-1", {"choice": "reassign-author", "ticket": "plan", "executor": "Codex standard"})
         self.engine = self.new_engine()
         with self.assertRaises(FlowError):
             self.engine._resume_executor("K-1", self.state(), review, "Sonnet", changed=True)
+
+    # --- PT-330: projekt bez ustawienia (`free`) — review planu tym samym modelem, zawsze w nowej sesji ----
+
+    def test_free_project_plan_review_by_the_planners_model_launches_a_new_step(self):
+        self.journal.append("K-1", "plan.proposed", planner="Sonnet", rows=self.rows)
+        self.journal.append("K-1", "plan.revision-ready", pending=True)
+        self.assertTrue(self.engine.edit_plan("K-1", {"action": "review-executor", "executor": "Sonnet"})["ok"])
+        with mock.patch.object(self.engine, "_plan_step") as launch:
+            self.engine._advance_plan_review("K-1", self.state())
+        selected, kind = launch.call_args.args[2], launch.call_args.args[3]
+        self.assertEqual((selected.name, kind), ("Sonnet", "plan-review"))
+
+    def test_free_project_default_plan_reviewer_still_prefers_another_executor(self):
+        self.journal.append("K-1", "plan.proposed", planner="Sonnet", rows=self.rows)
+        self.journal.append("K-1", "plan.revision-ready", pending=True)
+        with mock.patch.object(self.engine, "_plan_step") as launch:
+            self.engine._advance_plan_review("K-1", self.state())
+        self.assertNotEqual(launch.call_args.args[2].name, "Sonnet")
+
+    def test_free_project_resumed_plan_review_accepts_the_planners_model_in_a_new_session(self):
+        review = self.step("review", "", "plan-review")
+        self.journal.append("K-1", "step.finished", step="review", result="error")
+        selected = self.engine._resume_executor("K-1", self.state(), review, "Sonnet", changed=True)
+        self.assertEqual(selected.name, "Sonnet")
+        # Zmiana wykonawcy wznawia krok w nowej sesji (`resume_session` tylko bez zmiany wykonawcy).
+        self.assertEqual(self.engine._review_policy("K-1", klass=None), "free")
 
     def test_new_proposal_records_its_actual_author_independently_of_future_override(self):
         self.journal.append("K-1", "step.started", step="new-version", kind="plan-amend", executor="Codex standard")

@@ -194,7 +194,7 @@ class HistoryAuditTest(unittest.TestCase):
         fields = report["completeness"]["stateFields"]
         # Każde pole eksportowanego stanu obu wersji jest porównane albo ma regułę nowego pola.
         self.assertEqual({k for k, v in fields.items() if v["status"] == "niesklasyfikowane"}, set())
-        for name in ("box_wait", "box_env_deferred", "process_identities"):
+        for name in ("box_wait", "box_env_deferred", "process_identities", "lifted"):
             self.assertEqual((fields[name]["inReference"], fields[name]["inCandidate"]), (False, True))
             self.assertEqual(fields[name]["status"], "nowe pole: reguła oczekiwania spełniona")
         for name in ("paused", "steps", "finished", "verdicts", "step_decisions", "ticket_consents",

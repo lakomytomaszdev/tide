@@ -436,6 +436,14 @@ Rectangle {
     }
 
     // Odpowiedź z okna: metoda /Board i parametry wprost z decyzji (bez liczenia na stronie).
+    // PT-316: opcja decyzji o review niesie ticket i rundę pytania; usługa dostaje je w JSON-ie w `choice`.
+    function reviewChoice(params) {
+        if (!params.ticket) return params.choice || ""
+        const request = {choice: params.choice || "", ticket: params.ticket}
+        if (params.round) request.round = params.round
+        return JSON.stringify(request)
+    }
+
     function sendDecision(cardId, decisionId, method, params) {
         const tag = nextTag("decision:" + cardId)
         const tags = Object.assign({}, decisionTags)
@@ -445,7 +453,7 @@ Rectangle {
         else if (method === "RevokeTicketConsent") ticketConsentRevokeRequested(tag, cardId, JSON.stringify(params))
         else if (method === "AddCardStepNote") stepNoteRequested(tag, cardId, JSON.stringify(params))
         else if (method === "ResolveCardCaretaker") caretakerResolveRequested(tag, cardId, JSON.stringify(params))
-        else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, params.choice || "")
+        else if (method === "ResolveCardReview") reviewResolveRequested(tag, cardId, reviewChoice(params))
         else if (method === "ApproveCardPlan") planApproveRequested(tag, cardId)
         else if (method === "EditCardPlan") planEditRequested(tag, cardId, JSON.stringify(params))
         else if (method === "EnterStep") enterStepRequested(tag, cardId, params.step || "")

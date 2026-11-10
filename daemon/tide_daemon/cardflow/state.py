@@ -9,6 +9,8 @@ Typy zdarzeń (schemat 1, PT-58):
   ticket-branch, step-start, merge, main-merge), key (ten sam w parze), w wyniku ok, error i dane akcji,
 - `main-merge.checkpoint` / `main-merge.waiting` / `main-merge.resumed` — etapy trwałego scalenia i oczekiwanie,
 - `main-merge.abandoned` — porzucenie zamiaru po decyzji użytkownika, bez cofania materializacji,
+- `merge.check-armed` / `merge.check-requested` / `merge.check-finished` / `merge.check-accepted` — bramka testów po
+  scaleniu ticketu do gałęzi karty (PT-318, akceptacja mimo porażki PT-320, opis w mergecheck.py),
 - `step.started` — krok w tle: step, kind (ticket), ticket, executor, unit, session, worktree, branch, stepDir, gitDir,
 - `step.finished` — wynik kroku: result (done, question, denied, error, stopped), reason (no-result, bad-result,
   no-progress, exit, start), question, command, notes, wip (commit WIP przy zatrzymaniu),
@@ -33,6 +35,7 @@ import re
 
 from .baseproposal import pending
 from . import consent
+from . import mergecheck
 from .faults import cause_label, of_finished
 from .history import LOGGED as HISTORY_LOGGED
 from .findings import review_view as plan_review_view
@@ -127,6 +130,7 @@ class FlowState:
     moved_to: str = ""                              # kolumna z ostatniego card.moved po ostatnim wyniku kroku
     store_column: str = ""                          # kolumna ostatnio potwierdzona w dzienniku
     store_move_id: str = ""                         # ostatni ruch MoveCard potwierdzony w dzienniku
+    lifted: bool = False                            # PT-313: ostatni ruch to zdjęcie z Backlogu, ruch okna jeszcze nie przyszedł
     rejected: set = field(default_factory=set)
     last_failed_action: str = ""
     # Błędy Tide (PT-147): etap → {event, persisted, repeated}. Teksty pamiętamy w obrębie etapu,
@@ -153,6 +157,14 @@ class FlowState:
     # Nie z dziennika (PT-151): ustawienia opiekuna przy tej karcie (`caretaker.setup`), które silnik dokłada przed
     # widokami (`derived`); pusty — wartości domyślne bez katalogu wykonawców.
     caretaker_setup: dict = field(default_factory=dict)
+    # Testy po scaleniu (PT-318, mergecheck.py): ticket → bieżąca próba {requested, finished}, liczba prób ticketu,
+    # scalenia z założoną próbą (ticket, seq wyniku) i seq `merge.check-armed` (0 — bramka jeszcze nieuzbrojona).
+    merge_checks: dict = field(default_factory=dict)
+    merge_check_counts: dict = field(default_factory=dict)
+    merge_check_merges: set = field(default_factory=set)
+    merge_check_armed: int = 0
+    # Pseudokroki prób z poleceniem (PT-329): nazwa `merge-check-<ticket>-<n>` → `merge.check-step`.
+    merge_check_steps: dict = field(default_factory=dict)
 
     @property
     def flow_error_event(self) -> dict:
@@ -296,6 +308,7 @@ def fold(events: list[dict]) -> FlowState:
             st.merge_waiting = None
             st.store_column = e.get("column") or ""
             st.store_move_id = e.get("moveId") or ""
+            st.lifted = False
             st.plan_checked = st.plan_proposed = st.plan_approved = st.approval_requested = None
             st.plan_artifact_source = None
             st.imported = None
@@ -410,6 +423,9 @@ def fold(events: list[dict]) -> FlowState:
                 st.caretaking.pop(e.get("target"), None)
             if kind == "caretaker.escalated":
                 st.caretaker_escalations[e.get("problem")] = e
+        elif kind in (mergecheck.ARMED, mergecheck.REQUESTED, mergecheck.FINISHED, mergecheck.STEP,
+                      mergecheck.ACCEPTED):
+            mergecheck.fold_event(st, e)
         elif kind == "intent":
             st.intents[(e.get("action"), e.get("key"))] = e
         elif kind == 'youtrack.reset':
@@ -462,6 +478,12 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "step.started":
             st.plan_resumes.pop(e.get("parentStep"), None)
             st.waiting.pop((e.get("ticket"), e.get("kind")), None)
+            review_key = (e.get("ticket"), e.get("round"))
+            if e.get("kind") == "review" and \
+                    (st.review_questions.get(review_key) or {}).get("reason") == "independence":
+                # Pytanie przed startem nie zastępuje późniejszej decyzji po werdykcie tej rundy.
+                st.review_questions.pop(review_key, None)
+                st.review_decisions.pop(review_key, None)
             if e.get("ticket") and e.get("kind") in ("ticket", "fix"):
                 # Krok autora ruszył — każde inne czekanie autora tego ticketu jest nieaktualne (05.11, K-37/PT-147:
                 # poprawki szły na Codexie, a kafelek dalej pisał „czeka na limit” z wpisu sprzed przepięcia).
@@ -522,6 +544,8 @@ def fold(events: list[dict]) -> FlowState:
                 st.verdicts[(e.get("ticket"), e.get("round"))] = e
         elif kind == "review.question":
             st.review_questions[(e.get("ticket"), e.get("round"))] = e
+            if e.get("reason") == "independence":
+                st.review_decisions.pop((e.get("ticket"), e.get("round")), None)
         elif kind == "review.decision":
             st.review_decisions[(e.get("ticket"), e.get("round"))] = e
         elif kind == "step.retry":
@@ -716,6 +740,7 @@ def fold(events: list[dict]) -> FlowState:
         elif kind == "card.moved":
             st.store_column = e.get("to") or ""
             st.store_move_id = e.get("moveId") or ""
+            st.lifted = e.get("from") == "backlog" and e.get("to") == "todo"
             # „Do poprawy” to przeniesienie z kolumny wyliczonej (Do sprawdzenia, Czeka na mnie); z Backlogu do Do
             # zrobienia to wznowienie albo kolejka po zleceniu z popupu — karta pokazuje dalej stan z dziennika.
             if e.get("from") not in ("backlog", "todo"):
@@ -724,6 +749,10 @@ def fold(events: list[dict]) -> FlowState:
                     st.closed = None
             if (e.get("to") or "") != "backlog":
                 st.paused = False
+        elif kind == "card.move-ignored":
+            # PT-313: zbędny ruch okna do „Do zrobienia” po zdjęciu z Backlogu; zużywa zdjęcie, nie zmienia stanu.
+            st.store_move_id = e.get("moveId") or st.store_move_id
+            st.lifted = False
         elif kind == "ticket.rejected":
             st.rejected.add(e.get("ticket"))
         elif kind == "ticket.imported":
@@ -824,7 +853,8 @@ def _valid_generation(st, event, base):
 
 
 # PT-147: zdarzenia, które nie są pracą karty — nie przesuwają `last_activity_ts` i nie zdejmują „stoi”.
-BOOKKEEPING = ("flow.error-persisted", "stage.retry")
+# `merge.check-armed` (PT-318) to jednorazowy znacznik uzbrojenia bramki, nie praca nad kartą.
+BOOKKEEPING = ("flow.error-persisted", "stage.retry", "merge.check-armed")
 
 
 def _bookkeeping(st: FlowState, e: dict) -> bool:
@@ -1002,6 +1032,10 @@ def guard_reason(st: FlowState) -> str | None:
         return "pytanie, zgoda albo błąd kroku"
     if attention_step(st):
         return "limit dostawcy"
+    held = mergecheck.gate(st)
+    if held:
+        # PT-318: bramka testów po scaleniu to nazwany powód — nie postój dla strażnika ani opiekuna.
+        return "; ".join(f"{entry['check']}: testy po scaleniu ({entry['status']})" for entry in held)
     if (st.plan_revision or {}).get("failed"):
         return "decyzja po nieudanej poprawie planu"
     if (st.plan_revision or {}).get("pending") and st.plan_reviewed:
@@ -1209,6 +1243,12 @@ def _derived(st: FlowState, card: dict) -> dict | None:
             item["canEnter"] = False
             item["canTransfer"] = False
         return _fill(out, "waiting", "Decyzja o bazie karty; wyniki pozostają niescalone")
+    review_gate = next((d for d in decisions if d["kind"] == "review" and
+                        d.get("technical", {}).get("policy")), None)
+    if review_gate:
+        out["question"] = review_gate["why"]
+        return _fill(out, "backlog" if st.paused and column == "backlog" else "waiting",
+                     f"{review_gate['ticket']}: review wymaga wyboru recenzenta")
     caretaker_decision = next((d for d in decisions if d["kind"] == "caretaker"), None)
     if caretaker_decision:
         # Decyzja samej karty nie ma kroku dla attention_step; inne tickety mogą nadal pracować.
@@ -1226,6 +1266,34 @@ def _derived(st: FlowState, card: dict) -> dict | None:
         if column == "backlog":
             return None
         return _fill(out, "waiting", note)
+    held = mergecheck.gate(st)
+    out["flow"]["mergeChecks"] = [
+        {"ticket": entry["ticket"], "check": entry["check"], "status": entry["status"],
+         "command": entry["requested"].get("command") or "", "after": entry["requested"].get("after") or "",
+         "phase": mergecheck.phase(st, entry) if entry["status"] == mergecheck.PENDING else ""}
+        for entry in held]
+    stages = [mergecheck.phase(st, entry) if entry["status"] == mergecheck.PENDING else "" for entry in held]
+    # Pytanie o zgodę i problem próby (odmowa, porażka, brak polecenia) to decyzje karty bez kroku dla
+    # attention_step: jak decyzja opiekuna idą do „Czeka na mnie” także wtedy, gdy inne tickety pracują (PT-329,
+    # review r1). Próba w kolejce albo w toku zostaje „W toku” — przy pracujących krokach liczą je dalsze reguły.
+    asking = [i for i, entry in enumerate(held) if entry["status"] != mergecheck.PENDING or stages[i] == "consent"]
+    if held and not attention and (asking or not st.running()) and not st.paused and column != "backlog":
+        # Bramka testów po scaleniu (PT-318): karta stoi na wyniku albo na decyzji o próbie.
+        index = asking[0] if asking else 0
+        first = held[index]
+        stage = stages[index]
+        text = {mergecheck.UNAVAILABLE: "testy po scaleniu bez polecenia — ponów po dodaniu kontraktu lub celu "
+                                        "albo zaakceptuj",
+                mergecheck.FAILED: "testy po scaleniu nie przeszły — ponów albo zaakceptuj",
+                mergecheck.DENIED: "odmowa zgody na testy po scaleniu — ponów albo zaakceptuj",
+                mergecheck.PENDING: {"consent": "testy po scaleniu czekają na zgodę na polecenie poza piaskownicą",
+                                     "queued": "testy po scaleniu w kolejce poza piaskownicą",
+                                     "running": "trwają testy po scaleniu poza piaskownicą"}.get(
+                    stage, "testy po scaleniu czekają na przebieg")}[first["status"]]
+        waiting = first["status"] != mergecheck.PENDING or stage == "consent"
+        if stage == "consent":
+            out["question"] = f"Uruchomić testy po scaleniu {first['ticket']}: {first['requested'].get('command')}?"
+        return _fill(out, "waiting" if waiting else "progress", f"{first['ticket']}: {text}")
     if done.get("reason") in ("limit", "transfer"):
         decision = st.step_decisions.get(st.last_step) or {}
         limit = st.limits.get(st.last_step) or {}
