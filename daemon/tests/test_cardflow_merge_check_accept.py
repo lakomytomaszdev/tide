@@ -364,7 +364,10 @@ class AcceptDbusTest(FlowCase):
         self.assertTrue(wait_until(lambda: [f for f in self.of(card, mergecheck.FINISHED)], timeout=120),
                         self.events(card))
         result = self.of(card, mergecheck.FINISHED)[0]
-        self.assertEqual(result["exit"], 3)
+        # Próba zapisuje kod wyjścia całego polecenia: `make` po błędzie przepisu (`exit 3`) kończy się kodem 2.
+        self.assertEqual(result["exit"], 2)
+        with open(result["log"], encoding="utf-8") as fh:
+            self.assertIn("test PT-1 pada", fh.read())
         check = next(c for c in self.of(card, mergecheck.REQUESTED) if c["check"] == result["check"])
         self.assertTrue(wait_until(lambda: self.problems(card), timeout=20), self.shown(card).get("derived"))
         decision = self.problems(card)[0]
