@@ -283,8 +283,15 @@ def main(argv=None) -> int:
         report.board = board_snapshot(board)
     # Odczyty gita jako dane (/Git, K-36): dziennik kart z przepływu karty; bez niego źródło `card` — unavailable.
     from .git_monitor import GitMonitor
+    def known_git_repos():
+        """Repozytoria projektów Tablicy i worktrees z listy Worktrees: jedyne `repo`, które przyjmuje `Git.Diff`."""
+        paths = [item[key] for item in trees.scanner.snapshot() for key in ("path", "repoPath") if item.get(key)]
+        if board is not None:
+            paths += [p.repo for p in board.store.load().projects.values() if p.repo]
+        return paths
+
     git_reads = GitMonitor(lambda: board.flow.engine.journal if board is not None and board.flow is not None
-                           else None, parent=app)
+                           else None, parent=app, repos_source=known_git_repos)
     app.aboutToQuit.connect(git_reads.stop)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     box_proxy = None if args.no_box else start_box_proxy(app)  # noqa: F841 — musi żyć do końca

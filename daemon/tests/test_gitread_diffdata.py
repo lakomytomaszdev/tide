@@ -508,7 +508,7 @@ class GitMonitorTest(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         seen = []
 
-        def slow(reader, journal, text):
+        def slow(reader, journal, text, repos):
             seen.append((threading.current_thread().name, journal, text))
             entered.set()
             release.wait(5)
@@ -537,7 +537,7 @@ class GitMonitorTest(unittest.TestCase):
         from .privatebus import app
         app()
 
-        def broken(reader, journal, text):
+        def broken(reader, journal, text, repos):
             raise RuntimeError("zepsute")
 
         monitor = GitMonitor(compute=broken)

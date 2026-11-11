@@ -50,6 +50,20 @@ class GitDiffDbusTest(FlowCase):
         self.assertEqual(self.diff(source="card", card=card_id, targetRef="nie-ma")["error"], "bad-request")
         self.assertEqual(self.diff(source="card", card="K-999")["error"], "unknown-card")
         self.assertEqual(self.diff(source="nieznane")["error"], "bad-request")
+        # PT-349: źródła `ticket`, `commit`, `range` są zarejestrowane, a `repo` spoza list odrzuca walidacja.
+        self.assertEqual(self.diff(source="ticket", card=card_id, ticket="PT-9999")["error"], "bad-request")
+        self.assertEqual(self.diff(source="commit", repo="/etc", sha="HEAD")["error"], "bad-request")
+        self.assertEqual(self.diff(source="range", repo=f"{self.repo}/..", **{"from": "a", "to": "b"})["error"],
+                         "bad-request")
+
+        # Repozytorium projektu Tablicy (lista z app.known_git_repos): `commit` i `range` przechodzą walidację.
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        commit = self.diff(source="commit", repo=str(self.repo), sha="HEAD")
+        self.assertTrue(commit["ok"], commit)
+        self.assertEqual(commit["to"]["sha"], head)
+        ranged = self.diff(source="range", repo=str(self.repo), **{"from": "master", "to": branch})
+        self.assertTrue(ranged["ok"], ranged)
+        self.assertEqual((ranged["files"], ranged["totals"]), (data["files"], data["totals"]))
 
         self.assertEqual(len(self.events(card_id)), events)
         self.assertEqual(git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"), refs)
