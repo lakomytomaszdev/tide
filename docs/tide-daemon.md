@@ -42,6 +42,7 @@ Pola sesji:
 | `lastAction` | string | ostatnia czynność, np. `Edit · main.py`, `shell · make test` |
 | `waitingText` | string | tylko `waiting`: na co agent czeka — treść pytania (`AskUserQuestion` `input.questions[].question`, `ExitPlanMode` „Plan do zatwierdzenia: …”, `request_user_input` i pytanie asynchroniczne Codex Desktop, przy `reply` — pytanie z końca ostatniej wiadomości agenta, najwyżej 240 znaków) albo opis wywołania do zgody (jak `lastAction`, np. `Bash · Push na serwer`); pusty, gdy dziennik nie mówi, na co (sam status `waiting` z pliku Claude Code). W pozostałych stanach pusty. Raport i tablica koordynacji biorą stąd treść „czeka”, nigdy z ostatniego tekstu agenta (PT-23) |
 | `pid` | int | proces agenta albo 0 |
+| `processes` | string | stan migawki procesów, z której policzono `pid`, `canActivate` i żywotność (K-98 #4, PT-345): `none` — przed pierwszym wynikiem sondy (brak danych: sesja nie jest przez to `ended`), `fresh`, `stale` — ostatni wynik starszy niż trzy ticki (zawieszona sonda; zostaje ostatnia pełna migawka), `error` — ostatnia sonda rzuciła wyjątek. Bez pola przy `--no-processes` |
 | `canActivate` | bool | czy `ActivateSession` ma dokąd przejść. Sesja z Codex Desktop: zawsze, gdy aplikacja jest zainstalowana (także bez procesu i po zakończeniu — rozmowę da się otworzyć) |
 | `terminal` | string | nazwa okna docelowego, np. `Konsole`, `Codex` |
 | `newTask` | bool | tylko `true` i tylko przez 10 min: sesję uruchomiło przed chwilą okno „Nowe zadanie” (to samo narzędzie i katalog, sesji nie było przed startem). Widżet pokazuje przy niej znacznik „nowe”. W pozostałych sesjach pola nie ma |
@@ -120,7 +121,24 @@ Logika jest w `tide_daemon/windows.py` (`Activator`, `kwin_script`), wywołania 
 
 ## Skok do czekającego agenta
 
-**Skrót Meta+A.** Skrypt KWin `tide-agent-jump` (`kwin/agent-jump`, instalacja `make install-agent-jump`) rejestruje skrót przez `registerShortcut` i woła `ActivateLongestWaiting` na `/Agents`. Usługa odświeża stan i procesy, wybiera czekającą sesję z najwcześniejszym `sinceTs` spośród tych, do których okna da się przejść (czekająca w tmux czy przez ssh jest pomijana), i aktywuje okno tak jak `ActivateSession` (Konsole: najpierw karta). Gdy nic nie czeka — zwraca `false` bez żadnego komunikatu; sesje `done` nie są zapasowym celem (wyżej, „Meta+A tylko do czekających”). Jeśli usługa nie działa, D-Bus uruchomi ją przy pierwszym naciśnięciu.
+**Skrót Meta+A.** Skrypt KWin `tide-agent-jump` (`kwin/agent-jump`, instalacja `make install-agent-jump`) rejestruje skrót przez `registerShortcut` i woła `ActivateLongestWaiting` na `/Agents`. Usługa odświeża stan i procesy (sonda procesów rozpoczęta po wciśnięciu, poza wątkiem głównym — niżej, „Sonda procesów poza wątkiem głównym”), wybiera czekającą sesję z najwcześniejszym `sinceTs` spośród tych, do których okna da się przejść (czekająca w tmux czy przez ssh jest pomijana), i aktywuje okno tak jak `ActivateSession` (Konsole: najpierw karta). Gdy nic nie czeka — zwraca `false` bez żadnego komunikatu; sesje `done` nie są zapasowym celem (wyżej, „Meta+A tylko do czekających”). Jeśli usługa nie działa, D-Bus uruchomi ją przy pierwszym naciśnięciu.
+
+**Sonda procesów poza wątkiem głównym (K-98 #4, PT-345).** `processes.probe` (całe `/proc`, u agentów także `fd`)
+biegnie w jednym stałym wątku `tide-process-probe` (`procprobe.ProcessProber`), a nie w wątku głównym, który obsługuje
+D-Bus. Tick monitora sesji (co 5 s), zmiana dziennika i wynik oceny tury przeliczają listę na ostatniej opublikowanej
+migawce procesów i proszą o nową sondę bez czekania; jej wynik wraca sygnałem do wątku głównego, podmienia migawkę
+jednym przypisaniem (stara albo nowa tabela, nigdy częściowa) i przelicza listę ponownie. Prośby w trakcie sondy
+zlewają się w jedną następną; wyjątek sondy daje stan `error` i nie zatrzymuje następnej, a zawieszona sonda trzyma
+tylko swój wątek (odczyty dostają ostatnią migawkę ze stanem `stale`). Akcje użytkownika działają wyłącznie na sondzie
+rozpoczętej po wywołaniu, nie na opublikowanej migawce ani na sondzie trwającej w chwili wywołania: `ActivateSession`
+i `ActivateLongestWaiting` odpowiadają z opóźnieniem (delayed reply), gdy przyjdzie taka sonda, a po 2 s bez niej —
+`false` bez skutku. Wywołania z wnętrza usługi (przycisk „Przejdź” powiadomienia, `/Coordination Activate`, KRunner,
+otwarcie wątku Codex Desktop) czekają na nią jawnie najwyżej `PROBE_WAIT_S` (2 s) i wtedy odmawiają. Tak samo
+sprzątanie worktree (`/Worktrees Remove`, `RemoveForced`): katalogi żywych agentów liczy na sondzie nowszej niż
+wywołanie (`AgentMonitor.refresh_fresh`), a bez niej odmawia każdej ścieżki (`unavailable`) bez skutku. Wynik sondy jest
+wyłącznie prezentacją: przepływ karty (start kroku, odzyskiwanie, zgoda) go nie czyta — decyduje świeży, pełny odczyt
+dziennika w kolejce mutacji, więc uszkodzona historia i nieznana tożsamość odmawiają bez skutku także wtedy, gdy sonda
+widzi żywy proces (`daemon/tests/test_monitor_probe.py`).
 
 Dlaczego skrypt KWin, a nie rejestracja w KGlobalAccel prosto z usługi: na Waylandzie w Plasmie 6 globalne skróty obsługuje KWin, a `registerShortcut` to udokumentowane, stabilne API skryptów. Protokół D-Bus `org.kde.kglobalaccel` jest wewnętrzny (`doRegister`, `setShortcutKeys` ze strukturami klawiszy `a(ai)`, które zmieniły się między KF5 i KF6, `setInactive`, osobny obiekt `/component/<nazwa>` z sygnałem) — łatwo go zepsuć aktualizacją Frameworks i trudno poprawnie zbudować z PyQt. Skrót w skrypcie KWin nie znika przy restarcie usługi, widać go w Ustawieniach systemowych → Skróty → KWin („Tide: przejdź do agenta, który czeka najdłużej”) i można go tam zmienić. Przełączanie okien i tak idzie przez skrypty KWin.
 
@@ -3771,6 +3789,14 @@ klucz nigdy nie trafia i sekcja jest liczona w każdym odświeżeniu. Pamięć s
 podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar: `daemon/tests/perf_board_refresh.py`
 (metody Snapshot, Work, Badge, GetCardFlowSettings, RenderFlow i BoxStatus z atrapą `incus`;
 porównanie bazy z HEAD tym samym reproduktorem: `daemon/tests/perf_board_refresh_compare.sh`).
+
+**Bramka czasów odpowiedzi K-98 (PT-345).** `bash daemon/tests/perf_gate_k98.sh <katalog>` mierzy jeden scalony
+kandydat (HEAD): reproduktor PT-342 bez zmian (baza karty `a95d7a31` vs HEAD, bez obciążenia i przy zajętym workerze
+`--busy-ms 2000`), 5 osobnych zimnych startów i p95 pierwszego wywołania serii D-Bus na prawdziwej usłudze z sondą
+procesów (`daemon/tests/perf_dbus_first_call.py`, 20 serii, początek ticketu vs HEAD). Próba jest ważna tylko przy
+1-min `/proc/loadavg` < liczba rdzeni / 2 przed i po; najwyżej 3 próby, rozstrzyga pierwsza ważna. Potem regresje
+PT-342…PT-345 i `box.enabled=false` na tym samym HEAD, a `perf_gate_k98_eval.py` ocenia progi (każde odświeżenie
+≤ 500 ms i ≤ 1 wczytanie Tablicy, p95 < 1 s dla Snapshot, GetCardFlowSettings, BoxStatus i pierwszego wywołania serii).
 
 **Tick i odzyskiwanie bez powielania odczytów (K-98 #3, PT-344).** `engine.tick` ma jedną niezmienną fazę odczytu
 historii (`trialhold.HistoryPhase`): rozpoznanie niepełnej historii po restarcie, odtworzenie `step.started`
