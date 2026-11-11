@@ -71,6 +71,47 @@ function totalsText(totals) {
     return n + " " + noun + " · +" + totals.additions + " −" + totals.deletions
 }
 
+// Duże diffy (PT-355). Usługa dokłada pola tylko, gdy dotyczą pliku: `large` + `lines` (bez hunków), `truncated`
+// (treść poza limitem całości), `oldSize`/`newSize` (binarny). Doczytany plik dostaje `loaded: true`.
+var TRUNCATED_BAR ="Pokazano część zmian; wybierz plik, żeby doczytać"
+
+function isLarge(file) {
+    return !!file && file.large === true && file.loaded !== true && !(file.hunks && file.hunks.length)
+}
+
+// Plik bez treści tylko z powodu limitu całości — wybór pliku doczytuje go przez `options.path`.
+function needsLoad(file) {
+    return !!file && file.truncated === true && file.loaded !== true && !file.binary
+        && !(file.hunks && file.hunks.length)
+}
+
+function largeText(file) {
+    return "duży plik — " + file.lines + " linii, pokaż"
+}
+
+// 30 → „30 B”, 1536 → „1,5 KB”, 3 MB → „3,0 MB”; brak strony (null) → „—”.
+function sizeText(bytes) {
+    if (bytes === null || bytes === undefined) return "—"
+    if (bytes < 1024) return bytes + " B"
+    const units = ["KB", "MB", "GB"]
+    let value = bytes / 1024
+    let unit = 0
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++ }
+    return value.toFixed(1).replace(".", ",") + " " + units[unit]
+}
+
+// Bez rozmiarów w danych (`oldSize`/`newSize` nieobecne) zostaje dawny komunikat bez liczb.
+function binaryText(file) {
+    if (file.oldSize === undefined && file.newSize === undefined) return "Plik binarny — bez podglądu zmian."
+    return "plik binarny (" + sizeText(file.oldSize) + " → " + sizeText(file.newSize) + ")"
+}
+
+// `DiffData` z plikiem `file` (odpowiedź `options.path`) wstawionym w miejsce wpisu o tej samej ścieżce.
+function mergeFile(data, file) {
+    const files = data.files.map(f => f.path === file.path ? Object.assign({}, file, {loaded: true}) : f)
+    return Object.assign({}, data, {files: files})
+}
+
 // Jedno zdanie dla błędu usługi i co dalej (kody z daemon/tide_daemon/gitread/diffdata.py i runnera).
 function errorText(code, message) {
     const said = (fallback) => {

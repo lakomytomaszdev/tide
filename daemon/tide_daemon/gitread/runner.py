@@ -34,7 +34,7 @@ from ..worktrees.git import GIT_ENV, Git, Result
 DEFAULT_TIMEOUT = 30.0
 
 READ_COMMANDS = frozenset(("diff", "log", "show", "rev-parse", "rev-list", "merge-base", "status",
-                           "for-each-ref"))
+                           "for-each-ref", "ls-tree"))
 DIFF_COMMANDS = frozenset(("diff", "log", "show"))
 WORKTREE_COMMANDS = frozenset(("diff", "status"))  # czytają pliki checkoutu: filtry i podmoduły
 
@@ -128,8 +128,10 @@ class GitReader:
         self._pool.shutdown(wait=True, cancel_futures=True)
 
     def run(self, repo: str, command: str, *options: str, revs=(), paths=(), ok_codes=(0,),
-            timeout: float | None = None) -> Result:
-        """Jedno polecenie odczytu w `repo`. Zwraca `Result` dla kodu z `ok_codes`, inaczej `GitReadError`."""
+            timeout: float | None = None, max_bytes: int | None = None, max_lines: int | None = None) -> Result:
+        """Jedno polecenie odczytu w `repo`. Zwraca `Result` dla kodu z `ok_codes`, inaczej `GitReadError`.
+        `max_bytes`/`max_lines` (PT-355): limit czytany strumieniowo — po przekroczeniu git jest przerywany,
+        `Result.out` to pełne linie sprzed limitu, a `Result.truncated` jest prawdą."""
         if command not in READ_COMMANDS:
             raise GitReadError("bad-request", f"polecenie poza listą odczytu: {command!r}")
         if not isinstance(repo, str) or not os.path.isabs(repo):
@@ -152,7 +154,7 @@ class GitReader:
         argv += revs
         if paths or command in ("diff", "log", "rev-list", "show", "status"):
             argv += ["--", *paths]
-        return self._execute(repo, command, argv, ok_codes, timeout)
+        return self._execute(repo, command, argv, ok_codes, timeout, max_bytes, max_lines)
 
     def _filter_overrides(self, repo, timeout) -> list:
         """`-c` wyłączające każdy sterownik `filter.<nazwa>` z konfiguracji (odczyt konfiguracji nie
@@ -175,10 +177,10 @@ class GitReader:
                 overrides += ["-c", f"filter.{name}.{field}={value}"]
         return overrides
 
-    def _execute(self, repo, command, argv, ok_codes, timeout) -> Result:
+    def _execute(self, repo, command, argv, ok_codes, timeout, max_bytes=None, max_lines=None) -> Result:
         limit = timeout if timeout is not None else self.timeout
         try:
-            result = self._git.run(repo, *argv, timeout=limit)
+            result = self._git.run(repo, *argv, timeout=limit, max_bytes=max_bytes, max_lines=max_lines)
         except CancelledError as exc:
             raise GitReadError("cancelled", f"git {command}: odczyt anulowany przy zamykaniu usługi") from exc
         if result.timed_out:

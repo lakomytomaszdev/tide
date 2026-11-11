@@ -413,6 +413,151 @@ out["files"] = texts("diffFileName")
         self.assertEqual(out["files"], [])
 
 
+BIG_SCENARIO = '''
+SMALL = DIFF["files"][1]  # new.txt z hunkiem
+LARGE = dict(SMALL, path="duzy.txt", additions=3500, large=True, lines=3500, hunks=[])
+CUT = dict(SMALL, path="ucięty.txt", additions=40, truncated=True, hunks=[])
+BIN = dict(SMALL, path="img.png", status="M", additions=0, binary=True, hunks=[], oldSize=30, newSize=1536)
+BIN_NEW = dict(BIN, path="nowy.bin", status="A", oldSize=None, newSize=7)
+BIG = dict(DIFF, truncated=True, warnings=["Diff przekracza limit"],
+           files=[SMALL, LARGE, CUT, BIN, BIN_NEW], totals={"files": 5, "additions": 3541, "deletions": 0})
+
+
+def loaded(path, rows):
+    entry = dict(SMALL, path=path, additions=len(rows), hunks=[hunk(1, [line("+", None, i + 1, t) for i, t in enumerate(rows)])])
+    return dict(DIFF, files=[entry], totals={"files": 1, "additions": len(rows), "deletions": 0}, path=path)
+
+
+def hunk(start, lines):
+    return {"oldStart": 0, "oldLines": 0, "newStart": start, "newLines": len(lines), "header": "", "lines": lines}
+
+
+def line(kind, old, new, text):
+    return {"kind": kind, "oldNo": old, "newNo": new, "text": text}
+
+
+def options_of(call):
+    return json.loads(call[2]).get("options")
+'''
+
+
+class BigDiffViewTest(QmlCase):
+    """PT-355: plik `large`, binarny z rozmiarami i diff przycięty limitem całości."""
+
+    def probe(self, scenario: str) -> dict:
+        return super().probe(BIG_SCENARIO + scenario)
+
+    def test_large_file_is_collapsed_and_click_loads_it_through_options_path(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), BIG)
+click("diffFile", 1)
+out["selected"] = view("selectedPath")
+out["note"] = texts("diffFileNote")
+out["show"] = field("diffLargeShow", "it.label")
+out["rows"] = len(field("diffLine", "1"))
+out["callsBefore"] = len(calls())
+click("diffLargeShow")
+out["request"] = calls()[-1][2]
+out["tag"] = last_tag()
+out["reading"] = [texts("diffFileNote"), field("diffLargeShow", "1")]
+reply(last_tag(), loaded("duzy.txt", ["pierwsza", "druga"]))
+out["lines"] = field("diffLine", "[it.kind, it.content]")
+out["after"] = [texts("diffFileNote"), field("diffLargeShow", "1"), view("selectedPath")]
+out["names"] = texts("diffFileName")
+out["stats"] = texts("diffFileStats")
+click("diffFile", 0)
+click("diffFile", 1)
+out["noReload"] = len(calls())
+''')
+        self.assertEqual(out["selected"], "duzy.txt")
+        self.assertEqual(out["note"], ["Plik jest duży — treść nie została wczytana."])
+        self.assertEqual(out["show"], ["duży plik — 3500 linii, pokaż"])
+        self.assertEqual((out["rows"], out["callsBefore"]), (0, 1), "sam wybór dużego pliku niczego nie wysyła")
+        request = json.loads(out["request"])
+        self.assertEqual(request, {"source": "card", "card": "K-36", "options": {"path": "duzy.txt"}})
+        self.assertTrue(out["tag"].startswith("file:"))
+        self.assertEqual(out["reading"], [["Doczytuję zmiany pliku…"], []])
+        self.assertEqual(out["lines"][1:], [["+", "pierwsza"], ["+", "druga"]])
+        self.assertEqual(out["after"], [[], [], "duzy.txt"])
+        self.assertEqual(out["names"][:3], ["new.txt", "duzy.txt", "ucięty.txt"], "kolejność listy bez zmian")
+        self.assertEqual(out["noReload"], 2, "doczytany plik nie jest pobierany ponownie (tylko diff i plik)")
+
+    def test_truncated_diff_shows_the_bar_and_selecting_a_bodiless_file_loads_it(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+out["barNormal"] = field("diffTruncatedBar", "1")
+open_view()
+reply(last_tag(), BIG)
+out["bar"] = texts("diffTruncatedText")
+out["names"] = texts("diffFileName")
+click("diffFile", 2)
+out["request"] = calls()[-1][2]
+out["note"] = texts("diffFileNote")
+reply(last_tag(), loaded("ucięty.txt", ["treść", "pliku"]))
+out["lines"] = field("diffLine", "it.content")
+out["barAfter"] = texts("diffTruncatedText")
+out["calls"] = len(calls())
+''')
+        self.assertEqual(out["barNormal"], [], "bez ucięcia nie ma paska")
+        self.assertEqual(out["bar"], ["Pokazano część zmian; wybierz plik, żeby doczytać"])
+        self.assertEqual(len(out["names"]), 5, "lista plików pełna")
+        self.assertEqual(json.loads(out["request"]), {"source": "card", "card": "K-36", "options": {"path": "ucięty.txt"}})
+        self.assertEqual(out["note"], ["Doczytuję zmiany pliku…"])
+        self.assertEqual(out["lines"][1:], ["treść", "pliku"])
+        self.assertEqual(out["barAfter"], ["Pokazano część zmian; wybierz plik, żeby doczytać"], "reszta nadal ucięta")
+
+    def test_load_error_is_shown_and_retry_asks_again(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), BIG)
+click("diffFile", 2)
+reply(last_tag(), {"ok": False, "error": "timeout", "message": "git zbyt długo"})
+out["note"] = texts("diffFileNote")
+out["retry"] = field("diffRetryLoad", "it.label")
+click("diffRetryLoad")
+out["asked"] = [c[1][:5] for c in calls()]
+reply(last_tag(), loaded("ucięty.txt", ["ok"]))
+out["lines"] = field("diffLine", "it.content")
+out["retryGone"] = field("diffRetryLoad", "1")
+''')
+        self.assertIn("Spróbuj ponownie", out["note"][0])
+        self.assertEqual(out["retry"], ["Spróbuj ponownie"])
+        self.assertEqual(out["asked"], ["diff:", "file:", "file:"])
+        self.assertEqual(out["lines"][1:], ["ok"])
+        self.assertEqual(out["retryGone"], [])
+
+    def test_binary_files_show_sizes_before_and_after_without_content(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), BIG)
+click("diffFile", 3)
+out["changed"] = [texts("diffFileNote"), len(field("diffLine", "1"))]
+click("diffFile", 4)
+out["added"] = texts("diffFileNote")
+out["calls"] = len(calls())
+''')
+        self.assertEqual(out["changed"], [["plik binarny (30 B → 1,5 KB)"], 0])
+        self.assertEqual(out["added"], ["plik binarny (— → 7 B)"])
+        self.assertEqual(out["calls"], 1, "binarnego nie doczytuje się")
+
+    def test_reload_drops_a_late_file_reply(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), BIG)
+click("diffFile", 2)
+late = last_tag()
+key(Qt.Key.Key_R)
+reply(late, loaded("ucięty.txt", ["spóźnione"]))
+out["rows"] = field("diffLine", "it.content")
+reply(last_tag(), BIG)
+out["afterReload"] = [view("selectedPath"), texts("diffFileNote")]
+''')
+        self.assertEqual(out["rows"], [])
+        self.assertEqual(out["afterReload"][0], "ucięty.txt")
+
+
 class SourceTest(unittest.TestCase):
     def test_component_is_generic_apart_from_the_card_header(self):
         with open(VIEW_QML, encoding="utf-8") as fh:

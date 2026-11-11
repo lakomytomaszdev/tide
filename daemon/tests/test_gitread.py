@@ -308,12 +308,16 @@ class SingleRunnerTest(unittest.TestCase):
         calls = []
 
         class FakeReader:
-            def run(self, repo, command, *options, revs=(), paths=(), ok_codes=(0,), timeout=None):
+            def run(self, repo, command, *options, revs=(), paths=(), ok_codes=(0,), timeout=None,
+                    max_bytes=None, max_lines=None):
                 calls.append(command)
                 return Result(0, "", "")
 
         arguments = {"rev_parse": ("/r", "card"), "merge_base": ("/r", "a", "b"), "rev_list": ("/r", ["a"]),
-                     "log": ("/r", ["a"]), "diff": ("/r", "a", "b"), "status": ("/r",)}
+                     "log": ("/r", ["a"]), "diff": ("/r", "a", "b"), "status": ("/r",),
+                     "diff_capped": ("/r", "a", "b"), "diff_files": ("/r", "a", "b"),
+                     "blob_sizes": ("/r", "a", ["x"])}
+        calls_per_read = {"diff_files": 2}  # `--raw` i `--numstat`; reszta: jedno polecenie
         self.assertEqual(set(read.__all__), set(arguments))
 
         def refuse(*args, **kwargs):
@@ -324,8 +328,9 @@ class SingleRunnerTest(unittest.TestCase):
                 mock.patch.object(Git, "run", refuse):
             for name in read.__all__:
                 before = len(calls)
-                getattr(read, name)(FakeReader(), *arguments[name])
-                self.assertEqual(len(calls), before + 1, name)
+                extra = {"max_bytes": 1, "max_lines": 1} if name == "diff_capped" else {}
+                getattr(read, name)(FakeReader(), *arguments[name], **extra)
+                self.assertEqual(len(calls), before + calls_per_read.get(name, 1), name)
 
     def test_runner_cannot_be_given_an_environment_or_git(self):
         reader = GitReader()

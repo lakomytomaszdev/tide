@@ -53,6 +53,9 @@ Rectangle {
     property string wantedPath: initialPath
     property string pendingTag: ""
     property string branchTag: ""
+    property string fileTag: ""
+    property string loadingPath: ""
+    property string fileError: ""
     property int sequence: 0
 
     color: Tide.Tokens.backgroundWindow
@@ -63,8 +66,34 @@ Rectangle {
         if (!backend) return
         sequence += 1
         pendingTag = "diff:" + sequence
+        fileTag = ""
+        loadingPath = ""
+        fileError = ""
         loading = true
         backend.gitDiff(pendingTag, JSON.stringify(effectiveRequest))
+    }
+
+    // Doczytuje treść jednego pliku (duży, przycięty) przez `Git.Diff` z `options.path`; odpowiedź zastępuje
+    // wpis pliku w `diffData`.
+    function loadFile(path) {
+        if (!backend || !path) return
+        sequence += 1
+        fileTag = "file:" + sequence
+        loadingPath = path
+        fileError = ""
+        backend.gitDiff(fileTag, JSON.stringify(Object.assign({}, effectiveRequest, {options: {path: path}})))
+    }
+
+    function onFileReply(reply) {
+        const path = loadingPath
+        fileTag = ""
+        loadingPath = ""
+        if (!reply || !reply.ok || !reply.files || reply.files.length === 0) {
+            fileError = Diff.errorText(reply ? reply.error : "failed", reply ? reply.message : "")
+            return
+        }
+        diffData = Diff.mergeFile(diffData, reply.files[0])
+        if (selectedPath === path) selectFile(Diff.indexOfPath(files, path))
     }
 
     function chooseTarget(ref) {
@@ -82,6 +111,7 @@ Rectangle {
             currentHunk = -1
             return
         }
+        if (files[index].path !== selectedPath) fileError = ""
         fileIndex = index
         selectedPath = files[index].path
         lineRows = Diff.rows(files[index])
@@ -89,6 +119,8 @@ Rectangle {
         currentHunk = hunkStarts.length ? 0 : -1
         lines.positionViewAtBeginning()
         filesList.positionViewAtIndex(index, ListView.Contain)
+        // Plik bez treści z powodu limitu całości doczytuje się sam; `large` czeka na „pokaż”.
+        if (Diff.needsLoad(files[index]) && loadingPath !== selectedPath) loadFile(selectedPath)
     }
 
     function step(delta) {
@@ -126,9 +158,13 @@ Rectangle {
     }
 
     function onReply(tag, text) {
-        if (tag !== pendingTag && tag !== branchTag) return
+        if (tag !== pendingTag && tag !== branchTag && tag !== fileTag) return
         let reply = null
         try { reply = JSON.parse(text) } catch (e) { reply = null }
+        if (tag === fileTag) {
+            onFileReply(reply)
+            return
+        }
         if (tag === branchTag) {
             branchTag = ""
             branches = reply && reply.ok && Array.isArray(reply.branches) ? reply.branches : []
@@ -426,22 +462,82 @@ Rectangle {
             anchors.bottom: parent.bottom
             visible: view.files.length > 0
 
-            Text {
-                objectName: "diffFileNote"
+            // Diff ucięty limitem całości (PT-355): lista plików jest pełna, treść tylko części plików.
+            Rectangle {
+                id: truncatedBar
+                objectName: "diffTruncatedBar"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: visible ? 34 : 0
+                visible: view.diffData !== null && view.diffData.truncated === true
+                color: Tide.Theme.alpha(Tide.Tokens.lavender, 0.12)
+
+                Text {
+                    objectName: "diffTruncatedText"
+                    anchors.left: parent.left
+                    anchors.leftMargin: 14
+                    anchors.right: parent.right
+                    anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Diff.TRUNCATED_BAR
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                }
+            }
+
+            Column {
+                id: fileNote
+                z: 1  // nad ListView linii, żeby przyciski przyjmowały kliknięcia
                 anchors.centerIn: parent
+                width: Math.min(parent.width - 48, 520)
+                spacing: 12
                 visible: view.selectedFile !== null && view.lineRows.length === 0
-                text: view.selectedFile && view.selectedFile.binary ? "Plik binarny — bez podglądu zmian."
-                                                                    : "Brak zmian w treści pliku."
-                textFormat: Text.PlainText
-                color: Tide.Tokens.textMuted
-                font.family: Tide.Theme.uiFamily
-                font.pixelSize: 14
+
+                Text {
+                    objectName: "diffFileNote"
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: !view.selectedFile ? ""
+                        : view.selectedFile.binary ? Diff.binaryText(view.selectedFile)
+                        : view.loadingPath === view.selectedPath ? "Doczytuję zmiany pliku…"
+                        : view.fileError !== "" ? view.fileError
+                        : Diff.isLarge(view.selectedFile) ? "Plik jest duży — treść nie została wczytana."
+                        : Diff.needsLoad(view.selectedFile) ? "Treść pliku nie mieści się w limicie podglądu."
+                        : "Brak zmian w treści pliku."
+                    textFormat: Text.PlainText
+                    color: Tide.Tokens.textMuted
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 14
+                }
+                PillAction {
+                    objectName: "diffLargeShow"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: Diff.isLarge(view.selectedFile) && view.loadingPath !== view.selectedPath
+                    label: view.selectedFile && Diff.isLarge(view.selectedFile) ? Diff.largeText(view.selectedFile) : ""
+                    onClicked: view.loadFile(view.selectedPath)
+                }
+                PillAction {
+                    objectName: "diffRetryLoad"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    visible: view.fileError !== "" && Diff.needsLoad(view.selectedFile)
+                             && view.loadingPath !== view.selectedPath
+                    label: "Spróbuj ponownie"
+                    onClicked: view.loadFile(view.selectedPath)
+                }
             }
 
             ListView {
                 id: lines
                 objectName: "diffLines"
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: truncatedBar.bottom
+                anchors.bottom: parent.bottom
                 clip: true
                 model: view.lineRows
                 boundsBehavior: Flickable.StopAtBounds
