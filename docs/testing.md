@@ -404,6 +404,48 @@ gniazd D-Bus, lokalnych serwerów atrap i piaskownic uruchamianych przez testy. 
 obok innego pełnego przebiegu, bo pomiar czasu byłby zakłócony. `TEST_OUTPUT=<katalog>` pozwala
 wskazać inny katalog nadrzędny wyników; każde wywołanie nadal tworzy unikalny podkatalog.
 
+## Pętla przebiegów modułu pod obciążeniem
+
+Niestabilny test (K-100) odtwarzamy i dowodzimy poprawki jednym poleceniem, `tools/module_loop.py`.
+Powtarza badany moduł N razy (domyślnie 20); każdy przebieg to osobne wywołanie
+`tools/test_runner.py --modules … --output <katalog przebiegu>` (pula miejsc maszyny obowiązuje, narzędzie
+nie wywołuje unittest samo). Obciążenie robią palniki CPU w czystym Pythonie, zatrzymywane zawsze
+(`finally`, SIGINT, SIGTERM; grupy procesów).
+
+```sh
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py                      # tryb palników
+/usr/bin/python3 tools/module_loop.py daemon/tests/test_cardflow_waves.py --pool               # tryb puli
+/usr/bin/python3 tools/module_loop.py <moduł> --pool --with <moduł…> --runs 2 --output <katalog>
+```
+
+Parametry: `--runs`, `--burners` (domyślnie ⌈1,5 × rdzenie⌉), `--threshold` (próg loadavg1, domyślnie liczba
+rdzeni), `--wait` (najdłuższy czas dojścia do progu, s), `--output` (domyślnie `build/module-loop/…`).
+
+- **Tryb palników:** w przebiegu biegnie tylko badany moduł, a maszynę obciążają palniki. Loadavg1 to średnia
+  wykładnicza dochodząca do liczby procesów gotowych od dołu, dlatego palników jest 1,5× więcej niż próg.
+- **Tryb puli (`--pool`):** badany moduł biegnie w jednym wywołaniu uruchamiacza razem z towarzyszami i z jego
+  domyślnym `--jobs`, więc uruchamiacz dzieli moduły na równoległe i `[OSOBNO]` jak w pełnym `make test`
+  (14 procesów, prywatne magistrale, porty, procesy potomne). Towarzysze: `--with <moduły…>` albo stała
+  `DEFAULT_COMPANIONS` w narzędziu — 18 modułów `daemon/tests/` z prywatną magistralą D-Bus, procesami potomnymi
+  i fiksturą `FlowInProcess` (w tym pozostałe moduły K-100: `test_cardflow_youtrack`, `test_cardflow_waves`,
+  `test_daemon_lifecycle`, `test_cardflow_review`, `test_cardflow_dbus`), co z badanym modułem daje co najmniej
+  `JOBS` modułów równoległych (narzędzie odmawia, gdy zestaw domyślny jest za mały na tej maszynie). Badany
+  moduł nie jest duplikowany na liście. Pula pozostaje ciężka — nie uruchamiaj kilku naraz.
+- **Kiedy tryb puli:** moduł jest `[OSOBNO]` w `SERIAL_MODULES` (raport podaje to wprost), albo porażka z pełnego
+  `make test` nie odtwarza się palnikami.
+
+Ważność przebiegu: przed pierwszym przebiegiem **i przed każdym kolejnym** narzędzie czeka, aż loadavg1 ≥ próg.
+Przekroczenie czasu przed pierwszym przebiegiem to błąd bez przebiegów (kod 2); przed kolejnym przebieg rusza,
+ale jest „nieważny”. Przebieg jest ważny, gdy loadavg1 na starcie ≥ próg i wszystkie palniki żyły do końca;
+śmierć palnika unieważnia go. Spadek loadavg1 poniżej progu w trakcie lub na końcu (krótki moduł, przejścia
+uruchamiacza) daje tylko ostrzeżenie „spadek obciążenia” z minimum z próbek.
+
+Raport (`summary.json`, `report.md`): SHA, polecenie, tryb, badany moduł i towarzysze, `[OSOBNO]`, rdzenie,
+palniki, `JOBS`, a dla przebiegu loadavg start/koniec/minimum, ważność, ostrzeżenia, kod uruchamiacza, czas
+i nazwy nieudanych testów osobno dla badanego modułu i towarzyszy. Kod wyjścia 0 tylko dla N/N ważnych
+przebiegów z zielonym badanym modułem; porażki towarzyszy nie zmieniają kodu, ale raport je liczy —
+wykonawca rozlicza je w notce. Test narzędzia: `daemon/tests/test_module_loop.py`.
+
 ## Ponowienie padniętych modułów
 
 Etap A oszczędzania czasu testów (06.11.2026: 31% czasu testów ticketów to były powtórki całego zestawu na
