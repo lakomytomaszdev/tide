@@ -3781,8 +3781,9 @@ czyta ponownie. Faza nie zastępuje odczytu przed skutkiem: zapis odtworzonego s
 (pod blokadą świeży pełny odczyt musi być równy odczytowi decyzji, inaczej `HistoryChanged` bez zapisu), a przed
 pierwszą mutacją karty w `recover_network` (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
 odczyt porównuje `HistoryPhase.unchanged`; przy zmianie mutacje tej karty są odmówione, stan sieci nie jest
-zapamiętany i kolejny tick uzgadnia go od nowa. Dalsza część ticku (`_tick_card`, inwentaryzacja, kontrola procesu)
-czyta historię świeżo jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pamięci. Tablica:
+zapamiętany i kolejny tick uzgadnia go od nowa. Faza trwa cały tick: `_recover_started_steps` wołane z `_tick_card`
+też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo
+jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pamięci. Tablica:
 tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
 transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,
 `_caretake` i `_guard_card` (kolumna karty). Zapis pliku Tablicy w tym procesie (`BoardStore.generation`) unieważnia

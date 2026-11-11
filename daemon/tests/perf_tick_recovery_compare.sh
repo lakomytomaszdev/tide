@@ -17,8 +17,9 @@ script="$repo/daemon/tests/perf_tick_recovery.py"
 mkdir -p "$out"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# `tools/` jest potrzebne pakietowi testów (`daemon/tests/__init__.py` → `tools.test_isolation`).
-git -C "$repo" archive "$base_sha" daemon tools | tar -x -C "$tmp"
+# `tools/` jest potrzebne pakietowi testów (`daemon/tests/__init__.py` → `tools.test_isolation`), a `docs/` —
+# zasobom usługi (standard planu przy starcie karty), szukanym obok kodu z `--src`.
+git -C "$repo" archive "$base_sha" daemon tools docs | tar -x -C "$tmp"
 # Reproduktor importuje fixture z pakietu testów `--src`; w bazie musi to być ten sam plik co w HEAD.
 cp "$script" "$tmp/daemon/tests/perf_tick_recovery.py"
 {

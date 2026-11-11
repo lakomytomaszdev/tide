@@ -139,6 +139,31 @@ class HistoryPhaseTickTest(TickFixture):
         self.assertEqual(dict(count.phase), {card: 1 for card in cards},
                          "faza odzyskiwania czyta komplet historii karty więcej niż raz")
 
+    def test_every_recover_started_steps_call_of_a_tick_shares_the_phase_read(self):
+        self.engine.tick()
+        calls, reads_inside = [], []
+        real_recover, real_read = self.engine._recover_started_steps, self.journal.read_complete
+        inside = []
+
+        def recover(*args, **kwargs):
+            calls.append(kwargs.get("history"))
+            inside.append(1)
+            try:
+                return real_recover(*args, **kwargs)
+            finally:
+                inside.pop()
+
+        def read(card):
+            if inside:
+                reads_inside.append(card)
+            return real_read(card)
+        with mock.patch.object(self.engine, "_recover_started_steps", side_effect=recover), \
+                mock.patch.object(self.journal, "read_complete", side_effect=read):
+            self.engine.tick()
+        self.assertEqual(len(calls), 2, "pętla recovery i _tick_card")
+        self.assertTrue(all(h is not None and h is calls[0] for h in calls), "jedna faza ticku w obu wywołaniach")
+        self.assertEqual(reads_inside, [], "bez zapisu historia karty nie jest czytana ponownie")
+
     def test_restart_recovers_one_owner_with_separate_fresh_reads_before_and_after_the_write(self):
         self.lose_step_started()
         self.restarted()

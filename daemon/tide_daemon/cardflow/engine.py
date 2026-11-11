@@ -3324,8 +3324,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
 
     def tick(self) -> None:
-        # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów i sieci pudełek
-        # dzielą ten sam pełny odczyt karty; każda mutacja z niego porównuje świeży odczyt (odmowa przy zmianie).
+        # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów (w pętli recovery
+        # i w `_tick_card`) i sieci pudełek dzielą ten sam pełny odczyt karty; własny zapis karty go unieważnia,
+        # a każda mutacja z niego porównuje świeży odczyt (odmowa przy zmianie).
         history = trialhold.HistoryPhase(self.journal)
         # K-98 #3: jeden kontekst odczytu Tablicy (`BoardRead` z #1) na tick, przekazywany jawnie; zapis Tablicy
         # go unieważnia, a ścieżki ze skutkiem ubocznym czytają świeżo jak dotąd.
@@ -3362,7 +3363,6 @@ class FlowEngine(CaretakerChat, PlanEditing):
             if not baseproposal.blocked(current):
                 self._recover_started_steps(card, current, history=history)
         boxstep.recover_network(self, history=history)
-        del history     # koniec fazy: dalsza część ticku czyta historię świeżo, jak dotąd
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
                          for s in self.journal.state(card).running() if s.get("local")}
@@ -3396,7 +3396,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except Exception as exc:
                 print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
             try:
-                self._tick_card(card, st, read)
+                self._tick_card(card, st, read, history)
             except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
                 print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
             try:
@@ -3414,8 +3414,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._busy = tuple(sorted(busy))
         boxstep.lifecycle.tick(self)
 
-    def _tick_card(self, card: str, st: FlowState, read=None) -> None:
-        """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty."""
+    def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:
+        """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty.
+        `history`: faza odczytu historii tego ticku dla `_recover_started_steps` (zapis z niej — `Journal.unchanged`);
+        pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo jak dotąd."""
         self._outside_history(card)
         trialhold.inventory(self, card, st)
         if baseproposal.blocked(st):
@@ -3428,7 +3430,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._recover_console_openings(card, st)
         st = self.journal.state(card)
         self._sync_plan_cards(card, st)
-        self._recover_started_steps(card, st)
+        self._recover_started_steps(card, st, history=history)
         self._recover_verdicts(card)
         self._recover_review_rejections(card)
         st = self.journal.state(card)
