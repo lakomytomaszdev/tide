@@ -26,7 +26,11 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(len(result["refresh"]["samplesMs"]), 2)
         self.assertEqual(len(result["refresh"]["boardLoads"]), 2)
         self.assertGreaterEqual(result["coldStart"]["boardLoads"], 1)
+        self.assertEqual(result["coldStart"]["cleared"], ["engine._env_cache"])
         self.assertEqual(set(result["methods"]), set(perf.METHODS))
+        self.assertIn("BoxStatus", perf.METHODS)
+        self.assertEqual(result["boxStatus"]["builder"], "fake-incus")
+        self.assertTrue(result["boxStatus"]["ok"], result["boxStatus"])
         for data in result["methods"].values():
             self.assertEqual(len(data["samplesMs"]), 2)
         self.assertIn("p95", perf.summary(result))

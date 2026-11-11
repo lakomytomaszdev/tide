@@ -17,12 +17,20 @@ class BoardRead:
     kolejnych. Błąd wczytania jest zapamiętany i rzucany ponownie, więc nieudany odczyt też liczy się raz.
     Obiekt `Board` traktujemy jako tylko do odczytu."""
 
-    __slots__ = ("_store", "_board", "_error")
+    __slots__ = ("_store", "_board", "_error", "_memo")
 
     def __init__(self, store, board=None):
         self._store = store
         self._board = board
         self._error: BaseException | None = None
+        self._memo: dict = {}
+
+    def once(self, key, compute):
+        """Wartość pomocnicza liczona raz na odświeżenie (np. metadane magazynu kopii paczek projektu w kluczu
+        pamięci widoku). Ginie razem z kontekstem; służy wyłącznie prezentacji, nigdy decyzji ze skutkiem."""
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
 
     @property
     def board(self):

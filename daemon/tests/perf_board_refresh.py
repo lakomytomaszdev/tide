@@ -7,11 +7,19 @@ BoardStore + BoardMonitor + FlowEngine/CardFlowMonitor z włączonym pudełkiem,
 inne, z repozytoriami git) i N kart z dziennikiem przepływu i planem czekającym na zatwierdzenie (sekcja
 „Środowisko karty” liczona dla każdej karty). Potem mierzy:
 
-- zimny start osobno: pierwsze odświeżenie (`BoardMonitor.publish`) po złożeniu usługi, przy pustych pamięciach,
+- zimny start osobno: pierwsze odświeżenie (`BoardMonitor.publish`) po złożeniu usługi. Składanie usługi
+  (`create_card`/`upsert_project`) samo publikuje migawki i rozgrzewa pamięć widoku środowiska, więc przed
+  zimnym startem pamięć `engine._env_cache` jest czyszczona — jak po restarcie usługi (pole `coldStart.cleared`),
 - R odświeżeń Tablicy (`BoardMonitor.publish`: odczyt plików → projekcja → `engine.derived` każdej karty) — czas
   ścienny i liczba wczytań Tablicy (`BoardStore.load`, liczona na granicy magazynu) na odświeżenie,
-- Q żądań na metodę odczytu `/Board` w tej samej drodze co adaptor D-Bus (Snapshot, Work, Badge,
-  GetCardFlowSettings, RenderFlow) — opcjonalnie przy zajętym wątku przepływu (`--busy-ms`, scenariusz #2).
+- Q żądań na metodę odczytu `/Board` w tej samej drodze co adaptor D-Bus (Snapshot = Panel karty, Work, Badge,
+  GetCardFlowSettings, RenderFlow, BoxStatus = stan pudełka) — opcjonalnie przy zajętym wątku przepływu
+  (`--busy-ms`, scenariusz #2). BoxStatus używa prawdziwego `Builder` z atrapą `incus` (`fake_incus.py`, stan
+  w izolowanym katalogu; pudełka nie istnieją) — wynik ma `boxStatus.builder = "fake-incus"`; koszt usługi
+  (wczytania Tablicy, dzienniki kart, dziennik pudełka, slot dopuszczenia) jest prawdziwy, koszt Incusa nie.
+
+Dane: plasma-tide ma też jedną kopię paczki w magazynie kopii (`packs.create_snapshot`), więc klucz pamięci
+widoku przechodzi niepusty magazyn.
 
 p95 to nearest-rank: k = ⌈0,95·n⌉, wynik = k-ta próbka po posortowaniu. Wynik JSON zawiera surowe próbki, SHA
 kodu, `/proc/loadavg` przed i po, liczbę rdzeni, rozmiar historii (zdarzenia i bajty dzienników kart) i zimny start.
@@ -38,7 +46,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = os.path.dirname(os.path.dirname(HERE))          # katalog repozytorium (zawiera daemon/)
 PROJECTS = ("plasma-tide", "alpha", "beta")
-METHODS = ("Snapshot", "Work", "Badge", "GetCardFlowSettings", "RenderFlow")
+METHODS = ("Snapshot", "Work", "Badge", "GetCardFlowSettings", "RenderFlow", "BoxStatus")
+FAKE_INCUS = os.path.join(HERE, "fake_incus.py")
+INCUS_PROJECT = "user-1000"
 
 
 def nearest_rank(samples, q=0.95):
@@ -69,7 +79,8 @@ def git_sha(src):
 def isolated_env(base):
     """Izolowane katalogi usługi; poprzednie zmienne wracają po pomiarze."""
     names = {"HOME": "home", "XDG_STATE_HOME": "state", "XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data",
-             "XDG_CACHE_HOME": "cache", "XDG_RUNTIME_DIR": "run", "TIDE_BOARD_DIR": "board"}
+             "XDG_CACHE_HOME": "cache", "XDG_RUNTIME_DIR": "run", "TIDE_BOARD_DIR": "board",
+             "TIDE_FAKE_INCUS_STATE": "incus-state"}
     values = {key: os.path.join(base, rel) for key, rel in names.items()}
     for key, path in values.items():
         if key != "TIDE_BOARD_DIR":
@@ -138,7 +149,8 @@ class Service:
         self.engine = FlowEngine(self.store, claude_projects=os.path.join(os.environ["HOME"], ".claude", "projects"),
                                  systemd_run="/bin/false", catalog=executors.default_catalog,
                                  tmp_root=os.path.join(base, "tmp"), settings=settings, which=lambda name: None)
-        self.engine.box_settings_source = lambda: BoxSettings(enabled=True, project="user-1000")
+        self.engine.box_settings_source = lambda: BoxSettings(enabled=True, project=INCUS_PROJECT)
+        self.engine.box_builder = self._fake_builder(base)
         self.flow = CardFlowMonitor(self.engine, self.board, poll_ms=3_600_000)
         self.board.flow = self.flow
         slugs = []
@@ -169,6 +181,41 @@ class Service:
                            box=None)
             journal.append(card, "plan.reviewed", reviewer="Opus", verdict="APPROVE", findings=[])
             self.cards.append(card)
+        self._pack_snapshot(base)
+
+    @staticmethod
+    def _fake_builder(base):
+        """Fabryka `Builder` dla BoxStatus: prawdziwy kod usługi, `incus` to atrapa ze stanem w izolowanym katalogu."""
+        from tide_daemon.box.builder import Builder
+        from tide_daemon.box.incus import Incus
+        from tide_daemon.box.settings import BoxSettings
+        binary = os.path.join(base, "bin", "incus")
+        os.makedirs(os.path.dirname(binary), exist_ok=True)
+        with open(binary, "w", encoding="utf-8") as fh:
+            fh.write(f'#!/bin/sh\nexec /usr/bin/python3 -s "{FAKE_INCUS}" "$@"\n')
+        os.chmod(binary, 0o755)
+        settings = BoxSettings(enabled=True, project=INCUS_PROJECT)
+        return lambda: Builder(settings, incus=Incus(INCUS_PROJECT, binary=binary), policy=object())
+
+    def _pack_snapshot(self, base):
+        """Jedna kopia paczki plasma-tide w magazynie kopii (wejście klucza pamięci widoku)."""
+        from tide_daemon.box import packs
+        source = os.path.join(base, "packsrc")
+        os.makedirs(source)
+        for index in range(5):
+            with open(os.path.join(source, f"fixture-{index}.txt"), "w", encoding="utf-8") as fh:
+                fh.write(f"dane testowe {index}\n")
+        card = next(c for i, c in enumerate(self.cards) if PROJECTS[i % len(PROJECTS)] == "plasma-tide")
+        packs.create_snapshot("plasma-tide", card, {"name": "fixtures", "from": os.path.join(source, "*.txt")})
+
+    def clear_caches(self):
+        """Pamięć widoku środowiska jak po restarcie usługi (zimny start); zwraca listę wyczyszczonych pamięci."""
+        cleared = []
+        cache = getattr(self.engine, "_env_cache", None)
+        if isinstance(cache, dict):
+            cache.clear()
+            cleared.append("engine._env_cache")
+        return cleared
 
     def history(self):
         events = size = 0
@@ -209,6 +256,11 @@ class Service:
             box = []
             self.board.get_card_flow_settings(box.append)
             self._wait(box)
+        elif method == "BoxStatus":
+            box = []
+            self.board.box_status("plasma-tide", box.append)
+            self._wait(box)
+            self.last_box_status = box[0]
         else:
             raise ValueError(method)
         return (time.perf_counter() - start) * 1000.0
@@ -255,8 +307,9 @@ def measure(cards=30, refreshes=30, requests=100, busy_ms=0, base=None, keep=Fal
             service = Service(base, cards, box_file)
             result["setupMs"] = (time.perf_counter() - started) * 1000.0
             result["history"] = service.history()
+            cleared = service.clear_caches()
             cold_ms, cold_loads = service.refresh()
-            result["coldStart"] = {"ms": cold_ms, "boardLoads": cold_loads}
+            result["coldStart"] = {"ms": cold_ms, "boardLoads": cold_loads, "cleared": cleared}
             samples, loads = [], []
             for _ in range(refreshes):
                 ms, count = service.refresh()
@@ -271,6 +324,9 @@ def measure(cards=30, refreshes=30, requests=100, busy_ms=0, base=None, keep=Fal
                     values = [service.call(method) for _ in range(requests)]
                     methods[method] = {"samplesMs": values, "p95Ms": nearest_rank(values)}
             result["methods"] = methods
+            reply = json.loads(getattr(service, "last_box_status", "") or "{}")
+            result["boxStatus"] = {"builder": "fake-incus", "slug": "plasma-tide", "ok": bool(reply.get("ok")),
+                                   "state": reply.get("state"), "error": reply.get("error") or reply.get("message")}
     finally:
         if service is not None:
             service.close()
@@ -288,6 +344,7 @@ def summary(result):
              f"odświeżenie: p95 {result['refresh']['p95Ms']:.1f} ms, max {result['refresh']['maxMs']:.1f} ms, "
              f"wczytania Tablicy max {result['refresh']['maxBoardLoads']}"]
     lines += [f"{name}: p95 {data['p95Ms']:.2f} ms" for name, data in result["methods"].items()]
+    lines.append(f"BoxStatus: {result.get('boxStatus')}")
     return "\n".join(lines)
 
 

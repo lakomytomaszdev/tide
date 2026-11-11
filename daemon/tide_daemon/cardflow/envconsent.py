@@ -195,6 +195,13 @@ def _tree_sig(root: str, budget: int):
     return tuple(out)
 
 
+def _snapshots_sig(snapshots: str, read=None):
+    """Metadane magazynu kopii paczek projektu; w odświeżeniu z kontekstem liczone raz na projekt, nie na kartę."""
+    def compute():
+        return _tree_sig(snapshots, STAT_BUDGET) if os.path.isdir(snapshots) else _sig(snapshots)
+    return read.once(("pack-snapshots", snapshots), compute) if read is not None else compute()
+
+
 def view_key(engine, card_id: str, st, slug: str, repo: str, wait: str, read=None):
     """Klucz pamięci sekcji „Środowisko karty” z wejść, które ją wyznaczają — bez wczytania Tablicy ponad kontekst.
 
@@ -228,7 +235,7 @@ def view_key(engine, card_id: str, st, slug: str, repo: str, wait: str, read=Non
         _sig(repo) if repo else None, _sig(os.path.join(repo, ".tide", "box.yaml")) if repo else None,
         _sig(store_root) if store_root else None,
         _sig(os.path.join(store_root, "state.json")) if store_root else None,
-        _tree_sig(snapshots, STAT_BUDGET) if os.path.isdir(snapshots) else _sig(snapshots),
+        _snapshots_sig(snapshots, read),
         tuple(sorted((p, tuple(sorted(k3.credential_mode(p).items()))) for p in ("claude", "codex"))),
     )
 

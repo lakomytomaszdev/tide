@@ -120,8 +120,25 @@ class SingleReadTest(RefreshContextCase):
         with mock.patch.object(self.store, "load", side_effect=lambda: counted.append(1) or real()):
             self.board._json = ""
             self.board.snapshot_json()
-        self.assertLessEqual(len(counted), 2, "Snapshot: dwa odświeżenia (plany i migawka) najwyżej po jednym")
-        self.assertGreaterEqual(len(counted), 1)
+        # Pusta migawka → jedno `publish()` → dokładnie jedno wczytanie (regresja do dwóch byłaby widoczna).
+        self.assertEqual(len(counted), 1, "Snapshot wczytał Tablicę więcej niż raz")
+
+    def test_pack_store_metadata_is_walked_once_per_project_in_a_refresh(self):
+        os.makedirs(os.path.join(packs.snapshot_root(PLASMA), "kopia", "data"), exist_ok=True)
+        walks = []
+        real = envconsent._tree_sig
+
+        def tree_sig(root, budget):
+            walks.append(root)
+            return real(root, budget)
+        with mock.patch.object(envconsent, "_tree_sig", side_effect=tree_sig):
+            self.refresh()
+        self.assertEqual(walks, [packs.snapshot_root(PLASMA)],
+                         "magazyn kopii paczek przechodzony więcej niż raz na projekt w jednym odświeżeniu")
+        # Następne odświeżenie liczy go od nowa (kontekst nie przeżywa odświeżenia).
+        with mock.patch.object(envconsent, "_tree_sig", side_effect=tree_sig):
+            self.refresh()
+        self.assertEqual(len(walks), 2)
 
     def test_no_global_current_board_survives_the_refresh(self):
         self.refresh()

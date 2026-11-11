@@ -3759,10 +3759,18 @@ globalny, nie trafia do workera mutacji i ginie z końcem odświeżenia; funkcje
 jak dotąd (tick, zatwierdzenie zgody, start kroku). Sekcja ma pamięć `engine._env_cache` wspólną dla wszystkich
 projektów, także plasma-tide, z kluczem z odcisku wejść (`envconsent.view_key`: projekt i repozytorium karty, rejestr
 repozytoriów, dziennik karty i wersja planu, `boxWait`, wyłącznik i plik ustawień, profile projektu i karty, dziennik
-pudełka, `.tide/box.yaml`, magazyn zgody projektu i kopii paczek, tryb K3/K1) — każda zmiana wejścia unieważnia wpis
-przy następnym odświeżeniu. Pamięć służy wyłącznie prezentacji: `ApproveCardEnvironment` i bariery pudełka liczą
-odcisk i prawa świeżo, więc stary podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar:
-`daemon/tests/perf_board_refresh.py`.
+pudełka, `.tide/box.yaml`, magazyn zgody projektu i kopii paczek, tryb K3/K1) — każda zmiana wejścia z tej listy
+unieważnia wpis przy następnym odświeżeniu. **Ograniczenie:** klucz składa się z metadanych plików i katalogów
+(inode, rozmiar, mtime, ctime, tryb), bez czytania treści. Nie obejmuje treści źródeł paczek (`packs.inspect`: glob,
+liczba plików, rozmiar, trafienia skanera) ani treści plików repozytorium czytanych przez `stack.detect`
+(np. `package.json`), poza katalogiem głównym repozytorium i `.tide/box.yaml`. Zmiana takiego pliku bez zmiany
+metadanych katalogu głównego repozytorium nie odświeża podglądu do najbliższej zmiany innego wejścia. Magazyn kopii
+paczek jest przechodzony raz na projekt w jednym odświeżeniu (`BoardRead.once`), najwyżej 4096 wpisów; powyżej
+klucz nigdy nie trafia i sekcja jest liczona w każdym odświeżeniu. Pamięć służy wyłącznie prezentacji:
+`ApproveCardEnvironment` i bariery pudełka liczą odcisk, zawartość paczek (`blocked`) i prawa świeżo, więc stary
+podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar: `daemon/tests/perf_board_refresh.py`
+(metody Snapshot, Work, Badge, GetCardFlowSettings, RenderFlow i BoxStatus z atrapą `incus`;
+porównanie bazy z HEAD tym samym reproduktorem: `daemon/tests/perf_board_refresh_compare.sh`).
 
 `ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
 
