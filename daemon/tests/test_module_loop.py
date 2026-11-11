@@ -201,6 +201,10 @@ class ModuleLoopTest(unittest.TestCase):
         parallel = [m for m in module_loop.DEFAULT_COMPANIONS if m not in module_loop.SERIAL_MODULES]
         self.assertGreaterEqual(len(parallel) + 1, module_loop.default_jobs())
         self.assertGreaterEqual(len(module_loop.DEFAULT_COMPANIONS), 13)
+        for module in ("test_cardflow_youtrack", "test_worktrees_shutdown", "test_daemon_lifecycle",
+                       "test_cardflow_waves", "test_cardflow_integration_k38", "test_cardflow_review",
+                       "test_cardflow_dbus"):
+            self.assertIn("daemon/tests/%s.py" % module, module_loop.DEFAULT_COMPANIONS)
 
     def test_default_burners_exceed_threshold_by_half(self):
         cores = module_loop.available_cores()

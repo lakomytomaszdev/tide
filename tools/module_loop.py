@@ -32,7 +32,7 @@ from test_suites import SERIAL_MODULES  # noqa: E402
 
 # Stały zestaw towarzyszy trybu puli: moduły z prywatną magistralą D-Bus, procesami potomnymi i fiksturą
 # `FlowInProcess`, w tym pozostałe moduły z listy K-100. Dwa moduły `[OSOBNO]` (review, dbus) biegną na końcu,
-# więc równoległych jest 14 + badany moduł = co najmniej JOBS (14 na 16 rdzeniach).
+# więc równoległych jest 20 towarzyszy minus 2 `[OSOBNO]` + badany moduł = co najmniej JOBS.
 DEFAULT_COMPANIONS = (
     "daemon/tests/test_cardflow_youtrack.py",
     "daemon/tests/test_cardflow_waves.py",
@@ -52,9 +52,20 @@ DEFAULT_COMPANIONS = (
     "daemon/tests/test_cardflow_links_concurrency.py",
     "daemon/tests/test_cardflow_limits.py",
     "daemon/tests/test_runner_engine.py",
+    "daemon/tests/test_worktrees_shutdown.py",
+    "daemon/tests/test_cardflow_integration_k38.py",
 )
 
-BURNER_CODE = "while True:\n    pass\n"
+# Palnik kończy się, gdy rodzic zniknie (straż rodzica), więc nie zostaje po SIGKILL narzędzia.
+BURNER_CODE = (
+    "import os\n"
+    "ppid = os.getppid()\n"
+    "while True:\n"
+    "    for _ in range(2000000):\n"
+    "        pass\n"
+    "    if os.getppid() != ppid:\n"
+    "        break\n"
+)
 
 
 def available_cores():
@@ -85,6 +96,11 @@ class Burners:
         return [proc.pid for proc in self.procs]
 
     def stop(self):
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(sig, signal.SIG_IGN)
+            except ValueError:  # poza głównym wątkiem
+                pass
         for proc in self.procs:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)

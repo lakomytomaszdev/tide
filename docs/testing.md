@@ -426,9 +426,10 @@ rdzeni), `--wait` (najdłuższy czas dojścia do progu, s), `--output` (domyśln
 - **Tryb puli (`--pool`):** badany moduł biegnie w jednym wywołaniu uruchamiacza razem z towarzyszami i z jego
   domyślnym `--jobs`, więc uruchamiacz dzieli moduły na równoległe i `[OSOBNO]` jak w pełnym `make test`
   (14 procesów, prywatne magistrale, porty, procesy potomne). Towarzysze: `--with <moduły…>` albo stała
-  `DEFAULT_COMPANIONS` w narzędziu — 18 modułów `daemon/tests/` z prywatną magistralą D-Bus, procesami potomnymi
+  `DEFAULT_COMPANIONS` w narzędziu — 20 modułów `daemon/tests/` z prywatną magistralą D-Bus, procesami potomnymi
   i fiksturą `FlowInProcess` (w tym pozostałe moduły K-100: `test_cardflow_youtrack`, `test_cardflow_waves`,
-  `test_daemon_lifecycle`, `test_cardflow_review`, `test_cardflow_dbus`), co z badanym modułem daje co najmniej
+  `test_daemon_lifecycle`, `test_cardflow_review`, `test_cardflow_dbus`,
+  `test_worktrees_shutdown`, `test_cardflow_integration_k38`), co z badanym modułem daje co najmniej
   `JOBS` modułów równoległych (narzędzie odmawia, gdy zestaw domyślny jest za mały na tej maszynie). Badany
   moduł nie jest duplikowany na liście. Pula pozostaje ciężka — nie uruchamiaj kilku naraz.
 - **Kiedy tryb puli:** moduł jest `[OSOBNO]` w `SERIAL_MODULES` (raport podaje to wprost), albo porażka z pełnego
