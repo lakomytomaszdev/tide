@@ -285,6 +285,63 @@ Odświeżanie: co **60 s** w tle (jeden wątek roboczy: odczyt, potem rozmiary),
 
 Otwieranie: Konsole przez `konsole --workdir`, Rider przez skrypt z JetBrains Toolbox (`~/.local/share/JetBrains/Toolbox/scripts/rider`), `rider` z `PATH` albo `$TIDE_RIDER`; bez Ridera przycisk znika. Programy startują przez `systemd-run --user --scope`, żeby restart usługi nie zamykał otwartych okien.
 
+## Interfejs Git
+
+Odczyty gita jako dane (K-36): „co zmieniła ta karta” bez UI. Obiekt `/Git` obok `/Worktrees`
+(`dbus_service.GitAdaptor`, `git_monitor.py`, moduł `daemon/tide_daemon/gitread/`).
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Git` |
+| Interfejs | `org.tide.Daemon.Git` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Diff(s request)` | `→ s` | Diff jako dane. `request` to obiekt JSON ze źródłem (niżej). Odpowiedź `{ok: true, …DiffData}` albo `{ok: false, error, message}`; opóźniona — git działa w puli wątków runnera odczytu (`GitReader.submit`), pętla usługi w tym czasie obsługuje inne wywołania |
+
+**Źródło `card`** (PT-357): `{"source": "card", "card": "K-N", "targetRef": "refs/heads/master"}` (`targetRef`
+opcjonalny; pusty napis = brak). Działa w każdym stanie karty, która ma gałąź (także po domknięciu i scaleniu,
+dopóki gałąź karty istnieje).
+
+- Bez `targetRef` zakres zaczyna się od przypiętego `baseCommit` z dziennika karty i kończy na gałęzi karty
+  („zmiany od startu”). Ruch gałęzi startowej po starcie (np. nowe commity na `master`) nie zmienia początku zakresu.
+- Z `targetRef` zakres zaczyna się od merge-base celu i gałęzi karty. Ref może być pełny (`refs/heads/main`) albo
+  krótki (`main`); waliduje go runner odczytu (ref zaczynający się od `-` to `bad-request`, git nie rusza).
+- Repozytorium karty pochodzi wyłącznie z dziennika (`card.started.repo`, zapis przy starcie zlecenia; karta z grupy
+  kart — repozytorium jej projektu). Żądanie nie podaje ścieżek. Stan karty czytają istniejące funkcje odczytu
+  (`Journal.has`, `Journal.state`, `state.base_of`, `state.ticket_of`); odczyt nie dopisuje zdarzeń do dziennika
+  i nie zmienia refów.
+- Wszystkie polecenia gita (`rev-parse`, `merge-base`, `diff`, `log`) idą przez utwardzony runner odczytu
+  (`gitread/runner.py`: bez haków, filtrów, textconv, zewnętrznego diffu, pagera i gpg z konfiguracji repozytorium,
+  bez sieci); diff liczony jest między dwoma SHA (`--no-renames`, kontekst 3 linie), tekst parsuje
+  `gitread/diffparse.py`.
+- `CardBranchDiff` na `/Board` zostaje bez zmian (tekst diffu do oceny domknięcia).
+
+**`DiffData`** (kontrakt wspólny dla kolejnych źródeł i widoku diffa; zmiany tylko addytywne):
+
+| Pole | Typ | Opis |
+| --- | --- | --- |
+| `source` | string | źródło żądania (`card`) |
+| `card` | string | `K-N` (znormalizowany identyfikator karty) |
+| `repo` | string | ścieżka repozytorium z dziennika karty |
+| `title` | string | krótki opis zakresu, np. `K-36: zmiany gałęzi card/k-36-… od startu` |
+| `from`, `to` | object | `{ref, sha, date}`: `ref` — `baseRef` z dziennika albo `targetRef` (dla `to` — `refs/heads/<gałąź karty>`), `sha` — pełny SHA początku/końca zakresu, `date` — data commitera w ISO 8601 UTC (`2026-11-11T10:00:00Z`). Surowe dane: etykietę „Start od…” formatuje UI (`startLabel`) |
+| `files` | array | pliki z parsera diffu: `path`, `oldPath`, `status` (`A`, `D`, `R`, `C`, `T`, `M`), `additions`, `deletions`, `binary`, `oldMode`, `newMode`, `warnings`, `hunks` (`oldStart`, `oldLines`, `newStart`, `newLines`, `header`, `lines` — `kind` ` `/`-`/`+`, `oldNo`, `newNo`, `text`) |
+| `totals` | object | `{files, additions, deletions}` z parsera |
+| `truncated` | bool | zawsze `false` (limity i przycinanie dochodzą później razem z `large`, `oldSize`/`newSize`) |
+| `warnings` | array | ostrzeżenia parsera dla całego diffu (tekst przed pierwszym nagłówkiem) |
+
+**Kody błędów** (`{ok: false, error, message}`, `message` po polsku):
+
+| `error` | Kiedy |
+| --- | --- |
+| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty |
+| `unknown-card` | karta nie ma dziennika przepływu albo nie była zlecona (brak `card.started`) |
+| `no-branch` | karta nie ma gałęzi (brak wyniku `card-branch`, brak repozytorium w dzienniku, katalog repozytorium albo gałąź karty nie istnieje) |
+| `unknown-base` | bez `targetRef`, gdy baza startu w dzienniku jest nieznana albo jej commita nie ma w repozytorium; komunikat prosi o jawny ref porównania (`targetRef`) |
+| `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
+| `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
+
 ## Nowe zadanie
 
 Okno „Tide: nowe zadanie” (`apps/newtask`, skrót Meta+Alt+A, kafelek „＋ Zadanie” w docku, „＋ Nowe zadanie” w widżecie agentów) zbiera repozytorium, model (chmura albo lokalny), narzędzie (w chmurze Claude Code albo Codex; przy modelu lokalnym program z Tide → Modele), polecenie, zrzuty ekranu i decyzję „Nowy worktree”, a usługa zakłada worktree i otwiera kartę Konsoli z agentem. Uzasadnienia: decyzje 47, 70 i 72 w `docs/decisions.md`.
@@ -5277,6 +5334,8 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_tasks_dbus.py` — `/Tasks` przez prywatną magistralę z prawdziwą usługą i atrapami `konsole` (uruchamia polecenie z `-e`), `systemd-run`, `claude` i `codex` (zapisują argv): `Repos`, `Defaults`, `SuggestBranch`, `Start` z dokładnym poleceniem w agencie, wycofanie, gdy Konsola nie uruchomi zadania, odmowy i praca w głównym katalogu, `addDirs` z tablicy dla Codeksa (worktree) i Claude Code (katalog projektu) oraz odmowa `bad-add-dir`,
 - `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()`, `Fetch()` (odmowy `bad-request` i `no-remote`) i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
 - `daemon/tests/test_worktrees_fetch.py` — `Worktrees.Fetch` na prawdziwych repozytoriach z lokalnym gołym „zdalnym”: `refs/remotes`, `lastFetch` i liczby nowych commitów, nowa gałąź zdalna, wiele zdalnych, brak `--prune` (usunięta zdalnie gałąź zostaje) i nietknięte HEAD/worktree, dokładne argv (bez `--force`, `--tags`, `+refspec`), zdalny wskazujący na nieistniejący katalog i zdalny HTTP 401 z atrapą `GIT_ASKPASS` niewywołaną, maskowanie `user:token@` w komunikacie i logach, otoczenie (`BatchMode`), limit czasu na zawieszonym gicie, ścieżki spoza listy (dowiązanie, `..`) bez uruchomienia gita, czekanie na blokadę repozytorium trzymaną przez inny wątek,
+- `daemon/tests/test_gitread_diffdata.py` — `Git.Diff` źródła `card` na tymczasowych repozytoriach i dzienniku karty: pliki, hunki i sumy zgodne z `git diff` i `git diff --numstat` od przypiętej bazy, zakres po ruchu gałęzi startowej, `targetRef` (merge-base, ref bez wspólnej historii, ref z `-`), kody `unknown-base`, `unknown-card`, `no-branch`, `bad-request`, gałąź główna `main` i `develop` bez `origin`, karta z grupy kart (repozytorium z `card.started`), brak zapisu do dziennika i refów, pułapka konfiguracji z PT-348 nieuruchomiona; `GitMonitor` — odpowiedź z puli wątków po pracy w tle, pętla wolna,
+- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_homes.py` — kilka katalogów danych Codexa na świecie w katalogu tymczasowym (`~/.codex`, `~/snap/codex/33`, `34`, `current` → `34`; nigdy prawdziwe katalogi — `tests/__init__.py` ustawia też nieistniejący `$CODEX_HOME` dla usług uruchamianych bez `--codex-dir`): domyślna lista i `$CODEX_HOME`, `--codex-dir` powtarzane, rozwiązywanie `current` (także po odświeżeniu snapa), starsza rewizja pomijana, kopia tego samego pliku w dwóch katalogach liczona raz (Agents, KRunner, worktrees, raport, koordynacja), segmenty wątku jako jedna pozycja w Agents i KRunnerze, a osobno w raporcie i worktrees, przepięcie obserwacji na nową rewizję po odświeżeniu snapa, „Wznów” w raporcie dla sesji ze snapa, `is_snap` tylko pod `~/snap/codex`, przypisanie procesu ze ścieżką z numerem rewizji i Meta+A do karty Konsole, nowe pliki w obu katalogach zauważone przez obserwację katalogów (bez przeglądu co 30 s), nazwy wątków i baza stanu ze snapa w KRunnerze, wznowienie Codexem ze snapa albo spoza niego,
 - `daemon/tests/test_codex_desktop.py` — Codex Desktop: odnośnik tylko z UUID, linia `Exec` (kody pól, cudzysłowy, brak programu), szukanie pliku `.desktop` i `$TIDE_CODEX_DESKTOP`, polecenie jako lista argumentów w `systemd-run --scope`, zmienne ekranu z `systemctl --user show-environment`; uruchomienie z atrapą `chatgpt` (`fakebin.py`) — nigdy prawdziwej aplikacji; wątek główny podagenta (kilka poziomów, nieznany rodzic, pętla), zwijanie podagentów i stan najpilniejszy, podagent bez rodzica, `AgentMonitor.activate` i Meta+A (otwarcie wątku głównego, podniesienie okna `ChatGPT`) z atrapą aplikacji,

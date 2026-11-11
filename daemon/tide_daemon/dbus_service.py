@@ -28,6 +28,11 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
                              message} albo {ok: false, reason, message} (docs/tide-daemon.md),
 - sygnał Changed()           lista worktrees się zmieniła.
 
+Obiekt /Git, interfejs org.tide.Daemon.Git (odczyty gita jako dane, K-36, git_monitor.py, gitread/):
+- Diff(s request) -> s       diff jako dane (odpowiedź po zakończeniu, git w puli wątków runnera odczytu):
+                             request {"source": "card", "card": "K-N", "targetRef"?}; JSON {ok: true, ...DiffData}
+                             albo {ok: false, error, message} (docs/tide-daemon.md, „Interfejs Git”).
+
 Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
 - Repos() -> s               repozytoria z katalogu projektów jako JSON, od ostatnio aktywnych,
 - Defaults() -> s            JSON: zapamiętany wybór (repoPath, tool, newWorktree, model), dostępne narzędzia,
@@ -220,6 +225,8 @@ AGENTS_PATH = "/Agents"
 AGENTS_IFACE = "org.tide.Daemon.Agents"
 WORKTREES_PATH = "/Worktrees"
 WORKTREES_IFACE = "org.tide.Daemon.Worktrees"
+GIT_PATH = "/Git"
+GIT_IFACE = "org.tide.Daemon.Git"
 TASKS_PATH = "/Tasks"
 TASKS_IFACE = "org.tide.Daemon.Tasks"
 IDLE_PATH = "/Idle"
@@ -291,7 +298,14 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
   <signal name="Changed"/>
 </interface>"""
 
-REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
+GIT_XML = f"""<interface name="{GIT_IFACE}">
+  <method name="Diff">
+    <arg name="request" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+</interface>"""
+
+REPORTS_XML =f"""<interface name="{REPORTS_IFACE}">
   <method name="Generate"><arg name="path" type="s" direction="out"/></method>
   <method name="Latest"><arg name="path" type="s" direction="out"/></method>
   <method name="Status"><arg name="json" type="s" direction="out"/></method>
@@ -766,6 +780,28 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
     def Fetch(self, repo_path: str, message: QDBusMessage) -> str:
         # Sieć potrafi trwać do limitu czasu (120 s) — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
         self.monitor.fetch(repo_path, self._delayed(message, "Fetch"))
+        return ""
+
+
+@pyqtClassInfo("D-Bus Interface", GIT_IFACE)
+@pyqtClassInfo("D-Bus Introspection", GIT_XML)
+class GitAdaptor(QDBusAbstractAdaptor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection):
+        super().__init__(parent)
+        self.monitor = monitor
+        self.bus = bus
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Diff(self, request: str, message: QDBusMessage) -> str:
+        # Git działa w puli wątków runnera odczytu; odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        message.setDelayedReply(True)
+        pending = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
+
+        def reply(text: str) -> None:
+            if not self.bus.send(pending.createReply([text])):
+                print("tide-daemon: nie udało się odesłać wyniku Git.Diff", flush=True)
+
+        self.monitor.diff(request, reply)
         return ""
 
 
@@ -1657,7 +1693,7 @@ def _sender_pid(bus: QDBusConnection, message: QDBusMessage) -> int | None:
 
 def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=None, reports=None,
              limits=None, tasks=None, coordination=None, board=None,
-             docker=None, models=None, activity_look=None, monitors=None) -> QObject:
+             docker=None, models=None, activity_look=None, monitors=None, git=None) -> QObject:
     """Rejestruje obiekty i nazwę usługi. Zwraca obiekt, który trzeba trzymać przy życiu."""
     bus = bus or QDBusConnection.sessionBus()
     if not bus.isConnected():
@@ -1676,6 +1712,11 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
         holder.worktrees.adaptor = WorktreesAdaptor(holder.worktrees, worktrees, bus)
         if not bus.registerObject(WORKTREES_PATH, holder.worktrees):
             raise RuntimeError(f"nie udało się zarejestrować obiektu {WORKTREES_PATH}")
+    if git is not None:
+        holder.git = QObject(holder)
+        holder.git.adaptor = GitAdaptor(holder.git, git, bus)
+        if not bus.registerObject(GIT_PATH, holder.git):
+            raise RuntimeError(f"nie udało się zarejestrować obiektu {GIT_PATH}")
     if tasks is not None:
         holder.tasks = QObject(holder)
         holder.tasks.adaptor = TasksAdaptor(holder.tasks, tasks, bus)

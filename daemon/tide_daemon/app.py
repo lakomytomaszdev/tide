@@ -281,6 +281,11 @@ def main(argv=None) -> int:
         report.card_check = board_card_check(board)
         # Nazwy projektów z tablicy i karty, do których należy praca — w raporcie i jego tekście (reports/cards.py).
         report.board = board_snapshot(board)
+    # Odczyty gita jako dane (/Git, K-36): dziennik kart z przepływu karty; bez niego źródło `card` — unavailable.
+    from .git_monitor import GitMonitor
+    git_reads = GitMonitor(lambda: board.flow.engine.journal if board is not None and board.flow is not None
+                           else None, parent=app)
+    app.aboutToQuit.connect(git_reads.stop)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     box_proxy = None if args.no_box else start_box_proxy(app)  # noqa: F841 — musi żyć do końca
     monitors = None
@@ -308,7 +313,7 @@ def main(argv=None) -> int:
         holder = dbus_service.register(monitor, trees, idle=idle, reports=report,  # noqa: F841 — musi żyć do końca
                                        limits=limits, tasks=tasks, coordination=coordination, board=board,
                                        docker=docker, models=models, activity_look=look_state,
-                                       monitors=monitors)
+                                       monitors=monitors, git=git_reads)
     except RuntimeError as exc:
         print(f"tide-daemon: {exc}", file=sys.stderr, flush=True)
         return 1
