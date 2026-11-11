@@ -3794,6 +3794,12 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
   StartCard w `git worktree add`, scalenie, tick) albo flock innego procesu (zapis profilu pudełka K-38) daje od razu
   `BoardBusy`. Taka publikacja jest odrzucana w całości (także gdy wyjątek złapano niżej i podano treść zastępczą;
   pamięć widoku środowiska jej nie zatrzymuje) i wraca po `PUBLISH_RETRY_MS`; Snapshot oddaje poprzednią wersję.
+  Publikacje w tle (zegar przeliczenia, doręczanie wyników, ponowienia) nie czekają wcale; jawny `Snapshot()` czeka
+  na transakcję Tablicy najwyżej `SNAPSHOT_WAIT_S` (250 ms, jeden termin na wywołanie), więc krótka transakcja ticku
+  (np. `project_card_base`) nie zostawia odczytowi po zapisie ticku wersji sprzed zapisu, a długa mutacja daje
+  poprzednią wersję po terminie. Tak samo bez czekania idą zapisy Tablicy z zegara w wątku głównym: synchronizacja
+  zmian z zewnątrz (`store.sync`, `mark_ready_specs` — przy zajętej Tablicy wracają w następnej synchronizacji)
+  i utrwalanie połączeń kart z sesjami (`link_session` — wraca przy następnym przeliczeniu).
 - Wynik akcji jest odsyłany po publikacji jej skutku i commicie dziennika (FIFO; commit przy zajętej blokadzie
   ponawiany co 20 ms bez blokowania wątku głównego, migawka publikowana od razu i ponownie po commicie), a worker
   bierze następne zadanie dopiero po tym doręczeniu (najwyżej `DELIVERY_WAIT_S` = 5 s czekania, bez blokady

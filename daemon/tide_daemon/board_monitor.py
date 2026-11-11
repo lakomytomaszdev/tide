@@ -44,7 +44,9 @@
   zdarzenia, własna pamięć), a licznik epok akcji (seqlock) odrzuca odczyt, w trakcie którego trwała albo zmieniła się
   akcja z kolejki — żadna wersja nie pokazuje akcji w połowie. Wczytanie Tablicy w publikacji też nie czeka: idzie
   w `store.without_waiting()`, więc transakcja Tablicy trzymana przez mutację (StartCard w `git worktree add`,
-  scalenie, tick) albo inny proces odkłada publikację zamiast zatrzymać wątek główny. Wtedy publikacja wraca po
+  scalenie, tick) albo inny proces odkłada publikację zamiast zatrzymać wątek główny (jawny Snapshot() czeka na nią
+  najwyżej SNAPSHOT_WAIT_S — krótka transakcja ticku; publikacje w tle wcale). Zapisy Tablicy z zegara (sync,
+  mark_ready_specs, link_session) też nie czekają i wracają przy następnej okazji. Odłożona publikacja wraca po
   PUBLISH_RETRY_MS, a odczyty dostają poprzednią wersję. Zapisy ticku widać zapis po zapisie (tick nie jest akcją):
   jedna wersja może złożyć Tablicę z chwili po jednym zapisie ticku z dziennikiem sprzed kolejnego — każdy z nich
   jest pełny, jak przed K-98 #2; atomowość „cała akcja albo nic” dotyczy akcji z kolejki. Dane odczytu służą
@@ -79,7 +81,8 @@ REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agen
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
-PUBLISH_RETRY_MS = 50  # publikacja odłożona przez zajętą blokadę dziennika — kolejna próba (bez czekania)
+PUBLISH_RETRY_MS = 50  # publikacja odłożona (akcja w toku, zajęta Tablica) — kolejna próba (bez czekania)
+SNAPSHOT_WAIT_S = 0.25  # Snapshot() czeka na transakcję Tablicy najwyżej tyle (krótkie transakcje ticku), potem stara wersja
 
 
 class Published(NamedTuple):
@@ -225,14 +228,18 @@ class BoardMonitor(QObject):
         # K-98 #2: publikacja odłożona przez trwającą akcję — ostatnia opublikowana wersja albo „preparing”.
         # Zakończone, a jeszcze niedoręczone wyniki z kolejki najpierw trafiają do migawki (bez czekania — publikacja
         # nie bierze blokady dziennika), żeby odczyt po zapisie widział jego skutek.
+        # Jawny odczyt czeka na transakcję Tablicy najwyżej SNAPSHOT_WAIT_S łącznie (jeden termin na wywołanie): krótka
+        # transakcja ticku nie zostawia mu wersji sprzed zapisu, a długa mutacja daje poprzednią wersję po terminie.
+        deadline = time.monotonic() + SNAPSHOT_WAIT_S
+        left = lambda: max(0.0, deadline - time.monotonic())
         settle = getattr(self.flow, "settle", None) if self.flow is not None else None
         if settle is not None:
             settle()
         if self._pending is not None:
-            self._retry_pending()
+            self._retry_pending(left())
         mark = self._plans_stamp()
         if not self._json or mark != self._plans_mark:
-            if self.publish():
+            if self.publish(left()):
                 self._plans_mark = self._plans_stamp()
         return self._json or self._preparing_json()
 
@@ -677,10 +684,11 @@ class BoardMonitor(QObject):
 
     # --- odświeżanie ---------------------------------------------------------------------------
 
-    def publish(self) -> bool:
+    def publish(self, wait_s: float = 0.0) -> bool:
         """Świeża migawka z plików i projekcja kart. K-98 #2: pod bramką przepływu karty (bez blokady dziennika);
         gdy trwa akcja z kolejki albo zmieniła się w trakcie odczytu, publikacja jest odłożona (False), a Snapshot()
-        oddaje poprzednią opublikowaną wersję."""
+        oddaje poprzednią opublikowaną wersję. `wait_s`: najdłuższe czekanie na transakcję Tablicy (tylko jawny
+        Snapshot(); publikacje w tle — 0, bez czekania)."""
         with self._gate() as ticket:
             if not ticket:
                 self._defer("publish")
@@ -693,8 +701,8 @@ class BoardMonitor(QObject):
             # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
             # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
             # K-98 #2: wczytanie nie czeka na transakcję Tablicy trzymaną przez mutację (StartCard, scalenie, tick) —
-            # zajęta transakcja odkłada publikację, a Snapshot() oddaje poprzednią wersję.
-            with self._without_waiting() as probe:
+            # najwyżej `wait_s`; zajęta transakcja odkłada publikację, a Snapshot() oddaje poprzednią wersję.
+            with self._without_waiting(wait_s) as probe:
                 read = BoardRead(self.store)
                 try:
                     snapshot = self.store.snapshot(repos=repos, board=read.board)
@@ -711,10 +719,14 @@ class BoardMonitor(QObject):
                 # Podstawa trafia do `_base` dopiero z udaną publikacją (bilet ważny przez cały odczyt).
                 return self._apply(read, base=snapshot, ticket=ticket) is not False
 
-    def _without_waiting(self):
-        """Odczyty Tablicy z wątku głównego bez czekania na jej transakcję (K-98 #2, `BoardStore.without_waiting`)."""
+    def _without_waiting(self, wait_s=0.0):
+        """Odczyty Tablicy z wątku głównego bez czekania na jej transakcję (K-98 #2, `BoardStore.without_waiting`);
+        `wait_s` — najwyżej tyle sekund czekania (sygnał Qt może podać tu inny argument: wtedy 0)."""
         hold = getattr(self.store, "without_waiting", None)
-        return hold() if hold is not None else contextlib.nullcontext(SimpleNamespace(busy=False))
+        if hold is None:
+            return contextlib.nullcontext(SimpleNamespace(busy=False))
+        wait = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else 0.0
+        return hold(wait) if wait > 0 else hold()
 
     def _gate(self):
         """Bramka odczytu przepływu karty (K-98 #2) albo zawsze otwarta, gdy usługa działa bez przepływu."""
@@ -727,12 +739,13 @@ class BoardMonitor(QObject):
         if not self._retry.isActive():
             self._retry.start()
 
-    def _retry_pending(self) -> None:
+    def _retry_pending(self, wait_s: float = 0.0) -> None:
         kind, self._pending = self._pending, None
         if kind == "publish":
-            self.publish()
+            self.publish(wait_s)
         elif kind == "apply":
-            self._apply()
+            # Ponowione przeliczenie czyta Tablicę świeżo jak publikacja; z terminem — jako publikacja (Snapshot()).
+            self.publish(wait_s) if wait_s else self._apply()
 
     def _apply(self, read: BoardRead | None = None, base: dict | None = None, ticket=None):
         """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
@@ -901,7 +914,13 @@ class BoardMonitor(QObject):
         for card_id, session, how, branch in links:
             self._link_tried[(card_id, session)] = time.monotonic()
             try:
-                result = self.store.link_session(card_id, session, how, branch)
+                # Zapis z zegara przeliczenia: zajęta transakcja Tablicy (mutacja) — bez czekania; para wraca przy
+                # następnym przeliczeniu, bo znacznik próby jest zdejmowany.
+                with self._without_waiting():
+                    result = self.store.link_session(card_id, session, how, branch)
+            except BoardBusy:
+                self._link_tried.pop((card_id, session), None)
+                continue
             except BoardError as exc:
                 print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc}", flush=True)
                 continue
@@ -926,20 +945,29 @@ class BoardMonitor(QObject):
         if lock is not None and not lock.acquire(blocking=False):
             self._debounce.start()
         else:
+            # Review r1 (pełny przebieg): commit zmian z zewnątrz i znacznik specyfikacji to zapisy z zegara, nie
+            # z prośby użytkownika — transakcja Tablicy trzymana przez mutację (StartCard, scalenie, tick) albo inny
+            # proces odkłada je do następnej synchronizacji zamiast zatrzymać wątek główny.
             try:
                 try:
                     if self.flow is not None:
                         self.flow.commit()
-                    if self.store.sync():
-                        print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+                    with self._without_waiting():
+                        if self.store.sync():
+                            print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+                except BoardBusy:
+                    self._debounce.start()
                 except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
                     print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
             finally:
                 if lock is not None:
                     lock.release()
             try:
-                for card_id in self.store.mark_ready_specs():
-                    print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
+                with self._without_waiting():
+                    for card_id in self.store.mark_ready_specs():
+                        print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
+            except BoardBusy:
+                self._debounce.start()
             except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
                 print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
         self._rewatch()

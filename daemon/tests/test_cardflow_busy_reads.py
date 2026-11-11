@@ -260,7 +260,9 @@ class ReadAfterWriteTest(BusyReadsCase):
         self.addCleanup(holder.join)
         self.addCleanup(release.set)
         self.assertTrue(holding.wait(5))
-        app().processEvents()                  # wynik dociera: migawka ma skutek od razu, commit czeka na blokadę
+        # Wynik dociera do wątku głównego sygnałem z workera; pod obciążeniem (pełny przebieg r1) jeszcze go nie ma
+        # po jednym `processEvents`. Czekamy na samo doręczenie — wynik stoi w kolejce, bo commit czeka na blokadę.
+        self.assertTrue(pump(lambda: self.live._deliveries), "wynik akcji nie dotarł do wątku głównego")
         snap = self.snapshot()
         self.assertGreater(snap["version"], before["version"])
         self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"])
@@ -430,7 +432,9 @@ class BoardTransactionBusyTest(BusyReadsCase):
     wersję, a mutacja nadal trwa. Bez poprawki wątek główny stałby na `_transaction_lock`/`flock` do końca mutacji;
     strażnik zwalnia ją po WATCHDOG_S i oznacza to jako porażkę, żeby test nie wisiał."""
 
-    WATCHDOG_S = 10.0
+    # Pod obciążeniem pełnego przebiegu (14 procesów) BoxStatus i Snapshot trwają sekundy; strażnik musi być dłuższy
+    # od nich, a krótszy od czasu pętli `pump` (40 s), żeby czekanie wątku głównego dało porażkę, a nie zawieszenie.
+    WATCHDOG_S = 30.0
 
     @contextlib.contextmanager
     def held_transaction(self, submit):
@@ -460,15 +464,53 @@ class BoardTransactionBusyTest(BusyReadsCase):
         with self.held_transaction(submit) as (_, running, timed_out):
             self.assertFalse(self.board.publish(), "publikacja przy zajętej transakcji Tablicy")
             self.board._apply()               # przeliczenie z zegara (rederive) — też bez czekania
-            self.board._plans_mark = None     # Snapshot spróbuje opublikować
+            self.board._plans_mark = None     # Snapshot spróbuje opublikować (czeka najwyżej SNAPSHOT_WAIT_S)
             snap = self.snapshot()
             self.assertEqual((snap["version"], snap["readState"]), (before["version"], "ready"))
+            self.assertTrue(running(), "odpowiedź po zakończeniu mutacji nie zalicza próby")
             self.assertTrue(self.flow_settings()["ok"])
             self.assertTrue(self.box_status()["ok"])
-            self.assertTrue(running(), "odpowiedź po zakończeniu mutacji nie zalicza próby")
             self.assertEqual(timed_out, [])
         # Odłożona publikacja przychodzi sama po zwolnieniu transakcji.
         self.assertTrue(pump(lambda: self.board._pending is None and self.board.publish()))
+
+    def test_external_sync_does_not_wait_for_the_board_transaction(self):
+        # Pełny przebieg r1: zegar synchronizacji z zewnątrz (debounce po zdarzeniu obserwatora plików) stał w wątku
+        # głównym na `store.sync()` → `transaction()`, więc nie dochodziły odpowiedzi BoxStatus z puli odczytu.
+        # Teraz commit zmian z zewnątrz i znacznik specyfikacji są odkładane do następnej synchronizacji.
+        submit = lambda job, then: self.assertTrue(self.live._submit(job, then, whole=False))
+        with self.held_transaction(submit) as (_, running, timed_out):
+            self.board._debounce.stop()
+            self.board.sync()
+            self.assertTrue(running(), "sync wrócił dopiero po zakończeniu mutacji")
+            self.assertTrue(self.board._debounce.isActive(), "odłożona synchronizacja nie jest zaplanowana")
+            self.assertTrue(self.box_status()["ok"])
+            self.assertEqual(timed_out, [])
+
+    def test_snapshot_after_a_tick_write_waits_out_a_short_board_transaction(self):
+        # Pełny przebieg r1 (`test_cardflow_ticket_wait`): test widzi zapis ticku w dzienniku i od razu czyta
+        # Snapshot, a tick trzyma jeszcze krótką transakcję Tablicy. Publikacje w tle jej nie czekają, ale jawny
+        # Snapshot() czeka najwyżej SNAPSHOT_WAIT_S — krótka transakcja ticku nie zostawia mu wersji sprzed zapisu.
+        card = self.proj_cards[0]
+        before = self.snapshot()
+        self.assertFalse(self.card_of(before, card)["derived"]["flow"]["paused"])
+        written, release, finished = threading.Event(), threading.Event(), []
+
+        def tick_like():   # zapis ticku, potem krótka transakcja Tablicy (jak `project_card_base`)
+            self.engine.journal.append(card, "card.paused")
+            with self.store.transaction():
+                written.set()
+                release.wait(10)
+        self.assertTrue(self.live._submit(tick_like, finished.append, whole=False))
+        self.addCleanup(release.set)
+        self.assertTrue(written.wait(10))
+        self.assertFalse(self.board.publish(), "publikacja w tle czekała na transakcję")   # odłożona, bez czekania
+        threading.Timer(0.05, release.set).start()     # transakcja kończy się w trakcie oczekiwania Snapshot()
+        snap = self.snapshot()
+        self.assertGreater(snap["version"], before["version"])
+        self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"],
+                        "Snapshot po zapisie ticku oddał wersję sprzed zapisu")
+        self.assertTrue(pump(lambda: finished))
 
     def test_action_entering_the_board_transaction_after_the_gate_does_not_freeze_publication(self):
         # Okno ze zgłoszenia: bilet jest już ważny (akcji nie było), a akcja wchodzi w transakcję Tablicy, zanim

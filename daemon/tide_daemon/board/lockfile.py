@@ -17,16 +17,27 @@ import contextlib
 import fcntl
 import os
 import threading
+import time
 
 LOCK_NAME = "tide-board.lock"
 
 _local = threading.local()
 
 
-def _flock(path: str, flags: int, blocking: bool = True) -> int:
+def _flock(path: str, flags: int, blocking: bool = True, deadline: float | None = None) -> int:
     fd = os.open(path, flags | os.O_CLOEXEC, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if blocking:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if deadline is None or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.005)
     except BaseException:
         os.close(fd)
         raise
@@ -34,10 +45,10 @@ def _flock(path: str, flags: int, blocking: bool = True) -> int:
 
 
 @contextlib.contextmanager
-def exclusive(board_root: str, blocking: bool = True):
+def exclusive(board_root: str, blocking: bool = True, deadline: float | None = None):
     """Wyłączna blokada Tablicy o katalogu `board_root` (musi istnieć) na czas bloku `with`.
-    `blocking=False` (K-98 #2, publikacja migawki w wątku głównym): blokada trzymana przez inny proces daje od razu
-    `BlockingIOError` zamiast czekania."""
+    `blocking=False` (K-98 #2, publikacja migawki w wątku głównym): blokada trzymana przez inny proces daje
+    `BlockingIOError` — od razu albo po chwili `deadline` (`time.monotonic()`) — zamiast czekania bez końca."""
     held = _local.__dict__.setdefault("held", {})
     key = os.path.realpath(board_root)
     if held.get(key):
@@ -47,11 +58,12 @@ def exclusive(board_root: str, blocking: bool = True):
         finally:
             held[key] -= 1
         return
-    fds = [_flock(key, os.O_RDONLY | os.O_DIRECTORY, blocking)]
+    fds = [_flock(key, os.O_RDONLY | os.O_DIRECTORY, blocking, deadline)]
     try:
         git_dir = os.path.join(key, ".git")
         if os.path.isdir(git_dir):
-            fds.append(_flock(os.path.join(git_dir, LOCK_NAME), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, blocking))
+            fds.append(_flock(os.path.join(git_dir, LOCK_NAME), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, blocking,
+                              deadline))
         held[key] = 1
         yield
     finally:

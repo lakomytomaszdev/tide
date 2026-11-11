@@ -152,14 +152,17 @@ class BoardStore:
         return is_board_repo(self.root)
 
     @contextlib.contextmanager
-    def without_waiting(self):
+    def without_waiting(self, wait_s: float = 0.0):
         """K-98 #2: w tym bloku transakcje Tablicy z bieżącego wątku nie czekają na blokadę trzymaną przez inny wątek
-        (worker mutacji: StartCard, scalenie, tick) ani inny proces — od razu rzucają `BoardBusy`. Publikacja migawki
-        w wątku głównym używa go, żeby nigdy nie stanąć na długiej mutacji. Zwraca znacznik: `busy` jest prawdą, gdy
+        (worker mutacji: StartCard, scalenie, tick) ani inny proces — rzucają `BoardBusy` od razu albo, z `wait_s`,
+        najpóźniej po tylu sekundach liczonych od wejścia w blok (jeden termin na cały blok, nie na transakcję).
+        Publikacja migawki w wątku głównym używa go, żeby nigdy nie stanąć na długiej mutacji; jawny Snapshot() czeka
+        krótko, żeby krótka transakcja ticku nie zostawiła mu starej wersji. Zwraca znacznik: `busy` jest prawdą, gdy
         którakolwiek próba w bloku trafiła na zajętą blokadę (także gdy wołający złapał wyjątek i podał zastępczą
-        treść) — wtedy wynik bloku trzeba odrzucić."""
+        treść) — wtedy wynik bloku trzeba odrzucić. Blok zagnieżdżony korzysta ze znacznika i terminu zewnętrznego."""
         outer = getattr(self._wait_local, "probe", None)
-        probe = outer if outer is not None else SimpleNamespace(busy=False)
+        probe = outer if outer is not None else SimpleNamespace(
+            busy=False, deadline=time.monotonic() + wait_s if wait_s > 0 else None)
         self._wait_local.probe = probe
         try:
             yield probe
@@ -176,9 +179,14 @@ class BoardStore:
         """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart. W bloku `without_waiting`
         zajęta blokada daje `BoardBusy` zamiast czekania."""
         probe = getattr(self._wait_local, "probe", None)
-        if not self._transaction_lock.acquire(blocking=probe is None):
-            probe.busy = True
-            raise BoardBusy("Tablica: transakcję trzyma inny wątek")
+        if probe is None:
+            self._transaction_lock.acquire()
+        else:
+            left = probe.deadline - time.monotonic() if probe.deadline is not None else 0.0
+            if not (self._transaction_lock.acquire(timeout=left) if left > 0
+                    else self._transaction_lock.acquire(blocking=False)):
+                probe.busy = True
+                raise BoardBusy("Tablica: transakcję trzyma inny wątek")
         try:
             if self._transaction_depth:
                 yield
@@ -215,10 +223,12 @@ class BoardStore:
         if not os.path.lexists(self.root):
             os.makedirs(self.root, exist_ok=True)
         if os.path.isdir(self.root):
+            probe = getattr(self._wait_local, "probe", None)
+            deadline = probe.deadline if probe is not None and not self._transaction_waits else None
             try:
-                self._transaction_stack.enter_context(lockfile.exclusive(self.root, blocking=self._transaction_waits))
+                self._transaction_stack.enter_context(
+                    lockfile.exclusive(self.root, blocking=self._transaction_waits, deadline=deadline))
             except BlockingIOError:
-                probe = getattr(self._wait_local, "probe", None)
                 if probe is not None:
                     probe.busy = True
                 raise BoardBusy("Tablica: blokadę trzyma inny proces") from None
