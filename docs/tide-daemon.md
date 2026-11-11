@@ -3785,8 +3785,10 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
 - Akcja z kolejki (wszystko poza tickiem) biegnie w całości pod blokadą dziennika, więc żadna wersja nie pokazuje jej
   w połowie (np. `card.moved` bez `card.paused`); tick bierze blokadę w swoich sekcjach. Wynik akcji jest odsyłany
   dopiero po commicie dziennika i publikacji jej skutku (kolejność FIFO, ponowienie co 20 ms bez blokowania wątku
-  głównego). `Snapshot()` przy zakończonym, a nieopublikowanym wyniku czeka na blokadę najwyżej 250 ms
-  (`SETTLE_MS`) i publikuje go — odczyt po zapisie widzi skutek; trwająca mutacja nie zatrzymuje odczytu.
+  głównego), a worker bierze następne zadanie dopiero po tym doręczeniu (najwyżej `DELIVERY_WAIT_S` = 5 s czekania,
+  bez blokady dziennika) — kolejna mutacja nie rusza przed migawką ze skutkiem poprzedniej akcji. `Snapshot()` przy
+  zakończonym, a nieopublikowanym wyniku czeka na blokadę najwyżej 250 ms (`SETTLE_MS`) i publikuje go — odczyt
+  po zapisie widzi skutek; trwająca mutacja nie zatrzymuje odczytu.
 - Odpowiedź ma na początku `version` (numer publikacji; rośnie przy każdej zmianie treści albo `boxWait` kart, ten sam
   stan zachowuje numer) i `readState: "ready"`. Przed pierwszą publikacją: `{"version": 0, "readState": "preparing",
   "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca

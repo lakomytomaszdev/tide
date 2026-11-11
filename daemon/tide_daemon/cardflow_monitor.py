@@ -20,6 +20,7 @@
 """
 import contextlib
 import json
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
@@ -29,6 +30,7 @@ from .resources import ResourceError
 
 POLL_MS = 5_000
 DELIVER_RETRY_MS = 20   # wynik z kolejki czeka na wolną blokadę dziennika (commit i migawka przed odpowiedzią)
+DELIVERY_WAIT_S = 5.0   # worker czeka najwyżej tyle na doręczenie wyniku, zanim weźmie następne zadanie
 
 
 class CardFlowMonitor(QObject):
@@ -51,6 +53,8 @@ class CardFlowMonitor(QObject):
         self._timer.timeout.connect(self.tick)
         self._done.connect(self._deliver)
         self._read_done.connect(self._deliver_read)
+        self._handshakes: set = set()     # zdarzenia „wynik doręczony”, na które czeka worker (K-98 #2)
+        self._owner_thread = threading.current_thread()   # wątek główny (Qt), który doręcza wyniki
         self._deliveries: list = []       # [dalszy ciąg, future, opublikować] — wyniki z kolejki czekające na migawkę
         self._retry = QTimer(self, singleShot=True, interval=DELIVER_RETRY_MS)
         self._retry.timeout.connect(self._drain)
@@ -65,6 +69,8 @@ class CardFlowMonitor(QObject):
         self._timer.stop()
         self._retry.stop()
         self._stopped = True
+        for delivered in list(self._handshakes):   # worker nie czeka na doręczenie, którego już nie będzie
+            delivered.set()
         if self._hosting_pool is not None:
             self._hosting_pool.shutdown(wait=False, cancel_futures=True)
             self._hosting_pool = None
@@ -431,7 +437,21 @@ class CardFlowMonitor(QObject):
             future = self._pool.submit(atomic if whole else work)
         except RuntimeError:  # pula zamknięta (koniec usługi)
             return False
-        future.add_done_callback(lambda f: self._done.emit(then, f))
+        delivered = threading.Event()
+        future.tide_delivered = delivered
+        self._handshakes.add(delivered)
+
+        def done(f):
+            # Wątek workera, zanim weźmie następne zadanie: wynik trafia do wątku głównego, a worker czeka (bez
+            # blokady dziennika, najwyżej DELIVERY_WAIT_S), aż zostanie zapisany, opublikowany i odesłany. Kolejna
+            # mutacja nie rusza więc przed migawką ze skutkiem poprzedniej — wątek główny nie czeka na kolejkę.
+            self._done.emit(then, f)
+            # Tylko w wątku workera: wywołanie w wątku głównym (zadanie skończone przed podpięciem, anulowanie przy
+            # zatrzymaniu) nie może czekać na doręczenie, które sam ma wykonać.
+            if whole and not self._stopped and threading.current_thread() is not self._owner_thread:
+                delivered.wait(DELIVERY_WAIT_S)
+            self._handshakes.discard(delivered)
+        future.add_done_callback(done)
         return True
 
     def _submit_read(self, work, then) -> bool:
@@ -493,6 +513,12 @@ class CardFlowMonitor(QObject):
             self._retry.start()
 
     def _answer(self, then, future) -> None:
+        try:
+            self._send(then, future)
+        finally:
+            getattr(future, "tide_delivered", threading.Event()).set()   # worker może wziąć następne zadanie
+
+    def _send(self, then, future) -> None:
         for notice in self.engine.take_notices():
             if self.notifier is not None:
                 try:

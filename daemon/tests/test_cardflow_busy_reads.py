@@ -185,17 +185,25 @@ class ReadAfterWriteTest(BusyReadsCase):
         card = self.proj_cards[0]
         before = self.snapshot()
         self.assertFalse(self.card_of(before, card)["derived"]["flow"]["paused"])
-        holding, release, done = threading.Event(), threading.Event(), []
+        holding, release, appended, done = threading.Event(), threading.Event(), threading.Event(), []
 
         def pause():
             self.engine.journal.append(card, "card.paused")
+            appended.set()
 
-        def next_job():   # następna akcja trzyma blokadę dziennika krótko (krócej niż SETTLE_MS)
-            holding.set()
-            release.wait(5)
+        def other_holder():   # inny wątek usługi (nie kolejka) trzyma blokadę krótko, krócej niż SETTLE_MS
+            appended.wait(5)
+            with self.engine.journal.lock:     # czeka, aż akcja zwolni blokadę (biegnie pod nią w całości)
+                holding.set()
+                release.wait(5)
         self.assertTrue(self.live._submit(pause, done.append))
-        self.assertTrue(self.live._submit(next_job, lambda f: None))
-        self.assertTrue(pump(holding.is_set))
+        # Bez pętli zdarzeń: `pause` kończy się na workerze, a drugi wątek bierze blokadę, zanim wątek główny
+        # zdąży doręczyć wynik.
+        holder = threading.Thread(target=other_holder)
+        holder.start()
+        self.addCleanup(holder.join)
+        self.addCleanup(release.set)
+        self.assertTrue(holding.wait(5))
         app().processEvents()                  # wynik `pause` dociera, ale publikacja czeka na blokadę
         self.assertFalse(done, "wynik akcji opublikowany mimo trzymanej blokady")
         threading.Timer(0.05, release.set).start()
@@ -203,6 +211,22 @@ class ReadAfterWriteTest(BusyReadsCase):
         self.assertGreater(snap["version"], before["version"])
         self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"])
         self.assertTrue(done, "odpowiedź akcji przyszła dopiero po publikacji jej skutku")
+
+
+    def test_next_queued_job_starts_only_after_the_action_is_published(self):
+        card = self.proj_cards[0]
+        seen = []
+
+        def pause():
+            self.engine.journal.append(card, "card.paused")
+
+        def next_job():   # np. tick tuż po akcji: musi zastać migawkę ze skutkiem akcji
+            published = self.board._current
+            seen.append(self.card_of(published, card)["derived"]["flow"]["paused"])
+        self.assertTrue(self.live._submit(pause, lambda f: None))
+        self.assertTrue(self.live._submit(next_job, lambda f: None, whole=False))
+        self.assertTrue(pump(lambda: seen))
+        self.assertEqual(seen, [True], "następna mutacja ruszyła przed publikacją skutku akcji")
 
 
 class PreparingTest(BusyReadsCase):
