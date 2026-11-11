@@ -7,7 +7,10 @@
 - zmiany z zewnątrz (agent pisze plan w docs/, ręczna edycja karty): QFileSystemWatcher na
   katalogach i plikach tablicy, po DEBOUNCE_MS ciszy — commit „sync external changes” i Changed;
   dodatkowo co POLL_MS to samo sprawdzenie (zapis w miejscu bez zdarzenia, nowe podkatalogi,
-  tablica założona poza usługą).
+  tablica założona poza usługą). K-98 #6: bez `flow/` (dziennik i wyjście kroków pisze usługa — UNWATCHED_TOP)
+  i bez pełnego przejścia drzewa przy każdej synchronizacji i zapisie: zdarzenie katalogu zaznacza go do
+  przejrzenia, a `_rewatch` przegląda tylko zaznaczone katalogi i nowe poddrzewa; pełne przejście — przy
+  starcie, po założeniu Tablicy i co POLL_MS (także ponowienie ścieżek odrzuconych przez limit obserwacji).
 - stan kart z pracy agentów (PT-5, board/derive.py): migawka z plików jest w pamięci (`_base`), a po
   zmianie w /Agents albo /Coordination (rederive, najwyżej co REDERIVE_MS) przeliczamy tylko pola
   `derived` i `boardColumn` — bez ponownego czytania repozytorium tablicy,
@@ -79,6 +82,12 @@ DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
 REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
+# K-98 #6 (PT-362): katalogi główne Tablicy bez obserwacji plików. `flow/` (dziennik kart i wyjście kroków, w produkcji
+# ~95 % katalogów i plików Tablicy) pisze sama usługa: commit i nowa migawka idą z `CardFlowMonitor._drain` po każdej
+# akcji i ticku, zmianę dziennika z zewnątrz (revert, ręczna edycja) wykrywa tick (`Journal.check`), a resztę zbiera
+# odpytywanie co POLL_MS (commit „sync external changes” i migawka). Obserwacja `flow/` dawała tylko pełne
+# przejście drzewa na wątku głównym przy każdym zapisie dziennika.
+UNWATCHED_TOP = frozenset({".git", "flow"})
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 PUBLISH_RETRY_MS = 50  # publikacja odłożona (akcja w toku, zajęta Tablica) — kolejna próba (bez czekania)
@@ -128,7 +137,7 @@ class BoardMonitor(QObject):
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
-                 docs=None, youtrack=None, proc_root: str = "/proc", parent=None):
+                 docs=None, youtrack=None, proc_root: str = "/proc", parent=None, watcher=None):
         super().__init__(parent)
         self.store = store
         # /proc do sprawdzenia nadawcy zatwierdzenia kontraktu testów (call_origin, PT-286); atrapa tylko w testach.
@@ -159,13 +168,24 @@ class BoardMonitor(QObject):
         self._work_later = QTimer(self, singleShot=True, interval=WORK_VOLATILE_MS)
         self._work_later.timeout.connect(self.work_changed)
         self._base: dict | None = None                    # migawka z plików bez stanu z pracy agentów
-        self._watcher = QFileSystemWatcher(self)
-        self._watcher.directoryChanged.connect(self._touched)
+        # Obserwacja plików Tablicy (K-98 #6): obserwator tylko w wątku głównym (tu powstaje; `watcher` — atrapa
+        # w testach). Pamięć obserwowanych katalogów: katalog → obserwowane podkatalogi i pliki. Zdarzenie katalogu
+        # zaznacza go do ponownego przejrzenia (`_dirty`); `_rewatch` przegląda tylko zaznaczone katalogi i nowe
+        # poddrzewa, pełne przejście — przy pierwszym starcie, po (ponownym) założeniu katalogu Tablicy i co POLL_MS.
+        self._watcher = watcher if watcher is not None else QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._dir_touched)
         self._watcher.fileChanged.connect(self._touched)
+        self._tree: dict[str, set[str]] = {}       # obserwowany katalog → jego obserwowane podkatalogi
+        self._tree_files: dict[str, set[str]] = {}  # obserwowany katalog → jego obserwowane pliki
+        self._watched_files = 0
+        self._dirty: set[str] = set()
+        self._refused: set[str] = set()     # ścieżki odrzucone przez obserwatora (limit) — tylko odpytywanie
+        # Liczniki dla testów i diagnozy: przejrzane katalogi (scandir), pełne przejścia, odrzucone ścieżki.
+        self.watch_stats = {"visitedDirs": 0, "fullScans": 0, "refused": 0}
         self._debounce = QTimer(self, singleShot=True, interval=debounce_ms)
         self._debounce.timeout.connect(self.sync)
         self._poll = QTimer(self, interval=poll_ms)
-        self._poll.timeout.connect(self.sync)
+        self._poll.timeout.connect(self._poll_sync)
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
@@ -936,7 +956,13 @@ class BoardMonitor(QObject):
             self._rewatch()
             self.publish()
 
-    def sync(self) -> None:
+    def _poll_sync(self) -> None:
+        """Odpytywanie co POLL_MS: synchronizacja z pełnym przejściem obserwowanych poddrzew (zdarzenie, którego nie
+        było — zapis w miejscu bez obserwacji pliku, limit obserwacji, przepełniona kolejka inotify, tablica założona
+        poza usługą)."""
+        self.sync(full=True)
+
+    def sync(self, full: bool = False) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka. Zmiany dziennika kart (przepływ
         karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”.
         K-98 #2: blokadę dziennika bierzemy bez czekania. Gdy trzyma ją mutacja (np. StartCard z zapisem Tablicy),
@@ -970,7 +996,7 @@ class BoardMonitor(QObject):
                 self._debounce.start()
             except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
                 print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
-        self._rewatch()
+        self._rewatch(full=full is True)
         self.publish()
 
     # --- wnętrze -------------------------------------------------------------------------------
@@ -997,25 +1023,152 @@ class BoardMonitor(QObject):
     def _touched(self, _path: str) -> None:
         self._debounce.start()  # każda kolejna zmiana odsuwa commit — zapis z wielu plików to jeden commit
 
-    def _rewatch(self) -> None:
+    def _dir_touched(self, path: str) -> None:
+        """Zmiana wpisów katalogu (nowy, usunięty albo podmieniony plik lub podkatalog): katalog do przejrzenia."""
+        self._dirty.add(path)
+        self._debounce.start()
+
+    # --- obserwacja plików (K-98 #6) -----------------------------------------------------------
+
+    def _rewatch(self, full: bool = False) -> None:
+        """Obserwowane ścieżki zgodne z dyskiem. Bez zaznaczonych katalogów i bez `full` — nic (żadnego przejścia
+        drzewa). Inaczej przegląda tylko zaznaczone katalogi (rodzice przed dziećmi): usunięte poddrzewa znikają
+        z obserwacji, nowe są obserwowane od razu — katalog dostaje obserwację PRZED odczytem swoich wpisów, więc
+        zmiana w świeżym poddrzewie po odczycie daje zdarzenie, a wcześniejsza jest już w odczycie. `full`
+        (pierwszy start, ponowne założenie Tablicy, odpytywanie co POLL_MS) przegląda wszystkie obserwowane
+        poddrzewa. Każda ścieżka jest porównywana ze zbiorem obserwowanych raz — O(N)."""
         root = self.store.root
-        wanted: list[str] = []
-        files = 0
-        if os.path.isdir(root):
-            for folder, dirs, names in os.walk(root):
-                dirs[:] = sorted(d for d in dirs if d != ".git")
-                wanted.append(folder)
-                for name in sorted(names):
-                    if files < MAX_WATCHED_FILES and not name.startswith("."):
-                        wanted.append(os.path.join(folder, name))
-                        files += 1
-        current = set(self._watcher.directories()) | set(self._watcher.files())
-        stale = [p for p in current if p not in set(wanted)]
-        if stale:
-            self._watcher.removePaths(stale)
-        fresh = [p for p in wanted if p not in current]
-        if fresh:
-            self._watcher.addPaths(fresh)
+        if not os.path.isdir(root):
+            if self._tree:
+                actual = set(self._watcher.directories()) | set(self._watcher.files())
+                self._unwatch([p for p in self._forget(root) if p in actual])
+                self._tree.clear()
+                self._tree_files.clear()
+                self._watched_files = 0
+            self._dirty.clear()
+            return
+        full = full or root not in self._tree
+        if not full and not self._dirty:
+            return
+        dirty, self._dirty = self._dirty, set()
+        actual = set(self._watcher.directories()) | set(self._watcher.files())
+        add: list[str] = []
+        drop: list[str] = []
+        if full:
+            self.watch_stats["fullScans"] += 1
+            self._review(root, actual, add, drop, deep=True)
+        else:
+            for folder in sorted(dirty, key=lambda p: (p.count(os.sep), p)):
+                if folder in self._tree:   # katalog spoza obserwacji (np. już usunięty z rodzicem) — pomijamy
+                    self._review(folder, actual, add, drop, deep=False)
+        self._unwatch([p for p in drop if p in actual])
+        self._watch([p for p in add if p not in actual])
+
+    def _review(self, folder: str, actual: set, add: list, drop: list, deep: bool) -> None:
+        """Wpisy jednego obserwowanego katalogu; `deep` — także wszystkie jego znane podkatalogi. Katalog bez
+        obserwacji (pierwszy start, katalog usunięty i założony ponownie — obserwator gubi stary i-węzeł) dostaje ją
+        przed odczytem wpisów."""
+        if folder not in actual:
+            self._watch([folder])
+            actual.add(folder)
+        listed = self._entries(folder)
+        if listed is None:                       # katalog zniknął — z całym poddrzewem
+            drop += self._forget(folder)
+            return
+        subdirs, files = listed
+        known = self._tree.setdefault(folder, set())
+        for gone in sorted(known - set(subdirs)):
+            drop += self._forget(gone)
+        for sub in subdirs:
+            if sub in known and sub in actual:
+                if deep:
+                    self._review(sub, actual, add, drop, deep=True)
+            else:
+                if sub in known:                 # obserwacja zgubiona (np. odrzucona) — poddrzewo od nowa
+                    self._forget(sub)
+                known.add(sub)
+                self._enter(sub, actual, add, drop)
+        self._take_files(folder, files, actual, add, drop)
+
+    def _enter(self, folder: str, actual: set, add: list, drop: list) -> None:
+        """Nowe poddrzewo: najpierw obserwacja katalogu, potem odczyt jego wpisów (bez wyścigu z zapisem obok)."""
+        self._tree[folder] = set()
+        self._review(folder, actual, add, drop, deep=True)
+
+    def _take_files(self, folder: str, files: list, actual: set, add: list, drop: list) -> None:
+        have = self._tree_files.setdefault(folder, set())
+        present = set(files)
+        for gone in sorted(have - present):
+            have.discard(gone)
+            self._watched_files -= 1
+            drop.append(gone)
+        for path in files:
+            if path in have:
+                if path not in actual:           # plik podmieniony (rename) — obserwator zgubił stary i-węzeł
+                    add.append(path)
+            elif self._watched_files < MAX_WATCHED_FILES:
+                have.add(path)
+                self._watched_files += 1
+                add.append(path)
+
+    def _entries(self, folder: str):
+        """(podkatalogi, pliki) katalogu, posortowane; None — katalogu nie ma. Liczy przejrzane katalogi."""
+        self.watch_stats["visitedDirs"] += 1
+        top = folder == self.store.root
+        dirs, files = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        if entry.name != ".git" and not (top and entry.name in UNWATCHED_TOP):
+                            dirs.append(entry.path)
+                    elif not entry.name.startswith("."):
+                        files.append(entry.path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as exc:     # brak praw itp. — katalog zostaje w obserwacji bez zmian wpisów
+            print(f"tide-daemon: tablica: obserwacja {folder}: {exc!r}", flush=True)
+            return sorted(self._tree.get(folder, ())), sorted(self._tree_files.get(folder, ()))
+        return sorted(dirs), sorted(files)
+
+    def _forget(self, folder: str) -> list[str]:
+        """Usuwa poddrzewo z pamięci obserwacji; zwraca jego ścieżki (katalogi i pliki) do zdjęcia z obserwatora."""
+        out = []
+        for sub in self._tree.pop(folder, set()):
+            out += self._forget(sub)
+        files = self._tree_files.pop(folder, set())
+        self._watched_files -= len(files)
+        out += files
+        out.append(folder)
+        parent = self._tree.get(os.path.dirname(folder))
+        if parent is not None:
+            parent.discard(folder)
+        return out
+
+    def _unwatch(self, paths: list[str]) -> None:
+        if paths:
+            self._watcher.removePaths(paths)
+            self._refused.difference_update(paths)
+
+    def _watch(self, paths: list[str]) -> None:
+        """Dodaje ścieżki do obserwatora. Odrzucone (limit inotify) zostają tylko pod odpytywaniem co POLL_MS
+        (`_poll_sync` z pełnym przejściem ponawia je) — zmiana z zewnątrz trafi do migawki najpóźniej wtedy."""
+        if not paths:
+            return
+        refused = list(self._watcher.addPaths(paths) or [])
+        if refused:
+            first = not self._refused
+            self._refused.update(refused)
+            self.watch_stats["refused"] += len(refused)
+            if first:   # jeden wpis na okres odrzuceń, nie na każdą ścieżkę
+                print(f"tide-daemon: tablica: obserwator odrzuca ścieżki (limit inotify?), np. {refused[0]} — "
+                      f"zmiany tam wykryje odpytywanie co {self._poll.interval() / 1000:g} s", flush=True)
+        else:
+            self._refused.difference_update(paths)
 
 
 def badge(snapshot) -> tuple[str, str]:
