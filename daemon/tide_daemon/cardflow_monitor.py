@@ -365,7 +365,7 @@ class CardFlowMonitor(QObject):
             self._ticking = False
             _report("tick")(future)
 
-        if not self._submit(self.engine.tick, after):
+        if not self._submit(self.engine.tick, after, whole=False):
             self._ticking = False
 
     def commit(self, wait: bool = True):
@@ -413,13 +413,22 @@ class CardFlowMonitor(QObject):
         # Tylko zwrócony odczyt hostingu biegnie osobno, bez blokad gita/dziennika.
         return self._submit(work, prepared)
 
-    def _submit(self, work, then) -> bool:
+    def _submit(self, work, then, *, whole: bool = True) -> bool:
+        """Zadanie kolejki mutacji. K-98 #2: akcja (`whole`) biegnie w całości pod blokadą dziennika, więc
+        publikacja migawki (bramka `read_gate`) widzi ją całą albo wcale — np. `card.moved` i `card.paused`
+        z jednego ruchu karty. Tick (`whole=False`) bierze blokadę w swoich sekcjach, żeby długie przejście
+        po kartach nie wstrzymywało publikacji; każda jego sekcja zapisu pozostaje niepodzielna."""
         if self._stopped:
             return False
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-cardflow")
+        lock = self.lock
+
+        def atomic():
+            with lock:
+                return work()
         try:
-            future = self._pool.submit(work)
+            future = self._pool.submit(atomic if whole else work)
         except RuntimeError:  # pula zamknięta (koniec usługi)
             return False
         future.add_done_callback(lambda f: self._done.emit(then, f))
@@ -465,6 +474,19 @@ class CardFlowMonitor(QObject):
                 return
             self._deliveries.pop(0)
             self._answer(*item[:2])
+
+    def settle(self, timeout: float) -> None:
+        """Odczyt po zapisie (K-98 #2, Snapshot): zakończone, a jeszcze nieopublikowane wyniki z kolejki publikujemy
+        przed odpowiedzią, czekając na blokadę dziennika najwyżej `timeout` s. Bez takich wyników (trwa dopiero
+        mutacja) nic nie czeka — odczyt dostaje ostatnią opublikowaną wersję."""
+        if not self._deliveries or self._stopped:
+            return
+        if not self.lock.acquire(timeout=timeout):
+            return
+        try:
+            self._drain()
+        finally:
+            self.lock.release()
 
     def _retry_later(self) -> None:
         if not self._retry.isActive():

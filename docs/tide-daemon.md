@@ -3780,8 +3780,13 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
   czekania i trzymana przez cały odczyt, więc Tablica i dzienniki wszystkich kart pochodzą z jednej chwili, a zapis
   przepływu w połowie (pod tą blokadą) nie trafia do żadnej wersji. Gdy blokadę trzyma mutacja (tick, recovery,
   StartCard z `git worktree add`, scalenie), wątek główny nie czeka: publikacja wraca co `PUBLISH_RETRY_MS` (50 ms),
-  a odczyt dostaje poprzednią wersję. Synchronizacja zmian z zewnątrz (`sync`) i commit dziennika po wyniku z kolejki
-  też biorą blokadę bez czekania i odkładają commit do następnej okazji.
+  a odczyt dostaje poprzednią wersję. Synchronizacja zmian z zewnątrz (`sync`) bierze blokadę bez czekania i odkłada
+  commit do następnej okazji.
+- Akcja z kolejki (wszystko poza tickiem) biegnie w całości pod blokadą dziennika, więc żadna wersja nie pokazuje jej
+  w połowie (np. `card.moved` bez `card.paused`); tick bierze blokadę w swoich sekcjach. Wynik akcji jest odsyłany
+  dopiero po commicie dziennika i publikacji jej skutku (kolejność FIFO, ponowienie co 20 ms bez blokowania wątku
+  głównego). `Snapshot()` przy zakończonym, a nieopublikowanym wyniku czeka na blokadę najwyżej 250 ms
+  (`SETTLE_MS`) i publikuje go — odczyt po zapisie widzi skutek; trwająca mutacja nie zatrzymuje odczytu.
 - Odpowiedź ma na początku `version` (numer publikacji; rośnie przy każdej zmianie treści albo `boxWait` kart, ten sam
   stan zachowuje numer) i `readState: "ready"`. Przed pierwszą publikacją: `{"version": 0, "readState": "preparing",
   "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca

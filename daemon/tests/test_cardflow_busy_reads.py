@@ -132,18 +132,29 @@ class BusyWorkerReadsTest(BusyReadsCase):
         self.assertTrue(pump(lambda: self.board._pending is None and not self.board._retry.isActive()))
 
     def test_publication_never_mixes_one_mutation_half_done(self):
+        # Jedna sekcja blokady na oba zapisy oraz dwie osobne sekcje — jak `engine.moved` (card.moved, card.paused);
+        # akcja z kolejki jest niepodzielna dla publikacji w obu przypadkach.
+        for one_section in (True, False):
+            with self.subTest(one_section=one_section):
+                self.check_half_done(one_section)
+
+    def check_half_done(self, one_section):
         a, b = self.proj_cards
+        paused =self.card_of(self.snapshot(), a)["derived"]["flow"]["paused"]
+        event = "card.resumed" if paused else "card.paused"
         before = self.snapshot()
         seen = []
-        self.board.changed.connect(lambda: seen.append(json.loads(self.board._json)))
+        hook = lambda: seen.append(json.loads(self.board._json))
+        self.board.changed.connect(hook)
+        self.addCleanup(lambda: self.board.changed.disconnect(hook))
         midway, release = threading.Event(), threading.Event()
 
-        def mutation():   # jedna mutacja w kolejce: dwa zapisy pod jedną blokadą dziennika
-            with self.engine.journal.lock:
-                self.engine.journal.append(a, "card.paused")
+        def mutation():   # jedna akcja w kolejce: dwa zapisy dziennika
+            with self.engine.journal.lock if one_section else contextlib.nullcontext():
+                self.engine.journal.append(a, event)
                 midway.set()
                 release.wait(30)
-                self.engine.journal.append(b, "card.paused")
+                self.engine.journal.append(b, event)
         finished = []
         self.assertTrue(self.live._submit(mutation, finished.append))
         try:
@@ -155,18 +166,43 @@ class BusyWorkerReadsTest(BusyReadsCase):
                 time.sleep(0.01)
             snap = self.snapshot()
             self.assertEqual(snap["version"], before["version"])
-            self.assertFalse(self.card_of(snap, a)["derived"]["flow"]["paused"], "połowa mutacji w odczycie")
+            self.assertEqual(self.card_of(snap, a)["derived"]["flow"]["paused"], paused, "połowa mutacji w odczycie")
         finally:
             release.set()
         self.assertTrue(pump(lambda: finished))
         self.assertTrue(pump(lambda: self.snapshot()["version"] > before["version"]))
         after = self.snapshot()
-        self.assertTrue(self.card_of(after, a)["derived"]["flow"]["paused"])
-        self.assertTrue(self.card_of(after, b)["derived"]["flow"]["paused"])
+        self.assertEqual(self.card_of(after, a)["derived"]["flow"]["paused"], not paused)
+        self.assertEqual(self.card_of(after, b)["derived"]["flow"]["paused"], not paused)
         for published in seen:
             pa = self.card_of(published, a)["derived"]["flow"]["paused"]
             pb = self.card_of(published, b)["derived"]["flow"]["paused"]
             self.assertEqual(pa, pb, f"wersja {published['version']} miesza stan sprzed i po mutacji")
+
+
+class ReadAfterWriteTest(BusyReadsCase):
+    def test_snapshot_shows_a_finished_action_while_the_next_job_holds_the_journal(self):
+        card = self.proj_cards[0]
+        before = self.snapshot()
+        self.assertFalse(self.card_of(before, card)["derived"]["flow"]["paused"])
+        holding, release, done = threading.Event(), threading.Event(), []
+
+        def pause():
+            self.engine.journal.append(card, "card.paused")
+
+        def next_job():   # następna akcja trzyma blokadę dziennika krótko (krócej niż SETTLE_MS)
+            holding.set()
+            release.wait(5)
+        self.assertTrue(self.live._submit(pause, done.append))
+        self.assertTrue(self.live._submit(next_job, lambda f: None))
+        self.assertTrue(pump(holding.is_set))
+        app().processEvents()                  # wynik `pause` dociera, ale publikacja czeka na blokadę
+        self.assertFalse(done, "wynik akcji opublikowany mimo trzymanej blokady")
+        threading.Timer(0.05, release.set).start()
+        snap = self.snapshot()                 # czeka najwyżej SETTLE_MS na blokadę i publikuje zaległy wynik
+        self.assertGreater(snap["version"], before["version"])
+        self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"])
+        self.assertTrue(done, "odpowiedź akcji przyszła dopiero po publikacji jej skutku")
 
 
 class PreparingTest(BusyReadsCase):
@@ -237,8 +273,10 @@ class FreshAfterMutationTest(BusyReadsCase):
 
     def test_box_status_follows_the_published_box_wait(self):
         card = self.proj_cards[0]
+        published = self.board.published()
         first = self.box_status()
-        self.assertEqual(first["version"], self.snapshot()["version"])
+        # BoxStatus niesie wersję publikacji, z której wziął Tablicę i boxWait (Snapshot mógłby sam opublikować nową).
+        self.assertEqual(first["version"], published.version)
         self.assertIn({"card": card, "boxWait": ""}, first["cards"])
         boxwait.set_box_wait(self.engine.journal, card, boxwait.START, source="test")
         self.assertTrue(self.board.publish())

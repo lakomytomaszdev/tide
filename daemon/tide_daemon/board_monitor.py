@@ -73,6 +73,7 @@ MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_M
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 PUBLISH_RETRY_MS = 50  # publikacja odłożona przez zajętą blokadę dziennika — kolejna próba (bez czekania)
+SETTLE_MS = 250        # Snapshot czeka najwyżej tyle na blokadę, gdy wynik z kolejki czeka na publikację
 
 
 class Published(NamedTuple):
@@ -216,6 +217,13 @@ class BoardMonitor(QObject):
         # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
         # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
         # K-98 #2: publikacja odłożona przez trwającą mutację — ostatnia opublikowana wersja albo „preparing”.
+        # Zakończone, a jeszcze nieopublikowane wyniki z kolejki najpierw trafiają do migawki (czekanie na blokadę
+        # dziennika najwyżej SETTLE_MS), żeby odczyt po zapisie widział jego skutek.
+        settle = getattr(self.flow, "settle", None) if self.flow is not None else None
+        if settle is not None:
+            settle(SETTLE_MS / 1000)
+        if self._pending is not None:
+            self._retry_pending()
         mark = self._plans_stamp()
         if not self._json or mark != self._plans_mark:
             if self.publish():
