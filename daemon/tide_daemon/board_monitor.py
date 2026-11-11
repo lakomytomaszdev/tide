@@ -625,17 +625,17 @@ class BoardMonitor(QObject):
             snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
                         "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
         self._base = snapshot
-        self._refresh(read)
+        self._apply(read)
 
-    def _apply(self) -> None:
-        """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie."""
+    def _apply(self, read: BoardRead | None = None) -> None:
+        """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
+        `read`: kontekst odczytu Tablicy tego odświeżenia (K-98 #1); bez niego (zegar przeliczenia, YouTrack) —
+        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie."""
         if self._base is None:
             self.publish()
             return
-        self._refresh(BoardRead(self.store))
-
-    def _refresh(self, read: BoardRead) -> None:
-        """Przeliczenie stanu kart z `_base` z kontekstem odczytu Tablicy tego jednego odświeżenia."""
+        if not isinstance(read, BoardRead):   # sygnały Qt wołają bez argumentu
+            read = BoardRead(self.store)
         snapshot, context = self._derived(self._base, read)
         work = self._work(snapshot, context)
         if self.youtrack is not None:
