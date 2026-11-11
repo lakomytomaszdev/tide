@@ -574,6 +574,14 @@ class WorktreeScanner:
             f"gałąź zostaje: {_first_line(deleted.err)}"
 
 
+    # --- pobieranie ---------------------------------------------------------------------------
+
+    def fetch(self, repo_path: str) -> dict:
+        """„Pobierz”: `git fetch <zdalny>` ze wszystkich zdalnych repozytorium z listy (fetch.py).
+        Wynik {ok, …} albo {ok: False, reason, message}; lista odświeża się po stronie wywołującego."""
+        from .fetch import fetch_repository
+        return fetch_repository(self, repo_path)
+
     # --- brakujące katalogi -------------------------------------------------------------------
 
     def prune(self, repo_path: str) -> dict:

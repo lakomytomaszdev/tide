@@ -15,6 +15,7 @@ from PyQt6.QtDBus import (QDBusArgument, QDBusConnection, QDBusMessage, QDBusPen
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Worktrees", "org.tide.Daemon.Worktrees"
 REMOVE_TIMEOUT_MS = 30 * 60 * 1000  # duże katalogi potrafią się usuwać długo
+FETCH_TIMEOUT_MS = 270_000  # limit pobierania w usłudze to 120 s, plus do 120 s czekania na blokadę repozytorium
 
 
 def active_count(list_json: str) -> int:
@@ -36,6 +37,7 @@ class Backend(QObject):
     launchersChanged = pyqtSignal()
     removeFinished = pyqtSignal(str)
     pruneFinished = pyqtSignal(str)
+    fetchFinished = pyqtSignal(str, str)  # (repoPath, JSON wyniku Fetch albo "null")
     badgeChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: list | None = None, parent=None):
@@ -151,6 +153,18 @@ class Backend(QObject):
             return
         self._call("Prune", [repo_path], lambda ok, value: self.pruneFinished.emit(value if ok else "null"),
                    timeout=120_000)
+
+    @pyqtSlot(str)
+    def fetch(self, repo_path: str) -> None:
+        """„Pobierz”: git fetch ze zdalnych repozytorium (usługa odpowiada po zakończeniu, do 120 s plus
+        ewentualne czekanie na blokadę repozytorium); wynik w fetchFinished(repoPath, json)."""
+        if self.bus is None:
+            self.fetchFinished.emit(repo_path, json.dumps({"ok": False, "reason": "unavailable",
+                                                           "message": "podgląd bez usługi — nic nie pobrano"},
+                                                          ensure_ascii=False))
+            return
+        self._call("Fetch", [repo_path], lambda ok, value: self.fetchFinished.emit(repo_path, value if ok else "null"),
+                   timeout=FETCH_TIMEOUT_MS)
 
     @pyqtSlot(str, str)
     def open(self, path: str, app: str) -> None:

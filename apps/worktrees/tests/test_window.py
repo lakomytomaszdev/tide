@@ -451,7 +451,10 @@ Item {
         property var removed: []
         signal removeFinished(string text)
         signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
         property var forced: []
+        property var fetched: []
+        function fetch(repo) { fetched.push(repo) }
         function remove(paths) { removed = paths; removeFinished('[{"path": "/w/alpha/vin", "removed": true, "freed": 5}]') }
         function removeForced(paths, deleteBranches, confirmed) { forced = [paths.join(","), deleteBranches] }
         function open(path, app) {}
@@ -482,6 +485,80 @@ Item {
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
 
+    def test_fetch_button_state_and_result_per_repository(self):
+        """„Pobierz” tylko przy repozytorium ze zdalnym; w trakcie „Pobieram…” i wyłączony; wynik albo
+        błąd (jedno zdanie) przy repozytorium; po wyniku przycisk wraca (atrapa backendu)."""
+        data = [
+            item("/r/alpha", "alpha", "main", isMain=True, branch="master", tag="", blocker="main",
+                 remotes=["origin"], lastFetch=datetime.fromtimestamp(NOW - 7300, timezone.utc).isoformat()),
+            item("/w/alpha/vin", "alpha", "clean", remotes=["origin"], lastFetch=""),
+            item("/r/solo", "solo", "main", isMain=True, branch="master", tag="", blocker="main", remotes=[]),
+            item("/r/beta", "beta", "main", isMain=True, branch="master", tag="", blocker="main",
+                 remotes=["origin", "backup"]),
+        ]
+        log = self.harness("FetchSmoke.qml", """import QtQuick
+Item {
+    width: 1180; height: 820
+    QtObject {
+        id: stub
+        property string listJson: %(json)s
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property var fetched: []
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() {}
+        function prune(repo) {}
+        function fetch(repo) { fetched.push(repo) }
+    }
+    WorktreesView { id: win; anchors.fill: parent; backend: stub }
+    function all(item, name, out) {
+        if (item.objectName === name) out.push(item)
+        for (const child of item.children) all(child, name, out)
+        return out
+    }
+    function state() {
+        const buttons = all(win, "fetchButton", [])
+        const notes = all(win, "fetchNote", []).filter(n => n.visible).map(n => n.text)
+        return buttons.filter(b => b.visible).map(b => b.text + ":" + b.enabled).join(",") + "#" + notes.join("/")
+    }
+    Component.onCompleted: {
+        const rows = all(win, "repoRemotes", []).map(r => r.text)
+        console.warn("ROWS " + rows.join(" | "))
+        console.warn("BEFORE " + state())
+        win.page.startFetch("/r/alpha")
+        console.warn("BUSY " + state() + "#" + stub.fetched.join(","))
+        win.page.startFetch("/r/alpha")
+        console.warn("TWICE " + stub.fetched.length)
+        stub.fetchFinished("/r/alpha", '{"ok": true, "message": "pobrano: origin — 3 nowe commity na master"}')
+        console.warn("DONE " + state())
+        win.page.startFetch("/r/beta")
+        stub.fetchFinished("/r/beta", '{"ok": false, "reason": "network", "message": "origin: nie można połączyć się ze zdalnym"}')
+        console.warn("FAIL " + state())
+        win.page.startFetch("/r/beta")
+        stub.fetchFinished("/r/beta", "null")
+        console.warn("NULL " + state())
+        Qt.quit()
+    }
+}
+""" % {"json": json.dumps(json.dumps(data))})
+        rows = warned(log, "ROWS").split(" | ")
+        self.assertEqual(len(rows), 3)
+        self.assertIn("bez zdalnego", rows)
+        self.assertEqual(warned(log, "BEFORE"), "Pobierz:true,Pobierz:true#", "bez przycisku przy „bez zdalnego”")
+        self.assertEqual(warned(log, "BUSY"), "Pobieram…:false,Pobierz:true##/r/alpha")
+        self.assertEqual(warned(log, "TWICE"), "1", "drugie kliknięcie w trakcie nic nie wysyła")
+        self.assertEqual(warned(log, "DONE"), "Pobierz:true,Pobierz:true#pobrano: origin — 3 nowe commity na master")
+        self.assertEqual(warned(log, "FAIL"), "Pobierz:true,Pobierz:true#pobrano: origin — 3 nowe commity na master/"
+                         "Nie udało się pobrać — origin: nie można połączyć się ze zdalnym")
+        self.assertTrue(warned(log, "NULL").endswith("Nie udało się pobrać: brak odpowiedzi usługi"))
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
     def test_show_item_pending_search_field_and_first_refresh(self):
         """showItem: czeka tylko na pierwszą niepustą listę, przepada po zmianie szukania przez
         użytkownika, nigdy nie zaznacza; pole szukania pokazuje zapytanie także po wyczyszczeniu;
@@ -497,11 +574,13 @@ Item {
         property int refreshes: 0
         signal removeFinished(string text)
         signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
         function remove(paths) {}
         function removeForced(paths, deleteBranches, confirmed) {}
         function open(path, app) {}
         function refresh() { refreshes++ }
         function prune(repo) {}
+        function fetch(repo) {}
     }
     Stub { id: a }
     Stub { id: b }

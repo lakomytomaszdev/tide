@@ -23,6 +23,9 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - Launchers() -> s           JSON {"terminal": bool, "rider": bool, "window": bool} — które przyciski pokazać,
 - ShowWindow() -> b          otwiera okno Worktrees (False, gdy nie jest zainstalowane),
 - Prune(s repoPath) -> s     `git worktree prune` w repozytorium z worktrees bez katalogu (odpowiedź po zakończeniu),
+- Fetch(s repoPath) -> s     „Pobierz”: `git fetch <zdalny>` ze wszystkich zdalnych repozytorium z listy
+                             (odpowiedź po zakończeniu, limit 120 s): JSON {ok, repoPath, remotes, newCommits,
+                             message} albo {ok: false, reason, message} (docs/tide-daemon.md),
 - sygnał Changed()           lista worktrees się zmieniła.
 
 Obiekt /Tasks, interfejs org.tide.Daemon.Tasks (nowe zadanie dla agenta):
@@ -278,6 +281,10 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
   <method name="Launchers"><arg name="json" type="s" direction="out"/></method>
   <method name="ShowWindow"><arg name="ok" type="b" direction="out"/></method>
   <method name="Prune">
+    <arg name="repoPath" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="Fetch">
     <arg name="repoPath" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
@@ -753,6 +760,12 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
         message.setDelayedReply(True)
         request = QDBusMessage(message)
         self.monitor.prune(repo_path, lambda text: self.bus.send(request.createReply([text])))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def Fetch(self, repo_path: str, message: QDBusMessage) -> str:
+        # Sieć potrafi trwać do limitu czasu (120 s) — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.fetch(repo_path, self._delayed(message, "Fetch"))
         return ""
 
 

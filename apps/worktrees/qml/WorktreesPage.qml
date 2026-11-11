@@ -28,8 +28,11 @@ Rectangle {
     signal openRequested(string path, string app)
     signal refreshRequested()
     signal pruneRequested(string repoPath)
+    signal fetchRequested(string repoPath)   // „Pobierz”: git fetch ze wszystkich zdalnych repozytorium
 
     // Stan widoku.
+    property var fetching: ({})          // repoPath → true, gdy trwa pobieranie
+    property var fetchNotes: ({})        // repoPath → {ok, text}: wynik ostatniego pobierania
     property string query: ""
     property string repo: "all"
     property var selected: ({})          // ścieżka → true
@@ -51,6 +54,7 @@ Rectangle {
     // Worktrees na gałęzi głównej; same główne katalogi repozytoriów nie są tu pokazywane.
     readonly property var mains: Logic.inGroup(shown, "main").filter(w => !w.isMain)
     readonly property var missing: Logic.missingByRepo(shown)
+    readonly property var repoRows: Logic.repoRows(worktrees, repo, chips)
     readonly property var picked: Logic.selection(worktrees, selected)
     readonly property bool forcing: picked.risky.length > 0
     readonly property var unmergedInfo: Logic.unmergedBranches(picked.items)
@@ -119,6 +123,27 @@ Rectangle {
         const next = Object.assign({}, selected)
         for (const r of items) if (r.removed) delete next[r.path]
         selected = next
+    }
+
+    function startFetch(repoPath) {
+        if (fetching[repoPath] === true) return
+        const busy = Object.assign({}, fetching)
+        busy[repoPath] = true
+        fetching = busy
+        const notes = Object.assign({}, fetchNotes)
+        delete notes[repoPath]
+        fetchNotes = notes
+        fetchRequested(repoPath)
+    }
+
+    // Wynik Fetch() dla repozytorium (result: obiekt z usługi albo null przy braku odpowiedzi).
+    function finishFetch(repoPath, result) {
+        const busy = Object.assign({}, fetching)
+        delete busy[repoPath]
+        fetching = busy
+        const notes = Object.assign({}, fetchNotes)
+        notes[repoPath] = Logic.fetchNote(result)
+        fetchNotes = notes
     }
 
     function finishPrune(result) {
@@ -314,6 +339,70 @@ Rectangle {
                 y: 8
                 width: flick.width - 48
                 spacing: 18
+
+                // Repozytoria: zdalne, czas ostatniego pobrania i „Pobierz” (tylko ze zdalnym).
+                ColumnLayout {
+                    objectName: "repoStrip"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 10
+                    visible: page.repoRows.length > 0
+                    spacing: 6
+                    Repeater {
+                        model: page.repoRows
+                        ColumnLayout {
+                            id: repoRow
+                            required property var modelData
+                            readonly property bool busy: page.fetching[modelData.repoPath] === true
+                            readonly property var note: page.fetchNotes[modelData.repoPath] || null
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                Text {
+                                    Layout.preferredWidth: 150
+                                    leftPadding: 14
+                                    text: repoRow.modelData.repo
+                                    color: Tide.Tokens.textPrimary
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    objectName: "repoRemotes"
+                                    Layout.fillWidth: true
+                                    text: Logic.repoLine(repoRow.modelData.sample, page.nowTs)
+                                    color: Tide.Tokens.textMuted
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                PillButton {
+                                    objectName: "fetchButton"
+                                    visible: repoRow.modelData.canFetch
+                                    implicitHeight: 28
+                                    text: Logic.fetchButtonText(repoRow.busy)
+                                    pixelSize: 12
+                                    enabled: !repoRow.busy && page.available
+                                    toolTip: "Pobiera zmiany ze wszystkich zdalnych (git fetch). Nie zmienia gałęzi ani plików."
+                                    onClicked: page.startFetch(repoRow.modelData.repoPath)
+                                }
+                            }
+                            Text {
+                                objectName: "fetchNote"
+                                Layout.fillWidth: true
+                                visible: repoRow.note !== null
+                                leftPadding: 14
+                                text: repoRow.note ? repoRow.note.text : ""
+                                color: repoRow.note && repoRow.note.ok ? Tide.Tokens.positive : Tide.Tokens.neutral
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                }
 
                 // Wynik ostatniego sprzątania.
                 Rectangle {
