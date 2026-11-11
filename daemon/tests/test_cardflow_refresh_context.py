@@ -123,6 +123,24 @@ class SingleReadTest(RefreshContextCase):
         # Pusta migawka → jedno `publish()` → dokładnie jedno wczytanie (regresja do dwóch byłaby widoczna).
         self.assertEqual(len(counted), 1, "Snapshot wczytał Tablicę więcej niż raz")
 
+    def test_snapshot_with_a_deferred_publication_and_changed_plans_reads_the_board_once(self):
+        """PT-385 (N3): odłożona publikacja ponowiona w Snapshot() już wczytała plany — zmieniony znacznik planów
+        nie publikuje drugi raz w tym samym wywołaniu."""
+        counted = []
+        real = self.store.load
+        before = json.loads(self.board.snapshot_json())["version"]
+        self.board._pending = "publish"       # publikacja odłożona przez akcję z kolejki
+        self.board._plans_mark = None         # jak nowy plan w repozytorium projektu
+        with mock.patch.object(self.store, "load", side_effect=lambda: counted.append(1) or real()):
+            snap = json.loads(self.board.snapshot_json())
+        self.assertEqual(len(counted), 1, "Snapshot wczytał Tablicę więcej niż raz")
+        self.assertGreaterEqual(snap["version"], before)
+        self.assertIsNone(self.board._pending)
+        self.assertEqual(self.board._plans_mark, self.board._plans_stamp(), "znacznik planów po ponowieniu ustawiony")
+        with mock.patch.object(self.store, "load", side_effect=lambda: counted.append(1) or real()):
+            self.board.snapshot_json()
+        self.assertEqual(len(counted), 1, "kolejny Snapshot bez zmian nie wczytuje Tablicy")
+
     def test_pack_store_metadata_is_walked_once_per_project_in_a_refresh(self):
         os.makedirs(os.path.join(packs.snapshot_root(PLASMA), "kopia", "data"), exist_ok=True)
         walks = []

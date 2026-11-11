@@ -18,6 +18,7 @@ Rectangle {
     property var board: null
     property var sessions: []
     property var flowCards: []
+    property bool flowLoading: false     // usługa po restarcie jeszcze nie opublikowała Tablicy (PT-385)
     property var detail: null
     property bool available: true
     property real nowTs: Date.now() / 1000
@@ -219,7 +220,9 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.leftMargin: 6
                         visible: page.coordinators.length === 0 && page.flowCards.length === 0
-                        text: !page.available ? "Usługa tide-daemon nie działa." : "Żadna sesja z ostatnich dni nie zlecała pracy podagentom."
+                        text: !page.available ? "Usługa tide-daemon nie działa."
+                            : page.flowLoading ? "Wczytywanie kart w przepływie…"
+                            : "Żadna sesja z ostatnich dni nie zlecała pracy podagentom."
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.uiFamily
                         font.pixelSize: 13

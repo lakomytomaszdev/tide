@@ -12,9 +12,11 @@ Tide.DockTile {
 
     property var counts: Texts.counts(null)
     property bool available: true
+    property bool loading: false         // pierwsza migawka jeszcze się przygotowuje (PT-385)
 
-    readonly property var parts: available ? Texts.tileParts(counts) : []
-    readonly property string summary: available ? Texts.tileSummary(counts) : "usługa nie działa"
+    readonly property var parts: available && !loading ? Texts.tileParts(counts) : []
+    readonly property string summary: !available ? "usługa nie działa" : loading ? Texts.LOADING
+                                                                                 : Texts.tileSummary(counts)
 
     label: "Tablica"
     detail: available ? Texts.tileDetail(counts) : ""
@@ -66,7 +68,7 @@ Tide.DockTile {
             }
         }
 
-        // Brak kart albo usługa nie działa.
+        // Brak kart, wczytywanie albo usługa nie działa.
         Text {
             visible: tile.parts.length === 0
             text: tile.summary

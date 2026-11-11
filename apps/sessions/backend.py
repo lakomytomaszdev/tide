@@ -12,7 +12,7 @@ import importlib.util
 import json
 import os
 
-from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
 
@@ -26,6 +26,9 @@ PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku �
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
 # Zapisy /Board, po których usługa ma nową migawkę kart (lista „Karty w przepływie” odświeża się od razu).
+# Snapshot z `readState: "preparing"` (usługa po restarcie jeszcze nie opublikowała Tablicy): ponowny odczyt
+# najpóźniej po tylu ms — wcześniej, gdy przyjdzie /Board Changed (PT-385).
+PREPARING_RETRY_MS = 2000
 WRITES = ("ResolveCardReview", "EnterStep", "TalkToCaretaker", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "EditCardPlan", "ReportStepFault", "AddCardStepNote")
 
 
@@ -87,6 +90,10 @@ class Backend(QObject):
         self._board = "{}"
         self._sessions = "[]"
         self._flow_cards = "[]"
+        self._flow_ready = False         # była już gotowa migawka kart (nie „preparing”)
+        self._flow_loading = False       # pierwsza migawka jeszcze się przygotowuje
+        self._flow_retry = QTimer(self, singleShot=True, interval=PREPARING_RETRY_MS)
+        self._flow_retry.timeout.connect(self._load_flow_cards)
         self._detail = "{}"
         self._available = False
         self._selected = select
@@ -140,6 +147,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=flowCardsChanged)
     def flowCardsJson(self) -> str:
         return self._flow_cards
+
+    @pyqtProperty(bool, notify=flowCardsChanged)
+    def flowCardsLoading(self) -> bool:
+        """Usługa po restarcie jeszcze nie opublikowała Tablicy, a poprzedniej migawki kart nie ma."""
+        return self._flow_loading
 
     @pyqtProperty(str, notify=detailChanged)
     def detailJson(self) -> str:
@@ -335,10 +347,23 @@ class Backend(QObject):
         if not ok or not isinstance(value, str):
             return
         try:
-            cards = flow_cards(json.loads(value))
+            snapshot = json.loads(value)
         except ValueError:
-            cards = []
-        self._set("_flow_cards", json.dumps(cards, ensure_ascii=False), self.flowCardsChanged)
+            snapshot = None
+        if isinstance(snapshot, dict) and snapshot.get("readState") == "preparing":
+            # PT-385: `cards: []` to nie pusta Tablica — zostaje poprzednia lista; bez niej — „wczytywanie”.
+            if not self._flow_ready and not self._flow_loading:
+                self._flow_loading = True
+                self.flowCardsChanged.emit()
+            self._flow_retry.start()
+            return
+        self._flow_retry.stop()
+        self._flow_ready = True
+        was_loading, self._flow_loading = self._flow_loading, False
+        text = json.dumps(flow_cards(snapshot), ensure_ascii=False)
+        if text != self._flow_cards or was_loading:
+            self._flow_cards = text
+            self.flowCardsChanged.emit()
 
     def _got_coordinators(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):

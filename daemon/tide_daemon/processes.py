@@ -78,6 +78,10 @@ def probe(proc_root: str = "/proc", log_roots: tuple = ()) -> ProcessTable:
 # Pełny skan co tyle sekund także na postoju: zmiany, których nie widać po liście PID-ów (exec w tym samym procesie,
 # ponowne użycie numeru PID), trafiają do migawki najpóźniej po tym czasie.
 FULL_EVERY_S = 300.0
+# Świeży proces (młodszy niż tyle sekund od startu) jest czytany ponownie w każdej sondzie: wrapper, który robi
+# `exec claude` kilka sekund po `fork` (albo łańcuch dwóch `exec`), trafia do migawki w najbliższej sondzie, a nie
+# dopiero przy pełnym skanie (PT-385). 6 ticków monitora (TICK_MS 5 s); koszt — ponowny odczyt kilku świeżych PID-ów.
+SETTLE_S = 30.0
 
 
 class Prober:
@@ -88,18 +92,22 @@ class Prober:
 
     - czyta samą listę `/proc` (jedno `listdir`) i porównuje zbiór PID-ów z poprzednim — tak rozpoznaje „brak
       zmian” bez pełnego skanu: nowy potomek to nowy PID, zakończony potomek to brakujący PID,
-    - czyta `stat` tylko nowych PID-ów, potomków zakończonych procesów (zmiana rodzica) i PID-ów nowych
-      w poprzednim przebiegu (proces czytany tuż po `fork` mógł jeszcze nie zrobić `exec`),
+    - czyta `stat` tylko nowych PID-ów, potomków zakończonych procesów (zmiana rodzica) i świeżych PID-ów, które
+      nie są agentami (proces czytany tuż po `fork` mógł jeszcze nie zrobić `exec`): nowy PID jest czytany jeszcze
+      raz w następnym przebiegu, a dalej — dopóki od jego startu minęło mniej niż `SETTLE_S` s (zegar `wall`),
     - u agentów (claude/codex, zwykle kilka procesów) zawsze czyta `stat` (ten sam start i nazwa — ten sam proces),
       katalog i otwarte pliki dzienników, bo przełączenie dziennika nie zmienia listy PID-ów,
     - bez żadnej zmiany zwraca TEN SAM obiekt `ProcessTable` (ponowne użycie wyniku między odczytami).
 
     `counters`: `probes`, `fullScans`, `statReads` (odczyty `/proc/<pid>/stat`), `reused` (ta sama tabela)."""
 
-    def __init__(self, proc_root: str = "/proc", full_every: float = FULL_EVERY_S, monotonic=time.monotonic):
+    def __init__(self, proc_root: str = "/proc", full_every: float = FULL_EVERY_S, monotonic=time.monotonic,
+                 wall=time.time, settle_s: float = SETTLE_S):
         self.proc_root = proc_root
         self.full_every = full_every
         self.monotonic = monotonic
+        self.wall = wall              # zegar epoki — porównywany z czasem startu procesu (`ProcessInfo.start_time`)
+        self.settle_s = settle_s
         self.counters = {"probes": 0, "fullScans": 0, "statReads": 0, "reused": 0}
         self._infos: dict[int, ProcessInfo] = {}
         self._table: ProcessTable | None = None
@@ -141,7 +149,11 @@ class Prober:
                         infos.pop(pid)
                     else:
                         infos[pid] = fresh
-        self._settle = new
+        # Nowy PID — jeszcze jeden odczyt w następnej sondzie (jak dotąd); dalej tylko świeży proces bez rozpoznanego
+        # agenta (agenta pilnuje `_refresh_agent`). Na postoju bez nowych PID-ów zbiór jest pusty — zero ponownych odczytów.
+        young = self.wall() - self.settle_s
+        self._settle = {pid for pid in new | (self._settle & pids) if pid in infos
+                        and (pid in new or (not infos[pid].tool and infos[pid].start_time > young))}
         if not changed:
             self.counters["reused"] += 1
             return old
@@ -157,7 +169,9 @@ class Prober:
             info = self._read(pid, log_roots)
             if info is not None:
                 infos[pid] = info
-        self._infos, self._full_at, self._settle = infos, now, set()
+        young = self.wall() - self.settle_s   # świeże procesy z pełnego skanu też mogą jeszcze zrobić `exec`
+        self._settle = {pid for pid, info in infos.items() if not info.tool and info.start_time > young}
+        self._infos, self._full_at = infos, now
         self._table = ProcessTable(list(infos.values()))
         return self._table
 

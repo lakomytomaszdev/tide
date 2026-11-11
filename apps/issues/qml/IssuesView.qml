@@ -232,7 +232,13 @@ Item {
                         }
                         Label {
                             Layout.fillWidth: true
-                            visible: !!draft.project && !(modelState.projects || []).some(p => p.slug === draft.project)
+                            visible: !!modelState.projectsLoading
+                            text: "Wczytywanie projektów Tablicy…"
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !modelState.projectsLoading && !!draft.project
+                                     && !(modelState.projects || []).some(p => p.slug === draft.project)
                             text: "Nieznany lub usunięty projekt. Wybierz istniejący projekt albo wyczyść przypisanie przed submit."
                             color: Tide.Tokens.waiting
                         }

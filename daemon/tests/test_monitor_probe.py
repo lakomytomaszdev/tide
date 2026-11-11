@@ -426,6 +426,73 @@ class FreshForUserActionsTest(Fixture):
         self.assertEqual(replies, [False], "spóźniony wynik nie odpowiada drugi raz")
 
 
+class OneSessionsPerTickTest(Fixture):
+    """PT-385 (M1): tick monitora przy niezmienionej tabeli procesów (sonda przyrostowa oddaje TEN SAM obiekt,
+    PT-346) wykonuje jedno `scanner.sessions` — jak na masterze przed K-98; nowa tabela albo zmiana stanu migawki
+    publikuje nową listę po sondzie. Akcje użytkownika dalej czekają na sondę nowszą niż wywołanie."""
+
+    def setUp(self):
+        super().setUp()
+        self.settle()
+        self.calls = []
+        real = self.monitor.scanner.sessions
+        patcher = mock.patch.object(self.monitor.scanner, "sessions",
+                                    side_effect=lambda *a, **k: self.calls.append(1) or real(*a, **k))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tick(self):
+        """Jeden tick (`recompute`) i doręczenie jego sondy (`_probed`) w wątku głównym."""
+        seq = self.monitor._last.seq
+        self.monitor.recompute()
+        self.assertTrue(pump(lambda: self.monitor._last.seq > seq), "sonda ticku nie doszła")
+        app().processEvents()
+
+    def test_unchanged_table_costs_one_sessions_call_per_tick(self):
+        table = self.monitor.procs
+        for _ in range(5):
+            self.tick()
+        self.assertIs(self.monitor.procs, table, "atrapa oddaje ten sam obiekt tabeli")
+        self.assertEqual(len(self.calls), 5, "5 ticków bez zmian — 5 `scanner.sessions`, nie 10")
+        self.assertEqual(self.session()["processes"], "fresh")
+        self.assertEqual(self.monitor.processes_status()["seq"], self.monitor._last.seq,
+                         "wynik, numer i wiek migawki aktualizowane mimo braku przeliczenia")
+
+    def test_new_table_publishes_the_new_list_after_the_probe(self):
+        self.probe.table = self.table(pid=500)
+        self.tick()
+        self.assertEqual(len(self.calls), 2, "tick na starej tabeli + przeliczenie po nowej sondzie")
+        self.assertEqual(self.session()["pid"], 500)
+
+    def test_state_change_with_the_same_table_publishes(self):
+        table = self.probe.table
+        self.probe.error = OSError("odmowa /proc")
+        self.tick()
+        self.assertEqual(self.session()["processes"], "error")
+        self.probe.error = None
+        self.calls.clear()
+        self.tick()
+        self.assertIs(self.monitor.procs, table)
+        self.assertEqual(len(self.calls), 2, "error → fresh na tej samej tabeli — przeliczenie po sondzie")
+        self.assertEqual(self.session()["processes"], "fresh")
+
+    def test_user_actions_still_wait_for_a_probe_newer_than_the_call(self):
+        self.tick()
+        called = time.monotonic()
+        self.assertTrue(self.monitor.activate_longest_waiting())
+        self.assertGreaterEqual(self.monitor._result.started, called, "Meta+A na sondzie nowszej niż wywołanie")
+        self.probe.table = self.table(with_agent=False)
+        self.assertTrue(self.monitor.refresh_fresh())
+        self.assertEqual(self.session()["pid"], 0, "refresh_fresh widzi świeżą sondę")
+        replies = []
+        self.probe.table = self.table()
+        called = time.monotonic()
+        self.monitor.activate_later(f"codex:{uid(6)}", replies.append)
+        self.assertTrue(pump(lambda: replies))
+        self.assertEqual(replies, [True])
+        self.assertGreaterEqual(self.monitor._result.started, called)
+
+
 class WorktreeRemovalTest(Fixture):
     """Usuwanie worktree decyduje, gdzie działa agent (`agent_cwds`) — na sondzie nowszej niż wywołanie (jak przed
     PT-345, gdy `recompute` sondował w miejscu), a bez świeżej migawki odmawia bez skutku."""

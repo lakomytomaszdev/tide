@@ -255,9 +255,11 @@ class BoardMonitor(QObject):
         settle = getattr(self.flow, "settle", None) if self.flow is not None else None
         if settle is not None:
             settle()
-        if self._pending is not None:
-            self._retry_pending(left())
+        # Znacznik planów liczony PRZED ponowieniem: udane ponowienie już wczytało plany, więc ta sama zmiana planów
+        # nie publikuje drugi raz (jedno wczytanie Tablicy na Snapshot(), PT-385).
         mark = self._plans_stamp()
+        if self._pending is not None and self._retry_pending(left()):
+            self._plans_mark = mark
         if not self._json or mark != self._plans_mark:
             if self.publish(left()):
                 self._plans_mark = self._plans_stamp()
@@ -759,13 +761,15 @@ class BoardMonitor(QObject):
         if not self._retry.isActive():
             self._retry.start()
 
-    def _retry_pending(self, wait_s: float = 0.0) -> None:
+    def _retry_pending(self, wait_s: float = 0.0) -> bool:
+        """Ponowienie odłożonej publikacji; True — wersja opublikowana (Tablica wczytana świeżo)."""
         kind, self._pending = self._pending, None
         if kind == "publish":
-            self.publish(wait_s)
-        elif kind == "apply":
+            return bool(self.publish(wait_s))
+        if kind == "apply":
             # Ponowione przeliczenie czyta Tablicę świeżo jak publikacja; z terminem — jako publikacja (Snapshot()).
-            self.publish(wait_s) if wait_s else self._apply()
+            return bool(self.publish(wait_s) if wait_s else self._apply())
+        return False
 
     def _apply(self, read: BoardRead | None = None, base: dict | None = None, ticket=None):
         """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
@@ -1159,7 +1163,9 @@ class BoardMonitor(QObject):
         (`_poll_sync` z pełnym przejściem ponawia je) — zmiana z zewnątrz trafi do migawki najpóźniej wtedy."""
         if not paths:
             return
-        refused = list(self._watcher.addPaths(paths) or [])
+        # Ścieżki, których już nie ma (katalog usunięty między zdarzeniem a przejściem), obserwator też odrzuca — to
+        # nie limit inotify: nie liczymy ich i nie piszemy wpisu (PT-385); przejście zaraz zdejmie je z pamięci.
+        refused = [p for p in (self._watcher.addPaths(paths) or []) if os.path.lexists(p)]
         if refused:
             first = not self._refused
             self._refused.update(refused)

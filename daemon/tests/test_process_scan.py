@@ -175,6 +175,94 @@ class ProberTest(unittest.TestCase):
         self.assertEqual(self.scan.counters["fullScans"], 1)
 
 
+class LateExecTest(unittest.TestCase):
+    """PT-385 (N1): wrapper, który robi `exec claude` po kilku sekundach od `fork`, trafia do migawki w najbliższej
+    sondzie, dopóki od startu procesu minęło mniej niż `SETTLE_S` (30 s); później — dopiero przy pełnym skanie.
+    Na postoju bez nowych PID-ów sonda nie czyta ponownie żadnego procesu. Zegary: monotoniczny (pełny skan co
+    FULL_EVERY_S) i ścienny (wiek procesu z `stat`, btime atrapy = 0)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-proc-late-exec-")
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proc = FakeProc(os.path.join(self.tmp, "proc"))
+        self.proc.add(1, 0, "systemd")
+        self.proc.add(300, 1, "konsole", 10.0)
+        for pid in range(500, 540):
+            self.proc.add(pid, 1, f"proc{pid}", 5.0)
+        self.mono, self.wall = Clock(), Clock()
+        self.wall.now = 50_000.0
+        self.scan = processes.Prober(self.proc.root, monotonic=self.mono, wall=self.wall)
+
+    def tick(self):
+        self.mono.now += TICK_S
+        self.wall.now += TICK_S
+        return self.scan.probe()
+
+    def wrapper_with_exec_after(self, delay):
+        """Pełny skan, potem `fork` wrappera (1 s przed najbliższą sondą) i `exec claude` `delay` s po starcie.
+        Zwraca (tabela pierwszej sondy po `exec`, chwila startu procesu)."""
+        self.scan.probe()
+        start = self.wall.now + TICK_S - 1.0
+        self.proc.add(700, 300, "bash", start)
+        table = self.tick()
+        self.assertEqual(table.get(700).name, "bash", "odczyt tuż po fork — przed exec")
+        while self.wall.now + TICK_S < start + delay:
+            table = self.tick()
+        self.proc.add(700, 300, "claude", start, cmdline=("claude",), cwd="/srv/w")
+        return self.tick(), start
+
+    def test_exec_after_25_seconds_is_seen_in_the_next_probe(self):
+        self.assertEqual(processes.SETTLE_S, 30.0)
+        table, start = self.wrapper_with_exec_after(25.0)
+        self.assertLessEqual(self.wall.now - start, 30.0)
+        self.assertEqual((table.get(700).name, table.get(700).tool), ("claude", "claude"))
+        self.assertEqual(self.scan.counters["fullScans"], 1, "bez pełnego skanu")
+
+    def test_exec_after_35_seconds_waits_for_the_full_scan(self):
+        table, start = self.wrapper_with_exec_after(35.0)
+        self.assertGreater(self.wall.now - start, 35.0)
+        self.assertEqual(table.get(700).name, "bash", "po 30 s od startu proces nie jest czytany co sondę")
+        self.assertEqual(self.scan.counters["fullScans"], 1)
+        while self.scan.counters["fullScans"] < 2:
+            table = self.tick()
+        self.assertEqual(table.get(700).tool, "claude", "pełny skan co FULL_EVERY_S rozpoznaje agenta")
+
+    def test_two_execs_within_the_window_are_both_seen(self):
+        self.scan.probe()
+        start = self.wall.now + TICK_S - 1.0
+        self.proc.add(700, 300, "bash", start)
+        self.tick()
+        self.proc.add(700, 300, "env", start)            # pierwszy exec (np. `env … claude`)
+        self.assertEqual(self.tick().get(700).name, "env")
+        self.tick()
+        self.proc.add(700, 300, "claude", start, cmdline=("claude",), cwd="/srv/w")
+        self.assertEqual(self.tick().get(700).tool, "claude")
+
+    def test_young_process_from_the_full_scan_is_reread_too(self):
+        self.proc.add(700, 300, "bash", self.wall.now - 2.0)   # wystartował tuż przed pierwszym (pełnym) skanem
+        self.scan.probe()
+        self.tick()
+        self.proc.add(700, 300, "claude", self.wall.now - 2.0 - TICK_S, cmdline=("claude",), cwd="/srv/w")
+        self.assertEqual(self.tick().get(700).tool, "claude")
+        self.assertEqual(self.scan.counters["fullScans"], 1)
+
+    def test_idle_without_new_pids_rereads_nothing(self):
+        self.scan.probe()
+        reads = self.scan.counters["statReads"]
+        for _ in range(20):
+            self.tick()
+        self.assertEqual(self.scan.counters["statReads"] - reads, 0, "postój bez nowych PID-ów i agentów — 0 odczytów")
+        # Świeży proces jest czytany tylko do końca okna; potem postój znów kosztuje 0 odczytów.
+        self.proc.add(700, 300, "sleep", self.wall.now + 1.0)
+        for _ in range(int(processes.SETTLE_S // TICK_S) + 2):
+            self.tick()
+        reads = self.scan.counters["statReads"]
+        for _ in range(20):
+            self.tick()
+        self.assertEqual(self.scan.counters["statReads"] - reads, 0, "po oknie SETTLE_S — znów 0 ponownych odczytów")
+        self.assertEqual(self.scan.counters["fullScans"], 1)
+
+
 class MonitorTest(unittest.TestCase):
     """Monitor sesji z prawdziwym skanerem dzienników i przyrostową sondą na atrapie /proc."""
 

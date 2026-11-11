@@ -6,6 +6,8 @@ prawdziwy `QFileSystemWatcher` (inotify) dla zmian z zewnątrz w obserwowanych g
 docs/), poddrzewo powstałe w trakcie przejścia i atrapa obserwatora odrzucająca ścieżki (limit) — wtedy migawkę daje
 odpytywanie co POLL_MS. Grupa wyłączona z obserwacji (`flow/**`): żadna ścieżka nie jest obserwowana, zapis nie budzi
 synchronizacji, a commit i migawkę daje odpytywanie (dziennik i wyjście kroków commituje i publikuje sama usługa)."""
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -335,6 +337,66 @@ class RefusedWatchTest(WatchCase):
         self.write(os.path.join("cards", "K-1.md"), "\nZmiana bez zdarzenia.\n", mode="a")
         self.assertTrue(wait_until(lambda: "Zmiana bez zdarzenia." in monitor._json, timeout=5))
         self.assertEqual(_git_log(self.root).split("\n")[0], "sync external changes")
+
+
+class InotifyLikeWatcher(FakeWatcher):
+    """Jak inotify: ścieżki, której nie ma, nie da się obserwować (odrzucona), a obserwacja usuniętego katalogu
+    znika sama; `refuse_existing` — odrzuca też istniejące ścieżki (limit)."""
+
+    def __init__(self):
+        super().__init__()
+        self.refuse_existing = False
+
+    def directories(self):
+        self.dirs = {p for p in self.dirs if os.path.isdir(p)}
+        return super().directories()
+
+    def addPaths(self, paths):
+        refused = [str(p) for p in paths if self.refuse_existing or not os.path.lexists(p)]
+        super().addPaths([p for p in paths if str(p) not in refused])
+        return refused
+
+
+class VanishedDirectoryTest(WatchCase):
+    """PT-385 (N2): katalog usunięty między zdarzeniem a przejściem nie jest „odrzuconą ścieżką (limit inotify?)” —
+    bez licznika i bez wpisu; istniejąca odrzucona ścieżka dalej daje jedno i drugie."""
+
+    def setUp(self):
+        super().setUp()
+        self.watcher = InotifyLikeWatcher()
+        self.mon = self.monitor(self.watcher)
+        self.board(self.mon)
+        self.folder = os.path.join(self.root, "docs", "gone")
+        os.makedirs(os.path.join(self.folder, "inner"))
+        self.mon._rewatch(full=True)
+        self.assertIn(os.path.join(self.folder, "inner"), self.watcher.all())
+
+    def rewatch_after_event(self):
+        """Zdarzenie na katalogu, a przed przejściem — katalog znika (z obserwacją, jak w inotify)."""
+        self.mon._dirty.update({self.folder, os.path.join(self.folder, "inner")})
+        shutil.rmtree(self.folder)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.mon._rewatch()
+        return out.getvalue()
+
+    def test_vanished_directory_is_not_counted_as_refused(self):
+        log = self.rewatch_after_event()
+        self.assertEqual(self.mon.watch_stats["refused"], 0)
+        self.assertNotIn("limit inotify", log)
+        self.assertEqual(self.mon._refused, set())
+        self.assertNotIn(self.folder, self.mon._tree, "usunięte poddrzewo zdjęte z pamięci obserwacji")
+
+    def test_existing_refused_path_is_still_counted_and_logged(self):
+        self.watcher.refuse_existing = True
+        self.watcher.dirs.discard(self.folder)          # obserwacja zgubiona — przejście doda ją ponownie
+        self.mon._dirty.add(self.folder)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.mon._rewatch()
+        self.assertGreater(self.mon.watch_stats["refused"], 0)
+        self.assertIn("limit inotify", out.getvalue())
+        self.assertIn(self.folder, self.mon._refused)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,9 @@ import "boardtexts.js" as Texts
 PlasmoidItem {
     id: root
 
-    readonly property var snapshot: source.result && typeof source.result === "object" ? source.result : null
+    // „preparing” po restarcie usługi nie daje chwilowego „0 kart” (BoardSnapshot, PT-385).
+    readonly property var snapshot: board.snapshot
+    readonly property bool loading: board.loading
     readonly property bool exists: !!snapshot && snapshot.exists === true
     readonly property var counts: Texts.counts(snapshot)
     property string windowProblem: ""
@@ -68,7 +70,7 @@ PlasmoidItem {
     Plasmoid.title: "Tablica"
     Plasmoid.icon: "view-list-details"
     toolTipMainText: "Tablica"
-    toolTipSubText: Texts.toolTip(source.available, root.exists, root.counts)
+    toolTipSubText: Texts.toolTip(source.available, root.exists, root.counts, root.loading)
     // Pasek boczny Tide pokazuje zwarty kafelek na stałe (scripts/panels/sidebar.js).
     preferredRepresentation: Plasmoid.configuration.sidebarMode ? fullRepresentation : compactRepresentation
     onExpandedChanged: if (expanded) { status = ""; source.refresh() }
@@ -83,6 +85,11 @@ PlasmoidItem {
         iface: "org.tide.Daemon.Board"
         method: "Snapshot"
         pollInterval: 60000
+    }
+
+    BoardSnapshot {
+        id: board
+        daemon: source
     }
 
     Timer {
@@ -111,6 +118,7 @@ PlasmoidItem {
             height: Math.min(parent.height, Math.max(implicitHeight, dockHeight))
             counts: root.counts
             available: source.available
+            loading: root.loading
             active: compact.containsMouse || root.expanded
         }
 
@@ -170,6 +178,7 @@ PlasmoidItem {
             BoardPopup {
                 snapshot: root.snapshot
                 available: source.available
+                loading: root.loading
                 quickProject: Plasmoid.configuration.quickProject
                 status: root.status
                 statusError: root.statusError
@@ -192,6 +201,7 @@ PlasmoidItem {
             SidebarBoard {
                 snapshot: root.snapshot
                 available: source.available
+                loading: root.loading
                 problem: root.windowProblem
                 onOpenRequested: id => root.showWindow(id)
             }

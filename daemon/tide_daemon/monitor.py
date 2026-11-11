@@ -124,19 +124,26 @@ class AgentMonitor(QObject):
             print(f"tide-daemon: katalogi dzienników Codexa dla sondy: {exc!r}", flush=True)
         return self.prober.request()
 
-    def _accept(self, result) -> bool:
+    def _accept(self, result) -> tuple[bool, bool]:
         """Przyjmuje wynik sondy w wątku głównym. Tabela trafia do migawki jednym przypisaniem (stara albo nowa,
-        nigdy częściowa); wynik nie nowszy niż przyjęty jest pomijany. True, gdy stan migawki się zmienił."""
+        nigdy częściowa); wynik nie nowszy niż przyjęty jest pomijany. Wynik, numer i wiek migawki są aktualizowane
+        przy każdym przyjęciu. (przyjęto, zmieniono): `zmieniono` — inna tabela procesów niż opublikowana (sonda
+        przyrostowa oddaje TEN SAM obiekt, gdy nic się nie zmieniło — PT-346) albo inny stan migawki
+        (`processes_status()["state"]`, np. `stale` → `fresh`); tylko wtedy lista sesji wymaga przeliczenia (PT-385)."""
         if result is None or (self._last is not None and result.seq <= self._last.seq):
-            return False
+            return False, False
+        state = self.processes_status()["state"]
+        changed = result.table is not None and result.table is not self.procs
         self._last = result
         if result.table is not None:
             self._result, self.procs = result, result.table
-        return True
+        return True, changed or self.processes_status()["state"] != state
 
     def _probed(self, result) -> None:
-        """Wynik sondy w wątku głównym: nowa migawka procesów, przeliczenie listy i czekające akcje."""
-        if self._accept(result):
+        """Wynik sondy w wątku głównym: nowa migawka procesów, przeliczenie listy i czekające akcje. Ten sam obiekt
+        tabeli i ten sam stan — bez drugiego przeliczenia w ticku (`recompute` już opublikował listę na tej
+        tabeli; jedno `scanner.sessions` na tick jak przed K-98)."""
+        if self._accept(result)[1]:
             self._publish()
         ready = [entry for entry in self._waiting if result is not None and result.seq >= entry[0]]
         for entry in ready:
@@ -183,13 +190,13 @@ class AgentMonitor(QObject):
             return True, None
         ticket = self._request_probe()
         result = self.prober.wait(ticket, self.probe_wait)
-        if result is not None and result.table is None and self._accept(result):
+        if result is not None and result.table is None and self._accept(result)[0]:
             self._publish()     # jawny błąd sondy w migawce
         if result is None or result.table is None:
             print(f"tide-daemon: brak świeżej migawki procesów w {self.probe_wait:g} s — akcja pominięta"
                   + (f" ({result.error})" if result is not None and result.error else ""), flush=True)
             return False, None
-        if self._accept(result):
+        if self._accept(result)[0]:   # akcja użytkownika: lista na tej sondzie, jak dotąd (bez zmian semantyki)
             self._publish()
         return True, result.table
 

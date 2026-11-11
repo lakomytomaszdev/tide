@@ -3857,6 +3857,10 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
   "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca
   `error: "preparing"`. Okno Tablicy (`apps/board/backend.py`) nie zastępuje taką odpowiedzią posiadanej migawki,
   a bez migawki nie zapisuje jej jako Tablicy (okno zostaje w stanie „ładowanie” do pierwszego `Changed`).
+  Tak samo pozostali konsumenci `Snapshot` (PT-385): widżet Tablica (`widgets/board`, `BoardSnapshot.qml`), lista
+  „Karty w przepływie” w widoku Sesje (`apps/sessions/backend.py`, `flowCardsLoading`) i projekty w oknie Sprawy
+  (`apps/issues/backend.py`, `projectsLoading`) zachowują poprzednią migawkę, a bez niej pokazują „wczytywanie” i
+  ponawiają odczyt po `Changed` albo najpóźniej po 2 s.
 - `GetCardFlowSettings` czyta plik ustawień od razu (zapis atomowy) i dodaje `version` (skrót bajtów pliku, z których
   powstała odpowiedź; `missing` — brak pliku) oraz `readState: "ready"`.
 - `BoxStatus`/`BoxCardStatus` biegną w osobnej puli odczytu `tide-board-read` (nie w kolejce mutacji) na opublikowanej
