@@ -145,6 +145,31 @@ function repoLine(w, nowTs) {
            + (isNaN(fetched) ? "nigdy nie pobrano" : "pobrano " + agoText(Math.max(0, nowTs - fetched)))
 }
 
+// Repozytoria do paska „Pobierz” (PT-358): po jednym wierszu na repozytorium z bieżącego filtra,
+// od najstarszego fetch; canFetch tylko dla repozytorium ze zdalnym.
+function repoRows(items, repo, chips) {
+    var seen = {}
+    var rows = []
+    items.forEach(function (w) {
+        if (seen[w.repoPath] || !inRepo(w, repo, chips)) return
+        seen[w.repoPath] = true
+        rows.push({ repoPath: w.repoPath, repo: w.repo, remotes: w.remotes || [], lastFetch: w.lastFetch || "",
+                    canFetch: !!w.remotes && w.remotes.length > 0, sample: w })
+    })
+    return rows.sort(function (a, b) { return a.repo.toLowerCase().localeCompare(b.repo.toLowerCase()) })
+}
+
+function fetchButtonText(busy) {
+    return busy ? "Pobieram…" : "Pobierz"
+}
+
+// Wynik Fetch() przy repozytorium: jedno zdanie z usługi albo komunikat o braku odpowiedzi.
+function fetchNote(result) {
+    if (!result || typeof result.message !== "string" || result.message === "")
+        return { ok: false, text: "Nie udało się pobrać: brak odpowiedzi usługi" }
+    return { ok: result.ok === true, text: result.ok === true ? result.message : "Nie udało się pobrać — " + result.message }
+}
+
 function toolLabel(tool) {
     return tool === "codex" ? "Codex" : tool === "claude" ? "Claude" : "—"
 }

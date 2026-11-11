@@ -34,6 +34,8 @@ class WorktreeMonitor(QObject):
         self._again = False
         self._stopped = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees")
+        self._fetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees-fetch")
+        self._fetching: set = set()  # repozytoria, z których właśnie pobieramy
         self._finished.connect(self._deliver)
         self._timer = QTimer(self, interval=refresh_ms)
         self._timer.timeout.connect(self.refresh)
@@ -50,6 +52,7 @@ class WorktreeMonitor(QObject):
         if hasattr(self.scanner, "stop"):
             self.scanner.stop()
         self._pool.shutdown(wait=True, cancel_futures=True)
+        self._fetch_pool.shutdown(wait=True, cancel_futures=True)
 
     def list_json(self) -> str:
         return self._json
@@ -111,6 +114,33 @@ class WorktreeMonitor(QObject):
             reply(json.dumps(result, ensure_ascii=False))
             self.publish()
         self._submit(lambda: self.scanner.prune(repo_path), done)
+
+    def fetch(self, repo_path: str, reply) -> None:
+        """`git fetch` ze zdalnych repozytorium w tle; reply(json) w wątku głównym. Osobny wątek niż
+        odświeżanie, bo sieć potrafi trwać do limitu czasu, a lista nie ma na to czekać. Powtórne
+        żądanie dla repozytorium, które już pobieramy, dostaje „busy”."""
+        def refused(reason, message):
+            reply(json.dumps({"ok": False, "reason": reason, "message": message, "repoPath": repo_path,
+                              "remotes": []}, ensure_ascii=False))
+        if self._stopped:
+            refused("unavailable", "usługa się zamyka")
+            return
+        if not isinstance(repo_path, str) or repo_path in self._fetching:
+            refused("busy" if isinstance(repo_path, str) else "bad-request",
+                    "pobieranie tego repozytorium już trwa" if isinstance(repo_path, str)
+                    else "to nie jest repozytorium z listy Worktrees")
+            return
+        self._fetching.add(repo_path)
+
+        def done(result):
+            self._fetching.discard(repo_path)
+            if result is None:
+                result = {"ok": False, "reason": "error", "message": "błąd usługi przy pobieraniu",
+                          "repoPath": repo_path, "remotes": []}
+            reply(json.dumps(result, ensure_ascii=False))
+            self.refresh()  # nowe liczby ahead/behind i „pobrano przed chwilą”
+        future = self._fetch_pool.submit(lambda: self.scanner.fetch(repo_path))
+        future.add_done_callback(lambda f: self._finished.emit(done, f))
 
     def open(self, path: str, app: str) -> bool:
         if self._stopped:

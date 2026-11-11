@@ -185,6 +185,17 @@ class WorktreesContractTest(unittest.TestCase):
         # Usługa w teście nie widzi zainstalowanego okna (HOME testu nie ma launchera).
         self.assertIs(self.call("ShowWindow"), False)
 
+    def test_fetch_is_in_introspection_and_refuses_unknown_or_remoteless_repository(self):
+        xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
+        self.assertIn('<method name="Fetch">', xml)
+        outside = json.loads(self.call("Fetch", os.path.join(self.root, "nie-ma"), timeout=30000))
+        self.assertEqual((outside["ok"], outside["reason"]), (False, "bad-request"))
+        traversal = json.loads(self.call("Fetch", os.path.join(self.p["alpha"], "..", ".."), timeout=30000))
+        self.assertEqual((traversal["ok"], traversal["reason"]), (False, "bad-request"))
+        # alpha jest na liście, ale nie ma zdalnego: odmowa bez sieci (odpowiedź z opóźnieniem).
+        remoteless = json.loads(self.call("Fetch", self.p["alpha"], timeout=30000))
+        self.assertEqual((remoteless["ok"], remoteless["reason"]), (False, "no-remote"))
+
     def test_prune_refuses_unknown_repository(self):
         result = json.loads(self.call("Prune", os.path.join(self.root, "nie-ma"), timeout=30000))
         self.assertEqual((result["ok"], result["pruned"]), (False, []))
