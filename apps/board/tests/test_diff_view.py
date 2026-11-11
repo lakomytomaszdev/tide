@@ -1306,5 +1306,56 @@ out["calls"] = calls()
         self.assertEqual(out["calls"], [["Diff", '{"source":"card","card":"K-6"}']])
 
 
+class BackendEditorTest(unittest.TestCase):
+    """PT-361: backend Tablicy woła wyrzutnię Worktrees (`Open`, `Launchers`) i zna worktree gałęzi karty."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PyQt6.QtCore import QCoreApplication
+        cls.app = QCoreApplication.instance() or QCoreApplication([])
+
+    def make(self, worktrees):
+        from apps.board import backend as board_backend
+        snapshot = {"cards": [{"id": "K-1", "derived": {"flow": {"cardBranch": "card/k-1"}}},
+                              {"id": "K-2", "derived": {"flow": {}}}]}
+        be = board_backend.Backend(None, snapshot)
+        be._preview, be.bus, be.sent, be.replies = False, object(), [], []
+        be._launchers = board_backend.NO_LAUNCHERS
+
+        def call(member, args, then, timeout=0, path="", iface=""):
+            be.sent.append([path, iface, member, *args])
+            if then:
+                then(True, json.dumps(worktrees) if member == "List" else '{"terminal": true, "rider": true}')
+        be._call = call
+        be.replied.connect(lambda tag, text: be.replies.append([tag, json.loads(text)]))
+        return be
+
+    def test_open_goes_to_the_worktrees_launcher(self):
+        be = self.make([])
+        be.open("/wt/src/a.py", "rider")
+        self.assertEqual(be.sent, [["/Worktrees", "org.tide.Daemon.Worktrees", "Open", "/wt/src/a.py", "rider"]])
+
+    def test_launchers_are_read_from_worktrees(self):
+        be = self.make([])
+        self.assertEqual(json.loads(be.launchersJson)["rider"], False)
+        be._refresh_launchers()
+        self.assertEqual(json.loads(be.launchersJson)["rider"], True)
+
+    def test_card_worktree_is_found_by_the_card_branch(self):
+        be = self.make([{"branch": "card/k-9", "path": "/wt/9", "missing": False},
+                        {"branch": "card/k-1", "path": "/wt/gone", "missing": True},
+                        {"branch": "card/k-1", "path": "/wt/1", "missing": False}])
+        be.cardWorktree("t1", "K-1")
+        self.assertEqual(be.replies, [["t1", {"ok": True, "path": "/wt/1"}]])
+
+    def test_card_without_branch_or_worktree_gets_no_directory(self):
+        be = self.make([{"branch": "card/k-1", "path": "/wt/1", "missing": True}])
+        be.cardWorktree("t1", "K-2")
+        be.cardWorktree("t2", "K-1")
+        be.cardWorktree("t3", "K-404")
+        self.assertEqual([r[1]["ok"] for r in be.replies], [False, False, False])
+        self.assertEqual([c[2] for c in be.sent], ["List"], "bez gałęzi karty usługa nie jest pytana")
+
+
 if __name__ == "__main__":
     unittest.main()

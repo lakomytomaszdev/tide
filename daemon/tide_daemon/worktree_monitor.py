@@ -167,7 +167,13 @@ class WorktreeMonitor(QObject):
         if self._stopped:
             return False
         known = openable(json.loads(self._json), path, app)
-        return bool(known and self.launchers and self.launchers.open(app, path))
+        if not (known and self.launchers):
+            return False
+        if os.path.isfile(path):
+            # Plik (tylko Rider, PT-361): `Launchers.open` przyjmuje wyłącznie katalog, więc używamy publicznych
+            # `command` i `spawn`, a proces startuje w katalogu pliku.
+            return self.launchers.spawn(self.launchers.command(app, path), os.path.dirname(path))
+        return self.launchers.open(app, path)
 
     def show_window(self) -> bool:
         return bool(not self._stopped and self.launchers and self.launchers.show_window())
