@@ -34,7 +34,7 @@ from .test_cardflow_dbus import FlowCase
 from .test_cardflow_refresh_context import PLASMA, RefreshContextCase
 
 try:
-    from PyQt6.QtDBus import QDBusMessage
+    from PyQt6.QtDBus import QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply
 except ImportError:  # pragma: no cover
     QDBusMessage = None
 
@@ -339,7 +339,7 @@ class BusyWorkerDbusTest(FlowCase):
     def async_call(self, member, *args):
         msg = QDBusMessage.createMethodCall("org.tide.Daemon", "/Board", "org.tide.Daemon.Board", member)
         msg.setArguments(list(args))
-        return self.service.bus.asyncCall(msg, 120000)
+        return QDBusPendingCallWatcher(self.service.bus.asyncCall(msg, 120000))
 
     def read(self, member, *args):
         reply = self.service.call("org.tide.Daemon", "/Board", "org.tide.Daemon.Board", member, *args,
@@ -379,7 +379,7 @@ class BusyWorkerDbusTest(FlowCase):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(self.gate)
         self.assertTrue(wait_until(pending.isFinished, timeout=120), "StartCard bez odpowiedzi po odblokowaniu")
-        started = json.loads(pending.reply().arguments()[0])
+        started = json.loads(QDBusPendingReply(pending).argumentAt(0))
         self.assertTrue(started["ok"], started)
         # Wynik mutacji widać w następnym odczycie, z nową wersją.
         self.assertTrue(wait_until(lambda: self.read("Snapshot")["version"] > snap["version"] and

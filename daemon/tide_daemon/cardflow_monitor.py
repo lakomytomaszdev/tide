@@ -28,6 +28,7 @@ from .cardflow.engine import FlowError
 from .resources import ResourceError
 
 POLL_MS = 5_000
+DELIVER_RETRY_MS = 20   # wynik z kolejki czeka na wolną blokadę dziennika (commit i migawka przed odpowiedzią)
 
 
 class CardFlowMonitor(QObject):
@@ -50,6 +51,9 @@ class CardFlowMonitor(QObject):
         self._timer.timeout.connect(self.tick)
         self._done.connect(self._deliver)
         self._read_done.connect(self._deliver_read)
+        self._deliveries: list = []       # [dalszy ciąg, future, opublikować] — wyniki z kolejki czekające na migawkę
+        self._retry = QTimer(self, singleShot=True, interval=DELIVER_RETRY_MS)
+        self._retry.timeout.connect(self._drain)
 
     def start(self) -> None:
         self.tick()
@@ -59,6 +63,7 @@ class CardFlowMonitor(QObject):
         if self._stopped:
             return
         self._timer.stop()
+        self._retry.stop()
         self._stopped = True
         if self._hosting_pool is not None:
             self._hosting_pool.shutdown(wait=False, cancel_futures=True)
@@ -441,11 +446,31 @@ class CardFlowMonitor(QObject):
     def _deliver(self, then, future) -> None:
         if self._stopped:
             return
-        # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
-        # K-98 #2: gdy kolejna mutacja trzyma już dziennik, commit czeka na jej wynik, a publikacja — na zwolnienie
-        # blokady (BoardMonitor ponawia ją sam); wątek główny nie czeka na kolejkę.
-        if self.commit(wait=False) is not False and self.board is not None:
-            self.board.publish()
+        self._deliveries.append([then, future, False])
+        self._drain()
+
+    def _drain(self) -> None:
+        """Wyniki z kolejki po kolei. Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta
+        o Snapshot(), widzi już zlecenie. K-98 #2: gdy kolejna mutacja trzyma już blokadę dziennika, wątek główny
+        nie czeka na nią — wynik (i następne za nim) czeka, a próba wraca co DELIVER_RETRY_MS."""
+        while self._deliveries and not self._stopped:
+            item = self._deliveries[0]
+            committed = self.commit(wait=False)
+            if committed is None:
+                self._retry_later()
+                return
+            item[2] = item[2] or bool(committed)
+            if item[2] and self.board is not None and self.board.publish() is False:
+                self._retry_later()
+                return
+            self._deliveries.pop(0)
+            self._answer(*item[:2])
+
+    def _retry_later(self) -> None:
+        if not self._retry.isActive():
+            self._retry.start()
+
+    def _answer(self, then, future) -> None:
         for notice in self.engine.take_notices():
             if self.notifier is not None:
                 try:

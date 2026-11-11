@@ -685,7 +685,7 @@ class BoardMonitor(QObject):
                 snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
                             "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
             self._base = snapshot
-            self._publish(read)
+            self._apply(read)     # bramka jest już wzięta (blokada dziennika jest wielowejściowa w tym wątku)
         return True
 
     def _gate(self):
