@@ -16,13 +16,26 @@ from .gitread.runner import GitReader
 class GitMonitor(QObject):
     _finished = pyqtSignal(object, object)  # (odpowiedź, Future) — z wątku roboczego do głównego
 
-    def __init__(self, journal_source=None, reader: GitReader | None = None, parent=None, compute=None):
+    def __init__(self, journal_source=None, reader: GitReader | None = None, parent=None, compute=None,
+                 repos_source=None):
         super().__init__(parent)
         self.journal_source = journal_source or (lambda: None)
+        # Dozwolone `repo` źródeł `commit` i `range`: repozytoria projektów Tablicy i worktrees z listy Worktrees.
+        # Funkcja wołana w wątku odczytu, dopiero gdy źródło jej potrzebuje; bez niej żadne `repo` nie jest znane.
+        self.repos_source = repos_source or (lambda: [])
         self.reader = reader or GitReader()
-        self._compute = compute or diffdata.request  # (reader, journal, tekst) -> dict; atrapa w testach
+        self._compute = compute or self._request  # (reader, journal, tekst) -> dict; atrapa w testach
         self._stopped = False
         self._finished.connect(self._deliver)
+
+    def _request(self, reader, journal, text) -> dict:
+        return diffdata.request(reader, journal, text, self._known_repos)
+
+    def _known_repos(self) -> list:
+        try:
+            return list(self.repos_source())
+        except Exception:  # noqa: BLE001 — nie umiemy ustalić listy: żadne repo nie jest znane (bad-request)
+            return []
 
     def stop(self) -> None:
         self._stopped = True

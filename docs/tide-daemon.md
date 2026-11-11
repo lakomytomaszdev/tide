@@ -317,13 +317,56 @@ dopóki gałąź karty istnieje).
   `gitread/diffparse.py`.
 - `CardBranchDiff` na `/Board` zostaje bez zmian (tekst diffu do oceny domknięcia).
 
+**Źródło `ticket`** (PT-349): `{"source": "ticket", "card": "K-N", "ticket": "PT-N"}`. Zmiany jednego ticketu karty.
+
+- Zakres: od merge-base gałęzi karty i gałęzi ticketu do gałęzi ticketu (`from.ref` — gałąź karty, `to.ref` —
+  `refs/heads/<gałąź ticketu>`), więc drugi ticket nie zawiera plików pierwszego. Tytuł: `PT-12 · zmiany ticketu
+  względem gałęzi karty`; odpowiedź ma dodatkowe pole `ticket`.
+- Repozytorium pochodzi wyłącznie z dziennika karty (jak w źródle `card`); `repo` w żądaniu jest ignorowane.
+  Ticket musi być znany dziennikowi karty (rezerwacja, gałąź, krok, przydział albo scalenie), inaczej `bad-request`.
+- **Ticket scalony, gałąź usunięta.** Gdy gałęzi ticketu nie ma — albo jest, ale ticket jest już w gałęzi karty
+  (zakres byłby pusty) — zakres bierze się z pary zamiar/wynik akcji `merge` w dzienniku, czytanej istniejącymi
+  funkcjami odczytu stanu: `intent` z `expectedTip` (zatwierdzony czubek ticketu) i `cardTip` (czubek gałęzi karty
+  przed scaleniem) oraz `result` z `ok: true`. Zakres: merge-base(`cardTip`, `expectedTip`) → `expectedTip`
+  (`from.ref`/`to.ref` to wtedy SHA). Bez takiego zapisu (ticket niescalony bez gałęzi, ticket przejęty z planu,
+  stary dziennik), z nieudanym scaleniem albo z SHA, którego nie ma w repozytorium, odpowiedź to
+  `{ok: false, error: "no-ticket-range", message}` z jednym zdaniem, co dalej („Gałąź ticketu PT-12 nie istnieje,
+  a dziennik karty nie zapisał zakresu jego scalenia.”).
+
+**Źródło `commit`** (PT-349): `{"source": "commit", "repo": "/ścieżka", "sha": "58a3f26…"}`. Zakres: pierwszy rodzic →
+commit (commit scalający względem pierwszego rodzica, commit początkowy względem pustego drzewa: `from.ref` to
+`empty-tree`, `from.sha` — SHA pustego drzewa, `from.date` pusta). Tytuł: `commit 58a3f26 — temat`. `sha` to SHA albo
+dowolny ref rozwiązujący się do commita.
+
+**Źródło `range`** (PT-349): `{"source": "range", "repo": "/ścieżka", "from": "master", "to": "feat/x"}`. Zakres od
+merge-base(`from`, `to`) do `to`, jak `git diff from...to` (zmiany na `from` po rozejściu nie wchodzą do wyniku);
+`from`/`to` to pełne refy, krótkie nazwy albo SHA. `from.sha` w odpowiedzi to merge-base. Tytuł: `<to> względem
+<from>` (np. `feat/x względem master`). Brak wspólnej historii to `bad-request`. Używa go „Zmiany względem głównej”
+w Worktrees (#29).
+
+**Walidacja wejścia `commit` i `range`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`, tej samej
+użyje #29 dla `path` worktree, a K-99 dla `Git.Commits` i `Git.BranchMap`):
+
+- `repo` musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
+  kanonicznej (`realpath`, bez dowiązań) równą repozytorium projektu Tablicy (`repo` z projektu) albo worktree
+  z listy Worktrees (porównywane także po rozwiązaniu). Git działa potem na ścieżce kanonicznej. Dowiązanie
+  wskazujące poza listę, ścieżka z `..` i dowolny inny katalog dają `bad-request` — bez uruchamiania gita.
+  Lista powstaje przy każdym żądaniu (`GitMonitor.repos_source`); gdy jej nie da się ustalić, żadne `repo` nie jest znane.
+- `sha`, `from`, `to` muszą być niepustymi napisami bez znaków sterujących, nie mogą zaczynać się od `-` (nie są
+  przekazywane gitowi jako opcje) i muszą rozwiązać się do commita
+  (`rev-parse --verify --end-of-options <x>^{commit}`). Inaczej `bad-request`.
+- Wszystkie trzy źródła przyjmują `options.path` i `options.context` (jak `card`), mają te same limity i pola
+  `DiffData`; `source`, `title`, `repo`, `from`, `to` mają znaczenie jak wyżej, a pole `ticket` pojawia się tylko
+  w źródle `ticket` (zmiana addytywna).
+
 **`DiffData`** (kontrakt wspólny dla kolejnych źródeł i widoku diffa; zmiany tylko addytywne):
 
 | Pole | Typ | Opis |
 | --- | --- | --- |
-| `source` | string | źródło żądania (`card`) |
-| `card` | string | `K-N` (znormalizowany identyfikator karty) |
-| `repo` | string | ścieżka repozytorium z dziennika karty |
+| `source` | string | źródło żądania (`card`, `ticket`, `commit`, `range`) |
+| `card` | string | `K-N` (znormalizowany identyfikator karty); tylko źródła `card` i `ticket` |
+| `ticket` | string | `PT-N`; tylko źródło `ticket` (PT-349) |
+| `repo` | string | ścieżka repozytorium: z dziennika karty (`card`, `ticket`) albo kanoniczna zwalidowana (`commit`, `range`) |
 | `title` | string | krótki opis zakresu, np. `K-36: zmiany gałęzi card/k-36-… od startu` |
 | `from`, `to` | object | `{ref, sha, date}`: `ref` — `baseRef` z dziennika albo `targetRef` (dla `to` — `refs/heads/<gałąź karty>`), `sha` — pełny SHA początku/końca zakresu, `date` — data commitera w ISO 8601 UTC (`2026-11-11T10:00:00Z`). Surowe dane: etykietę „Start od…” formatuje UI (`startLabel`) |
 | `files` | array | pliki z parsera diffu: `path`, `oldPath`, `status` (`A`, `D`, `R`, `C`, `T`, `M`), `additions`, `deletions`, `binary`, `oldMode`, `newMode`, `warnings`, `hunks` (`oldStart`, `oldLines`, `newStart`, `newLines`, `header`, `lines` — `kind` ` `/`-`/`+`, `oldNo`, `newNo`, `text`); pola z „Duże diffy” niżej pojawiają się tylko przy plikach, których dotyczą |
@@ -352,8 +395,8 @@ dopóki gałąź karty istnieje).
 - **`options.context`** (liczba całkowita 0–100000, domyślnie 3): liczba linii kontekstu hunków pliku z `options.path`
   (`git diff --unified=N`), np. 20 do rozwinięcia kontekstu. Wymaga `options.path` (bez niego `bad-request`), bo dotyczy
   jednego pliku. Nieznane klucze `options` są ignorowane.
-- Żądanie z `options` ma ten sam wybór źródła (`source`, `targetRef`) co lista; kontrakt dla źródeł #2 i #29
-  (`ticket`/`commit`/`range`, `worktree`) jest identyczny.
+- Żądanie z `options` ma ten sam wybór źródła (`source` i jego pola) co lista; kontrakt jest identyczny dla źródeł
+  `card`, `ticket`, `commit`, `range` (PT-349) i późniejszego `worktree` (#29).
 
 **Widok diffa** (`apps/common/qml/git/DiffView.qml`, `diff.js`): plik `large` jest zwinięty z przyciskiem „duży plik —
 N linii, pokaż” (klik wysyła `Git.Diff` z `options.path` i wstawia treść); plik binarny pokazuje „plik binarny (rozmiar
@@ -366,11 +409,12 @@ odpowiedzi doczytywania.
 
 | `error` | Kiedy |
 | --- | --- |
-| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, zły `options.path`/`options.context` (także `context` bez `path`), `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty |
+| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, zły `options.path`/`options.context` (także `context` bez `path`), `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty; źródło `ticket`: zły albo nieznany karcie ticket; `commit`/`range`: `repo` spoza projektów Tablicy i listy Worktrees (także przez dowiązanie i `..`), ref zaczynający się od `-` albo niebędący commitem, `from` i `to` bez wspólnej historii (PT-349) |
 | `unknown-card` | karta nie ma dziennika przepływu albo nie była zlecona (brak `card.started`) |
 | `no-branch` | karta nie ma gałęzi (brak wyniku `card-branch`, brak repozytorium w dzienniku, katalog repozytorium albo gałąź karty nie istnieje) |
 | `unknown-base` | bez `targetRef`, gdy baza startu w dzienniku jest nieznana albo jej commita nie ma w repozytorium; komunikat prosi o jawny ref porównania (`targetRef`) |
 | `unknown-path` | `options.path` wskazuje plik bez zmian w zakresie diffu (PT-355) |
+| `no-ticket-range` | źródło `ticket`: gałęzi ticketu nie ma, a dziennik karty nie zapisał zakresu jego scalenia (albo zapisane SHA nie istnieje w repozytorium); `message` mówi jednym zdaniem, co dalej (PT-349) |
 | `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
 | `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
 
@@ -5367,6 +5411,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()`, `Fetch()` (odmowy `bad-request` i `no-remote`) i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
 - `daemon/tests/test_worktrees_fetch.py` — `Worktrees.Fetch` na prawdziwych repozytoriach z lokalnym gołym „zdalnym”: `refs/remotes`, `lastFetch` i liczby nowych commitów, nowa gałąź zdalna, wiele zdalnych, brak `--prune` (usunięta zdalnie gałąź zostaje) i nietknięte HEAD/worktree, dokładne argv (bez `--force`, `--tags`, `+refspec`), zdalny wskazujący na nieistniejący katalog i zdalny HTTP 401 z atrapą `GIT_ASKPASS` niewywołaną, maskowanie `user:token@` w komunikacie i logach, otoczenie (`BatchMode`), limit czasu na zawieszonym gicie, ścieżki spoza listy (dowiązanie, `..`) bez uruchomienia gita, czekanie na blokadę repozytorium trzymaną przez inny wątek,
 - `daemon/tests/test_gitread_diffdata.py` — `Git.Diff` źródła `card` na tymczasowych repozytoriach i dzienniku karty: pliki, hunki i sumy zgodne z `git diff` i `git diff --numstat` od przypiętej bazy, zakres po ruchu gałęzi startowej, `targetRef` (merge-base, ref bez wspólnej historii, ref z `-`), kody `unknown-base`, `unknown-card`, `no-branch`, `bad-request`, gałąź główna `main` i `develop` bez `origin`, karta z grupy kart (repozytorium z `card.started`), brak zapisu do dziennika i refów, pułapka konfiguracji z PT-348 nieuruchomiona; duże diffy (PT-355): limit linii i bajtów z pełną listą plików i `truncated`, plik `large` bez hunków, binarne z `oldSize`/`newSize`, `options.path` (także `large` i przycięty) i `options.context`, walidacja `options`, odczyt strumieniowy `Cancellation.run_capped` (nieskończone wyjście ucięte bez czytania całości, dokładnie limit to nie ucięcie); `GitMonitor` — odpowiedź z puli wątków po pracy w tle, pętla wolna,
+- `daemon/tests/test_gitread_diffsources.py` (K-36, PT-349) — `Git.Diff` źródła `ticket` (merge-base z gałęzią karty, drugi ticket bez plików pierwszego, ticket scalony z usuniętą gałęzią: zakres z pary `intent`/`result` akcji `merge` równy diffowi sprzed usunięcia, `no-ticket-range` bez zapisu, z nieudanym scaleniem, z SHA spoza repozytorium i z wartością zaczynającą się od `-`, nieznany ticket i karta), `commit` (pierwszy rodzic, commit scalający, commit początkowy względem pustego drzewa, worktree z listy, `options.path`) i `range` (merge-base, zmiany na `from` poza wynikiem, pełne refy i SHA, brak wspólnej historii); walidacja `repo`/refów (`validate.py`): repozytorium spoza listy, przez dowiązanie i `..` oraz ref z `-` odrzucone `bad-request` bez wywołania runnera, dowiązanie do znanego repozytorium rozwiązane do ścieżki kanonicznej, brak zapisu do dziennika i zmian refów oraz indeksu; `GitMonitor` przekazuje źródło znanych repozytoriów,
 - `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_homes.py` — kilka katalogów danych Codexa na świecie w katalogu tymczasowym (`~/.codex`, `~/snap/codex/33`, `34`, `current` → `34`; nigdy prawdziwe katalogi — `tests/__init__.py` ustawia też nieistniejący `$CODEX_HOME` dla usług uruchamianych bez `--codex-dir`): domyślna lista i `$CODEX_HOME`, `--codex-dir` powtarzane, rozwiązywanie `current` (także po odświeżeniu snapa), starsza rewizja pomijana, kopia tego samego pliku w dwóch katalogach liczona raz (Agents, KRunner, worktrees, raport, koordynacja), segmenty wątku jako jedna pozycja w Agents i KRunnerze, a osobno w raporcie i worktrees, przepięcie obserwacji na nową rewizję po odświeżeniu snapa, „Wznów” w raporcie dla sesji ze snapa, `is_snap` tylko pod `~/snap/codex`, przypisanie procesu ze ścieżką z numerem rewizji i Meta+A do karty Konsole, nowe pliki w obu katalogach zauważone przez obserwację katalogów (bez przeglądu co 30 s), nazwy wątków i baza stanu ze snapa w KRunnerze, wznowienie Codexem ze snapa albo spoza niego,
