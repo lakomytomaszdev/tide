@@ -232,5 +232,47 @@ Item {
         self.assertIsNone(nope)
 
 
+class DiffModeSettingTest(unittest.TestCase):
+    """PT-350: tryb diffa Worktrees to samo ustawienie okna co w Tablicy (window.json, klucz `diffMode`)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="tide-wt-diff-mode-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = self.tmp
+        self.addCleanup(lambda: os.environ.pop("XDG_CONFIG_HOME") if old is None
+                        else os.environ.__setitem__("XDG_CONFIG_HOME", old))
+        self.file = os.path.join(self.tmp, "tide", "window.json")
+
+    def test_mode_is_saved_for_the_window_and_read_back_by_a_new_backend(self):
+        from .test_window import load_launcher
+        module = load_launcher()
+        backend = module.Backend(None)
+        self.assertEqual(backend.diffMode, "unified")
+        seen = []
+        backend.diffModeChanged.connect(lambda: seen.append(backend.diffMode))
+        self.assertEqual(backend.setDiffMode("split"), "")
+        self.assertEqual((backend.diffMode, seen), ("split", ["split"]))
+        with open(self.file, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"diffMode": "split"})
+        self.assertEqual(module.Backend(None).diffMode, "split")
+        self.assertNotEqual(backend.setDiffMode("side"), "")
+        self.assertEqual(backend.diffMode, "split")
+
+    def test_preview_keeps_the_mode_in_memory_only(self):
+        from .test_window import load_launcher
+        backend = load_launcher().Backend(None, [])
+        self.assertEqual(backend.setDiffMode("split"), "")
+        self.assertEqual(backend.diffMode, "split")
+        self.assertFalse(os.path.exists(self.file))
+
+    def test_package_ships_the_window_config_module_next_to_the_backend(self):
+        from .test_window import stage
+        from daemon.tests.fakebin import files_under
+        with tempfile.TemporaryDirectory(prefix="tide-wt-pkg-") as tmp:
+            files = files_under(os.path.join(stage(os.path.join(tmp, "pkg")), "views", "worktrees"))
+        self.assertIn("windowconfig.py", files)
+
+
 if __name__ == "__main__":
     unittest.main()

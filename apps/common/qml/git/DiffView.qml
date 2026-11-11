@@ -11,8 +11,11 @@
 //  - `closeRequested()` — Esc i „Zamknij”; gospodarz wraca tam, skąd użytkownik przyszedł,
 //  - `reload()` — ponowny odczyt (przycisk „Odśwież” i `r`).
 // Klawisze: `]`/`[` i Alt+↓/↑ — następny/poprzedni plik, `n`/`p` — następny/poprzedni fragment, `r` — odśwież,
-// Esc — zamknij. Wszystkie teksty z gita (ścieżki, linie, nazwy gałęzi) to Text.PlainText; linie diffu to
-// ListView (wirtualizacja), nie Repeater.
+// `u` — tryb jednolity/obok siebie (przełącznik w nagłówku; zapamiętuje go gospodarz: `backend.diffMode`,
+// `backend.setDiffMode(tryb)`, sygnał `diffModeChanged`), `e` — rozwiń zwinięte niezmienione fragmenty pliku
+// (kliknięcie rozwija jeden), Esc — zamknij. Rozwinięcie to ponowne `Git.Diff` z `options.path` i większym
+// `options.context` dla jednego pliku. Wszystkie teksty z gita (ścieżki, linie, nazwy gałęzi) to Text.PlainText;
+// linie diffu to ListView (wirtualizacja), nie Repeater; pary „obok siebie” liczy diff.js raz na plik.
 //
 // Karta bez znanego startu (`unknown-base`): komunikat i wybór jawnego refu z `listCardBranches`; wybór ponawia
 // `Git.Diff` z `targetRef`.
@@ -38,9 +41,17 @@ Rectangle {
     property int fileIndex: -1
     property string selectedPath: ""
     property string selectedGroup: ""   // grupa wybranego pliku (źródło `worktree`); pusta bez grup
-    property var lineRows: []
+    property var lineRows: []          // wiersze jednolite wybranego pliku (diff.js, `rows`)
+    property var sideRows: []          // te same wiersze sparowane „obok siebie” — liczone raz na plik, gdy trzeba
     property var hunkStarts: []
     property int currentHunk: -1
+    // Tryb: "unified" albo "split". Wybór zapamiętuje gospodarz w ustawieniach okna (`backend.diffMode` i
+    // `backend.setDiffMode`); backend bez nich daje tryb jednolity na czas życia widoku.
+    property string mode: "unified"
+    readonly property var activeRows: mode === "split" ? sideRows : lineRows
+    readonly property Item activeList: mode === "split" ? sideLines : lines
+    property var contextByFile: ({})   // plik → `options.context` ostatniego rozwinięcia (domyślnie DEFAULT_CONTEXT)
+    property int loadContext: 0        // `options.context` trwającego doczytania; 0 — zwykłe doczytanie pliku
 
     readonly property var files: diffData ? diffData.files || [] : []
     // Wiersze listy: pliki, a dla źródła z grupami także nagłówki grup i nieśledzone (diff.js, `listRows`).
@@ -72,34 +83,102 @@ Rectangle {
         pendingTag = "diff:" + sequence
         fileTag = ""
         loadingPath = ""
+        loadContext = 0
+        contextByFile = ({})
         fileError = ""
         loading = true
         backend.gitDiff(pendingTag, JSON.stringify(effectiveRequest))
     }
 
     // Doczytuje treść jednego pliku (duży, przycięty) przez `Git.Diff` z `options.path`; odpowiedź zastępuje
-    // wpis pliku w `diffData`.
-    function loadFile(path) {
+    // wpis pliku w `diffData`. Z `context` (> 0) to rozwinięcie zwiniętych fragmentów: ten sam plik z większym
+    // `options.context`, a widok zostaje w tym samym miejscu.
+    function loadFile(path, context) {
         if (!backend || !path) return
         sequence += 1
         fileTag = "file:" + sequence
         loadingPath = path
+        loadContext = context || 0
         fileError = ""
         const options = selectedGroup ? {path: path, group: selectedGroup} : {path: path}
+        if (loadContext > 0) options.context = loadContext
         backend.gitDiff(fileTag, JSON.stringify(Object.assign({}, effectiveRequest, {options: options})))
     }
 
     function onFileReply(reply) {
         const path = loadingPath
         const group = selectedGroup
+        const context = loadContext
         fileTag = ""
         loadingPath = ""
+        loadContext = 0
         if (!reply || !reply.ok || !reply.files || reply.files.length === 0) {
             fileError = Diff.errorText(reply ? reply.error : "failed", reply ? reply.message : "")
             return
         }
+        if (context > 0 && !(reply.files[0].hunks && reply.files[0].hunks.length)) {
+            fileError = "Nie udało się rozwinąć kontekstu tego pliku."
+            return
+        }
         diffData = Diff.mergeFile(diffData, reply.files[0])
-        if (selectedPath === path && selectedGroup === group) selectFile(Diff.indexOfPath(files, path, group))
+        if (context > 0) {
+            const copy = Object.assign({}, contextByFile)
+            copy[fileKey(reply.files[0])] = context
+            contextByFile = copy
+        }
+        if (selectedPath === path && selectedGroup === group) selectFile(Diff.indexOfPath(files, path, group), context > 0)
+    }
+
+    function fileKey(file) {
+        return (file.group || "") + "\u0000" + file.path
+    }
+
+    // Rozwija jeden zwinięty fragment (klik) albo wszystkie fragmenty pliku (`e`; `hidden` = największy z nich).
+    function expand(hidden) {
+        const file = selectedFile
+        if (!file || hidden <= 0 || loadingPath !== "") return
+        loadFile(selectedPath, Diff.expandedContext(contextByFile[fileKey(file)], hidden))
+    }
+
+    function expandAll() {
+        expand(Diff.largestGap(lineRows))
+    }
+
+    // Wiersze wybranego pliku w obecnym trybie; pary „obok siebie” powstają tylko, gdy ktoś ich potrzebuje.
+    function rebuildRows() {
+        lineRows = Diff.rows(selectedFile)
+        sideRows = mode === "split" ? Diff.sideRows(lineRows) : []
+        hunkStarts = Diff.hunkStarts(activeRows)
+    }
+
+    // Indeks wiersza jednolitego u góry widocznego okna listy (do zachowania miejsca przy zmianie trybu).
+    function topSource() {
+        const list = activeList
+        const at = list.count > 0 ? list.indexAt(0, list.contentY + 1) : -1
+        if (at < 0) return 0
+        const row = activeRows[at]
+        return row && row.src !== undefined ? row.src : at
+    }
+
+    function setMode(value, persist) {
+        if ((value !== "unified" && value !== "split") || value === mode) return
+        const src = topSource()
+        mode = value
+        if (value === "split" && sideRows.length === 0 && lineRows.length > 0) sideRows = Diff.sideRows(lineRows)
+        hunkStarts = Diff.hunkStarts(activeRows)
+        const target = value === "split" ? Diff.rowOfSrc(sideRows, src) : Math.min(src, Math.max(0, lineRows.length - 1))
+        if (lineRows.length > 0) activeList.positionViewAtIndex(target, ListView.Beginning)
+        if (persist && backend && typeof backend.setDiffMode === "function") backend.setDiffMode(value)
+    }
+
+    function toggleMode() {
+        setMode(mode === "split" ? "unified" : "split", true)
+    }
+
+    // Tryb zapamiętany przez gospodarza (przy otwarciu widoku i po zmianie w ustawieniach okna).
+    function syncMode() {
+        const saved = backend ? backend.diffMode : undefined
+        if (saved === "unified" || saved === "split") setMode(saved)
     }
 
     function chooseTarget(ref) {
@@ -108,25 +187,33 @@ Rectangle {
         reload()
     }
 
-    function selectFile(index) {
+    // `keepView` — ten sam plik z rozwiniętym kontekstem: widok zostaje na tym samym miejscu, a numer fragmentu
+    // tylko mieści się w nowej liczbie hunków (po scaleniu jest ich mniej).
+    function selectFile(index, keepView) {
         if (index < 0 || index >= files.length) {
             fileIndex = -1
             selectedPath = ""
             selectedGroup = ""
             lineRows = []
+            sideRows = []
             hunkStarts = []
             currentHunk = -1
             return
         }
         const group = files[index].group || ""
         if (files[index].path !== selectedPath || group !== selectedGroup) fileError = ""
+        const scrollY = activeList.contentY
         fileIndex = index
         selectedPath = files[index].path
         selectedGroup = group
-        lineRows = Diff.rows(files[index])
-        hunkStarts = Diff.hunkStarts(lineRows)
+        rebuildRows()
+        if (keepView === true) {
+            currentHunk = hunkStarts.length ? Math.min(Math.max(0, currentHunk), hunkStarts.length - 1) : -1
+            Qt.callLater(() => { activeList.contentY = scrollY })
+            return
+        }
         currentHunk = hunkStarts.length ? 0 : -1
-        lines.positionViewAtBeginning()
+        activeList.positionViewAtBeginning()
         filesList.positionViewAtIndex(Math.max(0, Diff.rowOfFile(listRows, index)), ListView.Contain)
         // Plik bez treści z powodu limitu całości doczytuje się sam; `large` czeka na „pokaż”.
         if (Diff.needsLoad(files[index]) && loadingPath !== selectedPath) loadFile(selectedPath)
@@ -140,7 +227,7 @@ Rectangle {
     function stepHunk(delta) {
         if (!hunkStarts.length) return
         currentHunk = Math.max(0, Math.min(hunkStarts.length - 1, currentHunk + delta))
-        lines.positionViewAtIndex(hunkStarts[currentHunk], ListView.Beginning)
+        activeList.positionViewAtIndex(hunkStarts[currentHunk], ListView.Beginning)
     }
 
     function applyData(reply) {
@@ -189,14 +276,16 @@ Rectangle {
         target: view.backend
         ignoreUnknownSignals: true
         function onReplied(tag, text) { view.onReply(tag, text) }
+        function onDiffModeChanged() { view.syncMode() }
     }
 
     onRequestChanged: if (completed) { targetRef = ""; reload() }
-    onBackendChanged: if (completed) reload()
+    onBackendChanged: if (completed) { syncMode(); reload() }
     property bool completed: false
     Component.onCompleted: {
         completed = true
         forceActiveFocus()
+        syncMode()
         reload()
     }
 
@@ -214,6 +303,10 @@ Rectangle {
             view.stepHunk(-1)
         } else if (event.text === "r") {
             view.reload()
+        } else if (event.text === "u") {
+            view.toggleMode()
+        } else if (event.text === "e") {
+            view.expandAll()
         } else {
             return
         }
@@ -223,11 +316,13 @@ Rectangle {
     component PillAction: Rectangle {
         id: pill
         property string label: ""
+        property bool active: false   // wybrana opcja przełącznika (tryb diffa)
         signal clicked()
         implicitWidth: pillText.implicitWidth + 24
         implicitHeight: 30
         radius: Tide.Tokens.radiusSmall
-        color: pillMouse.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
+        color: active ? Tide.Theme.alpha(Tide.Tokens.accent, 0.22)
+             : pillMouse.containsMouse ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
                                        : Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.06)
         Accessible.role: Accessible.Button
         Accessible.name: label
@@ -275,7 +370,7 @@ Rectangle {
         Text {
             id: statusLabel
             objectName: "diffLoading"
-            anchors.right: refreshButton.left
+            anchors.right: modeSwitch.left
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             visible: view.loading
@@ -284,6 +379,36 @@ Rectangle {
             color: Tide.Tokens.textMuted
             font.family: Tide.Theme.uiFamily
             font.pixelSize: 13
+        }
+        // Przełącznik trybu (`u`): dwie opcje, wybrana podświetlona.
+        Row {
+            id: modeSwitch
+            objectName: "diffModeSwitch"
+            anchors.right: refreshButton.left
+            anchors.rightMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                rightPadding: 4
+                text: "u"
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.monoFamily
+                font.pixelSize: 12
+            }
+            PillAction {
+                objectName: "diffModeUnified"
+                label: "Jednolity"
+                active: view.mode === "unified"
+                onClicked: view.setMode("unified", true)
+            }
+            PillAction {
+                objectName: "diffModeSplit"
+                label: "Obok siebie"
+                active: view.mode === "split"
+                onClicked: view.setMode("split", true)
+            }
         }
         PillAction {
             id: refreshButton
@@ -540,6 +665,33 @@ Rectangle {
                 }
             }
 
+            // Nieudane rozwinięcie kontekstu: treść pliku zostaje, pasek mówi dlaczego.
+            Rectangle {
+                id: expandErrorBar
+                objectName: "diffExpandError"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: truncatedBar.bottom
+                height: visible ? 30 : 0
+                visible: view.fileError !== "" && view.lineRows.length > 0
+                color: Tide.Theme.alpha(Tide.Tokens.removed, 0.12)
+
+                Text {
+                    objectName: "diffExpandErrorText"
+                    anchors.left: parent.left
+                    anchors.leftMargin: 14
+                    anchors.right: parent.right
+                    anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: view.fileError
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Tide.Tokens.textPrimary
+                    font.family: Tide.Theme.uiFamily
+                    font.pixelSize: 13
+                }
+            }
+
             // Tylko nieśledzone pliki (PT-360): lista bez treści, nie ma czego pokazać w diffie.
             Text {
                 objectName: "diffUntrackedNote"
@@ -602,15 +754,16 @@ Rectangle {
                 objectName: "diffLines"
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: truncatedBar.bottom
+                anchors.top: expandErrorBar.bottom
                 anchors.bottom: parent.bottom
                 clip: true
-                model: view.lineRows
+                visible: view.mode === "unified"
+                model: view.mode === "unified" ? view.lineRows : []
                 boundsBehavior: Flickable.StopAtBounds
                 delegate: Rectangle {
                     id: lineRow
                     required property var modelData
-                    objectName: "diffLine"
+                    objectName: kind === "gap" ? "diffGap" : "diffLine"
                     property string kind: modelData.kind
                     property string content: modelData.text
                     property string oldLabel: modelData.oldNo
@@ -618,9 +771,20 @@ Rectangle {
                     readonly property color tone: kind === "+" ? Tide.Tokens.added : kind === "-" ? Tide.Tokens.removed
                                                 : kind === "hunk" ? Tide.Tokens.lavender : "transparent"
                     width: lines.width
-                    height: Math.max(22, lineText.implicitHeight + 4)
+                    height: kind === "gap" ? 22 : Math.max(22, lineText.implicitHeight + 4)
                     color: kind === "+" || kind === "-" ? Tide.Theme.alpha(tone, 0.13)
-                         : kind === "hunk" ? Tide.Theme.alpha(Tide.Tokens.lavender, 0.08) : "transparent"
+                         : kind === "hunk" ? Tide.Theme.alpha(Tide.Tokens.lavender, 0.08)
+                         : kind === "gap" ? Tide.Theme.alpha(Tide.Tokens.textPrimary, gapMouse.containsMouse ? 0.1 : 0.04)
+                         : "transparent"
+
+                    // Zwinięty fragment: kliknięcie rozwija ten jeden (PT-350).
+                    MouseArea {
+                        id: gapMouse
+                        anchors.fill: parent
+                        enabled: lineRow.kind === "gap"
+                        hoverEnabled: true
+                        onClicked: view.expand(lineRow.modelData.lines)
+                    }
 
                     Text {
                         id: oldNo
@@ -652,7 +816,7 @@ Rectangle {
                         id: marker
                         x: 118
                         anchors.verticalCenter: parent.verticalCenter
-                        text: lineRow.kind === "hunk" ? "" : lineRow.kind
+                        text: lineRow.kind === "hunk" || lineRow.kind === "gap" ? "" : lineRow.kind
                         textFormat: Text.PlainText
                         color: lineRow.tone
                         font.family: Tide.Theme.monoFamily
@@ -661,15 +825,158 @@ Rectangle {
                     Text {
                         id: lineText
                         objectName: "diffLineText"
-                        x: 136
-                        width: lineRow.width - 148
+                        x: lineRow.kind === "gap" ? 62 : 136
+                        width: lineRow.width - x - 12
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.text
                         textFormat: Text.PlainText
+                        wrapMode: lineRow.kind === "gap" ? Text.NoWrap : Text.WrapAnywhere
+                        color: lineRow.kind === "hunk" ? Tide.Tokens.lavender
+                             : lineRow.kind === "gap" ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
+                        font.family: lineRow.kind === "gap" ? Tide.Theme.uiFamily : Tide.Theme.monoFamily
+                        font.pixelSize: lineRow.kind === "gap" ? 12 : 13
+                    }
+                }
+            }
+
+            // Tryb „obok siebie”: pary linii z diff.js (`sideRows`); kontekst po obu stronach, usunięte po lewej,
+            // dodane po prawej w tym samym wierszu, nadmiar ma pustą drugą stronę.
+            ListView {
+                id: sideLines
+                objectName: "diffSideLines"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: expandErrorBar.bottom
+                anchors.bottom: parent.bottom
+                clip: true
+                visible: view.mode === "split"
+                model: view.mode === "split" ? view.sideRows : []
+                boundsBehavior: Flickable.StopAtBounds
+                delegate: Rectangle {
+                    id: pairRow
+                    required property var modelData
+                    readonly property string kind: modelData.kind
+                    readonly property var leftSide: modelData.left || null
+                    readonly property var rightSide: modelData.right || null
+                    readonly property real half: Math.floor((width - 1) / 2)
+                    objectName: kind === "gap" ? "diffGap" : kind === "hunk" ? "diffSideHunk" : "diffPair"
+                    property string content: modelData.text || ""
+                    property string leftKind: leftSide ? leftSide.kind : ""
+                    property string leftNo: leftSide ? leftSide.no : ""
+                    property string leftContent: leftSide ? leftSide.text : ""
+                    property string rightKind: rightSide ? rightSide.kind : ""
+                    property string rightNo: rightSide ? rightSide.no : ""
+                    property string rightContent: rightSide ? rightSide.text : ""
+                    width: sideLines.width
+                    height: kind === "pair" ? Math.max(22, leftText.implicitHeight + 4, rightText.implicitHeight + 4)
+                          : kind === "gap" ? 22 : Math.max(22, headText.implicitHeight + 4)
+                    color: kind === "hunk" ? Tide.Theme.alpha(Tide.Tokens.lavender, 0.08)
+                         : kind === "gap" ? Tide.Theme.alpha(Tide.Tokens.textPrimary, sideGapMouse.containsMouse ? 0.1 : 0.04)
+                         : "transparent"
+
+                    MouseArea {
+                        id: sideGapMouse
+                        anchors.fill: parent
+                        enabled: pairRow.kind === "gap"
+                        hoverEnabled: true
+                        onClicked: view.expand(pairRow.modelData.lines)
+                    }
+
+                    // Nagłówek hunka i zwinięty fragment rozciągają się na całą szerokość.
+                    Text {
+                        id: headText
+                        objectName: "diffSideHeadText"
+                        visible: pairRow.kind !== "pair"
+                        x: pairRow.kind === "gap" ? 62 : 8
+                        width: pairRow.width - x - 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: pairRow.kind === "pair" ? "" : pairRow.content
+                        textFormat: Text.PlainText
+                        wrapMode: pairRow.kind === "gap" ? Text.NoWrap : Text.WrapAnywhere
+                        color: pairRow.kind === "gap" ? Tide.Tokens.textMuted : Tide.Tokens.lavender
+                        font.family: pairRow.kind === "gap" ? Tide.Theme.uiFamily : Tide.Theme.monoFamily
+                        font.pixelSize: pairRow.kind === "gap" ? 12 : 13
+                    }
+
+                    // Lewa połowa (stary plik).
+                    Rectangle {
+                        visible: pairRow.kind === "pair"
+                        x: 0
+                        width: pairRow.half
+                        height: parent.height
+                        color: pairRow.leftKind === "-" ? Tide.Theme.alpha(Tide.Tokens.removed, 0.13)
+                             : pairRow.leftSide === null ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.03) : "transparent"
+                    }
+                    Text {
+                        objectName: "diffSideOldNo"
+                        visible: pairRow.kind === "pair"
+                        x: 4
+                        width: 44
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        text: pairRow.leftNo
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        id: leftText
+                        objectName: "diffSideOldText"
+                        visible: pairRow.kind === "pair"
+                        x: 56
+                        width: pairRow.half - x - 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: pairRow.leftContent
+                        textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
-                        color: lineRow.kind === "hunk" ? Tide.Tokens.lavender : Tide.Tokens.textPrimary
+                        color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.monoFamily
                         font.pixelSize: 13
+                    }
+
+                    // Prawa połowa (nowy plik).
+                    Rectangle {
+                        visible: pairRow.kind === "pair"
+                        x: pairRow.half + 1
+                        width: pairRow.width - x
+                        height: parent.height
+                        color: pairRow.rightKind === "+" ? Tide.Theme.alpha(Tide.Tokens.added, 0.13)
+                             : pairRow.rightSide === null ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.03) : "transparent"
+                    }
+                    Text {
+                        objectName: "diffSideNewNo"
+                        visible: pairRow.kind === "pair"
+                        x: pairRow.half + 5
+                        width: 44
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        text: pairRow.rightNo
+                        textFormat: Text.PlainText
+                        color: Tide.Tokens.textMuted
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        id: rightText
+                        objectName: "diffSideNewText"
+                        visible: pairRow.kind === "pair"
+                        x: pairRow.half + 57
+                        width: pairRow.width - x - 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: pairRow.rightContent
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WrapAnywhere
+                        color: Tide.Tokens.textPrimary
+                        font.family: Tide.Theme.monoFamily
+                        font.pixelSize: 13
+                    }
+                    Rectangle {
+                        visible: pairRow.kind === "pair"
+                        x: pairRow.half
+                        width: 1
+                        height: parent.height
+                        color: Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.12)
                     }
                 }
             }

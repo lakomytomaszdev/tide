@@ -6,12 +6,30 @@ Moduł widoku (apps/tide/views.json): okno Tide ładuje go z views/worktrees/bac
 create(bus, data). Strona QML to qml/WorktreesView.qml (WorktreesPage z akcjami i skrótami).
 Plakietka w pasku widoków: ile worktrees jest w pracy (bez głównych katalogów repozytoriów).
 """
+import importlib.util
 import json
 import os
 
 from PyQt6.QtCore import QMetaType, QObject, pyqtProperty, pyqtSignal, pyqtSlot
 from PyQt6.QtDBus import (QDBusArgument, QDBusConnection, QDBusMessage, QDBusPendingCallWatcher, QDBusPendingReply,
                           QDBusServiceWatcher)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_common(name: str):
+    """Moduł z apps/common: w pakiecie (widgets/stage.py) leży obok tego pliku, w repozytorium — w apps/common."""
+    for folder in (HERE, os.path.join(os.path.dirname(HERE), "common")):
+        path = os.path.join(folder, name + ".py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location(f"tide_common_{name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise ImportError(f"brak wspólnego modułu {name} (apps/common)")
+
+
+windowconfig = load_common("windowconfig")  # tryb diffa zapamiętany w ustawieniach okna (PT-350)
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Worktrees", "org.tide.Daemon.Worktrees"
 GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
@@ -45,6 +63,7 @@ class Backend(QObject):
     fetchFinished = pyqtSignal(str, str)  # (repoPath, JSON wyniku Fetch albo "null")
     badgeChanged = pyqtSignal()
     replied = pyqtSignal(str, str)  # (tag z QML, odpowiedź `Git.Diff` jako JSON) — odbiera ją widok diffa
+    diffModeChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: list | None = None, parent=None):
         super().__init__(parent)
@@ -55,6 +74,8 @@ class Backend(QObject):
         self._launchers = json.dumps({"terminal": False, "rider": False})
         self._pending: set = set()  # QDBusPendingCallWatcher muszą żyć do odpowiedzi
         self._badge = ""
+        self._diff_mode = windowconfig.DIFF_MODE_DEFAULT
+        self._diff_unsaved = False   # zapis się nie udał: do końca sesji obowiązuje wybór z pamięci
         self.listChanged.connect(self._update_badge)
         self.availableChanged.connect(self._update_badge)
         if data is not None:
@@ -172,6 +193,29 @@ class Backend(QObject):
             return
         self._call("Fetch", [repo_path], lambda ok, value: self.fetchFinished.emit(repo_path, value if ok else "null"),
                    timeout=FETCH_TIMEOUT_MS)
+
+    # Tryb widoku diffa (PT-350): "unified" albo "split", wspólny z Tablicą (plik ustawień okna, czytany przy
+    # każdym odczycie); podgląd z pliku trzyma go tylko w pamięci.
+    @pyqtProperty(str, notify=diffModeChanged)
+    def diffMode(self) -> str:
+        return self._diff_mode if self._preview or self._diff_unsaved else windowconfig.diff_mode()
+
+    @pyqtSlot(str, result=str)
+    def setDiffMode(self, value: str) -> str:
+        """Zapisuje tryb diffa; pusty tekst albo powód, gdy zapis się nie udał (wtedy działa do końca sesji)."""
+        if value not in windowconfig.DIFF_MODE_VALUES:
+            return "Nieznany tryb diffa."
+        problem = ""
+        if not self._preview:
+            try:
+                windowconfig.set_diff_mode(value)
+            except OSError as exc:
+                problem = f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        self._diff_unsaved = problem != ""
+        if value != self._diff_mode:
+            self._diff_mode = value
+            self.diffModeChanged.emit()
+        return problem
 
     @pyqtSlot(str, str)
     def gitDiff(self, tag: str, request: str) -> None:

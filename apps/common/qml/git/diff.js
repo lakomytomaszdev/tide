@@ -29,13 +29,37 @@ function fileName(file) {
     return file.path
 }
 
-// Wiersze jednego pliku: nagłówek hunka (`kind: "hunk"`) i linie (`kind` " ", "+", "-"). `hunk` to numer
-// hunka w pliku — z niego bierze się nawigacja `n`/`p`.
+// Kontekst, który usługa dokłada domyślnie (`options.context` bez wartości), i jej górna granica.
+var DEFAULT_CONTEXT = 3
+var MAX_CONTEXT = 100000
+
+// Pierwsza linia hunka po stronie nowej; hunk bez linii nowych (same usunięcia) zaczyna się „po” linii `newStart`.
+function newFirst(hunk) {
+    return hunk.newLines > 0 ? hunk.newStart : hunk.newStart + 1
+}
+
+// Ile niezmienionych linii ukrywa przerwa przed hunkiem `h` (przed pierwszym — od początku pliku).
+function hiddenBefore(hunks, h) {
+    const from = h === 0 ? 1 : newFirst(hunks[h - 1]) + hunks[h - 1].newLines
+    return Math.max(0, newFirst(hunks[h]) - from)
+}
+
+// „… 42 niezmienione linie” — podpis zwiniętego fragmentu.
+function gapText(n) {
+    return "… " + n + " " + plural(n, "niezmieniona", "niezmienione", "niezmienionych") + " "
+           + plural(n, "linia", "linie", "linii")
+}
+
+// Wiersze jednego pliku: nagłówek hunka (`kind: "hunk"`), linie (`kind` " ", "+", "-") i zwinięte fragmenty między
+// hunkami (`kind: "gap"`, `lines` — ile niezmienionych linii ukrywa; stoi tuż przed nagłówkiem następnego hunka).
+// `hunk` to numer hunka w pliku — z niego bierze się nawigacja `n`/`p`.
 function rows(file) {
     const out = []
     if (!file || !file.hunks) return out
     for (let h = 0; h < file.hunks.length; h++) {
         const hunk = file.hunks[h]
+        const hidden = hiddenBefore(file.hunks, h)
+        if (hidden > 0) out.push({kind: "gap", hunk: h, oldNo: "", newNo: "", lines: hidden, text: gapText(hidden)})
         const head = "@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines
                    + " @@" + (hunk.header ? " " + hunk.header : "")
         out.push({kind: "hunk", hunk: h, oldNo: "", newNo: "", text: head})
@@ -47,6 +71,63 @@ function rows(file) {
         }
     }
     return out
+}
+
+// Wiersze trybu „obok siebie” z wierszy jednolitych (liczone raz na plik). Nagłówki hunków i zwinięte fragmenty
+// przechodzą bez zmian; kontekst staje po obu stronach; ciąg linii `-`/`+` paruje się kolejno (i-ta usunięta
+// z i-tą dodaną), nadmiar ma pustą (`null`) drugą stronę. `src` to indeks wiersza jednolitego — po nim widok
+// zachowuje miejsce przy przełączeniu trybu.
+function sideRows(rowList) {
+    const out = []
+    let i = 0
+    while (i < rowList.length) {
+        const row = rowList[i]
+        if (row.kind === "hunk" || row.kind === "gap") {
+            out.push(Object.assign({}, row, {src: i}))
+            i++
+        } else if (row.kind === " ") {
+            out.push({kind: "pair", hunk: row.hunk, src: i,
+                      left: {kind: " ", no: row.oldNo, text: row.text},
+                      right: {kind: " ", no: row.newNo, text: row.text}})
+            i++
+        } else {
+            const removed = []
+            const added = []
+            while (i < rowList.length && (rowList[i].kind === "-" || rowList[i].kind === "+")) {
+                (rowList[i].kind === "-" ? removed : added).push(i)
+                i++
+            }
+            const count = Math.max(removed.length, added.length)
+            for (let k = 0; k < count; k++) {
+                const l = k < removed.length ? rowList[removed[k]] : null
+                const r = k < added.length ? rowList[added[k]] : null
+                out.push({kind: "pair", hunk: (l || r).hunk,
+                          src: k < removed.length ? removed[k] : added[k],
+                          left: l ? {kind: "-", no: l.oldNo, text: l.text} : null,
+                          right: r ? {kind: "+", no: r.newNo, text: r.text} : null})
+            }
+        }
+    }
+    return out
+}
+
+// Indeks pierwszego wiersza trybu „obok siebie” o `src` nie mniejszym niż podany (miejsce po przełączeniu trybu).
+function rowOfSrc(sideList, src) {
+    for (let i = 0; i < sideList.length; i++) if (sideList[i].src >= src) return i
+    return Math.max(0, sideList.length - 1)
+}
+
+// Największy zwinięty fragment pliku (0 — nic nie jest zwinięte).
+function largestGap(rowList) {
+    let best = 0
+    for (const row of rowList) if (row.kind === "gap" && row.lines > best) best = row.lines
+    return best
+}
+
+// `options.context` rozwijający fragment o `hidden` liniach: dotychczasowy kontekst plus cały fragment, więc hunki
+// po obu jego stronach na pewno się scalą (usługa ogranicza wartość do MAX_CONTEXT).
+function expandedContext(current, hidden) {
+    return Math.min(MAX_CONTEXT, (current || DEFAULT_CONTEXT) + hidden)
 }
 
 // Indeksy wierszy, od których zaczynają się hunki.

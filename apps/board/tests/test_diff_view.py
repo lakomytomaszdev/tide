@@ -33,6 +33,7 @@ import QtQuick.Window
 import "tide" as Tide
 import "git" as Git
 import "git/start.js" as Start
+import "git/diff.js" as Diff
 
 Window {
     id: root
@@ -45,6 +46,13 @@ Window {
     readonly property var tokens: Tide.Tokens
 
     function label(from) { return Start.startLabel(from) }
+    function gapText(n) { return Diff.gapText(n) }
+    // Wszystkie utworzone delegaty linii (także poza widokiem) — wirtualizacja ma ich trzymać garść.
+    function delegates() {
+        const count = it => (it.objectName === "diffLine" || it.objectName === "diffPair" ? 1 : 0)
+                            + Array.from(it.children).reduce((sum, child) => sum + count(child), 0)
+        return count(loader.item)
+    }
     function open(request, initial) {
         root.req = request
         root.path = initial
@@ -56,6 +64,10 @@ Window {
         id: fake
         signal replied(string tag, string json)
         property var calls: []
+        // Tryb diffa zapamiętany przez gospodarza (PT-350): `saved` zbiera zapisy, `diffMode` przeżywa ponowne otwarcie.
+        property string diffMode: "unified"
+        property var saved: []
+        function setDiffMode(value) { saved = saved.concat([value]); diffMode = value }
         function gitDiff(tag, request) { calls = calls.concat([["gitDiff", tag, request]]) }
         function listCardBranches(tag, card, request) { calls = calls.concat([["listCardBranches", tag, card, request]]) }
     }
@@ -145,10 +157,13 @@ class QmlCase(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def probe(self, scenario: str) -> dict:
+    def probe(self, scenario: str, files=()) -> dict:
+        """`files` — dodatkowe pliki doklejone do odpowiedzi `DIFF` (żeby nie zmieniać plików innych testów)."""
         script = os.path.join(self.tmp, "scenario.py")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(SCENARIO_HEAD + "\nDIFF = json.loads(" + repr(json.dumps(DIFF)) + ")\n" + scenario)
+            fh.write(SCENARIO_HEAD + "\nDIFF = json.loads(" + repr(json.dumps(DIFF)) + ")\n"
+                     + "DIFF['files'] = DIFF['files'] + json.loads(" + repr(json.dumps(list(files))) + ")\n"
+                     + scenario)
         env = offscreen()
         env["TZ"] = "UTC"
         result = subprocess.run(["/usr/bin/python3", PROBE, self.tmp, script], env=env, capture_output=True,
@@ -556,6 +571,353 @@ out["afterReload"] = [view("selectedPath"), texts("diffFileNote")]
 ''')
         self.assertEqual(out["rows"], [])
         self.assertEqual(out["afterReload"][0], "ucięty.txt")
+
+
+# PT-350: tryb „obok siebie”, zwinięte fragmenty i rozwijanie kontekstu.
+# Plik z nierówną liczbą usuniętych i dodanych linii w hunku: (x1,y1), (x2,∅), (x3,∅) i (z1,w1), (∅,w2).
+PAIRS = file_entry("pairs.txt", "M", 3, 4, [hunk(10, [
+    line(" ", 10, 10, "alfa"),
+    line("-", 11, None, "x1"), line("-", 12, None, "x2"), line("-", 13, None, "x3"), line("+", None, 11, "<b>y1</b>"),
+    line(" ", 14, 12, "beta"),
+    line("-", 15, None, "z1"), line("+", None, 13, "w1"), line("+", None, 14, "w2"),
+    line(" ", 16, 15, "gamma")])])
+PAIR_FIELDS = "[it.leftKind, it.leftNo, it.leftContent, it.rightKind, it.rightNo, it.rightContent]"
+PAIRED = [[" ", "10", "alfa", " ", "10", "alfa"],
+          ["-", "11", "x1", "+", "11", "<b>y1</b>"],
+          ["-", "12", "x2", "", "", ""],
+          ["-", "13", "x3", "", "", ""],
+          [" ", "14", "beta", " ", "12", "beta"],
+          ["-", "15", "z1", "+", "13", "w1"],
+          ["", "", "", "+", "14", "w2"],
+          [" ", "16", "gamma", " ", "15", "gamma"]]
+
+# Dwa hunki z przerwą 42 linii (oraz 3 linie ukryte przed pierwszym): „… 42 niezmienione linie”.
+GAPS = file_entry("gaps.txt", "M", 2, 1, [
+    hunk(4, [line(" ", 4, 4, "k4"), line(" ", 5, 5, "k5"), line(" ", 6, 6, "k6"), line("-", 7, None, "a"),
+             line("+", None, 7, "b"), line(" ", 8, 8, "k8"), line(" ", 9, 9, "k9"), line(" ", 10, 10, "k10")]),
+    hunk(53, [line(" ", 53, 53, "k53"), line("+", None, 54, "nowa"), line(" ", 54, 55, "k54")])])
+# Odpowiedź na `options.context`: te same zmiany, hunki scalone (przerwa rozwinięta w linie „ukryta N”).
+EXPANDED = file_entry("gaps.txt", "M", 2, 1, [
+    hunk(4, [line(" ", 4, 4, "k4"), line(" ", 5, 5, "k5"), line(" ", 6, 6, "k6"), line("-", 7, None, "a"),
+             line("+", None, 7, "b")]
+            + [line(" ", n, n, "ukryta %d" % n) for n in range(8, 53)]
+            + [line(" ", 53, 53, "k53"), line("+", None, 54, "nowa"), line(" ", 54, 55, "k54")])])
+BIG = file_entry("big.txt", "M", 20, 0, [
+    hunk(1 + i * 2000, [line("+", None, 1 + i * 2000 + n, "linia %d/%d" % (i, n)) for n in range(1000)])
+    for i in range(20)])
+
+
+class SideBySideTest(QmlCase):
+    def test_u_switches_to_two_columns_with_removed_left_and_added_right(self):
+        out = self.probe('''
+open_view(path="pairs.txt")
+reply(last_tag(), DIFF)
+out["unifiedPairs"] = field("diffPair", "1")
+out["unified"] = field("diffLine", "[it.kind, it.oldLabel, it.newLabel]")
+key(Qt.Key.Key_U)
+out["mode"] = view("mode")
+out["pairs"] = field("diffPair", "%s")
+out["unifiedLinesHidden"] = field("diffLine", "1")
+out["hunk"] = field("diffSideHunk", "it.content")
+out["oldNos"] = texts("diffSideOldNo")
+out["newNos"] = texts("diffSideNewNo")
+out["formats"] = field("diffSideNewText", "it.textFormat") + field("diffSideOldText", "it.textFormat")
+out["oldX"] = field("diffSideOldText", "it.mapToItem(loader.item, 0, 0).x")
+out["newX"] = field("diffSideNewText", "it.mapToItem(loader.item, 0, 0).x")
+out["oldY"] = field("diffSideOldText", "it.mapToItem(loader.item, 0, 0).y")
+out["newY"] = field("diffSideNewText", "it.mapToItem(loader.item, 0, 0).y")
+out["active"] = [view("mode"), js("loader.item.activeList.objectName")]
+key(Qt.Key.Key_U)
+out["backMode"] = view("mode")
+out["backPairs"] = field("diffPair", "1")
+out["backLines"] = field("diffLine", "[it.kind, it.oldLabel, it.newLabel]")
+''' % PAIR_FIELDS, files=[PAIRS])
+        self.assertEqual(out["unifiedPairs"], [], "tryb jednolity nie ma par")
+        self.assertEqual(out["mode"], "split")
+        self.assertEqual(out["pairs"], PAIRED)
+        self.assertEqual(out["unifiedLinesHidden"], [], "w trybie obok siebie lista jednolita jest ukryta")
+        self.assertEqual(out["hunk"], ["@@ -10,7 +10,6 @@"])
+        self.assertEqual(out["oldNos"], ["10", "11", "12", "13", "14", "15", "", "16"])
+        self.assertEqual(out["newNos"], ["10", "11", "", "", "12", "13", "14", "15"])
+        self.assertEqual(set(out["formats"]), {0}, "teksty plików jako Text.PlainText")
+        for left, right in zip(out["oldX"], out["newX"]):
+            self.assertLess(left, right, "usunięte po lewej, dodane po prawej")
+        self.assertEqual(out["oldY"], out["newY"], "obie strony pary w tym samym wierszu")
+        self.assertEqual(out["active"], ["split", "diffSideLines"])
+        self.assertEqual(out["backMode"], "unified")
+        self.assertEqual(out["backPairs"], [])
+        self.assertEqual(out["backLines"], out["unified"], "powrót do trybu jednolitego daje te same wiersze")
+
+    def test_header_switch_sets_the_mode_and_saves_it_for_the_window(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+out["initial"] = [view("mode"), js("fake.saved.length"), len(field("diffModeSwitch", "1"))]
+click("diffModeSplit")
+out["split"] = [view("mode"), js("JSON.stringify(fake.saved)")]
+click("diffModeUnified")
+out["unified"] = [view("mode"), js("JSON.stringify(fake.saved)")]
+key(Qt.Key.Key_U)
+out["byKey"] = [view("mode"), js("JSON.stringify(fake.saved)"), js("fake.diffMode")]
+''')
+        self.assertEqual(out["initial"], ["unified", 0, 1], "otwarcie niczego nie zapisuje")
+        self.assertEqual(out["split"], ["split", '["split"]'])
+        self.assertEqual(out["unified"], ["unified", '["split","unified"]'])
+        self.assertEqual(out["byKey"], ["split", '["split","unified","split"]', "split"])
+
+    def test_chosen_mode_survives_reopening_the_view(self):
+        out = self.probe('''
+open_view(path="pairs.txt")
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_U)
+open_view(path="pairs.txt")
+reply(last_tag(), DIFF)
+out["reopened"] = view("mode")
+out["pairs"] = field("diffPair", "%s")
+out["savedAgain"] = js("fake.saved.length")
+js("fake.diffMode = 'unified'")
+wait(60)
+out["followsHost"] = view("mode")
+js("fake.diffMode = 'rubbish'")
+wait(60)
+out["ignoresRubbish"] = view("mode")
+''' % PAIR_FIELDS, files=[PAIRS])
+        self.assertEqual(out["reopened"], "split")
+        self.assertEqual(out["pairs"], PAIRED)
+        self.assertEqual(out["savedAgain"], 1, "ponowne otwarcie nie zapisuje drugi raz")
+        self.assertEqual(out["followsHost"], "unified", "zmiana ustawienia w oknie dociera do otwartego widoku")
+        self.assertEqual(out["ignoresRubbish"], "unified")
+
+    def test_keys_of_the_view_work_in_split_mode(self):
+        out = self.probe('''
+from PyQt6.QtCore import Qt
+M = Qt.KeyboardModifier
+open_view()
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_U)
+out["start"] = [view("mode"), view("selectedPath"), view("hunkStarts.length"), view("currentHunk")]
+key(Qt.Key.Key_N)
+out["n"] = [view("currentHunk"), field("diffSideLines", "it.contentY")[0] > 0]
+key(Qt.Key.Key_P)
+out["p"] = [view("currentHunk"), field("diffSideLines", "it.contentY")[0]]
+key(Qt.Key.Key_BracketRight)
+out["next"] = [view("selectedPath"), view("mode")]
+key(Qt.Key.Key_Down, M.AltModifier)
+out["altDown"] = view("selectedPath")
+key(Qt.Key.Key_BracketLeft)
+out["prev"] = view("selectedPath")
+out["pairsOfAdded"] = field("diffPair", "%s")
+key(Qt.Key.Key_R)
+out["reload"] = [[c[0], c[1]] for c in calls()]
+key(Qt.Key.Key_Escape)
+out["closed"] = js("closed")
+''' % PAIR_FIELDS)
+        self.assertEqual(out["start"], ["split", "apps/a.py", 2, 0])
+        self.assertEqual(out["n"], [1, True])
+        self.assertEqual(out["p"], [0, 0])
+        self.assertEqual(out["next"], ["new.txt", "split"])
+        self.assertEqual(out["altDown"], "gone.txt")
+        self.assertEqual(out["prev"], "new.txt")
+        self.assertEqual(out["pairsOfAdded"],[["", "", "", "+", "1", "pierwsza"]])
+        self.assertEqual(out["reload"], [["gitDiff", "diff:1"], ["gitDiff", "diff:2"]])
+        self.assertEqual(out["closed"], 1)
+
+    def test_mode_switch_keeps_the_place_in_the_file(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+TOP = "loader.item.activeList.indexAt(0, loader.item.activeList.contentY + 1)"
+js("loader.item.activeList.positionViewAtIndex(40, ListView.Beginning)")
+wait(80)
+out["src"] = js("loader.item.topSource()")
+key(Qt.Key.Key_U)
+# wiersz trybu „obok siebie”, od którego zaczyna się ta sama linia pliku
+out["target"] = js("(function () { const r = loader.item.activeRows; for (let i = 0; i < r.length; i++) "
+                   "if (r[i].src >= %d) return i })()" % out["src"])
+out["before"] = js("loader.item.activeRows[%d - 1].src" % out["target"])
+out["splitTop"] = js(TOP)
+out["splitSrc"] = js("loader.item.topSource()")
+key(Qt.Key.Key_U)
+out["backSrc"] = js("loader.item.topSource()")
+''')
+        self.assertGreater(out["src"], 30, "widok faktycznie przewinięto")
+        self.assertLess(out["before"], out["src"], "wiersz docelowy to pierwszy, który nie leży przed miejscem")
+        # ListView szacuje wysokości nieutworzonych wierszy, więc górny wiersz może różnić się o kilka od docelowego.
+        self.assertLessEqual(abs(out["splitTop"] - out["target"]), 3)
+        self.assertLessEqual(abs(out["splitSrc"] - out["src"]), 3, "po przełączeniu u góry ta sama linia pliku")
+        self.assertLessEqual(abs(out["backSrc"] - out["src"]), 3)
+
+    def test_pairing_is_computed_once_per_file_not_while_scrolling(self):
+        with open(os.path.join(GIT_DIR, "DiffView.qml"), encoding="utf-8") as fh:
+            code = re.sub(r"//.*", "", fh.read())
+        self.assertEqual(code.count("Diff.sideRows("), 2, "tylko rebuildRows i przełączenie trybu")
+        self.assertNotRegex(code, r"model:\s*Diff\.", "modele list to gotowe tablice, nie wywołania w wiązaniu")
+        self.assertEqual(code.count("Repeater {"), 1, "Repeater tylko w liście refów bazy")
+
+    def test_20000_lines_scroll_in_both_modes_with_a_bounded_number_of_delegates(self):
+        out = self.probe('''
+open_view(path="big.txt")
+reply(last_tag(), DIFF)
+def scroll_through():
+    counts = [js("delegates()")]
+    for y in (30000, 200000, 380000):
+        js("loader.item.activeList.contentY = " + str(y))
+        wait(80)
+        counts.append(js("delegates()"))
+    return counts
+out["unifiedRows"] = js("loader.item.activeList.count")
+out["unified"] = scroll_through()
+key(Qt.Key.Key_U)
+out["splitRows"] = js("loader.item.activeList.count")
+out["split"] = scroll_through()
+''', files=[BIG])
+        # 20 hunków po 1000 linii: nagłówek + 1000 linii, a między hunkami zwinięty fragment (19).
+        self.assertEqual(out["unifiedRows"], 20 * 1001 + 19)
+        self.assertEqual(out["splitRows"], 20 * 1001 + 19, "same dodane linie: każda ma własny wiersz pary")
+        for counts in (out["unified"], out["split"]):
+            self.assertTrue(all(0 < n < 120 for n in counts), counts)
+
+    def test_gap_text_uses_polish_plural_forms(self):
+        out = self.probe('''
+out["texts"] = [js("gapText(%d)" % n) for n in (1, 2, 5, 12, 22, 42)]
+''')
+        self.assertEqual(out["texts"], ["… 1 niezmieniona linia", "… 2 niezmienione linie", "… 5 niezmienionych linii",
+                                        "… 12 niezmienionych linii", "… 22 niezmienione linie",
+                                        "… 42 niezmienione linie"])
+
+
+class ExpandContextTest(QmlCase):
+    def test_collapsed_fragments_show_their_line_count_in_both_modes(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+out["unified"] = field("diffGap", "it.content")
+out["unifiedLines"] = field("diffLine", "it.kind")
+key(Qt.Key.Key_U)
+out["split"] = field("diffGap", "it.content")
+out["splitFirst"] = field("diffPair", "it.leftContent")[:3]
+''', files=[GAPS])
+        self.assertEqual(out["unified"], ["… 3 niezmienione linie", "… 42 niezmienione linie"])
+        self.assertNotIn("gap", out["unifiedLines"], "zwinięty fragment nie jest zwykłą linią")
+        self.assertEqual(out["split"], out["unified"])
+        self.assertEqual(out["splitFirst"], ["k4", "k5", "k6"])
+
+    def test_click_requests_one_file_with_a_larger_context_and_shows_the_lines(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+before = len(calls())
+click("diffGap", 1)
+out["calls"] = [json.loads(c[2]) for c in calls()[before:]]
+out["during"] = view("loadingPath")
+tag = last_tag()
+expanded = dict(DIFF)
+expanded["files"] = [json.loads(%s)]
+reply(tag, expanded)
+out["after"] = view("loadingPath")
+out["gaps"] = field("diffGap", "it.content")
+out["lines"] = field("diffLine", "it.content")
+out["selected"] = view("selectedPath")
+out["hunks"] = view("hunkStarts.length")
+out["files"] = view("files.length")
+''' % repr(json.dumps(EXPANDED)), files=[GAPS])
+        self.assertEqual(out["calls"], [{"source": "card", "card": "K-36", "options": {"path": "gaps.txt", "context": 45}}])
+        self.assertEqual(out["during"], "gaps.txt")
+        self.assertEqual(out["after"], "")
+        self.assertEqual(out["gaps"], ["… 3 niezmienione linie"], "rozwinięty fragment znika, drugi zostaje")
+        self.assertIn("ukryta 8", out["lines"])
+        self.assertIn("ukryta 20", out["lines"])
+        self.assertEqual((out["selected"], out["hunks"], out["files"]), ("gaps.txt", 1, 7))
+
+    def test_e_expands_the_fragments_of_the_selected_file_and_only_that_file(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+before = len(calls())
+key(Qt.Key.Key_E)
+out["calls"] = [json.loads(c[2]) for c in calls()[before:]]
+key(Qt.Key.Key_E)
+out["ignoredWhileLoading"] = len(calls()) - before
+expanded = dict(DIFF)
+expanded["files"] = [json.loads(%s)]
+reply(last_tag(), expanded)
+out["lines"] = field("diffLine", "it.content")
+key(Qt.Key.Key_E)
+out["second"] = json.loads(calls()[-1][2])["options"]
+''' % repr(json.dumps(EXPANDED)), files=[GAPS])
+        self.assertEqual(out["calls"], [{"source": "card", "card": "K-36", "options": {"path": "gaps.txt", "context": 45}}])
+        self.assertEqual(out["ignoredWhileLoading"], 1, "drugie `e` w trakcie odczytu nie woła usługi")
+        self.assertIn("ukryta 8", out["lines"])
+        self.assertEqual(out["second"], {"path": "gaps.txt", "context": 48},
+                         "kolejne rozwinięcie zaczyna od ostatnio użytego kontekstu")
+
+    def test_e_without_collapsed_fragments_does_nothing(self):
+        out = self.probe('''
+open_view(path="new.txt")
+reply(last_tag(), DIFF)
+before = len(calls())
+key(Qt.Key.Key_E)
+out["calls"] = len(calls()) - before
+''', files=[GAPS])
+        self.assertEqual(out["calls"], 0)
+
+    def test_expanding_works_in_split_mode_and_keeps_the_mode(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_U)
+click("diffGap", 1)
+out["call"] = json.loads(calls()[-1][2])["options"]
+expanded = dict(DIFF)
+expanded["files"] = [json.loads(%s)]
+reply(last_tag(), expanded)
+out["mode"] = view("mode")
+out["gaps"] = field("diffGap", "it.content")
+out["left"] = field("diffPair", "it.leftContent")
+''' % repr(json.dumps(EXPANDED)), files=[GAPS])
+        self.assertEqual(out["call"], {"path": "gaps.txt", "context": 45})
+        self.assertEqual(out["mode"], "split")
+        self.assertEqual(out["gaps"], ["… 3 niezmienione linie"])
+        self.assertIn("ukryta 8", out["left"])
+
+    def test_failed_expansion_keeps_the_lines_and_says_so(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_E)
+reply(last_tag(), {"ok": False, "error": "timeout", "message": ""})
+out["timeoutBar"] = texts("diffExpandErrorText")
+out["gaps"] = field("diffGap", "it.content")
+key(Qt.Key.Key_E)
+empty = dict(DIFF)
+empty["files"] = [json.loads(%s)]
+reply(last_tag(), empty)
+out["empty"] = texts("diffExpandErrorText")
+out["after"] = field("diffGap", "it.content")
+''' % repr(json.dumps(dict(EXPANDED, hunks=[]))), files=[GAPS])
+        self.assertEqual(out["timeoutBar"], ["Git nie odpowiedział na czas. Spróbuj ponownie (r)."])
+        self.assertEqual(out["gaps"], ["… 3 niezmienione linie", "… 42 niezmienione linie"])
+        self.assertEqual(out["empty"], ["Nie udało się rozwinąć kontekstu tego pliku."])
+        self.assertEqual(out["after"], out["gaps"])
+
+    def test_reload_forgets_the_expanded_context(self):
+        out = self.probe('''
+open_view(path="gaps.txt")
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_E)
+expanded = dict(DIFF)
+expanded["files"] = [json.loads(%s)]
+reply(last_tag(), expanded)
+out["contexts"] = view("contextByFile")
+key(Qt.Key.Key_R)
+reply(last_tag(), DIFF)
+out["afterReload"] = [view("contextByFile"), field("diffGap", "it.content")]
+key(Qt.Key.Key_E)
+out["context"] = json.loads(calls()[-1][2])["options"]["context"]
+''' % repr(json.dumps(EXPANDED)), files=[GAPS])
+        self.assertEqual(list(out["contexts"].values()), [45])
+        self.assertEqual(out["afterReload"], [{}, ["… 3 niezmienione linie", "… 42 niezmienione linie"]])
+        self.assertEqual(out["context"], 45)
 
 
 class SourceTest(unittest.TestCase):

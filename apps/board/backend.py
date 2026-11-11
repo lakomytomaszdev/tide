@@ -208,6 +208,7 @@ class Backend(QObject):
     limitsChanged = pyqtSignal()
     flowSettingsChanged = pyqtSignal()
     cardOpenChanged = pyqtSignal()
+    diffModeChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
                  spectacle: str | None = None):
@@ -221,6 +222,8 @@ class Backend(QObject):
         self._limits = "{}"
         self._flow_settings = "{}"
         # Ustawienie okna (PT-133): na żywo z window.json; podgląd trzyma je tylko w pamięci i nie rusza plików.
+        self._diff_mode = windowconfig.DIFF_MODE_DEFAULT
+        self._diff_unsaved = False   # zapis się nie udał: do końca sesji obowiązuje wybór z pamięci
         self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
         # Sesje zapisują to samo ustawienie w tym samym oknie — nadążamy za plikiem (PT-131).
         self._card_open_watcher = windowconfig.watch(self._card_open_from_file, self) if data is None else None
@@ -362,6 +365,30 @@ class Backend(QObject):
         if value != self._card_open:
             self._card_open = value
             self.cardOpenChanged.emit()
+        return problem
+
+    # Tryb widoku diffa (PT-350): "unified" albo "split", zapamiętany w ustawieniach okna. Czytany z pliku przy
+    # każdym odczycie, więc widok otwarty w innym widoku okna (Worktrees) zapisał ten sam wybór; podgląd trzyma go
+    # tylko w pamięci.
+    @pyqtProperty(str, notify=diffModeChanged)
+    def diffMode(self) -> str:
+        return self._diff_mode if self._preview or self._diff_unsaved else windowconfig.diff_mode()
+
+    @pyqtSlot(str, result=str)
+    def setDiffMode(self, value: str) -> str:
+        """Zapisuje tryb diffa; pusty tekst albo powód, gdy zapis się nie udał (wtedy działa do końca sesji)."""
+        if value not in windowconfig.DIFF_MODE_VALUES:
+            return "Nieznany tryb diffa."
+        problem = ""
+        if not self._preview:
+            try:
+                windowconfig.set_diff_mode(value)
+            except OSError as exc:
+                problem = f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        self._diff_unsaved = problem != ""
+        if value != self._diff_mode:
+            self._diff_mode = value
+            self.diffModeChanged.emit()
         return problem
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.

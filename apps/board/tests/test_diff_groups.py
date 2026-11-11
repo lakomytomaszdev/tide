@@ -76,6 +76,35 @@ out["selectedRows"] = field("diffFile", "it.selected")
         self.assertEqual(out["unstaged"], ["both.txt", "unstaged", 3, ["poza indeksem"]])
         self.assertEqual(out["selectedRows"], [False, False, False, True])
 
+    def test_groups_and_untracked_files_are_visible_in_both_modes(self):
+        """PT-350: lista plików z grupami (PT-360) nie zależy od trybu treści; wybór po grupie działa w obu."""
+        pairs = "[it.leftContent, it.rightContent]"
+        out = self.probe('''
+open_wt()
+shown = lambda: [texts("diffGroupHeader"), texts("diffUntrackedHeader"), texts("diffUntracked"),
+                 texts("diffFileName")]
+out["unified"] = shown()
+key(Qt.Key.Key_U)
+out["split"] = shown()
+out["first"] = field("diffPair", "%s")
+click("diffFile", 2)
+out["unstagedB"] = field("diffPair", "%s")
+click("diffFile", 3)
+out["bothUnstaged"] = [view("selectedGroup"), field("diffPair", "%s")]
+click("diffFile", 1)
+out["bothStaged"] = [view("selectedGroup"), field("diffPair", "%s")]
+key(Qt.Key.Key_BracketRight)
+out["next"] = [view("selectedGroup"), view("fileIndex")]
+''' % (pairs, pairs, pairs, pairs))
+        self.assertEqual(out["split"], out["unified"])
+        self.assertEqual(out["split"][0], ["W indeksie · 2 pliki · +2 −1", "Poza indeksem · 2 pliki · +3 −0"])
+        self.assertEqual(out["split"][2], ["new.txt", "<b>dir</b>/ś.txt"])
+        self.assertEqual(out["first"], [["stare", "STAGED"]])
+        self.assertEqual(out["unstagedB"], [["", "x"], ["", "y"]])
+        self.assertEqual(out["bothUnstaged"], ["unstaged", [["", "poza indeksem"]]])
+        self.assertEqual(out["bothStaged"], ["staged", [["", "w indeksie"]]])
+        self.assertEqual(out["next"], ["unstaged", 2])
+
     def test_next_file_walks_groups_in_display_order(self):
         out = self.probe('''
 from PyQt6.QtCore import Qt
