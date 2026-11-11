@@ -14,8 +14,9 @@
   przepływu. Proste odczyty `/Board` nie czekają na nią: GetCardFlowSettings czyta plik ustawień od razu,
   BoxStatus biegnie w osobnej puli odczytu (`tide-board-read`) na opublikowanej migawce BoardMonitor (bez blokady
   dziennika i Tablicy, bez zapisu stanu slotu), a migawka Tablicy (Snapshot, Panel karty) powstaje pod bramką
-  `read_gate()`: blokada dziennika brana bez czekania. Gdy trzyma ją długa mutacja, wątek główny nie czeka —
-  oddaje ostatnią opublikowaną, spójną wersję i ponawia publikację po zwolnieniu blokady. Ciężkie podglądy Gita
+  `read_gate()`: bez blokady dziennika (odczyt prezentacji), z licznikiem epok akcji — w trakcie akcji z kolejki
+  wątek główny oddaje ostatnią opublikowaną, spójną wersję i publikuje po jej zakończeniu. Po akcji worker bierze
+  następne zadanie dopiero po doręczeniu jej wyniku (migawka ze skutkiem, commit, odpowiedź). Ciężkie podglądy Gita
   (CardBranchDiff, PreviewCardMerge, …) zachowują własny kontrakt w kolejce.
 """
 import contextlib
@@ -55,6 +56,7 @@ class CardFlowMonitor(QObject):
         self._read_done.connect(self._deliver_read)
         self._handshakes: set = set()     # zdarzenia „wynik doręczony”, na które czeka worker (K-98 #2)
         self._owner_thread = threading.current_thread()   # wątek główny (Qt), który doręcza wyniki
+        self._epoch = 0   # licznik epok akcji (K-98 #2): nieparzysty — akcja z kolejki w toku
         self._deliveries: list = []       # [dalszy ciąg, future, opublikować] — wyniki z kolejki czekające na migawkę
         self._retry = QTimer(self, singleShot=True, interval=DELIVER_RETRY_MS)
         self._retry.timeout.connect(self._drain)
@@ -87,15 +89,19 @@ class CardFlowMonitor(QObject):
 
     @contextlib.contextmanager
     def read_gate(self):
-        """Bramka publikacji migawki (K-98 #2): blokada dziennika bez czekania. `True` — blokada wzięta na cały
-        odczyt, więc wszystkie dzienniki kart i Tablica pochodzą z jednej chwili, w której żaden zapis przepływu
-        (pod tą blokadą) nie jest w połowie; `False` — trzyma ją mutacja, a wywołujący nie czeka."""
-        taken = self.lock.acquire(blocking=False)
-        try:
-            yield taken
-        finally:
-            if taken:
-                self.lock.release()
+        """Bramka publikacji migawki (K-98 #2), bez blokady dziennika — wątek główny nigdy nie czeka na mutację.
+
+        Bilet jest fałszywy, gdy trwa akcja z kolejki (licznik epok nieparzysty): migawka nie pokazuje akcji
+        w połowie, odczyt dostaje poprzednią wersję. W środku dziennik czytamy w trybie prezentacji (bez blokady,
+        pełne zdarzenia). `still_valid()` po obliczeniu: fałsz, gdy w trakcie odczytu zaczęła się albo skończyła
+        akcja — wynik odrzucamy i publikujemy ponownie. Tick nie jest akcją: jego zapisy widać zapis po zapisie,
+        jak dotąd."""
+        ticket = _ReadTicket(self)
+        if not ticket:
+            yield ticket
+            return
+        with self.engine.journal.presentation():
+            yield ticket
 
     def box_wait(self, card_id: str) -> str:
         return self.engine.box_wait(card_id)
@@ -420,19 +426,20 @@ class CardFlowMonitor(QObject):
         return self._submit(work, prepared)
 
     def _submit(self, work, then, *, whole: bool = True) -> bool:
-        """Zadanie kolejki mutacji. K-98 #2: akcja (`whole`) biegnie w całości pod blokadą dziennika, więc
+        """Zadanie kolejki mutacji. K-98 #2: akcja (`whole`) podbija licznik epok na czas wykonania, więc
         publikacja migawki (bramka `read_gate`) widzi ją całą albo wcale — np. `card.moved` i `card.paused`
-        z jednego ruchu karty. Tick (`whole=False`) bierze blokadę w swoich sekcjach, żeby długie przejście
-        po kartach nie wstrzymywało publikacji; każda jego sekcja zapisu pozostaje niepodzielna."""
+        z jednego ruchu karty — a worker czeka na doręczenie jej wyniku przed następnym zadaniem. Tick
+        (`whole=False`) nie jest akcją: jego zapisy widać zapis po zapisie, każdy pełny."""
         if self._stopped:
             return False
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-cardflow")
-        lock = self.lock
-
         def atomic():
-            with lock:
+            self._epoch += 1          # nieparzysty: akcja w toku (czyta go bramka publikacji)
+            try:
                 return work()
+            finally:
+                self._epoch += 1
         try:
             future = self._pool.submit(atomic if whole else work)
         except RuntimeError:  # pula zamknięta (koniec usługi)
@@ -475,7 +482,7 @@ class CardFlowMonitor(QObject):
     def _deliver(self, then, future) -> None:
         if self._stopped:
             return
-        self._deliveries.append([then, future, False])
+        self._deliveries.append([then, future, False, False])
         self._drain()
 
     def _drain(self) -> None:
@@ -483,30 +490,29 @@ class CardFlowMonitor(QObject):
         o Snapshot(), widzi już zlecenie. K-98 #2: gdy kolejna mutacja trzyma już blokadę dziennika, wątek główny
         nie czeka na nią — wynik (i następne za nim) czeka, a próba wraca co DELIVER_RETRY_MS."""
         while self._deliveries and not self._stopped:
-            item = self._deliveries[0]
-            committed = self.commit(wait=False)
-            if committed is None:
-                self._retry_later()
-                return
-            item[2] = item[2] or bool(committed)
-            if item[2] and self.board is not None and self.board.publish() is False:
+            item = self._deliveries[0]       # [dalszy ciąg, future, opublikowano, zapisano commit]
+            dirty = self.engine.journal.has_dirty()
+            committed = self.commit(wait=False)   # None — blokadę trzyma tick; commit później
+            if committed is not None:
+                item[3] = True
+            # Publikacja nie potrzebuje blokady: skutek akcji trafia do migawki od razu, także gdy commit czeka.
+            # Po commicie publikujemy jeszcze raz (ostatni commit Tablicy w migawce).
+            if (dirty or committed) and (not item[2] or committed) and self.board is not None:
+                if self.board.publish() is False:
+                    self._retry_later()
+                    return
+                item[2] = True
+            if not item[3]:
                 self._retry_later()
                 return
             self._deliveries.pop(0)
             self._answer(*item[:2])
 
-    def settle(self, timeout: float) -> None:
-        """Odczyt po zapisie (K-98 #2, Snapshot): zakończone, a jeszcze nieopublikowane wyniki z kolejki publikujemy
-        przed odpowiedzią, czekając na blokadę dziennika najwyżej `timeout` s. Bez takich wyników (trwa dopiero
-        mutacja) nic nie czeka — odczyt dostaje ostatnią opublikowaną wersję."""
-        if not self._deliveries or self._stopped:
-            return
-        if not self.lock.acquire(timeout=timeout):
-            return
-        try:
+    def settle(self) -> None:
+        """Odczyt po zapisie (K-98 #2, Snapshot): zakończone, a jeszcze niedoręczone wyniki z kolejki publikujemy
+        przed odpowiedzią — bez czekania (publikacja nie bierze blokady dziennika)."""
+        if self._deliveries and not self._stopped:
             self._drain()
-        finally:
-            self.lock.release()
 
     def _retry_later(self) -> None:
         if not self._retry.isActive():
@@ -527,6 +533,20 @@ class CardFlowMonitor(QObject):
                     print(f"tide-daemon: przepływ karty: powiadomienie: {exc!r}", flush=True)
         if not future.cancelled():
             then(future)
+
+
+class _ReadTicket:
+    """Bilet publikacji (seqlock na liczniku epok akcji): prawdziwy, gdy żadna akcja z kolejki nie trwa."""
+
+    def __init__(self, monitor):
+        self._monitor = monitor
+        self._epoch = monitor._epoch
+
+    def __bool__(self) -> bool:
+        return self._epoch % 2 == 0
+
+    def still_valid(self) -> bool:
+        return bool(self) and self._monitor._epoch == self._epoch
 
 
 def _report(what: str):

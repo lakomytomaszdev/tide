@@ -63,14 +63,17 @@ class BusyReadsCase(RefreshContextCase):
         return json.loads((board or self.board).snapshot_json())
 
     @contextlib.contextmanager
-    def blocked_tick(self):
+    def blocked_tick(self, write=None):
         """Prawdziwy `engine.tick` na workerze `tide-cardflow`, zatrzymany w `_project_base` pod blokadą dziennika
-        (`with journal.lock: store.project_card_base(...)`) aż do `release`. Zwraca (release, czy tick skończony)."""
+        (`with journal.lock: store.project_card_base(...)`) aż do `release`; `write()` — zapis ticku tuż przed
+        zatrzymaniem (wciąż pod blokadą). Zwraca (release, czy tick skończony)."""
         entered, release, where = threading.Event(), threading.Event(), []
         real = self.store.project_card_base
 
         def held(*args, **kwargs):
             where.append(threading.current_thread().name)
+            if write is not None and not entered.is_set():
+                write()
             entered.set()
             release.wait(30)
             return real(*args, **kwargs)
@@ -84,6 +87,25 @@ class BusyReadsCase(RefreshContextCase):
             finally:
                 release.set()
                 self.assertTrue(pump(lambda: not self.live._ticking, 40), "tick nie skończył się po odblokowaniu")
+
+    @contextlib.contextmanager
+    def blocked_action(self, flow=None):
+        """Akcja w kolejce mutacji (jak StartCard) trzymająca blokadę dziennika aż do `release`. Zwraca
+        (release, czy akcja doręczona)."""
+        entered, release, finished = threading.Event(), threading.Event(), []
+
+        def action():
+            with self.engine.journal.lock:
+                entered.set()
+                release.wait(30)
+            return {"ok": True}
+        self.assertTrue((flow or self.live)._submit(action, finished.append))
+        try:
+            self.assertTrue(pump(entered.is_set), "akcja nie wystartowała")
+            yield release, (lambda: bool(finished))
+        finally:
+            release.set()
+            self.assertTrue(pump(lambda: finished, 40), "akcja nie skończyła się po odblokowaniu")
 
     def flow_settings(self, board=None):
         got = []
@@ -102,34 +124,68 @@ class BusyReadsCase(RefreshContextCase):
 
 
 class BusyWorkerReadsTest(BusyReadsCase):
+    def check_reads(self, card, version):
+        """Snapshot (Panel karty), GetCardFlowSettings, BoxStatus i CardDocs odpowiadają; BoxStatus niesie wersję
+        tej samej publikacji co Snapshot."""
+        snap = self.snapshot()
+        self.assertEqual(snap["readState"], "ready")
+        version(snap["version"])
+        panel = self.card_of(snap, card)["derived"]["flow"]
+        self.assertTrue(panel.get("environment") or (panel.get("plan") or {}).get("environment"),
+                        "Panel karty bez sekcji środowiska w opublikowanej wersji")
+        settings = self.flow_settings()
+        self.assertTrue(settings["ok"], settings)
+        self.assertEqual(settings["readState"], "ready")
+        self.assertTrue(settings["version"])
+        status = self.box_status()
+        self.assertTrue(status["ok"], status)
+        self.assertEqual((status["version"], status["readState"]), (snap["version"], "ready"))
+        docs = []
+        self.board.card_docs(card, docs.append)
+        self.assertTrue(pump(lambda: docs), "CardDocs bez odpowiedzi")
+        self.assertTrue(json.loads(docs[0]).get("ok", True), docs[0])
+
     def test_reads_answer_while_the_tick_holds_the_journal(self):
         before = self.snapshot()
         card = self.plasma_cards[0]
         with self.blocked_tick() as (release, done):
-            # Publikacja nie czeka na blokadę dziennika — odkłada się, a odczyt dostaje poprzednią wersję.
-            self.assertFalse(self.board.publish())
-            self.board._plans_mark = None      # Snapshot spróbuje publikacji (jak przy nowym planie w repozytorium)
-            snap = self.snapshot()
-            self.assertEqual((snap["version"], snap["readState"]), (before["version"], "ready"))
-            panel = self.card_of(snap, card)["derived"]["flow"]
-            self.assertTrue(panel.get("environment") or (panel.get("plan") or {}).get("environment"),
-                            "Panel karty bez sekcji środowiska w opublikowanej wersji")
-            settings = self.flow_settings()
-            self.assertTrue(settings["ok"], settings)
-            self.assertEqual(settings["readState"], "ready")
-            self.assertTrue(settings["version"])
-            status = self.box_status()
-            self.assertTrue(status["ok"], status)
-            self.assertEqual((status["version"], status["readState"]), (before["version"], "ready"))
-            docs = []
-            self.board.card_docs(card, docs.append)
-            self.assertTrue(pump(lambda: docs), "CardDocs bez odpowiedzi")
-            self.assertTrue(json.loads(docs[0]).get("ok", True), docs[0])
-            # Wszystkie odpowiedzi przyszły, a worker mutacji nadal stoi w ticku.
+            # Publikacja nie bierze blokady dziennika: tick jej nie wstrzymuje, odczyt jest świeży od razu.
+            self.assertTrue(self.board.publish(), "publikacja czekała na blokadę trzymaną przez tick")
+            self.board._plans_mark = None      # Snapshot opublikuje ponownie (jak przy nowym planie w repozytorium)
+            self.check_reads(card, lambda v: self.assertGreaterEqual(v, before["version"]))
+            # Wszystkie odpowiedzi przyszły, a worker mutacji nadal stoi w ticku pod blokadą dziennika.
             self.assertFalse(release.is_set())
             self.assertFalse(done(), "odpowiedź po zakończeniu ticku nie zalicza próby")
-        # Po zwolnieniu blokady odłożona publikacja wraca sama (bez nowego wywołania).
-        self.assertTrue(pump(lambda: self.board._pending is None and not self.board._retry.isActive()))
+            free = self.engine.journal.lock.acquire(blocking=False)
+            if free:
+                self.engine.journal.lock.release()
+            self.assertFalse(free, "tick nie trzymał blokady dziennika")
+
+    def test_snapshot_shows_what_the_tick_already_wrote_while_it_still_holds_the_journal(self):
+        # Przebieg 4 `make test-changed` (FullPlanningTest): test widzi zdarzenie ticku w pliku dziennika i od razu
+        # czyta Snapshot. Publikacja musi je pokazać deterministycznie, choć tick dalej trzyma blokadę dziennika.
+        card = self.proj_cards[0]
+        before = self.snapshot()
+        self.assertFalse(self.card_of(before, card)["derived"]["flow"]["paused"])
+        with self.blocked_tick(write=lambda: self.engine.journal.append(card, "card.paused")) as (release, done):
+            with open(self.engine.journal.mirror_path(card), encoding="utf-8") as fh:   # bez blokady — trzyma ją tick
+                self.assertIn('"card.paused"', fh.read(), "tick nie zapisał zdarzenia")
+            self.board._plans_mark = None      # jak nowy plan w repozytorium: Snapshot publikuje
+            snap = self.snapshot()
+            self.assertGreater(snap["version"], before["version"])
+            self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"],
+                            "Snapshot nie pokazuje zapisu ticku, który jest już w dzienniku")
+            self.assertFalse(done())
+
+    def test_reads_answer_while_an_action_holds_the_journal(self):
+        before = self.snapshot()
+        card = self.plasma_cards[0]
+        with self.blocked_action() as (release, done):
+            # Akcja w toku: publikacja odłożona (bez czekania), odczyty dostają poprzednią, spójną wersję.
+            self.assertFalse(self.board.publish())
+            self.board._plans_mark = None
+            self.check_reads(card, lambda v: self.assertEqual(v, before["version"]))
+            self.assertFalse(done(), "odpowiedź po zakończeniu akcji nie zalicza próby")
 
     def test_publication_never_mixes_one_mutation_half_done(self):
         # Jedna sekcja blokady na oba zapisy oraz dwie osobne sekcje — jak `engine.moved` (card.moved, card.paused);
@@ -181,7 +237,7 @@ class BusyWorkerReadsTest(BusyReadsCase):
 
 
 class ReadAfterWriteTest(BusyReadsCase):
-    def test_snapshot_shows_a_finished_action_while_the_next_job_holds_the_journal(self):
+    def test_snapshot_shows_a_finished_action_while_another_thread_holds_the_journal(self):
         card = self.proj_cards[0]
         before = self.snapshot()
         self.assertFalse(self.card_of(before, card)["derived"]["flow"]["paused"])
@@ -191,11 +247,11 @@ class ReadAfterWriteTest(BusyReadsCase):
             self.engine.journal.append(card, "card.paused")
             appended.set()
 
-        def other_holder():   # inny wątek usługi (nie kolejka) trzyma blokadę krótko, krócej niż SETTLE_MS
+        def other_holder():   # inny wątek usługi (nie kolejka) trzyma blokadę dziennika
             appended.wait(5)
-            with self.engine.journal.lock:     # czeka, aż akcja zwolni blokadę (biegnie pod nią w całości)
+            with self.engine.journal.lock:
                 holding.set()
-                release.wait(5)
+                release.wait(10)
         self.assertTrue(self.live._submit(pause, done.append))
         # Bez pętli zdarzeń: `pause` kończy się na workerze, a drugi wątek bierze blokadę, zanim wątek główny
         # zdąży doręczyć wynik.
@@ -204,13 +260,13 @@ class ReadAfterWriteTest(BusyReadsCase):
         self.addCleanup(holder.join)
         self.addCleanup(release.set)
         self.assertTrue(holding.wait(5))
-        app().processEvents()                  # wynik `pause` dociera, ale publikacja czeka na blokadę
-        self.assertFalse(done, "wynik akcji opublikowany mimo trzymanej blokady")
-        threading.Timer(0.05, release.set).start()
-        snap = self.snapshot()                 # czeka najwyżej SETTLE_MS na blokadę i publikuje zaległy wynik
+        app().processEvents()                  # wynik dociera: migawka ma skutek od razu, commit czeka na blokadę
+        snap = self.snapshot()
         self.assertGreater(snap["version"], before["version"])
         self.assertTrue(self.card_of(snap, card)["derived"]["flow"]["paused"])
-        self.assertTrue(done, "odpowiedź akcji przyszła dopiero po publikacji jej skutku")
+        self.assertFalse(done, "odpowiedź akcji przed commitem dziennika")
+        release.set()
+        self.assertTrue(pump(lambda: done), "odpowiedź akcji po zwolnieniu blokady")
 
 
     def test_next_queued_job_starts_only_after_the_action_is_published(self):
@@ -237,7 +293,7 @@ class PreparingTest(BusyReadsCase):
         self.addCleanup(flow.stop)
         self.addCleanup(fresh.stop)
         card = self.plasma_cards[0]
-        with self.blocked_tick():
+        with self.blocked_action(flow):        # akcja w kolejce tej usługi: pierwszej publikacji jeszcze nie ma
             snap = self.snapshot(fresh)
             self.assertEqual((snap["readState"], snap["version"], snap["cards"]), ("preparing", 0, []))
             self.assertIsNone(fresh.published())
@@ -250,7 +306,7 @@ class PreparingTest(BusyReadsCase):
             work = json.loads(fresh.work_json())
             self.assertEqual(work["readState"], "preparing")
             self.assertEqual(self.flow_settings(fresh)["readState"], "ready")   # plik ustawień nie zależy od Tablicy
-        # Odłożona pierwsza publikacja przychodzi sama po zwolnieniu blokady.
+        # Odłożona pierwsza publikacja przychodzi sama po zakończeniu akcji.
         self.assertTrue(pump(lambda: fresh._json))
         ready = json.loads(fresh._json)
         self.assertEqual((ready["readState"], ready["version"]), ("ready", 1))

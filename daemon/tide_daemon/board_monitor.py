@@ -40,10 +40,11 @@
 - K-98 #2 — opublikowana, spójna migawka: Snapshot() (także Panel karty — `cards[].derived.flow`) oddaje ostatnią
   opublikowaną wersję z polami `version` (numer publikacji, rośnie przy każdej zmianie treści) i `readState`
   (`ready`; przed pierwszą publikacją `preparing` zamiast pustej Tablicy). Publikacja powstaje pod bramką przepływu
-  karty (`CardFlowMonitor.read_gate`): blokada dziennika bez czekania, trzymana przez cały odczyt — Tablica i dzienniki
-  kart z jednej chwili, bez zapisu przepływu w połowie. Gdy blokadę trzyma długa mutacja (tick, StartCard, scalenie),
-  wątek główny nie czeka: publikacja wraca po PUBLISH_RETRY_MS, a odczyty dostają poprzednią wersję. Dane odczytu
-  służą wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji.
+  karty (`CardFlowMonitor.read_gate`) i nie bierze blokady dziennika: dzienniki czyta w trybie prezentacji (pełne
+  zdarzenia, własna pamięć), a licznik epok akcji (seqlock) odrzuca odczyt, w trakcie którego trwała albo zmieniła się
+  akcja z kolejki — żadna wersja nie pokazuje akcji w połowie. Wtedy publikacja wraca po PUBLISH_RETRY_MS, a odczyty
+  dostają poprzednią wersję. Zapisy ticku widać zapis po zapisie, od razu (jak przed K-98 #2). Dane odczytu służą
+  wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji.
 """
 import contextlib
 import copy
@@ -73,7 +74,6 @@ MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_M
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
 PUBLISH_RETRY_MS = 50  # publikacja odłożona przez zajętą blokadę dziennika — kolejna próba (bez czekania)
-SETTLE_MS = 250        # Snapshot czeka najwyżej tyle na blokadę, gdy wynik z kolejki czeka na publikację
 
 
 class Published(NamedTuple):
@@ -216,12 +216,12 @@ class BoardMonitor(QObject):
     def snapshot_json(self) -> str:
         # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
         # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
-        # K-98 #2: publikacja odłożona przez trwającą mutację — ostatnia opublikowana wersja albo „preparing”.
-        # Zakończone, a jeszcze nieopublikowane wyniki z kolejki najpierw trafiają do migawki (czekanie na blokadę
-        # dziennika najwyżej SETTLE_MS), żeby odczyt po zapisie widział jego skutek.
+        # K-98 #2: publikacja odłożona przez trwającą akcję — ostatnia opublikowana wersja albo „preparing”.
+        # Zakończone, a jeszcze niedoręczone wyniki z kolejki najpierw trafiają do migawki (bez czekania — publikacja
+        # nie bierze blokady dziennika), żeby odczyt po zapisie widział jego skutek.
         settle = getattr(self.flow, "settle", None) if self.flow is not None else None
         if settle is not None:
-            settle(SETTLE_MS / 1000)
+            settle()
         if self._pending is not None:
             self._retry_pending()
         mark = self._plans_stamp()
@@ -672,10 +672,11 @@ class BoardMonitor(QObject):
     # --- odświeżanie ---------------------------------------------------------------------------
 
     def publish(self) -> bool:
-        """Świeża migawka z plików i projekcja kart. K-98 #2: pod bramką przepływu karty; gdy blokadę dziennika
-        trzyma mutacja, publikacja jest odłożona (False), a Snapshot() oddaje poprzednią opublikowaną wersję."""
-        with self._gate() as free:
-            if not free:
+        """Świeża migawka z plików i projekcja kart. K-98 #2: pod bramką przepływu karty (bez blokady dziennika);
+        gdy trwa akcja z kolejki albo zmieniła się w trakcie odczytu, publikacja jest odłożona (False), a Snapshot()
+        oddaje poprzednią opublikowaną wersję."""
+        with self._gate() as ticket:
+            if not ticket:
                 self._defer("publish")
                 return False
             try:
@@ -692,9 +693,8 @@ class BoardMonitor(QObject):
                 print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
                 snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
                             "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
-            self._base = snapshot
-            self._apply(read)     # bramka jest już wzięta (blokada dziennika jest wielowejściowa w tym wątku)
-        return True
+            # Podstawa trafia do `_base` dopiero z udaną publikacją (bilet ważny przez cały odczyt).
+            return self._apply(read, base=snapshot, ticket=ticket) is not False
 
     def _gate(self):
         """Bramka odczytu przepływu karty (K-98 #2) albo zawsze otwarta, gdy usługa działa bez przepływu."""
@@ -714,25 +714,33 @@ class BoardMonitor(QObject):
         elif kind == "apply":
             self._apply()
 
-    def _apply(self, read: BoardRead | None = None) -> None:
+    def _apply(self, read: BoardRead | None = None, base: dict | None = None, ticket=None):
         """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
         `read`: kontekst odczytu Tablicy tego odświeżenia (K-98 #1); bez niego (zegar przeliczenia, YouTrack) —
-        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie. K-98 #2: pod bramką jak `publish`."""
-        if self._base is None:
-            self.publish()
-            return
-        with self._gate() as free:
-            if not free:
+        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie. K-98 #2: pod bramką jak `publish`
+        (`ticket` — bilet z `publish`, `base` — świeżo wczytana podstawa). False — publikacja odłożona."""
+        if base is None and self._base is None:
+            return self.publish()
+        if ticket is not None:
+            return self._publish(read, ticket, base)
+        with self._gate() as ticket:
+            if not ticket:
                 self._defer("apply")
-                return
-            self._publish(read)
+                return False
+            return self._publish(read, ticket, base)
 
-    def _publish(self, read: BoardRead | None) -> None:
-        """Projekcja i publikacja jednej wersji (wywołujący trzyma bramkę)."""
+    def _publish(self, read: BoardRead | None, ticket, base: dict | None = None) -> bool:
+        """Projekcja i publikacja jednej wersji (wywołujący trzyma bramkę). Gdy w trakcie odczytu zaczęła się albo
+        skończyła akcja z kolejki (bilet nieważny), wynik jest odrzucany przed jakimkolwiek skutkiem."""
         if not isinstance(read, BoardRead):   # sygnały Qt wołają bez argumentu
             read = BoardRead(self.store)
-        snapshot, context, box_wait = self._derived(self._base, read)
+        base = self._base if base is None else base
+        snapshot, context, box_wait = self._derived(base, read)
         work = self._work(snapshot, context)
+        if not getattr(ticket, "still_valid", lambda: True)():
+            self._defer("publish")
+            return False
+        self._base = base
         if self.youtrack is not None:
             try:
                 self.youtrack.observe(snapshot)
@@ -759,6 +767,7 @@ class BoardMonitor(QObject):
                 self.work_changed.emit()
             elif not self._work_later.isActive():
                 self._work_later.start()   # tylko ostatnia czynność agenta — kafelek dowie się za chwilę
+        return True
 
     def _work(self, snapshot: dict, context) -> dict:
         """Lista „Praca”; błąd nigdy nie psuje tablicy — wtedy same karty, a w ostateczności pusta lista."""

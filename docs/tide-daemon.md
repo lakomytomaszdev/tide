@@ -3776,19 +3776,20 @@ porównanie bazy z HEAD tym samym reproduktorem: `daemon/tests/perf_board_refres
 pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:
 
 - `Snapshot()` (także Panel karty — `cards[].derived.flow`) oddaje ostatnią **opublikowaną** wersję. Publikacja
-  (`BoardMonitor.publish`/przeliczenie) idzie pod bramką `CardFlowMonitor.read_gate()`: blokada dziennika brana bez
-  czekania i trzymana przez cały odczyt, więc Tablica i dzienniki wszystkich kart pochodzą z jednej chwili, a zapis
-  przepływu w połowie (pod tą blokadą) nie trafia do żadnej wersji. Gdy blokadę trzyma mutacja (tick, recovery,
-  StartCard z `git worktree add`, scalenie), wątek główny nie czeka: publikacja wraca co `PUBLISH_RETRY_MS` (50 ms),
-  a odczyt dostaje poprzednią wersję. Synchronizacja zmian z zewnątrz (`sync`) bierze blokadę bez czekania i odkłada
-  commit do następnej okazji.
-- Akcja z kolejki (wszystko poza tickiem) biegnie w całości pod blokadą dziennika, więc żadna wersja nie pokazuje jej
-  w połowie (np. `card.moved` bez `card.paused`); tick bierze blokadę w swoich sekcjach. Wynik akcji jest odsyłany
-  dopiero po commicie dziennika i publikacji jej skutku (kolejność FIFO, ponowienie co 20 ms bez blokowania wątku
-  głównego), a worker bierze następne zadanie dopiero po tym doręczeniu (najwyżej `DELIVERY_WAIT_S` = 5 s czekania,
-  bez blokady dziennika) — kolejna mutacja nie rusza przed migawką ze skutkiem poprzedniej akcji. `Snapshot()` przy
-  zakończonym, a nieopublikowanym wyniku czeka na blokadę najwyżej 250 ms (`SETTLE_MS`) i publikuje go — odczyt
-  po zapisie widzi skutek; trwająca mutacja nie zatrzymuje odczytu.
+  (`BoardMonitor.publish`/przeliczenie) idzie pod bramką `CardFlowMonitor.read_gate()` i **nie bierze blokady
+  dziennika**: dzienniki kart czyta w trybie prezentacji (`Journal.presentation()` — własna pamięć, kopia usługi jest
+  tylko dopisywana, plik w tablicy podmieniany atomowo, urwany ostatni wiersz trwającego dopisania pomijany).
+  Spójność względem akcji daje licznik epok (seqlock): akcja z kolejki (wszystko poza tickiem) podbija go na czas
+  wykonania; publikacja w trakcie akcji albo taka, w której czasie akcja się zaczęła lub skończyła, jest odrzucana
+  przed jakimkolwiek skutkiem i wraca co `PUBLISH_RETRY_MS` (50 ms) — żadna wersja nie pokazuje akcji w połowie
+  (np. `card.moved` bez `card.paused`), a odczyt dostaje poprzednią wersję. Zapisy ticku i recovery widać zapis po
+  zapisie od razu (każdy pełny), jak przed zmianą — tick nie wstrzymuje publikacji, więc Snapshot po zapisie ticku
+  widzi go deterministycznie, nawet gdy tick dalej trzyma blokadę. Synchronizacja zmian z zewnątrz (`sync`) bierze
+  blokadę bez czekania i odkłada commit do następnej okazji.
+- Wynik akcji jest odsyłany po publikacji jej skutku i commicie dziennika (FIFO; commit przy zajętej blokadzie
+  ponawiany co 20 ms bez blokowania wątku głównego, migawka publikowana od razu i ponownie po commicie), a worker
+  bierze następne zadanie dopiero po tym doręczeniu (najwyżej `DELIVERY_WAIT_S` = 5 s czekania, bez blokady
+  dziennika). `Snapshot()` najpierw doręcza zakończone, a niedoręczone wyniki (bez czekania).
 - Odpowiedź ma na początku `version` (numer publikacji; rośnie przy każdej zmianie treści albo `boxWait` kart, ten sam
   stan zachowuje numer) i `readState: "ready"`. Przed pierwszą publikacją: `{"version": 0, "readState": "preparing",
   "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca
@@ -3805,7 +3806,8 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
   zachowują własny kontrakt w kolejce i nie są prostymi odczytami.
 - **Ograniczenie:** zapisy Tablicy z wątku głównego (`CreateCard`, `UpdateCard`, `MoveCard`, …) nadal czekają na
   transakcję Tablicy, jeśli trzyma ją długa mutacja (np. StartCard). `Worktrees` (`busy_places`) czyta dziennik pod
-  blokadą jak dotąd.
+  blokadą jak dotąd. Odczyt prezentacji pomija tylko blokadę; `Journal.read_complete` i jego parser są bez zmian
+  (urwany wiersz nadal daje błąd ścisłego odczytu), a zapisy i bramki czytają pod blokadą jak dotąd.
 
 `ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
 
