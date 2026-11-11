@@ -43,6 +43,7 @@ Window {
     property int closed: 0
     property var req: ({})
     property string path: ""
+    property string work: ""
     readonly property var tokens: Tide.Tokens
 
     function label(from) { return Start.startLabel(from) }
@@ -67,6 +68,9 @@ Window {
         // Tryb diffa zapamiętany przez gospodarza (PT-350): `saved` zbiera zapisy, `diffMode` przeżywa ponowne otwarcie.
         property string diffMode: "unified"
         property var saved: []
+        // Wyrzutnie Worktrees (PT-361): `open(pełnaŚcieżka, program)` zapisuje wywołania w `calls`.
+        property string launchersJson: '{"terminal": true, "rider": true}'
+        function open(path, app) { calls = calls.concat([["open", path, app]]) }
         function setDiffMode(value) { saved = saved.concat([value]); diffMode = value }
         function gitDiff(tag, request) { calls = calls.concat([["gitDiff", tag, request]]) }
         function listCardBranches(tag, card, request) { calls = calls.concat([["listCardBranches", tag, card, request]]) }
@@ -80,6 +84,7 @@ Window {
             Git.DiffView {
                 request: root.req
                 initialPath: root.path
+                workDir: root.work
                 backend: fake
                 onCloseRequested: root.closed += 1
             }
@@ -918,6 +923,330 @@ out["context"] = json.loads(calls()[-1][2])["options"]["context"]
         self.assertEqual(list(out["contexts"].values()), [45])
         self.assertEqual(out["afterReload"], [{}, ["… 3 niezmienione linie", "… 42 niezmienione linie"]])
         self.assertEqual(out["context"], 45)
+
+
+VISIBLE = ("(function () { const v = loader.item, l = v.activeList; "
+           "return v.curRow >= l.indexAt(0, l.contentY + 1) && v.curRow <= l.indexAt(0, l.contentY + l.height - 1) })()")
+CLIP = "QGuiApplication.clipboard()"
+
+
+class LineNavigationTest(QmlCase):
+    """PT-361: bieżąca linia, strony, ściągawka, zaznaczenie i kopiowanie."""
+
+    def test_arrows_and_jk_move_the_current_line_and_keep_it_visible(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+out["start"] = view("curRow")
+key(Qt.Key.Key_Down)
+out["down"] = view("curRow")
+key(Qt.Key.Key_J)
+out["j"] = view("curRow")
+key(Qt.Key.Key_Up)
+out["up"] = view("curRow")
+key(Qt.Key.Key_K)
+key(Qt.Key.Key_K)
+out["top"] = view("curRow")
+for _ in range(45):
+    key(Qt.Key.Key_J)
+out["far"] = [view("curRow"), js(%r), field("diffLines", "it.contentY")[0] > 0]
+out["selection"] = [view("selFrom"), view("selTo")]
+out["marks"] = len(field("diffCurrentMark", "1"))
+out["file"] = view("selectedPath")
+''' % VISIBLE)
+        self.assertEqual([out["start"], out["down"], out["j"], out["up"], out["top"]], [0, 1, 2, 1, 0])
+        self.assertEqual(out["far"], [45, True, True])
+        self.assertEqual(out["selection"], [-1, -2], "samo przesuwanie nie zaznacza")
+        self.assertEqual(out["marks"], 1, "jedna oznaczona bieżąca linia")
+        self.assertEqual(out["file"], "apps/a.py", "strzałki nie zmieniają pliku")
+
+    def test_page_keys_scroll_by_a_page_in_both_modes(self):
+        out = self.probe('''
+def pages():
+    result = {}
+    result["start"] = view("curRow")
+    result["page"] = js("loader.item.pageRows()")
+    key(Qt.Key.Key_PageDown)
+    result["down"] = [view("curRow"), js(%r)]
+    result["moved"] = field(view("activeList.objectName"), "it.contentY")[0]
+    key(Qt.Key.Key_PageDown)
+    result["down2"] = view("curRow")
+    key(Qt.Key.Key_PageUp)
+    result["up"] = view("curRow")
+    return result
+open_view()
+reply(last_tag(), DIFF)
+out["unified"] = pages()
+for _ in range(3):
+    key(Qt.Key.Key_PageUp)
+out["backAtTop"] = view("curRow")
+key(Qt.Key.Key_U)
+out["split"] = pages()
+''' % VISIBLE)
+        for mode in ("unified", "split"):
+            res = out[mode]
+            self.assertGreater(res["page"], 5, mode)
+            self.assertEqual(res["down"], [res["start"] + res["page"], True], mode)
+            self.assertGreater(res["moved"], 0, mode)
+            # wysokości wierszy bywają różne, więc strona liczona z widocznego okna może różnić się o jeden wiersz
+            self.assertLessEqual(abs(res["down2"] - res["down"][0] - res["page"]), 1, mode)
+            self.assertLessEqual(abs(res["up"] - res["down"][0]), 1, mode)
+
+    def test_arrows_work_in_split_mode(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_U)
+for _ in range(3):
+    key(Qt.Key.Key_Down)
+out["down"] = view("curRow")
+key(Qt.Key.Key_K)
+out["k"] = view("curRow")
+out["visible"] = js(%r)
+''' % VISIBLE)
+        self.assertEqual([out["down"], out["k"], out["visible"]], [3, 2, True])
+
+    def test_question_mark_opens_the_cheat_sheet_and_esc_closes_it_before_the_view(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+out["before"] = len(field("diffCheatSheet", "1"))
+key(Qt.Key.Key_Question, Qt.KeyboardModifier.ShiftModifier)
+out["open"] = [view("helpOpen"), len(field("diffCheatSheet", "1"))]
+out["keys"] = field("diffHelpKeys", "it.text")
+out["texts"] = field("diffHelpText", "it.text")
+key(Qt.Key.Key_Down)
+out["frozen"] = view("curRow")
+key(Qt.Key.Key_Escape)
+out["afterEsc"] = [view("helpOpen"), js("closed")]
+key(Qt.Key.Key_Escape)
+out["afterSecond"] = js("closed")
+key(Qt.Key.Key_Question, Qt.KeyboardModifier.ShiftModifier)
+key(Qt.Key.Key_Question, Qt.KeyboardModifier.ShiftModifier)
+out["toggled"] = view("helpOpen")
+''')
+        self.assertEqual(out["before"], 0)
+        self.assertEqual(out["open"], [True, 1])
+        joined = " | ".join(out["keys"])
+        for needed in ("] / [", "Alt+↓", "n / p", "r", "u", "e", "↓ / ↑", "j / k", "PgDn / PgUp", "Shift+↓", "Ctrl+C",
+                       "Menu", "?", "Esc"):
+            self.assertIn(needed, joined)
+        self.assertEqual(len(out["keys"]), len(out["texts"]))
+        self.assertEqual(out["frozen"], 0, "pod ściągawką klawisze nie ruszają widoku")
+        self.assertEqual(out["afterEsc"], [False, 0], "pierwszy Esc zamyka tylko ściągawkę")
+        self.assertEqual(out["afterSecond"], 1, "drugi Esc zamyka widok")
+        self.assertFalse(out["toggled"])
+
+    def test_shift_arrows_select_and_ctrl_c_copies_only_the_text(self):
+        out = self.probe('''
+M = Qt.KeyboardModifier
+open_view()
+reply(last_tag(), DIFF)
+%s.setText("")
+key(Qt.Key.Key_C, M.ControlModifier)
+out["single"] = %s.text()
+for _ in range(30):
+    key(Qt.Key.Key_Down)
+key(Qt.Key.Key_Down, M.ShiftModifier)
+key(Qt.Key.Key_Down, M.ShiftModifier)
+out["range"] = [view("selFrom"), view("selTo"), view("anchorRow"), view("curRow")]
+out["shown"] = len(field("diffSelection", "1"))
+key(Qt.Key.Key_C, M.ControlModifier)
+out["copied"] = %s.text()
+key(Qt.Key.Key_Up, M.ShiftModifier)
+out["shrunk"] = [view("selFrom"), view("selTo")]
+key(Qt.Key.Key_Down)
+out["cleared"] = [view("selFrom"), view("selTo")]
+%s.setText("")
+key(Qt.Key.Key_Up, M.ShiftModifier)
+key(Qt.Key.Key_Up, M.ShiftModifier)
+key(Qt.Key.Key_Up, M.ShiftModifier)
+out["upward"] = [view("selFrom"), view("selTo")]
+key(Qt.Key.Key_C, M.ControlModifier)
+out["copiedUp"] = %s.text()
+''' % ((CLIP,) * 5))
+        # bez zaznaczenia kopiuje się bieżąca linia — tu nagłówek hunka, czyli nic
+        self.assertEqual(out["single"], "")
+        self.assertEqual(out["range"], [30, 32, 30, 32])
+        self.assertEqual(out["shown"], 3)
+        self.assertEqual(out["copied"], "kontekst 30\nstara linia\nnowa linia")
+        self.assertEqual(out["shrunk"], [30, 31])
+        self.assertEqual(out["cleared"], [-1, -2])
+        self.assertEqual(out["upward"], [29, 32], "kotwica to bieżąca linia z chwili pierwszego Shift")
+        self.assertEqual(out["copiedUp"], "kontekst 29\nkontekst 30\nstara linia\nnowa linia")
+
+    def test_click_and_shift_click_select_a_range_and_the_header_is_not_copied(self):
+        out = self.probe('''
+M = Qt.KeyboardModifier
+open_view()
+reply(last_tag(), DIFF)
+%s.setText("")
+click("diffLine", 0)
+out["click"] = [view("curRow"), view("anchorRow")]
+click("diffLine", 3, M.ShiftModifier)
+out["shift"] = [view("selFrom"), view("selTo")]
+key(Qt.Key.Key_C, M.ControlModifier)
+out["copied"] = %s.text()
+click("diffLine", 6)
+out["reselect"] = [view("selFrom"), view("selTo")]
+out["focus"] = view("activeFocus")
+''' % (CLIP, CLIP))
+        self.assertEqual(out["click"], [0, 0], "nagłówek hunka też da się zaznaczyć")
+        self.assertEqual(out["shift"], [0, 3])
+        self.assertEqual(out["copied"], "kontekst 1\nkontekst 2\nkontekst 3", "bez nagłówka hunka")
+        self.assertEqual(out["reselect"][0], out["reselect"][1])
+        self.assertTrue(out["focus"], "klik w linię zostawia klawiaturę widokowi")
+
+    def test_split_mode_copies_one_side_the_one_in_the_selection(self):
+        out = self.probe('''
+M = Qt.KeyboardModifier
+open_view()
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_U)
+for _ in range(30):
+    key(Qt.Key.Key_Down)
+key(Qt.Key.Key_Down, M.ShiftModifier)
+out["rows"] = js("JSON.stringify(loader.item.activeRows.slice(30, 32).map(r => r.kind))")
+out["side"] = view("selSide")
+key(Qt.Key.Key_C, M.ControlModifier)
+out["right"] = %s.text()
+key(Qt.Key.Key_Left)
+key(Qt.Key.Key_C, M.ControlModifier)
+out["left"] = %s.text()
+out["shown"] = len(field("diffSelection", "1"))
+''' % (CLIP, CLIP))
+        self.assertEqual(out["side"], "right")
+        self.assertEqual(out["right"], "kontekst 30\nnowa linia")
+        self.assertEqual(out["left"], "kontekst 30\nstara linia")
+        self.assertEqual(out["shown"], 2)
+
+    def test_selection_is_a_range_and_survives_20000_lines_without_extra_delegates(self):
+        out = self.probe('''
+M = Qt.KeyboardModifier
+open_view(path="big.txt")
+reply(last_tag(), DIFF)
+%s.setText("")
+key(Qt.Key.Key_Down)
+counts = [js("delegates()")]
+for _ in range(6):
+    key(Qt.Key.Key_PageDown, M.ShiftModifier)
+    counts.append(js("delegates()"))
+out["counts"] = counts
+out["range"] = [view("selFrom"), view("selTo"), view("curRow")]
+key(Qt.Key.Key_C, M.ControlModifier)
+out["copied"] = %s.text().count("\\n") + 1
+out["visible"] = js(%r)
+''' % (CLIP, CLIP, VISIBLE), files=[BIG])
+        self.assertTrue(all(0 < n < 120 for n in out["counts"]), out["counts"])
+        self.assertEqual(out["range"][2], out["range"][1])
+        self.assertEqual(out["copied"], out["range"][1] - out["range"][0] + 1, "każdy wiersz zakresu to jedna dodana linia")
+        self.assertTrue(out["visible"])
+
+    def test_selection_is_cleared_when_the_file_changes(self):
+        out = self.probe('''
+M = Qt.KeyboardModifier
+open_view()
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_Down, M.ShiftModifier)
+out["selected"] = [view("selFrom"), view("selTo")]
+key(Qt.Key.Key_BracketRight)
+out["after"] = [view("selFrom"), view("selTo"), view("curRow")]
+''')
+        self.assertEqual(out["selected"], [0, 1])
+        self.assertEqual(out["after"], [-1, -2, 0])
+
+
+class FileMenuTest(QmlCase):
+    def menu(self, request, work="", file_index=0, extra=""):
+        return self.probe('''
+open_view(%s, "")
+%s
+reply(last_tag(), DIFF)
+%s.setText("")
+click("diffFile", %d, button=Qt.MouseButton.RightButton)
+out["menu"] = len(field("diffFileMenu", "1"))
+out["items"] = [field("diffCopyPath", "it.label"), field("diffOpenEditor", "it.label")]
+out["calls"] = [c for c in calls() if c[0] == "open"]
+''' % (json.dumps(request), "js(%s)" % json.dumps("root.work = " + json.dumps(work)) if work else "", CLIP,
+       file_index) + extra)
+
+    def test_copy_path_puts_the_file_path_on_the_clipboard(self):
+        out = self.menu(REQUEST, extra='''
+click("diffCopyPath")
+out["clip"] = %s.text()
+out["closed"] = len(field("diffFileMenu", "1"))
+''' % CLIP)
+        self.assertEqual(out["menu"], 1)
+        self.assertEqual(out["items"][0], ["Kopiuj ścieżkę"])
+        self.assertEqual(out["clip"], "apps/a.py")
+        self.assertEqual(out["closed"], 0, "wybór pozycji zamyka menu")
+
+    def test_copy_path_of_a_renamed_file_is_the_new_path(self):
+        out = self.menu(REQUEST, file_index=3, extra='''
+click("diffCopyPath")
+out["clip"] = %s.text()
+''' % CLIP)
+        self.assertEqual(out["clip"], "b/nowa-nazwa.py")
+
+    def test_menu_key_opens_the_menu_of_the_selected_file_and_esc_closes_it_first(self):
+        out = self.probe('''
+open_view()
+reply(last_tag(), DIFF)
+key(Qt.Key.Key_Menu)
+out["open"] = len(field("diffFileMenu", "1"))
+key(Qt.Key.Key_Escape)
+out["afterEsc"] = [len(field("diffFileMenu", "1")), js("closed")]
+''')
+        self.assertEqual(out["open"], 1)
+        self.assertEqual(out["afterEsc"], [0, 0])
+
+    def test_open_in_editor_calls_the_launcher_with_the_full_path_for_a_worktree_source(self):
+        out = self.menu({"source": "worktree", "path": "/work/tree"}, extra='''
+click("diffOpenEditor")
+out["after"] = [c for c in calls() if c[0] == "open"]
+''')
+        self.assertEqual(out["items"][1], ["Otwórz w edytorze"])
+        self.assertEqual(out["calls"], [])
+        self.assertEqual(out["after"], [["open", "/work/tree/apps/a.py", "rider"]])
+
+    def test_open_in_editor_for_a_card_needs_the_card_worktree_from_the_host(self):
+        with_work = self.menu(REQUEST, work="/work/card-wt/", extra='''
+click("diffOpenEditor")
+out["after"] = [c for c in calls() if c[0] == "open"]
+''')
+        self.assertEqual(with_work["after"], [["open", "/work/card-wt/apps/a.py", "rider"]], "bez podwójnego ukośnika")
+        without = self.menu(REQUEST)
+        self.assertEqual(without["items"][1], [], "karta bez znanego katalogu roboczego nie ma pozycji")
+
+    def test_open_in_editor_is_hidden_without_a_working_directory(self):
+        for request in ({"source": "commit", "repo": "/work/r", "sha": SHA},
+                        {"source": "range", "repo": "/work/r", "from": "a", "to": "b"}):
+            out = self.menu(request, work="/work/r")
+            self.assertEqual(out["menu"], 1, request)
+            self.assertEqual(out["items"], [["Kopiuj ścieżkę"], []], request)
+
+    def test_open_in_editor_is_hidden_for_deleted_files_and_without_the_launcher(self):
+        deleted = self.menu({"source": "worktree", "path": "/work/tree"}, file_index=2)
+        self.assertEqual(deleted["items"][1], [], "usunięty plik nie ma czego otworzyć")
+        out = self.probe('''
+js("fake.launchersJson = '{\\"terminal\\": true, \\"rider\\": false}'")
+open_view({"source": "worktree", "path": "/work/tree"}, "")
+reply(last_tag(), DIFF)
+click("diffFile", 0, button=Qt.MouseButton.RightButton)
+out["items"] = field("diffOpenEditor", "it.label")
+out["copy"] = field("diffCopyPath", "it.label")
+''')
+        self.assertEqual(out["items"], [])
+        self.assertEqual(out["copy"], ["Kopiuj ścieżkę"])
+
+    def test_open_in_editor_refuses_paths_from_git_that_leave_the_directory(self):
+        out = self.probe('''
+open_view({"source": "worktree", "path": "/work/tree"}, "")
+reply(last_tag(), DIFF)
+out["paths"] = [js("loader.item.editorPath({path: %s, status: 'M'})" % json.dumps(p))
+                for p in ("../x", "a/../../x", "/etc/passwd", "", "a/b.txt")]
+''')
+        self.assertEqual(out["paths"], ["", "", "", "", "/work/tree/a/b.txt"])
 
 
 class SourceTest(unittest.TestCase):

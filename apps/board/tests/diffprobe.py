@@ -54,14 +54,13 @@ def field(name, expression):
     return json.loads(text) if text else []
 
 
-def click(name, index=0):
+def click(name, index=0, modifiers=Qt.KeyboardModifier.NoModifier, button=Qt.MouseButton.LeftButton):
     point = js("(function () { const v = loader.item; const it = " + ALL + "(v, " + json.dumps(name) + ")[" + str(index)
                + "]; if (!it) return ''; return JSON.stringify(it.mapToItem(null, it.width / 2, it.height / 2)) })()")
     if not point:
         raise AssertionError(f"nie ma elementu {name}[{index}]")
     point = json.loads(point)
-    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                     QPoint(int(point["x"]), int(point["y"])))
+    QTest.mouseClick(window, button, modifiers, QPoint(int(point["x"]), int(point["y"])))
     wait(60)
 
 

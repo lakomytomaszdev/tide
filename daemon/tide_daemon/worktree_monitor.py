@@ -17,6 +17,21 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 REFRESH_MS = 60_000
 
 
+def openable(worktrees: list, path: str, app: str) -> bool:
+    """Czy `path` wolno otworzyć programem `app`: katalog z listy Worktrees (jak dotąd) albo — tylko w Riderze, bez
+    terminala — istniejący zwykły plik w takim katalogu (PT-361, „Otwórz w edytorze” z widoku diffa). Ścieżka plików
+    jest rozwiązywana (symlinki), więc wyjście poza worktree przez `..` albo link nie przejdzie."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    live = [w["path"] for w in worktrees if not w["missing"]]
+    if path in live:
+        return True
+    if app != "rider" or not os.path.isfile(path):
+        return False
+    real = os.path.realpath(path)
+    return any(real.startswith(os.path.realpath(root).rstrip("/") + "/") for root in live)
+
+
 class WorktreeMonitor(QObject):
     changed = pyqtSignal()
     _finished = pyqtSignal(object, object)  # (co dalej, Future) — z wątku roboczego do głównego
@@ -151,7 +166,7 @@ class WorktreeMonitor(QObject):
     def open(self, path: str, app: str) -> bool:
         if self._stopped:
             return False
-        known = any(w["path"] == path and not w["missing"] for w in json.loads(self._json))
+        known = openable(json.loads(self._json), path, app)
         return bool(known and self.launchers and self.launchers.open(app, path))
 
     def show_window(self) -> bool:
