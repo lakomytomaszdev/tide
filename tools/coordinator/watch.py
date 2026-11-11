@@ -1,17 +1,27 @@
 """Strażnik nocny: kończy się (budzi koordynatora), gdy pojawi się nowa decyzja, karta zmieni kolumnę
 na review/waiting albo minie limit czasu (puls). Widziane decyzje w seen.json."""
 import json, os, subprocess, sys, time
-CARDS = ("K-89", "K-91", "K-92", "K-69", "K-78", "K-88", "K-82", "K-83", "K-75", "K-79", "K-56", "K-76")
-SEEN = os.path.join(os.environ.get("TIDE_WATCH_STATE") or os.path.dirname(__file__), "seen.json")
+# Obserwowane są wszystkie karty w toku (kolumna inna niż backlog i done) oraz każda, która kiedyś była w toku,
+# aż do zgłoszenia jej przejścia do done. Lista na sztywno przegapiała nowe karty (K-98, 11.11).
+ACTIVE = ("todo", "doing", "review", "waiting")
+STATE = os.environ.get("TIDE_WATCH_STATE") or os.path.dirname(__file__)
+SEEN = os.path.join(STATE, "seen.json")
+WATCHED = os.path.join(STATE, "watched.json")
 deadline = time.time() + float(sys.argv[1] if len(sys.argv) > 1 else 3000)
 seen = set(json.load(open(SEEN))) if os.path.exists(SEEN) else set()
+watched = set(json.load(open(WATCHED))) if os.path.exists(WATCHED) else set()
+
+def column(c):
+    return (c.get("derived") or {}).get("column") or c.get("column")
 
 def snapshot():
     out = subprocess.run(["busctl", "--user", "--json=short", "call", "org.tide.Daemon", "/Board",
                           "org.tide.Daemon.Board", "Snapshot"], capture_output=True, text=True, timeout=60).stdout
     data = json.loads(json.loads(out)["data"][0], strict=False)
     cards = data.get("cards") or data.get("board", {}).get("cards")
-    return {c["id"]: c for c in (cards.values() if isinstance(cards, dict) else cards) if c.get("id") in CARDS}
+    every = list(cards.values() if isinstance(cards, dict) else cards)
+    watched.update(c["id"] for c in every if column(c) in ACTIVE)
+    return {c["id"]: c for c in every if c.get("id") in watched}
 
 while time.time() < deadline:
     try:
@@ -20,7 +30,7 @@ while time.time() < deadline:
         print("snapshot:", exc); time.sleep(60); continue
     events = []
     # Opiekun karty (K-37): każde jego zdarzenie budzi koordynatora — obserwacja nowej funkcji.
-    for cid in CARDS:
+    for cid in sorted(cards):
         try:
             for line in open(os.path.expanduser(f"~/DevWorkspace/tide-board/flow/{cid}/journal.jsonl")):
                 e = json.loads(line)
@@ -46,11 +56,14 @@ while time.time() < deadline:
             if key not in seen:
                 events.append(f"{cid} LIMIT: {note[:200]}")
                 seen.add(key)
-        col = d.get("column") or c.get("column")
+        col = column(c)
         key = f"{cid}:col:{col}:{d.get('note','')[:40]}"
         if col in ("review", "waiting", "done") and key not in seen:
             events.append(f"{cid} KOLUMNA {col}: {d.get('note','')[:200]}")
             seen.add(key)
+        if col == "done" and key in seen:
+            watched.discard(cid)
+    json.dump(sorted(watched), open(WATCHED, "w"))
     if events:
         json.dump(sorted(seen), open(SEEN, "w"))
         print("\n".join(events)); sys.exit(0)
