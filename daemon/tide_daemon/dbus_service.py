@@ -305,7 +305,7 @@ GIT_XML = f"""<interface name="{GIT_IFACE}">
   </method>
 </interface>"""
 
-REPORTS_XML =f"""<interface name="{REPORTS_IFACE}">
+REPORTS_XML = f"""<interface name="{REPORTS_IFACE}">
   <method name="Generate"><arg name="path" type="s" direction="out"/></method>
   <method name="Latest"><arg name="path" type="s" direction="out"/></method>
   <method name="Status"><arg name="json" type="s" direction="out"/></method>
