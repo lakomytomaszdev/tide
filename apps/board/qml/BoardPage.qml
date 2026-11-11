@@ -11,6 +11,7 @@ import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
 import "card" as CardUi
+import "git" as Git
 import "board.js" as Logic
 import "card/decision.js" as Decision
 
@@ -24,7 +25,10 @@ Rectangle {
     property string homeDir: ""
     property real nowTs: Date.now() / 1000
     property bool canLaunch: true        // okno „Co ma zrobić agent?” (LaunchDialog)
-    property bool canDiff: false         // PT-5: diff gałęzi karty
+    property bool canDiff: true          // „Zmiany gałęzi” na kafelku Do sprawdzenia (K-36, #17)
+    property var diffBackend: null       // backend widoku diffa (gitDiff, listCardBranches, replied) — ustawia BoardView
+    property bool diffOpen: false        // nakładka widoku diffa nad panelem albo pełną kartą (Esc wraca tam, skąd otwarto)
+    property string diffCardId: ""
     property var markdownRenderer: null  // backend.renderMarkdown: plan i specyfikacja w panelu karty jako bezpieczny HTML
     // Filtry i układ.
     property string tagFilter: ""
@@ -146,7 +150,6 @@ Rectangle {
     signal planEditRequested(string tag, string cardId, string request)
     signal planApproveRequested(string tag, string cardId)       // /Board ApproveCardPlan
     signal environmentApproveRequested(string tag, string cardId, string yaml, bool onlyPlan)   // /Board ApproveCardEnvironment
-    signal branchDiffRequested(string tag, string cardId)
     signal mergeMainRequested(string tag, string cardId)
     signal previewMergeRequested(string tag, string cardId, string request)
     signal mergeRequested(string tag, string cardId, string request)
@@ -391,6 +394,19 @@ Rectangle {
         delete notes[tag]
         settingNotes = notes
         return text
+    }
+
+    // „Zmiany gałęzi” (K-36, #17): widok diffa źródła `card` jako nakładka na okno. Panel albo pełna karta
+    // zostają pod nią, więc Esc (closeRequested widoku) wraca dokładnie tam, skąd użytkownik przyszedł.
+    function openDiff(cardId) {
+        if (!cardId) return
+        diffCardId = cardId
+        diffOpen = true
+    }
+
+    function closeDiff() {
+        diffOpen = false
+        page.forceActiveFocus()
     }
 
     // Panel karty z pełnej karty: wybór wykonawcy (napis `notice`) zostaje tam.
@@ -912,9 +928,8 @@ Rectangle {
                 : reply.message ? reply.message : reply.onlyPlan
                 ? "Plan zatwierdzony. Środowisko czeka na zatwierdzenie."
                 : (reply.build ? "Środowisko zatwierdzone. Budowa pudełka trwa w tle." : "Środowisko zatwierdzone.")
-        } else if (tag.indexOf("branch-diff:") === 0) {
-            cardPanel.error = error
-            if (!error) cardPanel.branchDiff = reply.diff || "(brak różnic)"
+        } else if (tag.indexOf("diff:") === 0) {
+            return   // odpowiedź `Git.Diff` odbiera sam widok diffa (DiffView), nie Tablica
         } else if (tag.indexOf("preview-merge:") === 0) {
             if (mergePreview.requestTag !== tag) return
             mergePreview.busy = false
@@ -1622,6 +1637,7 @@ Rectangle {
                         onSessionRequested: session => page.sessionRequested(session)
                         onAgentRequested: session => page.agentRequested(session)
                         onLaunchRequested: id => page.openLaunch(id, false)
+                        onDiffRequested: id => page.openDiff(id)
                         onKeyNavigation: (id, dx, dy) => page.navigate(id, dx, dy)
                         onKeyMove: (id, dx, dy) => page.keyMove(id, dx, dy)
                     }
@@ -1740,6 +1756,7 @@ Rectangle {
                                             onSessionRequested: session => page.sessionRequested(session)
                                             onAgentRequested: session => page.agentRequested(session)
                                             onLaunchRequested: id => page.openLaunch(id, false)
+                                            onDiffRequested: id => page.openDiff(id)
                                         }
                                     }
                                 }
@@ -1923,8 +1940,7 @@ Rectangle {
             page.environmentApproveRequested(page.nextTag("env-approve:" + cardId), cardId, yaml, onlyPlan)
         }
         onPlanManagerRequested: page.openPlanManager()
-        onBranchDiffRequested: cardId =>
-            page.branchDiffRequested(page.nextTag("branch-diff:" + cardId), cardId)
+        onBranchDiffRequested: cardId => page.openDiff(cardId)
         onMergeMainRequested: cardId =>
             page.previewMerge(cardId, cardPanel.card.derived.flow.mainBranch)
         onPreviewMergeRequested: (cardId, target) => page.previewMerge(cardId, target)
@@ -2085,7 +2101,7 @@ Rectangle {
         onMergeMainRequested: page.previewMerge(page.fullCardId, cardFullView.flow.mainBranch)
         onPreviewMergeRequested: target => page.previewMerge(page.fullCardId, target)
         onChooseMergeRequested: page.chooseMerge(page.fullCardId)
-        onBranchDiffRequested: page.panelFromFull("Diff gałęzi: kliknij „Diff gałęzi” w panelu karty.")
+        onBranchDiffRequested: page.openDiff(page.fullCardId)
         onEnterStepRequested: stepId => page.enterStepRequested(page.nextTag("enter-step:" + page.fullCardId),
                                                                 page.fullCardId, stepId)
     }
@@ -2190,10 +2206,29 @@ Rectangle {
         }
     }
 
+    // Widok diffa (K-36): nad panelem i pełną kartą, na całe okno Tide.
+    Loader {
+        id: diffLoader
+        objectName: "branchDiffOverlay"
+        anchors.fill: parent
+        z: 100
+        active: page.diffOpen
+        sourceComponent: Component {
+            Git.DiffView {
+                objectName: "branchDiffView"
+                request: ({source: "card", card: page.diffCardId})
+                backend: page.diffBackend
+                onCloseRequested: page.closeDiff()
+                Component.onCompleted: forceActiveFocus()
+            }
+        }
+    }
+
     // Skróty: Ctrl+N nowa karta, Ctrl+F szukaj, Esc zamyka okno decyzji, panel, pełną kartę albo stronę.
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-            if (page.decisionOpen && !page.managing) page.closeDecisions()
+            if (page.diffOpen) page.closeDiff()
+            else if (page.decisionOpen && !page.managing) page.closeDecisions()
             else if (page.launchOpen && !page.managing) page.cancelLaunch()
             else if (page.panelOpen) page.closePanel()
             else if (page.fullOpen && !page.managing) page.closeFull()

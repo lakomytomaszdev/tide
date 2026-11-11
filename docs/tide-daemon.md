@@ -5538,7 +5538,7 @@ do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z note
 ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani
 pudełka. Prompty ticketu i review mówią agentowi, by test wymagający prawdziwego pulpitu oznaczył w tej sekcji,
 a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
-`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
+`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Zmiany gałęzi” (widok diffa `Git.Diff`, także w trakcie pracy; `CardBranchDiff` zostaje w usłudze dla zgodności), „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
 Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje
