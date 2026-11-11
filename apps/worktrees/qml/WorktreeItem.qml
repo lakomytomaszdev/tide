@@ -134,6 +134,26 @@ Rectangle {
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
+            Text {
+                objectName: "worktreeSync"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: Logic.syncLabel(row.worktree)
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.monoFamily
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "worktreeRepoRemotes"
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: Logic.repoLine(row.worktree, row.nowTs)
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
         }
 
         Text {

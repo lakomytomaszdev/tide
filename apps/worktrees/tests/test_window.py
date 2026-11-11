@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from . import APP_DIR, REPO
 from daemon.tests import gitrepos
@@ -156,6 +157,52 @@ Item {
 }
 """ % {"card": json.dumps(card, ensure_ascii=False)})
         self.assertEqual(warned(log, "CARD_ACTIVITY"), "zajęty przez kartę")
+        self.assertEqual([line for line in log.splitlines() if re.search(QML_PROBLEMS, line)], [])
+
+    def test_row_shows_upstream_main_remotes_and_last_fetch_labels(self):
+        cases = {
+            "synced": item("/w/a/synced", "a", "active", upstream="origin/master", upstreamAhead=3, upstreamBehind=2,
+                           mainAhead=5, mainBehind=1, remotes=["origin"],
+                           lastFetch=datetime.fromtimestamp(NOW - 7300, timezone.utc).isoformat()),
+            "local": item("/w/a/local", "a", "active", upstream="", upstreamAhead=None, upstreamBehind=None,
+                          mainAhead=0, mainBehind=0, remotes=["origin"], lastFetch=""),
+            "solo": item("/w/b/solo", "b", "active", upstream="", upstreamAhead=None, upstreamBehind=None,
+                         mainAhead=1, mainBehind=0, remotes=[], lastFetch=""),
+        }
+        rows = "\n".join(f"""    WorktreeItem {{
+        id: row_{name}
+        y: {i * 90}; width: 760; height: 90
+        nowTs: {NOW}
+        worktree: {json.dumps(data, ensure_ascii=False)}
+    }}""" for i, (name, data) in enumerate(cases.items()))
+        log = self.harness("SyncSmoke.qml", """import QtQuick
+import "worktrees.js" as Logic
+Item {
+    width: 760; height: 300
+%(rows)s
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    Component.onCompleted: {
+        for (const [tag, row] of [["SYNCED", row_synced], ["LOCAL", row_local], ["SOLO", row_solo]]) {
+            console.warn(tag + " " + find(row, "worktreeSync").text + "|" + find(row, "worktreeRepoRemotes").text)
+        }
+        console.warn("AGO " + Logic.repoLine({ remotes: ["origin", "backup"], lastFetch: new Date((%(now)d - 7300) * 1000).toISOString() },
+                                              %(now)d))
+        Qt.quit()
+    }
+}
+""" % {"rows": rows, "now": NOW})
+        self.assertEqual(warned(log, "SYNCED"),
+                         "↑3 ↓2 · origin/master · ↑5 ↓1 względem master|origin · pobrano 2 h temu")
+        self.assertEqual(warned(log, "LOCAL"), "tylko lokalnie · ↑0 ↓0 względem master|origin · nigdy nie pobrano")
+        self.assertEqual(warned(log, "SOLO"), "tylko lokalnie · ↑1 ↓0 względem master|bez zdalnego")
+        self.assertEqual(warned(log, "AGO"), "origin, backup · pobrano 2 h temu")
         self.assertEqual([line for line in log.splitlines() if re.search(QML_PROBLEMS, line)], [])
 
     def test_page_groups_filters_selection_and_removal(self):

@@ -104,6 +104,47 @@ function detail(w) {
     return w.detached ? "odłączony HEAD " + w.head : ""
 }
 
+// Stan względem zdalnej i głównej (PT-352): „↑3 ↓2 · origin/master” albo „tylko lokalnie”.
+function arrows(ahead, behind) {
+    return "↑" + ahead + " ↓" + behind
+}
+
+function upstreamLabel(w) {
+    if (!w || !w.branch) return ""
+    if (!w.upstream) return "tylko lokalnie"
+    if (w.upstreamAhead === null || w.upstreamAhead === undefined) return w.upstream + " (brak odniesienia)"
+    return arrows(w.upstreamAhead, w.upstreamBehind) + " · " + w.upstream
+}
+
+// „↑5 ↓1 względem master”; pusty dla samej gałęzi głównej i gdy nie ma głównej.
+function mainLabel(w) {
+    if (!w || !w.branch || !w.mainBranch || w.branch === w.mainBranch) return ""
+    if (w.mainAhead === null || w.mainAhead === undefined) return ""
+    return arrows(w.mainAhead, w.mainBehind) + " względem " + w.mainBranch
+}
+
+function syncLabel(w) {
+    return [upstreamLabel(w), mainLabel(w)].filter(function (s) { return s !== "" }).join(" · ")
+}
+
+function agoText(seconds) {
+    if (seconds < 60) return "przed chwilą"
+    var minutes = Math.floor(seconds / 60)
+    if (minutes < 60) return minutes + " min temu"
+    var hours = Math.floor(minutes / 60)
+    if (hours < 48) return hours + " h temu"
+    return Math.floor(hours / 24) + " dni temu"
+}
+
+// Repozytorium: lista zdalnych i czas ostatniego fetch („origin · pobrano 2 h temu”).
+function repoLine(w, nowTs) {
+    if (!w) return ""
+    if (!w.remotes || w.remotes.length === 0) return "bez zdalnego"
+    var fetched = w.lastFetch ? Date.parse(w.lastFetch) / 1000 : NaN
+    return w.remotes.join(", ") + " · "
+           + (isNaN(fetched) ? "nigdy nie pobrano" : "pobrano " + agoText(Math.max(0, nowTs - fetched)))
+}
+
 function toolLabel(tool) {
     return tool === "codex" ? "Codex" : tool === "claude" ? "Claude" : "—"
 }

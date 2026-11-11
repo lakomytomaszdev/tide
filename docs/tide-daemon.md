@@ -196,6 +196,11 @@ Pola worktree:
 | `merged` | bool | czubek worktree jest przodkiem lokalnej gałęzi głównej (`unmerged == 0`) |
 | `unmerged` | int / null | `git rev-list --count <główna>..HEAD`; `null` bez gałęzi głównej |
 | `unpushed` | int | commity tylko w tym worktree: osiągalne z HEAD, a z żadnej innej lokalnej gałęzi ani gałęzi zdalnej (`rev-list --count HEAD --not --exclude=<gałąź> --branches --remotes`, stan z ostatniego fetch, bez sieci). To one przepadają po `branch -D` albo z odłączonym HEAD. Liczone tylko dla niescalonych (inaczej `0`); `-1`, gdy nie dało się policzyć |
+| `upstream` | string | skrót upstreamu gałęzi (`origin/master`, z `for-each-ref`, jedno wywołanie na repozytorium); pusty: gałąź bez upstreamu („tylko lokalnie”) albo odłączony HEAD |
+| `upstreamAhead`, `upstreamBehind` | int / null | `git rev-list --left-right --count HEAD...<upstream>` (jedno wywołanie na gałąź): commity gałęzi poza upstreamem i upstreamu poza gałęzią, stan z ostatniego fetch (bez sieci). `null` bez upstreamu albo gdy jego ref zniknął (upstream skasowany lokalnie) |
+| `mainAhead`, `mainBehind` | int / null | to samo względem lokalnej gałęzi głównej (`mainBranch`, wybranej jak dotąd); `null` bez gałęzi głównej. Liczone też dla odłączonego HEAD i brakującego katalogu (z czubka wpisu worktree); `mainAhead` równa się `unmerged` |
+| `remotes` | string[] | pola repozytorium (powtórzone w każdym worktree tego repozytorium): nazwy zdalnych z lokalnej konfiguracji (`config --local --list --name-only`, nie `git remote`); pusta lista: repozytorium bez zdalnego |
+| `lastFetch` | ISO 8601 / pusty | pole repozytorium: mtime `FETCH_HEAD` we wspólnym katalogu gita; pusty napis, gdy nigdy nie pobrano (albo repozytorium nie ma własnego katalogu `.git`) |
 | `lastChange`, `lastChangeTs` | ISO 8601 / sekundy epoki | najnowsze z: czas ostatniego commita HEAD, mtime plików wskazanych przez `git status` |
 | `size` | int | bajty na dysku jak `du -s` (bez zagnieżdżonych worktrees); `-1`, póki nie policzone |
 | `locked`, `missing` | bool | `git worktree lock` / katalogu już nie ma (`prunable`) |
