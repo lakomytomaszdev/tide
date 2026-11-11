@@ -17,7 +17,8 @@ script="$repo/daemon/tests/perf_tick_recovery.py"
 mkdir -p "$out"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-git -C "$repo" archive "$base_sha" daemon | tar -x -C "$tmp"
+# `tools/` jest potrzebne pakietowi testów (`daemon/tests/__init__.py` → `tools.test_isolation`).
+git -C "$repo" archive "$base_sha" daemon tools | tar -x -C "$tmp"
 # Reproduktor importuje fixture z pakietu testów `--src`; w bazie musi to być ten sam plik co w HEAD.
 cp "$script" "$tmp/daemon/tests/perf_tick_recovery.py"
 {
@@ -32,10 +33,17 @@ cp "$script" "$tmp/daemon/tests/perf_tick_recovery.py"
 set +e
 /usr/bin/python3 "$tmp/daemon/tests/perf_tick_recovery.py" --src "$tmp" --sha "$base_sha" --out "$out/base.json" "$@" \
   > "$out/base.txt" 2> "$out/base.err"
-echo "base-exit $?" >> "$out/run.txt"
+base_exit=$?
+echo "base-exit $base_exit" >> "$out/run.txt"
 echo "loadavg-between $(cat /proc/loadavg)" >> "$out/run.txt"
 /usr/bin/python3 "$script" --src "$repo" --sha "$head_sha" --out "$out/head.json" "$@" \
   > "$out/head.txt" 2> "$out/head.err"
-echo "head-exit $?" >> "$out/run.txt"
+head_exit=$?
+echo "head-exit $head_exit" >> "$out/run.txt"
 echo "loadavg-end $(cat /proc/loadavg)" >> "$out/run.txt"
 cat "$out/base.txt" "$out/head.txt"
+# Porażka reproduktora (wyjątek albo nieudane sprawdzenia odzyskiwania) jest widoczna w kodzie wyjścia.
+if [ "$base_exit" -ne 0 ] || [ "$head_exit" -ne 0 ]; then
+  tail -n 20 "$out/base.err" "$out/head.err" >&2
+  exit 1
+fi

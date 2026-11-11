@@ -68,9 +68,9 @@ def git_sha(src):
 
 
 def _tests(name):
-    """Moduł pakietu testów: z runnera (`daemon.tests.…`) albo ze skryptu (`daemon/` w sys.path → `tests.…`)."""
+    """Moduł pakietu testów `daemon.tests` — z runnera albo ze skryptu (`main` dodaje katalog `--src` do sys.path)."""
     import importlib
-    return importlib.import_module(f"{__package__}.{name}" if __package__ else f"tests.{name}")
+    return importlib.import_module(f"{__package__ or 'daemon.tests'}.{name}")
 
 
 def _fixture_class():
@@ -460,7 +460,10 @@ def main(argv=None):
     parser.add_argument("--sha", default="", help="SHA kodu z --src, gdy to nie jest repozytorium git")
     args = parser.parse_args(argv)
     src = os.path.realpath(args.src)
-    sys.path.insert(0, os.path.join(src, "daemon"))
+    # Pakiet testów jak w runnerze (`daemon.tests`, z izolacją `tools.test_isolation`) i kod usługi z `--src`.
+    # Katalog skryptu (domyślnie sys.path[0]) usuwamy, żeby moduły testów nie dały się zaimportować drugi raz.
+    sys.path[:] = [p for p in sys.path if os.path.realpath(p or ".") != HERE]
+    sys.path[:0] = [src, os.path.join(src, "daemon")]
     result = measure(args.fillers, args.padding, args.ticks, sha=args.sha, src=src)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1, default=str)

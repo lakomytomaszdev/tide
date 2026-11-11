@@ -33,6 +33,22 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(len(result["warmTicks"]), 1)
         self.assertIn("tick restartu", perf.summary(result))
 
+    def test_script_runs_from_its_file_path(self):
+        """Tak uruchamia go skrypt porównania (`perf_tick_recovery_compare.sh`): ścieżka pliku, bez runnera testów."""
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            out = os.path.join(folder, "wynik.json")
+            done = subprocess.run([sys.executable, perf.__file__, "--src", perf.DEFAULT_SRC, "--out", out,
+                                   "--fillers", "1", "--padding", "1", "--ticks", "1", "--sha", "test"],
+                                  cwd=folder, capture_output=True, text=True, timeout=300)
+            self.assertEqual(done.returncode, 0, done.stderr[-3000:])
+            with open(out, encoding="utf-8") as fh:
+                result = json.load(fh)
+        self.assertTrue(all(result["checks"]["ok"].values()), result["checks"])
+
 
 if __name__ == "__main__":
     unittest.main()
