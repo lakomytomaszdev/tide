@@ -31,6 +31,10 @@ class SmokeTest(unittest.TestCase):
         self.assertIn("BoxStatus", perf.METHODS)
         self.assertEqual(result["boxStatus"]["builder"], "fake-incus")
         self.assertTrue(result["boxStatus"]["ok"], result["boxStatus"])
+        # Normalny odczyt stanu pudełka (brak instancji w atrapie), nie ścieżka błędu atrapy `incus`.
+        self.assertIsNone(result["boxStatus"]["error"], result["boxStatus"])
+        from tide_daemon.box import state as bs
+        self.assertEqual(result["boxStatus"]["state"], bs.ABSENT, result["boxStatus"])
         for data in result["methods"].values():
             self.assertEqual(len(data["samplesMs"]), 2)
         self.assertIn("p95", perf.summary(result))

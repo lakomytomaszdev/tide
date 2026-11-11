@@ -80,10 +80,11 @@ def isolated_env(base):
     """Izolowane katalogi usługi; poprzednie zmienne wracają po pomiarze."""
     names = {"HOME": "home", "XDG_STATE_HOME": "state", "XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data",
              "XDG_CACHE_HOME": "cache", "XDG_RUNTIME_DIR": "run", "TIDE_BOARD_DIR": "board",
-             "TIDE_FAKE_INCUS_STATE": "incus-state"}
+             "TIDE_FAKE_INCUS_STATE": "incus-state", "TIDE_FAKE_LOG": "incus.log"}
+    files = ("TIDE_BOARD_DIR", "TIDE_FAKE_LOG")       # tworzone przez usługę / atrapę, nie katalogi
     values = {key: os.path.join(base, rel) for key, rel in names.items()}
     for key, path in values.items():
-        if key != "TIDE_BOARD_DIR":
+        if key not in files:
             os.makedirs(path, mode=0o700, exist_ok=True)
     gitconfig = os.path.join(base, "gitconfig")
     with open(gitconfig, "w", encoding="utf-8") as fh:
