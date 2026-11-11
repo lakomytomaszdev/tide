@@ -96,22 +96,27 @@ class Burners:
         return [proc.pid for proc in self.procs]
 
     def stop(self):
+        previous = {}
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                signal.signal(sig, signal.SIG_IGN)
+                previous[sig] = signal.signal(sig, signal.SIG_IGN)
             except ValueError:  # poza głównym wątkiem
                 pass
-        for proc in self.procs:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        for proc in self.procs:
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-        self.procs = []
+        try:
+            for proc in self.procs:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            for proc in self.procs:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+            self.procs = []
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler if handler is not None else signal.SIG_DFL)
 
 
 def run_command(command, log_path, cwd=ROOT):
@@ -241,7 +246,8 @@ def run_loop(module, runs=20, pool=False, companions=(), burner_count=None, thre
     summary = {"head": head_sha(root), "command": " ".join(argv if argv is not None else sys.argv),
                "runner_command": None, "mode": "pool" if pool else "burners", "module": module, "companions": companions,
                "module_serial": module in SERIAL_MODULES, "cores": cores, "burners": burner_count,
-               "threshold": threshold, "jobs": jobs, "runs_requested": runs, "runs": [], "error": None}
+               "threshold": threshold, "jobs": jobs,
+               "parallel_modules": len([m for m in modules if m not in SERIAL_MODULES]), "runs_requested": runs, "runs": [], "error": None}
     burners = deps["burners"](burner_count)
     try:
         burners.start()
@@ -290,6 +296,10 @@ def write_report(summary, output):
              f"- Towarzysze ({len(summary['companions'])}): " + (", ".join(summary["companions"]) or "brak"),
              f"- Rdzenie: {summary['cores']}, palniki: {summary['burners']}, próg loadavg1: {summary['threshold']:g}, "
              f"JOBS uruchamiacza: {summary['jobs']}"]
+    if summary["mode"] == "pool":
+        full = summary["parallel_modules"] >= summary["jobs"]
+        lines.append(f"- Moduły równoległe w wywołaniu: {summary['parallel_modules']} przy JOBS={summary['jobs']} "
+                     f"({'pula pełna' if full else 'pula NIEPEŁNA: mniej modułów równoległych niż JOBS'})")
     if summary["error"]:
         lines.append(f"- **BŁĄD:** {summary['error']}")
     lines += ["", f"**Wynik:** {summary['valid_runs']}/{summary['runs_requested']} ważnych przebiegów, "

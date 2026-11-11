@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import time
@@ -157,8 +158,10 @@ class ModuleLoopTest(unittest.TestCase):
 
     def test_pool_mode_passes_module_and_companions_in_one_command_without_duplicate(self):
         env = Env([HIGH], [{}])
-        summary, code, _ = self.loop(env, runs=2, pool=True, companions=[COMPANION, MODULE, COMPANION])
+        summary, code, files = self.loop(env, runs=2, pool=True, companions=[COMPANION, MODULE, COMPANION])
         self.assertEqual(code, 0)
+        self.assertEqual(summary["parallel_modules"], 2)
+        self.assertIn("Moduły równoległe w wywołaniu: 2 przy JOBS=", files["report.md"])
         self.assertEqual(len(env.commands), 2)  # jedno wywołanie na przebieg, nie osobne wywołania
         command = env.commands[0]
         modules = command[command.index("--modules") + 1:command.index("--output")]
@@ -215,12 +218,15 @@ class ModuleLoopTest(unittest.TestCase):
         self.assertEqual(summary["burners"], -(-3 * cores // 2))
 
     def test_real_burner_disappears_after_normal_end_and_after_exception(self):
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
         burners = module_loop.Burners(1)
         burners.start()
         pids = burners.pids()
         self.assertTrue(burners.alive())
         burners.stop()
         self.assertFalse(self.exists(pids[0]))
+        for sig, handler in before.items():
+            self.assertEqual(signal.getsignal(sig), handler)
 
         holder = {}
 
