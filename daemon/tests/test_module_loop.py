@@ -173,12 +173,33 @@ class ModuleLoopTest(unittest.TestCase):
                                               deps=Env([HIGH], [{}]).deps(), argv=["x"])
         self.assertTrue(summary["module_serial"])
 
+    def test_interrupt_writes_partial_report_and_stops_burners(self):
+        env = Env([HIGH], [{}])
+        deps = env.deps()
+        base_run = deps["run_command"]
+
+        def interrupting(command, log_path):
+            if len(env.commands) == 1:
+                raise KeyboardInterrupt
+            return base_run(command, log_path)
+
+        deps["run_command"] = interrupting
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(KeyboardInterrupt):
+                module_loop.run_loop(MODULE, runs=3, burner_count=1, threshold=8, output=tmp, wait_timeout=0,
+                                     sample_interval=3600, deps=deps, argv=["x"])
+            summary = json.loads((Path(tmp) / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(summary["runs"]), 1)
+            self.assertIn("przerwano", summary["error"])
+            self.assertTrue((Path(tmp) / "report.md").is_file())
+        self.assertTrue(FakeBurners.last.stopped)
+
     def test_default_companions_are_valid_and_fill_the_pool(self):
         self.assertEqual(len(set(module_loop.DEFAULT_COMPANIONS)), len(module_loop.DEFAULT_COMPANIONS))
         for module in module_loop.DEFAULT_COMPANIONS:
             self.assertTrue((ROOT / module).is_file(), module)
         parallel = [m for m in module_loop.DEFAULT_COMPANIONS if m not in module_loop.SERIAL_MODULES]
-        self.assertGreaterEqual(len(parallel) + 1, 14)
+        self.assertGreaterEqual(len(parallel) + 1, module_loop.default_jobs())
         self.assertGreaterEqual(len(module_loop.DEFAULT_COMPANIONS), 13)
 
     def test_default_burners_exceed_threshold_by_half(self):

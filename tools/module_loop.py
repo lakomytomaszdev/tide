@@ -223,7 +223,7 @@ def run_loop(module, runs=20, pool=False, companions=(), burner_count=None, thre
     modules = [module, *companions]
     jobs = deps["jobs"]()
     summary = {"head": head_sha(root), "command": " ".join(argv if argv is not None else sys.argv),
-               "mode": "pool" if pool else "burners", "module": module, "companions": companions,
+               "runner_command": None, "mode": "pool" if pool else "burners", "module": module, "companions": companions,
                "module_serial": module in SERIAL_MODULES, "cores": cores, "burners": burner_count,
                "threshold": threshold, "jobs": jobs, "runs_requested": runs, "runs": [], "error": None}
     burners = deps["burners"](burner_count)
@@ -240,7 +240,12 @@ def run_loop(module, runs=20, pool=False, companions=(), burner_count=None, thre
                 break
             summary["runs"].append(run)
             if index == 1:
-                summary["command"] = summary["command"] + "\n# przebieg: " + " ".join(command)
+                summary["runner_command"] = " ".join(command)
+    except BaseException as exc:
+        summary["error"] = f"przerwano: {type(exc).__name__} {exc}".strip()
+        interrupted = exc
+    else:
+        interrupted = None
     finally:
         burners.stop()
     runs_done = summary["runs"]
@@ -250,6 +255,8 @@ def run_loop(module, runs=20, pool=False, companions=(), burner_count=None, thre
     ok = (summary["error"] is None and len(runs_done) == runs and valid == runs and green == runs)
     summary.update(valid_runs=valid, green_runs=green, companion_failures=companion_failures, ok=ok)
     write_report(summary, output)
+    if interrupted is not None:
+        raise interrupted
     return summary, (0 if ok else 2 if summary["error"] else 1)
 
 
@@ -261,6 +268,7 @@ def write_report(summary, output):
     (output / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = [f"# Pętla modułu {summary['module']}", "",
              f"- SHA HEAD: {summary['head']}", f"- Polecenie: `{summary['command']}`",
+             f"- Polecenie przebiegu (pierwszego): `{summary['runner_command'] or 'brak'}`",
              f"- Tryb: {'pula (z towarzyszami)' if summary['mode'] == 'pool' else 'palniki'}",
              f"- Badany moduł: {summary['module']} ({'[OSOBNO] (SERIAL_MODULES)' if summary['module_serial'] else 'równolegle'})",
              f"- Towarzysze ({len(summary['companions'])}): " + (", ".join(summary["companions"]) or "brak"),
