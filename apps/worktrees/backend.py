@@ -14,6 +14,11 @@ from PyQt6.QtDBus import (QDBusArgument, QDBusConnection, QDBusMessage, QDBusPen
                           QDBusServiceWatcher)
 
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Worktrees", "org.tide.Daemon.Worktrees"
+GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
+DIFF_TIMEOUT_MS = 120_000  # odczyt gita w puli wątków usługi; duże repozytorium potrafi potrwać
+NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
+                    "message": "Usługa tide-daemon nie odpowiada. Spróbuj za chwilę."}
+PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są niedostępne."}
 REMOVE_TIMEOUT_MS = 30 * 60 * 1000  # duże katalogi potrafią się usuwać długo
 FETCH_TIMEOUT_MS = 270_000  # limit pobierania w usłudze to 120 s, plus do 120 s czekania na blokadę repozytorium
 
@@ -39,10 +44,12 @@ class Backend(QObject):
     pruneFinished = pyqtSignal(str)
     fetchFinished = pyqtSignal(str, str)  # (repoPath, JSON wyniku Fetch albo "null")
     badgeChanged = pyqtSignal()
+    replied = pyqtSignal(str, str)  # (tag z QML, odpowiedź `Git.Diff` jako JSON) — odbiera ją widok diffa
 
     def __init__(self, bus: QDBusConnection | None, data: list | None = None, parent=None):
         super().__init__(parent)
         self.bus = bus
+        self._preview = data is not None  # stała lista z pliku (--data): bez usługi
         self._list = "[]"
         self._available = False
         self._launchers = json.dumps({"terminal": False, "rider": False})
@@ -167,6 +174,22 @@ class Backend(QObject):
                    timeout=FETCH_TIMEOUT_MS)
 
     @pyqtSlot(str, str)
+    def gitDiff(self, tag: str, request: str) -> None:
+        """`Git.Diff` (K-36, wspólny widok diffa apps/common/qml/git/DiffView.qml): zmiany worktree (źródło
+        `worktree`) albo gałęzi względem głównej (`range`). Żądanie JSON, odpowiedź w `replied(tag, json)`.
+        Odczyt — nie zmienia listy ani repozytorium; `path` waliduje usługa (lista Worktrees)."""
+        if self.bus is None:
+            self.replied.emit(tag, json.dumps(PREVIEW_REPLY if self._preview else NO_SERVICE_REPLY,
+                                              ensure_ascii=False))
+            return
+
+        def done(ok: bool, value) -> None:
+            self.replied.emit(tag, value if ok and isinstance(value, str)
+                              else json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+
+        self._call("Diff", [request], done, timeout=DIFF_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
+
+    @pyqtSlot(str, str)
     def open(self, path: str, app: str) -> None:
         if self.bus is not None:
             self._call("Open", [path, app], None)
@@ -206,8 +229,9 @@ class Backend(QObject):
             self._available = value
             self.availableChanged.emit()
 
-    def _call(self, member: str, args: list, then, timeout: int = 25_000) -> None:
-        message = QDBusMessage.createMethodCall(SERVICE, PATH, IFACE, member)
+    def _call(self, member: str, args: list, then, timeout: int = 25_000, path: str = PATH,
+              iface: str = IFACE) -> None:
+        message = QDBusMessage.createMethodCall(SERVICE, path, iface, member)
         if args:
             message.setArguments(args)
         watcher = QDBusPendingCallWatcher(self.bus.asyncCall(message, timeout), self)

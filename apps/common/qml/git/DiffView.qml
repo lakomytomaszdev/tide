@@ -37,11 +37,15 @@ Rectangle {
     property var branches: []
     property int fileIndex: -1
     property string selectedPath: ""
+    property string selectedGroup: ""   // grupa wybranego pliku (źródło `worktree`); pusta bez grup
     property var lineRows: []
     property var hunkStarts: []
     property int currentHunk: -1
 
     readonly property var files: diffData ? diffData.files || [] : []
+    // Wiersze listy: pliki, a dla źródła z grupami także nagłówki grup i nieśledzone (diff.js, `listRows`).
+    readonly property var listRows: Diff.listRows(diffData)
+    readonly property bool hasEntries: listRows.length > 0
     readonly property var effectiveRequest: {
         const copy = Object.assign({}, request || {})
         if (targetRef) copy.targetRef = targetRef
@@ -81,11 +85,13 @@ Rectangle {
         fileTag = "file:" + sequence
         loadingPath = path
         fileError = ""
-        backend.gitDiff(fileTag, JSON.stringify(Object.assign({}, effectiveRequest, {options: {path: path}})))
+        const options = selectedGroup ? {path: path, group: selectedGroup} : {path: path}
+        backend.gitDiff(fileTag, JSON.stringify(Object.assign({}, effectiveRequest, {options: options})))
     }
 
     function onFileReply(reply) {
         const path = loadingPath
+        const group = selectedGroup
         fileTag = ""
         loadingPath = ""
         if (!reply || !reply.ok || !reply.files || reply.files.length === 0) {
@@ -93,7 +99,7 @@ Rectangle {
             return
         }
         diffData = Diff.mergeFile(diffData, reply.files[0])
-        if (selectedPath === path) selectFile(Diff.indexOfPath(files, path))
+        if (selectedPath === path && selectedGroup === group) selectFile(Diff.indexOfPath(files, path, group))
     }
 
     function chooseTarget(ref) {
@@ -106,19 +112,22 @@ Rectangle {
         if (index < 0 || index >= files.length) {
             fileIndex = -1
             selectedPath = ""
+            selectedGroup = ""
             lineRows = []
             hunkStarts = []
             currentHunk = -1
             return
         }
-        if (files[index].path !== selectedPath) fileError = ""
+        const group = files[index].group || ""
+        if (files[index].path !== selectedPath || group !== selectedGroup) fileError = ""
         fileIndex = index
         selectedPath = files[index].path
+        selectedGroup = group
         lineRows = Diff.rows(files[index])
         hunkStarts = Diff.hunkStarts(lineRows)
         currentHunk = hunkStarts.length ? 0 : -1
         lines.positionViewAtBeginning()
-        filesList.positionViewAtIndex(index, ListView.Contain)
+        filesList.positionViewAtIndex(Math.max(0, Diff.rowOfFile(listRows, index)), ListView.Contain)
         // Plik bez treści z powodu limitu całości doczytuje się sam; `large` czeka na „pokaż”.
         if (Diff.needsLoad(files[index]) && loadingPath !== selectedPath) loadFile(selectedPath)
     }
@@ -139,7 +148,7 @@ Rectangle {
         errorMessage = ""
         diffData = reply
         let index = Diff.indexOfPath(files, wantedPath)
-        if (index < 0) index = Diff.indexOfPath(files, selectedPath)
+        if (index < 0) index = Diff.indexOfPath(files, selectedPath, selectedGroup)
         if (index < 0 && files.length) index = 0
         wantedPath = ""
         selectFile(index)
@@ -309,7 +318,7 @@ Rectangle {
             anchors.centerIn: parent
             width: Math.min(parent.width - 48, 640)
             spacing: 12
-            visible: view.errorCode !== "" || (!view.diffData && view.loading) || (view.diffData !== null && view.files.length === 0)
+            visible: view.errorCode !== "" || (!view.diffData && view.loading) || (view.diffData !== null && !view.hasEntries)
 
             Text {
                 objectName: "diffError"
@@ -326,9 +335,10 @@ Rectangle {
             Text {
                 objectName: "diffEmpty"
                 width: parent.width
-                visible: view.diffData !== null && view.files.length === 0
+                visible: view.diffData !== null && !view.hasEntries
                 horizontalAlignment: Text.AlignHCenter
-                text: "Brak zmian w tym zakresie."
+                text: view.diffData && view.diffData.source === "worktree" ? "Brak niezacommitowanych zmian."
+                                                                           : "Brak zmian w tym zakresie."
                 textFormat: Text.PlainText
                 color: Tide.Tokens.textMuted
                 font.family: Tide.Theme.uiFamily
@@ -371,7 +381,7 @@ Rectangle {
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             width: 340
-            visible: view.files.length > 0
+            visible: view.hasEntries
             color: Tide.Tokens.backgroundPanel
 
             ListView {
@@ -380,63 +390,104 @@ Rectangle {
                 anchors.fill: parent
                 anchors.bottomMargin: 40
                 clip: true
-                model: view.files
-                delegate: Rectangle {
-                    id: fileRow
+                model: view.listRows
+                delegate: Item {
+                    id: entry
                     required property var modelData
-                    required property int index
-                    objectName: "diffFile"
-                    property string path: modelData.path
-                    property string status: Diff.statusLetter(modelData)
-                    property string name: Diff.fileName(modelData)
-                    property bool selected: index === view.fileIndex
+                    readonly property string kind: modelData.kind
                     width: filesList.width
-                    height: 34
-                    color: selected ? Tide.Theme.alpha(Tide.Tokens.accent, 0.14) : "transparent"
+                    height: kind === "file" ? 34 : kind === "untracked" ? 26 : 32
 
+                    // Nagłówek grupy plików („W indeksie · 2 pliki · +3 −1”) i nieśledzonych (PT-360).
                     Text {
-                        id: letter
-                        objectName: "diffFileStatus"
+                        objectName: entry.kind === "group" ? "diffGroupHeader" : "diffUntrackedHeader"
+                        visible: entry.kind === "group" || entry.kind === "untrackedHeader"
                         anchors.left: parent.left
                         anchors.leftMargin: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 28
-                        text: fileRow.status
+                        anchors.right: parent.right
+                        anchors.rightMargin: 12
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 5
+                        text: visible ? entry.modelData.text : ""
                         textFormat: Text.PlainText
-                        color: modelData.status === "A" ? Tide.Tokens.added : modelData.status === "D" ? Tide.Tokens.removed
-                             : Tide.Tokens.textMuted
-                        font.family: Tide.Theme.monoFamily
+                        elide: Text.ElideRight
+                        color: Tide.Tokens.textSecondary
+                        font.family: Tide.Theme.uiFamily
                         font.pixelSize: 12
+                        font.weight: Font.DemiBold
                     }
                     Text {
-                        id: stats
-                        objectName: "diffFileStats"
+                        objectName: "diffUntracked"
+                        visible: entry.kind === "untracked"
+                        anchors.left: parent.left
+                        anchors.leftMargin: 14
                         anchors.right: parent.right
                         anchors.rightMargin: 12
                         anchors.verticalCenter: parent.verticalCenter
+                        text: visible ? entry.modelData.path : ""
                         textFormat: Text.PlainText
-                        text: modelData.binary ? "" : "+" + modelData.additions + " −" + modelData.deletions
+                        elide: Text.ElideMiddle
                         color: Tide.Tokens.textMuted
                         font.family: Tide.Theme.monoFamily
                         font.pixelSize: 12
                     }
-                    Text {
-                        id: fileLabel
-                        objectName: "diffFileName"
-                        anchors.left: letter.right
-                        anchors.right: stats.left
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: fileRow.name
-                        textFormat: Text.PlainText
-                        elide: Text.ElideMiddle
-                        color: Tide.Tokens.textPrimary
-                        font.family: Tide.Theme.uiFamily
-                        font.pixelSize: 13
-                    }
-                    MouseArea {
+                    Rectangle {
+                        id: fileRow
+                        readonly property var file: entry.modelData.file || ({})
+                        objectName: "diffFile"
+                        visible: entry.kind === "file"
                         anchors.fill: parent
-                        onClicked: view.selectFile(fileRow.index)
+                        property string path: file.path || ""
+                        property string group: file.group || ""
+                        property string status: Diff.statusLetter(file)
+                        property string name: entry.kind === "file" ? Diff.fileName(file) : ""
+                        property bool selected: entry.modelData.fileIndex === view.fileIndex
+                        color: selected ? Tide.Theme.alpha(Tide.Tokens.accent, 0.14) : "transparent"
+
+                        Text {
+                            id: letter
+                            objectName: "diffFileStatus"
+                            anchors.left: parent.left
+                            anchors.leftMargin: 14
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 28
+                            text: fileRow.status
+                            textFormat: Text.PlainText
+                            color: fileRow.file.status === "A" ? Tide.Tokens.added
+                                 : fileRow.file.status === "D" ? Tide.Tokens.removed : Tide.Tokens.textMuted
+                            font.family: Tide.Theme.monoFamily
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            id: stats
+                            objectName: "diffFileStats"
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            textFormat: Text.PlainText
+                            text: fileRow.file.binary ? "" : "+" + fileRow.file.additions + " −" + fileRow.file.deletions
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.monoFamily
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            id: fileLabel
+                            objectName: "diffFileName"
+                            anchors.left: letter.right
+                            anchors.right: stats.left
+                            anchors.rightMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: fileRow.name
+                            textFormat: Text.PlainText
+                            elide: Text.ElideMiddle
+                            color: Tide.Tokens.textPrimary
+                            font.family: Tide.Theme.uiFamily
+                            font.pixelSize: 13
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: view.selectFile(entry.modelData.fileIndex)
+                        }
                     }
                 }
             }
@@ -460,7 +511,7 @@ Rectangle {
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            visible: view.files.length > 0
+            visible: view.hasEntries
 
             // Diff ucięty limitem całości (PT-355): lista plików jest pełna, treść tylko części plików.
             Rectangle {
@@ -487,6 +538,21 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pixelSize: 13
                 }
+            }
+
+            // Tylko nieśledzone pliki (PT-360): lista bez treści, nie ma czego pokazać w diffie.
+            Text {
+                objectName: "diffUntrackedNote"
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 48, 520)
+                visible: view.selectedFile === null && view.hasEntries
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: "Pliki nieśledzone są tylko wymienione — ich treści git jeszcze nie śledzi."
+                textFormat: Text.PlainText
+                color: Tide.Tokens.textMuted
+                font.family: Tide.Theme.uiFamily
+                font.pixelSize: 14
             }
 
             Column {

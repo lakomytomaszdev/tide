@@ -355,3 +355,26 @@ function resultText(results, titles) {
         details: lines
     }
 }
+
+// Zmiany worktree w widoku diffa (K-36, PT-360). „Zmiany w katalogu” ma worktree z niezacommitowaną pracą
+// (`dirty` ≠ 0; −1 to stan nieznany, więc też — widok pokaże, co git powie), „Zmiany względem głównej” — worktree
+// z gałęzią inną niż lokalna główna projektu. Brakujący katalog nie ma żadnej z akcji.
+function canShowChanges(w) {
+    return !!w && !w.missing && w.dirty !== 0 && w.dirty !== undefined && w.dirty !== null
+}
+
+function canShowBranchChanges(w) {
+    return !!w && !w.missing && !!w.branch && !!w.mainBranch && w.branch !== w.mainBranch && !!w.repoPath
+}
+
+// Żądanie `Git.Diff` dla widoku diffa albo null, gdy akcja nie dotyczy worktree. `worktree` czyta niezacommitowaną
+// pracę katalogu (usługa sprawdza `path` na liście Worktrees), `range` — gałąź worktree od lokalnej głównej projektu.
+function diffRequest(w, kind) {
+    if (kind === "worktree") return canShowChanges(w) ? {source: "worktree", path: w.path} : null
+    if (kind === "range") {
+        return canShowBranchChanges(w)
+            ? {source: "range", repo: w.repoPath, from: "refs/heads/" + w.mainBranch, to: "refs/heads/" + w.branch}
+            : null
+    }
+    return null
+}

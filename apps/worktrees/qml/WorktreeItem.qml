@@ -20,6 +20,7 @@ Rectangle {
     property string homeDir: ""
     signal toggled()
     signal openRequested(string path, string app)
+    signal diffRequested(string path, string kind)   // kind: "worktree" (zmiany w katalogu) albo "range" (względem głównej)
 
     readonly property string kind: worktree.group || ""
     readonly property bool selectable: Logic.selectable(worktree)
@@ -153,6 +154,35 @@ Rectangle {
                 font.family: Tide.Theme.uiFamily
                 font.pixelSize: 11
                 elide: Text.ElideRight
+            }
+            // Zmiany w widoku diffa (PT-360): bez terminala, Esc wraca na listę.
+            Row {
+                objectName: "worktreeChangeActions"
+                visible: changes.visible || branchChanges.visible
+                spacing: 8
+                topPadding: 2
+                PillButton {
+                    id: changes
+                    objectName: "worktreeChanges"
+                    visible: Logic.canShowChanges(row.worktree)
+                    implicitHeight: 26
+                    horizontalPadding: 10
+                    pixelSize: 12
+                    text: "Zmiany w katalogu"
+                    toolTip: "Niezacommitowana praca: w indeksie, poza indeksem i pliki nieśledzone"
+                    onClicked: row.diffRequested(row.worktree.path, "worktree")
+                }
+                PillButton {
+                    id: branchChanges
+                    objectName: "worktreeBranchChanges"
+                    visible: Logic.canShowBranchChanges(row.worktree)
+                    implicitHeight: 26
+                    horizontalPadding: 10
+                    pixelSize: 12
+                    text: "Zmiany względem głównej"
+                    toolTip: "Zmiany gałęzi " + (row.worktree.branch || "") + " względem " + (row.worktree.mainBranch || "")
+                    onClicked: row.diffRequested(row.worktree.path, "range")
+                }
             }
         }
 

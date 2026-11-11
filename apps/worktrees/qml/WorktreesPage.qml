@@ -11,6 +11,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "git" as Git
 import "worktrees.js" as Logic
 
 Rectangle {
@@ -30,8 +31,24 @@ Rectangle {
     signal pruneRequested(string repoPath)
     signal fetchRequested(string repoPath)   // „Pobierz”: git fetch ze wszystkich zdalnych repozytorium
 
+    // Widok diffa (PT-360): żądanie `Git.Diff` otwartego widoku (null — lista) i backend z gitDiff/replied.
+    property var diffRequest: null
+    property var diffBackend: null
+    readonly property bool diffOpen: diffRequest !== null
+
+    function openDiff(path, kind) {
+        const w = worktrees.find(x => x.path === path)
+        const request = w ? Logic.diffRequest(w, kind) : null
+        if (request !== null) diffRequest = request
+    }
+
+    function closeDiff() {
+        diffRequest = null
+        page.forceActiveFocus()
+    }
+
     // Stan widoku.
-    property var fetching: ({})          // repoPath → true, gdy trwa pobieranie
+    property var fetching: ({})        // repoPath → true, gdy trwa pobieranie
     property var fetchNotes: ({})        // repoPath → {ok, text}: wynik ostatniego pobierania
     property string query: ""
     property string repo: "all"
@@ -497,6 +514,7 @@ Rectangle {
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
                         }
                     }
                 }
@@ -537,6 +555,7 @@ Rectangle {
                             checked: page.selected[modelData.path] === true
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
                         }
                     }
                 }
@@ -568,6 +587,7 @@ Rectangle {
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
                         }
                     }
                     Text {
@@ -657,6 +677,7 @@ Rectangle {
                             canTerminal: page.canTerminal
                             canRider: page.canRider
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
                         }
                     }
                 }
@@ -952,6 +973,24 @@ Rectangle {
                         onClicked: page.confirmRemove()
                     }
                 }
+            }
+        }
+    }
+
+    // Zmiany worktree w widoku diffa (K-36, PT-360): nakładka na całe okno; Esc i „Zamknij” wracają do listy.
+    Loader {
+        id: diffLoader
+        objectName: "worktreeDiffOverlay"
+        anchors.fill: parent
+        z: 100
+        active: page.diffRequest !== null
+        sourceComponent: Component {
+            Git.DiffView {
+                objectName: "worktreeDiffView"
+                request: page.diffRequest
+                backend: page.diffBackend
+                onCloseRequested: page.closeDiff()
+                Component.onCompleted: forceActiveFocus()
             }
         }
     }

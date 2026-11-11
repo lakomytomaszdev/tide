@@ -83,6 +83,7 @@ Item {
         available: view.backend ? view.backend.available : false
         launchers: view.launchers
         homeDir: view.backend ? view.backend.homeDir : ""
+        diffBackend: view.backend
         onRemoveRequested: paths => view.backend.remove(paths)
         onRemoveForcedRequested: (paths, deleteBranches, confirmed) => view.backend.removeForced(paths, deleteBranches,
                                                                                                   confirmed)

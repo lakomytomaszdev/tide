@@ -56,19 +56,62 @@ function hunkStarts(rowList) {
     return starts
 }
 
-// Indeks pliku o ścieżce (po `path`, a dla zmiany nazwy także po starej); -1, gdy go nie ma.
-function indexOfPath(files, path) {
+// Indeks pliku o ścieżce (po `path`, a dla zmiany nazwy także po starej); -1, gdy go nie ma. Źródło z grupami
+// (`worktree`, PT-360) może mieć ten sam plik w dwóch grupach — wtedy `group` wskazuje właściwy wpis.
+function indexOfPath(files, path, group) {
     if (!path) return -1
-    for (let i = 0; i < files.length; i++) if (files[i].path === path || files[i].oldPath === path) return i
+    for (let i = 0; i < files.length; i++) {
+        if (group && files[i].group !== group) continue
+        if (files[i].path === path || files[i].oldPath === path) return i
+    }
     return -1
+}
+
+// Wiersze listy plików (PT-360). Bez `groups[]` i `untracked[]` to same pliki — dokładnie jak dotąd. Źródło
+// z grupami dokłada przed plikami każdej niepustej grupy nagłówek (`kind: "group"`: nazwa, liczba, sumy), a na końcu
+// listę nieśledzonych plików (`kind: "untrackedHeader"` i `"untracked"`, bez treści). Wiersz pliku zna swój indeks
+// w `data.files` (`fileIndex`), bo to on wybiera plik, nie pozycja na liście.
+function listRows(data) {
+    const files = data && Array.isArray(data.files) ? data.files : []
+    const groups = data && Array.isArray(data.groups) ? data.groups : []
+    const untracked = data && Array.isArray(data.untracked) ? data.untracked : []
+    const rows = []
+    if (groups.length === 0) {
+        for (let i = 0; i < files.length; i++) rows.push({kind: "file", file: files[i], fileIndex: i})
+    } else {
+        for (const group of groups) {
+            const members = []
+            for (let i = 0; i < files.length; i++) if (files[i].group === group.id) members.push(i)
+            if (members.length === 0) continue
+            rows.push({kind: "group", id: group.id, name: group.name, count: members.length,
+                       text: group.name + " · " + totalsText(group.totals)})
+            for (const i of members) rows.push({kind: "file", file: files[i], fileIndex: i})
+        }
+    }
+    if (untracked.length > 0) {
+        rows.push({kind: "untrackedHeader", count: untracked.length,
+                   text: "Nieśledzone · " + untracked.length + " " + plural(untracked.length, "plik", "pliki", "plików")
+                         + " (bez treści)"})
+        for (const path of untracked) rows.push({kind: "untracked", path: path})
+    }
+    return rows
+}
+
+// Indeks wiersza listy (`listRows`) pliku o indeksie `fileIndex` w `data.files`; -1, gdy go nie ma.
+function rowOfFile(rows, fileIndex) {
+    for (let i = 0; i < rows.length; i++) if (rows[i].kind === "file" && rows[i].fileIndex === fileIndex) return i
+    return -1
+}
+
+function plural(n, one, few, many) {
+    return n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many)
 }
 
 // Opis sumy: „3 pliki · +12 −4”.
 function totalsText(totals) {
     if (!totals) return ""
     const n = totals.files
-    const noun = n === 1 ? "plik" : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "pliki" : "plików")
-    return n + " " + noun + " · +" + totals.additions + " −" + totals.deletions
+    return n + " " + plural(n, "plik", "pliki", "plików") + " · +" + totals.additions + " −" + totals.deletions
 }
 
 // Duże diffy (PT-355). Usługa dokłada pola tylko, gdy dotyczą pliku: `large` + `lines` (bez hunków), `truncated`
@@ -108,7 +151,8 @@ function binaryText(file) {
 
 // `DiffData` z plikiem `file` (odpowiedź `options.path`) wstawionym w miejsce wpisu o tej samej ścieżce.
 function mergeFile(data, file) {
-    const files = data.files.map(f => f.path === file.path ? Object.assign({}, file, {loaded: true}) : f)
+    const files = data.files.map(f => f.path === file.path && f.group === file.group
+                                      ? Object.assign({}, file, {loaded: true}) : f)
     return Object.assign({}, data, {files: files})
 }
 
@@ -122,6 +166,7 @@ function errorText(code, message) {
     case "no-branch": return said("Karta nie ma gałęzi") + " Sprawdź, czy gałąź karty istnieje, i odśwież (r)."
     case "unknown-card": return said("Nie znam tej karty") + " Zamknij widok i otwórz go z karty, która ma dziennik."
     case "unknown-base": return said("Baza startu karty jest nieznana") + " Wybierz ref, z którym porównać."
+    case "no-worktree": return said("Katalog worktree nie istnieje") + " Odśwież listę Worktrees (r)."
     case "timeout": return "Git nie odpowiedział na czas. Spróbuj ponownie (r)."
     case "no-service": return "Usługa tide-daemon nie odpowiada. Spróbuj za chwilę (r)."
     default: return said("Nie udało się odczytać zmian") + " Spróbuj ponownie (r)."

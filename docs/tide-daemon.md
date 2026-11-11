@@ -342,12 +342,46 @@ dowolny ref rozwiązujący się do commita.
 merge-base(`from`, `to`) do `to`, jak `git diff from...to` (zmiany na `from` po rozejściu nie wchodzą do wyniku);
 `from`/`to` to pełne refy, krótkie nazwy albo SHA. `from.sha` w odpowiedzi to merge-base. Tytuł: `<to> względem
 <from>` (np. `feat/x względem master`). Brak wspólnej historii to `bad-request`. Używa go „Zmiany względem głównej”
-w Worktrees (#29).
+w Worktrees (PT-360): `repo` to repozytorium projektu, `from` — `refs/heads/<lokalna główna projektu>`, `to` —
+`refs/heads/<gałąź worktree>`.
 
-**Walidacja wejścia `commit` i `range`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`, tej samej
-użyje #29 dla `path` worktree, a K-99 dla `Git.Commits` i `Git.BranchMap`):
+**Źródło `worktree`** (PT-360): `{"source": "worktree", "path": "/ścieżka/worktree"}` — niezacommitowana praca katalogu,
+bez terminala. `path` trafia do tej samej funkcji walidacji co `repo` (niżej): musi być worktree z listy Worktrees
+(albo repozytorium projektu Tablicy), po ścieżce kanonicznej, bez dowiązań i `..`; inaczej `bad-request` bez
+uruchamiania gita na tej ścieżce. Odpowiedź to `DiffData` z dwiema grupami plików i listą nieśledzonych:
 
-- `repo` musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
+- `groups[]` — `{id, name, totals}` w stałej kolejności: `staged` („W indeksie”, `git diff --cached`: indeks względem
+  HEAD) i `unstaged` („Poza indeksem”, `git diff`: drzewo robocze względem indeksu); `totals` to `{files, additions,
+  deletions}` grupy. Każdy wpis `files[]` ma pole `group` (`staged` albo `unstaged`); pliki są ułożone grupami
+  (najpierw `staged`), a ten sam plik zmieniony w obu miejscach występuje dwa razy — raz w każdej grupie, z różnymi
+  hunkami. Zamiast kopiować pliki do `groups[].files` (podwoiłoby to odpowiedź), grupa wskazuje swoje pliki przez
+  `group`.
+- `untracked[]` — ścieżki nieśledzonych plików (po jednej na plik, także w nieśledzonych katalogach; `status
+  --porcelain=v1 -z --untracked-files=all`), **bez treści**. Lista ma limit 2000 plików i 1 MB wyniku gita; po
+  przekroczeniu w `warnings[]` pojawia się ostrzeżenie. Pliki z `.gitignore` nie są wymieniane.
+- `title` — `Niezacommitowane zmiany: <ścieżka kanoniczna>`; `repo` — ta ścieżka; `from` — `{ref: "HEAD", sha, date}`
+  (`sha` i `date` puste dla gałęzi bez commitów, wtedy grupa `staged` jest liczona względem pustego drzewa), `to` —
+  `{ref: "worktree", sha: "", date: ""}`. `totals` to suma plików obu grup (plik w obu grupach liczy się dwa razy).
+- Limity „Duże diffy” działają osobno dla każdej grupy; ostrzeżenia mają przedrostek nazwy grupy (`W indeksie: …`),
+  a `truncated` jest prawdą, gdy przycięto którąkolwiek. Rozmiary plików binarnych (`oldSize`/`newSize`) nie są
+  liczone dla tego źródła — widok pokazuje wtedy komunikat bez liczb.
+- `options.path` z opcjonalnym `options.group` (`staged`/`unstaged`) zwraca treść jednego pliku jednej grupy (bez
+  `group` — pierwszej grupy, w której plik ma zmiany: najpierw `staged`); odpowiedź ma pole `group`, a wpis pliku
+  ma `group`. Zły `options.group` to `bad-request`. Pozostałe źródła ignorują `group`.
+- Odczyt **nie zmienia** worktree: runner uruchamia gita z `GIT_OPTIONAL_LOCKS=0` i `diff.autoRefreshIndex=false`,
+  więc `status` i `diff` nie odświeżają ani nie zapisują indeksu, refy i pliki zostają bez zmian, a do dziennika karty
+  nic nie trafia. Źródło nie czyta stanu karty ani dziennika — wystarcza `path` z listy Worktrees.
+- Katalog worktree, którego już nie ma (usunięty po odczycie listy — historia 17), to błąd `no-worktree` z komunikatem
+  „Katalog worktree nie istnieje (został usunięty?): <ścieżka>”, bez uruchamiania gita.
+
+Odbiorcy bez obsługi grup (źródła `card`, `ticket`, `commit` i `range`) nie dostają pól `groups[]` i `untracked[]`
+i działają bez zmian; widok diffa traktuje brak `groups[]` jak dotąd (sama lista plików).
+
+**Walidacja wejścia `commit`, `range` i `worktree`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`
+— `known_repo` — którą `path` źródła `worktree` (PT-360) wywołuje tak samo jak `repo`, bez drugiej kopii; użyje jej
+też K-99 dla `Git.Commits` i `Git.BranchMap`):
+
+- `repo` (dla `worktree` — `path`) musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
   kanonicznej (`realpath`, bez dowiązań) równą repozytorium projektu Tablicy (`repo` z projektu) albo worktree
   z listy Worktrees (porównywane także po rozwiązaniu). Git działa potem na ścieżce kanonicznej. Dowiązanie
   wskazujące poza listę, ścieżka z `..` i dowolny inny katalog dają `bad-request` — bez uruchamiania gita.
@@ -363,16 +397,18 @@ użyje #29 dla `path` worktree, a K-99 dla `Git.Commits` i `Git.BranchMap`):
 
 | Pole | Typ | Opis |
 | --- | --- | --- |
-| `source` | string | źródło żądania (`card`, `ticket`, `commit`, `range`) |
+| `source` | string | źródło żądania (`card`, `ticket`, `commit`, `range`, `worktree`) |
 | `card` | string | `K-N` (znormalizowany identyfikator karty); tylko źródła `card` i `ticket` |
 | `ticket` | string | `PT-N`; tylko źródło `ticket` (PT-349) |
-| `repo` | string | ścieżka repozytorium: z dziennika karty (`card`, `ticket`) albo kanoniczna zwalidowana (`commit`, `range`) |
+| `repo` | string | ścieżka repozytorium: z dziennika karty (`card`, `ticket`) albo kanoniczna zwalidowana (`commit`, `range`, `worktree`) |
 | `title` | string | krótki opis zakresu, np. `K-36: zmiany gałęzi card/k-36-… od startu` |
 | `from`, `to` | object | `{ref, sha, date}`: `ref` — `baseRef` z dziennika albo `targetRef` (dla `to` — `refs/heads/<gałąź karty>`), `sha` — pełny SHA początku/końca zakresu, `date` — data commitera w ISO 8601 UTC (`2026-11-11T10:00:00Z`). Surowe dane: etykietę „Start od…” formatuje UI (`startLabel`) |
 | `files` | array | pliki z parsera diffu: `path`, `oldPath`, `status` (`A`, `D`, `R`, `C`, `T`, `M`), `additions`, `deletions`, `binary`, `oldMode`, `newMode`, `warnings`, `hunks` (`oldStart`, `oldLines`, `newStart`, `newLines`, `header`, `lines` — `kind` ` `/`-`/`+`, `oldNo`, `newNo`, `text`); pola z „Duże diffy” niżej pojawiają się tylko przy plikach, których dotyczą |
 | `totals` | object | `{files, additions, deletions}` — dla całego zakresu także po przycięciu (liczone z pełnej listy plików) |
 | `truncated` | bool | `true`, gdy całość przekroczyła limit i treść części plików jest pominięta (niżej); inaczej `false` |
 | `warnings` | array | ostrzeżenia: parsera (tekst przed pierwszym nagłówkiem) i limitów (przycięcie) |
+| `groups` | array | tylko źródło `worktree` (PT-360): grupy plików `{id, name, totals}` (`staged` „W indeksie”, `unstaged` „Poza indeksem”); wpis `files[]` wskazuje grupę polem `group` |
+| `untracked` | array | tylko źródło `worktree` (PT-360): ścieżki nieśledzonych plików, bez treści |
 
 **Duże diffy** (PT-355; pola tylko dodane do `DiffData`):
 
@@ -396,7 +432,7 @@ użyje #29 dla `path` worktree, a K-99 dla `Git.Commits` i `Git.BranchMap`):
   (`git diff --unified=N`), np. 20 do rozwinięcia kontekstu. Wymaga `options.path` (bez niego `bad-request`), bo dotyczy
   jednego pliku. Nieznane klucze `options` są ignorowane.
 - Żądanie z `options` ma ten sam wybór źródła (`source` i jego pola) co lista; kontrakt jest identyczny dla źródeł
-  `card`, `ticket`, `commit`, `range` (PT-349) i późniejszego `worktree` (#29).
+  `card`, `ticket`, `commit`, `range` (PT-349) i `worktree` (PT-360; tu `options.group` wskazuje grupę pliku).
 
 **Widok diffa** (`apps/common/qml/git/DiffView.qml`, `diff.js`): plik `large` jest zwinięty z przyciskiem „duży plik —
 N linii, pokaż” (klik wysyła `Git.Diff` z `options.path` i wstawia treść); plik binarny pokazuje „plik binarny (rozmiar
@@ -405,16 +441,29 @@ wybierz plik, żeby doczytać”, a wybór pliku bez treści (`truncated`) sam d
 doczytania pokazuje komunikat i „Spróbuj ponownie”; „Odśwież” (`r`) czyta całość od nowa i odrzuca spóźnione
 odpowiedzi doczytywania.
 
+**Grupy plików i nieśledzone w widoku** (PT-360): przy odpowiedzi z `groups[]` lista plików ma nagłówek każdej
+niepustej grupy z liczbą plików i sumą (`W indeksie · 2 pliki · +3 −1`), a pod plikami — nagłówek „Nieśledzone · N plików
+(bez treści)” i same ścieżki (zwykły tekst, bez wyboru i bez podglądu). Plik w obu grupach to dwa wiersze; `]`/`[`
+chodzą po plikach w kolejności wyświetlania, a doczytanie pliku (`options.path`) wysyła też `options.group`. Sama lista
+nieśledzonych (bez plików w grupach) nie jest „brakiem zmian”; czysty worktree pokazuje „Brak niezacommitowanych
+zmian.”. Odpowiedź bez `groups[]` wygląda jak dotąd.
+
+**Worktrees** (PT-360): przy worktree z niezacommitowanymi zmianami (`dirty` ≠ 0) okno ma „Zmiany w katalogu” (źródło
+`worktree`, `path` worktree), a przy worktree z gałęzią inną niż lokalna główna projektu — „Zmiany względem głównej”
+(źródło `range`). Widok otwiera się na całe okno nad listą; Esc albo „Zamknij” wracają do listy. Backend okna wywołuje
+`Git.Diff` (`/Git`) metodą `gitDiff(tag, żądanie)` i oddaje odpowiedź sygnałem `replied(tag, json)`.
+
 **Kody błędów** (`{ok: false, error, message}`, `message` po polsku):
 
 | `error` | Kiedy |
 | --- | --- |
-| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, zły `options.path`/`options.context` (także `context` bez `path`), `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty; źródło `ticket`: zły albo nieznany karcie ticket; `commit`/`range`: `repo` spoza projektów Tablicy i listy Worktrees (także przez dowiązanie i `..`), ref zaczynający się od `-` albo niebędący commitem, `from` i `to` bez wspólnej historii (PT-349) |
+| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, zły `options.path`/`options.context` (także `context` bez `path`), `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty; źródło `ticket`: zły albo nieznany karcie ticket; `commit`/`range`: `repo` spoza projektów Tablicy i listy Worktrees (także przez dowiązanie i `..`), ref zaczynający się od `-` albo niebędący commitem, `from` i `to` bez wspólnej historii (PT-349); `worktree`: `path` spoza listy Worktrees (te same reguły co `repo`) albo zły `options.group` (PT-360) |
 | `unknown-card` | karta nie ma dziennika przepływu albo nie była zlecona (brak `card.started`) |
 | `no-branch` | karta nie ma gałęzi (brak wyniku `card-branch`, brak repozytorium w dzienniku, katalog repozytorium albo gałąź karty nie istnieje) |
 | `unknown-base` | bez `targetRef`, gdy baza startu w dzienniku jest nieznana albo jej commita nie ma w repozytorium; komunikat prosi o jawny ref porównania (`targetRef`) |
 | `unknown-path` | `options.path` wskazuje plik bez zmian w zakresie diffu (PT-355) |
 | `no-ticket-range` | źródło `ticket`: gałęzi ticketu nie ma, a dziennik karty nie zapisał zakresu jego scalenia (albo zapisane SHA nie istnieje w repozytorium); `message` mówi jednym zdaniem, co dalej (PT-349) |
+| `no-worktree` | źródło `worktree`: `path` jest na liście Worktrees, ale katalogu już nie ma (usunięty po odczycie listy); `message`: „Katalog worktree nie istnieje (został usunięty?): <ścieżka>” (PT-360) |
 | `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
 | `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
 

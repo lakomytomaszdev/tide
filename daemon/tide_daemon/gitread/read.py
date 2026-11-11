@@ -6,7 +6,7 @@ od `-` (`bad-request`) i podaje je po `--end-of-options`/`--`.
 """
 
 __all__ = ["rev_parse", "merge_base", "rev_list", "log", "diff", "diff_capped", "diff_files", "blob_sizes",
-           "status"]
+           "status", "untracked"]
 
 LOG_FIELDS = ("sha", "parents", "author", "time", "subject")
 _LOG_FORMAT = "--format=%H%x1f%P%x1f%an%x1f%ct%x1f%s%x1e"
@@ -52,23 +52,29 @@ def diff(reader, repo: str, base: str, head: str | None = None, *, paths=(), con
                       revs=revs, paths=list(paths)).out
 
 
-def diff_capped(reader, repo: str, base: str, head: str | None = None, *, paths=(), context: int = 3,
-                max_bytes: int, max_lines: int) -> tuple[str, bool]:
+def diff_capped(reader, repo: str, base: str | None = None, head: str | None = None, *, cached: bool = False,
+                paths=(), context: int = 3, max_bytes: int, max_lines: int) -> tuple[str, bool]:
     """Jak `diff`, ale z limitem czytania (PT-355): `(tekst, ucięto)`. Po przekroczeniu `max_bytes` albo
-    `max_lines` git jest przerywany, a tekst to pełne linie z początku diffu — reszta nie trafia do pamięci."""
-    revs = [base] + ([head] if head is not None else [])
-    result = reader.run(repo, "diff", "--no-color", "--no-renames", f"--unified={int(context)}",
+    `max_lines` git jest przerywany, a tekst to pełne linie z początku diffu — reszta nie trafia do pamięci.
+    Bez `base` i `head`: drzewo robocze względem indeksu, a z `cached` — indeks względem HEAD (PT-360;
+    `diff.autoRefreshIndex=false` w runnerze, więc indeks nie jest dotykany)."""
+    revs = [r for r in (base, head) if r is not None]
+    options = ["--cached"] if cached else []
+    result = reader.run(repo, "diff", "--no-color", "--no-renames", f"--unified={int(context)}", *options,
                         revs=revs, paths=list(paths), max_bytes=max_bytes, max_lines=max_lines)
     return result.out, result.truncated
 
 
-def diff_files(reader, repo: str, base: str, head: str, *, max_bytes: int = 16 << 20) -> tuple[list[dict], bool]:
+def diff_files(reader, repo: str, base: str | None = None, head: str | None = None, *, cached: bool = False,
+               max_bytes: int = 16 << 20) -> tuple[list[dict], bool]:
     """Lista wszystkich plików zmienionych `base`→`head` bez treści: `(pliki, ucięto)`. Pliki mają
     `path`, `status` (A/D/M/T), `oldMode`, `newMode`, `additions`, `deletions` i `binary` — z `--raw` i `--numstat`
     (`-z`, ścieżki bez cytowania). Wynik jest mały (linia na plik); `max_bytes` tylko chroni pamięć."""
-    revs = [base, head]
-    raw = reader.run(repo, "diff", "--raw", "--no-renames", "--abbrev=40", "-z", revs=revs, max_bytes=max_bytes)
-    nums = reader.run(repo, "diff", "--numstat", "--no-renames", "-z", revs=revs, max_bytes=max_bytes)
+    revs = [r for r in (base, head) if r is not None]
+    options = ["--cached"] if cached else []
+    raw = reader.run(repo, "diff", "--raw", "--no-renames", "--abbrev=40", "-z", *options, revs=revs,
+                     max_bytes=max_bytes)
+    nums = reader.run(repo, "diff", "--numstat", "--no-renames", "-z", *options, revs=revs, max_bytes=max_bytes)
     counts = {}
     for record in nums.out.split("\0"):
         parts = record.split("\t", 2)
@@ -112,3 +118,25 @@ def blob_sizes(reader, repo: str, rev: str, paths) -> dict[str, int]:
 def status(reader, repo: str) -> str:
     """Surowe `status --porcelain=v1 -z` z plikami nieśledzonymi (parsowanie: `worktrees.git.parse_status`)."""
     return reader.run(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all").out
+
+
+def untracked(reader, repo: str, *, max_bytes: int, max_count: int) -> tuple[list[str], bool]:
+    """Pliki nieśledzone worktree (PT-360) z `status --porcelain=v1 -z`: `(ścieżki, ucięto)`. Czytanie jest
+    ograniczone (`max_bytes` i `max_count`); ścieżki bez cytowania (`-z`), bez treści plików.
+    `GIT_OPTIONAL_LOCKS=0` z runnera — status nie odświeża indeksu."""
+    result = reader.run(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all", max_bytes=max_bytes)
+    paths, cut = [], result.truncated
+    items = result.out.split("\0")
+    i = 0
+    while i < len(items):
+        item = items[i]
+        i += 1
+        code, path = item[:2], item[3:]
+        if "R" in code or "C" in code:
+            i += 1  # po zmianie nazwy -z dokleja jeszcze starą ścieżkę
+        if code == "??" and path:
+            if len(paths) >= max_count:
+                cut = True
+                break
+            paths.append(path)
+    return paths, cut
