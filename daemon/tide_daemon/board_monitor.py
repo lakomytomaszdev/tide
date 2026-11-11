@@ -255,11 +255,11 @@ class BoardMonitor(QObject):
         settle = getattr(self.flow, "settle", None) if self.flow is not None else None
         if settle is not None:
             settle()
-        # Znacznik planów liczony PRZED ponowieniem: udane ponowienie już wczytało plany, więc ta sama zmiana planów
+        # Udane ponowienie już wczytało Tablicę i plany: znacznik planów ustawiony po nim, więc ta sama zmiana planów
         # nie publikuje drugi raz (jedno wczytanie Tablicy na Snapshot(), PT-385).
-        mark = self._plans_stamp()
         if self._pending is not None and self._retry_pending(left()):
-            self._plans_mark = mark
+            self._plans_mark = self._plans_stamp()
+        mark = self._plans_stamp()
         if not self._json or mark != self._plans_mark:
             if self.publish(left()):
                 self._plans_mark = self._plans_stamp()

@@ -99,7 +99,8 @@ class Prober:
       katalog i otwarte pliki dzienników, bo przełączenie dziennika nie zmienia listy PID-ów,
     - bez żadnej zmiany zwraca TEN SAM obiekt `ProcessTable` (ponowne użycie wyniku między odczytami).
 
-    `counters`: `probes`, `fullScans`, `statReads` (odczyty `/proc/<pid>/stat`), `reused` (ta sama tabela)."""
+    `counters`: `probes`, `fullScans`, `statReads` (odczyty `/proc/<pid>/stat`), `reused` (ta sama tabela),
+    `settleReads` (ponowne odczyty świeżych PID-ów z `_settle`, PT-385)."""
 
     def __init__(self, proc_root: str = "/proc", full_every: float = FULL_EVERY_S, monotonic=time.monotonic,
                  wall=time.time, settle_s: float = SETTLE_S):
@@ -108,7 +109,7 @@ class Prober:
         self.monotonic = monotonic
         self.wall = wall              # zegar epoki — porównywany z czasem startu procesu (`ProcessInfo.start_time`)
         self.settle_s = settle_s
-        self.counters = {"probes": 0, "fullScans": 0, "statReads": 0, "reused": 0}
+        self.counters = {"probes": 0, "fullScans": 0, "statReads": 0, "reused": 0, "settleReads": 0}
         self._infos: dict[int, ProcessInfo] = {}
         self._table: ProcessTable | None = None
         self._full_at = 0.0
@@ -128,7 +129,9 @@ class Prober:
         old = self._table
         gone = set(self._infos) - pids
         new = pids - set(self._infos)
-        reread = new | (self._settle & pids)
+        settling = (self._settle & pids) - new
+        self.counters["settleReads"] += len(settling)
+        reread = new | settling
         for pid in gone:   # osierocone dzieci dostają nowego rodzica
             reread.update(child.pid for child in old.children.get(pid, ()) if child.pid in pids)
         changed = bool(gone)

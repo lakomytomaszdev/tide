@@ -247,19 +247,24 @@ class LateExecTest(unittest.TestCase):
         self.assertEqual(self.scan.counters["fullScans"], 1)
 
     def test_idle_without_new_pids_rereads_nothing(self):
+        # Licznik ponownych odczytów świeżych PID-ów (`settleReads`), nie `statReads` — ten rośnie także o odczyt
+        # każdego agenta w każdym przebiegu (tu agent 400 działa przez cały test).
+        self.proc.add(400, 300, "claude", 20.0, cmdline=("claude",), cwd="/srv/w")
         self.scan.probe()
-        reads = self.scan.counters["statReads"]
         for _ in range(20):
             self.tick()
-        self.assertEqual(self.scan.counters["statReads"] - reads, 0, "postój bez nowych PID-ów i agentów — 0 odczytów")
-        # Świeży proces jest czytany tylko do końca okna; potem postój znów kosztuje 0 odczytów.
+        self.assertEqual(self.scan.counters["settleReads"], 0, "postój bez nowych PID-ów — 0 ponownych odczytów")
+        self.assertGreater(self.scan.counters["statReads"], 20, "agent i tak czytany co przebieg (`_refresh_agent`)")
+        # Świeży proces jest czytany ponownie tylko do końca okna SETTLE_S; potem postój znów kosztuje 0.
         self.proc.add(700, 300, "sleep", self.wall.now + 1.0)
         for _ in range(int(processes.SETTLE_S // TICK_S) + 2):
             self.tick()
-        reads = self.scan.counters["statReads"]
+        settled = self.scan.counters["settleReads"]
+        self.assertGreater(settled, 0)
+        self.assertLessEqual(settled, int(processes.SETTLE_S // TICK_S) + 1, "najwyżej okno SETTLE_S, nie dłużej")
         for _ in range(20):
             self.tick()
-        self.assertEqual(self.scan.counters["statReads"] - reads, 0, "po oknie SETTLE_S — znów 0 ponownych odczytów")
+        self.assertEqual(self.scan.counters["settleReads"], settled, "po oknie SETTLE_S — znów 0 ponownych odczytów")
         self.assertEqual(self.scan.counters["fullScans"], 1)
 
 

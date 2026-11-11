@@ -1,15 +1,14 @@
 // Migawka Tablicy dla widżetu (PT-385): odpowiedź Snapshot() z `readState: "preparing"` (usługa po restarcie
 // jeszcze nie opublikowała Tablicy, `cards: []`) nie zastępuje poprzedniej migawki pustą Tablicą. Bez poprzedniej
-// — `loading` (kafelek pokazuje „wczytywanie”). Odczyt jest ponawiany po sygnale Changed (DaemonSource) albo
-// najpóźniej po `retryMs`, zamiast czekać na kolejne odpytanie co 60 s.
+// — `loading` (kafelek pokazuje „wczytywanie”) do najbliższej gotowej odpowiedzi. Usługa wysyła /Board Changed przy
+// pierwszej publikacji, a DaemonSource odczytuje wtedy Snapshot() ponownie — bez dodatkowego zegara.
 // Bez PlasmoidItem, więc da się go załadować w teście (widgets/tests/test_widget_board.py).
 import QtQuick
 
 QtObject {
     id: board
 
-    property var daemon: null            // DaemonSource: result, refresh(), sygnał refreshed()
-    property int retryMs: 2000
+    property var daemon: null            // DaemonSource: result i sygnał refreshed()
     property var snapshot: null          // ostatnia gotowa migawka (readState inne niż "preparing")
     property bool preparing: false       // ostatnia odpowiedź: usługa się przygotowuje
     readonly property bool loading: preparing && !snapshot
@@ -18,17 +17,10 @@ QtObject {
         if (!value || typeof value !== "object") return
         if (value.readState === "preparing") {
             preparing = true
-            retry.restart()
             return
         }
         preparing = false
-        retry.stop()
         snapshot = value
-    }
-
-    property Timer retry: Timer {
-        interval: board.retryMs
-        onTriggered: if (board.daemon) board.daemon.refresh()
     }
 
     property Connections watch: Connections {

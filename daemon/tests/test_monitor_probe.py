@@ -492,6 +492,28 @@ class OneSessionsPerTickTest(Fixture):
         self.assertEqual(replies, [True])
         self.assertGreaterEqual(self.monitor._result.started, called)
 
+    def test_fresh_still_publishes_an_explicit_probe_error(self):
+        self.tick()
+        self.calls.clear()
+        self.probe.error = OSError("odmowa /proc")
+        self.assertFalse(self.monitor.activate(f"codex:{uid(6)}"), "akcja odmawia bez świeżej migawki")
+        self.assertEqual(self.session()["processes"], "error", "`_fresh` publikuje jawny błąd sondy")
+        self.assertEqual(len(self.calls), 1, "jedna publikacja błędu")
+        self.assertEqual(self.raised, [])
+
+    def test_when_fresh_gets_a_result_newer_than_the_call(self):
+        self.tick()
+        got = []
+        called = time.monotonic()
+        before = self.monitor._last.seq
+        self.monitor._when_fresh(lambda ok, procs: got.append((ok, procs, self.monitor._last)))
+        self.assertTrue(pump(lambda: got))
+        ok, procs, result = got[0]
+        self.assertTrue(ok)
+        self.assertIs(procs, result.table)
+        self.assertGreater(result.seq, before)
+        self.assertGreaterEqual(result.started, called, "wynik sondy rozpoczętej po wywołaniu")
+
 
 class WorktreeRemovalTest(Fixture):
     """Usuwanie worktree decyduje, gdzie działa agent (`agent_cwds`) — na sondzie nowszej niż wywołanie (jak przed
