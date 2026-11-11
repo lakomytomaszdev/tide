@@ -321,7 +321,6 @@ class HistoryPhaseUnitTest(unittest.TestCase):
         first = trialhold.read_process_history(self.journal, "K-1", phase)
         self.assertEqual(trialhold.read_process_history(self.journal, "K-1", phase), first)
         self.assertEqual(self.reads, ["K-1"])
-        self.assertIsNotNone(phase.identities("K-1"))
         self.journal.append("K-1", "card.paused")
         self.reads.clear()
         after = trialhold.read_process_history(self.journal, "K-1", phase)
@@ -336,7 +335,6 @@ class HistoryPhaseUnitTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 trialhold.read_process_history(self.journal, "K-1", phase)
         self.assertEqual(self.reads, ["K-1"])
-        self.assertIsNone(phase.identities("K-1"))
         with self.assertRaises(ValueError):    # bez fazy: zawsze świeży ścisły odczyt
             trialhold.read_process_history(self.journal, "K-1")
         self.assertEqual(self.reads, ["K-1", "K-1"])

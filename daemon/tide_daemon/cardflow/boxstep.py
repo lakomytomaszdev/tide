@@ -545,12 +545,9 @@ def recover_network(engine, history=None) -> None:
             events = basis[card] = trialhold.read_process_history(engine.journal, card, history)
         except (OSError, ValueError, TypeError, KeyError):
             continue
-        identities = history.identities(card) if history is not None else None
-        if identities is None:
-            identities = process_identities(events)
         # Zachowujemy rezerwacje i migawki dawnych prób; odtwarzanie nie może
         # uruchamiać refguard.finish ani zwalniać WIP po zwykłym done.
-        protected = {name for name, identity in identities.items()
+        protected = {name for name, identity in process_identities(events).items()
                      if identity.held and isinstance(name, str)}
         events = [e for e in events if not trialhold.held(e) and e.get("step") not in protected
                   and e.get("key") not in protected]

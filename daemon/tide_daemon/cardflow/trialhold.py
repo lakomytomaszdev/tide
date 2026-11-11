@@ -28,18 +28,10 @@ def read_process_history(journal, card, phase=None):
         cached = phase.cached(card)
         if cached is not None:
             return cached
-        version = phase.version(card)
-    try:
-        events = journal.read_complete(card)
-        identities = process_identities(events)
-        if any(identity.state != "ok" for identity in identities.values()):
-            raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        if phase is not None:
-            phase.remember(card, version, error=exc)
-        raise
-    if phase is not None:
-        phase.remember(card, version, events=events, identities=identities)
+        return phase.load(card, lambda: read_process_history(journal, card))
+    events = journal.read_complete(card)
+    if any(identity.state != "ok" for identity in process_identities(events).values()):
+        raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
     return events
 
 
@@ -62,31 +54,34 @@ class HistoryPhase:
 
     def __init__(self, journal):
         self.journal = journal
-        self._read: dict = {}     # karta → (wersja, zdarzenia, tożsamości, błąd)
+        self._read: dict = {}     # karta → (wersja, zdarzenia, błąd)
 
     def version(self, card):
         generation = getattr(self.journal, "generation", None)
         return generation(card) if generation is not None else None
 
-    def remember(self, card, version, events=None, identities=None, error=None) -> None:
+    def load(self, card, read) -> list:
+        """Odczyt karty w fazie (`read` — zwykły `read_process_history`); wynik albo błąd zapamiętany dla wersji
+        sprzed odczytu, więc zapis w trakcie odczytu też unieważnia wpis."""
+        version = self.version(card)
+        try:
+            events = read()
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            if version is not None:
+                self._read[card] = (version, None, exc)
+            raise
         if version is not None:
-            self._read[card] = (version, tuple(events) if events is not None else None, identities, error)
+            self._read[card] = (version, tuple(events), None)
+        return events
 
     def cached(self, card):
         """Historia z odczytu fazy (kopia listy) albo None, gdy trzeba czytać; zapamiętany błąd jest rzucany."""
         hit = self._read.get(card)
         if hit is None or hit[0] != self.version(card):
             return None
-        if hit[3] is not None:
-            raise hit[3]
+        if hit[2] is not None:
+            raise hit[2]
         return list(hit[1])
-
-    def identities(self, card):
-        """Tożsamości procesów z bieżącego odczytu fazy tej karty (tylko do odczytu) albo None, gdy go nie ma."""
-        hit = self._read.get(card)
-        if hit is None or hit[0] != self.version(card) or hit[3] is not None:
-            return None
-        return hit[2]
 
     def unchanged(self, card, events) -> bool:
         """Świeży pełny odczyt przed mutacją: True, gdy historia karty jest dokładnie `events` (odczytem decyzji)."""
