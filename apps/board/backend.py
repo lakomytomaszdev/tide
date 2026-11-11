@@ -70,7 +70,8 @@ WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", 
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "TalkToCaretaker", "AbandonStep", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "SetCardPaused",
           "ApproveCardEnvironment", "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
-TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
+GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
+TASKS_PATH, TASKS_IFACE ="/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
@@ -498,6 +499,12 @@ class Backend(QObject):
         self._write(tag, "CardBranchDiff", [card_id, target_ref] if target_ref else [card_id])
 
     @pyqtSlot(str, str)
+    def gitDiff(self, tag: str, request: str) -> None:
+        """`Git.Diff` (K-36, wspólny widok diffa apps/common/qml/git/DiffView.qml): żądanie JSON, odpowiedź przez
+        `replied(tag, json)`. Odczyt — nie przeładowuje migawki."""
+        self._write(tag, "Diff", [request])
+
+    @pyqtSlot(str, str)
     def mergeCardToMain(self, tag: str, card_id: str) -> None:
         self._write(tag, "MergeCardToMain", [card_id])
 
@@ -734,6 +741,8 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
         elif member in ("StartCard", "EnterStep", "TalkToCaretaker"):   # zatrzymanie kroku i karta Konsoli mogą potrwać
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
+        elif member == "Diff":   # odczyt gita w puli wątków usługi; duże repozytorium potrafi potrwać
+            self._call(member, args, done, timeout=START_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
         elif member in ("PreviewCardMerge", "MergeCard", "PreviewCardBaseChange", "RequestCardBaseChange", "ResolveCardStep"):
