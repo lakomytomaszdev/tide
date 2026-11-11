@@ -38,7 +38,8 @@ NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada. Spróbuj za chwilę."}
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są niedostępne."}
 REMOVE_TIMEOUT_MS = 30 * 60 * 1000  # duże katalogi potrafią się usuwać długo
-FETCH_TIMEOUT_MS = 270_000  # limit pobierania w usłudze to 120 s, plus do 120 s czekania na blokadę repozytorium
+FETCH_TIMEOUT_MS = 150_000  # limit pobierania w usłudze to 120 s (bez czekania na blokadę silnika, K-36 M1)
+PULL_TIMEOUT_MS = 120_000   # „Zaciągnij”: do 10 s czekania na blokadę repozytorium i 60 s na merge z checkoutem
 
 
 def active_count(list_json: str) -> int:
@@ -61,6 +62,7 @@ class Backend(QObject):
     removeFinished = pyqtSignal(str)
     pruneFinished = pyqtSignal(str)
     fetchFinished = pyqtSignal(str, str)  # (repoPath, JSON wyniku Fetch albo "null")
+    pullFinished = pyqtSignal(str, str)  # (ścieżka worktree, JSON wyniku PullFastForward albo "null")
     badgeChanged = pyqtSignal()
     replied = pyqtSignal(str, str)  # (tag z QML, odpowiedź `Git.Diff` jako JSON) — odbiera ją widok diffa
     diffModeChanged = pyqtSignal()
@@ -184,8 +186,8 @@ class Backend(QObject):
 
     @pyqtSlot(str)
     def fetch(self, repo_path: str) -> None:
-        """„Pobierz”: git fetch ze zdalnych repozytorium (usługa odpowiada po zakończeniu, do 120 s plus
-        ewentualne czekanie na blokadę repozytorium); wynik w fetchFinished(repoPath, json)."""
+        """„Pobierz”: git fetch ze zdalnych repozytorium (usługa odpowiada po zakończeniu, do 120 s); wynik
+        w fetchFinished(repoPath, json)."""
         if self.bus is None:
             self.fetchFinished.emit(repo_path, json.dumps({"ok": False, "reason": "unavailable",
                                                            "message": "podgląd bez usługi — nic nie pobrano"},
@@ -193,6 +195,19 @@ class Backend(QObject):
             return
         self._call("Fetch", [repo_path], lambda ok, value: self.fetchFinished.emit(repo_path, value if ok else "null"),
                    timeout=FETCH_TIMEOUT_MS)
+
+    @pyqtSlot(str)
+    def pull(self, path: str) -> None:
+        """„Zaciągnij”: `merge --ff-only` do upstreamu w worktree (PullFastForward, odpowiedź po zakończeniu);
+        wynik w pullFinished(path, json). Lista odświeża się sygnałem Changed usługi."""
+        if self.bus is None:
+            self.pullFinished.emit(path, json.dumps({"ok": False, "reason": "unavailable",
+                                                     "message": "podgląd bez usługi — nic nie zaciągnięto"},
+                                                    ensure_ascii=False))
+            return
+        self._call("PullFastForward", [path],
+                   lambda ok, value: self.pullFinished.emit(path, value if ok and isinstance(value, str) else "null"),
+                   timeout=PULL_TIMEOUT_MS)
 
     # Tryb widoku diffa (PT-350): "unified" albo "split", wspólny z Tablicą (plik ustawień okna, czytany przy
     # każdym odczycie); podgląd z pliku trzyma go tylko w pamięci.

@@ -37,6 +37,10 @@ class WorktreeMonitor(QObject):
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees")
         self._fetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees-fetch")
         self._fetching: set = set()  # repozytoria, z których właśnie pobieramy
+        # „Zaciągnij” (PT-353): własny wątek — czeka krótko na blokadę repozytorium i nie może stać ani za
+        # pobieraniem (sieć), ani za odświeżaniem i mierzeniem rozmiarów.
+        self._pull_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees-pull")
+        self._pulling: set = set()  # worktrees (ścieżki kanoniczne), które właśnie zaciągamy
         self._finished.connect(self._deliver)
         self._timer = QTimer(self, interval=refresh_ms)
         self._timer.timeout.connect(self.refresh)
@@ -54,6 +58,7 @@ class WorktreeMonitor(QObject):
             self.scanner.stop()
         self._pool.shutdown(wait=True, cancel_futures=True)
         self._fetch_pool.shutdown(wait=True, cancel_futures=True)
+        self._pull_pool.shutdown(wait=True, cancel_futures=True)
 
     def list_json(self) -> str:
         return self._json
@@ -146,6 +151,41 @@ class WorktreeMonitor(QObject):
             reply(json.dumps(result, ensure_ascii=False))
             self.refresh()  # nowe liczby ahead/behind i „pobrano przed chwilą”
         future = self._fetch_pool.submit(lambda: self.scanner.fetch(repo_path))
+        future.add_done_callback(lambda f: self._finished.emit(done, f))
+
+    def pull(self, path: str, reply) -> None:
+        """„Zaciągnij” (fast-forward do upstreamu) w tle; reply(json) w wątku głównym. Wątek główny niczego nie
+        czeka: migawka agentów i miejsc przepływu karty, potem praca w osobnym wątku (blokada repozytorium, git).
+        Powtórne żądanie dla worktree, który właśnie zaciągamy, dostaje `locked` bez czekania."""
+        def refused(reason, message):
+            reply(json.dumps({"ok": False, "reason": reason, "message": message,
+                              "path": path if isinstance(path, str) else ""}, ensure_ascii=False))
+        if self._stopped:
+            refused("unavailable", "usługa się zamyka")
+            return
+        if not isinstance(path, str) or not path or "\0" in path:
+            refused("bad-request", "to nie jest worktree z listy Worktrees")
+            return
+        try:
+            key = os.path.realpath(path)
+        except (OSError, ValueError):
+            key = path
+        if key in self._pulling:
+            refused("locked", "zaciąganie tego worktree już trwa")
+            return
+        if self.refresh_agents:
+            self.refresh_agents()
+        cards = list(self.card_places_source()) if self.card_places_source else []
+        agents = list(self.cwds_source())
+        self._pulling.add(key)
+
+        def done(result):
+            self._pulling.discard(key)
+            if result is None:
+                result = {"ok": False, "reason": "error", "message": "błąd usługi przy zaciąganiu", "path": path}
+            reply(json.dumps(result, ensure_ascii=False))
+            self.refresh()  # nowy HEAD, ahead/behind i grupy
+        future = self._pull_pool.submit(lambda: self.scanner.pull(path, agents, cards))
         future.add_done_callback(lambda f: self._finished.emit(done, f))
 
     def open(self, path: str, app: str) -> bool:

@@ -153,8 +153,11 @@ function repoRows(items, repo, chips) {
     items.forEach(function (w) {
         if (seen[w.repoPath] || !inRepo(w, repo, chips)) return
         seen[w.repoPath] = true
+        // Główny katalog repozytorium (PT-353: „Zaciągnij” gałęzi głównej przy pasku — sam główny katalog
+        // nie ma wiersza na liście).
+        var main = items.filter(function (x) { return x.repoPath === w.repoPath && x.isMain })[0] || null
         rows.push({ repoPath: w.repoPath, repo: w.repo, remotes: w.remotes || [], lastFetch: w.lastFetch || "",
-                    canFetch: !!w.remotes && w.remotes.length > 0, sample: w })
+                    canFetch: !!w.remotes && w.remotes.length > 0, sample: w, main: main })
     })
     return rows.sort(function (a, b) { return a.repo.toLowerCase().localeCompare(b.repo.toLowerCase()) })
 }
@@ -168,6 +171,39 @@ function fetchNote(result) {
     if (!result || typeof result.message !== "string" || result.message === "")
         return { ok: false, text: "Nie udało się pobrać: brak odpowiedzi usługi" }
     return { ok: result.ok === true, text: result.ok === true ? result.message : "Nie udało się pobrać — " + result.message }
+}
+
+// „Zaciągnij” (PT-353): przycisk przy worktree, którego gałąź ma upstream (także główny katalog — w pasku
+// repozytoriów). Usługa sprawdza stan na nowo pod blokadą; tu tylko wyłączamy przycisk z powodem z danych listy.
+function canOfferPull(w) {
+    return !!w && !w.missing && !!w.branch && !!w.upstream
+}
+
+// Powód wyłączenia „Zaciągnij” z danych listy ({code, text}, kody jak w usłudze) albo null, gdy wolno.
+function pullBlocker(w) {
+    if (!w || w.missing) return { code: "bad-request", text: "katalogu nie ma" }
+    if (w.hasCard) return { code: "agent", text: "trwa krok karty" }
+    if (w.hasAgent) return { code: "agent", text: "pracuje agent" }
+    if (w.flowBranch) return { code: "card-step", text: "tą gałęzią zarządza Tide" }
+    if (!w.branch || !w.upstream || w.upstreamBehind === null || w.upstreamBehind === undefined)
+        return { code: "no-upstream", text: "brak upstreamu" }
+    if (w.dirty !== 0) return { code: "dirty", text: "zmiany w katalogu" }
+    if ((w.upstreamAhead || 0) > 0 && w.upstreamBehind > 0)
+        return { code: "diverged", text: "rozjechana z " + w.upstream + " — scal albo zrób rebase sam" }
+    if (w.upstreamBehind === 0) return { code: "up-to-date", text: "gałąź aktualna" }
+    return null
+}
+
+function pullButtonText(busy, w) {
+    if (busy) return "Zaciągam…"
+    return w && w.upstreamBehind > 0 ? "Zaciągnij ↓" + w.upstreamBehind : "Zaciągnij"
+}
+
+// Wynik PullFastForward(): jedno zdanie z usługi albo komunikat o braku odpowiedzi.
+function pullNote(result) {
+    if (!result || typeof result.message !== "string" || result.message === "")
+        return { ok: false, text: "Nie udało się zaciągnąć: brak odpowiedzi usługi" }
+    return { ok: result.ok === true, text: result.ok === true ? result.message : "Nie zaciągnięto — " + result.message }
 }
 
 function toolLabel(tool) {

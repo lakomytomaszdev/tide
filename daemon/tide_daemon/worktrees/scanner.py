@@ -43,6 +43,7 @@ from .cancellation import Cancellation
 from .git import (HEAD_RESTARTS, MAIN_CANDIDATES, Git, common_dir, parse_status, parse_worktree_list,
                   pick_main_branch, reflog_has_own_commit, worktree_gitdir)
 from .naming import guess_tool, humanize_branch
+from .pull import flow_card
 
 MAX_DEPTH = 3
 SIZE_TTL = 30 * 60
@@ -239,6 +240,10 @@ class WorktreeScanner:
         self.items: list[Worktree] = []
         self._sizes: dict[str, tuple[int, float]] = {}  # ścieżka → (bajty, kiedy policzone)
         self._lock = threading.Lock()
+        # Dziennik kart przepływu (funkcja() -> Journal albo None, PT-353): gałęzie kart w przepływie dla pola
+        # `flowBranch` i odmowy `card-step` przy „Zaciągnij”. Czytany w wątku roboczym, przy odświeżeniu.
+        self.journal_source = None
+        self._flows: dict = {}
 
     def stop(self) -> None:
         self._cancel.close()
@@ -253,6 +258,7 @@ class WorktreeScanner:
             items += self.scan_repo(repo)
         items = _dedupe(items)
         _mark_nested(items)
+        flows = self.read_flows()
         if self.sessions is not None:
             try:
                 self.sessions.refresh(self.clock())
@@ -260,7 +266,22 @@ class WorktreeScanner:
                 print(f"tide-daemon: worktrees: sesje: {exc!r}", flush=True)
         with self._lock:
             self.items = items
+            self._flows = flows
         return items
+
+    def journal(self):
+        """Bieżący dziennik kart albo None (bez przepływu karty albo przed startem Tablicy)."""
+        return self.journal_source() if self.journal_source else None
+
+    def read_flows(self) -> dict:
+        """Gałęzie kart w przepływie (pull.flow_branches); błąd odczytu → pusto, bo pole listy to tylko
+        podpowiedź — „Zaciągnij” czyta dziennik na nowo i przy błędzie odmawia."""
+        from .pull import flow_branches
+        try:
+            return flow_branches(self.journal())
+        except Exception as exc:  # dziennik jest dodatkiem do listy — nie może zatrzymać odświeżenia
+            print(f"tide-daemon: worktrees: dziennik kart: {exc!r}", flush=True)
+            return {}
 
     def scan_repo(self, repo_path: str) -> list[Worktree]:
         listed = self.git.run(repo_path, "worktree", "list", "--porcelain")
@@ -421,17 +442,19 @@ class WorktreeScanner:
         (live_sessions) — mają pierwszeństwo przy powiązaniu worktree z sesją."""
         with self._lock:
             items = list(self.items)
+            flows = self._flows
         agents = _agents_by_worktree(items, cwds)
         cards = _agents_by_worktree(items, card_paths)
         linked = (self.sessions.link([(w.path, w.real) for w in items], live)
                   if self.sessions is not None else {})
         now = self.clock() if now is None else now
-        out = [self._describe(w, w.path in agents, linked.get(w.path), now, w.path in cards) for w in items]
+        out = [self._describe(w, w.path in agents, linked.get(w.path), now, w.path in cards,
+                              bool(flow_card(flows, w.repo_path, w.branch))) for w in items]
         out.sort(key=lambda d: (d["repo"].lower(), d["repoPath"], not d["isMain"], -d["lastChangeTs"]))
         return out
 
     def _describe(self, wt: Worktree, has_agent: bool, session=None, now: float = 0.0,
-                  has_card: bool = False) -> dict:
+                  has_card: bool = False, flow_branch: bool = False) -> dict:
         blocker = wt.blocker(has_agent)
         force_blocker = wt.force_blocker(has_agent)
         tag, title = humanize_branch(wt.branch)
@@ -450,6 +473,7 @@ class WorktreeScanner:
             "isMain": wt.is_main,
             "hasAgent": has_agent,
             "hasCard": has_card,
+            "flowBranch": flow_branch,
             "dirty": wt.dirty,
             "mainBranch": wt.main_branch,
             "merged": wt.merged,
@@ -581,6 +605,13 @@ class WorktreeScanner:
         Wynik {ok, …} albo {ok: False, reason, message}; lista odświeża się po stronie wywołującego."""
         from .fetch import fetch_repository
         return fetch_repository(self, repo_path)
+
+    def pull(self, path: str, agents=(), cards=()) -> dict:
+        """„Zaciągnij”: `merge --ff-only` do upstreamu w worktree z listy (pull.py). agents/cards: migawka
+        katalogów agentów i miejsc przepływu karty z chwili żądania. Wynik {ok, …} albo {ok: False, reason,
+        message}; lista odświeża się po stronie wywołującego."""
+        from .pull import pull_fast_forward
+        return pull_fast_forward(self, path, agents, cards, self.journal())
 
     # --- brakujące katalogi -------------------------------------------------------------------
 

@@ -313,42 +313,36 @@ class FetchRequestTest(FetchTestCase):
         self.assertTrue(self.scanner().fetch(link)["ok"])
         self.assertTrue(self.scanner().fetch(os.path.join(self.proj, "..", "proj"))["ok"])
 
-    def test_fetch_waits_for_repository_lock_held_by_card_merge(self):
-        scanner = self.scanner()
-        lock = lock_for(self.proj)
-        done, results = threading.Event(), []
-
-        def run():
-            results.append(scanner.fetch(self.proj))
-            done.set()
-
-        lock.acquire()
-        try:
-            thread = threading.Thread(target=run, daemon=True)
-            thread.start()
-            self.assertFalse(done.wait(1.0), "pobieranie nie czeka na blokadę")
-        finally:
-            lock.release()
-        self.assertTrue(done.wait(30))
-        self.assertTrue(results[0]["ok"], results)
-
-    def test_lock_wait_has_a_limit(self):
+    def test_fetch_does_not_wait_for_repository_lock_held_by_card_merge(self):
+        """M1 (review K-36): fetch zapisuje tylko refs/remotes i FETCH_HEAD — bez blokady silnika (`lock_for`)."""
         scanner = self.scanner()
         held, release = threading.Event(), threading.Event()
 
-        def holder():
+        def card_merge():
             with lock_for(self.proj):
                 held.set()
                 release.wait(30)
 
-        thread = threading.Thread(target=holder, daemon=True)
+        thread = threading.Thread(target=card_merge, daemon=True)
         thread.start()
-        self.assertTrue(held.wait(5))
         self.addCleanup(thread.join)
         self.addCleanup(release.set)
-        with mock.patch.object(fetch, "LOCK_WAIT", 0.3):
+        self.assertTrue(held.wait(5))
+        self.push_commits(1)
+        result = scanner.fetch(self.proj)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["newCommits"], 1)
+
+    def test_second_fetch_of_same_repository_is_busy_without_waiting(self):
+        scanner = self.scanner()
+        lock = fetch.fetch_lock(os.path.join(self.proj, "..", "proj"))
+        self.assertTrue(lock.acquire(blocking=False))
+        try:
             result = scanner.fetch(self.proj)
+        finally:
+            lock.release()
         self.assertEqual((result["ok"], result["reason"]), (False, "busy"))
+        self.assertTrue(scanner.fetch(self.proj)["ok"], "po zwolnieniu znów wolno")
 
 
 if __name__ == "__main__":

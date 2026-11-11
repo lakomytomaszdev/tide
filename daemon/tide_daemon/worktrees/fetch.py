@@ -5,7 +5,10 @@ od Tide: zapisuje `refs/remotes/…` i `FETCH_HEAD` (z niego liczymy „pobrano 
 rusza HEAD, indeksu ani katalogów roboczych. Zasady:
 - repozytorium musi być na liście Worktrees (porównanie po ścieżce kanonicznej, inaczej `bad-request`
   i żadnego uruchomienia gita; do gita idzie ścieżka z listy, nie ta z żądania),
-- ta sama blokada repozytorium co scalanie karty (`cardflow.gitops.lock_for`, bez zmian w niej),
+- bez blokady silnika (`cardflow.gitops.lock_for`, review K-36 M1): fetch zapisuje wyłącznie `refs/remotes/*`
+  i `FETCH_HEAD`, które silnik tylko czyta, a silnik bierze `lock_for` blokująco w wątku głównym — trzymanie jej
+  przez transfer sieciowy (do FETCH_TIMEOUT) zatrzymywałoby całą usługę. Zostaje własna blokada „jedno pobieranie
+  na repozytorium” (`fetch_lock`, bez czekania: drugie żądanie → `busy`),
 - bez powłoki z naszej strony, bez pytań: GIT_TERMINAL_PROMPT=0, puste GIT_ASKPASS/SSH_ASKPASS (inaczej
   git wywołałby program z otoczenia użytkownika), SSH w trybie wsadowym (BatchMode=yes),
 - limit czasu całego pobierania (FETCH_TIMEOUT), poświadczenia użytkownika z otoczenia usługi
@@ -21,6 +24,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 from concurrent.futures import CancelledError
 
@@ -28,7 +32,6 @@ from ..gitcommand import boundary_active
 from .git import Git
 
 FETCH_TIMEOUT = 120.0   # s na całe pobieranie (wszystkie zdalne)
-LOCK_WAIT = 120.0       # s czekania na blokadę repozytorium trzymaną przez scalanie karty
 MAX_DETAIL = 160
 MAX_BRANCHES_IN_TEXT = 3
 
@@ -143,14 +146,15 @@ def _refused(reason: str, message: str, repo_path: str = "") -> dict:
     return {"ok": False, "reason": reason, "message": message, "repoPath": repo_path, "remotes": []}
 
 
-def _acquire(lock, deadline: float, cancel) -> bool:
-    while True:
-        if cancel is not None:
-            cancel.check()
-        if lock.acquire(timeout=0.1):
-            return True
-        if time.monotonic() >= deadline:
-            return False
+_fetch_locks: dict[str, threading.Lock] = {}
+_fetch_locks_guard = threading.Lock()
+
+
+def fetch_lock(repo: str) -> threading.Lock:
+    """Blokada „jedno pobieranie na repozytorium” (klucz: ścieżka kanoniczna). To nie jest blokada silnika."""
+    key = os.path.realpath(repo)
+    with _fetch_locks_guard:
+        return _fetch_locks.setdefault(key, threading.Lock())
 
 
 def fetch_repository(scanner, repo_path) -> dict:
@@ -174,11 +178,10 @@ def fetch_repository(scanner, repo_path) -> dict:
         return _refused("boundary", "pobieranie niedostępne: repozytorium jest wystawione pudełku "
                         "albo tryb pudełek jest włączony", repo)
 
-    from ..cardflow.gitops import lock_for  # leniwie: cardflow importuje ten pakiet
     cancel = getattr(scanner, "_cancel", None)
-    lock = lock_for(repo)
-    if not _acquire(lock, time.monotonic() + LOCK_WAIT, cancel):
-        return _refused("busy", "repozytorium jest zajęte (scalanie karty) — spróbuj za chwilę", repo)
+    lock = fetch_lock(repo)
+    if not lock.acquire(blocking=False):
+        return _refused("busy", "pobieranie tego repozytorium już trwa", repo)
     try:
         return _fetch_locked(scanner, repo, remotes, cancel)
     finally:

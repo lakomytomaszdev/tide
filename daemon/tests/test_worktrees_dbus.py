@@ -196,6 +196,21 @@ class WorktreesContractTest(unittest.TestCase):
         remoteless = json.loads(self.call("Fetch", self.p["alpha"], timeout=30000))
         self.assertEqual((remoteless["ok"], remoteless["reason"]), (False, "no-remote"))
 
+    def test_pull_fast_forward_is_in_introspection_and_refuses_with_codes(self):
+        xml = self.service.call(SERVICE, PATH, "org.freedesktop.DBus.Introspectable", "Introspect").arguments()[0]
+        self.assertIn('<method name="PullFastForward">', xml)
+        wait_until(lambda: any(w["path"] == self.p["alpha"] for w in self.listed()), timeout=15)
+        outside = json.loads(self.call("PullFastForward", os.path.join(self.root, "nie-ma"), timeout=30000))
+        self.assertEqual((outside["ok"], outside["reason"]), (False, "bad-request"))
+        traversal = json.loads(self.call("PullFastForward", os.path.join(self.p["alpha"], "..", ".."), timeout=30000))
+        self.assertEqual((traversal["ok"], traversal["reason"]), (False, "bad-request"))
+        # alpha: gałąź główna w głównym katalogu, bez zdalnego — odmowa bez zmiany HEAD (odpowiedź z opóźnieniem).
+        head = gitrepos.git(self.p["alpha"], "rev-parse", "HEAD")
+        local = json.loads(self.call("PullFastForward", self.p["alpha"], timeout=30000))
+        self.assertEqual((local["ok"], local["reason"]), (False, "no-upstream"))
+        self.assertEqual(gitrepos.git(self.p["alpha"], "rev-parse", "HEAD"), head)
+        self.assertIn("flowBranch", self.listed()[0])
+
     def test_prune_refuses_unknown_repository(self):
         result = json.loads(self.call("Prune", os.path.join(self.root, "nie-ma"), timeout=30000))
         self.assertEqual((result["ok"], result["pruned"]), (False, []))
