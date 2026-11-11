@@ -56,6 +56,15 @@ class GitDiffDbusTest(FlowCase):
         self.assertEqual(self.diff(source="range", repo=f"{self.repo}/..", **{"from": "a", "to": "b"})["error"],
                          "bad-request")
 
+        # Repozytorium projektu Tablicy (lista z app.known_git_repos): `commit` i `range` przechodzą walidację.
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        commit = self.diff(source="commit", repo=str(self.repo), sha="HEAD")
+        self.assertTrue(commit["ok"], commit)
+        self.assertEqual(commit["to"]["sha"], head)
+        ranged = self.diff(source="range", repo=str(self.repo), **{"from": "master", "to": branch})
+        self.assertTrue(ranged["ok"], ranged)
+        self.assertEqual((ranged["files"], ranged["totals"]), (data["files"], data["totals"]))
+
         self.assertEqual(len(self.events(card_id)), events)
         self.assertEqual(git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)"), refs)
         # Pętla usługi odpowiada dalej na inne wywołania (odpowiedź Diff jest opóźniona, z puli wątków).

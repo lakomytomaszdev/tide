@@ -107,8 +107,7 @@ class TicketSourceTest(CardDiffTestCase):
     def test_unknown_ticket_and_bad_input_are_bad_request(self):
         for request in (dict(ticket="PT-99"), dict(ticket="nie ticket"), dict(ticket="-x"), dict(ticket=5),
                         dict(ticket=None)):
-            self.assertEqual(self.ticket(**request)["error"] if "ticket" not in request else
-                             self.ask(source="ticket", card="K-1", **request)["error"], "bad-request", request)
+            self.assertEqual(self.ask(source="ticket", card="K-1", **request)["error"], "bad-request", request)
         self.assertEqual(self.ask(source="ticket", card="K-77", ticket="PT-1")["error"], "unknown-card")
 
     def test_repo_of_ticket_source_comes_only_from_the_journal(self):
@@ -273,10 +272,20 @@ class MonitorReposTest(unittest.TestCase):
         seen = []
         monitor = GitMonitor(repos_source=lambda: ["/a", "/b"])
         self.addCleanup(monitor.stop)
-        with mock.patch.object(diffdata, "request", lambda reader, journal, text, repos=(): seen.append(repos()) or {}):
-            monitor._compute(monitor.reader, None, "{}")
+        with mock.patch.object(diffdata, "request", lambda reader, journal, text, repos=(): seen.append(repos) or {}):
+            monitor._compute(monitor.reader, None, "{}", monitor._known_repos())
         self.assertEqual(seen, [["/a", "/b"]])
 
+    def test_repos_are_computed_in_the_calling_thread(self):
+        import threading
+        from tide_daemon.git_monitor import GitMonitor
+        threads, seen = [], []
+        monitor = GitMonitor(repos_source=lambda: threads.append(threading.current_thread()) or ["/a"],
+                             compute=lambda reader, journal, text, repos: seen.append(repos) or {})
+        self.addCleanup(monitor.stop)
+        monitor.diff("{}", lambda text: None)
+        monitor.reader.close()
+        self.assertEqual(threads, [threading.current_thread()])
     def test_failing_repos_source_means_no_known_repos(self):
         from tide_daemon.git_monitor import GitMonitor
 
