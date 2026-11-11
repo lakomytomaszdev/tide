@@ -12,6 +12,12 @@ jej wynik wraca sygnałem do wątku głównego i przelicza listę jeszcze raz. K
 listę procesów udającą, że agent nie działa. Akcje użytkownika (aktywacja, otwarcie wątku, Meta+A) czekają krótko
 i jawnie (`PROBE_WAIT_S`) na sondę rozpoczętą po wywołaniu — nigdy nie działają na starszym wyniku; metody D-Bus
 `/Agents` odpowiadają z opóźnieniem (`*_later`), więc nawet to czekanie nie wstrzymuje wątku głównego.
+
+Koszt sondy (K-98 #5, PT-346): sonda jest przyrostowa (`processes.Prober`) — pełny skan /proc tylko na starcie i co
+`processes.FULL_EVERY_S`; pomiędzy nimi lista PID-ów, nowe PID-y i sami agenci. Zmiana procesu agenta (nowy albo
+zakończony potomek, inny dziennik) trafia do migawki w pierwszej sondzie po zmianie, czyli na postoju najpóźniej po
+MAX_VISIBLE_DELAY_S (jeden tick) plus czas tej sondy. Akcje użytkownika jak dotąd zawsze dostają sondę nowszą niż
+wywołanie.
 """
 import json
 import time
@@ -27,6 +33,9 @@ TICK_MS = 5000
 RESCAN_MS = 30000
 PROBE_WAIT_S = 2.0                   # akcja użytkownika czeka najwyżej tyle na sondę nowszą niż wywołanie
 STALE_S = 3 * TICK_MS / 1000.0       # wynik starszy niż trzy ticki — sonda zawieszona, migawka „stale”
+# Najdłuższy czas od zmiany procesu agenta do sondy, która ją widzi, na postoju: każdy tick prosi o sondę, a każda
+# sonda widzi zmianę listy PID-ów i stan agentów bez pełnego skanu (processes.Prober).
+MAX_VISIBLE_DELAY_S = TICK_MS / 1000.0
 
 
 class AgentMonitor(QObject):
@@ -52,7 +61,9 @@ class AgentMonitor(QObject):
         self._last = None                # ostatni przyjęty wynik sondy, także z błędem
         self._log_roots: tuple = ()      # katalogi dzienników Codexa dla sondy — ustawiane w wątku głównym
         self._waiting: list[list] = []   # akcje czekające na świeżą sondę: [numer, funkcja(ok, procs)]
-        # Sonda woła `self._probe` w swoim wątku (testy podmieniają `_probe` na atrapę).
+        # Sonda woła `self._probe` w swoim wątku (testy podmieniają `_probe` na atrapę). `scan` to przyrostowy skan
+        # /proc (K-98 #5, PT-346) — używany wyłącznie w wątku sondy.
+        self.scan = processes.Prober()
         self.prober = ProcessProber(lambda: self._probe(), delivered=self.probed.emit)
         self.probed.connect(self._probed)   # sygnał z wątku sondy trafia do kolejki wątku monitora
         # Wątek sondy jest wątkiem demona: kończy się z usługą; `stop()` zatrzymuje go wcześniej (testy).
@@ -294,7 +305,7 @@ class AgentMonitor(QObject):
 
     def _probe(self):
         """Wołane wyłącznie w wątku sondy (`ProcessProber`)."""
-        return processes.probe(log_roots=self._log_roots)
+        return self.scan.probe(log_roots=self._log_roots)
 
     def _file_changed(self, path: str) -> None:
         self._dirty.add(path)
