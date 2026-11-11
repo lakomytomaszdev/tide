@@ -3751,6 +3751,19 @@ reguł ryzyka. Pola sekcji:
   do YAML-a z zaznaczonych pozycji), `notes[]` (np. odrzucony adres wewnętrzny w `.tide/box.yaml`, D13),
 - `question`: „Czego potrzebuje środowisko?” dla projektu bez profilu i bez wzorca — pozycja planu, nie pytanie w kroku.
 
+**Koszt odświeżenia (K-98 #1, PT-342).** Jedno odświeżenie BoardMonitor wczytuje Tablicę najwyżej raz: `publish`
+tworzy krótkożyjący kontekst `board/readcontext.BoardRead` i przekazuje go jawnie do migawki plików
+(`BoardStore.snapshot(board=…)`) i projekcji kart (`flow.derived(card, read)` → `engine._environment_view` →
+`envconsent`/`projectconsent`; także `_project`, `_review_policy`, `_plan_review_policy`). Kontekst nie jest
+globalny, nie trafia do workera mutacji i ginie z końcem odświeżenia; funkcje bez kontekstu czytają Tablicę świeżo
+jak dotąd (tick, zatwierdzenie zgody, start kroku). Sekcja ma pamięć `engine._env_cache` wspólną dla wszystkich
+projektów, także plasma-tide, z kluczem z odcisku wejść (`envconsent.view_key`: projekt i repozytorium karty, rejestr
+repozytoriów, dziennik karty i wersja planu, `boxWait`, wyłącznik i plik ustawień, profile projektu i karty, dziennik
+pudełka, `.tide/box.yaml`, magazyn zgody projektu i kopii paczek, tryb K3/K1) — każda zmiana wejścia unieważnia wpis
+przy następnym odświeżeniu. Pamięć służy wyłącznie prezentacji: `ApproveCardEnvironment` i bariery pudełka liczą
+odcisk i prawa świeżo, więc stary podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar:
+`daemon/tests/perf_board_refresh.py`.
+
 `ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
 
 1. `prepare`: `yaml` jest profilem karty (`profile.parse(…, "card")`). Nieznany klucz, zły typ, pozycja czerwona

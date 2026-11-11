@@ -213,11 +213,13 @@ class BoardStore:
                                          "message": f"{card.id}: nieznany dodatkowy projekt „{slug}”"})
         return board
 
-    def snapshot(self, repos=None, derive=None) -> dict:
+    def snapshot(self, repos=None, derive=None, board: Board | None = None) -> dict:
         """Migawka dla D-Bus i --print-board. repos: ścieżki repozytoriów z katalogu projektów
         (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z pracy agentów (PT-5,
-        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu."""
-        board = self.load()
+        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu. `board`: Tablica już wczytana
+        w tym odświeżeniu (kontekst `BoardRead`, K-98 #1); bez niej — świeży odczyt. Migawka jej nie zmienia."""
+        board = self.load() if board is None else board
+        errors = list(board.errors)
         tags = dict(board.tags)
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
         counts: dict[str, int] = {}
@@ -236,7 +238,7 @@ class BoardStore:
                                       "repo": project.repo if project else "",
                                       "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
-                    board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
+                    errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
             card_data = _card_json(card, project, resolved, derived, extra)
             if project and project.repo:
                 from .plan_candidates import candidates
@@ -266,12 +268,12 @@ class BoardStore:
         busy = self.repo.busy() if exists else ""
         git_state = {"busy": busy, "pending": len(self.repo.pending), "error": self.repo.last_error}
         if exists:
-            board.errors.extend(self._flow_warnings(board))
+            errors.extend(self._flow_warnings(board))
         if busy:
-            board.errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
+            errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
         if self.repo.pending:
-            board.errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
-                                                                  f"commit ({self.repo.last_error})"})
+            errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
+                                                            f"commit ({self.repo.last_error})"})
         last = self.repo.last_commit() if exists else None
         return {
             "assignmentRules": assignment.rules(board),
@@ -292,7 +294,7 @@ class BoardStore:
             "projects": [_project_json(p, self.docs_dir(p), project_cards.get(p.slug, 0)) for p in projects],
             "cards": cards_out,
             "repos": available,
-            "errors": board.errors,
+            "errors": errors,
         }
 
     def _flow_warnings(self, board: Board) -> list[dict]:

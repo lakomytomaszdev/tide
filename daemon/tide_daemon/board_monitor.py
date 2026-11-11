@@ -51,6 +51,7 @@ from . import call_origin
 from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
+from .board.readcontext import BoardRead
 from .board import ytsync
 from .coordination.youtrack import issue_key
 
@@ -614,21 +615,28 @@ class BoardMonitor(QObject):
         except Exception as exc:  # lista repozytoriów to dodatek — tablica działa bez niej
             print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
             repos = []
+        # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
+        # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
+        read = BoardRead(self.store)
         try:
-            snapshot = self.store.snapshot(repos=repos)
+            snapshot = self.store.snapshot(repos=repos, board=read.board)
         except Exception as exc:  # odczyt nie może położyć usługi
             print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
             snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
                         "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
         self._base = snapshot
-        self._apply()
+        self._refresh(read)
 
     def _apply(self) -> None:
         """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie."""
         if self._base is None:
             self.publish()
             return
-        snapshot, context = self._derived(self._base)
+        self._refresh(BoardRead(self.store))
+
+    def _refresh(self, read: BoardRead) -> None:
+        """Przeliczenie stanu kart z `_base` z kontekstem odczytu Tablicy tego jednego odświeżenia."""
+        snapshot, context = self._derived(self._base, read)
         work = self._work(snapshot, context)
         if self.youtrack is not None:
             try:
@@ -663,9 +671,11 @@ class BoardMonitor(QObject):
         return {"exists": bool(exists), "items": [],
                 "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}
 
-    def _derived(self, base: dict) -> tuple[dict, object]:
+    def _derived(self, base: dict, read: BoardRead | None = None) -> tuple[dict, object]:
         """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
-        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
+        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart.
+        `read`: odczyt Tablicy tego odświeżenia, przekazywany do `flow.derived` (K-98 #1)."""
+        read = read if read is not None else BoardRead(self.store)
         if self.derive is None and self.flow is None:
             return base, None
         snapshot = dict(base)
@@ -694,7 +704,7 @@ class BoardMonitor(QObject):
             try:
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
-                    derived = self.flow.derived(card)
+                    derived = self.flow.derived(card, read)
                     if derived is None and hasattr(self.flow, "card_base"):
                         # Ręczna kolumna ma derived: null; jej baza nadal pochodzi z dziennika.
                         card.update(self.flow.card_base(card.get("id") or ""))

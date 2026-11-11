@@ -63,8 +63,9 @@ class CardFlowMonitor(QObject):
     def has_journal(self, card_id: str) -> bool:
         return self.engine.has_journal(card_id)
 
-    def derived(self, card: dict):
-        return self.engine.derived(card)
+    def derived(self, card: dict, read=None):
+        """`read`: kontekst odczytu Tablicy jednego odświeżenia BoardMonitor (K-98 #1) albo None — świeży odczyt."""
+        return self.engine.derived(card, read)
 
     def card_base(self, card_id: str) -> dict:
         return self.engine.card_base(card_id)

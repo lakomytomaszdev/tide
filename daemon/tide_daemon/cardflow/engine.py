@@ -24,6 +24,7 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 """
 from __future__ import annotations
 
+import copy
 import functools
 import json
 import hashlib
@@ -832,10 +833,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
                                                         settings["limitThresholdPercent"], pick)
 
-    def _environment_view(self, card: str, st: FlowState, out: dict) -> None:
+    def _environment_view(self, card: str, st: FlowState, out: dict, read=None) -> None:
         """PT-172: `flow.boxWait` i sekcja „Środowisko karty” w planie do zatwierdzenia (albo zatwierdzonym z „Tylko plan”).
-        Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji."""
+        Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji.
+
+        K-98 #1: projekt karty i rejestr repozytoriów pochodzą z kontekstu odczytu odświeżenia (`read`, jedno
+        wczytanie Tablicy na odświeżenie). Pamięć `_env_cache` jest wspólna dla wszystkich projektów (także
+        plasma-tide) i ma klucz z odcisku wejść widoku (`envconsent.view_key`): każda zmiana zgody, profilu,
+        projektu/repozytorium, wersji planu, stanu karty, skutecznych ustawień albo manifestu wejść ją unieważnia.
+        Pamięć służy wyłącznie prezentacji — zatwierdzenie i bariery pudełka liczą odcisk i prawa świeżo."""
         from . import boxstep, boxwait, envconsent
+        from ..box import exposure
         wait = boxwait.card_box_wait(st)
         flow = out.get("flow") or {}
         flow["boxWait"], flow["boxWaitLabel"] = wait, boxwait.label(wait)
@@ -845,34 +853,40 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if wait != boxwait.ENVIRONMENT and not boxstep.settings_of(self).enabled:
             return
         plan = flow.get("plan")
+        if read is None:   # wywołanie spoza odświeżenia BoardMonitor: jeden świeży odczyt na to wyliczenie
+            from ..board.readcontext import BoardRead
+            read = BoardRead(self.store)
         try:
-            slug, _repo = envconsent._project_state(self, card)
+            slug, repo = envconsent._project_state(self, card, read)
         except FlowError:
             return
-        if slug == "plasma-tide":
-            try:
-                flow["environment"] = envconsent.model(self, card, st)
-                if plan:
-                    plan["environment"] = flow["environment"]
-            except Exception as exc:
-                flow["environment"] = {"projectExposure": True, "items": [], "notes": [str(exc)],
-                                       "stateLabel": "brak zgodnego manifestu", "yaml": "", "exposure": {}}
+        project_scope = slug == exposure.PROJECT
+        if not project_scope and (not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT)):
             return
-        if not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT):
-            return
-        proposal = st.plan_proposed or {}
         try:
-            slug, _repo = envconsent._project_state(self, card)
-            stamp = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in
-                          (envconsent.bp.project_path(slug), envconsent.bp.card_path(slug, card),
-                           envconsent.bs.journal_path(slug)))
-            key = (proposal.get("seq"), wait, bool(st.plan_approved), stamp)
+            try:
+                key = envconsent.view_key(self, card, st, slug, repo, wait, read)
+            except Exception:
+                key = envconsent._Miss()     # nieczytelne wejście klucza: bez pamięci, sam model pokaże problem
             hit = self._env_cache.get(card)
             if hit is None or hit[0] != key:
-                hit = (key, envconsent.model(self, card, st))
+                hit = (key, envconsent.model(self, card, st, read))
                 self._env_cache[card] = hit
-            plan["environment"] = hit[1]
+            view = copy.deepcopy(hit[1])   # migawka nie dzieli obiektów z pamięcią
+            if project_scope:
+                flow["environment"] = view
+                if plan:
+                    plan["environment"] = flow["environment"]
+            else:
+                plan["environment"] = view
         except Exception as exc:
+            self._env_cache.pop(card, None)
+            if project_scope:
+                flow["environment"] = {"projectExposure": True, "items": [], "notes": [str(exc)],
+                                       "stateLabel": "brak zgodnego manifestu", "yaml": "", "exposure": {}}
+                if plan:
+                    plan["environment"] = flow["environment"]
+                return
             plan["environment"] = {"items": [], "notes": [f"środowisko karty: {exc}"], "state": "error", "stateLabel": "",
                                    "boxWait": wait, "boxWaitLabel": boxwait.label(wait), "question": "", "yaml": "",
                                    "acceptKey": envconsent.CONSENT_KEY, "diff": {"added": [], "removed": []}}
@@ -899,7 +913,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {**{key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")},
                 "baseVersion": st.base_version}
 
-    def derived(self, card: dict) -> dict | None:
+    def derived(self, card: dict, read=None) -> dict | None:
+        """Stan karty w przepływie do migawki BoardMonitor. `read`: kontekst odczytu Tablicy jednego odświeżenia
+        (K-98 #1, `board.readcontext.BoardRead`) — tylko prezentacja; nie trafia do workera ani pamięci silnika."""
         st = self.journal.state(card.get("id") or "")
         if st.started is not None:
             st.caretaker_setup = self._caretaker_setup(st)
@@ -907,7 +923,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if out:
             ticketentry.enrich(st, out)
             self._limit_view(st, out)
-            self._environment_view(card.get("id") or "", st, out)
+            self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
             if st.closed and not st.merged:
                 out["flow"]["mainBranch"] = self._main_branches.get((st.started or {}).get("repo") or "", "")
@@ -5175,21 +5191,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self.journal.append(card, "ticket.rejected", ticket=ticket)
         return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice}
 
-    def _project(self, card: str):
-        board = self.store.load()
+    def _project(self, card: str, read=None):
+        """(karta, projekt) z Tablicy. `read`: kontekst odczytu jednego odświeżenia (K-98 #1, `BoardRead`) —
+        tylko dla prezentacji; bez niego świeży odczyt, jak w ticku i przed każdym skutkiem ubocznym."""
+        board = read.board if read is not None else self.store.load()
         item = board.cards.get(card_num(card))
         project = board.projects.get(item.project) if item else None
         if item is None or project is None:
             raise FlowError("no-project", f"{card}: nie ma karty albo projektu dla kroku")
         return item, project
 
+    def _project_read(self, card: str, read=None):
+        """`_project` z kontekstem odświeżenia albo — bez niego — dokładnie dotychczasowe wywołanie."""
+        return self._project(card) if read is None else self._project(card, read)
+
     def _review_policy(self, card: str, st: FlowState | None = None, ticket: str = "", *,
-                       klass: str | None = "", slug: str = "") -> str:
+                       klass: str | None = "", slug: str = "", read=None) -> str:
         """Polityka niezależności review (K-88/PT-330, decyzja 96 z 10.11) z ustawienia projektu ticketu.
 
         Czytana przy każdym wywołaniu z bieżącej Tablicy (bez restartu usługi). Projekt ticketu: kolumna Projekt
         zatwierdzonego planu, inaczej projekt karty. Klasa: podana, inaczej klasa ticketu z planu (`standard`);
-        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`."""
+        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`.
+        `read`: kontekst odczytu jednego odświeżenia (K-98 #1) — wtedy bez dodatkowego wczytania Tablicy."""
         if klass == "":
             klass = self._ticket_class(st, ticket) if st is not None and ticket else "standard"
         if not slug and st is not None and ticket:
@@ -5197,18 +5220,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         if str(r.get("id") or "") == ticket), {})
             slug = row.get("project") or ""
         try:
-            _, project = self._project(card)
+            _, project = self._project_read(card, read)
         except FlowError:
             project = None
         if slug and project is not None and slug != getattr(project, "slug", slug):
-            project = self.store.load().projects.get(slug)
+            project = (read.board if read is not None else self.store.load()).projects.get(slug)
         return reviewgate.project_policy(project, klass)
 
-    def _plan_review_policy(self, card: str):
+    def _plan_review_policy(self, card: str, read=None):
         """`review_policy` dla `plans.read`: projekt wiersza (pusty — projekt karty) i klasa ticketu.
-        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz."""
+        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz; z `read` (K-98 #1) — odczyt tego odświeżenia."""
         try:
-            _, project = self._project(card)
+            _, project = self._project_read(card, read)
         except FlowError:
             project = None
         board = None
@@ -5217,7 +5240,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             nonlocal board
             found = project
             if slug and project is not None and slug != getattr(project, "slug", slug):
-                board = board or self.store.load()
+                board = board or (read.board if read is not None else self.store.load())
                 found = board.projects.get(slug)
             return reviewgate.project_policy(found, klass or "standard")
         return policy
