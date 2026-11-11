@@ -176,7 +176,7 @@ class GitReader:
         return overrides
 
     def _execute(self, repo, command, argv, ok_codes, timeout) -> Result:
-        limit = timeout or self.timeout
+        limit = timeout if timeout is not None else self.timeout
         try:
             result = self._git.run(repo, *argv, timeout=limit)
         except CancelledError as exc:
