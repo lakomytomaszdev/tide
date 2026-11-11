@@ -145,6 +145,9 @@ class BoardStore:
         self._wait_local = threading.local()   # znacznik `without_waiting` bieżącego wątku (K-98 #2)
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
+        # K-98 #3: licznik zapisów plików Tablicy w tym procesie; kontekst odczytu (`BoardRead`) po jego zmianie
+        # wczytuje Tablicę ponownie (zapis w ticku unieważnia kontekst ticku).
+        self.generation = 0
 
     # --- odczyt --------------------------------------------------------------------------------
 
@@ -569,21 +572,31 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
-    def project_card_base(self, card_id: str, base: dict) -> dict:
-        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
+    def project_card_base(self, card_id: str, base: dict, board: Board | None = None) -> dict:
+        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard.
+
+        `board`: Tablica z kontekstu odczytu ticku (K-98 #3). Gdy według niej pola bazy już są zapisane, nie ma
+        zapisu ani wczytania; inaczej zwykła transakcja zapisu ze świeżym odczytem (`_execute`)."""
+        fields = (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit"))
+
         def plan(board):
             card = self._card(board, card_num(card_id))
             change = Change(result={"ok": True, "id": card.id})
             if card.column in ("done", "archived"):
                 return change
             changed = []
-            for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
+            for key, public in fields:
                 value = base.get(public) or ""
                 if value or card.doc.has(key):
                     changed += _doc_set(card.doc, key, value)
             if changed:
                 change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
             return change
+        card = board.cards.get(card_num(card_id)) if board is not None else None
+        if card is not None and (card.column in ("done", "archived") or all(
+                _doc_same(card.doc, key, base.get(public) or "")
+                for key, public in fields if (base.get(public) or "") or card.doc.has(key))):
+            return {"ok": True, "id": card.id, "commitError": ""}     # bez zmiany: bez transakcji i wczytania
         return self._execute(plan)
 
     def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
@@ -1302,6 +1315,7 @@ class BoardStore:
         tmp = os.path.join(folder, TMP_PREFIX + secrets.token_hex(6))
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
+        self.generation += 1        # przed podmianą: kontekst wczytany w trakcie zapisu też jest nieaktualny
         os.replace(tmp, path)
         return os.path.relpath(path, self.root)
 
@@ -1735,8 +1749,12 @@ def _new_project_doc(name: str, repo: str) -> Document:
     return doc
 
 
+def _doc_same(doc: Document, key: str, value) -> bool:
+    return doc.get(key) == ("" if value is None else str(value)) and doc.has(key)
+
+
 def _doc_set(doc: Document, key: str, value) -> list[str]:
-    if doc.get(key) == ("" if value is None else str(value)) and doc.has(key):
+    if _doc_same(doc, key, value):
         return []
     doc.set(key, value)
     return [key]

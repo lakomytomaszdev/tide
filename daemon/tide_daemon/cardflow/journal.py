@@ -35,6 +35,11 @@ class StrictReadInPresentation(RuntimeError):
     bramki traktują je jako „unknown”, a to jest błąd programu, który ma być widoczny."""
 
 
+class HistoryChanged(ValueError):
+    """Historia karty zmieniła się (dopisanie, ucięcie, podmiana kopii) między odczytem, na którym oparto decyzję,
+    a zapisem (K-98 #3). Zapis jest odmówiony bez skutku; jako ValueError oznacza dla bramek stan unknown."""
+
+
 def _validate_process_identity(event):
     """Nieznana tożsamość nie jest dowodem, że proces nie podlega ochronie.
 
@@ -66,6 +71,10 @@ class Journal:
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
         self._states: dict[str, tuple] = {}    # karta → (wersja dziennika, projekcja)
+        # K-98 #3: licznik zapisów karty w tym procesie (każde unieważnienie pamięci karty). Faza odczytu historii
+        # ticku (`trialhold.HistoryPhase`) po zmianie licznika czyta historię karty ponownie. Zapisów spoza procesu
+        # licznik nie widzi — przed skutkiem chroni je świeży pełny odczyt (`unchanged`, `HistoryPhase.unchanged`).
+        self._generations: dict[str, int] = {}
         # K-98 #2: odczyt prezentacji (publikacja migawki w wątku głównym) — bez blokady, z własną pamięcią.
         self._view = threading.local()
         self._view_cache: dict[str, tuple] = {}
@@ -236,7 +245,12 @@ class Journal:
 
     # --- zapis -----------------------------------------------------------------------------------
 
+    def generation(self, card: str) -> int:
+        """Numer wersji historii karty według zapisów tego procesu (K-98 #3); zmienia się przy każdym zapisie."""
+        return self._generations.get(card, 0)
+
     def _invalidate(self, card: str) -> None:
+        self._generations[card] = self._generations.get(card, 0) + 1
         self._cache.pop(card, None)
         self._states.pop(card, None)
 
@@ -252,6 +266,17 @@ class Journal:
         """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
         with self.lock:
             return self._append(card, kind, self.read_complete(card), data)
+
+    @contextlib.contextmanager
+    def unchanged(self, card: str, basis: list):
+        """Zapis decyzji podjętej na wcześniejszym odczycie `basis` (K-98 #3): blok trzyma blokadę dziennika, a na
+        wejściu świeży pełny ścisły odczyt musi być równy `basis`. Dopisanie, ucięcie albo podmiana dziennika lub
+        kopii po odczycie daje `HistoryChanged` przed blokiem — bez zapisu. Zapisy w bloku (`append_complete`)
+        czytają historię ponownie pod tą samą blokadą."""
+        with self.lock:
+            if self.read_complete(card) != list(basis):
+                raise HistoryChanged(f"{card}: historia zmieniła się po odczycie — zapis odmówiony")
+            yield
 
     def _append(self, card, kind, events, data):
         # Wywołujący trzyma lock od odczytu aż do końca zapisu.

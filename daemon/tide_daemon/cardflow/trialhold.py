@@ -19,12 +19,81 @@ def preserves_project(st, project=None):
                for identity in st.process_identities.values())
 
 
-def read_process_history(journal, card):
-    """Wspólna kontrola historii przed wykonaniem, inwentaryzacją i ochroną zasobów."""
-    events = journal.read_complete(card)
-    if any(identity.state != "ok" for identity in process_identities(events).values()):
-        raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
+def read_process_history(journal, card, phase=None):
+    """Wspólna kontrola historii przed wykonaniem, inwentaryzacją i ochroną zasobów.
+
+    `phase` (K-98 #3, `HistoryPhase` ticku): wynik tej kontroli — historia albo błąd — jest zapamiętany w fazie
+    i zwracany ponownie bez kolejnego odczytu, dopóki ten proces nie zapisze historii karty."""
+    if phase is not None:
+        cached = phase.cached(card)
+        if cached is not None:
+            return cached
+        version = phase.version(card)
+    try:
+        events = journal.read_complete(card)
+        identities = process_identities(events)
+        if any(identity.state != "ok" for identity in identities.values()):
+            raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        if phase is not None:
+            phase.remember(card, version, error=exc)
+        raise
+    if phase is not None:
+        phase.remember(card, version, events=events, identities=identities)
     return events
+
+
+class HistoryPhase:
+    """Jedna niezmienna faza odczytu historii procesów w ticku (K-98 #3, PT-344).
+
+    Rozpoznanie niepełnej historii po restarcie, odtworzenie `step.started` (`_recover_started_steps`) i uzgodnienie
+    sieci pudełek (`boxstep.recover_network`) dzielą jeden pełny ścisły odczyt historii karty z kontrolą tożsamości
+    (`read_process_history(…, phase)`) zamiast czytać ją każde osobno. Faza żyje tylko w jednym ticku na workerze
+    mutacji i ginie razem z nim; nie zastępuje odczytu przed skutkiem:
+
+    - zapis tego procesu do historii karty (licznik `Journal.generation`) unieważnia jej odczyt — następne użycie
+      czyta historię ponownie (osobny odczyt po zapisie),
+    - każda mutacja oparta na fazie najpierw robi świeży pełny odczyt i porównuje go z odczytem fazy
+      (`Journal.unchanged` pod blokadą zapisu, `HistoryPhase.unchanged`); zmiana albo ucięcie dziennika lub kopii
+      w międzyczasie (także spoza procesu) daje odmowę bez skutku.
+
+    Błąd odczytu albo nieznana tożsamość jest zapamiętany na tę wersję historii i rzucany przy każdym użyciu —
+    unknown nie znika w obrębie fazy. Dziennik bez licznika zapisów (atrapa) — bez pamięci, zawsze świeży odczyt."""
+
+    def __init__(self, journal):
+        self.journal = journal
+        self._read: dict = {}     # karta → (wersja, zdarzenia, tożsamości, błąd)
+
+    def version(self, card):
+        generation = getattr(self.journal, "generation", None)
+        return generation(card) if generation is not None else None
+
+    def remember(self, card, version, events=None, identities=None, error=None) -> None:
+        if version is not None:
+            self._read[card] = (version, tuple(events) if events is not None else None, identities, error)
+
+    def cached(self, card):
+        """Historia z odczytu fazy (kopia listy) albo None, gdy trzeba czytać; zapamiętany błąd jest rzucany."""
+        hit = self._read.get(card)
+        if hit is None or hit[0] != self.version(card):
+            return None
+        if hit[3] is not None:
+            raise hit[3]
+        return list(hit[1])
+
+    def identities(self, card):
+        """Tożsamości procesów z bieżącego odczytu fazy tej karty (tylko do odczytu) albo None, gdy go nie ma."""
+        hit = self._read.get(card)
+        if hit is None or hit[0] != self.version(card) or hit[3] is not None:
+            return None
+        return hit[2]
+
+    def unchanged(self, card, events) -> bool:
+        """Świeży pełny odczyt przed mutacją: True, gdy historia karty jest dokładnie `events` (odczytem decyzji)."""
+        try:
+            return self.journal.read_complete(card) == list(events)
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
 
 
 def inventory(engine, card, st):

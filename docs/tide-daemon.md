@@ -3756,7 +3756,7 @@ tworzy krótkożyjący kontekst `board/readcontext.BoardRead` i przekazuje go ja
 (`BoardStore.snapshot(board=…)`) i projekcji kart (`flow.derived(card, read)` → `engine._environment_view` →
 `envconsent`/`projectconsent`; także `_project`, `_review_policy`, `_plan_review_policy`). Kontekst nie jest
 globalny, nie trafia do workera mutacji i ginie z końcem odświeżenia; funkcje bez kontekstu czytają Tablicę świeżo
-jak dotąd (tick, zatwierdzenie zgody, start kroku). Sekcja ma pamięć `engine._env_cache` wspólną dla wszystkich
+jak dotąd (zatwierdzenie zgody, start kroku; tick ma własny kontekst — K-98 #3 niżej). Sekcja ma pamięć `engine._env_cache` wspólną dla wszystkich
 projektów, także plasma-tide, z kluczem z odcisku wejść (`envconsent.view_key`: projekt i repozytorium karty, rejestr
 repozytoriów, dziennik karty i wersja planu, `boxWait`, wyłącznik i plik ustawień, profile projektu i karty, dziennik
 pudełka, `.tide/box.yaml`, magazyn zgody projektu i kopii paczek, tryb K3/K1) — każda zmiana wejścia z tej listy
@@ -3771,6 +3771,25 @@ klucz nigdy nie trafia i sekcja jest liczona w każdym odświeżeniu. Pamięć s
 podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar: `daemon/tests/perf_board_refresh.py`
 (metody Snapshot, Work, Badge, GetCardFlowSettings, RenderFlow i BoxStatus z atrapą `incus`;
 porównanie bazy z HEAD tym samym reproduktorem: `daemon/tests/perf_board_refresh_compare.sh`).
+
+**Tick i odzyskiwanie bez powielania odczytów (K-98 #3, PT-344).** `engine.tick` ma jedną niezmienną fazę odczytu
+historii (`trialhold.HistoryPhase`): rozpoznanie niepełnej historii po restarcie, odtworzenie `step.started`
+(`_recover_started_steps`) i uzgodnienie sieci pudełek (`boxstep.recover_network`) dzielą jeden pełny ścisły odczyt
+karty z kontrolą tożsamości (`read_process_history(journal, card, phase)`; błąd i stan unknown są zapamiętane w fazie
+i nie znikają). Zapis tego procesu do historii karty (`Journal.generation`) unieważnia jej odczyt — następne użycie
+czyta ponownie. Faza nie zastępuje odczytu przed skutkiem: zapis odtworzonego startu idzie w `Journal.unchanged`
+(pod blokadą świeży pełny odczyt musi być równy odczytowi decyzji, inaczej `HistoryChanged` bez zapisu), a przed
+pierwszą mutacją karty w `recover_network` (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
+odczyt porównuje `HistoryPhase.unchanged`; przy zmianie mutacje tej karty są odmówione, stan sieci nie jest
+zapamiętany i kolejny tick uzgadnia go od nowa. Dalsza część ticku (`_tick_card`, inwentaryzacja, kontrola procesu)
+czyta historię świeżo jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pamięci. Tablica:
+tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
+transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,
+`_caretake` i `_guard_card` (kolumna karty). Zapis pliku Tablicy w tym procesie (`BoardStore.generation`) unieważnia
+kontekst; ścieżki ze skutkiem ubocznym (`moved`, start i wznowienie kroku, scalenie, start opiekuna) czytają Tablicę
+świeżo jak dotąd. Pomiar: `daemon/tests/perf_tick_recovery.py` (restart z żywym właścicielem, martwym procesem
+i stanem unknown; liczniki pełnych odczytów i wczytań Tablicy; porównanie bazy z HEAD:
+`daemon/tests/perf_tick_recovery_compare.sh`).
 
 **Odczyty podczas zajętej kolejki mutacji (K-98 #2, PT-343).** Kolejka mutacji (jednowątkowy worker `tide-cardflow`)
 pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:
