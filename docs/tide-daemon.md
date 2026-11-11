@@ -3787,7 +3787,9 @@ jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pam
 tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
 transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,
 `_caretake` i `_guard_card` (kolumna karty). Zapis pliku Tablicy w tym procesie (`BoardStore.generation`) unieważnia
-kontekst; ścieżki ze skutkiem ubocznym (`moved`, start i wznowienie kroku, scalenie, start opiekuna) czytają Tablicę
+kontekst ticku (`BoardRead(store, invalidate_on_write=True)`); kontekst odświeżenia BoardMonitor (domyślny) tego nie
+robi — trzyma jedną wersję Tablicy przez całe odświeżenie z jednym wczytaniem, także gdy tick równolegle zapisuje
+Tablicę (kontrakt #1). Ścieżki ze skutkiem ubocznym (`moved`, start i wznowienie kroku, scalenie, start opiekuna) czytają Tablicę
 świeżo jak dotąd. Pomiar: `daemon/tests/perf_tick_recovery.py` (restart z żywym właścicielem, martwym procesem
 i stanem unknown; liczniki pełnych odczytów i wczytań Tablicy; porównanie bazy z HEAD:
 `daemon/tests/perf_tick_recovery_compare.sh`).

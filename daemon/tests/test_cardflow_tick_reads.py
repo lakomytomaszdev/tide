@@ -18,8 +18,8 @@ from unittest import mock
 
 from tide_daemon.board.readcontext import BoardRead
 from tide_daemon.board.store import BoardStore
-from tide_daemon.cardflow import boxstep, trialhold
-from tide_daemon.cardflow.engine import FlowDeferred
+from tide_daemon.cardflow import boxstep, envconsent, trialhold
+from tide_daemon.cardflow.engine import FlowDeferred, FlowEngine
 from tide_daemon.cardflow.journal import HistoryChanged, Journal
 from tide_daemon.cardflow.state import fold
 
@@ -27,6 +27,7 @@ from . import flowfakes
 from .boxflow import BoxFlow, SLUG
 from .privatebus import wait_until
 from .test_cardflow import FlowInProcess, pass_merge_checks
+from .test_cardflow_refresh_context import RefreshContextCase
 
 
 def _lines(events):
@@ -413,7 +414,7 @@ class BoardReadInvalidationTest(unittest.TestCase):
             loads = []
             real = store.load
             with mock.patch.object(store, "load", side_effect=lambda: loads.append(1) or real()):
-                read = BoardRead(store)
+                read = BoardRead(store, invalidate_on_write=True)
                 read.board
                 read.board
                 self.assertEqual(len(loads), 1)
@@ -421,9 +422,58 @@ class BoardReadInvalidationTest(unittest.TestCase):
                 store._write("notatka.md", "x\n")
                 self.assertEqual(read.once("k", lambda: "nowa"), "nowa", "zapis czyści wartości pomocnicze")
                 read.board
-                self.assertEqual(len(loads), 2, "zapis Tablicy unieważnia kontekst")
+                self.assertEqual(len(loads), 2, "zapis Tablicy unieważnia kontekst ticku")
                 read.board
                 self.assertEqual(len(loads), 2)
+
+    def test_refresh_context_ignores_store_writes(self):
+        """Kontekst odświeżenia (#1, domyślny) trzyma jedną wersję Tablicy także po zapisie z równoległego ticku."""
+        with tempfile.TemporaryDirectory() as root:
+            store = BoardStore(root)
+            loads = []
+            real = store.load
+            with mock.patch.object(store, "load", side_effect=lambda: loads.append(1) or real()):
+                read = BoardRead(store)
+                first = read.board
+                read.once("k", lambda: "pamiec")
+                store._write("notatka.md", "x\n")
+                self.assertIs(read.board, first, "jedna wersja Tablicy na całe odświeżenie")
+                self.assertEqual(read.once("k", lambda: "nowa"), "pamiec")
+                self.assertEqual(len(loads), 1, "zapis spoza odświeżenia nie wymusza ponownego wczytania")
+
+    def test_tick_creates_an_invalidating_context(self):
+        created = []
+        real_init = BoardRead.__init__
+
+        def init(self, *args, **kwargs):
+            created.append(kwargs.get("invalidate_on_write", False))
+            real_init(self, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(BoardRead, "__init__", init):
+            engine = mock.Mock()
+            engine.store = BoardStore(root)
+            engine.journal.cards_complete.side_effect = OSError("stop po utworzeniu kontekstu")
+            engine._warnings = {}
+            FlowEngine.tick(engine)
+        self.assertEqual(created, [True])
+
+
+class RefreshDuringTickWriteTest(RefreshContextCase):
+    def test_store_write_during_refresh_does_not_reload_the_board(self):
+        """Zapis Tablicy (np. z równoległego ticku) w trakcie odświeżenia BoardMonitor nie powoduje drugiego
+        wczytania i nie miesza dwóch wersji Tablicy w jednej publikacji."""
+        real_model = envconsent.model
+        wrote = []
+
+        def model(engine, card, st, *rest):
+            if not wrote:
+                wrote.append(1)
+                self.store._write("notatka-z-ticku.md", "x\n")
+            return real_model(engine, card, st, *rest)
+        self.engine._env_cache.clear()
+        with mock.patch.object(envconsent, "model", side_effect=model):
+            _, loads, _ = self.refresh()
+        self.assertEqual(wrote, [1], "zapis w trakcie odświeżenia nie nastąpił")
+        self.assertLessEqual(loads, 1, f"odświeżenie wczytało Tablicę {loads} razy po zapisie z ticku")
 
 
 if __name__ == "__main__":

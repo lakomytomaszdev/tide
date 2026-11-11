@@ -3329,9 +3329,10 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # a każda mutacja z niego porównuje świeży odczyt (odmowa przy zmianie).
         history = trialhold.HistoryPhase(self.journal)
         # K-98 #3: jeden kontekst odczytu Tablicy (`BoardRead` z #1) na tick, przekazywany jawnie; zapis Tablicy
-        # go unieważnia, a ścieżki ze skutkiem ubocznym czytają świeżo jak dotąd.
+        # go unieważnia (tylko kontekst ticku — kontekst odświeżenia z #1 trzyma jedną wersję), a ścieżki ze skutkiem
+        # ubocznym czytają świeżo jak dotąd.
         from ..board.readcontext import BoardRead
-        read = BoardRead(self.store)
+        read = BoardRead(self.store, invalidate_on_write=True)
         try:
             # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
             # może wyprzedzić rozpoznania niepełnej historii po restarcie.

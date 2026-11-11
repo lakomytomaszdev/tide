@@ -10,9 +10,11 @@ Funkcje pomocnicze przyjmują kontekst opcjonalnie; bez niego zachowują dotychc
 
 K-98 #3 (PT-344): ten sam kontekst służy jednemu tickowi przepływu (`engine.tick` tworzy go na początku ticku
 i przekazuje jawnie do `_project_base`, `_tick_card`, `_project`, `_tracker_notes`, `_queue_notices`, `_caretake`,
-`_guard_card`). Zapis Tablicy w tym procesie (`BoardStore.generation`) unieważnia kontekst — kolejne użycie wczytuje
-Tablicę ponownie (osobny odczyt po zapisie). Ścieżki ze skutkiem ubocznym (start kroku, ruch karty, scalenie) nadal
-czytają świeżo, bez kontekstu.
+`_guard_card`). Tylko kontekst ticku (`invalidate_on_write=True`) jest unieważniany zapisem Tablicy w tym procesie
+(`BoardStore.generation`) — kolejne użycie wczytuje Tablicę ponownie (osobny odczyt po zapisie). Kontekst
+odświeżenia zachowuje kontrakt z #1: najwyżej jedno wczytanie na odświeżenie i jedna wersja Tablicy w opublikowanym
+wyniku, także gdy tick równolegle zapisuje Tablicę. Ścieżki ze skutkiem ubocznym (start kroku, ruch karty, scalenie)
+nadal czytają świeżo, bez kontekstu.
 """
 
 
@@ -20,17 +22,20 @@ class BoardRead:
     """Leniwy, jednorazowy odczyt Tablicy dla jednego odświeżenia albo jednego ticku.
 
     `board` wczytuje Tablicę przy pierwszym użyciu (albo przyjmuje już wczytaną) i zwraca ten sam obiekt przy
-    kolejnych, dopóki ten proces nie zapisał Tablicy (`store.generation`); po zapisie wczytuje ją ponownie.
+    kolejnych. Z `invalidate_on_write=True` (kontekst ticku, K-98 #3) zapis Tablicy w tym procesie
+    (`store.generation`) unieważnia kontekst i następne użycie wczytuje ją ponownie; domyślnie (odświeżenie, #1)
+    kontekst trzyma jedną wczytaną wersję do końca odświeżenia.
     Błąd wczytania jest zapamiętany i rzucany ponownie, więc nieudany odczyt też liczy się raz.
     Obiekt `Board` traktujemy jako tylko do odczytu."""
 
-    __slots__ = ("_store", "_board", "_error", "_memo", "_generation")
+    __slots__ = ("_store", "_board", "_error", "_memo", "_generation", "_invalidate_on_write")
 
-    def __init__(self, store, board=None):
+    def __init__(self, store, board=None, *, invalidate_on_write: bool = False):
         self._store = store
         self._board = board
         self._error: BaseException | None = None
         self._memo: dict = {}
+        self._invalidate_on_write = invalidate_on_write
         self._generation = self._current()
 
     def _current(self):
@@ -38,7 +43,10 @@ class BoardRead:
         return value if isinstance(value, int) else None
 
     def _drop_if_stale(self) -> None:
-        """Zapis Tablicy po wczytaniu: kontekst nieaktualny — także jego wartości pomocnicze i zapamiętany błąd."""
+        """Zapis Tablicy po wczytaniu: kontekst ticku nieaktualny — także jego wartości pomocnicze i zapamiętany
+        błąd. Kontekst odświeżenia (bez `invalidate_on_write`) nie reaguje na zapisy."""
+        if not self._invalidate_on_write:
+            return
         current = self._current()
         if current != self._generation:
             self._board, self._error, self._memo, self._generation = None, None, {}, current
