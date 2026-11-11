@@ -18,7 +18,7 @@ Rectangle {
     property bool compact: false
     property bool selected: false
     property bool canLaunch: false      // „Uruchom agenta…” w Do zrobienia (okno „Co ma zrobić agent?”)
-    property bool canDiff: false        // PT-5: „Diff gałęzi” w Do sprawdzenia
+    property bool canDiff: false        // K-36 #17: „Zmiany gałęzi” w Do sprawdzenia
     property var tagTone: null          // funkcja(nazwa) → kolor kropki tagu
     property var dragHost: null         // strona tablicy (BoardPage) — duch karty i upuszczanie
     property bool ghost: false          // kopia karty pod kursorem w czasie przeciągania
@@ -478,13 +478,14 @@ Rectangle {
             spacing: 6
             PillButton {
                 Layout.fillWidth: true
-                visible: root.canDiff
+                objectName: "cardTileDiff"
+                visible: root.canDiff && !!(root.c.derived && root.c.derived.flow && root.c.derived.flow.cardBranch)
                 implicitHeight: 30
                 pillRadius: Tide.Tokens.radiusSmall
                 pixelSize: 12
                 strong: true
                 outline: true
-                text: "Diff gałęzi"
+                text: "Zmiany gałęzi"
                 onClicked: root.diffRequested()
             }
             PillButton {
