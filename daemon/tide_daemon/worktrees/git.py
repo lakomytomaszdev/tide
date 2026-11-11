@@ -29,6 +29,7 @@ class Result:
     code: int
     out: str
     err: str
+    timed_out: bool = False  # polecenie przerwane po limicie czasu (code == -1)
 
     @property
     def ok(self) -> bool:
@@ -62,7 +63,7 @@ class Git:
                                       errors="replace", env=env, timeout=timeout or self.timeout,
                                       **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return Result(-1, "", str(exc))
+            return Result(-1, "", str(exc), timed_out=isinstance(exc, subprocess.TimeoutExpired))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())
 
     def read_checkout(self, cwd, *options, untracked_files="all", include_ignored=False):
