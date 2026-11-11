@@ -452,6 +452,7 @@ Item {
         signal removeFinished(string text)
         signal pruneFinished(string text)
         signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         property var forced: []
         property var fetched: []
         function fetch(repo) { fetched.push(repo) }
@@ -509,6 +510,7 @@ Item {
         signal removeFinished(string text)
         signal pruneFinished(string text)
         signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         function remove(paths) {}
         function removeForced(paths, deleteBranches, confirmed) {}
         function open(path, app) {}
@@ -559,6 +561,104 @@ Item {
         self.assertTrue(warned(log, "NULL").endswith("Nie udało się pobrać: brak odpowiedzi usługi"))
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
+    def test_pull_button_reasons_and_result(self):
+        """„Zaciągnij” (PT-353): przycisk przy worktree z upstreamem (główny katalog — w pasku repozytoriów);
+        wyłączony z widocznym powodem dla każdej odmowy dostępnej z danych listy; w trakcie „Zaciągam…” bez
+        drugiego żądania; wynik albo odmowa (jedno zdanie) pod wierszem (atrapa backendu)."""
+        def up(path, behind, ahead=0, **extra):
+            return item(path, "alpha", "decide", branch="feat/" + os.path.basename(path),
+                        upstream="origin/feat/" + os.path.basename(path), upstreamAhead=ahead, upstreamBehind=behind,
+                        lastActivityTs=NOW - DAY - len(path), **extra)
+        data = [
+            item("/r/alpha", "alpha", "main", isMain=True, branch="master", tag="", blocker="main", remotes=["origin"],
+                 upstream="origin/master", upstreamAhead=0, upstreamBehind=3),
+            up("/w/alpha/ok", 2),
+            up("/w/alpha/dirty", 1, dirty=2, blocker="dirty"),
+            up("/w/alpha/agent", 1, hasAgent=True, blocker="agent"),
+            up("/w/alpha/card", 1, hasAgent=True, hasCard=True, blocker="agent"),
+            up("/w/alpha/flow", 1, flowBranch=True),
+            up("/w/alpha/div", 1, ahead=1),
+            up("/w/alpha/same", 0),
+            up("/w/alpha/gone", None, ahead=None),
+            item("/w/alpha/local", "alpha", "decide", branch="feat/local", upstream=""),
+        ]
+        log = self.harness("PullSmoke.qml", """import QtQuick
+import "worktrees.js" as Logic
+Item {
+    width: 1180; height: 1400
+    QtObject {
+        id: stub
+        property string listJson: %(json)s
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property var pulled: []
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() {}
+        function prune(repo) {}
+        function fetch(repo) {}
+        function pull(path) { pulled.push(path) }
+    }
+    WorktreesView { id: win; anchors.fill: parent; backend: stub }
+    function all(item, name, out) {
+        if (item.objectName === name) out.push(item)
+        for (const child of item.children) all(child, name, out)
+        return out
+    }
+    function shown(name, f) { return all(win, name, []).filter(n => n.visible).map(f).sort().join("|") }
+    function state() {
+        return shown("pullButton", b => b.text + ":" + b.enabled) + "#" + shown("pullReason", t => t.text)
+               + "#" + shown("repoPullButton", b => b.text + ":" + b.enabled) + "#" + shown("pullNote", t => t.text)
+               + "#" + shown("repoPullNote", t => t.text)
+    }
+    Component.onCompleted: {
+        win.page.showAllDecide = true
+        const data = JSON.parse(stub.listJson)
+        console.warn("CODES " + data.map(w => { const b = Logic.pullBlocker(w); return b ? b.code : "ok" }).join(","))
+        console.warn("BEFORE " + state())
+        win.page.startPull("/w/alpha/ok")
+        win.page.startPull("/w/alpha/ok")
+        win.page.startPull("/w/alpha/dirty")
+        console.warn("BUSY " + state() + "#" + stub.pulled.join(","))
+        stub.pullFinished("/w/alpha/ok", '{"ok": true, "message": "zaciągnięto 2 commity z origin/feat/ok (fast-forward)"}')
+        win.page.startPull("/r/alpha")
+        stub.pullFinished("/r/alpha", '{"ok": false, "reason": "locked", "message": "repozytorium jest zajęte"}')
+        console.warn("DONE " + state() + "#" + stub.pulled.join(","))
+        win.page.startPull("/r/alpha")
+        stub.pullFinished("/r/alpha", "null")
+        console.warn("NULL " + shown("repoPullNote", t => t.text))
+        Qt.quit()
+    }
+}
+""" % {"json": json.dumps(json.dumps(data))})
+        self.assertEqual(warned(log, "CODES"), "ok,ok,dirty,agent,agent,card-step,diverged,up-to-date,no-upstream,"
+                                               "no-upstream")
+        buttons, reasons, repo, notes, repo_notes = warned(log, "BEFORE").split("#")
+        self.assertEqual(sorted(buttons.split("|")), sorted(
+            ["Zaciągnij ↓2:true"] + ["Zaciągnij ↓1:false"] * 5 + ["Zaciągnij:false"] * 2),
+            "bez przycisku przy gałęzi bez upstreamu")
+        self.assertEqual(sorted(reasons.split("|")), sorted([
+            "zmiany w katalogu", "pracuje agent", "trwa krok karty", "tą gałęzią zarządza Tide",
+            "rozjechana z origin/feat/div — scal albo zrób rebase sam", "gałąź aktualna", "brak upstreamu"]))
+        self.assertEqual(repo, "Zaciągnij ↓3 master:true")
+        self.assertEqual((notes, repo_notes), ("", ""))
+        busy = warned(log, "BUSY")
+        self.assertIn("Zaciągam…:false", busy)
+        self.assertTrue(busy.endswith("#/w/alpha/ok"), "jedno żądanie; wyłączony z powodem nic nie wysyła")
+        done = warned(log, "DONE").split("#")
+        self.assertNotIn("Zaciągam…", done[0])
+        self.assertEqual(done[3], "zaciągnięto 2 commity z origin/feat/ok (fast-forward)")
+        self.assertEqual(done[4], "Nie zaciągnięto — repozytorium jest zajęte")
+        self.assertEqual(done[5], "/w/alpha/ok,/r/alpha")
+        self.assertEqual(warned(log, "NULL"), "Nie udało się zaciągnąć: brak odpowiedzi usługi")
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
     def test_show_item_pending_search_field_and_first_refresh(self):
         """showItem: czeka tylko na pierwszą niepustą listę, przepada po zmianie szukania przez
         użytkownika, nigdy nie zaznacza; pole szukania pokazuje zapytanie także po wyczyszczeniu;
@@ -575,12 +675,14 @@ Item {
         signal removeFinished(string text)
         signal pruneFinished(string text)
         signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         function remove(paths) {}
         function removeForced(paths, deleteBranches, confirmed) {}
         function open(path, app) {}
         function refresh() { refreshes++ }
         function prune(repo) {}
         function fetch(repo) {}
+        function pull(path) {}
     }
     Stub { id: a }
     Stub { id: b }

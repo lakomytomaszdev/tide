@@ -40,6 +40,7 @@ Window {
         signal removeFinished(string text)
         signal pruneFinished(string text)
         signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         function gitDiff(tag, request) { calls = calls.concat([[tag, request]]) }
         function remove(paths) {}
         function removeForced(paths, deleteBranches, confirmed) {}
@@ -47,6 +48,7 @@ Window {
         function refresh() {}
         function prune(repo) {}
         function fetch(repo) {}
+        function pull(path) {}
     }
     WorktreesView { id: win; anchors.fill: parent; backend: fake }
     // diffprobe.py czyta widoczne elementy spod `loader.item`.

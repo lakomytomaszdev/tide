@@ -26,6 +26,10 @@ Obiekt /Worktrees, interfejs org.tide.Daemon.Worktrees:
 - Fetch(s repoPath) -> s     „Pobierz”: `git fetch <zdalny>` ze wszystkich zdalnych repozytorium z listy
                              (odpowiedź po zakończeniu, limit 120 s): JSON {ok, repoPath, remotes, newCommits,
                              message} albo {ok: false, reason, message} (docs/tide-daemon.md),
+- PullFastForward(s path) -> s
+                             „Zaciągnij”: `merge --ff-only` do upstreamu w worktree z listy, pod blokadą repozytorium
+                             scalania karty (odpowiedź po zakończeniu): JSON {ok, path, branch, upstream, from, to,
+                             commits, message} albo {ok: false, reason, message} (docs/tide-daemon.md),
 - sygnał Changed()           lista worktrees się zmieniła.
 
 Obiekt /Git, interfejs org.tide.Daemon.Git (odczyty gita jako dane, K-36, git_monitor.py, gitread/):
@@ -293,6 +297,10 @@ WORKTREES_XML = f"""<interface name="{WORKTREES_IFACE}">
   </method>
   <method name="Fetch">
     <arg name="repoPath" type="s" direction="in"/>
+    <arg name="json" type="s" direction="out"/>
+  </method>
+  <method name="PullFastForward">
+    <arg name="path" type="s" direction="in"/>
     <arg name="json" type="s" direction="out"/>
   </method>
   <signal name="Changed"/>
@@ -780,6 +788,12 @@ class WorktreesAdaptor(QDBusAbstractAdaptor):
     def Fetch(self, repo_path: str, message: QDBusMessage) -> str:
         # Sieć potrafi trwać do limitu czasu (120 s) — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
         self.monitor.fetch(repo_path, self._delayed(message, "Fetch"))
+        return ""
+
+    @pyqtSlot(str, QDBusMessage, result=str)
+    def PullFastForward(self, path: str, message: QDBusMessage) -> str:
+        # Blokada repozytorium i checkout plików w wątku roboczym — odpowiedź z opóźnieniem, pętla zdarzeń wolna.
+        self.monitor.pull(path, self._delayed(message, "PullFastForward"))
         return ""
 
 

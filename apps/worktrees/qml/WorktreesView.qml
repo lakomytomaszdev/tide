@@ -91,6 +91,7 @@ Item {
         onRefreshRequested: view.backend.refresh()
         onPruneRequested: repoPath => view.backend.prune(repoPath)
         onFetchRequested: repoPath => view.backend.fetch(repoPath)
+        onPullRequested: path => view.backend.pull(path)
         Component.onCompleted: {
             for (const path of view.previewValues("pick")) toggle(path)
             if (view.previewValues("confirm").length > 0) askRemove()
@@ -108,6 +109,11 @@ Item {
             let result = null
             try { result = JSON.parse(text) } catch (e) {}
             page.finishFetch(repoPath, result)
+        }
+        function onPullFinished(path, text) {
+            let result = null
+            try { result = JSON.parse(text) } catch (e) {}
+            page.finishPull(path, result)
         }
         function onPruneFinished(text) {
             let result = null

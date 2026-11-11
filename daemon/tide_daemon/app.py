@@ -290,8 +290,13 @@ def main(argv=None) -> int:
             paths += [p.repo for p in board.store.load().projects.values() if p.repo]
         return paths
 
-    git_reads = GitMonitor(lambda: board.flow.engine.journal if board is not None and board.flow is not None
-                           else None, parent=app, repos_source=known_git_repos)
+    def flow_journal():
+        return board.flow.engine.journal if board is not None and board.flow is not None else None
+
+    git_reads = GitMonitor(flow_journal, parent=app, repos_source=known_git_repos)
+    # „Zaciągnij” i pole `flowBranch` (PT-353): gałęzie kart w przepływie z tego samego dziennika (odczyt w wątku
+    # roboczym Worktrees, bez blokady repozytorium).
+    trees.scanner.journal_source = flow_journal
     app.aboutToQuit.connect(git_reads.stop)
     docker = None if args.no_docker else start_docker(app, args, clock, launchers)
     box_proxy = None if args.no_box else start_box_proxy(app)  # noqa: F841 — musi żyć do końca
