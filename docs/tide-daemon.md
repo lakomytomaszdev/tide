@@ -3784,8 +3784,16 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
   przed jakimkolwiek skutkiem i wraca co `PUBLISH_RETRY_MS` (50 ms) — żadna wersja nie pokazuje akcji w połowie
   (np. `card.moved` bez `card.paused`), a odczyt dostaje poprzednią wersję. Zapisy ticku i recovery widać zapis po
   zapisie od razu (każdy pełny), jak przed zmianą — tick nie wstrzymuje publikacji, więc Snapshot po zapisie ticku
-  widzi go deterministycznie, nawet gdy tick dalej trzyma blokadę. Synchronizacja zmian z zewnątrz (`sync`) bierze
+  widzi go deterministycznie, nawet gdy tick dalej trzyma blokadę. Granica spójności: „cała akcja albo nic” dotyczy
+  akcji z kolejki. Tick nie jest akcją, więc jedna wersja może złożyć Tablicę z chwili po jednym zapisie ticku
+  (np. kolumna karty) z dziennikiem sprzed jego kolejnego zapisu (albo odwrotnie) — każdy z nich pełny, jak przed
+  K-98 #2; atomowość całego ticku to zakres #3. Synchronizacja zmian z zewnątrz (`sync`) bierze
   blokadę bez czekania i odkłada commit do następnej okazji.
+- Wczytanie Tablicy w publikacji (`store.snapshot` i projekcja kart: widok środowiska, polityka review) też **nie
+  czeka**: idzie w `BoardStore.without_waiting()`, gdzie transakcja Tablicy trzymana przez inny wątek (worker:
+  StartCard w `git worktree add`, scalenie, tick) albo flock innego procesu (zapis profilu pudełka K-38) daje od razu
+  `BoardBusy`. Taka publikacja jest odrzucana w całości (także gdy wyjątek złapano niżej i podano treść zastępczą;
+  pamięć widoku środowiska jej nie zatrzymuje) i wraca po `PUBLISH_RETRY_MS`; Snapshot oddaje poprzednią wersję.
 - Wynik akcji jest odsyłany po publikacji jej skutku i commicie dziennika (FIFO; commit przy zajętej blokadzie
   ponawiany co 20 ms bez blokowania wątku głównego, migawka publikowana od razu i ponownie po commicie), a worker
   bierze następne zadanie dopiero po tym doręczeniu (najwyżej `DELIVERY_WAIT_S` = 5 s czekania, bez blokady
@@ -3793,7 +3801,8 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
 - Odpowiedź ma na początku `version` (numer publikacji; rośnie przy każdej zmianie treści albo `boxWait` kart, ten sam
   stan zachowuje numer) i `readState: "ready"`. Przed pierwszą publikacją: `{"version": 0, "readState": "preparing",
   "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca
-  `error: "preparing"`. Okno Tablicy (`apps/board/backend.py`) nie zastępuje taką odpowiedzią posiadanej migawki.
+  `error: "preparing"`. Okno Tablicy (`apps/board/backend.py`) nie zastępuje taką odpowiedzią posiadanej migawki,
+  a bez migawki nie zapisuje jej jako Tablicy (okno zostaje w stanie „ładowanie” do pierwszego `Changed`).
 - `GetCardFlowSettings` czyta plik ustawień od razu (zapis atomowy) i dodaje `version` (skrót bajtów pliku, z których
   powstała odpowiedź; `missing` — brak pliku) oraz `readState: "ready"`.
 - `BoxStatus`/`BoxCardStatus` biegną w osobnej puli odczytu `tide-board-read` (nie w kolejce mutacji) na opublikowanej
@@ -3807,7 +3816,9 @@ pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na
 - **Ograniczenie:** zapisy Tablicy z wątku głównego (`CreateCard`, `UpdateCard`, `MoveCard`, …) nadal czekają na
   transakcję Tablicy, jeśli trzyma ją długa mutacja (np. StartCard). `Worktrees` (`busy_places`) czyta dziennik pod
   blokadą jak dotąd. Odczyt prezentacji pomija tylko blokadę; `Journal.read_complete` i jego parser są bez zmian
-  (urwany wiersz nadal daje błąd ścisłego odczytu), a zapisy i bramki czytają pod blokadą jak dotąd.
+  (urwany wiersz nadal daje błąd ścisłego odczytu), a zapisy i bramki czytają pod blokadą jak dotąd. Ścisłe czytniki
+  bramek (`read_complete`, `cards_complete`) nie mają trybu prezentacji: wywołane w nim zgłaszają
+  `StrictReadInPresentation` (błąd programu, nie „unknown”) zamiast czytać bez blokady albo czekać na mutację.
 
 `ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
 

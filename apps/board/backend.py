@@ -819,9 +819,9 @@ class Backend(QObject):
         if not ok or not isinstance(value, str):
             self._set_available(False)
             return
-        if self._snapshot and _preparing(value):
-            # K-98 #2: usługa (np. po restarcie) jeszcze nie opublikowała migawki — zostaje poprzednia, a nowa
-            # przyjdzie po sygnale Changed z pierwszą publikacją.
+        if _preparing(value):
+            # K-98 #2: usługa (np. po restarcie) jeszcze nie opublikowała migawki — zostaje poprzednia (albo okno
+            # zostaje w stanie „ładowanie”, bez pustej Tablicy), a nowa przyjdzie po sygnale Changed z pierwszą publikacją.
             self._set_available(True)
             return
         if value != self._snapshot:

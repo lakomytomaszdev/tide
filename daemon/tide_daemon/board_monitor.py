@@ -42,9 +42,14 @@
   (`ready`; przed pierwszą publikacją `preparing` zamiast pustej Tablicy). Publikacja powstaje pod bramką przepływu
   karty (`CardFlowMonitor.read_gate`) i nie bierze blokady dziennika: dzienniki czyta w trybie prezentacji (pełne
   zdarzenia, własna pamięć), a licznik epok akcji (seqlock) odrzuca odczyt, w trakcie którego trwała albo zmieniła się
-  akcja z kolejki — żadna wersja nie pokazuje akcji w połowie. Wtedy publikacja wraca po PUBLISH_RETRY_MS, a odczyty
-  dostają poprzednią wersję. Zapisy ticku widać zapis po zapisie, od razu (jak przed K-98 #2). Dane odczytu służą
-  wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji.
+  akcja z kolejki — żadna wersja nie pokazuje akcji w połowie. Wczytanie Tablicy w publikacji też nie czeka: idzie
+  w `store.without_waiting()`, więc transakcja Tablicy trzymana przez mutację (StartCard w `git worktree add`,
+  scalenie, tick) albo inny proces odkłada publikację zamiast zatrzymać wątek główny. Wtedy publikacja wraca po
+  PUBLISH_RETRY_MS, a odczyty dostają poprzednią wersję. Zapisy ticku widać zapis po zapisie (tick nie jest akcją):
+  jedna wersja może złożyć Tablicę z chwili po jednym zapisie ticku z dziennikiem sprzed kolejnego — każdy z nich
+  jest pełny, jak przed K-98 #2; atomowość „cała akcja albo nic” dotyczy akcji z kolejki. Dane odczytu służą
+  wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji. Zapisy Tablicy z wątku
+  głównego (CreateCard, UpdateCard, MoveCard, UpsertProject, sync) nadal biorą transakcję z czekaniem.
 """
 import contextlib
 import copy
@@ -62,6 +67,7 @@ from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
 from .board.readcontext import BoardRead
+from .board.store import BoardBusy
 from .board import ytsync
 from .coordination.youtrack import issue_key
 
@@ -686,15 +692,29 @@ class BoardMonitor(QObject):
                 repos = []
             # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
             # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
-            read = BoardRead(self.store)
-            try:
-                snapshot = self.store.snapshot(repos=repos, board=read.board)
-            except Exception as exc:  # odczyt nie może położyć usługi
-                print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
-                snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
-                            "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
-            # Podstawa trafia do `_base` dopiero z udaną publikacją (bilet ważny przez cały odczyt).
-            return self._apply(read, base=snapshot, ticket=ticket) is not False
+            # K-98 #2: wczytanie nie czeka na transakcję Tablicy trzymaną przez mutację (StartCard, scalenie, tick) —
+            # zajęta transakcja odkłada publikację, a Snapshot() oddaje poprzednią wersję.
+            with self._without_waiting() as probe:
+                read = BoardRead(self.store)
+                try:
+                    snapshot = self.store.snapshot(repos=repos, board=read.board)
+                except BoardBusy:
+                    self._defer("publish")
+                    return False
+                except Exception as exc:  # odczyt nie może położyć usługi
+                    print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
+                    snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
+                                "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
+                if probe.busy is True:
+                    self._defer("publish")
+                    return False
+                # Podstawa trafia do `_base` dopiero z udaną publikacją (bilet ważny przez cały odczyt).
+                return self._apply(read, base=snapshot, ticket=ticket) is not False
+
+    def _without_waiting(self):
+        """Odczyty Tablicy z wątku głównego bez czekania na jej transakcję (K-98 #2, `BoardStore.without_waiting`)."""
+        hold = getattr(self.store, "without_waiting", None)
+        return hold() if hold is not None else contextlib.nullcontext(SimpleNamespace(busy=False))
 
     def _gate(self):
         """Bramka odczytu przepływu karty (K-98 #2) albo zawsze otwarta, gdy usługa działa bez przepływu."""
@@ -735,9 +755,12 @@ class BoardMonitor(QObject):
         if not isinstance(read, BoardRead):   # sygnały Qt wołają bez argumentu
             read = BoardRead(self.store)
         base = self._base if base is None else base
-        snapshot, context, box_wait = self._derived(base, read)
-        work = self._work(snapshot, context)
-        if not getattr(ticket, "still_valid", lambda: True)():
+        # Projekcja czyta Tablicę (widok środowiska, polityka review) bez czekania na transakcję mutacji; trafienie
+        # na zajętą transakcję — nawet złapane niżej i zamienione na zastępczą treść — odrzuca całą wersję.
+        with self._without_waiting() as probe:
+            snapshot, context, box_wait = self._derived(base, read)
+            work = self._work(snapshot, context)
+        if probe.busy is True or not getattr(ticket, "still_valid", lambda: True)():
             self._defer("publish")
             return False
         self._base = base

@@ -882,7 +882,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             hit = self._env_cache.get(card)
             if hit is None or hit[0] != key:
                 hit = (key, envconsent.model(self, card, st, read))
-                self._env_cache[card] = hit
+                # K-98 #2: model policzony przy zajętej transakcji Tablicy (publikacja bez czekania) może mieć
+                # zastępczą treść — tę wersję BoardMonitor odrzuca, a pamięć widoku jej nie zatrzymuje.
+                busy = getattr(self.store, "read_was_busy", None)
+                if busy is not None and busy() is True:
+                    self._env_cache.pop(card, None)
+                else:
+                    self._env_cache[card] = hit
             view = copy.deepcopy(hit[1])   # migawka nie dzieli obiektów z pamięcią
             if project_scope:
                 flow["environment"] = view

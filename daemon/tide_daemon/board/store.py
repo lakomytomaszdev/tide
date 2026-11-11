@@ -27,7 +27,9 @@ import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+import threading
 from threading import RLock
+from types import SimpleNamespace
 
 from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
@@ -120,6 +122,10 @@ class Change:
     high_water: int = 0      # następny wolny numer karty po tym zapisie (0 — bez zmiany)
 
 
+class BoardBusy(RuntimeError):
+    """Transakcję Tablicy trzyma inny wątek albo proces, a wołający (`BoardStore.without_waiting`) nie czeka."""
+
+
 class BoardStore:
     def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None,
                  approvals_path: str | None = None):
@@ -135,6 +141,8 @@ class BoardStore:
         self._transaction_depth = 0
         self._transaction_stack: contextlib.ExitStack | None = None
         self._board_locked = False
+        self._transaction_waits = True     # bieżąca zewnętrzna transakcja czeka na flock (False — `without_waiting`)
+        self._wait_local = threading.local()   # znacznik `without_waiting` bieżącego wątku (K-98 #2)
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
 
@@ -144,9 +152,34 @@ class BoardStore:
         return is_board_repo(self.root)
 
     @contextlib.contextmanager
+    def without_waiting(self):
+        """K-98 #2: w tym bloku transakcje Tablicy z bieżącego wątku nie czekają na blokadę trzymaną przez inny wątek
+        (worker mutacji: StartCard, scalenie, tick) ani inny proces — od razu rzucają `BoardBusy`. Publikacja migawki
+        w wątku głównym używa go, żeby nigdy nie stanąć na długiej mutacji. Zwraca znacznik: `busy` jest prawdą, gdy
+        którakolwiek próba w bloku trafiła na zajętą blokadę (także gdy wołający złapał wyjątek i podał zastępczą
+        treść) — wtedy wynik bloku trzeba odrzucić."""
+        outer = getattr(self._wait_local, "probe", None)
+        probe = outer if outer is not None else SimpleNamespace(busy=False)
+        self._wait_local.probe = probe
+        try:
+            yield probe
+        finally:
+            self._wait_local.probe = outer
+
+    def read_was_busy(self) -> bool:
+        """Czy w bieżącym bloku `without_waiting` tego wątku któraś transakcja trafiła na zajętą blokadę."""
+        probe = getattr(self._wait_local, "probe", None)
+        return bool(probe is not None and probe.busy)
+
+    @contextlib.contextmanager
     def transaction(self):
-        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
-        with self._transaction_lock:
+        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart. W bloku `without_waiting`
+        zajęta blokada daje `BoardBusy` zamiast czekania."""
+        probe = getattr(self._wait_local, "probe", None)
+        if not self._transaction_lock.acquire(blocking=probe is None):
+            probe.busy = True
+            raise BoardBusy("Tablica: transakcję trzyma inny wątek")
+        try:
             if self._transaction_depth:
                 yield
                 return
@@ -154,6 +187,7 @@ class BoardStore:
                 try:
                     self._transaction_depth += 1
                     self._transaction_stack = stack
+                    self._transaction_waits = probe is None
                     # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także
                     # na Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje. Bez katalogu Tablicy blokadę
                     # bierze dopiero `ensure()` (`_hold_board_lock`) i trzyma do końca tej transakcji: świeży
@@ -168,17 +202,26 @@ class BoardStore:
                     self._transaction_depth = 0
                     self._transaction_stack = None
                     self._board_locked = False
+                    self._transaction_waits = True
+        finally:
+            self._transaction_lock.release()
 
     def _hold_board_lock(self) -> None:
         """Wspólna blokada Tablicy do końca bieżącej (zewnętrznej) transakcji; brakujący katalog zakłada
         (tak samo robi `box/profile.board_lock`). Ścieżka, która nie jest katalogiem — bez blokady
-        (`ensure()` i tak ją odrzuci)."""
+        (`ensure()` i tak ją odrzuci). Transakcja z `without_waiting`: blokada innego procesu → `BoardBusy`."""
         if self._board_locked or self._transaction_stack is None:
             return
         if not os.path.lexists(self.root):
             os.makedirs(self.root, exist_ok=True)
         if os.path.isdir(self.root):
-            self._transaction_stack.enter_context(lockfile.exclusive(self.root))
+            try:
+                self._transaction_stack.enter_context(lockfile.exclusive(self.root, blocking=self._transaction_waits))
+            except BlockingIOError:
+                probe = getattr(self._wait_local, "probe", None)
+                if probe is not None:
+                    probe.busy = True
+                raise BoardBusy("Tablica: blokadę trzyma inny proces") from None
             self._board_locked = True
 
     def load(self) -> Board:

@@ -58,6 +58,7 @@ class CardFlowMonitor(QObject):
         self._owner_thread = threading.current_thread()   # wątek główny (Qt), który doręcza wyniki
         self._epoch = 0   # licznik epok akcji (K-98 #2): nieparzysty — akcja z kolejki w toku
         self._deliveries: list = []       # [dalszy ciąg, future, opublikować] — wyniki z kolejki czekające na migawkę
+        self._draining = False            # `_drain` w toku (bez ponownego wejścia z odbiorcy sygnału)
         self._retry = QTimer(self, singleShot=True, interval=DELIVER_RETRY_MS)
         self._retry.timeout.connect(self._drain)
 
@@ -89,7 +90,8 @@ class CardFlowMonitor(QObject):
 
     @contextlib.contextmanager
     def read_gate(self):
-        """Bramka publikacji migawki (K-98 #2), bez blokady dziennika — wątek główny nigdy nie czeka na mutację.
+        """Bramka publikacji migawki (K-98 #2), bez blokady dziennika. Razem z wczytaniem Tablicy bez czekania
+        (`BoardStore.without_waiting` w BoardMonitor) publikacja nie czeka na mutację.
 
         Bilet jest fałszywy, gdy trwa akcja z kolejki (licznik epok nieparzysty): migawka nie pokazuje akcji
         w połowie, odczyt dostaje poprzednią wersję. W środku dziennik czytamy w trybie prezentacji (bez blokady,
@@ -488,7 +490,18 @@ class CardFlowMonitor(QObject):
     def _drain(self) -> None:
         """Wyniki z kolejki po kolei. Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta
         o Snapshot(), widzi już zlecenie. K-98 #2: gdy kolejna mutacja trzyma już blokadę dziennika, wątek główny
-        nie czeka na nią — wynik (i następne za nim) czeka, a próba wraca co DELIVER_RETRY_MS."""
+        nie czeka na nią — wynik (i następne za nim) czeka, a próba wraca co DELIVER_RETRY_MS. Bez ponownego
+        wejścia: odbiorca `Changed` albo odpowiedzi, który synchronicznie woła Snapshot() (→ `settle`), nie doręcza
+        tego samego wyniku drugi raz — zewnętrzna pętla dokończy kolejkę."""
+        if self._draining:
+            return
+        self._draining = True
+        try:
+            self._drain_items()
+        finally:
+            self._draining = False
+
+    def _drain_items(self) -> None:
         while self._deliveries and not self._stopped:
             item = self._deliveries[0]       # [dalszy ciąg, future, opublikowano, zapisano commit]
             dirty = self.engine.journal.has_dirty()

@@ -30,6 +30,11 @@ JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
 
 
+class StrictReadInPresentation(RuntimeError):
+    """Ścisły czytnik bramki wywołany w odczycie prezentacji (K-98 #2). Celowo nie OSError/ValueError: wołający
+    bramki traktują je jako „unknown”, a to jest błąd programu, który ma być widoczny."""
+
+
 def _validate_process_identity(event):
     """Nieznana tożsamość nie jest dowodem, że proces nie podlega ochronie.
 
@@ -87,6 +92,15 @@ class Journal:
     def _guard(self):
         return contextlib.nullcontext() if self._presenting() else self.lock
 
+    def _strict(self):
+        """Blokada ścisłych czytników bramek (`cards_complete`, `read_complete`). Nie mają trybu prezentacji: ich
+        wynik decyduje o skutku, więc zawsze czytają pod blokadą dziennika. Wywołanie z odczytu prezentacji to błąd
+        programu — zgłaszamy go od razu (`StrictReadInPresentation`) zamiast czekać w wątku głównym na mutację albo
+        czytać bez blokady."""
+        if self._presenting():
+            raise StrictReadInPresentation("ścisły odczyt dziennika w odczycie prezentacji")
+        return self.lock
+
     # --- ścieżki ---------------------------------------------------------------------------------
 
     def rel_dir(self, card: str) -> str:
@@ -127,7 +141,7 @@ class Journal:
         musi być czytelny i nie może być dowiązaniem. Katalog karty bez dziennika
         też trafia do wyniku, aby read_complete odmówił zamiast pominąć historię.
         """
-        with self._guard():
+        with self._strict():
             found = set()
             for root, mirror in ((self.mirror, True), (os.path.join(self.root, FLOW_DIR), False)):
                 try:
@@ -196,7 +210,7 @@ class Journal:
         kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
         OSError/ValueError oznaczają dla wywołującego stan unknown.
         """
-        with self._guard():
+        with self._strict():
             source = self.mirror_path(card)
             try:
                 os.lstat(source)

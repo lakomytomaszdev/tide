@@ -424,6 +424,158 @@ class SerialWritesTest(BusyReadsCase):
         self.assertTrue(all(name.startswith("tide-cardflow") for name in threads), threads)
 
 
+class BoardTransactionBusyTest(BusyReadsCase):
+    """Review r1 MAJOR 1: wczytanie Tablicy w publikacji nie czeka na transakcję Tablicy trzymaną przez mutację
+    (worker: StartCard, scalenie, tick) ani przez inny proces — publikacja jest odłożona, Snapshot oddaje poprzednią
+    wersję, a mutacja nadal trwa. Bez poprawki wątek główny stałby na `_transaction_lock`/`flock` do końca mutacji;
+    strażnik zwalnia ją po WATCHDOG_S i oznacza to jako porażkę, żeby test nie wisiał."""
+
+    WATCHDOG_S = 10.0
+
+    @contextlib.contextmanager
+    def held_transaction(self, submit):
+        """`submit(job)` umieszcza `job` w kolejce mutacji; job wchodzi w `store.transaction()` i czeka. Zwraca
+        (czy job nadal trwa, czy strażnik musiał zwolnić blokadę)."""
+        inside, release, finished, timed_out = threading.Event(), threading.Event(), [], []
+
+        def job():
+            with self.store.transaction():
+                inside.set()
+                if not release.wait(self.WATCHDOG_S):
+                    timed_out.append(True)
+            return {"ok": True}
+        submit(job, finished.append)
+        try:
+            self.assertTrue(pump(inside.is_set), "mutacja nie weszła w transakcję Tablicy")
+            yield inside, (lambda: not finished), timed_out
+        finally:
+            release.set()
+            self.assertTrue(pump(lambda: finished, 40), "mutacja nie skończyła się po odblokowaniu")
+        self.assertEqual(timed_out, [], "wątek główny czekał na transakcję Tablicy trzymaną przez mutację")
+
+    def test_publication_does_not_wait_for_a_tick_holding_the_board_transaction(self):
+        # Tick nie jest akcją (bilet ważny), więc bez poprawki publikacja weszłaby w `store.load()` i czekała.
+        before = self.snapshot()
+        submit = lambda job, then: self.assertTrue(self.live._submit(job, then, whole=False))
+        with self.held_transaction(submit) as (_, running, timed_out):
+            self.assertFalse(self.board.publish(), "publikacja przy zajętej transakcji Tablicy")
+            self.board._apply()               # przeliczenie z zegara (rederive) — też bez czekania
+            self.board._plans_mark = None     # Snapshot spróbuje opublikować
+            snap = self.snapshot()
+            self.assertEqual((snap["version"], snap["readState"]), (before["version"], "ready"))
+            self.assertTrue(self.flow_settings()["ok"])
+            self.assertTrue(self.box_status()["ok"])
+            self.assertTrue(running(), "odpowiedź po zakończeniu mutacji nie zalicza próby")
+            self.assertEqual(timed_out, [])
+        # Odłożona publikacja przychodzi sama po zwolnieniu transakcji.
+        self.assertTrue(pump(lambda: self.board._pending is None and self.board.publish()))
+
+    def test_action_entering_the_board_transaction_after_the_gate_does_not_freeze_publication(self):
+        # Okno ze zgłoszenia: bilet jest już ważny (akcji nie było), a akcja wchodzi w transakcję Tablicy, zanim
+        # publikacja wczyta Tablicę — tu z `repos_source`, które stoi między bramką a `store.snapshot`.
+        before = self.snapshot()
+        state = {}
+        real = self.board.repos_source
+
+        def repos():
+            if "running" not in state:
+                cm = self.held_transaction(lambda job, then: self.assertTrue(self.live._submit(job, then)))
+                state["cm"] = cm
+                state["inside"], state["running"], state["timed_out"] = cm.__enter__()
+            return real()
+        with mock.patch.object(self.board, "repos_source", side_effect=repos):
+            published = self.board.publish()
+        try:
+            self.assertFalse(published, "publikacja przy akcji trzymającej transakcję Tablicy")
+            self.assertTrue(state["running"](), "publikacja wróciła dopiero po zakończeniu akcji")
+            self.assertEqual(state["timed_out"], [])
+            snap = self.snapshot()
+            self.assertEqual(snap["version"], before["version"])
+            self.assertTrue(state["running"]())
+        finally:
+            state["cm"].__exit__(None, None, None)
+
+    def test_projection_does_not_wait_for_the_board_transaction(self):
+        # Ścieżka `_apply` (zegar rederive, YouTrack): podstawa z pamięci, Tablicę czyta dopiero projekcja kart
+        # (widok środowiska) — po bramce. Zajęta transakcja odkłada tę wersję zamiast podać treść zastępczą.
+        before = self.snapshot()
+        submit = lambda job, then: self.assertTrue(self.live._submit(job, then, whole=False))
+        with self.held_transaction(submit) as (_, running, timed_out):
+            self.assertFalse(self.board._apply())
+            self.assertEqual(self.snapshot()["version"], before["version"])
+            self.assertTrue(running())
+        # Po zwolnieniu: odłożona wersja ma te same karty (z widokiem środowiska) co przed mutacją — trafienie na
+        # zajętą transakcję nie zostawiło zastępczej treści ani w migawce, ani w pamięci widoku środowiska.
+        # (`lastCommit` może się zmienić: commit dziennika z przygotowania testu.)
+        self.assertTrue(pump(lambda: self.board._pending is None and self.board.publish()))
+        self.assertEqual(json.loads(self.board._json)["cards"], before["cards"])
+
+    def test_publication_does_not_wait_for_another_process_holding_the_board_lock(self):
+        from tide_daemon.board import lockfile
+        before = self.snapshot()
+        holding, release, timed_out = threading.Event(), threading.Event(), []
+
+        def other():   # inny „proces”: osobny deskryptor i `flock` (np. zapis profilu pudełka K-38 z CLI)
+            with lockfile.exclusive(self.store.root):
+                holding.set()
+                if not release.wait(self.WATCHDOG_S):
+                    timed_out.append(True)
+        holder = threading.Thread(target=other)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(5))
+            self.assertFalse(self.board.publish())
+            self.assertEqual(self.snapshot()["version"], before["version"])
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+            holder.join()
+        self.assertEqual(timed_out, [], "publikacja czekała na flock innego procesu")
+        self.assertTrue(pump(lambda: self.board._pending is None and self.board.publish()))
+
+    def test_writes_still_wait_for_the_board_transaction(self):
+        # Granica tylko dla publikacji: zwykła transakcja (zapis) poza `without_waiting` dalej czeka.
+        entered = threading.Event()
+        with self.store.transaction():
+            worker = threading.Thread(target=lambda: (self.store.load(), entered.set()))
+            worker.start()
+            self.assertFalse(entered.wait(0.2), "odczyt poza publikacją nie czekał na transakcję")
+        worker.join(10)
+        self.assertTrue(entered.is_set())
+        with self.store.without_waiting() as probe:
+            self.store.load()                 # wolna transakcja: zwykłe wczytanie
+        self.assertFalse(probe.busy)
+
+
+class DeliveryAndStrictReadTest(BusyReadsCase):
+    def test_drain_is_not_reentered_by_a_synchronous_snapshot_reader(self):
+        # Review r1 NIT 1: odbiorca Changed, który od razu woła Snapshot() (→ settle → _drain), nie doręcza wyniku
+        # drugi raz ani nie zdejmuje cudzego elementu kolejki.
+        card = self.proj_cards[0]
+        answers = []
+        hook = lambda: self.board.snapshot_json()
+        self.board.changed.connect(hook)
+        self.addCleanup(lambda: self.board.changed.disconnect(hook))
+        self.assertTrue(self.live._submit(lambda: self.engine.journal.append(card, "card.paused"), answers.append))
+        self.assertTrue(pump(lambda: answers))
+        for _ in range(10):
+            app().processEvents()
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(self.live._deliveries, [])
+
+    def test_strict_journal_readers_refuse_the_presentation_mode(self):
+        # Review r1 NIT 4: czytniki bramek nie czytają bez blokady w odczycie prezentacji.
+        from tide_daemon.cardflow.journal import StrictReadInPresentation
+        card = self.proj_cards[0]
+        self.assertTrue(self.engine.journal.read_complete(card))
+        with self.engine.journal.presentation():
+            self.assertTrue(self.engine.journal.read(card))
+            with self.assertRaises(StrictReadInPresentation):
+                self.engine.journal.read_complete(card)
+            with self.assertRaises(StrictReadInPresentation):
+                self.engine.journal.cards_complete()
+
+
 INCUS_EMPTY = "#!/bin/sh\necho '[]'\n"
 GIT_GATE = """#!/bin/sh
 # Atrapa testu K-98 #2: gdy istnieje plik bramki, polecenie z jego wzorcem czeka, aż plik zniknie.
