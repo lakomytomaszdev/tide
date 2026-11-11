@@ -569,26 +569,46 @@ def _thread_launcher(slug: str, profile: dict, action: str) -> None:
 
 # ------------------------------------------------------------ BoxStatus
 
-def status(engine, slug: str, card: str = "") -> dict:
-    """`BoxStatus(slug)`: stan, hash, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu."""
+PREPARING_MESSAGE = "Tablica się przygotowuje — stan pudełka nieznany; spróbuj za chwilę"
+
+
+def preparing_status() -> dict:
+    """`BoxStatus` przed pierwszą opublikowaną migawką Tablicy (K-98 #2): jawne „nieznane”, nie gotowe pudełko."""
+    return {"ok": False, "error": "preparing", "readState": "preparing", "state": "unknown",
+            "message": PREPARING_MESSAGE}
+
+
+def status(engine, slug: str, card: str = "", published=None) -> dict:
+    """`BoxStatus(slug)`: stan, hash, „filtrowanie NIC: tak/nie” i `boxWait` kart projektu. Tylko odczyt.
+
+    K-98 #2: `published` to opublikowana migawka Tablicy (`board_monitor.Published`): projekty, karty i `boxWait`
+    kart pochodzą z jednej wersji stanu, bez blokady dziennika ani Tablicy, więc odczyt nie czeka na kolejkę
+    mutacji; odpowiedź niesie `version` tej migawki. Stan pudełka i slotu to bieżący odczyt hosta (Incus, dziennik
+    pudełka, `admission.view` — bez zapisu). Bez `published` (silnik bez BoardMonitor) — świeży odczyt Tablicy
+    i dzienników kart."""
     from .engine import fold
     from . import boxcontrol
-    card, name = boxcontrol.target(engine, slug, card)
-    board = engine.store.load()
+    board = published.board if published is not None else engine.store.load()
+    card, name = boxcontrol.target(engine, slug, card, board=board)
     builder = (engine.box_builder or (lambda: box_builder.Builder(box_settings.load())))()
     st = builder.status(slug, card) if card else builder.status(slug)
     out = st.to_dict()
     from ..box import admission
-    out['admission'] = admission.snapshot(builder.incus)
+    out['admission'] = admission.view(builder.incus)
     out["nicLabel"] = "filtrowanie NIC: " + ("tak" if st.nic_filtering else "nie")
     cards = []
     for num, item in sorted(board.cards.items()):
         if item.project != slug:
             continue
         cid = f"K-{num}"
-        if engine.journal.has(cid):
+        if published is not None:
+            if cid in published.box_wait:
+                cards.append({"card": cid, "boxWait": published.box_wait[cid]})
+        elif engine.journal.has(cid):
             cards.append({"card": cid, "boxWait": boxwait.card_box_wait(fold(engine.journal.read(cid)))})
     out["cards"] = cards
+    if published is not None:
+        out.update(version=published.version, readState="ready")
     out["timings"] = [{k: e[k] for k in ("type", "duration", "reason") if k in e}
                       for e in bs.events(slug, name) if e.get("type") in ("box.stop", "box.reset") and "duration" in e]
     out["ok"] = True

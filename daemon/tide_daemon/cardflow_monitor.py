@@ -10,7 +10,15 @@
   więc zdarzenia nie trafiają do „sync external changes”,
 - zatrzymanie usługi nie zatrzymuje kroków (własne jednostki systemd); po starcie tick podpina się pod nie z dziennika.
 - odczyt hostingu PR/MR korzysta z osobnej, ograniczonej puli na lokalnej migawce; nie zatrzymuje StartCard ani tick.
+- K-98 #2 — odczyty niezależne od kolejki mutacji: kolejka (`tide-cardflow`) pozostaje jedynym miejscem zapisów
+  przepływu. Proste odczyty `/Board` nie czekają na nią: GetCardFlowSettings czyta plik ustawień od razu,
+  BoxStatus biegnie w osobnej puli odczytu (`tide-board-read`) na opublikowanej migawce BoardMonitor (bez blokady
+  dziennika i Tablicy, bez zapisu stanu slotu), a migawka Tablicy (Snapshot, Panel karty) powstaje pod bramką
+  `read_gate()`: blokada dziennika brana bez czekania. Gdy trzyma ją długa mutacja, wątek główny nie czeka —
+  oddaje ostatnią opublikowaną, spójną wersję i ponawia publikację po zwolnieniu blokady. Ciężkie podglądy Gita
+  (CardBranchDiff, PreviewCardMerge, …) zachowują własny kontrakt w kolejce.
 """
+import contextlib
 import json
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -24,6 +32,7 @@ POLL_MS = 5_000
 
 class CardFlowMonitor(QObject):
     _done = pyqtSignal(object, object)   # (dalszy ciąg w wątku głównym, future)
+    _read_done = pyqtSignal(object, object)   # wynik odczytu z puli `tide-board-read` (bez commitu i publikacji)
 
     def __init__(self, engine, board=None, poll_ms: int = POLL_MS, notifier=None, parent=None):
         super().__init__(parent)
@@ -32,6 +41,7 @@ class CardFlowMonitor(QObject):
         self.notifier = notifier           # funkcja({card, ticket, result, detail}) w wątku głównym
         self.lock = engine.journal.lock
         self._pool: ThreadPoolExecutor | None = None
+        self._read_pool: ThreadPoolExecutor | None = None
         self._hosting_pool: ThreadPoolExecutor | None = None
         self._hosting_pending = 0
         self._stopped = False
@@ -39,6 +49,7 @@ class CardFlowMonitor(QObject):
         self._timer = QTimer(self, interval=poll_ms)
         self._timer.timeout.connect(self.tick)
         self._done.connect(self._deliver)
+        self._read_done.connect(self._deliver_read)
 
     def start(self) -> None:
         self.tick()
@@ -52,6 +63,9 @@ class CardFlowMonitor(QObject):
         if self._hosting_pool is not None:
             self._hosting_pool.shutdown(wait=False, cancel_futures=True)
             self._hosting_pool = None
+        if self._read_pool is not None:
+            self._read_pool.shutdown(wait=False, cancel_futures=True)
+            self._read_pool = None
         if self._pool is not None:
             # Bieżąca operacja zostawia trwały zamiar/wynik; niezależne jednostki nie są zatrzymywane.
             self._pool.shutdown(wait=True, cancel_futures=True)
@@ -59,6 +73,21 @@ class CardFlowMonitor(QObject):
         self.commit()  # callback Qt może już nie dotrzeć po app.exec()
 
     # --- odczyt dla BoardMonitor -----------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def read_gate(self):
+        """Bramka publikacji migawki (K-98 #2): blokada dziennika bez czekania. `True` — blokada wzięta na cały
+        odczyt, więc wszystkie dzienniki kart i Tablica pochodzą z jednej chwili, w której żaden zapis przepływu
+        (pod tą blokadą) nie jest w połowie; `False` — trzyma ją mutacja, a wywołujący nie czeka."""
+        taken = self.lock.acquire(blocking=False)
+        try:
+            yield taken
+        finally:
+            if taken:
+                self.lock.release()
+
+    def box_wait(self, card_id: str) -> str:
+        return self.engine.box_wait(card_id)
 
     def has_journal(self, card_id: str) -> bool:
         return self.engine.has_journal(card_id)
@@ -277,7 +306,19 @@ class CardFlowMonitor(QObject):
         self._action("ApproveCardEnvironment", lambda: self.engine.approve_environment(card_id, yaml_text, only_plan), reply)
 
     def box_status(self, slug: str, reply, card: str = "") -> None:
-        self._action("BoxStatus", lambda: self.engine.box_status(slug, card), reply)
+        """BoxStatus/BoxCardStatus (K-98 #2): odczyt poza kolejką mutacji, w puli `tide-board-read`, na opublikowanej
+        migawce Tablicy. Przed pierwszą publikacją — jawne „przygotowywanie” zamiast stanu gotowego pudełka."""
+        source = getattr(self.board, "published", None)
+        if source is None:   # silnik bez BoardMonitor (testy): świeży odczyt Tablicy, nadal poza kolejką
+            work = lambda: self.engine.box_status(slug, card)
+        else:
+            published = source()
+            if published is None:
+                from .cardflow import envconsent
+                reply(json.dumps(envconsent.preparing_status(), ensure_ascii=False))
+                return
+            work = lambda: self.engine.box_status(slug, card, published)
+        self._action("BoxStatus", work, reply, submit=self._submit_read)
 
     def stop_box(self, slug: str, card: str, reply) -> None:
         self._action("StopBox", lambda: self.engine.stop_box(slug, card), reply)
@@ -322,14 +363,20 @@ class CardFlowMonitor(QObject):
         if not self._submit(self.engine.tick, after):
             self._ticking = False
 
-    def commit(self) -> bool:
-        """Commit zmian dziennika i wyjścia kroków (wątek główny). True, gdy coś było do zapisania."""
-        with self.lock:
+    def commit(self, wait: bool = True):
+        """Commit zmian dziennika i wyjścia kroków (wątek główny). True, gdy coś było do zapisania.
+        `wait=False` (K-98 #2, wątek główny po wyniku z kolejki): gdy blokadę dziennika trzyma kolejna mutacja,
+        nic nie robi i zwraca None — zmiany zostają do commitu po jej zakończeniu, a wątek główny nie czeka."""
+        if not self.lock.acquire(blocking=wait):
+            return None
+        try:
             paths = self.engine.journal.take_dirty()
             if not paths:
                 return False
             cards = sorted({p.split("/")[1] for p in paths if p.count("/") >= 2})
             error = self.engine.store.repo.commit(f"{', '.join(cards) or 'flow'}: card flow", paths)
+        finally:
+            self.lock.release()
         if error:
             print(f"tide-daemon: przepływ karty: commit dziennika czeka: {error}", flush=True)
         return True
@@ -373,11 +420,31 @@ class CardFlowMonitor(QObject):
         future.add_done_callback(lambda f: self._done.emit(then, f))
         return True
 
+    def _submit_read(self, work, then) -> bool:
+        """Odczyt poza kolejką mutacji (K-98 #2): osobna pula, wynik w wątku głównym bez commitu i publikacji."""
+        if self._stopped:
+            return False
+        if self._read_pool is None:
+            self._read_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tide-board-read")
+        try:
+            future = self._read_pool.submit(work)
+        except RuntimeError:  # pula zamknięta (koniec usługi)
+            return False
+        future.add_done_callback(lambda f: self._read_done.emit(then, f))
+        return True
+
+    def _deliver_read(self, then, future) -> None:
+        if self._stopped or future.cancelled():
+            return
+        then(future)
+
     def _deliver(self, then, future) -> None:
         if self._stopped:
             return
         # Najpierw commit i nowa migawka, potem odpowiedź: kto po StartCard pyta o Snapshot(), widzi już zlecenie.
-        if self.commit() and self.board is not None:
+        # K-98 #2: gdy kolejna mutacja trzyma już dziennik, commit czeka na jej wynik, a publikacja — na zwolnienie
+        # blokady (BoardMonitor ponawia ją sam); wątek główny nie czeka na kolejkę.
+        if self.commit(wait=False) is not False and self.board is not None:
             self.board.publish()
         for notice in self.engine.take_notices():
             if self.notifier is not None:

@@ -3772,6 +3772,34 @@ podgląd (`exposure-expected`) po zmianie wejścia jest odrzucany. Pomiar: `daem
 (metody Snapshot, Work, Badge, GetCardFlowSettings, RenderFlow i BoxStatus z atrapą `incus`;
 porównanie bazy z HEAD tym samym reproduktorem: `daemon/tests/perf_board_refresh_compare.sh`).
 
+**Odczyty podczas zajętej kolejki mutacji (K-98 #2, PT-343).** Kolejka mutacji (jednowątkowy worker `tide-cardflow`)
+pozostaje jedynym miejscem zapisów przepływu karty; proste odczyty `/Board` na nią nie czekają:
+
+- `Snapshot()` (także Panel karty — `cards[].derived.flow`) oddaje ostatnią **opublikowaną** wersję. Publikacja
+  (`BoardMonitor.publish`/przeliczenie) idzie pod bramką `CardFlowMonitor.read_gate()`: blokada dziennika brana bez
+  czekania i trzymana przez cały odczyt, więc Tablica i dzienniki wszystkich kart pochodzą z jednej chwili, a zapis
+  przepływu w połowie (pod tą blokadą) nie trafia do żadnej wersji. Gdy blokadę trzyma mutacja (tick, recovery,
+  StartCard z `git worktree add`, scalenie), wątek główny nie czeka: publikacja wraca co `PUBLISH_RETRY_MS` (50 ms),
+  a odczyt dostaje poprzednią wersję. Synchronizacja zmian z zewnątrz (`sync`) i commit dziennika po wyniku z kolejki
+  też biorą blokadę bez czekania i odkładają commit do następnej okazji.
+- Odpowiedź ma na początku `version` (numer publikacji; rośnie przy każdej zmianie treści albo `boxWait` kart, ten sam
+  stan zachowuje numer) i `readState: "ready"`. Przed pierwszą publikacją: `{"version": 0, "readState": "preparing",
+  "cards": [], …}` — nie pusta, gotowa Tablica; `Work()` ma wtedy `readState: "preparing"`, a `CardDocs` zwraca
+  `error: "preparing"`. Okno Tablicy (`apps/board/backend.py`) nie zastępuje taką odpowiedzią posiadanej migawki.
+- `GetCardFlowSettings` czyta plik ustawień od razu (zapis atomowy) i dodaje `version` (skrót bajtów pliku, z których
+  powstała odpowiedź; `missing` — brak pliku) oraz `readState: "ready"`.
+- `BoxStatus`/`BoxCardStatus` biegną w osobnej puli odczytu `tide-board-read` (nie w kolejce mutacji) na opublikowanej
+  wersji (`BoardMonitor.published()`: projekty, karty i `boxWait` kart z jednej publikacji) i niosą jej `version`.
+  Stan pudełka i slotu to bieżący odczyt hosta; slot przez `admission.view` — to samo uzgodnienie z Incusem co
+  `admission.snapshot`, ale **bez zapisu** `state.json` (zapisują go zlecenia pudełek i tick). Przed pierwszą
+  publikacją: `{ok: false, error: "preparing", readState: "preparing", state: "unknown"}`.
+- Dane odczytu służą wyłącznie prezentacji: zapisy (zgoda, start, scalenie) idą kolejką i przed skutkiem sprawdzają
+  historię i prawa świeżo. Ciężkie podglądy Gita (`CardBranchDiff`, `PreviewCardMerge`, `PreviewCardBaseChange`, …)
+  zachowują własny kontrakt w kolejce i nie są prostymi odczytami.
+- **Ograniczenie:** zapisy Tablicy z wątku głównego (`CreateCard`, `UpdateCard`, `MoveCard`, …) nadal czekają na
+  transakcję Tablicy, jeśli trzyma ją długa mutacja (np. StartCard). `Worktrees` (`busy_places`) czyta dziennik pod
+  blokadą jak dotąd.
+
 `ApproveCardEnvironment(card, yaml, onlyPlan)` (JSON; błędy jak inne metody /Board):
 
 1. `prepare`: `yaml` jest profilem karty (`profile.parse(…, "card")`). Nieznany klucz, zły typ, pozycja czerwona
@@ -3809,8 +3837,9 @@ Zgoda projektu plasma-tide (`projectconsent`) przy wyłączonym pudełku zapisuj
 Tablicę commituje Tide; profil zapisuje wyłącznie usługa.
 
 `BoxStatus(slug)` zwraca `Builder.status` (`state`, `recipeHash`, `profileHash`, `diff`, `exists`, `usable`,
-`nicFiltering`) oraz `nicLabel` („filtrowanie NIC: tak/nie”) i `cards[]` = `{card, boxWait}` dla kart projektu z dziennikiem.
-Błędy: `bad-project`, `no-project`.
+`nicFiltering`) oraz `nicLabel` („filtrowanie NIC: tak/nie”) i `cards[]` = `{card, boxWait}` dla kart projektu z dziennikiem,
+`admission` (stan slotu, tylko odczyt) oraz `version` i `readState` opublikowanej migawki (K-98 #2).
+Błędy: `bad-project`, `no-project`, `preparing` (przed pierwszą publikacją migawki).
 
 #### Pole `boxWait`
 

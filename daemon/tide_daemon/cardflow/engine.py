@@ -666,12 +666,22 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
 
     def _settings_data(self) -> dict:
+        return self._settings_read()[0]
+
+    def _settings_read(self) -> tuple[dict, str]:
+        """(ustawienia, wersja): jeden odczyt pliku (zapis jest atomowy) i skrót tych samych bajtów jako wersja
+        odpowiedzi GetCardFlowSettings (K-98 #2) — treść i wersja zawsze pochodzą z tej samej wersji pliku."""
         try:
-            with open(self.settings, encoding="utf-8") as fh:
-                data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError, UnicodeError):
-            return {}
+            with open(self.settings, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return {}, "missing"
+        version = hashlib.sha1(raw).hexdigest()[:16]
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            return {}, version
+        return (data if isinstance(data, dict) else {}), version
 
     def migrate_environment(self) -> list:
         """PT-190: raz przy starcie usługi tworzy `box.proposed.yaml` z `networkDomains`/`outsideCommands`
@@ -681,7 +691,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return migration.migrate(migration.settings_slugs(data), data)
 
     def get_flow_settings(self) -> dict:
-        data = self._settings_data()
+        data, version = self._settings_read()
         transfer = data.get("limitTransfer") or {}
         if not isinstance(transfer, dict):
             transfer = {}
@@ -696,8 +706,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         box = bsettings.from_dict(data)
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(),
-                **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings)}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
+                **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
+                "version": version, "readState": "ready"}
 
     def _box_patch(self, request: dict, data: dict) -> dict | None:
         """PT-292: sekcja `box` po częściowym zapisie (`None` — żądanie bez `box`). Ścisła walidacja kluczy
@@ -896,9 +907,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         from . import envconsent
         return envconsent.approve(self, card_id, text, bool(only_plan))
 
-    def box_status(self, slug: str, card: str = "") -> dict:
+    def box_status(self, slug: str, card: str = "", published=None) -> dict:
+        """BoxStatus — tylko odczyt; `published`: opublikowana migawka Tablicy (K-98 #2, `envconsent.status`)."""
         from . import envconsent
-        return envconsent.status(self, slug, card)
+        return envconsent.status(self, slug, card, published)
+
+    def box_wait(self, card_id: str) -> str:
+        """`boxWait` karty z dziennika (odczyt do opublikowanej migawki BoardMonitor, K-98 #2)."""
+        from . import boxwait
+        return boxwait.card_box_wait(self.journal.state(card_id))
 
     def stop_box(self, slug: str, card: str = "") -> dict:
         from . import boxcontrol
@@ -7334,10 +7351,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             code = stepstop.read_exit_code(step_dir, stepstop.EXIT_CODE_FILE + ".tmp")
         return code if code is not None else OUTSIDE_STOPPED
 
-    def _review_rounds(self) -> int:
-        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
+    def _review_rounds(self, data: dict | None = None) -> int:
+        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę).
+        `data`: ustawienia już odczytane (GetCardFlowSettings — jeden odczyt pliku na odpowiedź)."""
+        data = self._settings_data() if data is None else data
         try:
-            return max(1, min(20, int(self._settings_data().get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
+            return max(1, min(20, int(data.get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
         except (TypeError, ValueError):
             return REVIEW_ROUNDS
 

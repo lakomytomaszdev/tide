@@ -300,6 +300,65 @@ def snapshot(incus):
         return state
 
 
+VIEW_WAIT_SECONDS = 0.2
+BUSY_VIEW = 'globalny slot w trakcie zmiany — stan z ostatniego zapisu'
+
+
+def view(incus, wait=VIEW_WAIT_SECONDS):
+    """Stan slotu dla odczytu `BoxStatus` (K-98 #2): to samo uzgodnienie z Incusem co `snapshot`, ale bez zapisu.
+
+    Odczyt nie jest mutacją: `state.json` zapisują wyłącznie zlecenia pudełek i tick usługi (`snapshot`). Mutex
+    bierzemy bez czekania dłużej niż `wait` (sprawdzenie lease musi być pod nim, inaczej równoległe dopuszczenie
+    uznałoby slot za zajęty); gdy trwa dopuszczenie, odczyt oddaje ostatni zapisany stan z `error`, nie czeka.
+    Nie zakłada katalogu ani plików blokad — ich brak znaczy, że nikt nie trzyma slotu."""
+    base = folder()
+    try:
+        state = load()
+    except ValueError as exc:
+        return {'v': 1, 'owner': None, 'queue': [], 'history': [], 'error': f'nieznany stan globalnego slotu: {exc}'}
+    try:
+        mutex = os.open(os.path.join(base, 'mutex'), os.O_RDONLY)
+    except FileNotFoundError:
+        mutex = None
+    try:
+        if mutex is not None:
+            deadline = time.monotonic() + wait
+            while True:
+                try:
+                    fcntl.flock(mutex, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        return {**state, 'error': BUSY_VIEW}
+                    time.sleep(0.01)
+            state = load()     # świeży odczyt pod mutexem
+        lease = None
+        if mutex is not None:  # bez mutexu nie sprawdzamy lease: nikt jeszcze nie dopuszczał, a próba bez niego ściga się
+            try:
+                lease = os.open(os.path.join(base, 'lease'), os.O_RDONLY)
+            except FileNotFoundError:
+                lease = None
+        busy = False
+        if lease is not None:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                busy = True
+            finally:
+                os.close(lease)     # zamknięcie zwalnia ewentualną próbę
+        try:
+            reconcile(state, incus, busy)
+            state.pop('error', None)
+        except Exception as exc:
+            state['error'] = f'nieznany stan globalnego slotu: {exc}'
+        return state
+    except ValueError as exc:
+        return {**state, 'error': f'nieznany stan globalnego slotu: {exc}'}
+    finally:
+        if mutex is not None:
+            os.close(mutex)
+
+
 def queued(kind):
     """Publiczne operacje builderów zachowują parametry do ponowienia w usłudze."""
     def decorate(method):

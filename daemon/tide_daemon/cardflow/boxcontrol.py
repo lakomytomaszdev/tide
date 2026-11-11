@@ -6,14 +6,16 @@ from ..box.incus import IncusError
 from . import boxstep
 
 
-def target(engine, slug, card=""):
+def target(engine, slug, card="", board=None):
+    """(karta, nazwa pudełka) po sprawdzeniu zakresu. `board`: Tablica z opublikowanej migawki (odczyt `BoxStatus`,
+    K-98 #2 — `projects` i `cards` z polem `project`); bez niej świeży odczyt (zatrzymanie i inne skutki)."""
     from .engine import FlowError
     from ..board.model import card_num
     try:
         bp._check_slug(slug, "projekt")
     except bp.ProfileError as exc:
         raise FlowError("bad-project", str(exc)) from None
-    board = engine.store.load()
+    board = engine.store.load() if board is None else board
     if slug not in board.projects:
         raise FlowError("no-project", f"nie ma projektu {slug}")
     if card:

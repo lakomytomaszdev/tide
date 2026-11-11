@@ -37,6 +37,13 @@
   przekazuje karty (z kolumną wyświetlaną) do `youtrack.observe`, a migawka dostaje stan synchronizacji przy
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
   zakłada karty w Backlogu tą samą drogą co CreateCard, bez duplikatów (po polu `youtrack`).
+- K-98 #2 — opublikowana, spójna migawka: Snapshot() (także Panel karty — `cards[].derived.flow`) oddaje ostatnią
+  opublikowaną wersję z polami `version` (numer publikacji, rośnie przy każdej zmianie treści) i `readState`
+  (`ready`; przed pierwszą publikacją `preparing` zamiast pustej Tablicy). Publikacja powstaje pod bramką przepływu
+  karty (`CardFlowMonitor.read_gate`): blokada dziennika bez czekania, trzymana przez cały odczyt — Tablica i dzienniki
+  kart z jednej chwili, bez zapisu przepływu w połowie. Gdy blokadę trzyma długa mutacja (tick, StartCard, scalenie),
+  wątek główny nie czeka: publikacja wraca po PUBLISH_RETRY_MS, a odczyty dostają poprzednią wersję. Dane odczytu
+  służą wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji.
 """
 import contextlib
 import copy
@@ -44,6 +51,8 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from typing import NamedTuple
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
@@ -63,6 +72,16 @@ REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agen
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
+PUBLISH_RETRY_MS = 50  # publikacja odłożona przez zajętą blokadę dziennika — kolejna próba (bez czekania)
+
+
+class Published(NamedTuple):
+    """Opublikowana wersja stanu Tablicy (K-98 #2) dla odczytów poza wątkiem głównym (BoxStatus).
+    Obiekty są świeże przy każdym wywołaniu `published()` i nie są zmieniane później."""
+    version: int
+    snapshot: dict
+    board: object      # projects: slug → projekt z migawki; cards: numer → obiekt z `project`
+    box_wait: dict     # karta z dziennikiem przepływu → `boxWait`
 
 
 def derived_cache_path(env=None) -> str:
@@ -113,6 +132,12 @@ class BoardMonitor(QObject):
         self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
         self._docs_ready.connect(self._deliver_docs)
         self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
+        self._version = 0                                 # numer opublikowanej wersji (K-98 #2); 0 — jeszcze żadnej
+        self._content = ""                                # treść ostatniej publikacji bez pól wersji
+        self._box_wait: dict = {}                         # boxWait kart z dziennikiem z tej samej publikacji
+        self._pending = None                              # odłożona publikacja: "publish" | "apply" | None
+        self._retry = QTimer(self, singleShot=True, interval=PUBLISH_RETRY_MS)
+        self._retry.timeout.connect(self._retry_pending)
         self._plans_mark = None
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
@@ -168,6 +193,7 @@ class BoardMonitor(QObject):
         self._debounce.stop()
         self._rederive.stop()
         self._work_later.stop()
+        self._retry.stop()
         if self._docs_pool is not None:
             self._docs_pool.shutdown(wait=False, cancel_futures=True)
             self._docs_pool = None
@@ -189,11 +215,34 @@ class BoardMonitor(QObject):
     def snapshot_json(self) -> str:
         # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
         # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
+        # K-98 #2: publikacja odłożona przez trwającą mutację — ostatnia opublikowana wersja albo „preparing”.
         mark = self._plans_stamp()
         if not self._json or mark != self._plans_mark:
-            self.publish()
-            self._plans_mark = self._plans_stamp()
-        return self._json
+            if self.publish():
+                self._plans_mark = self._plans_stamp()
+        return self._json or self._preparing_json()
+
+    def _preparing_json(self) -> str:
+        """Snapshot() przed pierwszą publikacją (K-98 #2): jawne „preparing”, nie pusta, gotowa Tablica."""
+        return json.dumps({"version": 0, "readState": "preparing", "boardDir": self.store.root,
+                           "exists": bool(self.store.exists()), "cards": [], "projects": [], "tags": [], "repos": [],
+                           "errors": []}, ensure_ascii=False)
+
+    def published(self) -> Published | None:
+        """Ostatnia opublikowana wersja stanu dla odczytów w innym wątku (BoxStatus); None — jeszcze żadnej.
+        Budowana w wątku głównym z obiektów tej publikacji, bez wczytywania Tablicy i bez blokady dziennika."""
+        if self._current is None or not self._version:
+            return None
+        snapshot = self._current
+        projects = {p["slug"]: p for p in snapshot.get("projects") or [] if isinstance(p, dict) and p.get("slug")}
+        cards = {}
+        for card in snapshot.get("cards") or []:
+            try:
+                cards[card_num(card.get("id") or "")] = SimpleNamespace(project=card.get("project") or "")
+            except (BoardError, AttributeError):
+                continue
+        return Published(self._version, snapshot, SimpleNamespace(projects=projects, cards=cards),
+                         dict(self._box_wait))
 
     def _plans_stamp(self):
         from .coordination import plan
@@ -217,7 +266,9 @@ class BoardMonitor(QObject):
         """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""
         if not self._work_json:
             self.publish()
-        return self._work_json
+        return self._work_json or json.dumps(
+            {"readState": "preparing", "exists": bool(self.store.exists()), "items": [],
+             "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}, ensure_ascii=False)
 
     def create_card(self, request: str) -> str:
         held = self._card_holding_session(request)
@@ -477,7 +528,10 @@ class BoardMonitor(QObject):
             return
         if self._current is None:
             self.snapshot_json()
-        snapshot = self._current or {}
+        if self._current is None:   # K-98 #2: pierwsza publikacja jeszcze trwa — nie „nie ma karty”
+            reply(json.dumps(_failure("preparing", "Tablica się przygotowuje — spróbuj za chwilę"), ensure_ascii=False))
+            return
+        snapshot = self._current
         card = next((c for c in snapshot.get("cards") or [] if isinstance(c, dict) and c.get("id") == ident), None)
         if card is None:
             reply(json.dumps(_failure("not-found", f"nie ma karty {ident}"), ensure_ascii=False))
@@ -609,34 +663,67 @@ class BoardMonitor(QObject):
 
     # --- odświeżanie ---------------------------------------------------------------------------
 
-    def publish(self) -> None:
-        try:
-            repos = list(self.repos_source() or [])
-        except Exception as exc:  # lista repozytoriów to dodatek — tablica działa bez niej
-            print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
-            repos = []
-        # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
-        # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
-        read = BoardRead(self.store)
-        try:
-            snapshot = self.store.snapshot(repos=repos, board=read.board)
-        except Exception as exc:  # odczyt nie może położyć usługi
-            print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
-            snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
-                        "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
-        self._base = snapshot
-        self._apply(read)
+    def publish(self) -> bool:
+        """Świeża migawka z plików i projekcja kart. K-98 #2: pod bramką przepływu karty; gdy blokadę dziennika
+        trzyma mutacja, publikacja jest odłożona (False), a Snapshot() oddaje poprzednią opublikowaną wersję."""
+        with self._gate() as free:
+            if not free:
+                self._defer("publish")
+                return False
+            try:
+                repos = list(self.repos_source() or [])
+            except Exception as exc:  # lista repozytoriów to dodatek — tablica działa bez niej
+                print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
+                repos = []
+            # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
+            # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
+            read = BoardRead(self.store)
+            try:
+                snapshot = self.store.snapshot(repos=repos, board=read.board)
+            except Exception as exc:  # odczyt nie może położyć usługi
+                print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
+                snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
+                            "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
+            self._base = snapshot
+            self._publish(read)
+        return True
+
+    def _gate(self):
+        """Bramka odczytu przepływu karty (K-98 #2) albo zawsze otwarta, gdy usługa działa bez przepływu."""
+        gate = getattr(self.flow, "read_gate", None) if self.flow is not None else None
+        return gate() if gate is not None else contextlib.nullcontext(True)
+
+    def _defer(self, kind: str) -> None:
+        if self._pending != "publish":
+            self._pending = kind
+        if not self._retry.isActive():
+            self._retry.start()
+
+    def _retry_pending(self) -> None:
+        kind, self._pending = self._pending, None
+        if kind == "publish":
+            self.publish()
+        elif kind == "apply":
+            self._apply()
 
     def _apply(self, read: BoardRead | None = None) -> None:
         """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
         `read`: kontekst odczytu Tablicy tego odświeżenia (K-98 #1); bez niego (zegar przeliczenia, YouTrack) —
-        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie."""
+        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie. K-98 #2: pod bramką jak `publish`."""
         if self._base is None:
             self.publish()
             return
+        with self._gate() as free:
+            if not free:
+                self._defer("apply")
+                return
+            self._publish(read)
+
+    def _publish(self, read: BoardRead | None) -> None:
+        """Projekcja i publikacja jednej wersji (wywołujący trzyma bramkę)."""
         if not isinstance(read, BoardRead):   # sygnały Qt wołają bez argumentu
             read = BoardRead(self.store)
-        snapshot, context = self._derived(self._base, read)
+        snapshot, context, box_wait = self._derived(self._base, read)
         work = self._work(snapshot, context)
         if self.youtrack is not None:
             try:
@@ -646,8 +733,13 @@ class BoardMonitor(QObject):
                 print(f"tide-daemon: tablica: YouTrack: {exc!r}", flush=True)
         self._current = snapshot
         text = json.dumps(snapshot, ensure_ascii=False)
-        if text != self._json:
-            self._json = text
+        fresh = text != self._content or box_wait != self._box_wait
+        if fresh:
+            # Nowa treść = nowa wersja; ta sama treść zachowuje wersję (odczyt bez zmian stanu jej nie podbija).
+            self._version += 1
+            self._content, self._box_wait = text, box_wait
+        if fresh or not self._json:
+            self._json = _versioned(text, self._version)
             self.changed.emit()
         work_text = json.dumps(work, ensure_ascii=False)
         if work_text != self._work_json:
@@ -671,13 +763,14 @@ class BoardMonitor(QObject):
         return {"exists": bool(exists), "items": [],
                 "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}
 
-    def _derived(self, base: dict, read: BoardRead | None = None) -> tuple[dict, object]:
-        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
-        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart.
-        `read`: odczyt Tablicy tego odświeżenia, przekazywany do `flow.derived` (K-98 #1)."""
+    def _derived(self, base: dict, read: BoardRead | None = None) -> tuple[dict, object, dict]:
+        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None, boxWait kart z dziennikiem)
+        — kontekst dostaje też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart.
+        `read`: odczyt Tablicy tego odświeżenia, przekazywany do `flow.derived` (K-98 #1). boxWait trafia do
+        opublikowanej wersji dla BoxStatus (K-98 #2), także dla kart bez wyliczanego stanu (ręczna kolumna)."""
         read = read if read is not None else BoardRead(self.store)
         if self.derive is None and self.flow is None:
-            return base, None
+            return base, None, {}
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
@@ -688,7 +781,7 @@ class BoardMonitor(QObject):
             except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
                 print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
                 if self.flow is None:
-                    return base, None
+                    return base, None, {}
         if self.flow is not None:
             try:
                 snapshot["errors"].extend(self.flow.warnings())   # dziennik karty odtworzony z kopii usługi
@@ -698,6 +791,7 @@ class BoardMonitor(QObject):
         cards = []
         links = []
         fresh: dict = {}
+        box_wait: dict = {}
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
@@ -722,6 +816,13 @@ class BoardMonitor(QObject):
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
             ident = card.get("id") or ""
             from_flow = self.flow is not None and self.flow.has_journal(ident)
+            if from_flow:
+                shown = ((derived or {}).get("flow") or {})
+                try:
+                    box_wait[ident] = shown["boxWait"] if "boxWait" in shown else \
+                        self.flow.box_wait(ident) if hasattr(self.flow, "box_wait") else ""
+                except Exception as exc:   # stan pudełka to dodatek migawki — BoxStatus pokaże kartę bez niego
+                    print(f"tide-daemon: tablica: {ident}: boxWait: {exc!r}", flush=True)
             if derived is not None and not from_flow:
                 fresh[ident] = derived
             elif derived is None and not from_flow and not self._derive_ready and ident in self._derived_cache:
@@ -741,7 +842,7 @@ class BoardMonitor(QObject):
                 _save_cache(self._derived_cache_path, fresh)
         snapshot["cards"] = cards
         self._queue_links(links)
-        return snapshot, (derive if hasattr(derive, "sessions") else None)
+        return snapshot, (derive if hasattr(derive, "sessions") else None), box_wait
 
     def _queue_links(self, links: list) -> None:
         now = time.monotonic()
@@ -778,20 +879,29 @@ class BoardMonitor(QObject):
 
     def sync(self) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka. Zmiany dziennika kart (przepływ
-        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”."""
-        try:
-            with self.flow.lock if self.flow is not None else contextlib.nullcontext():
-                if self.flow is not None:
-                    self.flow.commit()
-                if self.store.sync():
-                    print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
-        except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
-            print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
-        try:
-            for card_id in self.store.mark_ready_specs():
-                print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
-        except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
-            print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
+        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”.
+        K-98 #2: blokadę dziennika bierzemy bez czekania. Gdy trzyma ją mutacja (np. StartCard z zapisem Tablicy),
+        commit i znacznik specyfikacji czekają na następną synchronizację, a wątek główny dalej odpowiada."""
+        lock = getattr(self.flow, "lock", None) if self.flow is not None else None
+        if lock is not None and not lock.acquire(blocking=False):
+            self._debounce.start()
+        else:
+            try:
+                try:
+                    if self.flow is not None:
+                        self.flow.commit()
+                    if self.store.sync():
+                        print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+                except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
+                    print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
+            finally:
+                if lock is not None:
+                    lock.release()
+            try:
+                for card_id in self.store.mark_ready_specs():
+                    print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
+            except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
+                print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
         self._rewatch()
         self.publish()
 
@@ -854,6 +964,12 @@ def badge(snapshot) -> tuple[str, str]:
     if waiting:
         return f"● {waiting}", "waiting"
     return (str(total) if total else ""), "muted"
+
+
+def _versioned(text: str, version: int) -> str:
+    """JSON migawki z polami `version` i `readState` na początku (K-98 #2) — bez ponownej serializacji treści."""
+    head = f'{{"version": {int(version)}, "readState": "ready"'
+    return head + ("}" if text.strip() == "{}" else ", " + text.lstrip()[1:])
 
 
 def _object(request: str):
