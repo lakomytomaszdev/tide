@@ -9,6 +9,7 @@ z gotowych danych (snapshot), więc D-Bus odpowiada od razu.
 - zmiana sesji agentów → tylko przeliczenie flagi „aktywny agent”, bez gita.
 """
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
@@ -125,15 +126,20 @@ class WorktreeMonitor(QObject):
         if self._stopped:
             refused("unavailable", "usługa się zamyka")
             return
-        if not isinstance(repo_path, str) or repo_path in self._fetching:
-            refused("busy" if isinstance(repo_path, str) else "bad-request",
-                    "pobieranie tego repozytorium już trwa" if isinstance(repo_path, str)
-                    else "to nie jest repozytorium z listy Worktrees")
+        if not isinstance(repo_path, str):
+            refused("bad-request", "to nie jest repozytorium z listy Worktrees")
             return
-        self._fetching.add(repo_path)
+        try:
+            key = os.path.realpath(repo_path)
+        except (OSError, ValueError):
+            key = repo_path
+        if key in self._fetching:
+            refused("busy", "pobieranie tego repozytorium już trwa")
+            return
+        self._fetching.add(key)
 
         def done(result):
-            self._fetching.discard(repo_path)
+            self._fetching.discard(key)
             if result is None:
                 result = {"ok": False, "reason": "error", "message": "błąd usługi przy pobieraniu",
                           "repoPath": repo_path, "remotes": []}

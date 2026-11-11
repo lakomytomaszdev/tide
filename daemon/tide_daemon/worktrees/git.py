@@ -1,4 +1,5 @@
-"""Wywołania gita dla obszaru worktrees — wyłącznie lokalne, bez żadnej operacji sieciowej.
+"""Wywołania gita dla obszaru worktrees — wyłącznie lokalne, bez żadnej operacji sieciowej
+(wyjątek: `fetch.py` używa kopii tej klasy do `git fetch`, tylko poza granicą Gita).
 
 Zasady:
 - GIT_OPTIONAL_LOCKS=0: `git status` nie odświeża indeksu i nie bierze index.lock, więc nasze

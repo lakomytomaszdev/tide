@@ -10,6 +10,10 @@ rusza HEAD, indeksu ani katalogów roboczych. Zasady:
   git wywołałby program z otoczenia użytkownika), SSH w trybie wsadowym (BatchMode=yes),
 - limit czasu całego pobierania (FETCH_TIMEOUT), poświadczenia użytkownika z otoczenia usługi
   (agent SSH, pomocnik poświadczeń gita),
+- repozytorium objęte granicą Gita (tryb pudełek albo repozytorium wystawione pudełku) → `boundary`, bez
+  uruchomienia `git fetch`: git rusza tam w piaskownicy bez sieci i kluczy, a `.git/config` jest zapisywalny
+  z pudełka (`core.sshCommand`, `credential.helper`, `uploadpack`), więc fetch z poświadczeniami użytkownika
+  byłby wykonaniem cudzej konfiguracji,
 - komunikaty i logi nie niosą poświadczeń z adresów URL (`mask_credentials`).
 """
 import copy
@@ -20,6 +24,7 @@ import subprocess
 import time
 from concurrent.futures import CancelledError
 
+from ..gitcommand import boundary_active
 from .git import Git
 
 FETCH_TIMEOUT = 120.0   # s na całe pobieranie (wszystkie zdalne)
@@ -164,6 +169,10 @@ def fetch_repository(scanner, repo_path) -> dict:
     remotes = [r for r in scanner._remotes(repo) if not r.startswith("-")]
     if not remotes:
         return _refused("no-remote", "repozytorium nie ma zdalnego — nie ma z czego pobierać", repo)
+
+    if boundary_active(("-C", repo)):
+        return _refused("boundary", "pobieranie niedostępne: repozytorium jest wystawione pudełku "
+                        "albo tryb pudełek jest włączony", repo)
 
     from ..cardflow.gitops import lock_for  # leniwie: cardflow importuje ten pakiet
     cancel = getattr(scanner, "_cancel", None)

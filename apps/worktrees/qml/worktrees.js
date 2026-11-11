@@ -146,7 +146,7 @@ function repoLine(w, nowTs) {
 }
 
 // Repozytoria do paska „Pobierz” (PT-358): po jednym wierszu na repozytorium z bieżącego filtra,
-// od najstarszego fetch; canFetch tylko dla repozytorium ze zdalnym.
+// alfabetycznie po nazwie; canFetch tylko dla repozytorium ze zdalnym.
 function repoRows(items, repo, chips) {
     var seen = {}
     var rows = []

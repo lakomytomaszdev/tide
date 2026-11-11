@@ -237,7 +237,59 @@ class FetchFailureTest(FetchTestCase):
         self.assertIn("limit czasu", result["message"])
 
 
+class FetchMonitorTest(unittest.TestCase):
+    def test_second_request_for_same_repository_via_symlink_is_busy(self):
+        import json
+        from types import SimpleNamespace
+        from tide_daemon.worktree_monitor import WorktreeMonitor
+        from .privatebus import app
+        app()
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        real = os.path.join(tmp, "real")
+        os.mkdir(real)
+        link = os.path.join(tmp, "link")
+        os.symlink(real, link)
+        entered, release = threading.Event(), threading.Event()
+
+        def slow(path):
+            entered.set()
+            release.wait(5)
+            return {"ok": True, "repoPath": path, "remotes": [], "message": "pobrano"}
+        monitor = WorktreeMonitor(SimpleNamespace(fetch=slow, stop=lambda: None), lambda: [])
+        monitor.refresh = lambda: None
+        replies = []
+        monitor.fetch(real, lambda data: replies.append(json.loads(data)))
+        self.assertTrue(entered.wait(2))
+        monitor.fetch(link, lambda data: replies.append(json.loads(data)))
+        self.assertEqual([r["reason"] for r in replies], ["busy"])
+        release.set()
+        deadline = time.monotonic() + 3
+        while len(replies) < 2 and time.monotonic() < deadline:
+            app().processEvents()
+            time.sleep(.01)
+        self.assertEqual([r["ok"] for r in replies], [False, True])
+        monitor.fetch(link, lambda data: replies.append(json.loads(data)))  # po zakończeniu znów wolno
+        self.assertTrue(monitor._fetching)
+        release.set()
+        monitor._fetch_pool.shutdown(wait=True)
+
+
 class FetchRequestTest(FetchTestCase):
+    def test_repository_under_git_boundary_is_refused_without_fetch(self):
+        rec = Rec()
+        scanner = self.scanner(rec)
+        rec.calls.clear()
+        self.push_commits(1)
+        before = self.rev("refs/remotes/origin/master")
+        with mock.patch.object(fetch, "boundary_active", return_value=True) as active:
+            result = scanner.fetch(self.proj)
+        active.assert_called()
+        self.assertEqual((result["ok"], result["reason"]), (False, "boundary"))
+        self.assertIn("pudełk", result["message"])
+        self.assertEqual(rec.fetches(), [])
+        self.assertEqual(self.rev("refs/remotes/origin/master"), before)
+
     def test_path_outside_worktrees_list_is_bad_request_without_git(self):
         stranger = self.repo("stranger")
         outside = os.path.join(self.tmp, "outside")
