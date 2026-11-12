@@ -106,12 +106,27 @@ write("start")''')
         self.stop_measured()
         self.assertTrue(all(not flow.flowfakes.alive(p) for p in pids), "pozostali potomkowie gita")
 
+    def wait_event(self, card, kind, timeout=30.0, **fields):
+        """Czeka, aż dziennik karty ma zdarzenie `kind` z polami `fields` (PT-368)."""
+        def present():
+            return any(e["type"] == kind and all(e.get(k) == v for k, v in fields.items())
+                       for e in self.events(card))
+        self.assertTrue(wait_until(present, timeout=timeout), f"{card}: brak {kind} {fields}\n{self.events(card)}")
+
     def test_restart_preserves_decision_saved_result_and_review_column(self):
         waiting = self.card(description="ATRAPA: pytanie-opcje")
         waiting_start = self.start(waiting)
-        decision = self.wait_column(waiting, "waiting")["derived"]["flow"]["decisions"]
+        self.wait_column(waiting, "waiting")
         ready = self.card()
         ready_start = self.start(ready)
+        self.wait_column(ready, "review")
+        # PT-368: kolumna liczy się z dziennika w dowolnej chwili ticku silnika, więc „review” widać już po scaleniu
+        # i sprzątaniu worktree, przed krokiem `close`, a „waiting” — przed `step.notice`. Migawka `before` dopiero
+        # po ostatnim zdarzeniu przebiegu każdej karty: powiadomienie o pytaniu i o karcie do sprawdzenia.
+        self.wait_event(waiting, "step.notice", result="question")
+        self.wait_event(ready, "card.closed")
+        self.wait_event(ready, "flow.notice", result="review")
+        decision = self.wait_column(waiting, "waiting")["derived"]["flow"]["decisions"]
         self.wait_column(ready, "review")
         before = {card: self.events(card) for card in (waiting, ready)}
         heads = {r["branch"]: flow.git(self.repo, "rev-parse", r["branch"])
