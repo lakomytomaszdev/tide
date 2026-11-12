@@ -286,5 +286,58 @@ class BackgroundTest(unittest.TestCase):
         self.assertIn("blokery", view(blocked)["flow"]["headline"])
 
 
+class CardLimitTest(unittest.TestCase):
+    """PT-375: ticket bez kroku, który czeka na miejsce w karcie (`step.waiting` z `cause: card-limit`)."""
+
+    @staticmethod
+    def three_free():
+        events = plan()
+        events.add("plan.reviewed", reviewer="Sonnet", verdict="APPROVE", findings=[])
+        events.add("plan.approved", map={"#1": "PT-1", "#2": "PT-2", "#3": "PT-3"}, rows=[
+            {"id": f"PT-{n}", "workId": f"#{n}", "title": "T", "blockers": [], "executor": "Sonnet", "reviewer": "Opus"}
+            for n in (1, 2, 3)])
+        events.step("K-1-PT-1-1", ticket="PT-1", result="question", question="?")
+        events.step("K-1-PT-2-1", ticket="PT-2")
+        events.add("step.waiting", ticket="PT-3", kind="ticket", provider="", reason="czeka na miejsce w karcie (2 z 2)",
+                   cause="card-limit", until="")
+        return events
+
+    def shown(self, events, limit, override=None):
+        from tide_daemon.cardflow.fullcard import card_limit
+        out = card_limit(events.state(), view(events), limit, override)
+        return out, {t["id"]: t for t in out["tickets"]}
+
+    def test_status_says_how_many_tickets_hold_the_card_slots(self):
+        out, tickets = self.shown(self.three_free(), 2)
+        self.assertEqual((tickets["PT-3"]["status"], tickets["PT-3"]["statusLabel"]),
+                         ("card-limit", "czeka na miejsce w karcie (2 z 2)"))
+        self.assertEqual(out["flow"]["ticketLimit"], {"limit": 2, "running": 2, "override": None})
+        self.assertNotEqual(tickets["PT-2"]["status"], "card-limit", "ticket w toku nie czeka na miejsce")
+
+    def test_label_follows_the_current_limit_and_vanishes_when_a_slot_is_free(self):
+        out, tickets = self.shown(self.three_free(), 1, override=1)
+        self.assertEqual(tickets["PT-3"]["statusLabel"], "czeka na miejsce w karcie (2 z 1)")
+        self.assertEqual(out["flow"]["ticketLimit"]["override"], 1)
+        _out, tickets = self.shown(self.three_free(), 3)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit", "limit nie jest pełny — zwykła kolejka")
+
+    def test_a_merged_or_rejected_ticket_frees_the_slot(self):
+        events = merge(self.three_free(), "PT-2")
+        out, tickets = self.shown(events, 2)
+        self.assertEqual(out["flow"]["ticketLimit"]["running"], 1)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit")
+        events = self.three_free()
+        events.add("ticket.rejected", ticket="PT-1")
+        out, _tickets = self.shown(events, 2)
+        self.assertEqual(out["flow"]["ticketLimit"]["running"], 1)
+
+    def test_other_waits_keep_their_labels(self):
+        events = self.three_free()
+        events.add("step.waiting", ticket="PT-3", kind="ticket", provider="anthropic",
+                   reason="limit kroków dostawcy anthropic: 2/2", cause="slots", until="")
+        _out, tickets = self.shown(events, 2)
+        self.assertNotEqual(tickets["PT-3"]["status"], "card-limit")
+
+
 if __name__ == "__main__":
     unittest.main()

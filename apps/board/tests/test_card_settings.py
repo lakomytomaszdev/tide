@@ -132,6 +132,41 @@ out["toast"] = js("page.toast")
         self.assertEqual(out["calls"], [["UpdateCard", "K-8", '{"youtrack":"TOM-142"}']])
         self.assertEqual(out["toast"], "Karta K-8 powiązana ze zgłoszeniem TOM-142.")
 
+    def test_tickets_at_once_saves_a_number_and_an_empty_field_restores_the_default(self):
+        """PT-375: „Tickety naraz” — liczba 1..6 zapisuje `maxTickets`, spoza zakresu nic nie wysyła, puste pole
+        (przy zapisanym nadpisaniu) usuwa je; podpowiedź pokazuje limit obowiązujący z usługi."""
+        data = full_d(self.data)
+        for card in data["cards"]:
+            if card["id"] == "K-8":
+                card["maxTickets"] = 3
+                card["derived"].setdefault("flow", {})["ticketLimit"] = {"limit": 3, "running": 1, "override": 3}
+        out = self.probe(STATE_PY + """
+open_full()
+out["initial"] = [js(items("settingMaxTicketsField") + "[0].text"), js(items("settingMaxTicketsField") + "[0].placeholderText")]
+field("settingMaxTicketsField", "7")
+click(at(items("settingMaxTicketsButton") + "[0]"))
+out["badCalls"] = len(calls())
+out["badError"] = js("page.cardFullView.settingError")
+field("settingMaxTicketsField", "x")
+click(at(items("settingMaxTicketsButton") + "[0]"))
+out["wordCalls"] = len(calls())
+field("settingMaxTicketsField", "5")
+click(at(items("settingMaxTicketsButton") + "[0]"))
+wait(80)
+out["saved"] = calls()
+out["toast"] = js("page.toast")
+field("settingMaxTicketsField", "")
+click(at(items("settingMaxTicketsButton") + "[0]"))
+wait(80)
+out["cleared"] = calls()[1:]
+""", data)
+        self.assertEqual(out["initial"], ["3", "domyślnie 3"])
+        self.assertEqual((out["badCalls"], out["wordCalls"]), (0, 0), "wartość spoza 1..6 i napis nic nie wysyłają")
+        self.assertIn("od 1 do 6", out["badError"])
+        self.assertEqual(out["saved"], [["UpdateCard", "K-8", '{"maxTickets":5}']])
+        self.assertEqual(out["toast"], "Karta K-8: najwyżej 5 tickety naraz. Trwające nie są zatrzymywane.")
+        self.assertEqual(out["cleared"], [["UpdateCard", "K-8", '{"maxTickets":""}']])
+
     def test_linked_card_empty_field_only_focuses_and_unlink_is_explicit(self):
         data = full_d(self.data)
         for card in data["cards"]:

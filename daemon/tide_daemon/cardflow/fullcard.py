@@ -39,7 +39,8 @@ WAIT_PRIORITY = ("user", "blocker", "limit")
 
 TICKET_STATUS = {"planned": "w planie", "queued": "w kolejce", "running": "pracuje", "review": "review",
                  "fix": "poprawki", "merging": "scalanie", "you": "czeka na Ciebie", "limit": "czeka na limit",
-                 "blocked": "czeka na bloker", "waiting": "czeka", "merged": "scalony", "rejected": "odrzucony"}
+                 "blocked": "czeka na bloker", "waiting": "czeka", "merged": "scalony", "rejected": "odrzucony",
+                 "card-limit": "czeka na miejsce w karcie"}
 
 
 def enrich(st: FlowState, out: dict) -> dict:
@@ -383,6 +384,24 @@ def heavy_queued(st: FlowState, out: dict, held: dict) -> dict:
         found = next((value for name, value in held.items() if mergecheck.is_step(name)), None)
     if found is not None:
         out["note"] = _clip(queued_label(note, *found), NOTE_MAX)
+    return out
+
+
+def card_limit(st: FlowState, out: dict, limit: int, override) -> dict:
+    """Limit ticketów w toku karty (PT-375): `flow.ticketLimit` = `{limit, running, override}` (limit efektywny,
+    liczba ticketów w toku, `max-tickets` karty albo None) i status „czeka na miejsce w karcie (<n> z <limit>)”
+    ticketu, który nie wystartował, bo limit jest pełny (`step.waiting` z `cause: card-limit`). Liczba i limit są
+    bieżące (zmiana limitu odświeża napis bez nowego zdarzenia); bez pełnego limitu ticket zostaje „w kolejce"."""
+    from . import ticketlimit
+    rows = (st.plan_approved or {}).get("rows") or []
+    running = len(ticketlimit.in_progress(st, rows)) if rows else 0
+    out["flow"]["ticketLimit"] = {"limit": limit, "running": running, "override": override}
+    if running < limit:
+        return out
+    for ticket in out.get("tickets") or []:
+        wait = st.waiting.get((ticket.get("id"), "ticket")) or {}
+        if ticket.get("status") == "queued" and wait.get("cause") == ticketlimit.CAUSE:
+            ticket["status"], ticket["statusLabel"] = "card-limit", ticketlimit.wait_reason(running, limit)
     return out
 
 

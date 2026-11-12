@@ -57,6 +57,7 @@ from . import testrerun
 from . import testpolicy
 from . import mergecheck
 from . import heavyqueue
+from . import ticketlimit
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -720,6 +721,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "limitThresholdPercent": threshold, "providerSlots": slots,
                 "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
                 "heavyLimit": heavyqueue.limit_of(data.get("heavyLimit")),
+                "ticketsPerCard": ticketlimit.default_of(data.get("ticketsPerCard")),
                 "heavyCommands": heavyqueue.patterns_of(data.get("heavyCommands")),
                 **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
                 "version": version, "readState": "ready"}
@@ -749,7 +751,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def set_flow_settings(self, request: dict) -> dict:
         allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
-                   "heavyLimit", "heavyCommands", *caretaker.SETTINGS_DEFAULTS}
+                   "heavyLimit", "heavyCommands", "ticketsPerCard", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -785,6 +787,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Ciężkie polecenia naraz na maszynę (PT-373). Zmniejszenie nie przerywa trwających — działa przy kolejnym starcie.
         if "heavyLimit" in request and heavyqueue.limit_problem(request["heavyLimit"]):
             raise FlowError("bad-settings", heavyqueue.limit_problem(request["heavyLimit"]))
+        # Tickety naraz na kartę (PT-375). Zmniejszenie nie zatrzymuje trwających ticketów — działa przy starcie nowych.
+        if "ticketsPerCard" in request and ticketlimit.problem(request["ticketsPerCard"]):
+            raise FlowError("bad-settings", ticketlimit.problem(request["ticketsPerCard"]))
         # Wzorce ciężkich poleceń (PT-382): niepoprawna lista nie trafia do pliku.
         if "heavyCommands" in request and heavyqueue.patterns_problem(request["heavyCommands"]):
             raise FlowError("bad-settings", heavyqueue.patterns_problem(request["heavyCommands"]))
@@ -796,6 +801,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             data["reviewRoundsBeforeQuestion"] = rounds
         if "heavyLimit" in request:
             data["heavyLimit"] = request["heavyLimit"]
+        if "ticketsPerCard" in request:
+            data["ticketsPerCard"] = request["ticketsPerCard"]
         if "heavyCommands" in request:
             data["heavyCommands"] = heavyqueue.patterns_of(request["heavyCommands"])
         if box is not None:
@@ -970,6 +977,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if out:
             ticketentry.enrich(st, out)
             fullcard.heavy_queued(st, out, self._heavy_view(card.get("id") or ""))
+            override = card.get("maxTickets")
+            fullcard.card_limit(st, out, ticketlimit.effective(override, self._settings_data().get("ticketsPerCard")),
+                                override if ticketlimit.valid(override) else None)
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
@@ -3994,6 +4004,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             # Odrzucony bloker nie blokuje na zawsze: użytkownik wydzielił go z karty (K-16/LEGAL-75, 03.11).
             if not set(row["blockers"]) <= merged | set(st.rejected):
                 continue
+            # Limit ticketów w toku na kartę (PT-375): dotyczy tylko startu nowego ticketu; ticket w toku nie blokuje
+            # własnych kroków (te nie przechodzą przez `_plan_next`), a zmniejszenie limitu niczego nie zatrzymuje.
+            running, limit = len(ticketlimit.in_progress(st, rows)), self._tickets_limit(item)
+            if running >= limit:
+                self._card_limit_wait(card, st, ticket, running, limit)
+                continue
             cfg = self.models_config() if self.models_config else None
             catalog = cfg.catalog if cfg is not None else self.catalog() if self.catalog else None
             if catalog is None:
@@ -4043,6 +4059,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 continue
             st = self.journal.state(card)
         # Odrzucony ticket nie blokuje niezależnych gałęzi grafu.
+
+    def _tickets_limit(self, item) -> int:
+        """Limit ticketów w toku karty: `max-tickets` karty albo ustawienie przepływu `ticketsPerCard` (PT-375)."""
+        return ticketlimit.effective(getattr(item, "max_tickets", None), self._settings_data().get("ticketsPerCard"))
+
+    def _card_limit_wait(self, card: str, st: FlowState, ticket: str, running: int, limit: int) -> None:
+        """`step.waiting` z `cause: card-limit` — raz na zmianę powodu (bez zapętlenia zapisu przy każdym ticku);
+        krok startu ticketu zdejmuje wpis (`step.started`)."""
+        reason = ticketlimit.wait_reason(running, limit)
+        previous = st.waiting.get((ticket, "ticket")) or {}
+        if previous.get("reason") != reason or previous.get("cause") != ticketlimit.CAUSE:
+            self.journal.append(card, "step.waiting", ticket=ticket, kind="ticket", provider="", reason=reason,
+                                cause=ticketlimit.CAUSE, until="")
 
     def _plan_commit(self, card: str, st: FlowState, repo: str, branch: str, worktree: str) -> None:
         approved = st.plan_approved or {}

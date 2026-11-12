@@ -148,6 +148,10 @@ Rectangle {
     property var confirming: null
     readonly property string typedBranch: branchField.text.trim()
     readonly property var typedYoutrack: Settings.issueKey(youtrackField.text)
+    // Tickety naraz (PT-375): nadpisanie karty (0 — brak, ustawienie domyślne) i limit obowiązujący z usługi.
+    readonly property int storedMaxTickets: card && card.maxTickets ? card.maxTickets : 0
+    readonly property int effectiveMaxTickets: flow && flow.ticketLimit ? flow.ticketLimit.limit : 0
+    readonly property var typedMaxTickets: Settings.maxTickets(maxTicketsField.text)
 
     // Jedna lista akcji dla sekcji ustawień i menu „Karta ▾”: {id, label, effect, danger, input}.
     // Gałąź karty z przepływu ustala Tide (silnik jej używa, `card.branch` tylko dopasowuje pracę), więc jej nie zmieniamy.
@@ -228,6 +232,20 @@ Rectangle {
         if (key === storedYoutrack || key === "") return
         settingRequested("update", { field: "youtrack", value: key,
             effect: "Karta " + card.id + " powiązana ze zgłoszeniem " + key + "." })
+    }
+
+    // Pusta wartość usuwa nadpisanie (limit z ustawienia przepływu); zmniejszenie niczego nie zatrzymuje.
+    function applyMaxTickets() {
+        const value = typedMaxTickets
+        if (value === null) {
+            settingError = "Tickety naraz: liczba od 1 do 6 albo puste pole (ustawienie domyślne)."
+            return
+        }
+        settingError = ""
+        if (value === (storedMaxTickets || "")) return
+        settingRequested("update", { field: "maxTickets", value: value,
+            effect: value === "" ? "Karta " + card.id + ": tickety naraz wg ustawienia domyślnego."
+                                 : "Karta " + card.id + ": najwyżej " + value + " tickety naraz. Trwające nie są zatrzymywane." })
     }
 
     function askFinish(params) {
@@ -1294,6 +1312,43 @@ Rectangle {
                         Text {
                             Layout.fillWidth: true
                             text: "Teraz: " + (view.storedYoutrack || "brak") + "."
+                            textFormat: Text.PlainText
+                            color: Tide.Tokens.textMuted
+                            font.family: Tide.Theme.uiFamily
+                            font.pointSize: Tide.Tokens.fontSizePt * 0.85
+                            wrapMode: Text.Wrap
+                        }
+                    }
+
+                    // Tickety naraz (PT-375): puste pole = ustawienie domyślne; limit pilnuje usługa przy starcie ticketu.
+                    RowLayout {
+                        objectName: "settingTicketsRow"
+                        Layout.fillWidth: true
+                        spacing: 12
+                        QQC2.TextField {
+                            id: maxTicketsField
+                            objectName: "settingMaxTicketsField"
+                            Layout.preferredWidth: 220
+                            placeholderText: view.effectiveMaxTickets > 0 ? "domyślnie " + view.effectiveMaxTickets : "domyślnie"
+                            text: view.storedMaxTickets > 0 ? String(view.storedMaxTickets) : ""
+                            maximumLength: 2
+                            selectByMouse: true
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            Accessible.name: "Tickety naraz (teraz: " + (view.storedMaxTickets > 0 ? view.storedMaxTickets : "domyślnie") + ")"
+                            onAccepted: view.applyMaxTickets()
+                            onTextChanged: view.settingError = ""
+                        }
+                        Tide.TextButton {
+                            objectName: "settingMaxTicketsButton"
+                            text: "Zapisz tickety naraz"
+                            variant: "outline"
+                            onClicked: view.applyMaxTickets()
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Tickety naraz: " + (view.storedMaxTickets > 0 ? view.storedMaxTickets : "domyślnie"
+                                  + (view.effectiveMaxTickets > 0 ? " (" + view.effectiveMaxTickets + ")" : ""))
+                                  + ". Puste pole przywraca ustawienie domyślne."
                             textFormat: Text.PlainText
                             color: Tide.Tokens.textMuted
                             font.family: Tide.Theme.uiFamily
