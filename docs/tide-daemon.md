@@ -759,6 +759,98 @@ Indeks powstaje leniwie: pierwsze `Match` po starcie usługi czeka na zbudowanie
 
 **Instalacja.** `make install-daemon` (kod i plik aktywacji `org.tide.Daemon.KRunner.service`) oraz `make install-krunner` (plik `.desktop`; oba są też w `make install`). KRunner czyta wtyczki D-Bus przy starcie, więc instalator i dezinstalator proszą działający KRunner o zamknięcie (`qdbus6 org.kde.krunner /MainApplication quit`) — wraca sam przy następnym Alt+Spacja. Wyszukiwanie w menu Plasmy (Kickoff) ma własną instancję i zobaczy zmianę po ponownym zalogowaniu albo `systemctl --user restart plasma-plasmashell`. `make uninstall-krunner` usuwa plik wtyczki, więc znika ona z KRunnera. Szybkie sprawdzenie: `qdbus6 org.kde.krunner /App querySingleRunner tide plasma` otwiera KRunnera z wynikami tylko tej wtyczki.
 
+## Wydajność postoju (K-105, PT-458)
+
+Kryterium gotowości „Gotowe (M0)”: usługa na postoju nie zajmuje więcej niż 30 % jednego rdzenia, `Snapshot` odpowiada
+w p95 poniżej 1 s, a zatwierdzenie planu 18 wierszy trwa poniżej 10 s. Mierzy się to dwoma narzędziami o tej samej
+mierze CPU: reproduktorem (przed instalacją, koordynator) i skryptem produkcji (po instalacji, właściciel).
+
+### Narzędzie 10 okien CPU całego procesu
+
+Kod: `daemon/tests/perf_cpu_windows.py` (miara i ocena), reproduktor `daemon/tests/perf_idle_cpu.py --scale prod
+--windows 10`, skrypt produkcji `scripts/measure_idle_prod.py`.
+
+- **Miara rozstrzygająca: CPU całego procesu usługi.** „Proces” to w reproduktorze PID usługi uruchomionej przez
+  reproduktor, a na produkcji `MainPID` jednostki (`systemctl --user show -p MainPID`). Liczy się przyrost
+  `utime + stime` z `/proc/<pid>/stat` — **wszystkie wątki procesu, bez procesów potomnych** (`cutime`/`cstime` nie są
+  czytane). 10 kolejnych okien po 60 s, w % jednego rdzenia na okno; **próg: każde okno ≤ 30 %** (średnia nie
+  ratuje okna ponad progiem). Wynik podaje PID, surowe przyrosty `utime` i `stime` (ticki) i % rdzenia każdego okna,
+  średnią, maksimum, `box.enabled`, loadavg przed i po oraz SHA.
+- **Czysty postój.** Rozgrzewka (`--warmup`, w reproduktorze i na produkcji domyślnie 60 s po starcie i sprawdzeniu
+  ważności; nie ma jej jak wykryć bez żądań, więc to parametr) i 10 okien CPU **nie wysyłają żadnych żądań do usługi**:
+  bez próbnika, `Snapshot` i innych wywołań D-Bus. Próbnik usługi (60 s: udział `engine.tick`, próbki `engine.tick`/s,
+  najcięższe ramki) i seria 60 wywołań `Snapshot` co 0,5 s (p95 nearest-rank) idą w **osobnym oknie po** oknach CPU,
+  bo próbnik sam zużywa CPU.
+- **Ważność.** Zmiana PID (restart usługi) albo zniknięcie procesu unieważnia próbę; tak samo loadavg 1-min ≥ rdzenie/2
+  przed pomiarem albo po oknach CPU (reguła PT-362), niepełna seria okien i przekroczenie limitu czasu. Na produkcji
+  dodatkowo kroki w toku (jednostki `tide-step-*` i `tide-outside-*`) — jednym odczytem przed rozgrzewką, nie w trakcie.
+- **Diagnostyka bez progu** (nie zmienia oceny): udział `engine.tick`, próbki `engine.tick`/s, CPU wątku workera przepływu
+  (`flowThread` według reguły PT-410: jedyny wątek `tide-cardflow*`, inaczej największe `cpuS` bez wątku głównego
+  i próbnika), `Snapshot` p95 (w reproduktorze; na produkcji próg `< 1 s` ocenia skrypt), oraz pamięć przed i po oknach CPU:
+  `RssAnon`, `VmRSS`, `VmHWM` z `/proc/<pid>/status` i `MemoryCurrent` — w reproduktorze `memory.current` cgroup procesu
+  (z zapisaną ścieżką cgroup i znacznikiem, czy cgroup zawiera inne procesy), na produkcji `MemoryCurrent` jednostki.
+- **Ocena jednookienkowa PT-410** (`perf_idle_scale.py evaluate`, tryb PT-346 bez zmian) nie ma już progów ani werdyktu:
+  CPU wątku przepływu, udział `engine.tick` i wzrost `VmRSS` są raportowane z oznaczeniem „tryb jednego okna — bez oceny
+  progu; rozstrzyga tryb 10 okien”. Zostaje tylko ważność (loadavg).
+- **Porównywalność.** Reproduktor nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` ani
+  `scanner` (~15 % próbek produkcji), więc jest wskaźnikiem. Rozstrzyga pomiar produkcji.
+
+### Reproduktor: skrypt kolejki koordynatora
+
+`daemon/tests/perf_k105_queue.py` — każde podpolecenie to **jedno polecenie `outside`**; dane syntetyczne, nic
+z danych właściciela.
+
+- `/usr/bin/python3 daemon/tests/perf_k105_queue.py build-data` — buduje dane 46 kart / ~60 MB (generator PT-410) **raz**
+  do `build/k105-data/` w worktree (katalog ignorowany przez git) z manifestem `manifest.json` (parametry, skrót
+  plików generatora, SHA repozytorium, rozmiar na dysku, czas budowy). Ponowne wywołanie przy zgodnym manifeście nic nie
+  robi. Czas budowy zapisuje manifest (`buildSeconds`); budowa to osobne polecenie, żeby nie liczyć się w limicie pomiaru.
+- `/usr/bin/python3 daemon/tests/perf_k105_queue.py measure <before|after> <false|true> [--base-sha SHA]` —
+  **jedna konfiguracja (strona × `box.enabled`) i jedna seria 10 okien na polecenie**. Kopiuje dane z `build/` do świeżego
+  katalogu tymczasowego (ścieżki w danych i klucz kopii dzienników są przepisywane na nowy katalog; `box.enabled`
+  ustawia plik `cardflow.json`). Strona `before` uruchamia kod usługi z przypiętego SHA bazy karty (`--base-sha` albo
+  `K105_BASE_SHA`) z własnego `git worktree add --detach` w katalogu tymczasowym i usuwa go po pomiarze
+  (`git worktree remove` tylko tego katalogu, bez `prune`, bez zmiany gałęzi karty i ticketu); `after` — kod bieżącego
+  worktree.
+- **Wynik** konfiguracji: `build/k105-measure/<strona>-box-<false|true>.json` z listą prób; zapis przyrostowy po każdym oknie
+  (próba `running` z oknami do tej pory).
+- **Limit i wznawianie.** Próba ma wewnętrzny limit czasu (`--limit-min`, domyślnie 13 min: rozgrzewka 60 s + 10 okien
+  + okno diagnostyki 60 s + start ≈ 12,5 min). Po przekroczeniu w rozgrzewce albo w oknach próba jest nieważna; limit
+  przed oknem diagnostyki pomija tylko diagnostykę (okna CPU zostają ważne). Ponowne uruchomienie **tego samego polecenia**
+  pomija konfigurację z ważnym wynikiem (także z oceną „niespełniony” — to ważny wynik) albo z wyczerpanymi 3 próbami
+  i liczy próby dalej; próba zapisana jako `running` (polecenie ubite, np. kodem 143) liczy się jako nieważna.
+  Jeden przebieg naraz (blokada pliku `build/k105-measure/.lock`), najwyżej 3 próby na konfigurację, rozstrzyga pierwsza ważna.
+- Kody wyjścia `measure`: 0 — wynik ważny albo konfiguracja już rozstrzygnięta; 1 — 3 próby bez ważnej; 2 — ta próba
+  nieważna (zgłoś to samo polecenie ponownie); 3 — inny przebieg trwa; 4 — brak danych albo zły SHA bazy.
+
+Kolejność dla koordynatora: `build-data`, potem cztery polecenia `measure` (`before false`, `before true`, `after false`,
+`after true`), każde osobno.
+
+### Procedura produkcji po instalacji (właściciel)
+
+Skrypt `scripts/measure_idle_prod.py` **tylko czyta**: niczego nie instaluje, nie zmienia konfiguracji (także
+`box.enabled`), nie zapisuje w `~/.local/share`, `~/.config` ani w Tablicy — poza wynikiem (`--out`, odmawia ścieżek
+w tych katalogach), plikiem żądania próbnika w katalogu uruchomieniowym i raportem próbnika zapisywanym przez usługę.
+
+1. Po `make install` i restarcie usługi (nie w trakcie pracy agentów): `/usr/bin/python3 scripts/measure_idle_prod.py
+   --out ~/pomiar-k105-box-<false|true>.json`. Skrypt sprawdza loadavg i brak kroków w toku jednym odczytem, czeka do
+   10 min na postój (`--wait-idle-min`) albo przyjmuje czas postoju właściciela (`--owner-idle-min`, zapisywany w wyniku),
+   rozgrzewka, 10 okien CPU `MainPID` na czystym postoju, potem osobno próbnik 60 s (przez plik żądania usługi) i seria
+   `Snapshot`. Wynik JSON: okna, średnia, maksimum, pamięć przed i po, bieżące `box.enabled` odczytane z konfiguracji,
+   ocena (próg CPU każdego okna ≤ 30 %, `Snapshot` p95 < 1 s). Kod wyjścia 0 — w progach, 1 — ponad próg, 2 — nieważny.
+2. **Oba ustawienia `box.enabled`.** Właściciel przełącza je sam (zwykłym sposobem ustawień usługi, restartuje usługę
+   i powtarza pomiar z kroku 1): raz `false`, raz `true`. Skrypt nigdy ich nie przełącza.
+3. **Zatwierdzenie planu 18 wierszy (kryterium M0, < 10 s).** Osobny, jawnie nazwany tryb:
+   `/usr/bin/python3 scripts/measure_idle_prod.py --mode approve-plan --card K-<numer> --out ~/pomiar-k105-zatwierdzenie.json`.
+   To **jedyny tryb, który wywołuje akcję usługi** (`ApproveCardPlan`); uruchamia go wyłącznie właściciel dla karty z planem
+   ≥ 18 wierszy, którą i tak zatwierdza. Mierzy czas od wywołania do zdarzenia `plan.approved` w dzienniku karty
+   (`<Tablica>/flow/<karta>/journal.jsonl`, tylko odczyt) i zapisuje liczbę wierszy planu. Odmawia przy planie
+   < 18 wierszy, chyba że właściciel poda `--allow-small-plan` — wtedy wynik ma znacznik „poza kryterium”.
+4. **Gdzie zapisać wynik.** Pliki JSON zostają u właściciela poza repozytorium i poza Tablicą; do karty trafia podsumowanie
+   (okna, maksimum, `Snapshot` p95, czas zatwierdzenia, `box.enabled`, SHA) wpisane przez koordynatora w notce domknięcia.
+5. **Domknięcie karty kończy się pytaniem do właściciela o wynik pomiaru produkcji.** Wynik powyżej progu —
+   CPU któregokolwiek okna w którymkolwiek ustawieniu `box.enabled`, `Snapshot` p95 ≥ 1 s albo zatwierdzenie planu ≥ 10 s —
+   to **otwarty bloker M0**. Ten sam pomiar powtarza się po następnej instalacji (regresja).
+
 ## Bezczynność
 
 Tapeta „Tide: kot” (`org.tide.cat`) zamyka kotu oczy, gdy nikt nie używa komputera. Wie o tym od usługi:

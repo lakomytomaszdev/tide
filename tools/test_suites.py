@@ -63,6 +63,7 @@ FILE_TEST_MODULES = {
     "tools/next_id.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
     "tools/check_plans.py": ("daemon/tests/test_boardplans.py", "daemon/tests/test_coordination_numbering.py"),
     "tools/sessions_preview.py": ("apps/sessions/tests/test_window.py",),
+    "scripts/measure_idle_prod.py": ("daemon/tests/test_perf_cpu_windows.py",),
 }
 
 # Tylko ten kod ma stabilną przestrzeń nazw importów. Pozostałe komponenty

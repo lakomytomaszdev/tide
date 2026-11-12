@@ -59,55 +59,50 @@ def result(flow_cpu=10.0, tick_share=0.1, rss_end=200.0, load="0.50 0.40 0.30 1/
 
 
 class EvaluateTest(unittest.TestCase):
-    def test_passes_within_thresholds_and_reports_the_rest_without_threshold(self):
+    def test_single_window_evaluation_has_no_thresholds_and_no_verdict(self):
         evaluation = scale.evaluate(result())
-        self.assertEqual(evaluation["verdict"], "pass")
-        self.assertEqual(evaluation["thresholds"]["flowThreadCpuPercent"]["source"], "name")
-        self.assertEqual(evaluation["reported"]["processCpuPercent"], 55.0)     # CPU procesu: bez progu
-        self.assertEqual(evaluation["reported"]["snapshotP95Ms"], 12.5)
+        for gone in ("verdict", "thresholds", "failedThresholds"):
+            self.assertNotIn(gone, evaluation)
+        self.assertIn("bez oceny progu; rozstrzyga tryb 10 okien", evaluation["mode"])
+        self.assertTrue(evaluation["valid"])
+        reported = evaluation["reported"]
+        self.assertEqual((reported["flowThreadCpuPercent"], reported["flowThreadSource"]), (10.0, "name"))
+        self.assertEqual(reported["engineTickShare"], 0.1)
+        self.assertEqual(reported["processCpuPercent"], 55.0)
+        self.assertEqual(reported["snapshotP95Ms"], 12.5)
         self.assertIn("rozstrzyga pomiar produkcji", evaluation["note"])
 
-    def test_process_cpu_alone_never_fails_the_run(self):
-        data = result()
-        data["cpuWindow"]["cpuPercent"] = 95.0
-        self.assertEqual(scale.evaluate(data)["verdict"], "pass")
+    def test_high_flow_thread_and_tick_share_are_only_reported(self):
+        evaluation = scale.evaluate(result(flow_cpu=99.0, tick_share=0.95))
+        self.assertTrue(evaluation["valid"])
+        self.assertEqual(evaluation["reported"]["flowThreadCpuPercent"], 99.0)
+        text = scale.evaluation_text(evaluation)
+        self.assertIn("bez oceny progu", text)
+        self.assertNotIn("NIE", text)
+        self.assertNotIn("werdykt", text)
 
-    def test_flow_thread_over_limit_fails(self):
-        evaluation = scale.evaluate(result(flow_cpu=30.01))
-        self.assertEqual((evaluation["verdict"], evaluation["failedThresholds"]), ("fail", ["flowThreadCpuPercent"]))
-        self.assertEqual(scale.evaluate(result(flow_cpu=30.0))["verdict"], "pass")
-
-    def test_tick_share_over_limit_fails(self):
-        evaluation = scale.evaluate(result(tick_share=0.26))
-        self.assertEqual((evaluation["verdict"], evaluation["failedThresholds"]), ("fail", ["engineTickShare"]))
-        self.assertEqual(scale.evaluate(result(tick_share=0.25))["verdict"], "pass")
-
-    def test_both_thresholds_reported_together(self):
-        evaluation = scale.evaluate(result(flow_cpu=50.0, tick_share=0.9))
-        self.assertEqual(evaluation["failedThresholds"], ["flowThreadCpuPercent", "engineTickShare"])
-        self.assertIn("NIE", scale.evaluation_text(evaluation))
-
-    def test_missing_measurement_is_not_a_pass(self):
+    def test_missing_measurement_is_reported_as_none_not_failed(self):
         data = result()
         data["flowThread"] = None
-        self.assertEqual(scale.evaluate(data)["verdict"], "fail")
+        evaluation = scale.evaluate(data)
+        self.assertTrue(evaluation["valid"])
+        self.assertIsNone(evaluation["reported"]["flowThreadCpuPercent"])
 
-    def test_high_load_makes_the_run_invalid_even_when_thresholds_fail(self):
-        evaluation = scale.evaluate(result(flow_cpu=99.0, load="4.00 3.00 2.00 1/200 99", cores=8))
-        self.assertEqual(evaluation["verdict"], "invalid")
+    def test_high_load_makes_the_run_invalid(self):
+        evaluation = scale.evaluate(result(load="4.00 3.00 2.00 1/200 99", cores=8))
         self.assertFalse(evaluation["valid"])
         self.assertTrue(any("loadavgBefore" in reason for reason in evaluation["invalidReasons"]))
-        self.assertEqual(scale.evaluate(result(load="3.99 1 1 1/2 3", cores=8))["verdict"], "pass")
+        self.assertTrue(scale.evaluate(result(load="3.99 1 1 1/2 3", cores=8))["valid"])
 
     def test_load_after_the_window_also_invalidates(self):
         data = result()
         data["loadavgAfter"] = "9.00 1.00 1.00 1/200 99"
-        self.assertEqual(scale.evaluate(data)["verdict"], "invalid")
+        self.assertFalse(scale.evaluate(data)["valid"])
 
     def test_missing_load_reading_is_invalid(self):
         data = result()
         del data["loadavgWindowEnd"]
-        self.assertEqual(scale.evaluate(data)["verdict"], "invalid")
+        self.assertFalse(scale.evaluate(data)["valid"])
 
     def test_comparison_and_rss_growth_against_before(self):
         before = result(flow_cpu=40.0, tick_share=0.5, rss_end=200.0, per_second=50.0)
@@ -115,7 +110,7 @@ class EvaluateTest(unittest.TestCase):
         evaluation = scale.evaluate(after, before)
         growth = evaluation["vmRssGrowth"]
         self.assertEqual((growth["growthMb"], growth["growthPercent"]), (30.0, 15.0))
-        self.assertIsNone(growth["limit"])                                       # próg ocenia #5
+        self.assertIsNone(growth["limit"])                                       # bez progu
         comparison = evaluation["comparison"]
         self.assertEqual(comparison["flowThreadCpuPercent"]["delta"], -30.0)
         self.assertEqual(comparison["engineTickPerSecond"]["delta"], -40.0)
@@ -125,14 +120,14 @@ class EvaluateTest(unittest.TestCase):
     def test_invalid_before_makes_the_comparison_invalid(self):
         before = result(load="9.00 1.00 1.00 1/200 99")
         evaluation = scale.evaluate(result(), before)
-        self.assertEqual(evaluation["verdict"], "invalid")
+        self.assertFalse(evaluation["valid"])
         self.assertTrue(any(reason.startswith("przed:") for reason in evaluation["invalidReasons"]))
 
     def test_evaluate_command_exit_codes_and_output_file(self):
         base = tempfile.mkdtemp(prefix="tide-perf-scale-test-")
         self.addCleanup(shutil.rmtree, base)
         paths = {}
-        for name, data in (("ok", result()), ("bad", result(flow_cpu=80.0)), ("load", result(load="8 8 8 1/2 3"))):
+        for name, data in (("ok", result()), ("high", result(flow_cpu=80.0)), ("load", result(load="8 8 8 1/2 3"))):
             paths[name] = os.path.join(base, name + ".json")
             with open(paths[name], "w", encoding="utf-8") as fh:
                 json.dump(data, fh)
@@ -140,8 +135,10 @@ class EvaluateTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(scale.main(["evaluate", "--after", paths["ok"], "--out", out]), 0)
             with open(out, encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh)["verdict"], "pass")
-            self.assertEqual(scale.main(["evaluate", "--after", paths["bad"], "--before", paths["ok"]]), 1)
+                saved = json.load(fh)
+            self.assertNotIn("verdict", saved)
+            self.assertTrue(saved["valid"])
+            self.assertEqual(scale.main(["evaluate", "--after", paths["high"], "--before", paths["ok"]]), 0)
             self.assertEqual(scale.main(["evaluate", "--after", paths["load"]]), 2)
 
 

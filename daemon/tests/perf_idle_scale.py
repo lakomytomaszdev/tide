@@ -11,10 +11,9 @@ poleceniem `evaluate`. Wyłącznie dane syntetyczne w katalogu tymczasowym repro
   jest sprawdzany ścisłym odczytem (`Journal.read_complete`) i kontrolą tożsamości procesów usługi — inaczej usługa
   wstrzymałaby odzyskiwanie i pomiar byłby zaniżony. Rozmiar jest łączny dla kopii usługi i pliku w Tablicy.
 - `select_flow_thread` — deterministyczny wybór wątku workera przepływu z mapy `threads` okna CPU.
-- `evaluate` — ocena „przed”/„po”: progi dotyczą wątku workera przepływu i udziału `engine.tick`, nie CPU całego
-  procesu. To świadome odstępstwo od progu produkcji (CPU całego `tide-daemon` ≤ 30 % rdzenia): reproduktor
-  nie ma m.in. `coordination_monitor._scan`, `describe.facts_hash`, `boardplans` i `scanner` (~15 % próbek produkcji).
-  Wynik jest wskaźnikiem; rozstrzyga pomiar produkcji przy domknięciu karty.
+- `evaluate` — ocena jednookienkowa „przed”/„po” **bez progów i bez werdyktu** (K-105, PT-458): CPU wątku przepływu,
+  udział `engine.tick` i wzrost `VmRSS` są raportowane („tryb jednego okna — bez oceny progu; rozstrzyga tryb
+  10 okien”, `perf_cpu_windows.py`). Zostaje tylko ważność (loadavg, reguła PT-362). Kod wyjścia: 0 ważny, 2 nieważny.
 
 Użycie oceny:
     /usr/bin/python3 daemon/tests/perf_idle_scale.py evaluate --after po.json [--before przed.json] [--out ocena.json]
@@ -33,8 +32,6 @@ from datetime import datetime, timezone
 
 FLOW_PREFIX = "tide-cardflow"          # prefiks puli workera przepływu (`cardflow_monitor`)
 SAMPLER_NAME = "tide-sampler"          # wątek próbnika usługi
-FLOW_CPU_LIMIT = 30.0                  # % jednego rdzenia, wątek workera przepływu („po”)
-TICK_SHARE_LIMIT = 0.25                # udział `engine.tick` w próbkach okna próbnika („po”)
 SNAPSHOT_CALLS = 60
 SNAPSHOT_INTERVAL_S = 0.5
 PROJECTS = ("plasma-tide", "alpha", "beta")
@@ -165,27 +162,22 @@ def _delta(before, after):
     return round(after - before, 3)
 
 
-def evaluate(after, before=None):
-    """Ocena wyniku „po” (progi) z opcjonalnym porównaniem z „przed”.
+SINGLE_WINDOW_NOTE = "tryb jednego okna — bez oceny progu; rozstrzyga tryb 10 okien"
 
-    Progi: CPU wątku workera przepływu ≤ 30 % jednego rdzenia i udział `engine.tick` ≤ 25 % próbek. CPU całego
-    procesu i `Snapshot` p95 są tylko raportowane. Wzrost `VmRSS` (koniec okna) podajemy w MB i %, bez progu (próg
-    ocenia #5). Werdykt: `invalid` (wysokie loadavg), `fail` (próg niespełniony albo brak pomiaru), `pass`."""
+
+def evaluate(after, before=None):
+    """Ocena jednookienkowa „po” z opcjonalnym porównaniem z „przed” — **bez progów i bez werdyktu** (K-105, PT-458).
+
+    CPU wątku workera przepływu, udział `engine.tick`, `Snapshot` p95, CPU procesu i wzrost `VmRSS` są tylko
+    raportowane. Rozstrzyga tryb 10 okien CPU całego procesu (`perf_cpu_windows.py`). Zostaje ważność: wynik jest
+    nieważny (`valid` false), gdy loadavg 1-min ≥ rdzenie/2 przed pomiarem, w oknie albo po nim (reguła PT-362)."""
     flow, tick = _flow(after), after.get("tick") or {}
     flow_cpu, share = flow.get("cpuPercent"), tick.get("share")
-    thresholds = {
-        "flowThreadCpuPercent": {"value": flow_cpu, "limit": FLOW_CPU_LIMIT, "source": flow.get("source"),
-                                 "thread": flow.get("name"), "ok": flow_cpu is not None and flow_cpu <= FLOW_CPU_LIMIT},
-        "engineTickShare": {"value": share, "limit": TICK_SHARE_LIMIT,
-                            "ok": share is not None and share <= TICK_SHARE_LIMIT},
-    }
     ok_run, reasons = validity(after)
     if before is not None:
         ok_before, reasons_before = validity(before)
         ok_run = ok_run and ok_before
         reasons += [f"przed: {reason}" for reason in reasons_before]
-    failed = [name for name, item in thresholds.items() if not item["ok"]]
-    verdict = "invalid" if not ok_run else ("fail" if failed else "pass")
     memory = after.get("memory") or {}
     growth = None
     if before is not None:
@@ -207,32 +199,32 @@ def evaluate(after, before=None):
                                                     tick.get("perSecond"))},
         }
     return {
-        "verdict": verdict, "valid": ok_run, "invalidReasons": reasons, "failedThresholds": failed,
-        "thresholds": thresholds, "comparison": comparison, "vmRssGrowth": growth,
-        "reported": {"processCpuPercent": (after.get("cpuWindow") or {}).get("cpuPercent"),
+        "mode": SINGLE_WINDOW_NOTE, "valid": ok_run, "invalidReasons": reasons,
+        "reported": {"flowThreadCpuPercent": flow_cpu, "flowThread": flow.get("name"),
+                     "flowThreadSource": flow.get("source"), "engineTickShare": share,
+                     "engineTickPerSecond": tick.get("perSecond"),
+                     "processCpuPercent": (after.get("cpuWindow") or {}).get("cpuPercent"),
                      "snapshotP95Ms": (after.get("snapshot") or {}).get("p95Ms"),
                      "vmHwmMb": memory.get("vmHwmMb")},
-        "note": ("Wskaźnik reproduktora: progi dotyczą wątku workera przepływu i udziału engine.tick, nie CPU całego "
-                 "procesu; rozstrzyga pomiar produkcji przy domknięciu karty."),
+        "comparison": comparison, "vmRssGrowth": growth,
+        "note": "Wskaźnik reproduktora (" + SINGLE_WINDOW_NOTE + "); rozstrzyga pomiar produkcji przy domknięciu karty.",
     }
 
 
 def evaluation_text(evaluation):
-    t = evaluation["thresholds"]
-    flow, tick = t["flowThreadCpuPercent"], t["engineTickShare"]
-    lines = [f"werdykt: {evaluation['verdict']}"]
+    reported = evaluation["reported"]
+    lines = [evaluation["mode"]]
     if evaluation["invalidReasons"]:
         lines.append("nieważny: " + "; ".join(evaluation["invalidReasons"]))
-    lines.append(f"CPU wątku przepływu: {flow['value']} % (próg ≤ {flow['limit']} %; wątek {flow['thread']}, "
-                 f"źródło {flow['source']}) — {'ok' if flow['ok'] else 'NIE'}")
-    lines.append(f"udział engine.tick: {tick['value']} (próg ≤ {tick['limit']}) — {'ok' if tick['ok'] else 'NIE'}")
-    reported = evaluation["reported"]
+    lines.append(f"bez progu: CPU wątku przepływu {reported['flowThreadCpuPercent']} % (wątek {reported['flowThread']}, "
+                 f"źródło {reported['flowThreadSource']}), udział engine.tick {reported['engineTickShare']} "
+                 f"({reported['engineTickPerSecond']}/s)")
     lines.append(f"bez progu: CPU procesu {reported['processCpuPercent']} %, Snapshot p95 {reported['snapshotP95Ms']} ms, "
                  f"VmHWM {reported['vmHwmMb']} MB")
     growth = evaluation["vmRssGrowth"]
     if growth:
         lines.append(f"VmRSS: {growth['beforeMb']} → {growth['afterMb']} MB ({growth['growthMb']:+} MB, "
-                     f"{growth['growthPercent']:+} %), bez progu (ocenia #5)")
+                     f"{growth['growthPercent']:+} %), bez progu")
     comparison = evaluation["comparison"]
     if comparison:
         for name, item in comparison.items():
@@ -571,7 +563,7 @@ def main(argv=None):
             json.dump(evaluation, fh, ensure_ascii=False, indent=1)
             fh.write("\n")
     print(evaluation_text(evaluation))
-    return {"pass": 0, "fail": 1, "invalid": 2}[evaluation["verdict"]]
+    return 0 if evaluation["valid"] else 2
 
 
 if __name__ == "__main__":
