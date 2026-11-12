@@ -168,6 +168,11 @@ class WaveFlowTest(FlowInProcess):
             self.restart()
             self.local_config()
             self.wait_column(card, "review", timeout=15)
+            # PT-366: „review” bywa widoczne chwilę przed startem lokalnego kroku close karty, który zajmuje
+            # ten sam slot (wykonawca Lokalny). Czekamy na koniec karty i kończymy tick monitora: zapis
+            # step.finished poprzedza zwolnienie slotu, a card.closed pada dopiero po końcu kroku close.
+            self.assertTrue(wait_until(lambda: self.of(card, "card.closed"), timeout=20), self.events(card))
+            self.stop_flow()
             self.assertEqual(len([s for s in self.of(card, "step.started") if s.get("kind") != "close"]), 2)
             self.assertFalse(isolated.busy())
 
