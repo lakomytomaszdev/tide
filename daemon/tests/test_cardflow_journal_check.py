@@ -234,6 +234,35 @@ class ErrorsTest(CheckCase):
         self.assertEqual(self.text(self.mirror()), text, "kopia odbudowana z Tablicy jak dotąd")
         self.assert_forgotten_then_full_compare()
 
+    def test_external_change_right_after_the_restore_is_not_remembered_as_agreement(self):
+        """Review M1: zapis Tablicy z zewnątrz po `os.replace` odtworzenia, przed `stat` (np. `git checkout`
+        przepisujący plik ponownie) — para nie jest zapamiętana, kolejne wywołanie porównuje i odtwarza."""
+        self.confirmed()
+        self.checkout_older()
+        real_write = journal_module._write
+
+        def write_then_revert(path, text):
+            real_write(path, text)
+            if path == self.board():
+                self.checkout_older()
+        with mock.patch.object(journal_module, "_write", side_effect=write_then_revert):
+            self.assertEqual(self.journal.check("K-1"), "K-1: " + WARNING)
+        self.assertNotEqual(self.text(self.board()), self.text(self.mirror()))
+        self.assertNotIn("K-1", self.journal._check_memory, "stan po zmianie z zewnątrz nie jest parą zgodną")
+        self.calls.clear()
+        self.assertEqual(self.journal.check("K-1"), "K-1: " + WARNING)
+        self.restored_after_fresh_compare()
+        self.assertIn("K-1", self.journal._check_memory)
+
+    def test_restore_is_remembered_only_after_a_fresh_read_of_the_restored_board(self):
+        self.confirmed()
+        self.checkout_older()
+        self.assertEqual(self.journal.check("K-1"), "K-1: " + WARNING)
+        index = self.calls.index(("restore", "K-1"))
+        self.assertEqual([path for kind, path in self.calls[index + 1:] if kind == "read"], [self.board()],
+                         "potwierdzenie odtworzenia: świeży odczyt Tablicy")
+        self.assertIn("K-1", self.journal._check_memory)
+
     def test_failed_restore_is_not_remembered(self):
         self.confirmed()
         self.checkout_older()

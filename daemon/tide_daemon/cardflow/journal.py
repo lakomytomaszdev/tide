@@ -480,11 +480,13 @@ class Journal:
 
         PT-416: para stanów obu plików (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`, `st_ctime_ns` — reguła klucza
         wersji z K-105 #2) jest pamiętana po potwierdzonej zgodności albo po udanym odtworzeniu. Ta sama para w kolejnym
-        wywołaniu pomija porównanie treści (sam `stat`) i zwraca "" bez żadnego skutku. Każda inna para, błąd `stat`
-        albo brak pliku: pełne porównanie treści (`_check_read` obu plików) w tym wywołaniu — odtworzenie wyłącznie po
-        nim, nigdy na podstawie samej różnicy stanu ani pamięci. Wpis jest zdejmowany na wejściu i wraca tylko po
-        udanym porównaniu bez błędu (stan obu plików bez zmian w trakcie) albo po odtworzeniu przy niezmienionej
-        kopii; zapis tego procesu (`_invalidate`) i `forget_except` go usuwają.
+        wywołaniu pomija porównanie treści (sam `stat`) i zwraca "" bez żadnego skutku. Brak kopii usługi: odbudowa
+        kopii z Tablicy jak dotąd (bez porównania i bez pary). W pozostałych przypadkach (inna para, błąd `stat`, brak
+        pliku w Tablicy): pełne porównanie treści (`_check_read` obu plików) w tym wywołaniu — odtworzenie wyłącznie
+        po nim, nigdy na podstawie samej różnicy stanu ani pamięci. Wpis jest zdejmowany na wejściu i wraca tylko po
+        udanym porównaniu bez błędu (stan obu plików bez zmian w trakcie) albo po odtworzeniu potwierdzonym
+        obramowanym świeżym odczytem Tablicy (`_confirm_restored`); zapis tego procesu (`_invalidate`)
+        i `forget_except` go usuwają.
 
         Ograniczenie (jak klucz wersji K-105 #2): zmiana w miejscu bez zmiany rozmiaru wykonana tuż po porównaniu
         w obrębie jednego kwantu zegara znaczników czasu jądra nie zmienia żadnego z pięciu pól."""
@@ -509,11 +511,24 @@ class Journal:
                     self._check_memory[card] = before
                 return ""
             self._restore(card)
-            after = _pair(board, mirror)
-            if readable and after is not None and after[1] == before[1]:
-                self._check_memory[card] = after
+            if readable:
+                self._confirm_restored(card, before, mirror_text)
             return (f"{card}: dziennik karty w repozytorium tablicy był cofnięty albo zmieniony z zewnątrz — "
                     "odtworzony z kopii usługi")
+
+    def _confirm_restored(self, card: str, before, mirror_text: str) -> None:
+        """Para po odtworzeniu (PT-416, review M1): zapamiętana tylko po obramowanym potwierdzeniu w tym samym
+        wywołaniu — `stat` obu plików, świeży odczyt treści Tablicy równy przeczytanej kopii, ponowny `stat` równy
+        pierwszemu, kopia w stanie sprzed porównania. Zmiana Tablicy z zewnątrz po `os.replace` w `_restore` (przed
+        `stat`) nie trafia do pamięci jako zgodna: następne wywołanie porównuje pełną treść. Samo potwierdzenie nie
+        wywołuje żadnego zapisu."""
+        board, mirror = self.path(card), self.mirror_path(card)
+        first = _pair(board, mirror)
+        if first is None or first[1] != before[1]:
+            return
+        text, ok = self._check_read(board)
+        if ok and text == mirror_text and _pair(board, mirror) == first:
+            self._check_memory[card] = first
 
     def _check_read(self, path: str) -> tuple[str, bool]:
         """Odczyt treści pliku dziennika w kontroli zgodności (PT-416: granica liczenia odczytów). Błąd odczytu daje

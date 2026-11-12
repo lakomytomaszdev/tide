@@ -2577,7 +2577,22 @@ czyta plik w całości zamiast trafienia albo przyrostu; przyrost nie przesuwa t
 dotyczy tylko odczytów bez skutku: porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`), zapisy
 (`append`, `append_complete`) i kontrole wycofania (`rollback`) czytają świeżo (`Journal.read_fresh` — pełny ścisły
 odczyt z pominięciem pamięci), więc zapis oparty na takiej historii jest odmówiony (`HistoryChanged`). Pełne odczyty
-liczy granica `Journal._read_strict` (pełny odczyt `read_complete` i `read_fresh`); `Journal.check` jej nie używa.
+liczy granica `Journal._read_strict` (pełny odczyt `read_complete` i `read_fresh`); `Journal.check` jej nie używa —
+ma własną pamięć opisaną niżej.
+
+**Pamięć kontroli zgodności (K-105, PT-416).** `Journal.check` (dziennik w Tablicy ↔ kopia usługi, w każdym ticku dla
+każdej karty) pamięta parę stanów obu plików według tej samej reguły pięciu pól (`st_dev`, `st_ino`, `st_size`,
+`st_mtime_ns`, `st_ctime_ns`). Ta sama para kosztuje dwa `stat` i daje wynik bez ostrzeżenia, bez odczytu treści
+i bez żadnego skutku. Każda zmiana któregokolwiek pola któregokolwiek pliku (revert z nowym i-węzłem, edycja w miejscu
+z przywróconym mtime, `chmod`, `touch`) daje pełne porównanie treści obu plików w tym samym wywołaniu; odtworzenie
+z kopii następuje wyłącznie po nim — pamięć tylko pomija porównanie i niczego nie autoryzuje. Para trafia do pamięci
+po porównaniu zgodnym, obramowanym dwoma równymi `stat`, albo po odtworzeniu potwierdzonym tak samo (świeży odczyt
+Tablicy równy kopii między dwoma równymi `stat`, kopia bez zmian od porównania); zmiana Tablicy z zewnątrz tuż po
+odtworzeniu nie zostaje zapamiętana jako zgodna. Błąd `stat` albo odczytu, brak pliku i nieudane odtworzenie usuwają
+wpis karty, a brak kopii daje jak dotąd odbudowę kopii z Tablicy bez pary. Zapis tego procesu do dziennika i początek
+ticku dla kart spoza rejestru (`forget_except`) usuwają wpisy. Odczyty treści liczy granica `Journal._check_read`.
+Ograniczenie jak przy kluczu wersji: zmiana w miejscu bez zmiany rozmiaru tuż po porównaniu, w obrębie jednego kwantu
+zegara znaczników czasu jądra, nie zmienia żadnego z pięciu pól.
 
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
