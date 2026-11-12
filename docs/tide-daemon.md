@@ -2332,7 +2332,10 @@ i nie czeka w kolejce. Migawka: `derived.flow.plan.approving` to `plan.approval_
 `approvalError` to treść ostatniego błędu rezerwacji albo powód „Zatwierdzanie wstrzymane: czeka decyzja o bazie
 karty”. `status` nie dostaje nowych wartości. Zatwierdzanie różnicy planu nie zapisuje `plan.approval_requested`,
 więc migawka nie pokazuje dla niego `approving`; jego koniec klient poznaje z odpowiedzi wywołania. W trakcie
-faza karty to „zatwierdzanie planu w tle”, a decyzja `plan-approval` nie jest oferowana.
+faza karty to „zatwierdzanie planu w tle”, a decyzja `plan-approval` nie jest oferowana. Znane ograniczenie:
+błędy `approve_plan` po zapisaniu prośby, które nie trafiają do dziennika jako wynik `reserve` (projekt usunięty
+z konfiguracji, `OSError` przy przenoszeniu kartek ticketów), nie kończą „trwa” — tick ponawia próbę, a karta
+pokazuje „zatwierdzanie planu w tle” bez `approvalError` i bez `plan-approval`, dopóki przyczyna nie ustąpi.
 
 ### Planowanie Lekkie i zasady przydziału (PT-79)
 
