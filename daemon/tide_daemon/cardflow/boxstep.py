@@ -541,8 +541,9 @@ def recover_network(engine, history=None) -> None:
         try:
             # PT-288: wspólny ścisły odczyt i model tożsamości zamiast lokalnej reguły zdarzeń.
             # Nieznana lub niespójna historia karty: bez zwolnień, refguard ani polityk sieci.
-            # K-105 PT-415: stan procesu karty (model tożsamości i fold) z pamięci według wersji dziennika.
-            events, whole = trialhold.process_state(engine.journal, card, history)
+            # K-105 PT-415: stan procesu karty (model tożsamości i fold) z pamięci według wersji dziennika, gdy mutacje
+            # porównuje świeżo faza ticku (`fresh`); bez fazy (odtworzenie zamiaru startu) świeży odczyt bez pamięci.
+            events, whole = trialhold.process_state(engine.journal, card, history, fresh=history is None)
             basis[card] = events
         except (OSError, ValueError, TypeError, KeyError):
             continue

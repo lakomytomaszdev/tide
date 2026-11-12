@@ -13,11 +13,12 @@ import time
 import unittest
 from unittest import mock
 
-from tide_daemon.cardflow import processidentity, state as state_module, trialhold
+from tide_daemon.cardflow import boxstep, processidentity, state as state_module, trialhold
 from tide_daemon.cardflow.engine import FlowError
 from tide_daemon.cardflow.journal import HistoryChanged, Journal
 from tide_daemon.cardflow.state import fold
 
+from .boxflow import BoxFlow, SLUG
 from .test_cardflow_tick_reads import TickFixture, _external_event, _lines
 
 
@@ -374,6 +375,104 @@ class ProcessMemoryTickTest(TickFixture):
             trialhold.inventory(self.engine, self.card_id, None)
         self.assertEqual(calls, [False, True], "zapis inwentaryzacji dopiero po świeżym odczycie")
         self.assertEqual(appended, [(self.card_id, "k38.handoff")])
+
+    HEAVY = "make test-changed BASE=1"
+
+    def merge_check(self):
+        """Próba testów po scaleniu z zgodą, czekająca na start (PT-329)."""
+        from tide_daemon.cardflow import mergecheck
+        card, append, sha = self.card_id, self.journal.append, "b" * 40
+        check = "PT-7:1"
+        name = mergecheck.step_name(check)
+        append(card, mergecheck.ARMED)
+        append(card, mergecheck.REQUESTED, ticket="PT-7", check=check, command=self.HEAVY, after=sha, start=sha,
+               before=sha)
+        append(card, mergecheck.STEP, step=name, ticket="PT-7", kind=mergecheck.KIND, check=check,
+               command=self.HEAVY, after=sha, worktree="/wt/card", stepDir="/wt/card.step")
+        append(card, "step.decision", step=name, ticket="PT-7", choice="run")
+        st = self.journal.state(card)
+        entry = next(e for e in mergecheck.gate(st) if mergecheck.step_name(e["check"]) == name)
+        return name, self.engine._merge_check_step(card, entry), entry, sha
+
+    @contextlib.contextmanager
+    def merge_check_launch(self, sha):
+        log = os.path.join(self.base, "merge-check.log")
+        with mock.patch.object(self.engine, "_merge_check_head", return_value=sha), \
+                mock.patch.object(self.engine, "_outside_launch",
+                                  return_value=("unit-m", log, "/nonexistent/in/exit-code", ["true"], {})), \
+                mock.patch("tide_daemon.cardflow.engine.subprocess.Popen") as popen:
+            yield popen
+
+    def test_merge_check_start_reads_fresh_under_the_lock_before_popen(self):
+        name, step, entry, sha = self.merge_check()
+        self.engine._merge_check_history(self.card_id)          # rozgrzana pamięć (obserwacja czekania)
+        with self.merge_check_launch(sha) as popen, Counts(self.journal)() as count:
+            self.engine._merge_check_start(self.card_id, step, entry)
+        popen.assert_called_once()
+        self.assertEqual(count.reads[0], self.card_id, "start próby po świeżym pełnym odczycie")
+        self.assertIn(name, self.journal.state(self.card_id).outside_launched)
+
+    def test_merge_check_start_is_refused_after_an_external_outside_start_despite_a_memory_hit(self):
+        name, step, entry, sha = self.merge_check()
+        events = self.engine._merge_check_history(self.card_id)  # tick: odczyt z pamięci
+        with open(self.journal.mirror_path(self.card_id), "a", encoding="utf-8") as fh:
+            fh.write(_lines([{"v": 1, "seq": len(events) + 1, "ts": "2026-11-12T12:00:00+01:00",
+                              "card": self.card_id, "type": "outside.started", "step": name, "ticket": "PT-7",
+                              "command": self.HEAVY, "unit": "u", "log": "/nonexistent/log",
+                              "exitFile": "/nonexistent/in/exit-code", "worktree": "/wt/card", "head": sha}]))
+        # Nawet gdy tolerancyjna projekcja przepuściłaby start, decyduje świeży ścisły odczyt pod blokadą.
+        with self.merge_check_launch(sha) as popen, \
+                mock.patch.object(self.engine, "_merge_check_still_allowed", return_value=True) as allowed:
+            self.engine._merge_check_start(self.card_id, step, entry)
+        popen.assert_not_called()
+        allowed.assert_not_called()
+
+    def test_outside_unit_is_not_stopped_when_the_fresh_confirmation_fails(self):
+        from tide_daemon.tasks import stepstop
+        started = {"unit": "u-old", "ts": "2020-01-01T00:00:00+00:00", "log": "/nonexistent/log",
+                   "exitFile": "/nonexistent/in/exit-code"}
+        with mock.patch.object(stepstop, "_systemctl") as systemctl:
+            self.assertIsNone(self.engine._outside_collect(self.card_id, "out-x", started, confirm=lambda: False))
+        systemctl.assert_not_called()
+        with mock.patch.object(stepstop, "_systemctl") as systemctl:
+            code, _ = self.engine._outside_collect(self.card_id, "out-x", started, confirm=lambda: True)
+        self.assertEqual(code, "przekroczony czas")
+        systemctl.assert_any_call("stop", "u-old.scope")
+
+
+class ProcessMemoryBoxTickTest(BoxFlow):
+    """MAJOR 1 review PT-415: przy `box.enabled=true` cykl życia pudełka (`box/lifecycle.tick`) bierze stan procesu
+    karty z pamięci — rozgrzany tick bez zmian nie woła modelu tożsamości ani złożenia stanu dla żadnej karty."""
+
+    PROFILE = {"tide-box": 1, "ports": {"pool": [49123, 49132], "env": ["APP_PORT"]}}
+
+    def setUp(self):
+        super().setUp()
+        self.flow.stop()
+        self.card_id = self.card()
+        self.engine.journal.append(self.card_id, "card.started", project=SLUG)
+        self.build_box(self.PROFILE)
+
+    def test_second_tick_with_the_box_enabled_computes_no_identity_model_nor_card_state(self):
+        from tide_daemon.box import lifecycle
+        journal = self.engine.journal
+        self.assertTrue(boxstep.settings_of(self.engine).enabled)
+        self.engine.tick()
+        seen = []
+        real_state = trialhold.process_state
+
+        def spy(journal_, card, phase=None, *, fresh=False):
+            seen.append((card, fresh))
+            return real_state(journal_, card, phase, fresh=fresh)
+        real_tick = lifecycle.tick
+        ticks = []
+        with Counts(journal)() as count, mock.patch.object(trialhold, "process_state", side_effect=spy), \
+                mock.patch.object(lifecycle, "tick", side_effect=lambda engine: ticks.append(1) or real_tick(engine)):
+            self.engine.tick()
+        self.assertEqual(ticks, [1], f"tick nie doszedł do cyklu życia pudełka: {self.engine._warnings}")
+        self.assertIn((self.card_id, False), seen, "cykl życia pudełka bierze stan procesu karty z pamięci")
+        self.assertEqual(count.identities, [], "model tożsamości procesów w ticku bez zmian")
+        self.assertEqual(dict(count.states), {}, "złożenie stanu procesu karty w ticku bez zmian")
 
 
 if __name__ == "__main__":

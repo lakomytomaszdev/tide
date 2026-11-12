@@ -7141,21 +7141,37 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {key: found.get(key) for key in ("step", "ticket", "kind", "check", "command", "after", "branch",
                                                 "worktree", "stepDir", "baseVersion")}
 
-    def _merge_check_history(self, card: str) -> list:
+    def _merge_check_history(self, card: str, *, fresh: bool = False) -> list:
+        """Historia procesów karty dla próby testów po scaleniu. Bez `fresh` z pamięci według wersji dziennika
+        (K-105 PT-415) — wyłącznie do obserwacji czekania; `fresh=True` (świeży pełny odczyt, bez pamięci) przed każdym
+        skutkiem: start próby (Popen), zatrzymanie jednostki i zapis wyniku."""
         try:
-            return trialhold.read_process_history(self.journal, card)
+            return trialhold.read_process_history(self.journal, card, fresh=fresh)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
+
+    def _merge_check_fresh_run(self, card: str, name: str):
+        """(started, finished) bieżącego uruchomienia próby `name` ze świeżego odczytu historii (bramka przed skutkiem)."""
+        state, started, finished = processidentity.outside_run(self._merge_check_history(card, fresh=True), name)
+        if state != "ok":
+            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+        return started, finished
 
     def _merge_check_run(self, card: str, step: dict, entry: dict, decision: dict) -> None:
         """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
         `outside.finished` pseudokroku i `merge.check-finished` z tym samym `exit` (liczba, „zatrzymane”,
-        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku."""
+        „przekroczony czas”). Odpowiednik `_outside_ready` bez wznawiania kroku.
+
+        K-105 PT-415: czekanie (kolejka, trwająca próba) z pamięci historii; każdy skutek — wynik z zapisanego
+        zakończenia, start (pod blokadą w `_merge_check_start`), zatrzymanie jednostki i zapis wyniku — dopiero po
+        świeżym odczycie i tej samej redukcji na nim."""
         self._trial_check(step)
         name = step["step"]
         state, started, finished = processidentity.outside_run(self._merge_check_history(card), name)
         if state != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+        if finished:
+            started, finished = self._merge_check_fresh_run(card, name)
         if finished:
             # Restart między `outside.finished` a wynikiem próby: wynik z zapisanego zakończenia, dokładnie raz.
             self._merge_check_finish(card, step, entry, finished.get("exit"), (started or {}).get("log") or "")
@@ -7182,7 +7198,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._merge_check_start(card, step, entry)
             return
-        collected = self._outside_collect(card, name, started)
+        def still_current():
+            # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
+            now_started, now_finished = self._merge_check_fresh_run(card, name)
+            return not now_finished and now_started == started
+        collected = self._outside_collect(card, name, started, confirm=still_current)
         if collected is not None:
             code, tail = collected
             with self.journal.lock:
@@ -7237,7 +7257,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # bo udane ponowienie nie może zastąpić porażki (zasady wyjątków od testów).
         unit, log, exit_file, argv, env = self._outside_launch(name, step["stepDir"], worktree, command)
         with open(log, "ab") as out, self.journal.lock:
-            self._merge_check_history(card)
+            # K-105 PT-415: świeży ścisły odczyt pod blokadą przed Popen (jak `_start_outside`): uruchomienie dopisane
+            # z zewnątrz po ticku (odczyt z pamięci) zamyka start.
+            started, finished = self._merge_check_fresh_run(card, name)
+            if started is not None or finished is not None:
+                self._outside_waiting.pop(name, None)
+                return
             if not self._merge_check_still_allowed(card, step):
                 return
             subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
@@ -7637,12 +7662,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
-        collected = self._outside_collect(card, name, started)
+        def still_current():
+            # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
+            _, now_started, now_finished = fresh_run()
+            return not now_finished and now_started == started
+        collected = self._outside_collect(card, name, started, confirm=still_current)
         if collected is None:
             return None
-        _, now_started, now_finished = fresh_run()
-        if now_finished or now_started != started:
-            return None     # historia zmieniła się po odczycie z pamięci: kolejny tick decyduje od nowa
         code, tail = collected
         self.journal.append(card, "outside.finished", step=name, ticket=step.get("ticket") or "",
                             command=started.get("command") or "", exit=code, tail=tail)
@@ -7651,10 +7677,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {**decision, "answer": f"Kod wyjścia: {code}\nPełny wynik (do odczytu): {started['log']}\n"
                                       f"Koniec wyniku:\n{tail}"}
 
-    def _outside_collect(self, card: str, name: str, started: dict):
+    def _outside_collect(self, card: str, name: str, started: dict, confirm=None):
         """Kod wyjścia i koniec wyniku rozpoczętego uruchomienia outside `name` albo None, gdy jeszcze trwa: plik kodu
         wyjścia, zatrzymana jednostka bez kodu (PT-315, `_outside_stopped`) albo przekroczony czas. Wspólne dla prośby
-        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego."""
+        kroku i próby testów po scaleniu (PT-329); zapis wyniku należy do wywołującego.
+
+        `confirm` (K-105 PT-415): gdy `started` pochodzi z pamięci historii, świeża kontrola tuż przed pierwszym skutkiem
+        (zatrzymanie jednostki, zwolnienie miejsca); False — historia zmieniła się po odczycie z pamięci, bez skutku
+        i bez wyniku (None), kolejny tick decyduje od nowa. Wołana tylko, gdy uruchomienie już się skończyło albo
+        przekroczyło czas, więc nie dokłada świeżego odczytu do czekania."""
         self._outside_busy(card)            # buduje zbiór aktywnych po restarcie
         self._outside_active[name] = (card, started["unit"])
         step_dir = os.path.dirname(os.path.dirname(started["exitFile"]))
@@ -7663,6 +7694,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             code = self._outside_stopped(started, step_dir)
             if code is None:
                 return None
+        if confirm is not None and not confirm():
+            return None
         if code is None:
             stepstop._systemctl("stop", started["unit"] + ".scope")
             code = "przekroczony czas"

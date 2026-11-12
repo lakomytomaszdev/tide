@@ -2608,13 +2608,19 @@ historia, ani jako „brak zmian”. Wpisy znikają razem z pamięcią ścisłą
 `Journal.state`, wspólna funkcja `state.copy_state`). Z pamięci korzystają wyłącznie odczyty bez skutku: faza ticku
 (`HistoryPhase` jest widokiem jednego ticku nad pamięcią; zapamiętany błąd fazy nadal rzucany w obrębie fazy),
 bariera `_outside_history(card)`, inwentaryzacja K-38, `_recover_started_steps` z fazy (zapis przez `Journal.unchanged`),
-`boxstep.recover_network` (model tożsamości i stan z pamięci; nowy `fold` tylko dla historii z pominiętymi próbami
-K-38), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`, `_recover_console_openings`) oraz czekanie na polecenie
-outside (`_outside_ready`, `_outside_recheck`, wejście `_resume_step`). Wariant `fresh=True` (świeży pełny odczyt
+`boxstep.recover_network` z fazy (model tożsamości i stan z pamięci, mutacje po `HistoryPhase.unchanged`; nowy `fold`
+tylko dla historii z pominiętymi próbami K-38; bez fazy — odtworzenie zamiaru startu — świeżo), cykl życia pudełka
+przy `box.enabled=true` (`box/lifecycle.tick`, `active_steps`, `packs.cleanup` — ta sama pamięć ścisła PT-411 co przed
+PT-415, teraz bez nowego `fold` co tick), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`,
+`_recover_console_openings`) oraz czekanie na polecenie outside i próbę testów po scaleniu (`_outside_ready`,
+`_merge_check_run`, `_outside_recheck`, wejście `_resume_step`). Wariant `fresh=True` (świeży pełny odczyt
 `Journal.read_fresh` i nowe złożenie, bez czytania i zapisu pamięci) mają bramki przed skutkiem: `_process_check`
 przed startem, zatrzymaniem i wznowieniem procesu (domyślnie), `_outside_history` z krokiem lub poleceniem (zgoda,
 start, wynik i zapis `outside.finished`, zapisy `_outside_recheck` i automatycznej zgody — `consent.record_automatic`
-z `gate`), wejście Konsoli, przekazanie, ręczne domknięcie, diagnostyka K-38 i `public_inventory` przed zapisem.
+z `gate`), próba testów po scaleniu (wynik z zapisanego zakończenia, start pod blokadą przed Popen, zapis
+`outside.finished`/`merge.check-finished`), zatrzymanie jednostki outside po końcu albo przekroczeniu czasu
+(`_outside_collect` z `confirm` — świeży odczyt tylko po zakończeniu uruchomienia, nie przy czekaniu), wejście Konsoli,
+przekazanie, ręczne domknięcie, diagnostyka K-38 i `public_inventory` przed zapisem.
 Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), powtarza całą
 inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
 zmian w dziennikach nie woła modelu tożsamości ani `fold` (także `BaseGeneration.recover` i `_pending_main_merge`
