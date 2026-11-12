@@ -227,7 +227,8 @@ class BaseGeneration:
         self.engine._project_base(card)
 
     def recover(self, card):
-        intent = intent_of(fold(self.journal.read(card)))
+        # K-105 PT-415: projekcja z pamięci `Journal.state` (ten sam `fold` odczytu) zamiast złożenia co tick.
+        intent = intent_of(self.journal.state(card))
         if intent:
             with lock_for(intent["repo"]), self.journal.lock:
                 self.resume(card, intent)

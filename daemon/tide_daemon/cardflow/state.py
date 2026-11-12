@@ -29,6 +29,7 @@ Kolumna (ręczne kolumny wygrywają z dziennikiem):
 """
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
@@ -260,6 +261,16 @@ class FlowState:
                 and not self.steps and not self.card_finished):
             return "zlecenie z YouTracka jeszcze się zaczyna"
         return ""
+
+
+def copy_state(state: FlowState) -> FlowState:
+    """Kopia projekcji z własnymi kontenerami pól (reguła `Journal.state`): silnik może zmieniać pola i kontenery
+    kopii, a wartości zagnieżdżone (także wytworzone przez fold) tylko czyta — są wspólne z oryginałem."""
+    out = copy(state)
+    for name, value in vars(out).items():
+        if isinstance(value, (dict, list, set)):
+            setattr(out, name, value.copy())
+    return out
 
 
 def fold(events: list[dict]) -> FlowState:

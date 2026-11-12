@@ -5,7 +5,7 @@ import stat
 
 from ..box import trialgate
 from ..tasks import stepstop
-from .state import fold
+from .state import copy_state, fold
 from .processidentity import box_event_error, process_identities
 
 
@@ -19,20 +19,76 @@ def preserves_project(st, project=None):
                for identity in st.process_identities.values())
 
 
-def read_process_history(journal, card, phase=None):
+UNKNOWN_IDENTITY = "nieznana lub niespójna tożsamość procesu w historii karty"
+
+
+def _checked_state(events):
+    """Stan procesu karty: `fold` historii ścisłej z kontrolą tożsamości procesów (ten sam model
+    `process_identities`, liczony raz w `fold`). Nieznana albo niespójna tożsamość — ValueError."""
+    st = fold(events)
+    if any(identity.state != "ok" for identity in st.process_identities.values()):
+        raise ValueError(UNKNOWN_IDENTITY)
+    return st
+
+
+def _remembered(journal, card):
+    """(zdarzenia, stan procesu karty) z pamięci według wersji dziennika (K-105 PT-415, `Journal.derive`).
+    Dziennik bez pamięci (atrapa) — (zdarzenia, None) po samej kontroli tożsamości, jak przed PT-415."""
+    # Metoda klasy, nie atrybut instancji: dziennik tylko do odczytu audytu (`historyaudit_driver.ReadOnlyJournal`)
+    # zgłasza każdy nieudostępniony atrybut jako odmowę.
+    if getattr(type(journal), "derive", None) is not None:
+        return journal.derive(card, _checked_state)
+    events = journal.read_complete(card)
+    if any(identity.state != "ok" for identity in process_identities(events).values()):
+        raise ValueError(UNKNOWN_IDENTITY)
+    return events, None
+
+
+def _fresh(journal, card):
+    """Świeży pełny ścisły odczyt bramki przed skutkiem (`Journal.read_fresh`, K-105 #2): bez pamięci."""
+    if getattr(type(journal), "read_fresh", None) is not None:
+        return journal.read_fresh(card)
+    return journal.read_complete(card)
+
+
+def read_process_history(journal, card, phase=None, *, fresh=False):
     """Wspólna kontrola historii przed wykonaniem, inwentaryzacją i ochroną zasobów.
+
+    K-105 PT-415: wynik kontroli tożsamości procesów (historia albo błąd) i stan procesu karty są pamiętane dla wersji
+    dziennika z pamięci ścisłego odczytu (`Journal.derive`); zdarzenia to te same obiekty co w tej pamięci (tylko do
+    odczytu, nowa lista). Błąd nie zostaje w pamięci. `fresh=True` — bramka przed skutkiem: świeży pełny odczyt
+    (`Journal.read_fresh`) i kontrola tożsamości bez pamięci (ani jej nie czyta, ani nie zapisuje).
 
     `phase` (K-98 #3, `HistoryPhase` ticku): wynik tej kontroli — historia albo błąd — jest zapamiętany w fazie
     i zwracany ponownie bez kolejnego odczytu, dopóki ten proces nie zapisze historii karty."""
+    if fresh:
+        events = _fresh(journal, card)
+        if any(identity.state != "ok" for identity in process_identities(events).values()):
+            raise ValueError(UNKNOWN_IDENTITY)
+        return events
     if phase is not None:
-        cached = phase.cached(card)
-        if cached is not None:
-            return cached
-        return phase.load(card, lambda: read_process_history(journal, card))
-    events = journal.read_complete(card)
-    if any(identity.state != "ok" for identity in process_identities(events).values()):
-        raise ValueError("nieznana lub niespójna tożsamość procesu w historii karty")
-    return events
+        return phase.history(card, lambda: _remembered(journal, card))[0]
+    return _remembered(journal, card)[0]
+
+
+def process_state(journal, card, phase=None, *, fresh=False):
+    """Stan procesu karty (K-105 PT-415): (zdarzenia historii ścisłej, `FlowState` z kontrolą tożsamości).
+
+    Jedno wywołanie zamiast `fold(read_process_history(…))`. Bez `fresh` stan pochodzi z pamięci według wersji dziennika
+    (i z fazy ticku, gdy jest `phase`) i jest zwracany jako kopia z własnymi kontenerami pól (`copy_state`, reguła
+    `Journal.state`): wołający zmienia tylko pola i kontenery, nie wartości zagnieżdżone. Wyłącznie do odczytów bez
+    skutku albo do decyzji, której zapis porównuje historię świeżo (`Journal.unchanged`). `fresh=True` — bramka przed
+    skutkiem: świeży pełny odczyt i nowe złożenie stanu, bez pamięci."""
+    if fresh:
+        events = _fresh(journal, card)
+        return events, _checked_state(events)
+    if phase is not None:
+        events, st = phase.history(card, lambda: _remembered(journal, card))
+    else:
+        events, st = _remembered(journal, card)
+    if st is None:                    # dziennik bez pamięci (atrapa): nowe złożenie na wołającego
+        return events, _checked_state(events)
+    return events, copy_state(st)
 
 
 class HistoryPhase:
@@ -50,41 +106,41 @@ class HistoryPhase:
       w międzyczasie (także spoza procesu) daje odmowę bez skutku.
 
     Błąd odczytu albo nieznana tożsamość jest zapamiętany na tę wersję historii i rzucany przy każdym użyciu —
-    unknown nie znika w obrębie fazy. Dziennik bez licznika zapisów (atrapa) — bez pamięci, zawsze świeży odczyt.
+    unknown nie znika w obrębie fazy (tylko w fazie: pamięć między tickami błędów nie trzyma). Dziennik bez licznika
+    zapisów (atrapa) — bez pamięci, zawsze świeży odczyt.
 
-    Zdarzenia z fazy (`cached`) to te same obiekty co w pamięci ścisłego odczytu dziennika (K-105 #2): nowa lista,
-    słowniki tylko do odczytu."""
+    K-105 PT-415: faza jest widokiem jednego ticku nad pamięcią historii procesów i stanu procesu karty
+    (`Journal.derive`). Zdarzenia z fazy to te same obiekty co w pamięci ścisłego odczytu dziennika (K-105 #2): nowa
+    lista, słowniki tylko do odczytu; stan procesu karty jest wspólny z pamięcią (wołający dostają kopię
+    z `process_state`)."""
 
     def __init__(self, journal):
         self.journal = journal
-        self._read: dict = {}     # karta → (wersja, zdarzenia, błąd)
+        self._read: dict = {}     # karta → (wersja, zdarzenia, stan procesu karty, błąd)
 
     def version(self, card):
         generation = getattr(self.journal, "generation", None)
         return generation(card) if generation is not None else None
 
-    def load(self, card, read) -> list:
-        """Odczyt karty w fazie (`read` — zwykły `read_process_history`); wynik albo błąd zapamiętany dla wersji
-        sprzed odczytu, więc zapis w trakcie odczytu też unieważnia wpis."""
+    def history(self, card, read):
+        """(zdarzenia, stan procesu karty albo None) z odczytu fazy; bez trafienia — `read()` (pamięć według wersji
+        dziennika), a wynik albo błąd zapamiętany dla wersji sprzed odczytu, więc zapis w trakcie odczytu też
+        unieważnia wpis. Zapamiętany błąd jest rzucany przy każdym użyciu."""
         version = self.version(card)
+        hit = self._read.get(card)
+        if hit is not None and hit[0] == version:
+            if hit[3] is not None:
+                raise hit[3]
+            return list(hit[1]), hit[2]
         try:
-            events = read()
+            events, st = read()
         except (OSError, ValueError, TypeError, KeyError) as exc:
             if version is not None:
-                self._read[card] = (version, None, exc)
+                self._read[card] = (version, None, None, exc)
             raise
         if version is not None:
-            self._read[card] = (version, tuple(events), None)
-        return events
-
-    def cached(self, card):
-        """Historia z odczytu fazy (kopia listy) albo None, gdy trzeba czytać; zapamiętany błąd jest rzucany."""
-        hit = self._read.get(card)
-        if hit is None or hit[0] != self.version(card):
-            return None
-        if hit[2] is not None:
-            raise hit[2]
-        return list(hit[1])
+            self._read[card] = (version, tuple(events), st, None)
+        return events, st
 
     def unchanged(self, card, events) -> bool:
         """Świeży pełny odczyt przed mutacją: True, gdy historia karty jest dokładnie `events` (odczytem decyzji).
@@ -96,16 +152,39 @@ class HistoryPhase:
             return False
 
 
-def inventory(engine, card, st):
+def inventory(engine, card, st, *, fresh=False):
+    """Inwentaryzacja K-38 procesów chronionych prób karty.
+
+    K-105 PT-415: bez `fresh` czyta stan procesu karty z pamięci według wersji dziennika (odczyt bez skutku, bariera
+    ticku). Gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), cała inwentaryzacja jest powtarzana na świeżym
+    pełnym odczycie (`fresh=True`) i dopiero ona zapisuje — zapis nigdy nie wynika z historii z pamięci.
+    `fresh=True` także dla bramek przed skutkiem (diagnostyka K-38)."""
     try:
-        events = read_process_history(engine.journal, card)
         # Stan z tolerancyjnego odczytu UI lub wcześniejszego ticka nie jest dowodem.
-        st = fold(events)
+        events, st = process_state(engine.journal, card, fresh=fresh)
     except (OSError, ValueError, TypeError, KeyError):
         # Nie dopisujemy przez tolerancyjny parser do uszkodzonej historii.
         # Jej zachowany błąd oznacza unknown również po restarcie usługi.
         return False
-    items = []
+    items, handoffs = _inventory_items(engine, st, events)
+    previous = next((e for e in reversed(events) if e.get("type") == "k38.inventory"), {})
+    changed = bool(items) and previous.get("items") != items
+    if (handoffs or changed) and not fresh:
+        return inventory(engine, card, None, fresh=True)
+    for name, step in handoffs:
+        engine.journal.append(card, "k38.handoff", step=name, ticket=step.get("ticket"), version=1,
+                              instruction=trialgate.MESSAGE, preserved=True,
+                              excluded=step.get("ticket") in trialgate.EXCLUDED)
+    if changed:
+        engine.journal.append(card, "k38.inventory", version=1, items=items,
+                              instruction="Zachowano procesy i WIP. Nie cofnięto wcześniejszych skutków.")
+    public_safe = public_inventory(engine) if card == "K-38" else True
+    return public_safe and all(i["state"] == "inactive" for i in items)
+
+
+def _inventory_items(engine, st, events):
+    """Pozycje inwentaryzacji (stan jednostek) i brakujące zapisy przekazania `k38.handoff` — bez zapisu."""
+    items, handoffs = [], []
     for name, identity in st.process_identities.items():
         if not identity.held:
             continue
@@ -133,9 +212,7 @@ def inventory(engine, card, st):
                       "stepDir": step.get("stepDir") or "", "branch": step.get("branch") or "",
                       "wip": (st.finished.get(name) or {}).get("wip") or {}, "kind": "step"})
         if not any(e.get("type") == "k38.handoff" and e.get("step") == name for e in events):
-            engine.journal.append(card, "k38.handoff", step=name, ticket=step.get("ticket"), version=1,
-                                  instruction=trialgate.MESSAGE, preserved=True,
-                                  excluded=step.get("ticket") in trialgate.EXCLUDED)
+            handoffs.append((name, step))
     outside = []
     for identity in st.process_identities.values():
         if identity.held and identity.outside:
@@ -153,12 +230,7 @@ def inventory(engine, card, st):
             state = "unknown"
         items.append({"step": event.get("step"), "ticket": event.get("ticket"), "kind": "outside",
                       "state": state, "unit": event.get("unit") or "", "log": event.get("log") or ""})
-    previous = next((e for e in reversed(events) if e.get("type") == "k38.inventory"), {})
-    if items and previous.get("items") != items:
-        engine.journal.append(card, "k38.inventory", version=1, items=items,
-                              instruction="Zachowano procesy i WIP. Nie cofnięto wcześniejszych skutków.")
-    public_safe = public_inventory(engine) if card == "K-38" else True
-    return public_safe and all(i["state"] == "inactive" for i in items)
+    return items, handoffs
 
 
 def public_inventory(engine):
@@ -172,10 +244,14 @@ def public_inventory(engine):
         # Publiczne CLI mogło nigdy nie mieć karty. Nie tworzymy jej przy skanie.
         if "K-38" in engine.journal.cards_complete():
             with engine.journal.lock:
-                events = read_process_history(engine.journal, "K-38")
-                previous = next((e for e in reversed(events) if e.get("type") == "k38.public-inventory"), {})
-                if items != previous.get("items", []):
-                    engine.journal.append_complete("K-38", "k38.public-inventory", version=1, items=items)
+                # K-105 PT-415: porównanie z pamięci; zapis tylko po świeżym pełnym odczycie i ponownym porównaniu.
+                for fresh in (False, True):
+                    events = read_process_history(engine.journal, "K-38", fresh=fresh)
+                    previous = next((e for e in reversed(events) if e.get("type") == "k38.public-inventory"), {})
+                    if items == previous.get("items", []):
+                        break
+                    if fresh:
+                        engine.journal.append_complete("K-38", "k38.public-inventory", version=1, items=items)
     except (OSError, ValueError, TypeError, KeyError):
         return False
     return not items

@@ -928,6 +928,8 @@ def _callback_write(resolver, path, call, catalog):
 # bez przypisanej bariery test kompletności kończy się porażką.
 IDENTITY_NAMES = frozenset({
     "process_identities", "read_process_history", "preserves_project", "_identityHeld",
+    # K-105 PT-415: stan procesu karty (historia ścisła + fold z kontrolą tożsamości, pamięć według wersji).
+    "process_state",
     "_process_state", "_process_check", "public_processes", "public_inventory", "active_steps",
     "box_event_error", "start_error", "_validate_process_identity", "_validate_box_event",
     "process_history_checked",

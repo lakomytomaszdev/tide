@@ -21,12 +21,11 @@ import re
 import stat
 import threading
 import time
-from copy import copy
 from datetime import datetime, timezone
 from typing import NamedTuple
 
 from .processidentity import CARD_STEP_KINDS, TICKET_STEP_KINDS, start_error
-from .state import FlowState, fold
+from .state import FlowState, copy_state, fold
 
 SCHEMA = 1
 FLOW_DIR = "flow"
@@ -105,6 +104,9 @@ class Journal:
         # K-105 #2: zegar okresu pełnego odczytu (wstrzykiwalny w testach); pamięć ścisłego odczytu: karta → wpis.
         self.monotonic = monotonic or time.monotonic
         self._strict_memory: dict[str, _Remembered] = {}
+        # K-105 PT-415: wartość wyliczona z historii ścisłej karty (`derive`): karta → (wpis pamięci ścisłego odczytu,
+        # jego wersja, wartość). Bez własnej kopii zdarzeń — ważna, dopóki pamięć ścisła ma ten sam wpis i wersję.
+        self._derived: dict[str, tuple] = {}
         self.lock = threading.RLock()
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
@@ -226,13 +228,9 @@ class Journal:
             if hit is None or hit[0] != key:
                 hit = (key, fold(events))
                 states[card] = hit
-            state = copy(hit[1])
             # Silnik lokalnie zmienia pola i kontenery projekcji. Wartości zagnieżdżone
             # (także wytworzone przez fold) tylko czyta; deepcopy jest droższy od fold.
-            for name, value in vars(state).items():
-                if isinstance(value, (dict, list, set)):
-                    setattr(state, name, value.copy())
-            return state
+            return copy_state(hit[1])
 
     def view_version(self, card: str) -> tuple:
         """Wersja dziennika karty do porównań (ten sam klucz, który unieważnia pamięć prezentacji lub workera,
@@ -310,12 +308,36 @@ class Journal:
                 return entry.version, list(entry.events)
             return self._loose_version(card, events), events
 
+    def derive(self, card: str, compute):
+        """Ścisły odczyt (`read_complete`) i wartość `compute(zdarzenia)` pamiętana dla wersji dziennika (K-105 PT-415).
+
+        Klucz to wpis pamięci ścisłego odczytu i jego `JournalVersion` (z `st_ctime_ns` i `generation`): trafienie
+        wymaga, by odczyt zwrócił zdarzenia tego samego wpisu (te same obiekty), więc nowa wersja, przyrost, okresowy
+        pełny odczyt, własny zapis albo luźna wersja (plik zmieniany w trakcie czytania) dają nowe wyliczenie. Błąd
+        odczytu albo `compute` usuwa wpis karty i propaguje — nie zostaje jako wartość ani jako „brak zmian”.
+        Zwraca (zdarzenia, wartość); wartość jest wspólna — wołający jej nie zmienia (kopiuje u siebie)."""
+        with self._strict():
+            hit = self._derived.pop(card, None)
+            events = self.read_complete(card)
+            entry = self._strict_memory.get(card)
+            same = (entry is not None and len(events) == len(entry.events)
+                    and (not events or events[-1] is entry.events[-1]))
+            if hit is not None and same and hit[0] is entry and hit[1] == entry.version:
+                self._derived[card] = hit
+                return events, hit[2]
+            value = compute(events)
+            if same:
+                self._derived[card] = (entry, entry.version, value)
+            return events, value
+
     def forget_except(self, cards) -> None:
-        """Usuwa wpisy pamięci ścisłego odczytu kart spoza `cards` (K-105 #2: początek ticku, karta usunięta)."""
+        """Usuwa wpisy pamięci ścisłego odczytu i wartości z niej wyliczonych (`derive`) kart spoza `cards`
+        (K-105 #2, PT-415: początek ticku, karta usunięta)."""
         keep = set(cards)
         with self.lock:
-            for card in [c for c in self._strict_memory if c not in keep]:
-                del self._strict_memory[card]
+            for memory in (self._strict_memory, self._derived):
+                for card in [c for c in memory if c not in keep]:
+                    del memory[card]
 
     def _strict_open(self, card: str):
         source = self.mirror_path(card)
@@ -399,6 +421,7 @@ class Journal:
     def _invalidate(self, card: str) -> None:
         self._generations[card] = self._generations.get(card, 0) + 1
         self._strict_memory.pop(card, None)
+        self._derived.pop(card, None)
         self._cache.pop(card, None)
         self._states.pop(card, None)
 

@@ -2563,7 +2563,7 @@ schemat, kolejny `seq`, ta sama karta, znana tożsamość startu procesu; błąd
 dziennika (`Journal.version`, `JournalVersion`): źródło (kopia usługi albo plik w Tablicy), `st_dev`, `st_ino`,
 `st_size`, `st_mtime_ns`, `st_ctime_ns` z `fstat` otwartego deskryptora, licznik zapisów tego procesu (`generation`)
 i ostatni `seq`. Niezmieniony dziennik kosztuje `open` i `fstat`; trafienie zwraca nową listę tych samych obiektów
-zdarzeń (zdarzenia są tylko do odczytu, także w `HistoryPhase.cached`). Przy tym samym i-węźle, większym rozmiarze
+zdarzeń (zdarzenia są tylko do odczytu, także w fazie ticku `HistoryPhase`). Przy tym samym i-węźle, większym rozmiarze
 i niezmienionym ostatnim zapamiętanym wierszu (porównany skrót bajtów w tym samym miejscu; pamięć nie trzyma tekstu)
 odczyt doczytuje tylko nowe bajty i sprawdza je tą samą regułą. Każda inna zmiana — ucięcie, podmiana pliku (nowy
 i-węzeł), zmiana treści bez zmiany rozmiaru, także z przywróconym mtime (`st_ctime_ns`), zapis tego procesu — daje
@@ -2578,6 +2578,32 @@ dotyczy tylko odczytów bez skutku: porównania przed zapisem (`Journal.unchange
 (`append`, `append_complete`) i kontrole wycofania (`rollback`) czytają świeżo (`Journal.read_fresh` — pełny ścisły
 odczyt z pominięciem pamięci), więc zapis oparty na takiej historii jest odmówiony (`HistoryChanged`). Pełne odczyty
 liczy granica `Journal._read_strict` (pełny odczyt `read_complete` i `read_fresh`); `Journal.check` jej nie używa.
+
+**Pamięć historii procesów i stanu procesu karty (K-105 PT-415).** Nad pamięcią ścisłego odczytu `Journal.derive`
+pamięta wartość wyliczoną z historii karty: wynik kontroli tożsamości procesów i stan procesu karty
+(`trialhold._checked_state` — jeden `fold` z modelem `process_identities`; nieznana albo niespójna tożsamość =
+ValueError). Kluczem jest wpis pamięci ścisłego odczytu i jego `JournalVersion` (z `st_ctime_ns` i `generation`);
+trafienie wymaga, by odczyt zwrócił zdarzenia tego samego wpisu, więc nowa wersja, przyrost, okresowy pełny odczyt,
+zapis tego procesu i luźna wersja dają nowe wyliczenie. Pamięć nie trzyma tekstu ani własnej kopii zdarzeń — tylko
+odwołanie do wpisu PT-411 i stan. Błąd odczytu, `stat` albo kontroli usuwa wpis karty i nie jest pamiętany ani jako
+historia, ani jako „brak zmian”. Wpisy znikają razem z pamięcią ścisłą (`_invalidate`, `forget_except`).
+
+`trialhold.read_process_history(journal, card)` zwraca historię z tej pamięci, a `trialhold.process_state` —
+(historię, kopię stanu z własnymi kontenerami pól; wartości zagnieżdżone wspólne i tylko do odczytu, jak w
+`Journal.state`, wspólna funkcja `state.copy_state`). Z pamięci korzystają wyłącznie odczyty bez skutku: faza ticku
+(`HistoryPhase` jest widokiem jednego ticku nad pamięcią; zapamiętany błąd fazy nadal rzucany w obrębie fazy),
+bariera `_outside_history(card)`, inwentaryzacja K-38, `_recover_started_steps` z fazy (zapis przez `Journal.unchanged`),
+`boxstep.recover_network` (model tożsamości i stan z pamięci; nowy `fold` tylko dla historii z pominiętymi próbami
+K-38), obserwacja kroku co tick (`_poll`, `_guard`, `_advance`, `_recover_console_openings`) oraz czekanie na polecenie
+outside (`_outside_ready`, `_outside_recheck`, wejście `_resume_step`). Wariant `fresh=True` (świeży pełny odczyt
+`Journal.read_fresh` i nowe złożenie, bez czytania i zapisu pamięci) mają bramki przed skutkiem: `_process_check`
+przed startem, zatrzymaniem i wznowieniem procesu (domyślnie), `_outside_history` z krokiem lub poleceniem (zgoda,
+start, wynik i zapis `outside.finished`, zapisy `_outside_recheck` i automatycznej zgody — `consent.record_automatic`
+z `gate`), wejście Konsoli, przekazanie, ręczne domknięcie, diagnostyka K-38 i `public_inventory` przed zapisem.
+Inwentaryzacja K-38 liczy pozycje z pamięci, a gdy trzeba coś dopisać (`k38.handoff`, `k38.inventory`), powtarza całą
+inwentaryzację na świeżym odczycie i dopiero ona zapisuje. Odtworzenie startu bez fazy czyta świeżo. Rozgrzany tick bez
+zmian w dziennikach nie woła modelu tożsamości ani `fold` (także `BaseGeneration.recover` i `_pending_main_merge`
+czytają projekcję `Journal.state`). Pamięć usługi mierzy PT-414 (punkt odniesienia bez progu).
 
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
@@ -4422,10 +4448,10 @@ czyta ponownie. Faza nie zastępuje odczytu przed skutkiem: zapis odtworzonego s
 pierwszą mutacją karty w `recover_network` (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
 odczyt porównuje `HistoryPhase.unchanged`; przy zmianie mutacje tej karty są odmówione, stan sieci nie jest
 zapamiętany i kolejny tick uzgadnia go od nowa. Faza trwa cały tick: `_recover_started_steps` wołane z `_tick_card`
-też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię poza fazą
-(`read_process_history` bez fazy → `Journal.read_complete`), więc od K-105 #2 także one korzystają z pamięci
-ścisłego odczytu według wersji dziennika (sekcja dziennika karty); skierowanie ich do świeżego odczytu
-(`Journal.read_fresh`) należy do K-105 #6. Porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`)
+też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię poza fazą;
+od K-105 PT-415 odczyty bez skutku korzystają z pamięci historii procesów i stanu procesu karty, a bramki przed
+skutkiem czytają świeżo (sekcja dziennika karty, „Pamięć historii procesów i stanu procesu karty”). Faza jest
+widokiem jednego ticku nad tą pamięcią. Porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`)
 i zapisy bramek (`append`, `append_complete`) czytają świeżo (`Journal.read_fresh`). Tablica:
 tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
 transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,

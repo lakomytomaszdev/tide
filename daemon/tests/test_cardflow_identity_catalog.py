@@ -383,6 +383,8 @@ BARRIERS = {
     "model": dict(
         consumers=[("cardflow/state.py", "fold"), ("cardflow/trialhold.py", "preserves_project"),
                    ("cardflow/trialhold.py", "read_process_history"),
+                   # K-105 PT-415: kontrola tożsamości i stan procesu karty (pamięć według wersji dziennika).
+                   ("cardflow/trialhold.py", "_checked_state"), ("cardflow/trialhold.py", "_remembered"),
                    ("cardflow/journal.py", "_validate_process_identity"),
                    # K-105 #2: ścisła reguła `read_complete` (z pamięcią) i `read_fresh` (bramki) — jeden parser.
                    ("cardflow/journal.py", "_parse_strict"),
@@ -391,7 +393,8 @@ BARRIERS = {
         denial="read_process_history: ValueError; fold: _identityHeld", effect="wspólny wynik redukcji",
         negative=NEG, positive=[f"{M}:BarrierMatrixPositive.test_model_and_strict_read"]),
     "inventory": dict(
-        consumers=[("cardflow/trialhold.py", "inventory"), ("cardflow/trialhold.py", "public_inventory"),
+        consumers=[("cardflow/trialhold.py", "inventory"), ("cardflow/trialhold.py", "_inventory_items"),
+                   ("cardflow/trialhold.py", "public_inventory"),
                    ("cardflow/trialhold.py", "public_processes"), ("cardflow/trialhold.py", "_public_process_inventory"),
                    ("cardflow/trialhold.py", "_validate_box_event"), ("cardflow/engine.py", "FlowEngine._tick_card")],
         denial="inventory() False", effect="zgoda inwentaryzacji kart i dawnych publicznych prób",
@@ -408,6 +411,8 @@ BARRIERS = {
                    ("cardflow/engine.py", "FlowEngine._consent_recheck"),
                    # Bieżące uruchomienie outside ze wspólnego wyniku (M4/M7 review 2).
                    ("cardflow/engine.py", "FlowEngine._outside_ready"),
+                   # K-105 PT-415: ponowna redukcja na świeżym odczycie przed skutkiem (wynik, zapis zakończenia).
+                   ("cardflow/engine.py", "FlowEngine._outside_ready.fresh_run"),
                    ("cardflow/engine.py", "FlowEngine._outside_busy"),
                    ("cardflow/engine.py", "FlowEngine._outside_exit"),
                    ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
@@ -645,6 +650,8 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._review"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_conflict"): "step-launch",
     ("cardflow/engine.py", "FlowEngine._start_outside"): "outside",
+    # K-105 PT-415: świeża bramka historii outside przed każdym zapisem sprawdzenia reguł (recheck co tick z pamięci).
+    ("cardflow/engine.py", "FlowEngine._outside_recheck.gate"): "outside",
     # PT-329: przebieg pod zgodą próby testów po scaleniu (kolejka outside, wynik) i decyzja z panelu.
     ("cardflow/engine.py", "FlowEngine._merge_checks"): "outside",
     ("cardflow/engine.py", "FlowEngine._merge_check_waiting"): "outside",
@@ -677,6 +684,8 @@ DELEGATIONS = {
     ("cardflow/engine.py", "_CaretakerPort.retry_stage"): "advance-resume",
     ("cardflow/envconsent.py", "_thread_launcher.work"): "box-lifecycle",
     ("cardflow/historyaudit_driver.py", "main"): "model",
+    # K-105 PT-415: stan procesu karty — jedno wywołanie zamiast fold(read_process_history(…)).
+    ("cardflow/trialhold.py", "process_state"): "model",
     ("cardflow_monitor.py", "CardFlowMonitor.enter_step"): "console",
     ("cardflow_monitor.py", "CardFlowMonitor.moved"): "advance-resume",
     ("cardflow_monitor.py", "CardFlowMonitor.report_step_fault"): "console",
