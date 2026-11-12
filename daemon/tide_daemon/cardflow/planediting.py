@@ -585,27 +585,25 @@ class PlanEditing:
         floor = max((int(row["id"][len(prefix) + 1:]) for row in current["rows"]
                      if row["id"].startswith(prefix + "-") and row["id"][len(prefix) + 1:].isdigit()), default=0)
         _, project = self._project(card)
+        # K-102 #2: lokalne numery nowych wierszy jedną rezerwacją zbiorczą (wspólny pomocnik z zatwierdzenia planu).
+        local = {} if project.youtrack else self._reserve_plan_rows(
+            card, proposal["seq"], [r for r in proposal["rows"] if r["workId"].startswith("#")],
+            repo=self._repo(card), prefix=prefix, floor=floor)
         for row in proposal["rows"]:
             ident = row["workId"]
-            if ident.startswith("#"):
-                key = f"plan:{proposal['seq']}:{ident}"
-                if project.youtrack:
-                    # Karta z YouTrackiem: nowy ticket poprawki planu zakłada się w YouTracku, jak przy pierwszym
-                    # zatwierdzeniu (K-16, 03.11: lokalna rezerwacja dawała numer LEGAL spoza YouTracka).
-                    from ..coordination import youtrack as yt
-                    try:
-                        reserved = self._tracker_reserve(card, key, int(ident[1:]), row["title"], row.get("body") or "")
-                    except yt.YouTrackError as exc:
-                        raise FlowError("youtrack", str(exc)) from None
-                else:
-                    reserved = self._act(card, "reserve", key,
-                                         lambda r=row, k=key: self._reserve(self._repo(card), r["title"], f"{card}:{k}",
-                                                                            proposal["prefix"], floor),
-                                         retry_failed=True, repo=self._repo(card), title=row["title"],
-                                         prefix=proposal["prefix"], minimumNumber=floor)
-                mapping[ident] = reserved["ticket"]
-            else:
+            if not ident.startswith("#"):
                 mapping[ident] = ident
+            elif project.youtrack:
+                # Karta z YouTrackiem: nowy ticket poprawki planu zakłada się w YouTracku, jak przy pierwszym
+                # zatwierdzeniu (K-16, 03.11: lokalna rezerwacja dawała numer LEGAL spoza YouTracka).
+                from ..coordination import youtrack as yt
+                key = f"plan:{proposal['seq']}:{ident}"
+                try:
+                    mapping[ident] = self._tracker_reserve(card, key, int(ident[1:]), row["title"], row.get("body") or "")["ticket"]
+                except yt.YouTrackError as exc:
+                    raise FlowError("youtrack", str(exc)) from None
+            else:
+                mapping[ident] = local[ident]
         rows = [{**r, "id": mapping[r["workId"]], "blockers": [mapping[b] for b in r["blockers"]],
                  "cardPath": os.path.join(self.store.root, self.journal.rel_dir(card), "plan", "tickets", mapping[r["workId"]] + ".md")}
                 for r in proposal["rows"]]
