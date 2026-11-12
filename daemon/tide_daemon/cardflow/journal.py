@@ -115,6 +115,9 @@ class Journal:
         # ticku (`trialhold.HistoryPhase`) po zmianie licznika czyta historię karty ponownie. Zapisów spoza procesu
         # licznik nie widzi — przed skutkiem chroni je świeży pełny odczyt (`unchanged`, `HistoryPhase.unchanged`).
         self._generations: dict[str, int] = {}
+        # PT-416: kontrola zgodności (`check`) — karta → para stanów plików (Tablica, kopia) po ostatnim potwierdzeniu
+        # zgodności albo odtworzeniu. Służy wyłącznie do pominięcia porównania treści, nigdy jako zgoda na skutek.
+        self._check_memory: dict[str, tuple] = {}
         # K-98 #2: odczyt prezentacji (publikacja migawki w wątku głównym) — bez blokady, z własną pamięcią.
         self._view = threading.local()
         self._view_cache: dict[str, tuple] = {}
@@ -331,11 +334,11 @@ class Journal:
             return events, value
 
     def forget_except(self, cards) -> None:
-        """Usuwa wpisy pamięci ścisłego odczytu i wartości z niej wyliczonych (`derive`) kart spoza `cards`
-        (K-105 #2, PT-415: początek ticku, karta usunięta)."""
+        """Usuwa wpisy pamięci ścisłego odczytu, kontroli zgodności (PT-416) i wartości wyliczonych z pamięci ścisłej
+        (`derive`, PT-415) kart spoza `cards` (K-105 #2: początek ticku, karta usunięta)."""
         keep = set(cards)
         with self.lock:
-            for memory in (self._strict_memory, self._derived):
+            for memory in (self._strict_memory, self._check_memory, self._derived):
                 for card in [c for c in memory if c not in keep]:
                     del memory[card]
 
@@ -421,6 +424,7 @@ class Journal:
     def _invalidate(self, card: str) -> None:
         self._generations[card] = self._generations.get(card, 0) + 1
         self._strict_memory.pop(card, None)
+        self._check_memory.pop(card, None)
         self._derived.pop(card, None)
         self._cache.pop(card, None)
         self._states.pop(card, None)
@@ -493,19 +497,68 @@ class Journal:
                 self._dirty.add(os.path.relpath(target, self.root))
 
     def check(self, card: str) -> str:
-        """Plik w tablicy różny od kopii (revert, ręczna zmiana, usunięcie) — odtworzenie z kopii; ostrzeżenie albo ""."""
+        """Plik w tablicy różny od kopii (revert, ręczna zmiana, usunięcie) — odtworzenie z kopii; ostrzeżenie albo "".
+
+        PT-416: para stanów obu plików (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`, `st_ctime_ns` — reguła klucza
+        wersji z K-105 #2) jest pamiętana po potwierdzonej zgodności albo po udanym odtworzeniu. Ta sama para w kolejnym
+        wywołaniu pomija porównanie treści (sam `stat`) i zwraca "" bez żadnego skutku. Brak kopii usługi: odbudowa
+        kopii z Tablicy jak dotąd (bez porównania i bez pary). W pozostałych przypadkach (inna para, błąd `stat`, brak
+        pliku w Tablicy): pełne porównanie treści (`_check_read` obu plików) w tym wywołaniu — odtworzenie wyłącznie
+        po nim, nigdy na podstawie samej różnicy stanu ani pamięci. Wpis jest zdejmowany na wejściu i wraca tylko po
+        udanym porównaniu bez błędu (stan obu plików bez zmian w trakcie) albo po odtworzeniu potwierdzonym
+        obramowanym świeżym odczytem Tablicy (`_confirm_restored`); zapis tego procesu (`_invalidate`)
+        i `forget_except` go usuwają.
+
+        Ograniczenie (jak klucz wersji K-105 #2): zmiana w miejscu bez zmiany rozmiaru wykonana tuż po porównaniu
+        w obrębie jednego kwantu zegara znaczników czasu jądra nie zmienia żadnego z pięciu pól."""
         with self.lock:
-            if not os.path.isfile(self.mirror_path(card)):
-                if os.path.isfile(self.path(card)):
+            board, mirror = self.path(card), self.mirror_path(card)
+            remembered = self._check_memory.pop(card, None)
+            before = _pair(board, mirror)
+            if remembered is not None and before == remembered:
+                self._check_memory[card] = remembered
+                return ""
+            if not os.path.isfile(mirror):
+                if os.path.isfile(board):
                     self._invalidate(card)
                     os.makedirs(self.mirror, mode=0o700, exist_ok=True)
-                    _write(self.mirror_path(card), _read(self.path(card)))
+                    _write(mirror, _read(board))
                 return ""
-            if _read(self.path(card)) == _read(self.mirror_path(card)):
+            board_text, board_ok = self._check_read(board)
+            mirror_text, mirror_ok = self._check_read(mirror)
+            readable = before is not None and board_ok and mirror_ok
+            if board_text == mirror_text:
+                if readable and _pair(board, mirror) == before:
+                    self._check_memory[card] = before
                 return ""
             self._restore(card)
+            if readable:
+                self._confirm_restored(card, before, mirror_text)
             return (f"{card}: dziennik karty w repozytorium tablicy był cofnięty albo zmieniony z zewnątrz — "
                     "odtworzony z kopii usługi")
+
+    def _confirm_restored(self, card: str, before, mirror_text: str) -> None:
+        """Para po odtworzeniu (PT-416, review M1): zapamiętana tylko po obramowanym potwierdzeniu w tym samym
+        wywołaniu — `stat` obu plików, świeży odczyt treści Tablicy równy przeczytanej kopii, ponowny `stat` równy
+        pierwszemu, kopia w stanie sprzed porównania. Zmiana Tablicy z zewnątrz po `os.replace` w `_restore` (przed
+        `stat`) nie trafia do pamięci jako zgodna: następne wywołanie porównuje pełną treść. Samo potwierdzenie nie
+        wywołuje żadnego zapisu."""
+        board, mirror = self.path(card), self.mirror_path(card)
+        first = _pair(board, mirror)
+        if first is None or first[1] != before[1]:
+            return
+        text, ok = self._check_read(board)
+        if ok and text == mirror_text and _pair(board, mirror) == first:
+            self._check_memory[card] = first
+
+    def _check_read(self, path: str) -> tuple[str, bool]:
+        """Odczyt treści pliku dziennika w kontroli zgodności (PT-416: granica liczenia odczytów). Błąd odczytu daje
+        pustą treść jak dotąd (`_read`) i `False` — taki wynik nigdy nie trafia do pamięci kontroli."""
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(), True
+        except OSError:
+            return "", False
 
     def has_dirty(self) -> bool:
         """Czy są zmiany dziennika do commita (odczyt bez blokady, wątek główny — K-98 #2)."""
@@ -598,6 +651,19 @@ def _parse_strict(data: bytes, card: str, before: int) -> list[dict]:
 def _same_state(a, b) -> bool:
     return (a.st_dev, a.st_ino, a.st_size, a.st_mtime_ns, a.st_ctime_ns) == \
         (b.st_dev, b.st_ino, b.st_size, b.st_mtime_ns, b.st_ctime_ns)
+
+
+def _file_state(path: str) -> tuple:
+    st = os.stat(path)
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _pair(board: str, mirror: str):
+    """Para stanów plików kontroli zgodności (PT-416): (Tablica, kopia) albo None przy błędzie `stat`/braku pliku."""
+    try:
+        return _file_state(board), _file_state(mirror)
+    except OSError:
+        return None
 
 
 def _version(source, st, generation, events) -> JournalVersion:
