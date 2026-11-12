@@ -69,6 +69,34 @@ Rectangle {
     readonly property int selTo: anchorRow < 0 ? -2 : Math.max(anchorRow, curRow)
     property bool helpOpen: false
     readonly property var keyHelp: Diff.KEY_HELP
+
+    // Podświetlanie składni (PT-351). `highlighter` to jedyny punkt wstrzyknięcia (Component według umowy z SyntaxText.qml;
+    // w testach atrapa). Bez niego widok próbuje załadować ModuleHighlighter.qml (moduł KSyntaxHighlighting) dynamicznie;
+    // gdy się nie uda, linie zostają zwykłym tekstem, a ściągawka mówi, że podświetlania nie ma.
+    property Component highlighter: null
+    property string highlighterSource: "ModuleHighlighter.qml"
+    property Component moduleHighlighter: null
+    readonly property Component highlighterComponent: highlighter ? highlighter : moduleHighlighter
+    readonly property bool highlightAvailable: highlighterComponent !== null
+    readonly property string highlightLanguage: Diff.highlightLanguage(selectedFile)
+    readonly property real tintAlpha: 0.13   // przezroczystość tła linii dodanej i usuniętej
+    // Tła, na których czyta się tekst linii: dodana, usunięta (kolor palety na tle okna) i kontekstowa (tło okna).
+    readonly property var lineBackgrounds: [
+        Diff.blend(Tide.Tokens.added, tintAlpha, Tide.Tokens.backgroundWindow),
+        Diff.blend(Tide.Tokens.removed, tintAlpha, Tide.Tokens.backgroundWindow),
+        Tide.Tokens.backgroundWindow
+    ]
+
+    // Kolor formatu podświetlacza, jeśli ma kontrast >= 4,5:1 na każdym tle linii; inaczej tekst z palety.
+    function readableColor(color) {
+        return Diff.readableOn(color, lineBackgrounds, Tide.Tokens.textPrimary)
+    }
+
+    function resolveHighlighter() {
+        if (highlighter) return
+        const component = Qt.createComponent(highlighterSource)
+        moduleHighlighter = component.status === Component.Ready ? component : null
+    }
     property var menuFile: null        // plik, którego menu jest otwarte (null — zamknięte)
     property real menuX: 0
     property real menuY: 0
@@ -429,8 +457,10 @@ Rectangle {
     onRequestChanged: if (completed) { targetRef = ""; reload() }
     onBackendChanged: if (completed) { syncMode(); reload() }
     property bool completed: false
+    onHighlighterSourceChanged: if (completed) resolveHighlighter()
     Component.onCompleted: {
         completed = true
+        resolveHighlighter()
         forceActiveFocus()
         syncMode()
         reload()
@@ -966,7 +996,7 @@ Rectangle {
                                                 : kind === "hunk" ? Tide.Tokens.lavender : "transparent"
                     width: lines.width
                     height: kind === "gap" ? 22 : Math.max(22, lineText.implicitHeight + 4)
-                    color: kind === "+" || kind === "-" ? Tide.Theme.alpha(tone, 0.13)
+                    color: kind === "+" || kind === "-" ? Tide.Theme.alpha(tone, view.tintAlpha)
                          : kind === "hunk" ? Tide.Theme.alpha(Tide.Tokens.lavender, 0.08)
                          : kind === "gap" ? Tide.Theme.alpha(Tide.Tokens.textPrimary, gapMouse.containsMouse ? 0.1 : 0.04)
                          : "transparent"
@@ -1045,6 +1075,20 @@ Rectangle {
                              : lineRow.kind === "gap" ? Tide.Tokens.textMuted : Tide.Tokens.textPrimary
                         font.family: lineRow.kind === "gap" ? Tide.Theme.uiFamily : Tide.Theme.monoFamily
                         font.pixelSize: lineRow.kind === "gap" ? 12 : 13
+                        opacity: syntax.item === null ? 1 : 0   // układ i wysokość dalej z tego Text, rysuje TextEdit
+                    }
+                    // Podświetlona treść linii kodu (PT-351): tylko dla widocznych delegatów znanego języka.
+                    SyntaxText {
+                        id: syntax
+                        objectName: "diffSyntaxText"
+                        x: lineText.x
+                        width: lineText.width
+                        anchors.verticalCenter: parent.verticalCenter
+                        language: lineRow.kind === " " || lineRow.kind === "+" || lineRow.kind === "-"
+                                  ? view.highlightLanguage : ""
+                        text: modelData.text
+                        highlighter: view.highlighterComponent
+                        readable: view.readableColor
                     }
                 }
             }
@@ -1137,7 +1181,7 @@ Rectangle {
                         x: 0
                         width: pairRow.half
                         height: parent.height
-                        color: pairRow.leftKind === "-" ? Tide.Theme.alpha(Tide.Tokens.removed, 0.13)
+                        color: pairRow.leftKind === "-" ? Tide.Theme.alpha(Tide.Tokens.removed, view.tintAlpha)
                              : pairRow.leftSide === null ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.03) : "transparent"
                     }
                     Text {
@@ -1166,6 +1210,18 @@ Rectangle {
                         color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.monoFamily
                         font.pixelSize: 13
+                        opacity: leftSyntax.item === null ? 1 : 0
+                    }
+                    SyntaxText {
+                        id: leftSyntax
+                        objectName: "diffSyntaxText"
+                        x: leftText.x
+                        width: leftText.width
+                        anchors.verticalCenter: parent.verticalCenter
+                        language: pairRow.kind === "pair" && pairRow.leftSide !== null ? view.highlightLanguage : ""
+                        text: pairRow.leftContent
+                        highlighter: view.highlighterComponent
+                        readable: view.readableColor
                     }
 
                     // Prawa połowa (nowy plik).
@@ -1174,7 +1230,7 @@ Rectangle {
                         x: pairRow.half + 1
                         width: pairRow.width - x
                         height: parent.height
-                        color: pairRow.rightKind === "+" ? Tide.Theme.alpha(Tide.Tokens.added, 0.13)
+                        color: pairRow.rightKind === "+" ? Tide.Theme.alpha(Tide.Tokens.added, view.tintAlpha)
                              : pairRow.rightSide === null ? Tide.Theme.alpha(Tide.Tokens.textPrimary, 0.03) : "transparent"
                     }
                     Text {
@@ -1203,6 +1259,18 @@ Rectangle {
                         color: Tide.Tokens.textPrimary
                         font.family: Tide.Theme.monoFamily
                         font.pixelSize: 13
+                        opacity: rightSyntax.item === null ? 1 : 0
+                    }
+                    SyntaxText {
+                        id: rightSyntax
+                        objectName: "diffSyntaxText"
+                        x: rightText.x
+                        width: rightText.width
+                        anchors.verticalCenter: parent.verticalCenter
+                        language: pairRow.kind === "pair" && pairRow.rightSide !== null ? view.highlightLanguage : ""
+                        text: pairRow.rightContent
+                        highlighter: view.highlighterComponent
+                        readable: view.readableColor
                     }
                     Rectangle {
                         visible: pairRow.kind === "pair"
@@ -1300,7 +1368,7 @@ Rectangle {
             anchors.top: sheetTitle.bottom
             anchors.topMargin: 16
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 20
+            anchors.bottomMargin: highlightNote.visible ? highlightNote.implicitHeight + 30 : 20
             clip: true
             interactive: contentHeight > height
             model: view.keyHelp
@@ -1332,6 +1400,24 @@ Rectangle {
                     font.pixelSize: 13
                 }
             }
+        }
+        // Bez modułu KSyntaxHighlighting widok działa jak dotąd, a ściągawka mówi, czemu nie ma kolorów składni.
+        Text {
+            id: highlightNote
+            objectName: "diffHighlightNote"
+            anchors.left: parent.left
+            anchors.leftMargin: 40
+            anchors.right: parent.right
+            anchors.rightMargin: 40
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 20
+            visible: !view.highlightAvailable
+            text: Diff.HIGHLIGHT_UNAVAILABLE
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Tide.Tokens.textMuted
+            font.family: Tide.Theme.uiFamily
+            font.pixelSize: 13
         }
     }
 }

@@ -271,3 +271,64 @@ function errorText(code, message) {
     default: return said("Nie udało się odczytać zmian") + " Spróbuj ponownie (r)."
     }
 }
+
+// --- podświetlanie składni (K-36, PT-351) ---
+
+// Język z rozszerzenia pliku: nazwa definicji w KSyntaxHighlighting.
+var LANGUAGES = {
+    py: "Python", pyw: "Python",
+    qml: "QML",
+    js: "JavaScript", mjs: "JavaScript", cjs: "JavaScript",
+    cs: "C#",
+    md: "Markdown", markdown: "Markdown",
+    yml: "YAML", yaml: "YAML",
+    json: "JSON",
+    sh: "Bash", bash: "Bash"
+}
+
+// Nieznane rozszerzenie (i nazwa bez rozszerzenia, np. „.gitignore” albo „Makefile”) — pusty język.
+function languageFor(path) {
+    if (typeof path !== "string") return ""
+    const name = path.split("/").pop()
+    const dot = name.lastIndexOf(".")
+    if (dot <= 0) return ""
+    const key = name.slice(dot + 1).toLowerCase()
+    return LANGUAGES.hasOwnProperty(key) ? LANGUAGES[key] : ""
+}
+
+// Język do podświetlenia wybranego pliku. Binarny i `large` (także doczytany) zostają zwykłym tekstem.
+function highlightLanguage(file) {
+    if (!file || file.binary || file.large === true) return ""
+    return languageFor(file.path)
+}
+
+// Jasność względna i kontrast według WCAG 2.x (kolory jako {r, g, b} w 0..1).
+function channel(v) {
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+}
+
+function luminance(c) {
+    return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+}
+
+function contrast(a, b) {
+    const la = luminance(a)
+    const lb = luminance(b)
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
+// Kolor `fg` z przezroczystością `alpha` na nieprzezroczystym tle `bg` (tło linii diffu na tle okna).
+function blend(fg, alpha, bg) {
+    return {r: fg.r * alpha + bg.r * (1 - alpha), g: fg.g * alpha + bg.g * (1 - alpha),
+            b: fg.b * alpha + bg.b * (1 - alpha)}
+}
+
+var MIN_CONTRAST = 4.5
+
+// Kolor z podświetlacza, jeśli czyta się na każdym z teł (kontrast >= 4,5:1); inaczej `fallback` (tekst z palety).
+function readableOn(color, backgrounds, fallback) {
+    for (const bg of backgrounds) if (!(contrast(color, bg) >= MIN_CONTRAST)) return fallback   // także NaN (nie kolor)
+    return color
+}
+
+var HIGHLIGHT_UNAVAILABLE = "Podświetlanie składni niedostępne (brak modułu KSyntaxHighlighting)"

@@ -464,6 +464,18 @@ też K-99 dla `Git.Commits` i `Git.BranchMap`):
 - Żądanie z `options` ma ten sam wybór źródła (`source` i jego pola) co lista; kontrakt jest identyczny dla źródeł
   `card`, `ticket`, `commit`, `range` (PT-349) i `worktree` (PT-360; tu `options.group` wskazuje grupę pliku).
 
+**Podświetlanie składni w widoku diffa** (K-36, PT-351): linie kodu `.py`, `.qml`, `.js`, `.cs`, `.md`, `.yml`/`.yaml`, `.json`
+i `.sh` (język z rozszerzenia, `Diff.languageFor`) dostają kolory składni, jeśli w systemie jest moduł QML
+`org.kde.syntaxhighlighting`. Delegat linii ma `SyntaxText.qml`: Loader z lekkim, tylko do odczytu `TextEdit`, tworzonym
+wyłącznie dla widocznych linii znanego języka (nie dla pliku `large` ani binarnego, nie dla nagłówków hunków). Podświetlacz
+to `Component` wstrzykiwany jednym punktem (`DiffView.highlighter`, w testach atrapa); domyślnie widok ładuje
+`ModuleHighlighter.qml` dynamicznie przez `Qt.createComponent` i przy braku modułu zostaje przy zwykłym `Text`, a ściągawka
+(`?`) mówi „Podświetlanie składni niedostępne (brak modułu KSyntaxHighlighting)”. Motyw: ciemny motyw modułu. Tła linii
+dodanej, usuniętej i kontekstowej się nie zmieniają; `DiffView.readableColor` zastępuje kolor formatu tekstem z palety, gdy
+jego kontrast na którymkolwiek z trzech teł jest poniżej 4,5:1 (WCAG 2.x). Ograniczenia: każda linia to osobny dokument, więc
+wieloliniowe konstrukcje (komentarze blokowe, napisy wielowierszowe) nie są rozpoznawane; kolorów formatów prawdziwego
+modułu nie da się podmienić z QML, więc `readableColor` działa na podświetlaczach, które go używają (atrapa w testach).
+
 **Widok diffa** (`apps/common/qml/git/DiffView.qml`, `diff.js`): plik `large` jest zwinięty z przyciskiem „duży plik —
 N linii, pokaż” (klik wysyła `Git.Diff` z `options.path` i wstawia treść); plik binarny pokazuje „plik binarny (rozmiar
 przed → po)” bez treści i niczego nie doczytuje; przy `truncated: true` nad treścią jest pasek „Pokazano część zmian;
