@@ -127,6 +127,10 @@ class CardFlowMonitor(QObject):
     def warnings(self) -> list:
         return self.engine.warnings()
 
+    def queue_view(self):
+        """Pole `queue` migawki (K-39 #4): gotowy słownik z ostatniego ticku silnika albo None."""
+        return self.engine.queue_view()
+
     # --- akcje -----------------------------------------------------------------------------------
 
     def issue_call(self, service, method, args, reply):

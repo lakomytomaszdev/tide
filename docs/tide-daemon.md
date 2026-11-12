@@ -1457,6 +1457,8 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
 | `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
+| `max-tickets` | limit ticketów w toku na kartę (PT-375): liczba 1–6; brak klucza — ustawienie przepływu `ticketsPerCard`. Zapis: `UpdateCard {maxTickets}` (pusta wartość usuwa klucz), migawka: `maxTickets`. Zła wartość w pliku — limit domyślny i wpis w `errors` |
+| `priority` | priorytet karty (PT-377): `high`, `normal` albo `low`; brak klucza — `normal`. Ustala kolejność kroków czekających na miejsce u dostawcy (sekcja „Kolejność kroków czekających na miejsce u dostawcy (PT-377)”). Zapis: `UpdateCard {priority}` i `CreateCard {priority}` (tylko te trzy wartości, inna → `{ok: false}` bez zmian; `normal` usuwa klucz z pliku), migawka: `priority`. Zła wartość w pliku — `normal` i wpis w `errors` („niepoprawny priorytet”), bez błędu odczytu karty. Okno: „Priorytet” w ustawieniach pełnej karty (Wysoki / Normalny / Niski) |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -1943,6 +1945,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
+| `queue` | stan kolejki poleceń poza piaskownicą (K-39 #4, PT-374; tylko usługa z przepływem karty, po pierwszym ticku — stara usługa nie ma pola): `heavy` `{limit, running: [{step, card, ticket, command, since, kind, exclusive}], waiting: [{…, reason}], load: {avg1, cores, threshold, error}}` (`kind`: `outside` albo `merge-check`; `exclusive` — polecenie wymagające ciszy, K-39 #6; `waiting` w kolejności startu, `reason` to zdanie usługi, także o ciszy; `load` — jeden odczyt obciążenia maszyny na tick, `error` niepusty przy błędzie odczytu), `outside` (lekkie) `{perProject, total, occupied: {total, projects: {slug: n}}, running: […], waiting: […]}` (`occupied` liczy trwające razem z ciężkimi, bo liczą się do limitów; wpisy lekkich mają `project`), `limits` `{heavyLimit, providerSlots, providerSlotsDefault}`. Część `steps` dochodzi w #10 |
 | `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
 
 Karta ma też `youtrackSync` (PT-7): `null` bez pola `youtrack`, inaczej `{status, text, issue, issueState, url,
@@ -2834,6 +2837,102 @@ zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej od
 startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
 Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
 
+**Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń (K-39 #3, PT-373).** Zgoda (ręczna albo
+automatyczna: zapamiętana rodzina projektu, „dla ticketu”, `outsideAuto`) trafia do kolejki według czasu zgody.
+Polecenia dzielą się na dwie klasy (`cardflow/heavyqueue.py`, czyste `classify` i `admit`):
+
+- **ciężkie** — polecenie z rodziny `tests.changed` albo `tests.full` efektywnego kontraktu testów projektu
+  (zatwierdzony kontrakt, inaczej cele `make` worktree: `make test-changed BASE={base}`, `make test`) oraz każda
+  próba testów po scaleniu (K-88). Rodzina to argumenty polecenia kontraktu do pierwszego `{base}`, porównywane
+  słowo po słowie z początkiem polecenia bez początkowych przypisań: `make test-changed BASE=<dowolny SHA> JOBS=4`
+  jest ciężkie, `make lint`, `make test-cardflow`, `ss -ltnp` — nie. Projekt z innym kontraktem (np. `dotnet test`)
+  ma za ciężkie swoje polecenia. Ponowienie samych padniętych modułów (`rerunOf`) liczy się jak pełny przebieg.
+  także polecenie pasujące do wzorca `heavyCommands` (niżej);
+- **lekkie** — pozostałe polecenia.
+
+**Wzorce `heavyCommands` (PT-382).** Budowy, testy innych technologii i pomiary wpisuje właściciel w ustawieniach
+przepływu (np. `bash daemon/tests/perf_gate_k98.sh *`); takie polecenie czeka w tej samej kolejce, z tym samym limitem.
+
+- *Argumenty* `classify` bierze przez `outside_argv(command, roots)` z `roots` = (worktree ticketu, repozytorium
+  projektu, katalog kroku), tak jak zgoda przy starcie; bez `roots` `bash`/`sh` i `env` nie dałyby argumentów.
+- *Dopasowanie* jest jedną funkcją `heavyqueue.pattern_matches` (użyje jej też `quietCommands`, #6), a nie
+  `outside_matches`. Reguła ma format zgód „zawsze w projekcie”: dokładne polecenie albo rodzina z końcowym ` *`,
+  a rodzina działa prefiksowo po argumentach. Reguła jest parsowana jak polecenie (z `roots`, z normalizacją).
+- *Normalizacja* (wyłącznie klasyfikacja; polecenie uruchamia się bez zmian, a `outside_allowed`/`outside_risky`
+  działają jak dotąd): początkowe przypisania i `env NAZWA=…` są pomijane, interpreter podany ścieżką
+  (`/usr/bin/python3`, `.venv/bin/python`, `python3.12`) to `python3`. `env PYTHONPATH=… .venv/bin/python -m pytest …`
+  pasuje więc do `python3 -m pytest *`, a `JOBS=4 make test-changed BASE=…` do rodziny kontraktu. Dotyczy też rodzin
+  kontraktu.
+- *Skrypty*: dla `bash`/`sh <skrypt> …` ze skryptem w `roots` (`script_in_roots`) ścieżka w poleceniu i we wzorcu jest
+  sprowadzana do postaci względnej wobec worktree albo repozytorium (`./`, ścieżka bezwzględna w worktree i `sh` zamiast
+  `bash` dają to samo). Skrypt spoza `roots` (także `../`) nie pasuje do żadnego wzorca.
+- *Lista domyślna* (`heavyqueue.DEFAULT_PATTERNS`, rodziny z końcowym ` *`): `make test`, `make test-changed`,
+  `make test-cardflow`, `make test-daemon`, `make test-board`, `make mist-golden`, `npm test`, `npm run build`,
+  `npm run e2e`, `npx playwright test`, `dotnet test`, `dotnet build`, `go test`, `cargo test`, `pytest`,
+  `python3 -m pytest`, `python3 -m unittest`, `python3 tools/test_runner.py`, `docker build`, `docker run`,
+  `docker compose up`, `docker compose build`. `make test*` nie jest składnią dopasowania (`make test *` dopasowuje
+  cel `test`, nie `test-cardflow`), dlatego cele są wyliczone.
+
+Ciężkich biegnie naraz najwyżej `heavyLimit` na maszynę (ustawienie przepływu, 1..6, domyślnie 2), niezależnie od
+projektu, karty i rodzaju zgody. Lekkie i ciężkie razem podlegają dotychczasowym limitom: `OUTSIDE_PER_PROJECT = 6`
+w projekcie i `OUTSIDE_TOTAL = 7` łącznie (łączny nie jest mniejszy niż największy `heavyLimit`), więc lekkie
+polecenie rusza mimo zajętych miejsc ciężkich, a starsza zgoda ciężka, która czeka na miejsce ciężkich, nie trzyma
+w kolejce lekkich. Limit działa przy każdej decyzji startu: zmniejszenie `heavyLimit` nie przerywa trwających,
+a nowe ruszają dopiero, gdy trwających jest mniej niż nowy limit. Kolejność wśród ciężkich to czas zgody.
+
+Zbiór trwających to żywy `_outside_active` silnika (po sprawdzeniu kodów wyjścia i po każdym starcie w tym samym
+ticku, także próby po scaleniu), a nie migawka stanu kart z fazy odczytu ticku: dwie karty sprawdzane w jednym ticku
+nie ruszą obie przy jednym wolnym miejscu. Sam start zostaje pod blokadą dziennika z kontrolą decyzji tuż przed
+`Popen` (PT-311). Wstrzymana karta nie trzyma miejsca w kolejce; po wznowieniu zgoda wraca do niej. Po restarcie
+usługi trwające polecenia (także procesy wstrzymane z jakimkolwiek startem) zajmują miejsca, z klasą liczoną
+z dziennika, a czekające wracają do kolejki z czasem zgody; wpis kolejki ma pole `heavy`.
+
+Ticket, którego ciężkie polecenie czeka na miejsce, ma w pełnej karcie (`tickets[].statusLabel`) i na kafelku napis
+`w kolejce: <polecenie> (ciężkie polecenia: <zajęte> z <limit> zajęte)`, np. „w kolejce: make test-changed
+(ciężkie polecenia: 2 z 2 zajęte)” — pochodna żywej kolejki silnika, dokładana przy budowie stanu karty. Lekkie
+polecenie zachowuje napis `w kolejce: <polecenie>`. Dziennik usługi zapisuje powód czekania raz na zmianę
+(„ciężkie polecenia: 2 z 2 zajęte (…)”).
+
+**Polecenia wymagające ciszy (K-39 #6, PT-376).** Pomiar wydajności zgłoszony przez krok jako wymagający ciszy rusza
+sam dopiero na spokojnej maszynie, a w trakcie nie startuje nic ciężkiego (wcześniej koordynator ręcznie wstrzymywał
+karty przez `SetCardPaused`).
+
+- *Znacznik*: wynik kroku `outside` albo `denied` z poleceniem może mieć `"exclusive": true` (standard planu 1.5,
+  „Kontrakt kroku”); pole trafia do `step.finished` jako `exclusive` (każdy wynik `denied`; zły typ — `false`, nie błąd
+  kroku). Kartka kroku przy kontrakcie `outside` każe je dopisać do każdego pomiaru wydajności i innego polecenia,
+  którego wynik zależy od obciążenia maszyny.
+- *Wzorce* `quietCommands` (ustawienie przepływu, domyślnie pusta lista): polecenie pasujące do wzorca wymaga ciszy
+  także bez znacznika. Dopasowanie to ta sama funkcja co `heavyCommands` (`heavyqueue.pattern_matches`, argumenty
+  z `roots` i normalizacją), więc `bash daemon/tests/perf_gate_k98.sh *` rozpoznaje skrypt pomiaru w worktree.
+  Polecenie wymagające ciszy jest zawsze ciężkie. Próba testów po scaleniu nie wymaga ciszy.
+- *Warunek ciszy* (`heavyqueue.quiet`): brak trwających ciężkich i 1-minutowe obciążenie (`loadavg1`) mniejsze niż
+  liczba rdzeni / 2. Odczyt jest wstrzykiwany (`heavyqueue.read_load`: `/proc/loadavg`, `os.cpu_count()`); błąd
+  odczytu oznacza warunek niespełniony z powodem — nigdy start.
+- *Start* (`heavyqueue.admit`): polecenie wymagające ciszy rusza tylko przy spełnionym warunku; gdy trwa (albo
+  właśnie rusza), żadne inne ciężkie nie startuje; gdy czeka na czele kolejki ciężkich (pierwszy wpis w kolejności,
+  który nie ruszył), nowsze ciężkie też nie startują (opróżnianie), żeby nie czekało w nieskończoność. Wpis wymagający
+  ciszy dalej w kolejce niczego nie wstrzymuje. Lekkie polecenia i kroki agentów nie są wstrzymywane: nie przechodzą
+  przez `admit`, a starsza zgoda ciężka wstrzymana ciszą nie trzyma w kolejce lekkich ani innych projektów.
+- *Powody* (zdania usługi): „czeka na ciszę: obciążenie 7,1 przy progu 6,0”, „czeka na ciszę: biegnie make test
+  (K-36)”, „czeka na ciszę: nie da się odczytać obciążenia maszyny (…)”, „wstrzymane: na czele kolejki czeka polecenie
+  wymagające ciszy (K-36)”, „wstrzymane: biegnie polecenie wymagające ciszy: <polecenie> (K-36)”. Ticket dostaje
+  zdanie jako `statusLabel` z `cause: quiet`, kafelek — w nawiasie po napisie kolejki, a migawka — w
+  `queue.heavy.waiting[].reason`. `queue.heavy.load` podaje `avg1`, `cores`, `threshold` i `error`, a wpisy
+  `running`/`waiting` mają `exclusive`.
+- *Restart*: znacznik ciszy odtwarza się z `step.finished.exclusive` i bieżących `quietCommands` (dla trwających
+  i czekających); klasa jest pamiętana do końca uruchomienia polecenia, więc zmiana wzorców dotyczy nowych zgłoszeń.
+
+**Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
+tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
+(`journal.state`), a `snapshot_json` tylko je dołącza — bez odczytów dziennika i plików kroków w ścieżce migawki.
+Trwające: `outside_started` (polecenie i `since` z `outside.started`, ticket z `steps` albo `merge_check_steps`;
+próba testów po scaleniu to pseudokrok `merge-check-*` z `kind: merge-check`), czekające: `outside_queued` i próby
+w etapie `queued`, z poleceniem i czasem zgody ze stanu karty; kolejność i powód z `heavyqueue.admit`. Klasa polecenia
+to ta sama klasyfikacja co przy starcie (`_outside_heavy_of`). Decyzja zgody na polecenie poza piaskownicą ma
+w części technicznej `queue: "heavy" | "outside"`. Okno decyzji (`decision.js`) liczy z tego tylko arytmetykę
+prognozy „Ruszy od razu: n, poczeka w kolejce: m” (ciężkie: `limit` minus trwające i czekające; lekkie: reszta limitu
+projektu i łącznego) i nie zna limitów ani napisów usługi; bez pola `queue` pokazuje samą liczbę ticketów.
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
@@ -3521,6 +3620,8 @@ blokuje rezerwacja dla opiekuna ich własnej karty według `_wait_reason`. Dzię
 ticket A → opiekun B → opiekun A nie tworzy cyklu: startuje opiekun B, następnie opiekun A, a potem ticket A.
 Opiekun nie przejmuje wcześniejszego miejsca swojego ticketu. Gdy obok rezerwacji są jeszcze miejsca dla
 zwykłych kroków, ich wcześniejsze czekanie nadal liczy się w kolejce innych kart.
+Od PT-377 ta sama kolejka obejmuje wszystkie kroki, a klucz porządku dostaje priorytet karty — sekcja „Kolejność
+kroków czekających na miejsce u dostawcy (PT-377)”.
 
 **Ponowienie bez decyzji w krokach planu:** `retry` opiekuna przy problemie bez decyzji (`step.retry` z `caretaker`
 i `instruction`) wznawia krok wspólną funkcją `_caretaker_resume` — w zwykłych krokach (`_advance`), w planowaniu
@@ -3699,6 +3800,29 @@ zły typ albo zakres (np. `caretakerActionLimit` 0, 11 albo `"3"`, `caretakerDec
 zamiast liczby) → `bad-request`; wykonawca spoza katalogu → `bad-executor`; nieznany klucz → `bad-settings` (jak
 dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają bez zmian.
 
+`heavyLimit` (PT-373) — liczba całkowita 1–6, ile ciężkich poleceń poza piaskownicą biegnie naraz na maszynie
+(sekcja „Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń”); domyślnie 2. `GetCardFlowSettings` zwraca
+je zawsze (zła wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true`
+(`bad-settings`), a zapis zmienia tylko ten klucz i zachowuje nieznane klucze pliku. Pole w oknie: „Ciężkie polecenia
+naraz” na stronie „Zarządzaj” (PT-375, sekcja „PRZEPŁYW KARTY · RÓWNOLEGŁOŚĆ”).
+
+`ticketsPerCard` (PT-375) — liczba całkowita 1–6, ile ticketów jednej karty jest w toku naraz (sekcja „Limit
+ticketów w toku na kartę”); domyślnie 2. Te same zasady co `heavyLimit`: `GetCardFlowSettings` zwraca je zawsze (zła
+wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true` kodem
+`bad-settings`, a zapis zachowuje pozostałe klucze pliku. Pole w oknie: „Tickety naraz na kartę” obok „Ciężkie
+polecenia naraz” (jeden zapis `SetCardFlowSettings {heavyLimit, ticketsPerCard}`).
+
+`heavyCommands` (PT-382) — lista napisów-wzorców ciężkich poleceń (składnia i lista domyślna: sekcja „Kolejka
+poleceń poza piaskownicą i kolejka ciężkich poleceń”). `GetCardFlowSettings` zwraca ją zawsze: brak klucza (albo
+niepoprawna wartość w pliku) — lista domyślna; zapisana pusta lista `[]` oznacza brak wzorców (ciężkie zostają
+polecenia kontraktu i próby po scaleniu). `SetCardFlowSettings` odrzuca wartość, która nie jest listą napisów,
+oraz pusty wzorzec (`""`, same spacje, `*`) kodem `bad-settings` przed zapisem; zapis zachowuje nieznane klucze.
+
+`quietCommands` (PT-376) — lista napisów-wzorców poleceń wymagających ciszy (składnia jak `heavyCommands`; sekcja
+„Polecenia wymagające ciszy”). `GetCardFlowSettings` zwraca ją zawsze: brak klucza albo niepoprawna wartość w pliku —
+lista pusta. `SetCardFlowSettings` odrzuca wartość, która nie jest listą napisów, oraz pusty wzorzec kodem
+`bad-settings` przed zapisem; zapis zachowuje nieznane klucze.
+
 **Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
 `caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,
 a także rozmowa z opiekunem (#7) i zmiana wykonawcy przez opiekuna (#3)):
@@ -3726,6 +3850,76 @@ wybór wykonawcy („Domyślny — najmocniejszy u dostawcy karty” i cały kat
 
 Piaskownica — „Piaskownica i strażnik” niżej. Opiekun czekający na slot dostawcy (`step.waiting` rodzaju
 `caretaker`) nie daje powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
+
+### Limit ticketów w toku na kartę (PT-375)
+
+Karta nie uruchamia więcej ticketów naraz, niż pozwala limit (`cardflow/ticketlimit.py`). Masterplan dopuszcza 2
+tickety na kartę, a K-36 uruchomiła 3: dotąd jedynym limitem była liczba kroków u dostawcy.
+
+- **Ticket w toku** to ticket zatwierdzonego planu z co najmniej jednym krokiem, niescalony (`merge` bez `ok`, poza
+  `imported_done`) i nieodrzucony. Liczy się także ticket czekający na decyzję użytkownika (pytanie, błąd), na review,
+  poprawki i scalenie.
+- **Limit efektywny:** `max-tickets` w pliku karty (1–6), a bez niego ustawienie przepływu `ticketsPerCard` (domyślnie
+  2). Zła wartość w pliku karty (`max-tickets: 9`, napis) daje limit domyślny i wpis w `errors` Tablicy
+  („niepoprawny limit ticketów”), bez błędu odczytu karty. `UpdateCard {maxTickets}` przyjmuje liczbę 1–6 (także napis
+  z cyframi), a wartość pustą (`""`, `null`) usuwa klucz z pliku; inna (0, 7, ułamek, `true`, napis) → `{ok: false}` bez
+  zmian. `CreateCard` przyjmuje `maxTickets` tak samo. Migawka karty niesie `maxTickets` (liczba albo `null`), a
+  `derived.flow.ticketLimit` — `{limit, running, override}` (limit efektywny, liczba ticketów w toku, nadpisanie karty).
+- **Egzekwowanie.** `_plan_next` przed startem każdego ticketu liczy tickety w toku (po każdym starcie z odświeżonego
+  stanu). Przy `w toku >= limit` ticket nie startuje (nie powstaje gałąź ani worktree), a silnik zapisuje
+  `step.waiting` z `kind: ticket`, `cause: card-limit` i powodem „czeka na miejsce w karcie (<n> z <limit>)” — **raz na
+  zmianę powodu** (kolejne ticki z tym samym powodem niczego nie dopisują) — i przechodzi do następnego ticketu.
+  Zwolnione miejsce (scalenie albo odrzucenie innego ticketu) uruchamia czekający ticket przy najbliższym ticku;
+  `step.started` zdejmuje wpis czekania.
+- **Zakres.** Limit dotyczy wyłącznie startu nowego ticketu w `_plan_next`. Kolejne kroki ticketu w toku (review,
+  poprawki, scalenie, konflikt, opiekun) nie przechodzą przez tę bramkę, więc ticket w toku nie blokuje własnych
+  kroków. Zmniejszenie limitu niczego nie zatrzymuje: nowy ticket rusza dopiero, gdy liczba w toku spadnie poniżej
+  limitu. Karta „Od razu” (jeden ticket, bez `_plan_next`) działa bez zmian także przy limicie 1. Limit nie zmienia
+  kolejności startu między kartami, kolejki ciężkich poleceń ani bramki testów po scaleniu.
+- **Status.** `derived.tickets[]` dla ticketu czekającego na miejsce ma `status: card-limit` i
+  `statusLabel: „czeka na miejsce w karcie (<n> z <limit>)”` z bieżącą liczbą i limitem (zmiana limitu odświeża napis bez
+  nowego zdarzenia; `fullcard.card_limit`). Kafelek karty bez trwających kroków pokazuje ten sam powód z `step.waiting`.
+- **Okno.** Strona „Zarządzaj”: „Ciężkie polecenia naraz” i „Tickety naraz na kartę” (1–6, jeden zapis
+  `SetCardFlowSettings`, błąd usługi pod sekcją). Ustawienia pełnej karty: „Tickety naraz” (puste pole — ustawienie
+  domyślne; zapis `UpdateCard {maxTickets}`).
+
+### Kolejność kroków czekających na miejsce u dostawcy (PT-377)
+
+Zwolnione miejsce u dostawcy (`providerSlots`) bierze czekający krok karty o wyższym priorytecie, a przy równym
+priorytecie krok czekający dłużej — niezależnie od tego, którą kartę tick sprawdza jako pierwszą (`journal.cards()`).
+Uogólnia to kolejkę opiekuna z PT-150 („Pierwszeństwo slotu”) na wszystkie kroki. Porządek liczy wyłącznie
+`cardflow/stepqueue.py`; silnik tylko go woła.
+
+- **Priorytet karty** — klucz `priority` w pliku karty (`high`, `normal`, `low`; brak albo zła wartość — `normal`).
+  Karta toru silnika dostaje pierwszeństwo, gdy właściciel nada jej priorytet wysoki.
+- **Klucz porządku** (mniejszy rusza pierwszy, wspólny dla wszystkich kart i totalny):
+  `(podbicie, priorytet karty, since, karta, ticket, rodzaj)`. `since` to początek czekania (`step.waiting.since`,
+  zachowany przy zmianie powodu); krok jeszcze nieczekający przychodzi po wszystkich czekających o tym samym
+  priorytecie. Remis w obrębie sekundy rozstrzyga stały porządek (karta, ticket, rodzaj), więc dwa kroki nigdy nie
+  czekają na siebie nawzajem. Podbicie jest dziś zawsze fałszywe (ustawi je ręczne podbicie, K-39 #11).
+- **Start kroku.** `_admit` → `_earlier_waiters` buduje wpis tego kroku i liczy wpisy innych kart w kolejce przed nim
+  u tego samego dostawcy (`stepqueue.order` + `stepqueue.ahead`). Liczą się jak trwające kroki (w powodzie najwyżej
+  `limit/limit`), więc krok startuje tylko wtedy, gdy miejsc wystarcza dla wszystkich wpisów przed nim. Kroki tej samej
+  karty nie czekają na siebie w tej kolejce (ich kolejność ustala dalej przebieg karty i rezerwacja opiekuna
+  `_caretaker_reserved`, bez zmian). Krok modelu lokalnego ma własną kolejkę (`model_queue`) i tej nie podlega.
+- **Bieżąca przyczyna, nie zapisany `cause`.** W kolejce stoją wpisy `step.waiting` z zapisanym `cause` `slots` albo
+  `quota`, ale o miejscu decyduje stan z chwili decyzji: stan kart z fazy odczytu ticku, limit tygodniowy i okna
+  dostawcy (`_low_limit`), pauza, decyzja o bazie, miejsce w karcie. Wpis z `cause: slots`, którego dostawca teraz
+  przekroczył limit, czeka na limit i nie blokuje innych; wpis z `cause: quota`, którego limit się odnowił, wraca do
+  kolejki po miejsce. Krok, który nie może ruszyć z innego powodu, nie zajmuje miejsca: karta czeka na decyzję o bazie,
+  nowy ticket (bez kroku) czeka na miejsce w karcie (`max-tickets`/`ticketsPerCard`), na testy po scaleniu albo
+  trwającą operację karty, a zwykły krok jest zablokowany rezerwacją własnego opiekuna (PT-150, runda 3 — bez cyklu
+  czekania). Karty zakończone, wstrzymane, przeniesione do Gotowe/Archiwum/Backlogu, odrzucone i scalone tickety oraz
+  trwające kroki wypadają z kolejki.
+- **Koszt.** Kolejność liczona jest ze stanów kart z jednej fazy odczytu ticku (`journal.state`, bez dodatkowych
+  odczytów dzienników na krok). Priorytety i limity kart pochodzą z kontekstu odczytu Tablicy bieżącego ticku
+  (`BoardRead`, K-98 #3); poza tickiem (start z D-Bus) — z jednego świeżego odczytu, i to tylko wtedy, gdy u dostawcy
+  czeka krok innej karty. Limit tygodniowy i rezerwacja opiekuna są liczone raz na dostawcę/kartę w jednej decyzji.
+- **Jedna funkcja porządku.** `stepqueue.order` zwraca czekających w kolejności startu z bieżącą przyczyną i powodem;
+  użyje jej także część `queue.steps` migawki (K-39 #10). Kolejka ciężkich poleceń (`heavyqueue`) i limit
+  `providerSlots` się nie zmieniają.
+- **Ograniczenie.** Wpis należy do kolejki dostawcy zapisanego w `step.waiting`. Przekazanie pracy innemu dostawcy po
+  limicie (`limitTransfer`) zmienia dostawcę dopiero przy następnej próbie startu tego kroku.
 
 ### Piaskownica i strażnik (PT-158)
 
@@ -3821,6 +4015,32 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   przesunięta gałąź ticket/pt-1”. Dalej jak każde nieudane działanie: `caretaker.escalated` z `failed: true`,
   akcja nie jest wykonana, działanie liczy się w `owned()`, a historia karty ma wpis „Opiekun: wynik odrzucony,
   akcja nie wykonana — <powód>”.
+- Wyjątek: polecenie Tide w worktree pod strażą (K-39, PT-372). W trakcie kroku opiekuna w worktree może biec
+  uruchomienie poza piaskownicą na zgodę kroku ticketu (`make test-changed`, skrypt pomiaru) albo próba testów po
+  scaleniu (`merge-check-*` w worktree gałęzi karty, K-88). Jego `build/`, `__pycache__` i wyniki testów nie są
+  zapisem opiekuna (wcześniej fałszywe `caretaker-wrote`, np. K-98-care-10 i K-98-care-13 z 11.11). Logika jest
+  czysta w `cardflow/guard` (`runs`, `active`, `skipped`, `excuse`); silnik podaje tylko zdarzenia dziennika
+  (`_guard_outside`):
+  - uruchomienie to `outside.started` → `outside.finished` tego samego kroku; worktree z pola `worktree` startu,
+    dla próby testów po scaleniu z jej pseudokroku `merge.check-step`. Start bez `worktree` niczego nie wyłącza;
+  - liczy się, gdy start jest w dzienniku przed sprawdzeniem (dziennik czytany przed migawką), a koniec jest po
+    stanie bazowym (`seq` ostatniego `caretaker.guard`) albo go nie ma — także polecenie, które ruszyło i skończyło
+    się w trakcie kroku opiekuna;
+  - worktree porównywane po `os.path.normpath(os.path.abspath(…))`, bez podążania za dowiązaniami (końcowy `/`
+    i `./` pasują, dowiązanie do worktree — nie);
+  - wyłączone są tylko zmiany drzewa (`tree`) tego worktree: zamiast `wrote` Tide zapisuje `caretaker.guard`
+    z `cause: outside`, `wrote: []` i `skipped: [{run, worktree, entries}]` (nazwa uruchomienia, worktree,
+    zmienione wpisy najwyższego poziomu) i bierze drzewo tego worktree na nowo. `HEAD` worktree, refy gałęzi,
+    zniknięcie worktree oraz zapis w innym worktree pod strażą albo w worktree bez polecenia są wykrywane jak
+    dotąd;
+  - ta sama reguła działa w `_guard_check`, w `_guard_rebase` (krok niezamrożony; przy zamrożonym całe okno
+    działania i tak należy do Tide, `_guard_freeze` bez zmian) i w `_guard_verdict`, więc zmiana pominięta
+    w jednym miejscu nie wraca jako `wrote` w drugim. Stare dzienniki bez `skipped` czytają się bez zmian;
+  - granice: opiekun nie ma kontraktu `outside`, więc sam nie otworzy wyjątku — polecenia w worktree uruchamia
+    wyłącznie Tide (zgoda kroku ticketu, bramka testów po scaleniu). Zapis opiekuna w drzewie worktree
+    z trwającym poleceniem jest w tym oknie nieodróżnialny od zapisu polecenia i przechodzi. Uruchomienie bez
+    `outside.finished` (np. utracone po awarii usługi) wyłącza drzewo tego worktree do końca kroku opiekuna.
+    Polecenia uruchomione ręcznie przez koordynatora (Tide ich nie zna) nadal dają `caretaker-wrote`.
 - Ograniczenie: gałąź karty przesunięta w trakcie kroku opiekuna przez inny krok (np. rozwiązanie konfliktu
   innego ticketu w worktree karty) nie jest działaniem Tide, więc odrzuca wynik opiekuna (bezpieczna pomyłka —
   problem wraca do użytkownika z powodem). Tak samo działanie Tide przy kroku, którego nie dało się zamrozić
@@ -5595,7 +5815,7 @@ dziennik muszą wskazywać tę samą domenę; odmowa połączenia innej karty ni
 karty `box.risk` (`risk: "K1"`, `box`, `step`, `program`, `text`: „poświadczenia agenta czytelne dla kodu w pudełku
 (grupa docker); pełna ochrona: K3”) — raz na kartę.
 
-**Ograniczenia.** `OUTSIDE_PER_PROJECT` dotyczy wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
+**Ograniczenia.** `OUTSIDE_PER_PROJECT` i `heavyLimit` dotyczą wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
 tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Wynik `outside` kroku pudełkowego
 nie dostaje zgody na wykonanie na hoście: blokada obejmuje nowe wyniki, ponowne sprawdzanie zgód, decyzje
 oraz sam start polecenia. Dotychczasowe `outside*` kroków hostowych działają jak wcześniej.

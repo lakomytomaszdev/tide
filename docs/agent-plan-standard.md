@@ -1,7 +1,9 @@
 # Standard planu pracy agentów (Tide)
 
-Wersja 1.4, 9.11.2026 (zgodna wstecz z wersjami 1, 1.1, 1.2 i 1.3: dodatkowe kolumny są opcjonalne,
-a plany z sześcioma kolumnami działają jak dotąd). **Zmiana 1.4 (K-69):** zasada testów ticketu i domknięcia (K-62)
+Wersja 1.5, 12.11.2026 (zgodna wstecz z wersjami 1, 1.1, 1.2, 1.3 i 1.4: dodatkowe kolumny są opcjonalne,
+a plany z sześcioma kolumnami działają jak dotąd). **Zmiana 1.5 (K-39, PT-376):** wynik kroku `outside` albo
+`denied` z poleceniem może mieć opcjonalne `"exclusive": true` — polecenie wymagające ciszy (sekcja „Kontrakt
+kroku”); stare wyniki bez pola działają bez zmian. **Zmiana 1.4 (K-69):** zasada testów ticketu i domknięcia (K-62)
 jest opisana ogólnie, dla każdej technologii — polecenia pochodzą z kontraktu testów projektu (`tests.changed`
 z `{base}`, `tests.full`), a `make test-changed BASE=…` i `make test` to przykład plasma-tide
 (sekcje „Testy ticketu i review” i „Domknięcie”, reguły 1–9 w [testing.md](testing.md#zasada-ogólna-i-kontrakt-testów-projektu)).
@@ -217,7 +219,10 @@ równolegle, z limitem kroków dostawcy; bloker rusza po scaleniu poprzedników 
 **Kontrakt kroku.** Tide przekazuje kartkę z identyfikatorem karty i ticketu, gałęzią, katalogiem roboczym,
 ograniczeniami oraz ścieżką katalogu wyjściowego. Autor zapisuje tam notkę `note.md`, a na końcu `result.json`:
 `{"result":"done","notes":["note.md"]}`, `{"result":"question","question":"…"}`,
-`{"result":"denied","command":"…"}` albo `{"result":"error","reason":"…"}`. Recenzent oprócz tego
+`{"result":"denied","command":"…"}` albo `{"result":"error","reason":"…"}`. Wynik `outside` albo `denied`
+z poleceniem pomiaru wydajności (albo innym, którego wynik zależy od obciążenia maszyny) ma `"exclusive": true`: Tide
+uruchamia je dopiero na spokojnej maszynie i w trakcie nie startuje innych ciężkich poleceń (zły typ pola = `false`).
+Recenzent oprócz tego
 zapisuje `review.md` i wynik, np. `{"result":"done","verdict":"APPROVE","blockers":0,
 "majors":0,"nits":0,"notes":["review.md"]}`; `REQUEST_CHANGES` wymaga dodatniej liczby `blockers`
 lub `majors`. Brak poprawnego wyniku jest błędem

@@ -2083,7 +2083,7 @@ Rectangle {
         visible: page.decisionOpen && !page.managing
         cardId: page.decisionCardId
         decisions: Logic.decisions(page.decisionCard)
-        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+        outsideLoad: Decision.outsideLoad(page.snapshot && page.snapshot.queue,
                                           page.decisionCardRaw ? page.decisionCardRaw.project : "")
         cardOpen: page.cardOpen
         onCardOpenRequested: value => page.setCardOpen(value)
@@ -2123,8 +2123,8 @@ Rectangle {
         z: 35
         visible: page.fullOpen && !page.managing
         card: page.fullOpen ? page.fullCard : null
-        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340): obciążenie z migawki wszystkich kart.
-        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.cards,
+        // Prognoza „ruszy od razu / poczeka” przy zgrupowanej zgodzie (PT-340, PT-374): stan kolejki z pola `queue` migawki.
+        outsideLoad: page.fullOpen ? Decision.outsideLoad(page.snapshot && page.snapshot.queue,
                                                           page.fullCardRaw ? page.fullCardRaw.project : "") : null
         moveTargets: page.fullCard ? Logic.settingTargets(page.fullCard) : []
         canArchive: page.fullCard ? Logic.canArchive(page.fullCard) : false

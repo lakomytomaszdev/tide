@@ -410,6 +410,8 @@ BARRIERS = {
                    ("cardflow/engine.py", "FlowEngine._outside_busy"),
                    ("cardflow/engine.py", "FlowEngine._outside_exit"),
                    ("cardflow/engine.py", "FlowEngine._seed_outside_waiting"),
+                   # PT-373: klasa trwającego polecenia po restarcie z tego samego wspólnego wyniku (outside_runs).
+                   ("cardflow/engine.py", "FlowEngine._started_heavy"),
                    # PT-329: przebieg próby testów po scaleniu (pseudokrok `merge-check-…`) — ta sama historia
                    # i ten sam wspólny wynik redukcji co prośba outside kroku.
                    ("cardflow/engine.py", "FlowEngine._merge_check_history"),
@@ -647,6 +649,12 @@ DELEGATIONS = {
     ("cardflow/engine.py", "FlowEngine._merge_check_waiting"): "outside",
     ("cardflow/engine.py", "FlowEngine._merge_check_start"): "outside",
     ("cardflow/engine.py", "FlowEngine._outside_collect"): "outside",
+    # PT-373: kolejka ciężkich poleceń — zajętość z żywego zbioru i klasa trwających po restarcie.
+    ("cardflow/engine.py", "FlowEngine._heavy_admitted"): "outside",
+    ("cardflow/engine.py", "FlowEngine._heavy_running"): "outside",
+    # PT-376: decyzja kolejki ciężkich z ciszą i wpisy wstrzymane ciszą (`_outside_behind`).
+    ("cardflow/engine.py", "FlowEngine._heavy_decision"): "outside",
+    ("cardflow/engine.py", "FlowEngine._quiet_held"): "outside",
     ("cardflow/engine.py", "FlowEngine.resolve_merge_check"): "process-check",
     # PT-313: udany start zdejmuje kartę z Backlogu przez moved(), jak wznowienie w set_paused.
     ("cardflow/engine.py", "FlowEngine._lift_from_backlog"): "advance-resume",
@@ -740,6 +748,9 @@ RAW_READS = {
     ("cardflow/testrerun.py", "substitute"):
         "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
         "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
+    ("cardflow/guard.py", "runs"):
+        "PT-372: przedziały outside.started/outside.finished do wyjątku strażnika opiekuna; wynik tylko pomija "
+        "zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie uruchamia ani nie wznawia procesu",
 }
 
 # Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja

@@ -930,6 +930,17 @@ def _epoch(value) -> float:
         return 0.0
 
 
+OUTSIDE_APPROVAL_MAX_AGE = 86400    # s: starsza zgoda w kolejce (karta porzucona) nie zajmuje miejsca
+
+
+def approval_live(st: FlowState, name: str, now: float) -> bool:
+    """Czy zgoda „uruchom” kroku `name` wciąż może ruszyć: krok nie jest `superseded` (karta wystartowała od nowa)
+    i zgoda nie jest starsza niż doba. Jedna reguła dla odtwarzania kolejki silnika i widoku `queueview`."""
+    ts = (st.step_decisions.get(name) or {}).get("ts")
+    queued = _epoch(ts) if ts else now
+    return name not in st.superseded and now - queued < OUTSIDE_APPROVAL_MAX_AGE
+
+
 def outside_queued(st: FlowState) -> list[str]:
     """Kroki z decyzją „uruchom poza piaskownicą”, których polecenie jeszcze nie ruszyło (czeka na miejsce)."""
     resumed = {s.get("parentStep") for s in st.steps.values() if s.get("parentStep")}

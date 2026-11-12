@@ -2090,6 +2090,43 @@ out["saveError"] = [obj("caretakerError").property("visible"), obj("caretakerErr
         self.assertTrue(out["saveError"][0])
         self.assertIn("nieznany wykonawca opiekuna", out["saveError"][1])
 
+    def test_concurrency_settings_are_shown_and_saved_from_manage_page(self):
+        """PT-375 (K-39): „Ciężkie polecenia naraz” (`heavyLimit`, PT-373) i „Tickety naraz na kartę”
+        (`ticketsPerCard`) z GetCardFlowSettings, jeden zapis SetCardFlowSettings; wartość spoza 1..6 odrzuca usługa
+        i strona pokazuje jej komunikat."""
+        data = json.loads(json.dumps(self.data))
+        data["flowSettings"] = {"ok": True, "limitTransfer": {"mode": "ask", "executor": ""},
+                                "limitThresholdPercent": 10, "heavyLimit": 4, "ticketsPerCard": 3}
+        out = self.probe(FIND_PY + """
+js("page.managing = true")
+wait(50)
+out["initial"] = [obj("heavyLimit").property("value"), obj("ticketsPerCard").property("value"),
+                  obj("concurrencySave").property("enabled")]
+js("page.managePage.heavyLimit = 1; page.managePage.ticketsPerCard = 6; page.managePage.concurrencyDirty = true")
+out["shown"] = [obj("heavyLimit").property("value"), obj("ticketsPerCard").property("value")]
+click(at(FIND + "(page.managePage, 'concurrencySave')"))
+out["call"] = calls()[-1]
+out["busy"] = obj("concurrencySave").property("enabled")
+js("page.managePage.handleReply('concurrency-settings:9', {ok: true})")
+out["afterOk"] = [obj("concurrencyError").property("visible"), obj("concurrencySave").property("enabled")]
+js("page.managePage.heavyLimit = 9; page.managePage.concurrencyDirty = true")
+click(at(FIND + "(page.managePage, 'concurrencySave')"))
+out["badCall"] = calls()[-1]
+js("page.managePage.handleReply('concurrency-settings:10', {ok: false, error: 'bad-settings', "
+   "message: 'liczba ciężkich poleceń naraz musi być liczbą całkowitą od 1 do 6'})")
+out["saveError"] = [obj("concurrencyError").property("visible"), obj("concurrencyError").property("text")]
+""", data=data)
+        self.assertEqual(out["initial"], [4, 3, False])
+        self.assertEqual(out["shown"], [1, 6])
+        self.assertEqual(out["call"][0], "SetCardFlowSettings")
+        self.assertEqual(json.loads(out["call"][1]), {"heavyLimit": 1, "ticketsPerCard": 6})
+        self.assertFalse(out["busy"], "zapis w toku blokuje przycisk")
+        self.assertEqual(out["afterOk"], [False, False])
+        self.assertEqual(json.loads(out["badCall"][1]), {"heavyLimit": 9, "ticketsPerCard": 6},
+                         "strona nie poprawia wartości — odmowa należy do usługi")
+        self.assertTrue(out["saveError"][0])
+        self.assertIn("od 1 do 6", out["saveError"][1])
+
     def test_project_command_lists_are_editable_and_saved(self):
         data = json.loads(json.dumps(self.data))
         data["projects"] = [p for p in data["projects"] if p["slug"] == "plasma-tide"]
