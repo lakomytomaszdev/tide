@@ -30,3 +30,65 @@ function startLabel(from) {
                    typeof point.sha === "string" ? point.sha.substring(0, 7) : ""].filter(p => p !== "")
     return parts.length ? parts.join(" · ") : "nieznany"
 }
+
+// --- Start karty (K-99, PT-389) -------------------------------------------------------------------------
+// Zdanie „master (3.11, 58a3f26)” na tych samych pomocnikach (`shortRef`, `shortDate`, 7 znaków SHA).
+// Dane są z migawki `derived.flow`: baza z `flow.base`, data z ostatniego `card.started` w `flow.timeline`
+// (nie data commita). Skuteczna korekta bazy (`flow.baseVersion > 0`) zmienia bazę, a `timeline` nie niesie
+// czasu korekty — wtedy zdanie jest bez daty, a pierwotną bazę (`flow.initialBase`) pokazuje `cardStartHint`.
+// Follow-up (osobna zmiana silnika): `card.base-changed` w `timeline` pozwoli pokazać datę po korekcie.
+
+function _startEvent(flow) {
+    const timeline = flow && Array.isArray(flow.timeline) ? flow.timeline : []
+    for (let i = timeline.length - 1; i >= 0; i--)
+        if (timeline[i] && timeline[i].type === "card.started") return timeline[i]
+    return null
+}
+
+// Zlecenie wystartowało: w `timeline` jest `card.started`.
+function hasStarted(flow) {
+    return _startEvent(flow) !== null
+}
+
+function _phrase(base, date) {
+    if (!base || typeof base !== "object" || base.status !== "known") return "nieznany"
+    const ref = shortRef(base.baseRef)
+    if (ref === "") return "nieznany"
+    const inner = [shortDate(date), typeof base.baseCommit === "string" ? base.baseCommit.substring(0, 7) : ""]
+        .filter(p => p !== "")
+    return inner.length ? ref + " (" + inner.join(", ") + ")" : ref
+}
+
+function _corrected(flow) {
+    return !!flow && typeof flow.baseVersion === "number" && flow.baseVersion > 0
+}
+
+// „master (3.11, 58a3f26)”, „origin/develop (5.11, abc1234)”, „master (58a3f26)” bez daty, „nieznany”.
+function cardStartLabel(flow) {
+    if (!flow) return "nieznany"
+    const started = _startEvent(flow)
+    return _phrase(flow.base, started && !_corrected(flow) ? started.ts : "")
+}
+
+// Linia na karcie; "" dla karty bez wystartowanego zlecenia.
+function cardStartLine(flow) {
+    return hasStarted(flow) ? "Start od: " + cardStartLabel(flow) : ""
+}
+
+// Podpowiedź po korekcie bazy: pierwotna baza z datą startu; inaczej "".
+function cardStartHint(flow) {
+    const started = _startEvent(flow)
+    if (!started || !_corrected(flow)) return ""
+    return "Pierwotna baza: " + _phrase(flow.initialBase, started.ts)
+}
+
+// „Zmień gałąź startową…” tylko na karcie bez pracy: zlecenie wystartowało, brak domknięcia, żaden wiersz planu
+// poza `todo`, brak scalonych ticketów. Karta „Od razu” (bez wierszy planu) nie ma kroku poza historią.
+function canChangeStart(derived) {
+    const flow = derived && derived.flow
+    if (!flow || !hasStarted(flow) || flow.closed || flow.merged || flow.mainMerged) return false
+    const tickets = Array.isArray(derived.tickets) ? derived.tickets : []
+    if (tickets.some(t => t.state !== "todo")) return false
+    if (tickets.length > 0) return true
+    return !(Array.isArray(flow.steps) ? flow.steps : []).some(s => !s.historical)
+}

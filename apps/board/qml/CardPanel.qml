@@ -91,6 +91,7 @@ Rectangle {
         || (card && card.derived && card.derived.flow && card.derived.flow.environment) || null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
+    signal baseChangeRequested(string cardId)       // „Zmień gałąź startową…”: pełna karta z podglądem korekty bazy
     readonly property string cardBranch: card && card.derived && card.derived.flow && card.derived.flow.cardBranch
                                          ? card.derived.flow.cardBranch : ""
     signal mergeMainRequested(string cardId)
@@ -567,6 +568,15 @@ Rectangle {
                 panel.busy = true
                 panel.environmentApproveRequested(panel.card.id, yaml, onlyPlan)
             }
+        }
+
+        // „Start od: …” (K-99, PT-389): panel tylko sygnalizuje; podgląd korekty bazy otwiera pełna karta (BoardPage).
+        CardUi.CardStartLine {
+            objectName: "cardPanelStartLine"
+            Layout.fillWidth: true
+            visible: panel.editing && !panel.descriptionOnly && !panel.reading && text !== ""
+            derived: panel.card ? panel.card.derived : null
+            onChangeRequested: panel.baseChangeRequested(panel.card.id)
         }
 
         // „Zmiany gałęzi” (K-36, #17): dla karty z gałęzią w każdym stanie; widok diffa otwiera BoardPage.

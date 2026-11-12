@@ -47,6 +47,10 @@ Window {
     readonly property var tokens: Tide.Tokens
 
     function label(from) { return Start.startLabel(from) }
+    function cardLabel(flow) { return Start.cardStartLabel(flow) }
+    function cardLine(flow) { return Start.cardStartLine(flow) }
+    function cardHint(flow) { return Start.cardStartHint(flow) }
+    function canChange(derived) { return Start.canChangeStart(derived) }
     function gapText(n) { return Diff.gapText(n) }
     // Wszystkie utworzone delegaty linii (także poza widokiem) — wirtualizacja ma ich trzymać garść.
     function delegates() {
@@ -213,6 +217,75 @@ out["other"] = label(ref="HEAD~2", sha="%s", date="%s")
             source = fh.read()
         self.assertEqual(len(re.findall(r"function startLabel\(", source)), 1)
         self.assertNotIn("refs/heads/", re.sub(r"//.*", "", source).replace('"refs/heads/"', ""))
+
+    def test_card_start_sentence(self):
+        """K-99, PT-389: drugie zdanie modułu startu — baza lokalna, zdalna, bez daty, bez SHA, nieznana, po korekcie."""
+        out = self.probe('''
+def flow(base, started="%(iso)s", **extra):
+    timeline = [{"type": "step.started", "ts": "2026-11-09T12:00:00Z"}]
+    if started is not None:
+        timeline.insert(0, {"type": "card.started", "ts": started})
+    return {"base": base, "timeline": timeline, **extra}
+def known(ref, sha="%(sha)s"):
+    return {"status": "known", "baseRef": ref, "baseBranch": ref, "baseCommit": sha}
+def label(f):
+    return js("cardLabel(" + json.dumps(f) + ")")
+out["local"] = label(flow(known("refs/heads/master")))
+out["remote"] = label(flow(known("refs/remotes/origin/develop")))
+out["noDate"] = [label(flow(known("refs/heads/master"), started=None)), label(flow(known("refs/heads/master"), started="zła"))]
+out["noSha"] = label(flow(known("refs/heads/master", "")))
+out["bare"] = label(flow(known("refs/heads/master", ""), started=None))
+out["unknown"] = [label(flow({"status": "unknown", "baseRef": "", "baseCommit": ""})), label({}), js("cardLabel(null)"),
+                  label(flow(None)), label(flow({"status": "known", "baseRef": "", "baseCommit": "%(sha)s"}))]
+out["line"] = [js("cardLine(" + json.dumps(flow(known("refs/heads/master"))) + ")"),
+               js("cardLine(" + json.dumps(flow({"status": "unknown"})) + ")"),
+               js("cardLine(" + json.dumps({"base": known("refs/heads/master"), "timeline": []}) + ")"),
+               js("cardLine(null)")]
+out["lastStart"] = label({"base": known("refs/heads/master"), "timeline": [
+    {"type": "card.started", "ts": "2026-11-01T12:00:00Z"}, {"type": "card.started", "ts": "2026-11-07T12:00:00Z"}]})
+# Po skutecznej korekcie bazy: nowa baza bez daty, pierwotna w podpowiedzi (z datą startu).
+fixed = flow(known("refs/heads/topic", "%(new)s"), baseVersion=1, initialBase=known("refs/heads/master"))
+out["corrected"] = [label(fixed), js("cardLine(" + json.dumps(fixed) + ")"), js("cardHint(" + json.dumps(fixed) + ")")]
+out["hint"] = [js("cardHint(" + json.dumps(flow(known("refs/heads/master"), baseVersion=0)) + ")"), js("cardHint(null)")]
+''' % {"iso": ISO, "sha": SHA, "new": "1234567" + "0" * 33})
+        self.assertEqual(out["local"], "master (5.11, abcdef0)")
+        self.assertEqual(out["remote"], "origin/develop (5.11, abcdef0)")
+        self.assertEqual(out["noDate"], ["master (abcdef0)"] * 2)
+        self.assertEqual(out["noSha"], "master (5.11)")
+        self.assertEqual(out["bare"], "master")
+        self.assertEqual(out["unknown"], ["nieznany"] * 5)
+        self.assertEqual(out["line"], ["Start od: master (5.11, abcdef0)", "Start od: nieznany", "", ""])
+        self.assertEqual(out["lastStart"], "master (7.11, abcdef0)")
+        self.assertEqual(out["corrected"], ["topic (1234567)", "Start od: topic (1234567)",
+                                            "Pierwotna baza: master (5.11, abcdef0)"])
+        self.assertEqual(out["hint"], ["", ""])
+
+    def test_change_start_only_on_card_without_work(self):
+        out = self.probe('''
+STARTED = [{"type": "card.started", "ts": "%(iso)s"}]
+def derived(tickets=(), steps=(), timeline=STARTED, **flow):
+    return {"flow": {"timeline": timeline, "steps": list(steps), **flow}, "tickets": [{"state": s} for s in tickets]}
+def can(d):
+    return js("canChange(" + json.dumps(d) + ")")
+out["noWork"] = can(derived())
+out["todoRows"] = can(derived(["todo", "todo"]))
+out["notStarted"] = can(derived(timeline=[]))
+out["inProgress"] = [can(derived([state, "todo"])) for state in ("w-toku", "review", "czeka", "gotowe", "odrzucone")]
+out["step"] = can(derived(steps=[{"id": "x", "historical": False}]))
+out["oldStep"] = can(derived(steps=[{"id": "x", "historical": True}]))
+out["closed"] = can(derived(["todo"], closed=True))
+out["merged"] = [can(derived(merged=True)), can(derived(mainMerged=True))]
+out["none"] = [can(None), can({}), can({"flow": None})]
+''' % {"iso": ISO})
+        self.assertTrue(out["noWork"])
+        self.assertTrue(out["todoRows"])
+        self.assertTrue(out["oldStep"])
+        self.assertFalse(out["notStarted"])
+        self.assertEqual(out["inProgress"], [False] * 5)
+        self.assertFalse(out["step"])
+        self.assertFalse(out["closed"])
+        self.assertEqual(out["merged"], [False, False])
+        self.assertEqual(out["none"], [False] * 3)
 
 
 class ViewTest(QmlCase):
