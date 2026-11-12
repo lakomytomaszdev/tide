@@ -1681,6 +1681,7 @@ w raporcie porannym, gdziekolwiek leży.
 | `cards` | `[{id, num, title, project, projectName, tags, resolvedTags, column, boardColumn, order, note, created, createdTs, updated, updatedTs, moved, movedTs, youtrack, spec, session, branch, check, entry, mode, tool, worktree, launched, launchedTs, branchSlug, projects, extraProjects, description, derived, path}]` w kolejności kolumn i `order`; `branchSlug` — `k-12-<opis>`, część proponowanej gałęzi bez narzędzia; `extraProjects` — dodatkowe projekty rozwiązane `[{slug, name, repo, repoMissing}]` (bez nieznanych slugów) |
 | `repos` | repozytoria z katalogu projektów, które nie są jeszcze projektami: `[{name, path, aiDocs}]` (domyślne `ai-docs`) |
 | `errors` | `[{path, message}]` — złe pliki; także konflikty z YouTrackiem (PT-7, z pustym `path`) |
+| `queue` | stan kolejki poleceń poza piaskownicą (K-39 #4, PT-374; tylko usługa z przepływem karty, po pierwszym ticku — stara usługa nie ma pola): `heavy` `{limit, running: [{step, card, ticket, command, since, kind}], waiting: [{…, reason}]}` (`kind`: `outside` albo `merge-check`; `waiting` w kolejności startu, `reason` to zdanie usługi), `outside` (lekkie) `{perProject, total, occupied: {total, projects: {slug: n}}, running: […], waiting: […]}` (`occupied` liczy trwające razem z ciężkimi, bo liczą się do limitów; wpisy lekkich mają `project`), `limits` `{heavyLimit, providerSlots, providerSlotsDefault}`. Obciążenie maszyny (`heavy.load`) dochodzi w #6, część `steps` w #10 |
 | `youtrack` | stan synchronizacji (PT-7, tylko usługa z YouTrackiem — bez `--no-youtrack`): `{enabled, sync, url, available, error, pending, conflicts, conflictItems: [{issue, label, cards, youtrack, tide, url}], newIssues, importError, states}` |
 
 Karta ma też `youtrackSync` (PT-7): `null` bez pola `youtrack`, inaczej `{status, text, issue, issueState, url,
@@ -2610,8 +2611,19 @@ z dziennika, a czekające wracają do kolejki z czasem zgody; wpis kolejki ma po
 Ticket, którego ciężkie polecenie czeka na miejsce, ma w pełnej karcie (`tickets[].statusLabel`) i na kafelku napis
 `w kolejce: <polecenie> (ciężkie polecenia: <zajęte> z <limit> zajęte)`, np. „w kolejce: make test-changed
 (ciężkie polecenia: 2 z 2 zajęte)” — pochodna żywej kolejki silnika, dokładana przy budowie stanu karty. Lekkie
-polecenie zachowuje napis `w kolejce: <polecenie>`; prefiks `w kolejce: ` czyta okno (`decision.js`).
-Dziennik usługi zapisuje powód czekania raz na zmianę („ciężkie polecenia: 2 z 2 zajęte (…)”).
+polecenie zachowuje napis `w kolejce: <polecenie>`. Dziennik usługi zapisuje powód czekania raz na zmianę
+(„ciężkie polecenia: 2 z 2 zajęte (…)”).
+
+**Stan kolejki w migawce** (K-39 #4, PT-374, `cardflow/queueview.py`). Pole najwyższego poziomu `queue` migawki
+tablicy (kształt w tabeli migawki) liczy silnik **raz na tick** z obiektów `FlowState` tej samej fazy odczytu
+(`journal.state`), a `snapshot_json` tylko je dołącza — bez odczytów dziennika i plików kroków w ścieżce migawki.
+Trwające: `outside_started` (polecenie i `since` z `outside.started`, ticket z `steps` albo `merge_check_steps`;
+próba testów po scaleniu to pseudokrok `merge-check-*` z `kind: merge-check`), czekające: `outside_queued` i próby
+w etapie `queued`, z poleceniem i czasem zgody ze stanu karty; kolejność i powód z `heavyqueue.admit`. Klasa polecenia
+to ta sama klasyfikacja co przy starcie (`_outside_heavy_of`). Decyzja zgody na polecenie poza piaskownicą ma
+w części technicznej `queue: "heavy" | "outside"`. Okno decyzji (`decision.js`) liczy z tego tylko arytmetykę
+prognozy „Ruszy od razu: n, poczeka w kolejce: m” (ciężkie: `limit` minus trwające i czekające; lekkie: reszta limitu
+projektu i łącznego) i nie zna limitów ani napisów usługi; bez pola `queue` pokazuje samą liczbę ticketów.
 
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`

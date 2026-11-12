@@ -234,5 +234,5 @@ STATUS_SUFFIX =" (ciężkie polecenia: {busy} z {limit} zajęte)"
 
 def queued_label(label: str, busy: int, limit: int) -> str:
     """Napis statusu ciężkiego polecenia w kolejce: `w kolejce: <polecenie> (ciężkie polecenia: 2 z 2 zajęte)`.
-    Prefiks `w kolejce: ` zostaje (decision.js liczy po nim czekające zgody, `OUTSIDE_QUEUED_PREFIX`)."""
+    Prefiks `w kolejce: ` zostaje (napis statusu; prognozę okna liczy pole `queue` migawki, `queueview`)."""
     return label + STATUS_SUFFIX.format(busy=busy, limit=limit)

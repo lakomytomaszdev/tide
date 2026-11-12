@@ -386,7 +386,7 @@ def heavy_queued(st: FlowState, out: dict, held: dict) -> dict:
     return out
 
 
-QUEUED_PREFIX = "w kolejce: "   # decision.js (OUTSIDE_QUEUED_PREFIX) liczy po nim czekające zgody
+QUEUED_PREFIX = "w kolejce: "   # prefiks statusu ticketu w kolejce (okno nie liczy po nim: prognoza z `queue`, PT-374)
 
 
 def _command(done: dict) -> str:
