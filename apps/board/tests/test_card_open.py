@@ -72,6 +72,28 @@ class WindowConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.wc.set_card_open("pop-up", self.path)
 
+    def test_diff_mode_defaults_to_unified_and_is_saved_next_to_other_settings(self):
+        """PT-350: tryb widoku diffa żyje w tym samym pliku co `cardOpen` i nie rusza go."""
+        self.assertEqual(self.wc.diff_mode(self.path), "unified")
+        self.assertFalse(os.path.exists(self.path), "odczyt niczego nie tworzy")
+        self.wc.set_card_open("full", self.path)
+        self.wc.set_diff_mode("split", self.path)
+        self.assertEqual(self.wc.diff_mode(self.path), "split")
+        self.assertEqual(self.wc.load(self.path), {"cardOpen": "full", "diffMode": "split"})
+        self.wc.set_diff_mode("unified", self.path)
+        self.assertEqual(self.wc.diff_mode(self.path), "unified")
+        self.assertEqual(self.wc.card_open(self.path), "full")
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["window.json"], "bez plików tymczasowych")
+
+    def test_bad_diff_mode_never_breaks_reading(self):
+        os.makedirs(os.path.dirname(self.path))
+        for text in ("{nie json", "[1]", json.dumps({"diffMode": "side"}), json.dumps({"diffMode": 3})):
+            with open(self.path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            self.assertEqual(self.wc.diff_mode(self.path), "unified", text)
+        with self.assertRaises(ValueError):
+            self.wc.set_diff_mode("side", self.path)
+
     def test_path_follows_xdg_config_home(self):
         self.assertEqual(self.wc.config_path({"XDG_CONFIG_HOME": "/x"}), "/x/tide/window.json")
         self.assertEqual(self.wc.config_path({"HOME": "/h"}), "/h/.config/tide/window.json")
@@ -127,6 +149,35 @@ class BackendSettingTest(unittest.TestCase):
         self.assertEqual(backend.cardOpen, "full")
         self.assertFalse(os.path.exists(self.file))
         self.assertEqual(self.module.Backend(None, {"cards": [], "cardOpen": "full"}).cardOpen, "full")
+
+
+    def test_diff_mode_is_saved_for_the_window_and_survives_a_restart(self):
+        backend = self.module.Backend(None)
+        self.assertEqual(backend.diffMode, "unified")
+        seen = []
+        backend.diffModeChanged.connect(lambda: seen.append(backend.diffMode))
+        self.assertEqual(backend.setDiffMode("split"), "")
+        self.assertEqual((backend.diffMode, seen), ("split", ["split"]))
+        self.assertEqual(backend.setDiffMode("split"), "")
+        self.assertEqual(seen, ["split"], "ta sama wartość nie powiadamia ponownie")
+        with open(self.file, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), {"diffMode": "split"})
+        self.assertEqual(self.module.Backend(None).diffMode, "split", "nowy start okna czyta zapisany tryb")
+        self.assertNotEqual(backend.setDiffMode("side"), "")
+        self.assertEqual(backend.diffMode, "split")
+
+    def test_diff_mode_unwritable_config_keeps_the_choice_for_the_session(self):
+        with open(os.path.join(self.tmp, "tide"), "w", encoding="utf-8") as fh:   # plik zamiast katalogu
+            fh.write("x")
+        backend = self.module.Backend(None)
+        self.assertIn("Nie zapisano", backend.setDiffMode("split"))
+        self.assertEqual(backend.diffMode, "split")
+
+    def test_diff_mode_preview_never_touches_the_config_file(self):
+        backend = self.module.Backend(None, {"cards": []})
+        self.assertEqual(backend.setDiffMode("split"), "")
+        self.assertEqual(backend.diffMode, "split")
+        self.assertFalse(os.path.exists(self.file))
 
 
 class CardOpenViewTest(ProbeCase):

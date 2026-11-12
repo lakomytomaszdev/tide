@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from theme.colors.generate import render, scheme  # noqa: E402
+from theme.syntax import generate as syntax_theme  # noqa: E402
 from theme import palette as palettes  # noqa: E402
 
 PALETTE = ROOT / "theme" / "palette" / "mist.json"
@@ -57,6 +58,8 @@ CACHE = xdg("XDG_CACHE_HOME", ".cache")
 SCHEME_FILE = DATA / "color-schemes" / "TideMist.colors"
 SCHEME_DIR = SCHEME_FILE.parent
 FONT_DIR = DATA / "fonts" / "tide"
+# Motyw podświetlania składni (KSyntaxHighlighting) czytany przez widok diffa; Repository szuka go w $XDG_DATA_HOME.
+SYNTAX_THEME_FILE = DATA / "org.kde.syntax-highlighting" / "themes" / f"{syntax_theme.THEME_NAME}.theme"
 PREVIOUS = STATE / "tide" / "appearance-previous.json"
 
 
@@ -162,6 +165,8 @@ def install() -> None:
 
     SCHEME_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCHEME_FILE.write_text(render(scheme(json.loads(PALETTE.read_text()))))
+    SYNTAX_THEME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SYNTAX_THEME_FILE.write_text(syntax_theme.render(json.loads(PALETTE.read_text())))
     install_fonts()
 
     palette = json.loads(PALETTE.read_text())
@@ -195,6 +200,7 @@ def uninstall() -> None:
     run("plasma-apply-desktoptheme", previous.get("plasmarc|Theme|name") or "default")
 
     SCHEME_FILE.unlink(missing_ok=True)
+    SYNTAX_THEME_FILE.unlink(missing_ok=True)
     for path in tide_scheme_files():
         path.unlink(missing_ok=True)
     if FONT_DIR.is_dir():

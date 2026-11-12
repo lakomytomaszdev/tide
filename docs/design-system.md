@@ -41,6 +41,8 @@ Mist to miękki, ciemny grafit z tealem jako podpisem i pastelami do statusów, 
 | `pastel.mint` | `#9fe3b8` | Dobrze: scalony, dużo limitu (>40%). Przycisk maksymalizacji |
 | `pastel.sky` | `#a6c8f0` | Linki w terminalu, Codex. Stan „agent skończył” (`semantic.done`, puste kółko) — informacja, nie wezwanie |
 
+Widok diffa (`apps/common/qml/git/DiffView.qml`) koloruje linie przez `semantic.added` (mięta, dodane) i `semantic.removed` (róża, usunięte); tło wiersza to ten kolor z małą przezroczystością.
+
 Na tealowym zaznaczeniu tekst jest ciemny (`background.desktop`) — jasny tekst na tealu nie przechodzi testu kontrastu.
 
 ## Typografia

@@ -70,11 +70,14 @@ WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", 
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "TalkToCaretaker", "AbandonStep", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "SetCardPaused",
           "ApproveCardEnvironment", "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
 YOUTRACK_TIMEOUT_MS = 25_000   # YouTrackIssues: dwa zapytania do YouTracka w sieci lokalnej (po 4 s) i zapas
-TASKS_PATH, TASKS_IFACE = "/Tasks", "org.tide.Daemon.Tasks"
+GIT_PATH, GIT_IFACE = "/Git", "org.tide.Daemon.Git"
+TASKS_PATH, TASKS_IFACE ="/Tasks", "org.tide.Daemon.Tasks"
 COORDINATION_PATH, COORDINATION_IFACE = "/Coordination", "org.tide.Daemon.Coordination"
 AGENTS_PATH, AGENTS_IFACE = "/Agents", "org.tide.Daemon.Agents"
 MODELS_PATH, MODELS_IFACE = "/Models", "org.tide.Daemon.Models"
 LIMITS_PATH, LIMITS_IFACE = "/Limits", "org.tide.Daemon.Limits"
+WORKTREES_PATH, WORKTREES_IFACE = "/Worktrees", "org.tide.Daemon.Worktrees"
+NO_LAUNCHERS = '{"terminal": false, "rider": false, "window": false}'
 MODELS_VIEW = "models"
 PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
 START_TIMEOUT_MS = 10 * 60 * 1000  # jak w oknie „Nowe zadanie”: worktree dużego repozytorium zakłada się długo
@@ -218,6 +221,8 @@ class Backend(QObject):
     limitsChanged = pyqtSignal()
     flowSettingsChanged = pyqtSignal()
     cardOpenChanged = pyqtSignal()
+    diffModeChanged = pyqtSignal()
+    launchersChanged = pyqtSignal()
 
     def __init__(self, bus: QDBusConnection | None, data: dict | None = None, parent=None,
                  spectacle: str | None = None):
@@ -230,7 +235,10 @@ class Backend(QObject):
         self._tasks = "{}"
         self._limits = "{}"
         self._flow_settings = "{}"
+        self._launchers = NO_LAUNCHERS   # Worktrees Launchers(): które programy ma „Otwórz w edytorze” (PT-361)
         # Ustawienie okna (PT-133): na żywo z window.json; podgląd trzyma je tylko w pamięci i nie rusza plików.
+        self._diff_mode = windowconfig.DIFF_MODE_DEFAULT
+        self._diff_unsaved = False   # zapis się nie udał: do końca sesji obowiązuje wybór z pamięci
         self._card_open = windowconfig.CARD_OPEN_DEFAULT if data is not None else windowconfig.card_open()
         # Sesje zapisują to samo ustawienie w tym samym oknie — nadążamy za plikiem (PT-131).
         self._card_open_watcher = windowconfig.watch(self._card_open_from_file, self) if data is None else None
@@ -266,6 +274,7 @@ class Backend(QObject):
             self._tasks = json.dumps(data.pop("tasks", None) or {}, ensure_ascii=False)
             self._limits = json.dumps(data.pop("limits", None) or {}, ensure_ascii=False)
             self._flow_settings = json.dumps(data.pop("flowSettings", None) or {}, ensure_ascii=False)
+            self._launchers = '{"terminal": true, "rider": true, "window": false}'  # podgląd z „Otwórz w edytorze”
             preview_open = data.pop("cardOpen", None)
             if preview_open in windowconfig.CARD_OPEN_VALUES:
                 self._card_open = preview_open
@@ -279,7 +288,8 @@ class Backend(QObject):
         self._watcher = QDBusServiceWatcher(SERVICE, bus, QDBusServiceWatcher.WatchModeFlag.WatchForRegistration
                                             | QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
         self._watcher.serviceRegistered.connect(lambda _name: (self.reload(), self._refresh_tasks(),
-                                                                 self._refresh_limits(), self._refresh_flow_settings()))
+                                                                 self._refresh_limits(), self._refresh_flow_settings(),
+                                                                 self._refresh_launchers()))
         self._watcher.serviceUnregistered.connect(lambda _name: self._set_available(False))
         self._models = PENDING_MODELS
         bus.connect(SERVICE, MODELS_PATH, MODELS_IFACE, "Changed", self._models_changed)
@@ -288,6 +298,7 @@ class Backend(QObject):
         self._refresh_tasks()
         self._refresh_limits()
         self._refresh_flow_settings()
+        self._refresh_launchers()
 
     # --- właściwości dla QML ------------------------------------------------------------------
 
@@ -347,6 +358,10 @@ class Backend(QObject):
     def flowSettingsJson(self) -> str:
         return self._flow_settings
 
+    @pyqtProperty(str, notify=launchersChanged)
+    def launchersJson(self) -> str:
+        return self._launchers
+
     # Co otwiera kafelek z „Czeka na mnie” i powiadomienie: "decision" (okno decyzji) albo "full" (pełna karta).
     @pyqtProperty(str, notify=cardOpenChanged)
     def cardOpen(self) -> str:
@@ -372,6 +387,30 @@ class Backend(QObject):
         if value != self._card_open:
             self._card_open = value
             self.cardOpenChanged.emit()
+        return problem
+
+    # Tryb widoku diffa (PT-350): "unified" albo "split", zapamiętany w ustawieniach okna. Czytany z pliku przy
+    # każdym odczycie, więc widok otwarty w innym widoku okna (Worktrees) zapisał ten sam wybór; podgląd trzyma go
+    # tylko w pamięci.
+    @pyqtProperty(str, notify=diffModeChanged)
+    def diffMode(self) -> str:
+        return self._diff_mode if self._preview or self._diff_unsaved else windowconfig.diff_mode()
+
+    @pyqtSlot(str, result=str)
+    def setDiffMode(self, value: str) -> str:
+        """Zapisuje tryb diffa; pusty tekst albo powód, gdy zapis się nie udał (wtedy działa do końca sesji)."""
+        if value not in windowconfig.DIFF_MODE_VALUES:
+            return "Nieznany tryb diffa."
+        problem = ""
+        if not self._preview:
+            try:
+                windowconfig.set_diff_mode(value)
+            except OSError as exc:
+                problem = f"Nie zapisano ustawienia: {exc.strerror or exc}."
+        self._diff_unsaved = problem != ""
+        if value != self._diff_mode:
+            self._diff_mode = value
+            self.diffModeChanged.emit()
         return problem
 
     # Plakietka w pasku widoków okna Tide; pusta — ukryta.
@@ -507,6 +546,12 @@ class Backend(QObject):
     @pyqtSlot(str, str, str)
     def cardBranchDiff(self, tag: str, card_id: str, target_ref: str = "") -> None:
         self._write(tag, "CardBranchDiff", [card_id, target_ref] if target_ref else [card_id])
+
+    @pyqtSlot(str, str)
+    def gitDiff(self, tag: str, request: str) -> None:
+        """`Git.Diff` (K-36, wspólny widok diffa apps/common/qml/git/DiffView.qml): żądanie JSON, odpowiedź przez
+        `replied(tag, json)`. Odczyt — nie przeładowuje migawki."""
+        self._write(tag, "Diff", [request])
 
     @pyqtSlot(str, str)
     def mergeCardToMain(self, tag: str, card_id: str) -> None:
@@ -660,6 +705,61 @@ class Backend(QObject):
             pass
         return False
 
+    @pyqtSlot(str, str)
+    def open(self, path: str, app: str) -> None:
+        """„Otwórz w edytorze” z widoku diffa (PT-361): istniejąca wyrzutnia Worktrees (`Open`). Usługa sama
+        sprawdza, że ścieżka leży w wylistowanym worktree; bez usługi nic się nie dzieje."""
+        if self._preview or self.bus is None:
+            self._record("open", path, app)
+            return
+        self._call("Open", [path, app], None, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    @pyqtSlot(str, str)
+    def cardWorktree(self, tag: str, card_id: str) -> None:
+        """Katalog worktree gałęzi karty (PT-361): gałąź z migawki karty, katalog z listy Worktrees. Odpowiedź
+        `replied(tag, {"ok", "path"})`; `ok` fałszywe, gdy karta nie ma gałęzi albo worktree nie istnieje."""
+        branch = ""
+        for card in self._parsed_snapshot().get("cards") or []:
+            if card.get("id") == card_id:
+                branch = (((card.get("derived") or {}).get("flow") or {}).get("cardBranch") or "")
+                break
+
+        def reply(path: str) -> None:
+            self.replied.emit(tag, json.dumps({"ok": bool(path), "path": path}, ensure_ascii=False))
+
+        if not branch or self._preview or self.bus is None:
+            reply("")
+            return
+
+        def done(ok: bool, value) -> None:
+            path = ""
+            try:
+                for row in json.loads(value) if ok and isinstance(value, str) else []:
+                    if row.get("branch") == branch and not row.get("missing") and isinstance(row.get("path"), str):
+                        path = row["path"]
+                        break
+            except (ValueError, TypeError, AttributeError):
+                pass
+            reply(path)
+
+        self._call("List", [], done, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    def _refresh_launchers(self) -> None:
+        if self.bus is not None:
+            self._call("Launchers", [], self._got_launchers, path=WORKTREES_PATH, iface=WORKTREES_IFACE)
+
+    def _got_launchers(self, ok: bool, value) -> None:
+        text = NO_LAUNCHERS
+        if ok and isinstance(value, str):
+            try:
+                if isinstance(json.loads(value), dict):
+                    text = value
+            except ValueError:
+                pass
+        if text != self._launchers:
+            self._launchers = text
+            self.launchersChanged.emit()
+
     @pyqtSlot(str, result=bool)
     def showInFolder(self, path: str) -> bool:
         """„Pokaż w katalogu”: menedżer plików z zaznaczonym plikiem (FileManager1), bez niego — katalog."""
@@ -745,6 +845,8 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=TASKS_PATH, iface=TASKS_IFACE)
         elif member in ("StartCard", "EnterStep", "TalkToCaretaker"):   # zatrzymanie kroku i karta Konsoli mogą potrwać
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
+        elif member == "Diff":   # odczyt gita w puli wątków usługi; duże repozytorium potrafi potrwać
+            self._call(member, args, done, timeout=START_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
         elif member in ("PreviewCardMerge", "MergeCard", "PreviewCardBaseChange", "RequestCardBaseChange", "ResolveCardStep"):

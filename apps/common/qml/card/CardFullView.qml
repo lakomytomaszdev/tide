@@ -555,6 +555,14 @@ Rectangle {
                     elide: Text.ElideMiddle
                 }
                 Tide.TextButton {
+                    objectName: "fullBranchDiff"
+                    visible: !!(view.flow && view.flow.cardBranch)
+                    text: "Zmiany gałęzi"
+                    variant: "outline"
+                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
+                    onClicked: view.branchDiffRequested()
+                }
+                Tide.TextButton {
                     objectName: "fullDescription"
                     text: "Edytuj opis"
                     variant: "outline"
@@ -700,13 +708,6 @@ Rectangle {
                     font.family: Tide.Theme.uiFamily
                     font.pointSize: Tide.Tokens.fontSizePt * 0.9
                     wrapMode: Text.Wrap
-                }
-                Tide.TextButton {
-                    objectName: "fullBranchDiff"
-                    text: "Diff gałęzi"
-                    variant: "outline"
-                    Accessible.name: "Pokaż zmiany gałęzi karty względem bazy"
-                    onClicked: view.branchDiffRequested()
                 }
                 Tide.TextButton {
                     objectName: "fullPreviewMerge"

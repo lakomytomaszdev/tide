@@ -9,11 +9,27 @@ z gotowych danych (snapshot), więc D-Bus odpowiada od razu.
 - zmiana sesji agentów → tylko przeliczenie flagi „aktywny agent”, bez gita.
 """
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 REFRESH_MS = 60_000
+
+
+def openable(worktrees: list, path: str, app: str) -> bool:
+    """Czy `path` wolno otworzyć programem `app`: katalog z listy Worktrees (jak dotąd) albo — tylko w Riderze, bez
+    terminala — istniejący zwykły plik w takim katalogu (PT-361, „Otwórz w edytorze” z widoku diffa). Ścieżka plików
+    jest rozwiązywana (symlinki), więc wyjście poza worktree przez `..` albo link nie przejdzie."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    live = [w["path"] for w in worktrees if not w["missing"]]
+    if path in live:
+        return True
+    if app != "rider" or not os.path.isfile(path):
+        return False
+    real = os.path.realpath(path)
+    return any(real.startswith(os.path.realpath(root).rstrip("/") + "/") for root in live)
 
 
 class WorktreeMonitor(QObject):
@@ -34,6 +50,12 @@ class WorktreeMonitor(QObject):
         self._again = False
         self._stopped = False
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees")
+        self._fetch_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees-fetch")
+        self._fetching: set = set()  # repozytoria, z których właśnie pobieramy
+        # „Zaciągnij” (PT-353): własny wątek — czeka krótko na blokadę repozytorium i nie może stać ani za
+        # pobieraniem (sieć), ani za odświeżaniem i mierzeniem rozmiarów.
+        self._pull_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tide-worktrees-pull")
+        self._pulling: set = set()  # worktrees (ścieżki kanoniczne), które właśnie zaciągamy
         self._finished.connect(self._deliver)
         self._timer = QTimer(self, interval=refresh_ms)
         self._timer.timeout.connect(self.refresh)
@@ -50,6 +72,8 @@ class WorktreeMonitor(QObject):
         if hasattr(self.scanner, "stop"):
             self.scanner.stop()
         self._pool.shutdown(wait=True, cancel_futures=True)
+        self._fetch_pool.shutdown(wait=True, cancel_futures=True)
+        self._pull_pool.shutdown(wait=True, cancel_futures=True)
 
     def list_json(self) -> str:
         return self._json
@@ -116,11 +140,84 @@ class WorktreeMonitor(QObject):
             self.publish()
         self._submit(lambda: self.scanner.prune(repo_path), done)
 
+    def fetch(self, repo_path: str, reply) -> None:
+        """`git fetch` ze zdalnych repozytorium w tle; reply(json) w wątku głównym. Osobny wątek niż
+        odświeżanie, bo sieć potrafi trwać do limitu czasu, a lista nie ma na to czekać. Powtórne
+        żądanie dla repozytorium, które już pobieramy, dostaje „busy”."""
+        def refused(reason, message):
+            reply(json.dumps({"ok": False, "reason": reason, "message": message, "repoPath": repo_path,
+                              "remotes": []}, ensure_ascii=False))
+        if self._stopped:
+            refused("unavailable", "usługa się zamyka")
+            return
+        if not isinstance(repo_path, str):
+            refused("bad-request", "to nie jest repozytorium z listy Worktrees")
+            return
+        try:
+            key = os.path.realpath(repo_path)
+        except (OSError, ValueError):
+            key = repo_path
+        if key in self._fetching:
+            refused("busy", "pobieranie tego repozytorium już trwa")
+            return
+        self._fetching.add(key)
+
+        def done(result):
+            self._fetching.discard(key)
+            if result is None:
+                result = {"ok": False, "reason": "error", "message": "błąd usługi przy pobieraniu",
+                          "repoPath": repo_path, "remotes": []}
+            reply(json.dumps(result, ensure_ascii=False))
+            self.refresh()  # nowe liczby ahead/behind i „pobrano przed chwilą”
+        future = self._fetch_pool.submit(lambda: self.scanner.fetch(repo_path))
+        future.add_done_callback(lambda f: self._finished.emit(done, f))
+
+    def pull(self, path: str, reply) -> None:
+        """„Zaciągnij” (fast-forward do upstreamu) w tle; reply(json) w wątku głównym. Wątek główny niczego nie
+        czeka: migawka agentów i miejsc przepływu karty, potem praca w osobnym wątku (blokada repozytorium, git).
+        Powtórne żądanie dla worktree, który właśnie zaciągamy, dostaje `locked` bez czekania."""
+        def refused(reason, message):
+            reply(json.dumps({"ok": False, "reason": reason, "message": message,
+                              "path": path if isinstance(path, str) else ""}, ensure_ascii=False))
+        if self._stopped:
+            refused("unavailable", "usługa się zamyka")
+            return
+        if not isinstance(path, str) or not path or "\0" in path:
+            refused("bad-request", "to nie jest worktree z listy Worktrees")
+            return
+        try:
+            key = os.path.realpath(path)
+        except (OSError, ValueError):
+            key = path
+        if key in self._pulling:
+            refused("locked", "zaciąganie tego worktree już trwa")
+            return
+        if self.refresh_agents:
+            self.refresh_agents()
+        cards = list(self.card_places_source()) if self.card_places_source else []
+        agents = list(self.cwds_source())
+        self._pulling.add(key)
+
+        def done(result):
+            self._pulling.discard(key)
+            if result is None:
+                result = {"ok": False, "reason": "error", "message": "błąd usługi przy zaciąganiu", "path": path}
+            reply(json.dumps(result, ensure_ascii=False))
+            self.refresh()  # nowy HEAD, ahead/behind i grupy
+        future = self._pull_pool.submit(lambda: self.scanner.pull(path, agents, cards))
+        future.add_done_callback(lambda f: self._finished.emit(done, f))
+
     def open(self, path: str, app: str) -> bool:
         if self._stopped:
             return False
-        known = any(w["path"] == path and not w["missing"] for w in json.loads(self._json))
-        return bool(known and self.launchers and self.launchers.open(app, path))
+        known = openable(json.loads(self._json), path, app)
+        if not (known and self.launchers):
+            return False
+        if os.path.isfile(path):
+            # Plik (tylko Rider, PT-361): `Launchers.open` przyjmuje wyłącznie katalog, więc używamy publicznych
+            # `command` i `spawn`, a proces startuje w katalogu pliku.
+            return self.launchers.spawn(self.launchers.command(app, path), os.path.dirname(path))
+        return self.launchers.open(app, path)
 
     def show_window(self) -> bool:
         return bool(not self._stopped and self.launchers and self.launchers.show_window())

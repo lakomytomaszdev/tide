@@ -389,11 +389,12 @@ class SameCommandDBusTest(unittest.TestCase):
                         self.assertEqual(got, want, (card, flow_key, check, request))
 
     def normal(self, text: str, card: str) -> str:
-        """Tekst bez tymczasowej ścieżki i z numerem karty z fixture (K-1). Ścieżki najpierw: numer karty (K-3)
-        jest prefiksem nazwy worktree `k-39-…`, więc zamiana numeru przed ścieżką standardu psuła tę ścieżkę."""
-        return text.replace(self.ws, "{WS}").replace(
-            str(resources.resolve("plan-standard")), "{TIDE_STANDARD}").replace(card, "K-1").replace(
-            card.lower(), "k-1")
+        """Tekst bez tymczasowej ścieżki i z numerem karty z fixture (K-1).
+
+        Ścieżki najpierw: ścieżka standardu leży w checkoutcie, którego nazwa może zawierać numer karty
+        testowej (np. worktree `k-36-…` przy karcie `K-3`), więc zamiana numeru przed nią psuje `{TIDE_STANDARD}`."""
+        text = text.replace(str(resources.resolve("plan-standard")), "{TIDE_STANDARD}").replace(self.ws, "{WS}")
+        return text.replace(card, "K-1").replace(card.lower(), "k-1")
 
     def test_project_defaulting_to_spec_keeps_old_requests_meaning(self):
         # Projekt ze starym `mode: spec` i z nowym `entry: spec`: {} to spec, a sam tryb to Planowanie — jak przed zmianą.
