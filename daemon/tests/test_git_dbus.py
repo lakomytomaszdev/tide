@@ -1,12 +1,14 @@
 """`Git.Diff` (K-36, PT-357) przez D-Bus na prywatnej magistrali: karta uruchomiona „Od razu” z atrapą agenta,
 diff jej gałęzi od przypiętej bazy, bez zapisu do dziennika i bez zmiany refów."""
 import json
+import time
 
-from .privatebus import SERVICE, requires_dbus
+from .privatebus import SERVICE, requires_dbus, wait_until
 from .test_cardflow_dbus import FlowCase, git
 from tide_daemon.gitread.diffparse import parse_diff
 
 try:
+    from PyQt6.QtCore import QCoreApplication
     from PyQt6.QtDBus import QDBusMessage
 except ImportError:  # pragma: no cover
     pass
@@ -70,6 +72,19 @@ class GitDiffDbusTest(FlowCase):
         # Pętla usługi odpowiada dalej na inne wywołania (odpowiedź Diff jest opóźniona, z puli wątków).
         self.assertTrue(self.call("Snapshot")["cards"])
 
+    def settled(self, card_id, quiet=2.0, timeout=30.0) -> int:
+        """Liczba zdarzeń dziennika karty, gdy przez `quiet` sekund nic nie przybyło."""
+        last, since, deadline = -1, time.monotonic(), time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            count = len(self.events(card_id))
+            if count != last:
+                last, since = count, time.monotonic()
+            elif time.monotonic() - since >= quiet:
+                return count
+            time.sleep(.1)
+        self.fail(f"{card_id}: dziennik karty nie ustał w {timeout:g} s")
+
     def branch_map(self, request):
         return self.call("BranchMap", json.dumps(request), path=GIT_PATH, iface=GIT_IFACE)
 
@@ -87,7 +102,11 @@ class GitDiffDbusTest(FlowCase):
         reply = self.start(card_id)
         self.assertTrue(reply["ok"], reply)
         self.wait_column(card_id, "review")
-        events = len(self.events(card_id))
+        # Silnik dopisuje jeszcze zdarzenia po wejściu karty do Do sprawdzenia (domknięcie, sprzątanie): dziennik
+        # i refy porównujemy dopiero po domknięciu i ustaniu zapisów, żeby mierzyć tylko skutek odczytu mapy.
+        self.assertTrue(wait_until(lambda: "card.closed" in {e["type"] for e in self.events(card_id)},
+                                   timeout=30), self.events(card_id))
+        events = self.settled(card_id)
         refs = git(self.repo, "for-each-ref", "--format=%(refname) %(objectname)")
 
         data = self.branch_map({"project": "proj"})
