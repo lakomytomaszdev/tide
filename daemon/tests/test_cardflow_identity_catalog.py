@@ -421,7 +421,10 @@ BARRIERS = {
                    # PT-329: przebieg próby testów po scaleniu (pseudokrok `merge-check-…`) — ta sama historia
                    # i ten sam wspólny wynik redukcji co prośba outside kroku.
                    ("cardflow/engine.py", "FlowEngine._merge_check_history"),
-                   ("cardflow/engine.py", "FlowEngine._merge_check_run")],
+                   ("cardflow/engine.py", "FlowEngine._merge_check_run"),
+                   # K-105 PT-415 (review 1, MAJOR 2): jak `_outside_ready.fresh_run` — ponowna redukcja na świeżym
+                   # odczycie przed skutkiem próby (wynik z zakończenia, zatrzymanie jednostki, zapis wyniku).
+                   ("cardflow/engine.py", "FlowEngine._merge_check_run.fresh_run")],
         denial="_outside_history pod journal.lock przed Popen; _outside_ready: stan outside_run ≠ ok → FlowError",
         effect="Popen niezależnego outside; zaakceptowanie zakończenia bieżącej próby; zajętość i kolejka miejsc",
         negative=NEG + [f"{M}:Review10OutsideCompletionUnit.test_explicit_wrong_completion_unit_denies_every_barrier_across_restart",
@@ -514,7 +517,9 @@ EFFECT_SCOPE = {
     ("box/lifecycle.py", "Lifecycle.stop", "incus.stop"): ("box-lifecycle", "direct", {"require_idle"}, False),
     ("box/lifecycle.py", "Lifecycle.close_card", "incus.delete"): ("box-lifecycle", "direct", {"require_idle"}, False),
     ("box/lifecycle.py", "tick", "packs.cleanup"): ("idle-tick", "direct", {"active_steps"}, False),
-    ("box/packs.py", "cleanup", "incus.device_remove"): ("packs", "direct", {"read_process_history"}, False),
+    # K-105 PT-415: `process_state` — ta sama kontrola tożsamości (model, kategoria „model”) i stan procesu karty.
+    ("box/packs.py", "cleanup", "incus.device_remove"):
+        ("packs", "direct", {"read_process_history", "process_state"}, False),
     ("box/builder.py", "Builder.reset", "incus.stop"): ("box-lifecycle", "direct", {"require_idle"}, False),
     ("box/builder.py", "Builder.destroy", "incus.delete"): ("box-lifecycle", "direct", {"running_steps"}, False),
     ("box/builder.py", "Builder.copy_for_card", "incus.delete"): ("box-lifecycle", "direct", {"require_idle"}, False),

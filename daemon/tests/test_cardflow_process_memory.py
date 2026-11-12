@@ -422,7 +422,8 @@ class ProcessMemoryTickTest(TickFixture):
                               "exitFile": "/nonexistent/in/exit-code", "worktree": "/wt/card", "head": sha}]))
         # Nawet gdy tolerancyjna projekcja przepuściłaby start, decyduje świeży ścisły odczyt pod blokadą.
         with self.merge_check_launch(sha) as popen, \
-                mock.patch.object(self.engine, "_merge_check_still_allowed", return_value=True) as allowed:
+                mock.patch.object(self.engine, "_merge_check_still_allowed", return_value=True) as allowed, \
+                self.assertRaises(FlowError):
             self.engine._merge_check_start(self.card_id, step, entry)
         popen.assert_not_called()
         allowed.assert_not_called()

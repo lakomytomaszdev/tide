@@ -7141,21 +7141,21 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {key: found.get(key) for key in ("step", "ticket", "kind", "check", "command", "after", "branch",
                                                 "worktree", "stepDir", "baseVersion")}
 
-    def _merge_check_history(self, card: str, *, fresh: bool = False) -> list:
+    def _merge_check_history(self, card: str, *, fresh: bool = False, starting: str = "") -> list:
         """Historia procesów karty dla próby testów po scaleniu. Bez `fresh` z pamięci według wersji dziennika
         (K-105 PT-415) — wyłącznie do obserwacji czekania; `fresh=True` (świeży pełny odczyt, bez pamięci) przed każdym
-        skutkiem: start próby (Popen), zatrzymanie jednostki i zapis wyniku."""
+        skutkiem: start próby (Popen), zatrzymanie jednostki i zapis wyniku. `starting` — nazwa próby przed jej startem:
+        świeża historia z jakimkolwiek uruchomieniem tej próby (np. dopisanym z zewnątrz po odczycie z pamięci) albo
+        niespójnym stanem outside odmawia startu (FlowError), jak `_outside_history` z krokiem i poleceniem."""
         try:
-            return trialhold.read_process_history(self.journal, card, fresh=fresh)
+            events = trialhold.read_process_history(self.journal, card, fresh=fresh or bool(starting))
+            if starting:
+                state, started, finished = processidentity.outside_run(events, starting)
+                if state != "ok" or started is not None or finished is not None:
+                    raise ValueError("próba ma już uruchomienie w historii — start odmówiony")
+            return events
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise FlowError("outside-history", f"nieznana historia outside — wykonanie wstrzymane: {exc}") from None
-
-    def _merge_check_fresh_run(self, card: str, name: str):
-        """(started, finished) bieżącego uruchomienia próby `name` ze świeżego odczytu historii (bramka przed skutkiem)."""
-        state, started, finished = processidentity.outside_run(self._merge_check_history(card, fresh=True), name)
-        if state != "ok":
-            raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
-        return started, finished
 
     def _merge_check_run(self, card: str, step: dict, entry: dict, decision: dict) -> None:
         """Zgoda na próbę: start raz w kolejce outside (limit, jednostka, plik kodu wyjścia), a po końcu zapis
@@ -7170,8 +7170,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         state, started, finished = processidentity.outside_run(self._merge_check_history(card), name)
         if state != "ok":
             raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+
+        def fresh_run():
+            run = processidentity.outside_run(self._merge_check_history(card, fresh=True), name)
+            if run[0] != "ok":
+                raise FlowError("outside-history", "nieznana historia outside — wykonanie wstrzymane")
+            return run
         if finished:
-            started, finished = self._merge_check_fresh_run(card, name)
+            _, started, finished = fresh_run()
         if finished:
             # Restart między `outside.finished` a wynikiem próby: wynik z zapisanego zakończenia, dokładnie raz.
             self._merge_check_finish(card, step, entry, finished.get("exit"), (started or {}).get("log") or "")
@@ -7200,7 +7206,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             return
         def still_current():
             # Historia zmieniła się po odczycie z pamięci: bez zatrzymania jednostki i zapisu, kolejny tick od nowa.
-            now_started, now_finished = self._merge_check_fresh_run(card, name)
+            _, now_started, now_finished = fresh_run()
             return not now_finished and now_started == started
         collected = self._outside_collect(card, name, started, confirm=still_current)
         if collected is not None:
@@ -7259,10 +7265,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         with open(log, "ab") as out, self.journal.lock:
             # K-105 PT-415: świeży ścisły odczyt pod blokadą przed Popen (jak `_start_outside`): uruchomienie dopisane
             # z zewnątrz po ticku (odczyt z pamięci) zamyka start.
-            started, finished = self._merge_check_fresh_run(card, name)
-            if started is not None or finished is not None:
-                self._outside_waiting.pop(name, None)
-                return
+            self._merge_check_history(card, fresh=True, starting=name)
             if not self._merge_check_still_allowed(card, step):
                 return
             subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL, stdout=out,
