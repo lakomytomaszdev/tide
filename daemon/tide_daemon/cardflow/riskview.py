@@ -33,11 +33,12 @@ class RiskMemo:
             if hit is None or hit[0] != version:
                 self._cards[card] = (version, {})
         state = {"card": card, "version": version, "used": False}
-        token = _ACTIVE.set((self, state))
+        outer = _ACTIVE.get()
+        _ACTIVE.set((self, state))
         try:
             yield
         finally:
-            _ACTIVE.reset(token)
+            _ACTIVE.set(outer)
             if not state["used"]:
                 with self._lock:
                     if self._cards.get(card, (None,))[0] == version:
