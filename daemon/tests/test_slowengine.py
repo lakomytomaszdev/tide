@@ -130,20 +130,34 @@ class SlowFixtureTest(FlowInProcess):
         self.assertEqual(self.flow.engine.tick.__func__.__qualname__, "FlowEngine.tick")
         self.assertEqual(Path(self.fakes["claude"]).read_text(encoding="utf-8"), flowfakes.CLAUDE)
 
-    def observe(self):
+    def observe(self, delay):
+        """wait_column z opóźnieniem `delay` punktu obserwacji: (punkty, liczba ticków silnika w czasie czekania)."""
         card = self.card()
-        calls = []
-        self.stop_flow_worker()     # bez ticków timera: liczy się tylko to, co zleca sama fikstura
-        with mock.patch.object(self.flow, "tick", lambda: calls.append("tick")), \
-                mock.patch.object(slowengine, "sleep", calls.append):
+        self.wait_column(card, "todo", timeout=5)       # poza pomiarem: pierwsze wywołanie punktu
+        points, ticks = [], []
+        real = slowengine.take
+
+        def take(point):
+            if not point.startswith("fixture.observe"):
+                return real(point)      # tick/callback trwającego ticku monitora
+            points.append(point)
+            real(point)
+            return delay
+
+        with mock.patch.object(slowengine, "take", take), \
+                mock.patch.object(self.flow.engine, "tick", lambda: ticks.append(1)):
             self.wait_column(card, "todo")
-        return calls
+        return points, len(ticks)
 
-    def test_wait_column_lets_the_monitor_tick_before_the_test_thread_sleeps_slow(self):
-        self.assertEqual(self.observe(), ["tick", "fixture.observe"])
+    def test_wait_column_keeps_the_event_loop_running_while_the_test_lags_slow(self):
+        points, ticks = self.observe(0.6)
+        self.assertEqual(points, ["fixture.observe"])
+        self.assertGreaterEqual(ticks, 2, "ticki monitora (co 150 ms) biegną, gdy wątek testu zostaje w tyle")
 
-    def test_wait_column_neither_ticks_nor_sleeps_without_variable(self):
-        self.assertEqual(self.observe(), [])
+    def test_wait_column_does_not_wait_without_variable(self):
+        points, _ = self.observe(0.0)
+        self.assertEqual(points, ["fixture.observe"])
+        self.assertEqual(slowengine.take("fixture.observe"), 0.0)
 
 
 if __name__ == "__main__":

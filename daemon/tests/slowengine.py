@@ -27,8 +27,8 @@ PROFILES = {
     "domyslny": {
         "fixture.tick": (0.5, 0.3),           # FlowInProcess: przed `engine.tick()` w wątku monitora
         "fixture.callback": (0.5, 0.3),       # FlowInProcess: po ticku, przed callbackiem monitora (commit, publikacja)
-        "fixture.observe": (0.7, 1.2),        # FlowInProcess: po `wait_column` tick monitora, a wątek testu śpi
-                                              # bez pętli zdarzeń (silnik wyprzedza test, PT-366)
+        "fixture.observe": (0.7, 1.2),        # FlowInProcess: po `wait_column` test czeka z działającą pętlą
+                                              # zdarzeń — ticki monitora biegną, silnik wyprzedza test (PT-366)
         "claude.start": (0.5, 0.8),           # atrapa `claude`/`codex`: start procesu kroku
         "claude.result": (0.7, 1.5),          # atrapa `claude`/`codex`: zapis `result.json`
         "systemd-run.start": (0.5, 0.5),      # atrapa `systemd-run`: przed `exec` programu jednostki
@@ -92,8 +92,8 @@ def begin(scope):
         _counters.clear()
 
 
-def sleep(point):
-    """Opóźnienie punktu w procesie testu; bez zmiennej nic nie robi. Zwraca przespany czas."""
+def take(point):
+    """Kolejne opóźnienie punktu w procesie testu (licznik wywołań rośnie), bez czekania; bez zmiennej 0."""
     slow = current()
     if slow is None:
         return 0.0
@@ -101,7 +101,12 @@ def sleep(point):
         number = _counters.get(point, 0)
         _counters[point] = number + 1
         scope = _scope[0]
-    delay = slow.delay(point, number, scope)
+    return slow.delay(point, number, scope)
+
+
+def sleep(point):
+    """Opóźnienie punktu w procesie testu; bez zmiennej nic nie robi. Zwraca przespany czas."""
+    delay = take(point)
     if delay:
         time.sleep(delay)
     return delay

@@ -507,9 +507,9 @@ dowód). Testy: `daemon/tests/test_module_loop.py` (narzędzie), `daemon/tests/t
 
 Punkty i ich parametry (prawdopodobieństwo, najdłuższe opóźnienie w sekundach) są w `PROFILES`
 w `daemon/tests/slowengine.py`. Obecne punkty: `fixture.tick` i `fixture.callback` (tick monitora w
-`FlowInProcess` i odpowiedź po nim), `fixture.observe` (po `wait_column` fikstura zleca tick monitora, a wątek
-testu śpi bez pętli zdarzeń: silnik wyprzedza test jak pod obciążeniem; sam sen nie wystarcza, bo nowe ticki
-startują z timera pętli zdarzeń wątku testu), `claude.start`
+`FlowInProcess` i odpowiedź po nim), `fixture.observe` (po `wait_column` wątek testu czeka z działającą pętlą
+zdarzeń, więc timer monitora daje kolejne ticki i silnik wyprzedza test jak pod obciążeniem; sam `sleep` w wątku
+testu nie wystarcza, bo zatrzymuje też ticki startujące z timera jego pętli zdarzeń), `claude.start`
 i `claude.result` (atrapa agenta: start procesu kroku, zapis `result.json`), `systemd-run.start`, `systemctl`
 oraz `service.poll` (dodatek do `TIDE_FLOW_POLL_MS` usługi na prywatnej magistrali w `FlowCase`). Nowy punkt:
 

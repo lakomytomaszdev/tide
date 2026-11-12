@@ -329,12 +329,12 @@ class FlowInProcess(unittest.TestCase):
         # Kolumna liczy się z kopii dziennika w usłudze; plik w tablicy dostaje to samo zdarzenie chwilę później.
         journal = self.flow.engine.journal
         self.assertTrue(wait_until(lambda: self.events(card_id) == journal.read(card_id), timeout=5))
-        if slowengine.active():
-            # PT-417: wątek testu zostaje w tyle za silnikiem (jak pod obciążeniem). Nowe ticki startują z timera
-            # pętli zdarzeń tego wątku, więc sam sen zatrzymałby też silnik: najpierw tick (to samo co timer
-            # monitora; nic, gdy tick już trwa), potem sen bez pętli zdarzeń — tick biegnie w wątku roboczym.
-            self.flow.tick()
-            slowengine.sleep("fixture.observe")
+        delay = slowengine.take("fixture.observe")
+        if delay:
+            # PT-417: wątek testu sprawdza stan później (jak pod obciążeniem), a jego pętla zdarzeń dalej daje
+            # timerowi monitora kolejne ticki — silnik wyprzedza test o kilka ticków. Sam sen zatrzymałby też
+            # silnik, bo ticki startują z timera pętli zdarzeń tego wątku.
+            wait_until(lambda: False, timeout=delay, step=0.01)
         return card
 
     def events(self, card_id) -> list:
