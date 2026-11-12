@@ -2322,6 +2322,18 @@ planów ze wszystkich worktree widzi nowe ID w Sesjach, raporcie i kontroli nume
 dopiero po scaleniu wszystkich swoich blokerów; każdy przechodzi review i scalenie z PT-59.
 Przerwanie między rezerwacją, wpisem mapy i commitem planu odtwarza ten sam plan i numery.
 
+**Drugie zatwierdzenie w trakcie (PT-407, K-102).** Monitor przepływu trzyma zbiór kart z zatwierdzaniem planu
+w kolejce zmian albo w toku (wątek główny, od przyjęcia do doręczenia odpowiedzi; czyszczony przy sukcesie,
+`FlowError`, wyjątku i odmowie „usługa się zamyka”). Wchodzą do niego `ApproveCardPlan` (plan i różnica planu —
+ta sama metoda) oraz `ApproveCardEnvironment`, które zatwierdziłoby plan. Duplikat dowolnej z tych metod dla tej
+samej karty dostaje od razu `{"ok": true, "id": "K-n", "approving": true, "message": "Zatwierdzanie trwa…"}`
+i nie czeka w kolejce. Migawka: `derived.flow.plan.approving` to `plan.approval_requested` bieżącej propozycji bez
+`plan.approved`, bez nowszego nieudanego wyniku `reserve` tej propozycji i bez wstrzymanej decyzji o bazie (PT-208);
+`approvalError` to treść ostatniego błędu rezerwacji albo powód „Zatwierdzanie wstrzymane: czeka decyzja o bazie
+karty”. `status` nie dostaje nowych wartości. Zatwierdzanie różnicy planu nie zapisuje `plan.approval_requested`,
+więc migawka nie pokazuje dla niego `approving`; jego koniec klient poznaje z odpowiedzi wywołania. W trakcie
+faza karty to „zatwierdzanie planu w tle”, a decyzja `plan-approval` nie jest oferowana.
+
 ### Planowanie Lekkie i zasady przydziału (PT-79)
 
 `StartCard(K-12, {"entry":"planning","mode":"light","executor":"Opus","preferredProvider":"mixed"})`
