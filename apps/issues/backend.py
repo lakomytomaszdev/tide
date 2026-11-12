@@ -15,6 +15,7 @@ from PyQt6.QtGui import QColor, QDesktopServices
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVICE, PATH, IFACE = "org.tide.Daemon", "/Issues", "org.tide.Daemon.Issues"
 FILE_MAX = 20 * 1024 * 1024
+BOARD_PATH, BOARD_IFACE = "/Board", "org.tide.Daemon.Board"
 
 
 def common(name):
@@ -86,6 +87,8 @@ class Backend(QObject):
         self._preview = bus is None
         self._data = data or {}
         self._issues, self._list_errors, self._projects = [], [], []
+        self._projects_ready = False     # była już gotowa migawka Tablicy (nie „preparing”)
+        self._projects_loading = False   # pierwsza migawka jeszcze się przygotowuje
         self._buffers = {}
         self._accept_requests = {}
         self._launch = None
@@ -111,6 +114,7 @@ class Backend(QObject):
                 QDBusServiceWatcher.WatchModeFlag.WatchForUnregistration, self)
             self._watcher.serviceRegistered.connect(lambda _: self.reload())
             self._watcher.serviceUnregistered.connect(lambda _: self._lost())
+            bus.connect(SERVICE, BOARD_PATH, BOARD_IFACE, "Changed", self._board_changed)
             self._timer = QTimer(self)
             self._timer.setInterval(5000)
             self._timer.timeout.connect(self.reload)
@@ -142,6 +146,7 @@ class Backend(QObject):
     def stateJson(self):
         buf = self._buffers.get(self._selected, {})
         return json.dumps(dict(issues=self._issues, listErrors=self._list_errors, projects=self._projects,
+            projectsLoading=self._projects_loading,
             selected=self._selected, notice=self._notice, available=self._available, busy=self._busy,
             issue=buf.get("issue"), draft=buf.get("draft", {}), dirty=self._dirty(buf),
             conflict=buf.get("conflict", 0), current=buf.get("current"), error=buf.get("error", ""),
@@ -226,11 +231,32 @@ class Backend(QObject):
                     ident = self._selected
                     self._call("Show", [ident], lambda reply, _: self._shown(ident, reply))
             self.changed.emit()
-        def projects(result, _raw):
-            self._projects = result.get("projects", [])
-            self.changed.emit()
         self._call("Info", [], info)
-        self._call("Snapshot", [], projects, "/Board", "org.tide.Daemon.Board")
+        self._load_projects()
+
+    def _load_projects(self):
+        self._call("Snapshot", [], self._got_projects, BOARD_PATH, BOARD_IFACE)
+
+    @pyqtSlot()
+    def _board_changed(self):
+        """/Board Changed: usługa wysyła go przy pierwszej publikacji Tablicy. Czekając na pierwszą gotową migawkę
+        (po „preparing”), od razu czytamy projekty; później wystarcza reload co 5 s (bez dodatkowego kosztu)."""
+        if not self._projects_ready:
+            self._load_projects()
+
+    def _got_projects(self, result, _raw):
+        if result.get("readState") == "preparing":
+            # PT-385: usługa po restarcie jeszcze nie opublikowała Tablicy — `projects: []` to nie brak projektów.
+            # Zostaje poprzednia lista; bez niej — „wczytywanie” do najbliższego /Board Changed.
+            if not self._projects_ready and not self._projects_loading:
+                self._projects_loading = True
+                self.changed.emit()
+            return
+        if "projects" in result:         # gotowa migawka; odpowiedź z błędem usługi nie kończy czekania na Changed
+            self._projects_ready = True
+            self._projects_loading = False
+        self._projects = result.get("projects", [])
+        self.changed.emit()
 
     @pyqtSlot(str)
     def selectIssue(self, ident):

@@ -16,6 +16,7 @@ ColumnLayout {
 
     property var snapshot: null
     property bool available: true
+    property bool loading: false         // pierwsza migawka jeszcze się przygotowuje (PT-385)
     property string quickProject: ""
     property string status: ""           // komunikat po dopisaniu: błąd albo „Dopisano K-23”
     property bool statusError: false
@@ -87,7 +88,8 @@ ColumnLayout {
     Text {
         objectName: "popupSubtitle"
         Layout.fillWidth: true
-        text: popup.available ? Texts.subtitle(popup.counts) : "Usługa tide-daemon nie działa"
+        text: !popup.available ? "Usługa tide-daemon nie działa"
+            : popup.loading ? "Tablica się wczytuje…" : Texts.subtitle(popup.counts)
         textFormat: Text.PlainText
         color: Tide.Tokens.textMuted
         font.family: Tide.Theme.uiFamily

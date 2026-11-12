@@ -57,6 +57,7 @@ Item {
         board: view.board
         sessions: view.sessions
         flowCards: view.flowCards
+        flowLoading: !!(view.backend && view.backend.flowCardsLoading)
         detail: view.detail
         available: view.backend ? view.backend.available : false
         selectedId: view.backend ? view.backend.selected : ""

@@ -173,6 +173,17 @@ def render_markdown(markdown: str, link: QColor | None = None) -> str:
     return _IMG_TAG.sub("", html)   # zabezpieczenie: po zamianie nie powinno już być żadnego <img>
 
 
+def _preparing(text: str) -> bool:
+    """Snapshot() przed pierwszą publikacją usługi (`readState: preparing`, K-98 #2). Pole jest na początku JSON,
+    więc dużej migawki nie parsujemy przy każdym odczycie."""
+    if '"preparing"' not in text[:200]:
+        return False
+    try:
+        return json.loads(text).get("readState") == "preparing"
+    except (ValueError, AttributeError):
+        return False
+
+
 def badge(snapshot) -> tuple[str, str]:
     """(tekst, ton) plakietki z migawki: czekające karty albo karty w grze; ("", "muted") — ukryta."""
     cards = snapshot.get("cards") if isinstance(snapshot, dict) else None
@@ -807,6 +818,11 @@ class Backend(QObject):
     def _got_snapshot(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):
             self._set_available(False)
+            return
+        if _preparing(value):
+            # K-98 #2: usługa (np. po restarcie) jeszcze nie opublikowała migawki — zostaje poprzednia (albo okno
+            # zostaje w stanie „ładowanie”, bez pustej Tablicy), a nowa przyjdzie po sygnale Changed z pierwszą publikacją.
+            self._set_available(True)
             return
         if value != self._snapshot:
             self._snapshot = value

@@ -58,9 +58,9 @@ class RefreshCostTest(BoxFlow):
         models = []
         real = envconsent.model
 
-        def counting(engine, card, st):
+        def counting(engine, card, st, *rest):
             models.append(card)
-            return real(engine, card, st)
+            return real(engine, card, st, *rest)
         with mock.patch.object(envconsent, "_project_state", return_value=(exposure.PROJECT, "")), \
                 mock.patch.object(envconsent, "model", side_effect=counting):
             self.box_enabled = False

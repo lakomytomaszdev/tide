@@ -87,6 +87,8 @@ class Backend(QObject):
         self._board = "{}"
         self._sessions = "[]"
         self._flow_cards = "[]"
+        self._flow_ready = False         # była już gotowa migawka kart (nie „preparing”)
+        self._flow_loading = False       # pierwsza migawka jeszcze się przygotowuje
         self._detail = "{}"
         self._available = False
         self._selected = select
@@ -140,6 +142,11 @@ class Backend(QObject):
     @pyqtProperty(str, notify=flowCardsChanged)
     def flowCardsJson(self) -> str:
         return self._flow_cards
+
+    @pyqtProperty(bool, notify=flowCardsChanged)
+    def flowCardsLoading(self) -> bool:
+        """Usługa po restarcie jeszcze nie opublikowała Tablicy, a poprzedniej migawki kart nie ma."""
+        return self._flow_loading
 
     @pyqtProperty(str, notify=detailChanged)
     def detailJson(self) -> str:
@@ -335,10 +342,22 @@ class Backend(QObject):
         if not ok or not isinstance(value, str):
             return
         try:
-            cards = flow_cards(json.loads(value))
+            snapshot = json.loads(value)
         except ValueError:
-            cards = []
-        self._set("_flow_cards", json.dumps(cards, ensure_ascii=False), self.flowCardsChanged)
+            snapshot = None
+        if isinstance(snapshot, dict) and snapshot.get("readState") == "preparing":
+            # PT-385: `cards: []` to nie pusta Tablica — zostaje poprzednia lista; bez niej — „wczytywanie” do
+            # najbliższego /Board Changed (usługa wysyła go przy pierwszej publikacji → `_board_changed`).
+            if not self._flow_ready and not self._flow_loading:
+                self._flow_loading = True
+                self.flowCardsChanged.emit()
+            return
+        self._flow_ready = True
+        was_loading, self._flow_loading = self._flow_loading, False
+        text = json.dumps(flow_cards(snapshot), ensure_ascii=False)
+        if text != self._flow_cards or was_loading:
+            self._flow_cards = text
+            self.flowCardsChanged.emit()
 
     def _got_coordinators(self, ok: bool, value) -> None:
         if not ok or not isinstance(value, str):

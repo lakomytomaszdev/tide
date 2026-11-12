@@ -12,13 +12,15 @@ Tide.SidebarTile {
 
     property var snapshot: null
     property bool available: true
+    property bool loading: false         // pierwsza migawka jeszcze się przygotowuje (PT-385)
     property string problem: ""          // "not-installed", "no-service" albo ""
     signal openRequested(string cardId)
 
     readonly property var counts: Texts.counts(snapshot)
-    readonly property var parts: Texts.tileParts(counts)
+    readonly property var parts: loading ? [] : Texts.tileParts(counts)
     readonly property var rows: available ? Texts.rows(snapshot, 3).rows.filter(r => r.kind !== "backlog") : []
-    readonly property string summary: available ? Texts.tileSummary(counts) : "usługa nie działa"
+    readonly property string summary: !available ? "usługa nie działa" : loading ? Texts.LOADING
+                                                                                 : Texts.tileSummary(counts)
     readonly property bool showProblem: !available || problem !== ""
     readonly property string problemText: !available || problem === "no-service"
         ? "Usługa tide-daemon nie odpowiada" : "Okno Tide nie jest zainstalowane"

@@ -252,7 +252,7 @@ def main(argv=None) -> int:
                                                       sessions=worktree_sessions),
                             lambda: worktrees.agent_cwds(monitor.sessions, monitor.procs)
                             + [place for source in flow_places for place in source()],
-                            launchers, refresh_agents=monitor.recompute,
+                            launchers, refresh_agents=monitor.refresh_fresh,
                             live_source=lambda: worktrees.live_sessions(monitor.sessions),
                             card_places_source=lambda: [place for source in flow_places for place in source()])
     monitor.changed.connect(trees.publish)  # nowy albo zakończony agent zmienia flagę „aktywny agent”

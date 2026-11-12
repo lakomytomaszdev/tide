@@ -330,6 +330,21 @@ class BackendParseOnceTest(unittest.TestCase):
         backend._got_snapshot(True, "to nie jest JSON")
         self.assertEqual((backend.badgeText, backend.badgeTone), ("", "muted"))
 
+    def test_preparing_answer_never_becomes_the_window_board(self):
+        # K-98 #2, review r1 NIT 3: „preparing” bez posiadanej migawki nie zapisuje się jako pusta Tablica (okno
+        # zostaje w stanie „ładowanie”), a przy posiadanej migawce jej nie zastępuje.
+        preparing = json.dumps({"version": 0, "readState": "preparing", "exists": True, "cards": []})
+        backend = self.module.create(None, None)
+        changed = []
+        backend.snapshotChanged.connect(lambda: changed.append(True))
+        backend._got_snapshot(True, preparing)
+        self.assertTrue(backend.available)
+        self.assertEqual((backend._snapshot, changed), ("{}", []))   # początkowa „brak migawki”, bez Changed
+        ready = self.snapshot(waiting=2)
+        backend._got_snapshot(True, ready)
+        backend._got_snapshot(True, preparing)
+        self.assertEqual((backend._snapshot, len(changed)), (ready, 1))
+
     def test_preview_backend_parses_once(self):
         backend = self.module.create(None, {"exists": True, "cards": [{"id": "K-1", "column": "backlog"}]})
         self.assertEqual(backend.parse_count, 1)

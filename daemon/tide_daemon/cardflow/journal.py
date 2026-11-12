@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -27,6 +28,16 @@ SCHEMA = 1
 FLOW_DIR = "flow"
 JOURNAL = "journal.jsonl"
 CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
+
+
+class StrictReadInPresentation(RuntimeError):
+    """Ścisły czytnik bramki wywołany w odczycie prezentacji (K-98 #2). Celowo nie OSError/ValueError: wołający
+    bramki traktują je jako „unknown”, a to jest błąd programu, który ma być widoczny."""
+
+
+class HistoryChanged(ValueError):
+    """Historia karty zmieniła się (dopisanie, ucięcie, podmiana kopii) między odczytem, na którym oparto decyzję,
+    a zapisem (K-98 #3). Zapis jest odmówiony bez skutku; jako ValueError oznacza dla bramek stan unknown."""
 
 
 def _validate_process_identity(event):
@@ -60,6 +71,44 @@ class Journal:
         self._dirty: set[str] = set()
         self._cache: dict[str, tuple] = {}     # karta → (rozmiar i mtime kopii, zdarzenia)
         self._states: dict[str, tuple] = {}    # karta → (wersja dziennika, projekcja)
+        # K-98 #3: licznik zapisów karty w tym procesie (każde unieważnienie pamięci karty). Faza odczytu historii
+        # ticku (`trialhold.HistoryPhase`) po zmianie licznika czyta historię karty ponownie. Zapisów spoza procesu
+        # licznik nie widzi — przed skutkiem chroni je świeży pełny odczyt (`unchanged`, `HistoryPhase.unchanged`).
+        self._generations: dict[str, int] = {}
+        # K-98 #2: odczyt prezentacji (publikacja migawki w wątku głównym) — bez blokady, z własną pamięcią.
+        self._view = threading.local()
+        self._view_cache: dict[str, tuple] = {}
+        self._view_states: dict[str, tuple] = {}
+
+    # --- odczyt prezentacji ------------------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def presentation(self):
+        """Odczyt do prezentacji (K-98 #2) w bieżącym wątku: bez blokady dziennika, więc publikacja migawki nigdy
+        nie czeka na mutację. Kopia usługi jest tylko dopisywana, a plik w tablicy podmieniany atomowo, więc
+        czytamy zawsze pełne zdarzenia; urwany ostatni wiersz trwającego dopisania pomijamy (jeszcze go nie ma).
+        Pamięć jest osobna od pamięci workera. Wyłącznie do wyświetlania — zapisy i bramki czytają pod blokadą."""
+        before = getattr(self._view, "on", False)
+        self._view.on = True
+        try:
+            yield
+        finally:
+            self._view.on = before
+
+    def _presenting(self) -> bool:
+        return getattr(self._view, "on", False)
+
+    def _guard(self):
+        return contextlib.nullcontext() if self._presenting() else self.lock
+
+    def _strict(self):
+        """Blokada ścisłych czytników bramek (`cards_complete`, `read_complete`). Nie mają trybu prezentacji: ich
+        wynik decyduje o skutku, więc zawsze czytają pod blokadą dziennika. Wywołanie z odczytu prezentacji to błąd
+        programu — zgłaszamy go od razu (`StrictReadInPresentation`) zamiast czekać w wątku głównym na mutację albo
+        czytać bez blokady."""
+        if self._presenting():
+            raise StrictReadInPresentation("ścisły odczyt dziennika w odczycie prezentacji")
+        return self.lock
 
     # --- ścieżki ---------------------------------------------------------------------------------
 
@@ -101,7 +150,7 @@ class Journal:
         musi być czytelny i nie może być dowiązaniem. Katalog karty bez dziennika
         też trafia do wyniku, aby read_complete odmówił zamiast pominąć historię.
         """
-        with self.lock:
+        with self._strict():
             found = set()
             for root, mirror in ((self.mirror, True), (os.path.join(self.root, FLOW_DIR), False)):
                 try:
@@ -123,17 +172,18 @@ class Journal:
 
     def read(self, card: str) -> list[dict]:
         """Zdarzenia karty z kopii usługi (albo z tablicy, gdy kopii nie ma). Pamięć po rozmiarze i mtime."""
-        with self.lock:
+        with self._guard():
             return list(self._read_version(card)[1])
 
     def state(self, card: str) -> FlowState:
         """Projekcja z własnymi kontenerami pól. Zagnieżdżone wartości służą tylko do odczytu."""
-        with self.lock:
+        with self._guard():
             key, events = self._read_version(card)
-            hit = self._states.get(card)
+            states = self._view_states if self._presenting() else self._states
+            hit = states.get(card)
             if hit is None or hit[0] != key:
                 hit = (key, fold(events))
-                self._states[card] = hit
+                states[card] = hit
             state = copy(hit[1])
             # Silnik lokalnie zmienia pola i kontenery projekcji. Wartości zagnieżdżone
             # (także wytworzone przez fold) tylko czyta; deepcopy jest droższy od fold.
@@ -143,18 +193,23 @@ class Journal:
             return state
 
     def _read_version(self, card: str) -> tuple:
+        cache = self._view_cache if self._presenting() else self._cache
         source = self.mirror_path(card) if os.path.isfile(self.mirror_path(card)) else self.path(card)
         try:
             st = os.stat(source)
         except OSError:
-            self._cache.pop(card, None)
+            cache.pop(card, None)
             return (source, None, None), []
         key = (source, st.st_size, st.st_mtime_ns)
-        hit = self._cache.get(card)
+        hit = cache.get(card)
         if hit is not None and hit[0] == key:
             return hit
-        events = _parse(_read(source))
-        self._cache[card] = (key, events)
+        text = _read(source)
+        if self._presenting() and not text.endswith("\n"):
+            # Dopisanie w toku: bez urwanego wiersza i bez pamięci (klucz nie opisuje pełnej treści).
+            return key, _parse(text[:text.rfind("\n") + 1])
+        events = _parse(text)
+        cache[card] = (key, events)
         return key, events
 
     def read_complete(self, card: str) -> list[dict]:
@@ -164,7 +219,7 @@ class Journal:
         kopia hostowa jest autorytatywna także wtedy, gdy nie da się jej odczytać.
         OSError/ValueError oznaczają dla wywołującego stan unknown.
         """
-        with self.lock:
+        with self._strict():
             source = self.mirror_path(card)
             try:
                 os.lstat(source)
@@ -190,7 +245,12 @@ class Journal:
 
     # --- zapis -----------------------------------------------------------------------------------
 
+    def generation(self, card: str) -> int:
+        """Numer wersji historii karty według zapisów tego procesu (K-98 #3); zmienia się przy każdym zapisie."""
+        return self._generations.get(card, 0)
+
     def _invalidate(self, card: str) -> None:
+        self._generations[card] = self._generations.get(card, 0) + 1
         self._cache.pop(card, None)
         self._states.pop(card, None)
 
@@ -206,6 +266,17 @@ class Journal:
         """Zapis bramki tylko na pełnej historii, bez tolerancyjnego odtworzenia."""
         with self.lock:
             return self._append(card, kind, self.read_complete(card), data)
+
+    @contextlib.contextmanager
+    def unchanged(self, card: str, basis: list):
+        """Zapis decyzji podjętej na wcześniejszym odczycie `basis` (K-98 #3): blok trzyma blokadę dziennika, a na
+        wejściu świeży pełny ścisły odczyt musi być równy `basis`. Dopisanie, ucięcie albo podmiana dziennika lub
+        kopii po odczycie daje `HistoryChanged` przed blokiem — bez zapisu. Zapisy w bloku (`append_complete`)
+        czytają historię ponownie pod tą samą blokadą."""
+        with self.lock:
+            if self.read_complete(card) != list(basis):
+                raise HistoryChanged(f"{card}: historia zmieniła się po odczycie — zapis odmówiony")
+            yield
 
     def _append(self, card, kind, events, data):
         # Wywołujący trzyma lock od odczytu aż do końca zapisu.
@@ -264,6 +335,10 @@ class Journal:
             self._restore(card)
             return (f"{card}: dziennik karty w repozytorium tablicy był cofnięty albo zmieniony z zewnątrz — "
                     "odtworzony z kopii usługi")
+
+    def has_dirty(self) -> bool:
+        """Czy są zmiany dziennika do commita (odczyt bez blokady, wątek główny — K-98 #2)."""
+        return bool(self._dirty)
 
     def take_dirty(self) -> list[str]:
         with self.lock:

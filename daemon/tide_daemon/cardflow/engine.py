@@ -24,6 +24,8 @@ pierwszego sprawdzenia — po restarcie usługi od nowa (krok dostaje pełny cza
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import functools
 import json
 import hashlib
@@ -83,7 +85,7 @@ from .gitops import FlowGit, FlowGitError, worktree_for, lock_for
 from . import baseproposal, planartifacts
 from .mergepreview import source_dirty
 from .mergeop import MergeWorktree
-from .journal import Journal
+from .journal import HistoryChanged, Journal
 from .stepnotes import close_console
 from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
@@ -665,12 +667,22 @@ class FlowEngine(CaretakerChat, PlanEditing):
             raise FlowError(exc.code, str(exc)) from None
 
     def _settings_data(self) -> dict:
+        return self._settings_read()[0]
+
+    def _settings_read(self) -> tuple[dict, str]:
+        """(ustawienia, wersja): jeden odczyt pliku (zapis jest atomowy) i skrót tych samych bajtów jako wersja
+        odpowiedzi GetCardFlowSettings (K-98 #2) — treść i wersja zawsze pochodzą z tej samej wersji pliku."""
         try:
-            with open(self.settings, encoding="utf-8") as fh:
-                data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError, UnicodeError):
-            return {}
+            with open(self.settings, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return {}, "missing"
+        version = hashlib.sha1(raw).hexdigest()[:16]
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            return {}, version
+        return (data if isinstance(data, dict) else {}), version
 
     def migrate_environment(self) -> list:
         """PT-190: raz przy starcie usługi tworzy `box.proposed.yaml` z `networkDomains`/`outsideCommands`
@@ -680,7 +692,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return migration.migrate(migration.settings_slugs(data), data)
 
     def get_flow_settings(self) -> dict:
-        data = self._settings_data()
+        data, version = self._settings_read()
         transfer = data.get("limitTransfer") or {}
         if not isinstance(transfer, dict):
             transfer = {}
@@ -695,8 +707,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         box = bsettings.from_dict(data)
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
-                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(),
-                **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings)}
+                "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
+                **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
+                "version": version, "readState": "ready"}
 
     def _box_patch(self, request: dict, data: dict) -> dict | None:
         """PT-292: sekcja `box` po częściowym zapisie (`None` — żądanie bez `box`). Ścisła walidacja kluczy
@@ -832,10 +845,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         flow["limitTransfer"] = fullcard.limit_transfer(stopped, flow["otherProviders"],
                                                         settings["limitThresholdPercent"], pick)
 
-    def _environment_view(self, card: str, st: FlowState, out: dict) -> None:
+    def _environment_view(self, card: str, st: FlowState, out: dict, read=None) -> None:
         """PT-172: `flow.boxWait` i sekcja „Środowisko karty” w planie do zatwierdzenia (albo zatwierdzonym z „Tylko plan”).
-        Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji."""
+        Błąd odczytu profilu nie psuje migawki: sekcja dostaje komunikat zamiast pozycji.
+
+        K-98 #1: projekt karty i rejestr repozytoriów pochodzą z kontekstu odczytu odświeżenia (`read`, jedno
+        wczytanie Tablicy na odświeżenie). Pamięć `_env_cache` jest wspólna dla wszystkich projektów (także
+        plasma-tide) i ma klucz z odcisku wejść widoku (`envconsent.view_key`): każda zmiana zgody, profilu,
+        projektu/repozytorium, wersji planu, stanu karty, skutecznych ustawień albo manifestu wejść ją unieważnia.
+        Pamięć służy wyłącznie prezentacji — zatwierdzenie i bariery pudełka liczą odcisk i prawa świeżo."""
         from . import boxstep, boxwait, envconsent
+        from ..box import exposure
         wait = boxwait.card_box_wait(st)
         flow = out.get("flow") or {}
         flow["boxWait"], flow["boxWaitLabel"] = wait, boxwait.label(wait)
@@ -845,34 +865,46 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if wait != boxwait.ENVIRONMENT and not boxstep.settings_of(self).enabled:
             return
         plan = flow.get("plan")
+        if read is None:   # wywołanie spoza odświeżenia BoardMonitor: jeden świeży odczyt na to wyliczenie
+            from ..board.readcontext import BoardRead
+            read = BoardRead(self.store)
         try:
-            slug, _repo = envconsent._project_state(self, card)
+            slug, repo = envconsent._project_state(self, card, read)
         except FlowError:
             return
-        if slug == "plasma-tide":
-            try:
-                flow["environment"] = envconsent.model(self, card, st)
-                if plan:
-                    plan["environment"] = flow["environment"]
-            except Exception as exc:
-                flow["environment"] = {"projectExposure": True, "items": [], "notes": [str(exc)],
-                                       "stateLabel": "brak zgodnego manifestu", "yaml": "", "exposure": {}}
+        project_scope = slug == exposure.PROJECT
+        if not project_scope and (not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT)):
             return
-        if not plan or not (plan.get("status") == "pending" or wait == boxwait.ENVIRONMENT):
-            return
-        proposal = st.plan_proposed or {}
         try:
-            slug, _repo = envconsent._project_state(self, card)
-            stamp = tuple(os.path.getmtime(p) if os.path.exists(p) else 0 for p in
-                          (envconsent.bp.project_path(slug), envconsent.bp.card_path(slug, card),
-                           envconsent.bs.journal_path(slug)))
-            key = (proposal.get("seq"), wait, bool(st.plan_approved), stamp)
+            try:
+                key = envconsent.view_key(self, card, st, slug, repo, wait, read)
+            except Exception:
+                key = envconsent._Miss()     # nieczytelne wejście klucza: bez pamięci, sam model pokaże problem
             hit = self._env_cache.get(card)
             if hit is None or hit[0] != key:
-                hit = (key, envconsent.model(self, card, st))
-                self._env_cache[card] = hit
-            plan["environment"] = hit[1]
+                hit = (key, envconsent.model(self, card, st, read))
+                # K-98 #2: model policzony przy zajętej transakcji Tablicy (publikacja bez czekania) może mieć
+                # zastępczą treść — tę wersję BoardMonitor odrzuca, a pamięć widoku jej nie zatrzymuje.
+                busy = getattr(self.store, "read_was_busy", None)
+                if busy is not None and busy() is True:
+                    self._env_cache.pop(card, None)
+                else:
+                    self._env_cache[card] = hit
+            view = copy.deepcopy(hit[1])   # migawka nie dzieli obiektów z pamięcią
+            if project_scope:
+                flow["environment"] = view
+                if plan:
+                    plan["environment"] = flow["environment"]
+            else:
+                plan["environment"] = view
         except Exception as exc:
+            self._env_cache.pop(card, None)
+            if project_scope:
+                flow["environment"] = {"projectExposure": True, "items": [], "notes": [str(exc)],
+                                       "stateLabel": "brak zgodnego manifestu", "yaml": "", "exposure": {}}
+                if plan:
+                    plan["environment"] = flow["environment"]
+                return
             plan["environment"] = {"items": [], "notes": [f"środowisko karty: {exc}"], "state": "error", "stateLabel": "",
                                    "boxWait": wait, "boxWaitLabel": boxwait.label(wait), "question": "", "yaml": "",
                                    "acceptKey": envconsent.CONSENT_KEY, "diff": {"added": [], "removed": []}}
@@ -882,9 +914,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         from . import envconsent
         return envconsent.approve(self, card_id, text, bool(only_plan))
 
-    def box_status(self, slug: str, card: str = "") -> dict:
+    def box_status(self, slug: str, card: str = "", published=None) -> dict:
+        """BoxStatus — tylko odczyt; `published`: opublikowana migawka Tablicy (K-98 #2, `envconsent.status`)."""
         from . import envconsent
-        return envconsent.status(self, slug, card)
+        return envconsent.status(self, slug, card, published)
+
+    def box_wait(self, card_id: str) -> str:
+        """`boxWait` karty z dziennika (odczyt do opublikowanej migawki BoardMonitor, K-98 #2)."""
+        from . import boxwait
+        return boxwait.card_box_wait(self.journal.state(card_id))
 
     def stop_box(self, slug: str, card: str = "") -> dict:
         from . import boxcontrol
@@ -899,7 +937,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {**{key: base[key] for key in ("baseRef", "baseBranch", "baseCommit")},
                 "baseVersion": st.base_version}
 
-    def derived(self, card: dict) -> dict | None:
+    def derived(self, card: dict, read=None) -> dict | None:
+        """Stan karty w przepływie do migawki BoardMonitor. `read`: kontekst odczytu Tablicy jednego odświeżenia
+        (K-98 #1, `board.readcontext.BoardRead`) — tylko prezentacja; nie trafia do workera ani pamięci silnika."""
         st = self.journal.state(card.get("id") or "")
         if st.started is not None:
             st.caretaker_setup = self._caretaker_setup(st)
@@ -907,7 +947,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if out:
             ticketentry.enrich(st, out)
             self._limit_view(st, out)
-            self._environment_view(card.get("id") or "", st, out)
+            self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
             if st.closed and not st.merged:
                 out["flow"]["mainBranch"] = self._main_branches.get((st.started or {}).get("repo") or "", "")
@@ -1894,11 +1934,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
                               'parent': item.youtrack})
         return result
 
-    def _tracker_notes(self, card):
+    def _tracker_notes(self, card, read=None):
+        """`read`: kontekst odczytu Tablicy ticku (K-98 #3) — projekt karty bez osobnego wczytania."""
         st = self.journal.state(card)
         if not st.started:
             return
-        _, project = self._project(card)
+        _, project = self._project_read(card, read)
         if not project.youtrack:
             return
         for (action, ticket), result in list(st.results.items()):
@@ -3268,22 +3309,35 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if claim is not None:
             model_queue.shared().release_step(claim)
 
-    def _project_base(self, card: str) -> None:
-        """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól."""
+    def _project_base(self, card: str, read=None) -> None:
+        """Awaria projekcji nie cofa zlecenia; kolejny tick ponawia wyłącznie zapis pól.
+        `read`: kontekst odczytu ticku (K-98 #3) — gdy pola bazy już są na Tablicy, bez zapisu i bez wczytania."""
         st = self.journal.state(card)
         if st.started:
             try:
                 with self.journal.lock:
-                    self.store.project_card_base(card, base_of(st))
+                    if read is None:
+                        self.store.project_card_base(card, base_of(st))
+                    else:
+                        self.store.project_card_base(card, base_of(st), board=read.board)
             except Exception as exc:
                 print(f"tide-daemon: projekcja bazy {card}: {exc!r}", flush=True)
 
     def tick(self) -> None:
+        # K-98 #3: jedna faza odczytu historii na tick — rozpoznanie poniżej, odtworzenie startów (w pętli recovery
+        # i w `_tick_card`) i sieci pudełek dzielą ten sam pełny odczyt karty; własny zapis karty go unieważnia,
+        # a każda mutacja z niego porównuje świeży odczyt (odmowa przy zmianie).
+        history = trialhold.HistoryPhase(self.journal)
+        # K-98 #3: jeden kontekst odczytu Tablicy (`BoardRead` z #1) na tick, przekazywany jawnie; zapis Tablicy
+        # go unieważnia (tylko kontekst ticku — kontekst odświeżenia z #1 trzyma jedną wersję), a ścieżki ze skutkiem
+        # ubocznym czytają świeżo jak dotąd.
+        from ..board.readcontext import BoardRead
+        read = BoardRead(self.store, invalidate_on_write=True)
         try:
             # Recovery i journal.check zapisują stan. Żadna z tych operacji nie
             # może wyprzedzić rozpoznania niepełnej historii po restarcie.
             for card in self.journal.cards_complete():
-                trialhold.read_process_history(self.journal, card)
+                trialhold.read_process_history(self.journal, card, history)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self._warnings["journal"] = f"niepełna historia kart — odzyskiwanie wstrzymane: {exc}"
             return
@@ -3305,11 +3359,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 BaseGeneration(self).recover(card)
             except Exception as exc:
                 print(f"tide-daemon: odzyskiwanie generacji {card}: {exc!r}", flush=True)
-            self._project_base(card)
+            self._project_base(card, read)
             current = self.journal.state(card)
             if not baseproposal.blocked(current):
-                self._recover_started_steps(card, current)
-        boxstep.recover_network(self)
+                self._recover_started_steps(card, current, history=history)
+        boxstep.recover_network(self, history=history)
         # Odtwarzamy zajęte tory przed sprawdzeniem końca kroków i startem nowych.
         running_local = {s["step"]: s for card in self.journal.cards()
                          for s in self.journal.state(card).running() if s.get("local")}
@@ -3343,12 +3397,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             except Exception as exc:
                 print(f"tide-daemon: strażnik worktree: {exc!r}", flush=True)
             try:
-                self._tick_card(card, st)
+                self._tick_card(card, st, read, history)
             except Exception as exc:  # jedna karta nie zatrzymuje pozostałych
                 print(f"tide-daemon: przepływ karty {card}: {exc!r}", flush=True)
             try:
-                self._guard_card(card)
-                self._queue_notices(card)
+                self._guard_card(card, read)
+                self._queue_notices(card, read)
             except Exception as exc:
                 print(f"tide-daemon: przepływ karty {card}: strażnik/powiadomienie: {exc!r}", flush=True)
             st = self.journal.state(card)
@@ -3361,25 +3415,29 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self._busy = tuple(sorted(busy))
         boxstep.lifecycle.tick(self)
 
-    def _tick_card(self, card: str, st: FlowState) -> None:
+    def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:
+        """`read`: kontekst odczytu Tablicy ticku (K-98 #3) dla odczytów bez skutku; bez niego świeże odczyty.
+        `history`: faza odczytu historii tego ticku dla `_recover_started_steps` (zapis z niej — `Journal.unchanged`);
+        pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo jak dotąd."""
         self._outside_history(card)
         trialhold.inventory(self, card, st)
         if baseproposal.blocked(st):
             for step in st.running():
                 self._poll(card, step)
-            self._queue_notices(card)
+            self._queue_notices(card, read)
             return
         self._recover_transfer_requests(card, st)
         st = self.journal.state(card)
         self._recover_console_openings(card, st)
         st = self.journal.state(card)
         self._sync_plan_cards(card, st)
-        self._recover_started_steps(card, st)
+        self._recover_started_steps(card, st, history=history)
         self._recover_verdicts(card)
         self._recover_review_rejections(card)
         st = self.journal.state(card)
         if st.started is not None and not st.card_finished and st.store_column:
-            stored = self.store.load().cards.get(card_num(card))
+            # Wykrycie ruchu z kontekstu ticku; sam zapis ruchu (`moved`) czyta Tablicę świeżo.
+            stored = (read.board if read is not None else self.store.load()).cards.get(card_num(card))
             if stored is not None and (stored.column != st.store_column or
                                        (stored.move_id and stored.move_id != st.store_move_id)):
                 self.moved(card, stored.column, stored.moved_from or st.store_column, stored.move_id)
@@ -3392,14 +3450,14 @@ class FlowEngine(CaretakerChat, PlanEditing):
         try:
             if not blocking_tracker_error and st.started and not st.paused and not st.card_finished and st.started.get('entry') == 'now' \
                     and not st.steps and st.started.get('request'):
-                _, project = self._project(card)
+                _, project = self._project_read(card, read)
                 if project.youtrack or st.started.get("orderId"):
-                    self.start(card, st.started['request'], _resume=True)
+                    self.start(card, st.started['request'], _resume=True)    # start czyta Tablicę świeżo
             if not blocking_tracker_error and st.plan_proposed and st.plan_reviewed and not st.plan_approved and any(
                     e['type'] == 'plan.approval_requested' and e.get('proposal') == st.plan_proposed['seq']
                     for e in self.journal.read(card)):
                 self.approve_plan(card)
-            self._tracker_notes(card)
+            self._tracker_notes(card, read)
         except yt.YouTrackError:
             pass
         st = self.journal.state(card)
@@ -3428,12 +3486,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
         current = self.journal.state(card)
         if (current.plan_revision or {}).get("pending"):
             self._advance_plan_review(card, current)
-        self._queue_notices(card)
+        self._queue_notices(card, read)
         for found in self._advance_card(card):
             self._flow_error(card, found)
         # Opiekun karty (PT-143) po istniejących automatach (ponowienie, mocniejszy wykonawca, odpowiedź
         # o środowisko, auto-odmowa) i przed powiadomieniami (`_queue_notices` w `tick`).
-        self._caretake(card, self.journal.state(card))
+        self._caretake(card, self.journal.state(card), read)
 
     def _advance_card(self, card: str, *, own: tuple | None = None) -> list[dict]:
         """Przebieg etapów karty: ostatnie kroki ticketów, commit planu i kolejne tickety, domknięcie karty.
@@ -5175,21 +5233,28 @@ class FlowEngine(CaretakerChat, PlanEditing):
             self.journal.append(card, "ticket.rejected", ticket=ticket)
         return {"ok": True, "id": card, "ticket": ticket, "round": round_no, "choice": choice}
 
-    def _project(self, card: str):
-        board = self.store.load()
+    def _project(self, card: str, read=None):
+        """(karta, projekt) z Tablicy. `read`: kontekst odczytu jednego odświeżenia (K-98 #1, `BoardRead`) —
+        tylko dla prezentacji; bez niego świeży odczyt, jak w ticku i przed każdym skutkiem ubocznym."""
+        board = read.board if read is not None else self.store.load()
         item = board.cards.get(card_num(card))
         project = board.projects.get(item.project) if item else None
         if item is None or project is None:
             raise FlowError("no-project", f"{card}: nie ma karty albo projektu dla kroku")
         return item, project
 
+    def _project_read(self, card: str, read=None):
+        """`_project` z kontekstem odświeżenia albo — bez niego — dokładnie dotychczasowe wywołanie."""
+        return self._project(card) if read is None else self._project(card, read)
+
     def _review_policy(self, card: str, st: FlowState | None = None, ticket: str = "", *,
-                       klass: str | None = "", slug: str = "") -> str:
+                       klass: str | None = "", slug: str = "", read=None) -> str:
         """Polityka niezależności review (K-88/PT-330, decyzja 96 z 10.11) z ustawienia projektu ticketu.
 
         Czytana przy każdym wywołaniu z bieżącej Tablicy (bez restartu usługi). Projekt ticketu: kolumna Projekt
         zatwierdzonego planu, inaczej projekt karty. Klasa: podana, inaczej klasa ticketu z planu (`standard`);
-        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`."""
+        `klass=None` — review planu (bez zawężenia klas). Brak projektu albo ustawienia — `free`.
+        `read`: kontekst odczytu jednego odświeżenia (K-98 #1) — wtedy bez dodatkowego wczytania Tablicy."""
         if klass == "":
             klass = self._ticket_class(st, ticket) if st is not None and ticket else "standard"
         if not slug and st is not None and ticket:
@@ -5197,18 +5262,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                         if str(r.get("id") or "") == ticket), {})
             slug = row.get("project") or ""
         try:
-            _, project = self._project(card)
+            _, project = self._project_read(card, read)
         except FlowError:
             project = None
         if slug and project is not None and slug != getattr(project, "slug", slug):
-            project = self.store.load().projects.get(slug)
+            project = (read.board if read is not None else self.store.load()).projects.get(slug)
         return reviewgate.project_policy(project, klass)
 
-    def _plan_review_policy(self, card: str):
+    def _plan_review_policy(self, card: str, read=None):
         """`review_policy` dla `plans.read`: projekt wiersza (pusty — projekt karty) i klasa ticketu.
-        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz."""
+        Jeden odczyt Tablicy na sprawdzenie planu, nie na wiersz; z `read` (K-98 #1) — odczyt tego odświeżenia."""
         try:
-            _, project = self._project(card)
+            _, project = self._project_read(card, read)
         except FlowError:
             project = None
         board = None
@@ -5217,7 +5282,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
             nonlocal board
             found = project
             if slug and project is not None and slug != getattr(project, "slug", slug):
-                board = board or self.store.load()
+                board = board or (read.board if read is not None else self.store.load())
                 found = board.projects.get(slug)
             return reviewgate.project_policy(found, klass or "standard")
         return policy
@@ -5674,10 +5739,15 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if action == "step-start":
             self._release_box(card, {**intent, "step": key})
 
-    def _recover_started_steps(self, card: str, st: FlowState) -> None:
-        """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started."""
+    def _recover_started_steps(self, card: str, st: FlowState, history=None) -> None:
+        """Wynik startu zapisany przed awarią oznacza żywy albo zakończony krok, nawet bez step.started.
+
+        `history` (K-98 #3, `trialhold.HistoryPhase` ticku): decyzja na odczycie fazy, a każdy zapis dopiero po
+        świeżym pełnym odczycie równym temu, na którym ją podjęto (`append_unchanged`); zmiana albo ucięcie
+        dziennika lub kopii w międzyczasie — odmowa bez skutku, kolejny tick decyduje od nowa."""
         try:
-            st = fold(trialhold.read_process_history(self.journal, card))
+            events = trialhold.read_process_history(self.journal, card, history)
+            st = fold(events)
         except (OSError, ValueError, TypeError, KeyError):
             return  # także bezpośrednie recovery zachowuje bajty nieznanej historii
         ticket = ticket_of(st)
@@ -5687,32 +5757,42 @@ class FlowEngine(CaretakerChat, PlanEditing):
             intent = st.intents.get((action, key)) or {}
             if intent.get("seq", 0) < st.base_change.get("seq", 0):
                 continue
-            self.journal.append_complete(card, "step.started", step=key, kind=intent.get("kind") or "ticket",
-                                ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
-                                executor=intent.get("executor") or (st.started or {}).get("executor") or "",
-                                program=intent.get("program") or (st.started or {}).get("program") or "claude",
-                                model=intent.get("model") or (st.started or {}).get("model") or "",
-                                provider=intent.get("provider") or (st.started or {}).get("provider") or "",
-                                effort=intent.get("effort") or "", routeUrl=intent.get("routeUrl") or "",
-                                routeKind=intent.get("routeKind") or "",
-                                routeTokenFile=intent.get("routeTokenFile") or "",
-                                local=bool(intent.get("local", (st.started or {}).get("provider") == "local")),
-                                unit=result.get("unit") or intent.get("unit") or "",
-                                session=intent.get("session") or "", worktree=intent.get("worktree") or "",
-                                branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
-                                reviewTip=intent.get("reviewTip") or "",
-                                parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
-                                deliveredNoteIds=intent.get("deliveredNoteIds") or [],
-                                **({"executorReason": intent["executorReason"]} if intent.get("executorReason") else {}),
-                                readDirsProfile=bool(result.get("readDirsProfile")),
-                                gitDir=result.get("gitDir") or "", repo=self._repo(card),
-                                baseVersion=intent.get("baseVersion", 0),
-                                baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""),
-                                # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
-                                **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
-                                                         "boxPortOwner") if intent.get(k)},
-                                **{name: intent[name] for name in ("testPolicy", "testPolicyCard", "contractCommands")
-                                   if name in intent})
+            # Z fazy: zapis tylko na świeżej historii równej odczytowi decyzji (inaczej HistoryChanged bez zapisu).
+            guard = self.journal.unchanged(card, events) if history is not None else contextlib.nullcontext()
+            try:
+                with guard:
+                    event = self.journal.append_complete(
+                        card, "step.started", step=key, kind=intent.get("kind") or "ticket",
+                        ticket=intent.get("ticket") or ticket["id"], round=intent.get("round") or 0,
+                        executor=intent.get("executor") or (st.started or {}).get("executor") or "",
+                        program=intent.get("program") or (st.started or {}).get("program") or "claude",
+                        model=intent.get("model") or (st.started or {}).get("model") or "",
+                        provider=intent.get("provider") or (st.started or {}).get("provider") or "",
+                        effort=intent.get("effort") or "", routeUrl=intent.get("routeUrl") or "",
+                        routeKind=intent.get("routeKind") or "",
+                        routeTokenFile=intent.get("routeTokenFile") or "",
+                        local=bool(intent.get("local", (st.started or {}).get("provider") == "local")),
+                        unit=result.get("unit") or intent.get("unit") or "",
+                        session=intent.get("session") or "", worktree=intent.get("worktree") or "",
+                        branch=intent.get("branch") or ticket["branch"], stepDir=intent.get("stepDir") or "",
+                        reviewTip=intent.get("reviewTip") or "",
+                        parentStep=intent.get("parentStep") or "", attempt=intent.get("attempt") or 0,
+                        deliveredNoteIds=intent.get("deliveredNoteIds") or [],
+                        **({"executorReason": intent["executorReason"]} if intent.get("executorReason") else {}),
+                        readDirsProfile=bool(result.get("readDirsProfile")),
+                        gitDir=result.get("gitDir") or "", repo=self._repo(card),
+                        baseVersion=intent.get("baseVersion", 0),
+                        baseRef=intent.get("baseRef", ""), baseCommit=intent.get("baseCommit", ""),
+                        # PT-181: runner kroku w pudełku (po nim `_runner_for` sprawdza i zatrzymuje krok).
+                        **{k: intent[k] for k in ("runner", "box", "boxSlug", "boxIp", "boxAccess",
+                                                 "boxPortOwner") if intent.get(k)},
+                        **{name: intent[name] for name in ("testPolicy", "testPolicyCard", "contractCommands")
+                           if name in intent})
+            except HistoryChanged as exc:
+                print(f"tide-daemon: przepływ karty {card}: odzyskanie startu {key} odmówione: {exc}", flush=True)
+                return
+            # Własny zapis: kolejna decyzja tej pętli porównuje historię razem z nim, w postaci z dysku.
+            events = [*events, json.loads(json.dumps(event, ensure_ascii=False))]
 
     def _repo(self, card: str) -> str:
         st = self.journal.state(card)
@@ -5857,12 +5937,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
             stalled = datetime.fromtimestamp(self.clock() - (now - seen[1]), timezone.utc).isoformat(timespec="seconds")
             self._stop(card, step, "error", "no-progress", stalled_since=stalled)
 
-    def _guard_card(self, card: str) -> None:
-        """Po trzech minutach bez pracy i bez nazwanego powodu czekania zapisuje pojedynczy alarm."""
+    def _guard_card(self, card: str, read=None) -> None:
+        """Po trzech minutach bez pracy i bez nazwanego powodu czekania zapisuje pojedynczy alarm.
+        `read`: kontekst odczytu Tablicy ticku (K-98 #3)."""
         st = self.journal.state(card)
         if guard_reason(st) != "" or st.stalled_since or not st.last_activity_ts:
             return
-        item = self.store.load().cards.get(card_num(card))
+        item = (read.board if read is not None else self.store.load()).cards.get(card_num(card))
         if item is None or item.column in ("done", "archived") or self.clock() - st.last_activity_ts < 180:
             return
         event = self.journal.append(card, "card.stalled", reason=st.flow_error or "brak kroku i powodu czekania")
@@ -6182,12 +6263,13 @@ class FlowEngine(CaretakerChat, PlanEditing):
         planartifacts.save(self.journal, card, relative, planartifacts.read(out))
         return os.path.join(self.store.root, self.journal.rel_dir(card), relative)
 
-    def _queue_notices(self, card: str) -> None:
-        """Zdarzenie przed wysłaniem: po restarcie pytanie nie daje drugiego powiadomienia."""
+    def _queue_notices(self, card: str, read=None) -> None:
+        """Zdarzenie przed wysłaniem: po restarcie pytanie nie daje drugiego powiadomienia.
+        `read`: kontekst odczytu Tablicy ticku (K-98 #3) dla kolumny karty."""
         st = self.journal.state(card)
         if st.card_finished:
             return
-        withheld = self._caretaker_withheld(card, st)
+        withheld = self._caretaker_withheld(card, st, read)
         for name, done in st.finished.items():
             step = st.steps.get(name) or {}
             result = done.get("result")
@@ -6241,18 +6323,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     # --- opiekun karty (PT-143) --------------------------------------------------------------------
 
-    def _card_column(self, card: str) -> str:
+    def _card_column(self, card: str, read=None) -> str:
+        """Kolumna karty na Tablicy; `read` — kontekst odczytu ticku (K-98 #3), bez niego świeży odczyt."""
         try:
-            item = self.store.load().cards.get(card_num(card))
+            item = (read.board if read is not None else self.store.load()).cards.get(card_num(card))
         except (BoardError, OSError, ValueError):
             return ""
         return item.column if item is not None else ""
 
-    def _caretaker_withheld(self, card: str, st: FlowState) -> set:
+    def _caretaker_withheld(self, card: str, st: FlowState, read=None) -> set:
         """Kroki bez powiadomienia o decyzji: sprawdza je opiekun albo zaraz zacznie (problem jeszcze nieoddany)."""
         st = self._caretaker_state(st)
         held = {name for name in st.caretaking if caretaker.hidden(st, name)}
-        if st.started is None or caretaker.unavailable(st, self._card_column(card), self._caretaker_setup(st)):
+        if st.started is None or caretaker.unavailable(st, self._card_column(card, read), self._caretaker_setup(st)):
             return held
         for problem in caretaker.problems(st):
             policy = caretaker.PROBLEM_POLICIES.get(problem["trigger"]) or {}
@@ -6260,7 +6343,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 held.add(problem["step"])
         return held
 
-    def _caretake(self, card: str, st: FlowState) -> None:
+    def _caretake(self, card: str, st: FlowState, read=None) -> None:
         """Jedyne wejście opiekuna w silniku: dokończenie zapisanych kroków opiekuna (wynik → akcja z rejestru,
         `caretaker.started` bez startu po restarcie → start bez drugiej kopii) i start opiekuna przy nowych
         problemach. Krok opiekuna kończy się istniejącym `_poll`/`_finish` (rodzaj `caretaker`)."""
@@ -6276,7 +6359,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 self._caretaker_launch(card, current, run)
         st = self._caretaker_state(self.journal.state(card))
         conf = self._caretaker_setup(st)
-        if caretaker.unavailable(st, self._card_column(card), conf):
+        # Kolumna z kontekstu ticku (`read`, K-98 #3); start opiekuna (`_caretaker_launch`) czyta Tablicę świeżo.
+        if caretaker.unavailable(st, self._card_column(card, read), conf):
             return
         limit = conf["limit"]
         for problem in caretaker.problems(st):
@@ -7311,10 +7395,12 @@ class FlowEngine(CaretakerChat, PlanEditing):
             code = stepstop.read_exit_code(step_dir, stepstop.EXIT_CODE_FILE + ".tmp")
         return code if code is not None else OUTSIDE_STOPPED
 
-    def _review_rounds(self) -> int:
-        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę)."""
+    def _review_rounds(self, data: dict | None = None) -> int:
+        """Po tylu rundach REQUEST_CHANGES Tide pyta użytkownika (domyślnie 6; 03.11: po 3 karty stały co chwilę).
+        `data`: ustawienia już odczytane (GetCardFlowSettings — jeden odczyt pliku na odpowiedź)."""
+        data = self._settings_data() if data is None else data
         try:
-            return max(1, min(20, int(self._settings_data().get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
+            return max(1, min(20, int(data.get("reviewRoundsBeforeQuestion", REVIEW_ROUNDS))))
         except (TypeError, ValueError):
             return REVIEW_ROUNDS
 

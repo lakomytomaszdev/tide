@@ -7,7 +7,10 @@
 - zmiany z zewnątrz (agent pisze plan w docs/, ręczna edycja karty): QFileSystemWatcher na
   katalogach i plikach tablicy, po DEBOUNCE_MS ciszy — commit „sync external changes” i Changed;
   dodatkowo co POLL_MS to samo sprawdzenie (zapis w miejscu bez zdarzenia, nowe podkatalogi,
-  tablica założona poza usługą).
+  tablica założona poza usługą). K-98 #6: bez `flow/` (dziennik i wyjście kroków pisze usługa — UNWATCHED_TOP)
+  i bez pełnego przejścia drzewa przy każdej synchronizacji i zapisie: zdarzenie katalogu zaznacza go do
+  przejrzenia, a `_rewatch` przegląda tylko zaznaczone katalogi i nowe poddrzewa; pełne przejście — przy
+  starcie, po założeniu Tablicy i co POLL_MS (także ponowienie ścieżek odrzuconych przez limit obserwacji).
 - stan kart z pracy agentów (PT-5, board/derive.py): migawka z plików jest w pamięci (`_base`), a po
   zmianie w /Agents albo /Coordination (rederive, najwyżej co REDERIVE_MS) przeliczamy tylko pola
   `derived` i `boardColumn` — bez ponownego czytania repozytorium tablicy,
@@ -37,6 +40,21 @@
   przekazuje karty (z kolumną wyświetlaną) do `youtrack.observe`, a migawka dostaje stan synchronizacji przy
   kartach (`youtrackSync`), ogólny (`youtrack`) i konflikty w `errors`. Import zgłoszeń (ImportYouTrack)
   zakłada karty w Backlogu tą samą drogą co CreateCard, bez duplikatów (po polu `youtrack`).
+- K-98 #2 — opublikowana, spójna migawka: Snapshot() (także Panel karty — `cards[].derived.flow`) oddaje ostatnią
+  opublikowaną wersję z polami `version` (numer publikacji, rośnie przy każdej zmianie treści) i `readState`
+  (`ready`; przed pierwszą publikacją `preparing` zamiast pustej Tablicy). Publikacja powstaje pod bramką przepływu
+  karty (`CardFlowMonitor.read_gate`) i nie bierze blokady dziennika: dzienniki czyta w trybie prezentacji (pełne
+  zdarzenia, własna pamięć), a licznik epok akcji (seqlock) odrzuca odczyt, w trakcie którego trwała albo zmieniła się
+  akcja z kolejki — żadna wersja nie pokazuje akcji w połowie. Wczytanie Tablicy w publikacji też nie czeka: idzie
+  w `store.without_waiting()`, więc transakcja Tablicy trzymana przez mutację (StartCard w `git worktree add`,
+  scalenie, tick) albo inny proces odkłada publikację zamiast zatrzymać wątek główny (jawny Snapshot() czeka na nią
+  najwyżej SNAPSHOT_WAIT_S — krótka transakcja ticku; publikacje w tle wcale). Zapisy Tablicy z zegara (sync,
+  mark_ready_specs, link_session) też nie czekają i wracają przy następnej okazji. Odłożona publikacja wraca po
+  PUBLISH_RETRY_MS, a odczyty dostają poprzednią wersję. Zapisy ticku widać zapis po zapisie (tick nie jest akcją):
+  jedna wersja może złożyć Tablicę z chwili po jednym zapisie ticku z dziennikiem sprzed kolejnego — każdy z nich
+  jest pełny, jak przed K-98 #2; atomowość „cała akcja albo nic” dotyczy akcji z kolejki. Dane odczytu służą
+  wyłącznie prezentacji; operacje sprawdzają historię i prawa świeżo w kolejce mutacji. Zapisy Tablicy z wątku
+  głównego (CreateCard, UpdateCard, MoveCard, UpsertProject, sync) nadal biorą transakcję z czekaniem.
 """
 import contextlib
 import copy
@@ -44,6 +62,8 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from typing import NamedTuple
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 
@@ -51,6 +71,8 @@ from . import call_origin
 from .board import work as work_list
 from .board.docs import CardDocs
 from .board.model import CARD_PREFIX, BoardError, card_num
+from .board.readcontext import BoardRead
+from .board.store import BoardBusy
 from .board import ytsync
 from .coordination.youtrack import issue_key
 
@@ -60,8 +82,25 @@ DEBOUNCE_MS = 2_000
 POLL_MS = 60_000
 REDERIVE_MS = 500  # zmiany sesji przychodzą seriami (co 250 ms przy pracy agenta) — przeliczenie najwyżej tak często
 MAX_WATCHED_FILES = 2_000  # powyżej — tylko katalogi i odpytywanie co POLL_MS
+# K-98 #6 (PT-362): katalogi główne Tablicy bez obserwacji plików. `flow/` (dziennik kart i wyjście kroków, w produkcji
+# ~95 % katalogów i plików Tablicy) pisze sama usługa: commit i nowa migawka idą z `CardFlowMonitor._drain` po każdej
+# akcji i ticku, zmianę dziennika z zewnątrz (revert, ręczna edycja) wykrywa tick (`Journal.check`), a resztę zbiera
+# odpytywanie co POLL_MS (commit „sync external changes” i migawka). Obserwacja `flow/` dawała tylko pełne
+# przejście drzewa na wątku głównym przy każdym zapisie dziennika.
+UNWATCHED_TOP = frozenset({".git", "flow"})
 WORK_VOLATILE_MS = 10_000  # zmiana samej ostatniej czynności agenta na liście „Praca” — WorkChanged najwyżej tak często
 LINK_RETRY_S = 60.0  # nieudane utrwalenie sesji w karcie ponawiamy najwyżej tak często
+PUBLISH_RETRY_MS = 50  # publikacja odłożona (akcja w toku, zajęta Tablica) — kolejna próba (bez czekania)
+SNAPSHOT_WAIT_S = 0.25  # Snapshot() czeka na transakcję Tablicy najwyżej tyle (krótkie transakcje ticku), potem stara wersja
+
+
+class Published(NamedTuple):
+    """Opublikowana wersja stanu Tablicy (K-98 #2) dla odczytów poza wątkiem głównym (BoxStatus).
+    Obiekty są świeże przy każdym wywołaniu `published()` i nie są zmieniane później."""
+    version: int
+    snapshot: dict
+    board: object      # projects: slug → projekt z migawki; cards: numer → obiekt z `project`
+    box_wait: dict     # karta z dziennikiem przepływu → `boxWait`
 
 
 def derived_cache_path(env=None) -> str:
@@ -98,7 +137,7 @@ class BoardMonitor(QObject):
 
     def __init__(self, store, repos_source=None, derive=None, debounce_ms: int = DEBOUNCE_MS,
                  poll_ms: int = POLL_MS, launchers=None, rederive_ms: int = REDERIVE_MS, coordinators=None,
-                 docs=None, youtrack=None, proc_root: str = "/proc", parent=None):
+                 docs=None, youtrack=None, proc_root: str = "/proc", parent=None, watcher=None):
         super().__init__(parent)
         self.store = store
         # /proc do sprawdzenia nadawcy zatwierdzenia kontraktu testów (call_origin, PT-286); atrapa tylko w testach.
@@ -112,6 +151,12 @@ class BoardMonitor(QObject):
         self._docs_waiting: dict[str, list] = {}     # ID karty → odpowiedzi czekające na trwający odczyt
         self._docs_ready.connect(self._deliver_docs)
         self._current: dict | None = None                 # migawka z `derived` (to, co oddaje Snapshot())
+        self._version = 0                                 # numer opublikowanej wersji (K-98 #2); 0 — jeszcze żadnej
+        self._content = ""                                # treść ostatniej publikacji bez pól wersji
+        self._box_wait: dict = {}                         # boxWait kart z dziennikiem z tej samej publikacji
+        self._pending = None                              # odłożona publikacja: "publish" | "apply" | None
+        self._retry = QTimer(self, singleShot=True, interval=PUBLISH_RETRY_MS)
+        self._retry.timeout.connect(self._retry_pending)
         self._plans_mark = None
         self.launchers = launchers                        # worktrees.Launchers — okno Tide (ShowWindow)
         self.repos_source = repos_source or (lambda: [])  # funkcja() → ścieżki repozytoriów z katalogu projektów
@@ -123,13 +168,24 @@ class BoardMonitor(QObject):
         self._work_later = QTimer(self, singleShot=True, interval=WORK_VOLATILE_MS)
         self._work_later.timeout.connect(self.work_changed)
         self._base: dict | None = None                    # migawka z plików bez stanu z pracy agentów
-        self._watcher = QFileSystemWatcher(self)
-        self._watcher.directoryChanged.connect(self._touched)
+        # Obserwacja plików Tablicy (K-98 #6): obserwator tylko w wątku głównym (tu powstaje; `watcher` — atrapa
+        # w testach). Pamięć obserwowanych katalogów: katalog → obserwowane podkatalogi i pliki. Zdarzenie katalogu
+        # zaznacza go do ponownego przejrzenia (`_dirty`); `_rewatch` przegląda tylko zaznaczone katalogi i nowe
+        # poddrzewa, pełne przejście — przy pierwszym starcie, po (ponownym) założeniu katalogu Tablicy i co POLL_MS.
+        self._watcher = watcher if watcher is not None else QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._dir_touched)
         self._watcher.fileChanged.connect(self._touched)
+        self._tree: dict[str, set[str]] = {}       # obserwowany katalog → jego obserwowane podkatalogi
+        self._tree_files: dict[str, set[str]] = {}  # obserwowany katalog → jego obserwowane pliki
+        self._watched_files = 0
+        self._dirty: set[str] = set()
+        self._refused: set[str] = set()     # ścieżki odrzucone przez obserwatora (limit) — tylko odpytywanie
+        # Liczniki dla testów i diagnozy: przejrzane katalogi (scandir), pełne przejścia, odrzucone ścieżki.
+        self.watch_stats = {"visitedDirs": 0, "fullScans": 0, "refused": 0}
         self._debounce = QTimer(self, singleShot=True, interval=debounce_ms)
         self._debounce.timeout.connect(self.sync)
         self._poll = QTimer(self, interval=poll_ms)
-        self._poll.timeout.connect(self.sync)
+        self._poll.timeout.connect(self._poll_sync)
         self._rederive = QTimer(self, singleShot=True, interval=rederive_ms)
         self._rederive.timeout.connect(self._apply)
         self._rederive_requested.connect(self.rederive)
@@ -167,6 +223,7 @@ class BoardMonitor(QObject):
         self._debounce.stop()
         self._rederive.stop()
         self._work_later.stop()
+        self._retry.stop()
         if self._docs_pool is not None:
             self._docs_pool.shutdown(wait=False, cancel_futures=True)
             self._docs_pool = None
@@ -188,11 +245,47 @@ class BoardMonitor(QObject):
     def snapshot_json(self) -> str:
         # Plany mogą powstać w repozytorium projektu poza tablicą; przy jawnym odświeżeniu
         # odczytaj je ponownie, aby otwarte okno zlecenia dostało aktualnych kandydatów.
+        # K-98 #2: publikacja odłożona przez trwającą akcję — ostatnia opublikowana wersja albo „preparing”.
+        # Zakończone, a jeszcze niedoręczone wyniki z kolejki najpierw trafiają do migawki (bez czekania — publikacja
+        # nie bierze blokady dziennika), żeby odczyt po zapisie widział jego skutek.
+        # Jawny odczyt czeka na transakcję Tablicy najwyżej SNAPSHOT_WAIT_S łącznie (jeden termin na wywołanie): krótka
+        # transakcja ticku nie zostawia mu wersji sprzed zapisu, a długa mutacja daje poprzednią wersję po terminie.
+        deadline = time.monotonic() + SNAPSHOT_WAIT_S
+        left = lambda: max(0.0, deadline - time.monotonic())
+        settle = getattr(self.flow, "settle", None) if self.flow is not None else None
+        if settle is not None:
+            settle()
+        # Udane ponowienie już wczytało Tablicę i plany: znacznik planów ustawiony po nim, więc ta sama zmiana planów
+        # nie publikuje drugi raz (jedno wczytanie Tablicy na Snapshot(), PT-385).
+        if self._pending is not None and self._retry_pending(left()):
+            self._plans_mark = self._plans_stamp()
         mark = self._plans_stamp()
         if not self._json or mark != self._plans_mark:
-            self.publish()
-            self._plans_mark = self._plans_stamp()
-        return self._json
+            if self.publish(left()):
+                self._plans_mark = self._plans_stamp()
+        return self._json or self._preparing_json()
+
+    def _preparing_json(self) -> str:
+        """Snapshot() przed pierwszą publikacją (K-98 #2): jawne „preparing”, nie pusta, gotowa Tablica."""
+        return json.dumps({"version": 0, "readState": "preparing", "boardDir": self.store.root,
+                           "exists": bool(self.store.exists()), "cards": [], "projects": [], "tags": [], "repos": [],
+                           "errors": []}, ensure_ascii=False)
+
+    def published(self) -> Published | None:
+        """Ostatnia opublikowana wersja stanu dla odczytów w innym wątku (BoxStatus); None — jeszcze żadnej.
+        Budowana w wątku głównym z obiektów tej publikacji, bez wczytywania Tablicy i bez blokady dziennika."""
+        if self._current is None or not self._version:
+            return None
+        snapshot = self._current
+        projects = {p["slug"]: p for p in snapshot.get("projects") or [] if isinstance(p, dict) and p.get("slug")}
+        cards = {}
+        for card in snapshot.get("cards") or []:
+            try:
+                cards[card_num(card.get("id") or "")] = SimpleNamespace(project=card.get("project") or "")
+            except (BoardError, AttributeError):
+                continue
+        return Published(self._version, snapshot, SimpleNamespace(projects=projects, cards=cards),
+                         dict(self._box_wait))
 
     def _plans_stamp(self):
         from .coordination import plan
@@ -216,7 +309,9 @@ class BoardMonitor(QObject):
         """Work(): lista „Praca” (board/work.py) — {exists, items, counts}."""
         if not self._work_json:
             self.publish()
-        return self._work_json
+        return self._work_json or json.dumps(
+            {"readState": "preparing", "exists": bool(self.store.exists()), "items": [],
+             "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}, ensure_ascii=False)
 
     def create_card(self, request: str) -> str:
         held = self._card_holding_session(request)
@@ -476,7 +571,10 @@ class BoardMonitor(QObject):
             return
         if self._current is None:
             self.snapshot_json()
-        snapshot = self._current or {}
+        if self._current is None:   # K-98 #2: pierwsza publikacja jeszcze trwa — nie „nie ma karty”
+            reply(json.dumps(_failure("preparing", "Tablica się przygotowuje — spróbuj za chwilę"), ensure_ascii=False))
+            return
+        snapshot = self._current
         card = next((c for c in snapshot.get("cards") or [] if isinstance(c, dict) and c.get("id") == ident), None)
         if card is None:
             reply(json.dumps(_failure("not-found", f"nie ma karty {ident}"), ensure_ascii=False))
@@ -608,28 +706,101 @@ class BoardMonitor(QObject):
 
     # --- odświeżanie ---------------------------------------------------------------------------
 
-    def publish(self) -> None:
-        try:
-            repos = list(self.repos_source() or [])
-        except Exception as exc:  # lista repozytoriów to dodatek — tablica działa bez niej
-            print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
-            repos = []
-        try:
-            snapshot = self.store.snapshot(repos=repos)
-        except Exception as exc:  # odczyt nie może położyć usługi
-            print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
-            snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
-                        "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
-        self._base = snapshot
-        self._apply()
+    def publish(self, wait_s: float = 0.0) -> bool:
+        """Świeża migawka z plików i projekcja kart. K-98 #2: pod bramką przepływu karty (bez blokady dziennika);
+        gdy trwa akcja z kolejki albo zmieniła się w trakcie odczytu, publikacja jest odłożona (False), a Snapshot()
+        oddaje poprzednią opublikowaną wersję. `wait_s`: najdłuższe czekanie na transakcję Tablicy (tylko jawny
+        Snapshot(); publikacje w tle — 0, bez czekania)."""
+        with self._gate() as ticket:
+            if not ticket:
+                self._defer("publish")
+                return False
+            try:
+                repos = list(self.repos_source() or [])
+            except Exception as exc:  # lista repozytoriów to dodatek — tablica działa bez niej
+                print(f"tide-daemon: tablica: repozytoria: {exc!r}", flush=True)
+                repos = []
+            # K-98 #1: jedno odświeżenie = najwyżej jedno wczytanie Tablicy. Kontekst powstaje tutaj, idzie jawnie do
+            # migawki plików i projekcji kart (`engine.derived` → widok środowiska) i ginie z końcem odświeżenia.
+            # K-98 #2: wczytanie nie czeka na transakcję Tablicy trzymaną przez mutację (StartCard, scalenie, tick) —
+            # najwyżej `wait_s`; zajęta transakcja odkłada publikację, a Snapshot() oddaje poprzednią wersję.
+            with self._without_waiting(wait_s) as probe:
+                read = BoardRead(self.store)
+                try:
+                    snapshot = self.store.snapshot(repos=repos, board=read.board)
+                except BoardBusy:
+                    self._defer("publish")
+                    return False
+                except Exception as exc:  # odczyt nie może położyć usługi
+                    print(f"tide-daemon: tablica: odczyt: {exc!r}", flush=True)
+                    snapshot = {"boardDir": self.store.root, "exists": False, "cards": [], "projects": [], "tags": [],
+                                "repos": [], "errors": [{"path": self.store.root, "message": f"błąd odczytu: {exc}"}]}
+                if probe.busy is True:
+                    self._defer("publish")
+                    return False
+                # Podstawa trafia do `_base` dopiero z udaną publikacją (bilet ważny przez cały odczyt).
+                return self._apply(read, base=snapshot, ticket=ticket) is not False
 
-    def _apply(self) -> None:
-        """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie."""
-        if self._base is None:
-            self.publish()
-            return
-        snapshot, context = self._derived(self._base)
-        work = self._work(snapshot, context)
+    def _without_waiting(self, wait_s=0.0):
+        """Odczyty Tablicy z wątku głównego bez czekania na jej transakcję (K-98 #2, `BoardStore.without_waiting`);
+        `wait_s` — najwyżej tyle sekund czekania (sygnał Qt może podać tu inny argument: wtedy 0)."""
+        hold = getattr(self.store, "without_waiting", None)
+        if hold is None:
+            return contextlib.nullcontext(SimpleNamespace(busy=False))
+        wait = float(wait_s) if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool) else 0.0
+        return hold(wait) if wait > 0 else hold()
+
+    def _gate(self):
+        """Bramka odczytu przepływu karty (K-98 #2) albo zawsze otwarta, gdy usługa działa bez przepływu."""
+        gate = getattr(self.flow, "read_gate", None) if self.flow is not None else None
+        return gate() if gate is not None else contextlib.nullcontext(True)
+
+    def _defer(self, kind: str) -> None:
+        if self._pending != "publish":
+            self._pending = kind
+        if not self._retry.isActive():
+            self._retry.start()
+
+    def _retry_pending(self, wait_s: float = 0.0) -> bool:
+        """Ponowienie odłożonej publikacji; True — wersja opublikowana (Tablica wczytana świeżo)."""
+        kind, self._pending = self._pending, None
+        if kind == "publish":
+            return bool(self.publish(wait_s))
+        if kind == "apply":
+            # Ponowione przeliczenie czyta Tablicę świeżo jak publikacja; z terminem — jako publikacja (Snapshot()).
+            return bool(self.publish(wait_s) if wait_s else self._apply())
+        return False
+
+    def _apply(self, read: BoardRead | None = None, base: dict | None = None, ticket=None):
+        """Migawka z plików + stan kart z pracy agentów → JSON; Changed tylko przy zmianie.
+        `read`: kontekst odczytu Tablicy tego odświeżenia (K-98 #1); bez niego (zegar przeliczenia, YouTrack) —
+        nowy kontekst, czyli najwyżej jedno wczytanie na to przeliczenie. K-98 #2: pod bramką jak `publish`
+        (`ticket` — bilet z `publish`, `base` — świeżo wczytana podstawa). False — publikacja odłożona."""
+        if base is None and self._base is None:
+            return self.publish()
+        if ticket is not None:
+            return self._publish(read, ticket, base)
+        with self._gate() as ticket:
+            if not ticket:
+                self._defer("apply")
+                return False
+            return self._publish(read, ticket, base)
+
+    def _publish(self, read: BoardRead | None, ticket, base: dict | None = None) -> bool:
+        """Projekcja i publikacja jednej wersji (wywołujący trzyma bramkę). Gdy w trakcie odczytu zaczęła się albo
+        skończyła akcja z kolejki (bilet nieważny), wynik jest odrzucany przed jakimkolwiek skutkiem."""
+        if not isinstance(read, BoardRead):   # sygnały Qt wołają bez argumentu
+            read = BoardRead(self.store)
+        base = self._base if base is None else base
+        # Projekcja czyta Tablicę (widok środowiska, polityka review) bez czekania na transakcję mutacji; trafienie
+        # na zajętą transakcję — nawet złapane niżej i zamienione na zastępczą treść — odrzuca całą wersję.
+        with self._without_waiting() as probe:
+            snapshot, context, box_wait = self._derived(base, read)
+            work = self._work(snapshot, context)
+        if probe.busy is True or not getattr(ticket, "still_valid", lambda: True)():
+            self._defer("publish")
+            return False
+        self._base = base
         if self.youtrack is not None:
             try:
                 self.youtrack.observe(snapshot)
@@ -638,8 +809,13 @@ class BoardMonitor(QObject):
                 print(f"tide-daemon: tablica: YouTrack: {exc!r}", flush=True)
         self._current = snapshot
         text = json.dumps(snapshot, ensure_ascii=False)
-        if text != self._json:
-            self._json = text
+        fresh = text != self._content or box_wait != self._box_wait
+        if fresh:
+            # Nowa treść = nowa wersja; ta sama treść zachowuje wersję (odczyt bez zmian stanu jej nie podbija).
+            self._version += 1
+            self._content, self._box_wait = text, box_wait
+        if fresh or not self._json:
+            self._json = _versioned(text, self._version)
             self.changed.emit()
         work_text = json.dumps(work, ensure_ascii=False)
         if work_text != self._work_json:
@@ -651,6 +827,7 @@ class BoardMonitor(QObject):
                 self.work_changed.emit()
             elif not self._work_later.isActive():
                 self._work_later.start()   # tylko ostatnia czynność agenta — kafelek dowie się za chwilę
+        return True
 
     def _work(self, snapshot: dict, context) -> dict:
         """Lista „Praca”; błąd nigdy nie psuje tablicy — wtedy same karty, a w ostateczności pusta lista."""
@@ -663,11 +840,14 @@ class BoardMonitor(QObject):
         return {"exists": bool(exists), "items": [],
                 "counts": {**{g: 0 for g in work_list.GROUPS}, "total": 0, "sessions": 0}}
 
-    def _derived(self, base: dict) -> tuple[dict, object]:
-        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None) — kontekst dostaje
-        też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart."""
+    def _derived(self, base: dict, read: BoardRead | None = None) -> tuple[dict, object, dict]:
+        """(migawka z `derived` i `boardColumn`, kontekst przeliczenia derive albo None, boxWait kart z dziennikiem)
+        — kontekst dostaje też lista „Praca” (board/work.py), więc sesje i połączenia są te same co w kolumnach kart.
+        `read`: odczyt Tablicy tego odświeżenia, przekazywany do `flow.derived` (K-98 #1). boxWait trafia do
+        opublikowanej wersji dla BoxStatus (K-98 #2), także dla kart bez wyliczanego stanu (ręczna kolumna)."""
+        read = read if read is not None else BoardRead(self.store)
         if self.derive is None and self.flow is None:
-            return base, None
+            return base, None, {}
         snapshot = dict(base)
         snapshot["errors"] = list(base.get("errors") or [])
         claimed = [c.get("session") for c in base.get("cards") or [] if isinstance(c, dict) and c.get("session")]
@@ -678,7 +858,7 @@ class BoardMonitor(QObject):
             except Exception as exc:  # stan z pracy agentów to dodatek — tablica działa bez niego
                 print(f"tide-daemon: tablica: stan z pracy agentów: {exc!r}", flush=True)
                 if self.flow is None:
-                    return base, None
+                    return base, None, {}
         if self.flow is not None:
             try:
                 snapshot["errors"].extend(self.flow.warnings())   # dziennik karty odtworzony z kopii usługi
@@ -688,13 +868,14 @@ class BoardMonitor(QObject):
         cards = []
         links = []
         fresh: dict = {}
+        box_wait: dict = {}
         for card in base.get("cards") or []:
             card = copy.copy(card)
             derived = None
             try:
                 if self.flow is not None and self.flow.has_journal(card.get("id") or ""):
                     # Karta w przepływie karty: stan tylko z dziennika (dziennik wygrywa z planem i sesjami).
-                    derived = self.flow.derived(card)
+                    derived = self.flow.derived(card, read)
                     if derived is None and hasattr(self.flow, "card_base"):
                         # Ręczna kolumna ma derived: null; jej baza nadal pochodzi z dziennika.
                         card.update(self.flow.card_base(card.get("id") or ""))
@@ -712,6 +893,13 @@ class BoardMonitor(QObject):
                                            "message": f"{card.get('id', '')}: stan z pracy agentów: {exc}"})
             ident = card.get("id") or ""
             from_flow = self.flow is not None and self.flow.has_journal(ident)
+            if from_flow:
+                shown = ((derived or {}).get("flow") or {})
+                try:
+                    box_wait[ident] = shown["boxWait"] if "boxWait" in shown else \
+                        self.flow.box_wait(ident) if hasattr(self.flow, "box_wait") else ""
+                except Exception as exc:   # stan pudełka to dodatek migawki — BoxStatus pokaże kartę bez niego
+                    print(f"tide-daemon: tablica: {ident}: boxWait: {exc!r}", flush=True)
             if derived is not None and not from_flow:
                 fresh[ident] = derived
             elif derived is None and not from_flow and not self._derive_ready and ident in self._derived_cache:
@@ -731,7 +919,7 @@ class BoardMonitor(QObject):
                 _save_cache(self._derived_cache_path, fresh)
         snapshot["cards"] = cards
         self._queue_links(links)
-        return snapshot, (derive if hasattr(derive, "sessions") else None)
+        return snapshot, (derive if hasattr(derive, "sessions") else None), box_wait
 
     def _queue_links(self, links: list) -> None:
         now = time.monotonic()
@@ -750,7 +938,13 @@ class BoardMonitor(QObject):
         for card_id, session, how, branch in links:
             self._link_tried[(card_id, session)] = time.monotonic()
             try:
-                result = self.store.link_session(card_id, session, how, branch)
+                # Zapis z zegara przeliczenia: zajęta transakcja Tablicy (mutacja) — bez czekania; para wraca przy
+                # następnym przeliczeniu, bo znacznik próby jest zdejmowany.
+                with self._without_waiting():
+                    result = self.store.link_session(card_id, session, how, branch)
+            except BoardBusy:
+                self._link_tried.pop((card_id, session), None)
+                continue
             except BoardError as exc:
                 print(f"tide-daemon: tablica: {card_id}: połączenie z sesją {session}: {exc}", flush=True)
                 continue
@@ -766,23 +960,47 @@ class BoardMonitor(QObject):
             self._rewatch()
             self.publish()
 
-    def sync(self) -> None:
+    def _poll_sync(self) -> None:
+        """Odpytywanie co POLL_MS: synchronizacja z pełnym przejściem obserwowanych poddrzew (zdarzenie, którego nie
+        było — zapis w miejscu bez obserwacji pliku, limit obserwacji, przepełniona kolejka inotify, tablica założona
+        poza usługą)."""
+        self.sync(full=True)
+
+    def sync(self, full: bool = False) -> None:
         """Commit zmian z zewnątrz, nowe ścieżki do obserwacji i świeża migawka. Zmiany dziennika kart (przepływ
-        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”."""
-        try:
-            with self.flow.lock if self.flow is not None else contextlib.nullcontext():
-                if self.flow is not None:
-                    self.flow.commit()
-                if self.store.sync():
-                    print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
-        except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
-            print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
-        try:
-            for card_id in self.store.mark_ready_specs():
-                print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
-        except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
-            print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
-        self._rewatch()
+        karty) najpierw własnym commitem, pod blokadą dziennika — nie trafiają do „sync external changes”.
+        K-98 #2: blokadę dziennika bierzemy bez czekania. Gdy trzyma ją mutacja (np. StartCard z zapisem Tablicy),
+        commit i znacznik specyfikacji czekają na następną synchronizację, a wątek główny dalej odpowiada."""
+        lock = getattr(self.flow, "lock", None) if self.flow is not None else None
+        if lock is not None and not lock.acquire(blocking=False):
+            self._debounce.start()
+        else:
+            # Review r1 (pełny przebieg): commit zmian z zewnątrz i znacznik specyfikacji to zapisy z zegara, nie
+            # z prośby użytkownika — transakcja Tablicy trzymana przez mutację (StartCard, scalenie, tick) albo inny
+            # proces odkłada je do następnej synchronizacji zamiast zatrzymać wątek główny.
+            try:
+                try:
+                    if self.flow is not None:
+                        self.flow.commit()
+                    with self._without_waiting():
+                        if self.store.sync():
+                            print("tide-daemon: tablica: zapisano zmiany z zewnątrz", flush=True)
+                except BoardBusy:
+                    self._debounce.start()
+                except Exception as exc:  # np. zablokowany indeks — spróbujemy przy następnej okazji
+                    print(f"tide-daemon: tablica: commit zmian z zewnątrz: {exc}", flush=True)
+            finally:
+                if lock is not None:
+                    lock.release()
+            try:
+                with self._without_waiting():
+                    for card_id in self.store.mark_ready_specs():
+                        print(f"tide-daemon: tablica: {card_id}: specyfikacja gotowa", flush=True)
+            except BoardBusy:
+                self._debounce.start()
+            except Exception as exc:  # znacznik to dodatek — spróbujemy przy następnej synchronizacji
+                print(f"tide-daemon: tablica: gotowe specyfikacje: {exc!r}", flush=True)
+        self._rewatch(full=full is True)
         self.publish()
 
     # --- wnętrze -------------------------------------------------------------------------------
@@ -809,25 +1027,154 @@ class BoardMonitor(QObject):
     def _touched(self, _path: str) -> None:
         self._debounce.start()  # każda kolejna zmiana odsuwa commit — zapis z wielu plików to jeden commit
 
-    def _rewatch(self) -> None:
+    def _dir_touched(self, path: str) -> None:
+        """Zmiana wpisów katalogu (nowy, usunięty albo podmieniony plik lub podkatalog): katalog do przejrzenia."""
+        self._dirty.add(path)
+        self._debounce.start()
+
+    # --- obserwacja plików (K-98 #6) -----------------------------------------------------------
+
+    def _rewatch(self, full: bool = False) -> None:
+        """Obserwowane ścieżki zgodne z dyskiem. Bez zaznaczonych katalogów i bez `full` — nic (żadnego przejścia
+        drzewa). Inaczej przegląda tylko zaznaczone katalogi (rodzice przed dziećmi): usunięte poddrzewa znikają
+        z obserwacji, nowe są obserwowane od razu — katalog dostaje obserwację PRZED odczytem swoich wpisów, więc
+        zmiana w świeżym poddrzewie po odczycie daje zdarzenie, a wcześniejsza jest już w odczycie. `full`
+        (pierwszy start, ponowne założenie Tablicy, odpytywanie co POLL_MS) przegląda wszystkie obserwowane
+        poddrzewa. Każda ścieżka jest porównywana ze zbiorem obserwowanych raz — O(N)."""
         root = self.store.root
-        wanted: list[str] = []
-        files = 0
-        if os.path.isdir(root):
-            for folder, dirs, names in os.walk(root):
-                dirs[:] = sorted(d for d in dirs if d != ".git")
-                wanted.append(folder)
-                for name in sorted(names):
-                    if files < MAX_WATCHED_FILES and not name.startswith("."):
-                        wanted.append(os.path.join(folder, name))
-                        files += 1
-        current = set(self._watcher.directories()) | set(self._watcher.files())
-        stale = [p for p in current if p not in set(wanted)]
-        if stale:
-            self._watcher.removePaths(stale)
-        fresh = [p for p in wanted if p not in current]
-        if fresh:
-            self._watcher.addPaths(fresh)
+        if not os.path.isdir(root):
+            if self._tree:
+                actual = set(self._watcher.directories()) | set(self._watcher.files())
+                self._unwatch([p for p in self._forget(root) if p in actual])
+                self._tree.clear()
+                self._tree_files.clear()
+                self._watched_files = 0
+            self._dirty.clear()
+            return
+        full = full or root not in self._tree
+        if not full and not self._dirty:
+            return
+        dirty, self._dirty = self._dirty, set()
+        actual = set(self._watcher.directories()) | set(self._watcher.files())
+        add: list[str] = []
+        drop: list[str] = []
+        if full:
+            self.watch_stats["fullScans"] += 1
+            self._review(root, actual, add, drop, deep=True)
+        else:
+            for folder in sorted(dirty, key=lambda p: (p.count(os.sep), p)):
+                if folder in self._tree:   # katalog spoza obserwacji (np. już usunięty z rodzicem) — pomijamy
+                    self._review(folder, actual, add, drop, deep=False)
+        self._unwatch([p for p in drop if p in actual])
+        self._watch([p for p in add if p not in actual])
+
+    def _review(self, folder: str, actual: set, add: list, drop: list, deep: bool) -> None:
+        """Wpisy jednego obserwowanego katalogu; `deep` — także wszystkie jego znane podkatalogi. Katalog bez
+        obserwacji (pierwszy start, katalog usunięty i założony ponownie — obserwator gubi stary i-węzeł) dostaje ją
+        przed odczytem wpisów."""
+        if folder not in actual:
+            self._watch([folder])
+            actual.add(folder)
+        listed = self._entries(folder)
+        if listed is None:                       # katalog zniknął — z całym poddrzewem
+            drop += self._forget(folder)
+            return
+        subdirs, files = listed
+        known = self._tree.setdefault(folder, set())
+        for gone in sorted(known - set(subdirs)):
+            drop += self._forget(gone)
+        for sub in subdirs:
+            if sub in known and sub in actual:
+                if deep:
+                    self._review(sub, actual, add, drop, deep=True)
+            else:
+                if sub in known:                 # obserwacja zgubiona (np. odrzucona) — poddrzewo od nowa
+                    self._forget(sub)
+                known.add(sub)
+                self._enter(sub, actual, add, drop)
+        self._take_files(folder, files, actual, add, drop)
+
+    def _enter(self, folder: str, actual: set, add: list, drop: list) -> None:
+        """Nowe poddrzewo: najpierw obserwacja katalogu, potem odczyt jego wpisów (bez wyścigu z zapisem obok)."""
+        self._tree[folder] = set()
+        self._review(folder, actual, add, drop, deep=True)
+
+    def _take_files(self, folder: str, files: list, actual: set, add: list, drop: list) -> None:
+        have = self._tree_files.setdefault(folder, set())
+        present = set(files)
+        for gone in sorted(have - present):
+            have.discard(gone)
+            self._watched_files -= 1
+            drop.append(gone)
+        for path in files:
+            if path in have:
+                if path not in actual:           # plik podmieniony (rename) — obserwator zgubił stary i-węzeł
+                    add.append(path)
+            elif self._watched_files < MAX_WATCHED_FILES:
+                have.add(path)
+                self._watched_files += 1
+                add.append(path)
+
+    def _entries(self, folder: str):
+        """(podkatalogi, pliki) katalogu, posortowane; None — katalogu nie ma. Liczy przejrzane katalogi."""
+        self.watch_stats["visitedDirs"] += 1
+        top = folder == self.store.root
+        dirs, files = [], []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if is_dir:
+                        if entry.name != ".git" and not (top and entry.name in UNWATCHED_TOP):
+                            dirs.append(entry.path)
+                    elif not entry.name.startswith("."):
+                        files.append(entry.path)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except OSError as exc:     # brak praw itp. — katalog zostaje w obserwacji bez zmian wpisów
+            print(f"tide-daemon: tablica: obserwacja {folder}: {exc!r}", flush=True)
+            return sorted(self._tree.get(folder, ())), sorted(self._tree_files.get(folder, ()))
+        return sorted(dirs), sorted(files)
+
+    def _forget(self, folder: str) -> list[str]:
+        """Usuwa poddrzewo z pamięci obserwacji; zwraca jego ścieżki (katalogi i pliki) do zdjęcia z obserwatora."""
+        out = []
+        for sub in self._tree.pop(folder, set()):
+            out += self._forget(sub)
+        files = self._tree_files.pop(folder, set())
+        self._watched_files -= len(files)
+        out += files
+        out.append(folder)
+        parent = self._tree.get(os.path.dirname(folder))
+        if parent is not None:
+            parent.discard(folder)
+        return out
+
+    def _unwatch(self, paths: list[str]) -> None:
+        if paths:
+            self._watcher.removePaths(paths)
+            self._refused.difference_update(paths)
+
+    def _watch(self, paths: list[str]) -> None:
+        """Dodaje ścieżki do obserwatora. Odrzucone (limit inotify) zostają tylko pod odpytywaniem co POLL_MS
+        (`_poll_sync` z pełnym przejściem ponawia je) — zmiana z zewnątrz trafi do migawki najpóźniej wtedy."""
+        if not paths:
+            return
+        # Ścieżki, których już nie ma (katalog usunięty między zdarzeniem a przejściem), obserwator też odrzuca — to
+        # nie limit inotify: nie liczymy ich i nie piszemy wpisu (PT-385); przejście zaraz zdejmie je z pamięci.
+        refused = [p for p in (self._watcher.addPaths(paths) or []) if os.path.lexists(p)]
+        if refused:
+            first = not self._refused
+            self._refused.update(refused)
+            self.watch_stats["refused"] += len(refused)
+            if first:   # jeden wpis na okres odrzuceń, nie na każdą ścieżkę
+                print(f"tide-daemon: tablica: obserwator odrzuca ścieżki (limit inotify?), np. {refused[0]} — "
+                      f"zmiany tam wykryje odpytywanie co {self._poll.interval() / 1000:g} s", flush=True)
+        else:
+            self._refused.difference_update(paths)
 
 
 def badge(snapshot) -> tuple[str, str]:
@@ -844,6 +1191,12 @@ def badge(snapshot) -> tuple[str, str]:
     if waiting:
         return f"● {waiting}", "waiting"
     return (str(total) if total else ""), "muted"
+
+
+def _versioned(text: str, version: int) -> str:
+    """JSON migawki z polami `version` i `readState` na początku (K-98 #2) — bez ponownej serializacji treści."""
+    head = f'{{"version": {int(version)}, "readState": "ready"'
+    return head + ("}" if text.strip() == "{}" else ", " + text.lstrip()[1:])
 
 
 def _object(request: str):

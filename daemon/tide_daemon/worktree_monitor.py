@@ -93,8 +93,12 @@ class WorktreeMonitor(QObject):
                 reply(json.dumps([_refused(p, "bad-request", "niepoprawny opis potwierdzenia — nic nie usunięto")
                                   for p in paths], ensure_ascii=False))
                 return
-        if self.refresh_agents:
-            self.refresh_agents()
+        # Świeży stan agentów przed usuwaniem (PT-345: sonda procesów nowsza niż wywołanie). False — brak świeżej
+        # migawki (zawieszona sonda): odmowa bez skutku zamiast decyzji na starszym wyniku.
+        if self.refresh_agents and self.refresh_agents() is False:
+            reply(json.dumps([_refused(p, "unavailable", "brak świeżego stanu procesów agentów — nic nie usunięto")
+                              for p in paths], ensure_ascii=False))
+            return
         cwds = self.cwds_source()  # migawka agentów z chwili wywołania
         self._submit(lambda: self.scanner.remove(paths, cwds, force=force, delete_unmerged=delete_unmerged,
                                                  confirmed=seen),

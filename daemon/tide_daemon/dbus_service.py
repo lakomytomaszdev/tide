@@ -675,22 +675,38 @@ BOARD_XML = f"""<interface name="{BOARD_IFACE}">
 class AgentsAdaptor(QDBusAbstractAdaptor):
     Changed = pyqtSignal()
 
-    def __init__(self, parent: QObject, monitor):
+    def __init__(self, parent: QObject, monitor, bus: QDBusConnection | None = None):
         super().__init__(parent)
         self.monitor = monitor
+        self.bus = bus
         monitor.changed.connect(self.Changed)
 
     @pyqtSlot(result=str)
     def Sessions(self) -> str:
         return self.monitor.sessions_json()
 
-    @pyqtSlot(str, result=bool)
-    def ActivateSession(self, session_id: str) -> bool:
-        return self.monitor.activate(session_id)
+    # Aktywacja potrzebuje sondy procesów nowszej niż wywołanie (PT-345). Sonda biegnie w swoim wątku, a odpowiedź
+    # odchodzi z opóźnieniem, gdy przyjdzie jej wynik — wątek główny w tym czasie obsługuje inne wywołania.
+    @pyqtSlot(str, QDBusMessage, result=bool)
+    def ActivateSession(self, session_id: str, message: QDBusMessage) -> bool:
+        self.monitor.activate_later(session_id, self._delayed(message, "ActivateSession"))
+        return False
 
-    @pyqtSlot(result=bool)
-    def ActivateLongestWaiting(self) -> bool:
-        return self.monitor.activate_longest_waiting()
+    @pyqtSlot(QDBusMessage, result=bool)
+    def ActivateLongestWaiting(self, message: QDBusMessage) -> bool:
+        self.monitor.activate_longest_waiting_later(self._delayed(message, "ActivateLongestWaiting"))
+        return False
+
+    def _delayed(self, message: QDBusMessage, name: str):
+        message.setDelayedReply(True)
+        request = QDBusMessage(message)  # kopia — oryginał żyje tylko do końca tego wywołania
+        bus = self.bus
+
+        def reply(ok: bool) -> None:
+            if bus is None or not bus.send(request.createReply([bool(ok)])):
+                print(f"tide-daemon: nie udało się odesłać wyniku {name}", flush=True)
+
+        return reply
 
 
 @pyqtClassInfo("D-Bus Interface", WORKTREES_IFACE)
@@ -1655,7 +1671,7 @@ def register(monitor, worktrees=None, bus: QDBusConnection | None = None, idle=N
     if not bus.registerObject(ISSUES_PATH, holder.issues):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {ISSUES_PATH}")
     holder.agents = QObject(holder)
-    holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor)
+    holder.agents.adaptor = AgentsAdaptor(holder.agents, monitor, bus)
     if not bus.registerObject(AGENTS_PATH, holder.agents):
         raise RuntimeError(f"nie udało się zarejestrować obiektu {AGENTS_PATH}")
     if worktrees is not None:

@@ -11,7 +11,13 @@ początek pierwszej wiadomości (do 100 znaków), projekt, gałąź, a dla sesji
 z jego planu (tablica „Tide Sesje”). Nigdy treść rozmowy. Tekst przechodzi przez strip_secrets z raportu
 porannego (klucze, tokeny, hasła w adresach, katalog domowy → „~”) i jest przycinany do DOC_LIMIT znaków.
 
-Indeks (`Store`): $XDG_DATA_HOME/tide/search/sessions.json, plik 0600 w katalogu 0700, zapis atomowy.
+Indeks (`Store`): $XDG_DATA_HOME/tide/search/sessions.json, plik 0600 w katalogu 0700. Format 2 (K-98 #5,
+PT-346) to dziennik JSON Lines: pierwsza linia — nagłówek {version, model, dims, updated}, dalej rekordy
+dopisywane przy zmianach: pozycja {id, hash, ts, vec}, sam czas {id, ts}, usunięcie {id, del} i czas indeksu
+{updated}. Zmiana jednej sesji dopisuje jedną linię (O_APPEND) zamiast przepisywać cały plik; pełny zapis
+atomowy (kompaktowanie) jest tylko przy nowym pliku, zmianie modelu albo wymiarów, po nieczytelnym pliku i gdy
+dziennik urośnie ponad 2× liczbę pozycji + COMPACT_SLACK linii. Plik to odtwarzalna pamięć podręczna: stary
+format (1), inna wersja, uszkodzona linia albo urwany zapis — indeks od nowa (jedno pełne przeliczenie, bez błędu).
 Wektory są znormalizowane i zapisane jako float16 (base64) — 1024 wymiary bge-m3 to ok. 2,7 KB na sesję.
 Bez tekstu dokumentów: przy każdej pozycji tylko skrót tekstu (zmiana tytułu = nowy wektor), czas
 ostatniej aktywności i wektor. Nagłówek ma model i liczbę wymiarów: inny model (zmiana roli `embed`) albo
@@ -19,7 +25,10 @@ inna liczba wymiarów — indeks od nowa, bo wektory różnych modeli są niepor
 oknem KRunnera (sesje z 30 dni) i MAX_ITEMS najświeższych; reszta wypada przy kolejnym przebiegu.
 
 Indeksowanie (`sync`) w osobnym wątku: pierwszy przebieg FIRST_DELAY_S po starcie usługi, potem co
-INDEX_EVERY_S i od razu po zmianie ustawień modeli (wake). Przyrostowe — liczy tylko nowe i zmienione
+INDEX_EVERY_S i od razu po zmianie ustawień modeli (wake). Przyrostowe — tekst i skrót dokumentu liczone są
+tylko dla sesji, których metadane (tytuł, początek rozmowy, projekt, gałąź, tickety) zmieniły się od
+poprzedniego przebiegu (pamięć `_docs`); przebieg bez zmian nie buduje żadnego dokumentu i nie zapisuje pliku
+(liczniki `counters`, `Store.counters`). Do modelu idą tylko nowe i zmienione
 pozycje, partiami po BATCH, z najniższym priorytetem kolejki modeli (queue.IDLE): rusza dopiero, gdy na
 serwerze nic innego nie czeka, więc nie opóźnia raportu ani opisów kart. Jeden model naraz na karcie 8 GB:
 załadowanie bge-m3 wypycha z karty qwen3:8b, więc przebieg z czymś do policzenia czeka też na QUIET_S ciszy
@@ -61,7 +70,8 @@ from ..models.transport import Cancel, ModelError
 from ..reports.summarize import strip_secrets
 from .index import HISTORY_AGE
 
-STORE_VERSION = 1
+STORE_VERSION = 2
+COMPACT_SLACK = 64             # linii dziennika ponad 2× liczbę pozycji, zanim plik zostanie przepisany od nowa
 MAX_ITEMS = 2000
 MAX_AGE = HISTORY_AGE          # to samo okno co sesje w KRunnerze (30 dni)
 DOC_LIMIT = 700                # znaków tekstu na sesję (tytuł, początek rozmowy, projekt, gałąź, tickety)
@@ -179,8 +189,20 @@ def _iso(ts: float) -> str:
 
 # --- plik indeksu ----------------------------------------------------------------------------------
 
+def _number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _line(record: dict) -> str:
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
 class Store:
-    """Wektory sesji na dysku: {version, model, dims, updated, items: {id: {hash, ts, vec}}}. Bez tekstów."""
+    """Wektory sesji na dysku (format 2: dziennik JSON Lines — nagłówek i rekordy zmian). Bez tekstów.
+
+    Zmiany idą przez `put` (nowy wektor), `touch` (sam czas aktywności) i `drop`; `flush` dopisuje do pliku tylko
+    zmienione pozycje, a `save` przepisuje plik w całości (atomowo). `counters` liczą zapisy: `writes` (wszystkie),
+    `fullWrites`, `appends`, `writtenItems` (rekordy pozycji w zapisie) i `writtenBytes`."""
 
     def __init__(self, path: str):
         self.path = path
@@ -188,47 +210,175 @@ class Store:
         self.dims = 0
         self.updated = 0.0
         self.items: dict[str, dict] = {}   # id → {"hash", "ts", "vec": array('f')}
+        self.counters = {"writes": 0, "fullWrites": 0, "appends": 0, "writtenItems": 0, "writtenBytes": 0}
+        self._dirty: dict[str, str] = {}   # id → "item" | "ts" | "del" — zmiany od ostatniego zapisu
+        self._full = True                  # następny zapis przepisuje cały plik (brak pliku, reset, zły plik)
+        self._header = None                # (model, wymiary) w nagłówku pliku
+        self._lines = 0                    # linie w pliku — kompaktowanie dziennika
+        self._updated_written = 0.0
 
     def reset(self, model: str = "") -> None:
         self.model, self.dims, self.items = model, 0, {}
+        self._dirty = {}
+        self._full = True
+
+    # --- zmiany ---------------------------------------------------------------------------------
+
+    def put(self, key: str, hash_: str, ts: float, vec) -> None:
+        self.items[key] = {"hash": hash_, "ts": ts, "vec": vec}
+        self._dirty[key] = "item"
+
+    def touch(self, key: str, ts: float) -> None:
+        item = self.items.get(key)
+        if item is None or round(item["ts"], 3) == round(ts, 3):
+            return
+        item["ts"] = ts
+        if self._dirty.get(key) != "item":
+            self._dirty[key] = "ts"
+
+    def drop(self, key: str) -> None:
+        if self.items.pop(key, None) is not None:
+            self._dirty[key] = "del"
+
+    def unsaved(self) -> bool:
+        """Czy w pamięci jest coś, czego nie ma w pliku."""
+        return (self._full or bool(self._dirty) or self._header != (self.model, self.dims)
+                or self.updated != self._updated_written)
+
+    # --- plik -----------------------------------------------------------------------------------
 
     def load(self) -> str:
-        """Czyta plik; brak — pusty indeks, zepsuty albo innej wersji — pusty z opisem (plik nadpisze zapis)."""
+        """Czyta plik; brak — pusty indeks; uszkodzony, stary albo innej wersji — pusty z opisem (następny zapis
+        przepisze plik w całości, a wszystkie sesje policzą się raz od nowa)."""
         self.reset()
+        self.updated = 0.0
         try:
             with open(self.path, encoding="utf-8") as fh:
-                data = json.load(fh)
+                lines = fh.read().split("\n")
         except FileNotFoundError:
             return ""
         except (OSError, ValueError) as exc:
             return f"indeks wyszukiwania nieczytelny ({type(exc).__name__}) — liczę od nowa"
-        if not isinstance(data, dict) or data.get("version") != STORE_VERSION:
+        torn = lines[-1] != ""          # ostatni zapis bez końca linii (np. awaria w trakcie dopisywania)
+        if not torn:
+            lines.pop()
+        if not lines:
+            return self._broken("pusty plik")
+        try:
+            head = json.loads(lines[0])
+        except ValueError:
+            return self._broken("zła linia")
+        if not isinstance(head, dict) or head.get("version") != STORE_VERSION:
+            self.reset()   # m.in. format 1 (jeden obiekt JSON) — pamięć podręczna liczona od nowa
             return "indeks wyszukiwania w innej wersji — liczę od nowa"
-        model, dims, items = data.get("model"), data.get("dims"), data.get("items")
-        if not isinstance(model, str) or not isinstance(dims, int) or isinstance(dims, bool) or not isinstance(items, dict):
-            return "indeks wyszukiwania nieczytelny — liczę od nowa"
+        if torn:
+            return self._broken("urwany zapis")
+        try:
+            records = [head] + [json.loads(line) for line in lines[1:]]
+        except ValueError:
+            return self._broken("zła linia")
+        model, dims = head.get("model"), head.get("dims")
+        if not isinstance(model, str) or not isinstance(dims, int) or isinstance(dims, bool):
+            return self._broken("nagłówek")
         self.model, self.dims = model, dims
-        updated = data.get("updated")
-        self.updated = float(updated) if isinstance(updated, (int, float)) and not isinstance(updated, bool) else 0.0
-        for key, item in items.items():
-            if not isinstance(item, dict) or not isinstance(item.get("hash"), str):
+        self.updated = float(head["updated"]) if _number(head.get("updated")) else 0.0
+        clean = True
+        for record in records[1:]:
+            if not isinstance(record, dict):
+                return self._broken("zła linia")
+            key = record.get("id")
+            if key is None:
+                if not _number(record.get("updated")):
+                    return self._broken("zła linia")
+                self.updated = float(record["updated"])
                 continue
-            vec = unpack(item.get("vec"), dims)
-            ts = item.get("ts")
-            if vec is None or not isinstance(ts, (int, float)) or isinstance(ts, bool):
-                continue
-            self.items[str(key)] = {"hash": item["hash"], "ts": float(ts), "vec": vec}
+            key = str(key)
+            if record.get("del"):
+                self.items.pop(key, None)
+            elif "vec" in record:
+                vec = unpack(record.get("vec"), dims)
+                if vec is None or not isinstance(record.get("hash"), str) or not _number(record.get("ts")):
+                    self.items.pop(key, None)   # zła pozycja — pominięta (policzy się od nowa), reszta zostaje
+                    clean = False
+                    continue
+                self.items[key] = {"hash": record["hash"], "ts": float(record["ts"]), "vec": vec}
+            elif _number(record.get("ts")):
+                if key in self.items:
+                    self.items[key]["ts"] = float(record["ts"])
+            else:
+                return self._broken("zła linia")
+        self._full = not clean
+        self._header = (self.model, self.dims)
+        self._lines = len(records)
+        self._updated_written = self.updated
         return ""
 
+    def _broken(self, why: str) -> str:
+        self.reset()
+        self.updated = 0.0
+        return f"indeks wyszukiwania nieczytelny ({why}) — liczę od nowa"
+
+    def flush(self) -> None:
+        """Zapisuje zmiany: dopisuje rekordy zmienionych pozycji albo — gdy trzeba — przepisuje cały plik."""
+        if not self.unsaved():
+            return
+        grown = self._lines + len(self._dirty) + 1 > 2 * len(self.items) + COMPACT_SLACK
+        if self._full or self._header != (self.model, self.dims) or grown or not os.path.exists(self.path):
+            self.save()
+            return
+        lines, items = [], 0
+        for key in sorted(self._dirty):
+            kind, item = self._dirty[key], self.items.get(key)
+            if item is None:
+                lines.append(_line({"id": key, "del": 1}))
+            elif kind == "ts":
+                lines.append(_line({"id": key, "ts": round(item["ts"], 3)}))
+            else:
+                lines.append(_line({"id": key, "hash": item["hash"], "ts": round(item["ts"], 3),
+                                    "vec": pack(item["vec"])}))
+                items += 1
+        if self.updated != self._updated_written:
+            lines.append(_line({"updated": self.updated}))
+        data = "".join(lines).encode("utf-8")
+        try:
+            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+            finally:
+                os.close(fd)
+        except OSError:
+            self._full = True   # stan pliku nieznany — następny zapis przepisze go w całości
+            raise
+        self._dirty = {}
+        self._lines += len(lines)
+        self._updated_written = self.updated
+        self._count(len(data), items, append=True)
+
     def save(self) -> None:
-        data = {"version": STORE_VERSION, "model": self.model, "dims": self.dims, "updated": self.updated,
-                "items": {k: {"hash": v["hash"], "ts": round(v["ts"], 3), "vec": pack(v["vec"])}
-                          for k, v in self.items.items()}}
-        atomic_write(self.path, json.dumps(data, separators=(",", ":")).encode("utf-8"), 0o600)
+        """Pełny zapis (atomowy): nagłówek i wszystkie pozycje."""
+        lines = [_line({"version": STORE_VERSION, "model": self.model, "dims": self.dims, "updated": self.updated})]
+        lines += [_line({"id": k, "hash": v["hash"], "ts": round(v["ts"], 3), "vec": pack(v["vec"])})
+                  for k, v in self.items.items()]
+        data = "".join(lines).encode("utf-8")
+        atomic_write(self.path, data, 0o600)
         try:  # katalog z wektorami tylko dla właściciela, także gdy istniał wcześniej
             os.chmod(os.path.dirname(os.path.realpath(self.path)), 0o700)
         except OSError:
             pass
+        self._dirty = {}
+        self._full = False
+        self._header = (self.model, self.dims)
+        self._lines = len(lines)
+        self._updated_written = self.updated
+        self._count(len(data), len(self.items), append=False)
+
+    def _count(self, size: int, items: int, append: bool) -> None:
+        self.counters["writes"] += 1
+        self.counters["appends" if append else "fullWrites"] += 1
+        self.counters["writtenItems"] += items
+        self.counters["writtenBytes"] += size
 
     def remove(self) -> None:
         self.reset()
@@ -284,6 +434,10 @@ class SemanticSearch:
         self._seq = 0
         self._cache: OrderedDict = OrderedDict()
         self._down_until = 0.0
+        # id sesji → (pola źródłowe dokumentu, skrót, tekst) z ostatniego przebiegu — tylko wątek indeksu.
+        self._docs: dict[str, tuple] = {}
+        # Koszt przebiegów (testy, reproduktor): zbudowane teksty dokumentów i policzone skróty.
+        self.counters = {"documents": 0, "digests": 0}
 
     # --- stan -----------------------------------------------------------------------------------
 
@@ -412,12 +566,12 @@ class SemanticSearch:
             return
         changed = False
         for key in [k for k in self.store.items if k not in wanted]:
-            del self.store.items[key]
+            self.store.drop(key)
             changed = True
         for key, (hash_, ts, _text) in wanted.items():
             item = self.store.items.get(key)
             if item is not None and item["hash"] == hash_:
-                item["ts"] = ts
+                self.store.touch(key, ts)
         todo = [k for k, (hash_, _ts, _text) in wanted.items()
                 if (self.store.items.get(k) or {}).get("hash") != hash_]
         if changed:
@@ -452,7 +606,7 @@ class SemanticSearch:
             self.store.dims = result.dims
             for key, vector in zip(keys, result.vectors):
                 hash_, ts, _text = wanted[key]
-                self.store.items[key] = {"hash": hash_, "ts": ts, "vec": normalize(vector)}
+                self.store.put(key, hash_, ts, normalize(vector))
             changed = True
             self._publish()
             self._set(items=len(self.store.items), pending=max(0, len(todo) - start - len(keys)),
@@ -465,10 +619,10 @@ class SemanticSearch:
             return
         pending = sum(1 for k, (hash_, _ts, _text) in wanted.items()
                       if (self.store.items.get(k) or {}).get("hash") != hash_)
-        if not pending:
-            self.store.updated = self.clock()
-        if changed or not pending:
-            self._save()
+        if not pending and (changed or not self.store.updated):
+            self.store.updated = self.clock()   # chwila ostatniej zmiany kompletnego indeksu, nie każdego przebiegu
+        if self.store.unsaved():
+            self._save()   # tylko zmienione pozycje (dopisane), przebieg bez zmian nie zapisuje nic
         self._set(state="error" if error else ("ready" if not pending else "waiting"), error=error,
                   items=len(self.store.items), pending=pending, updated=_iso(self.store.updated),
                   dims=self.store.dims)
@@ -494,7 +648,7 @@ class SemanticSearch:
             if not self._enabled():
                 return  # wyłączone w międzyczasie — plik został usunięty i ma nie wrócić
             try:
-                self.store.save()
+                self.store.flush()
             except OSError as exc:
                 print(f"tide-daemon: wyszukiwanie: nie udało się zapisać indeksu ({type(exc).__name__})", flush=True)
 
@@ -505,16 +659,31 @@ class SemanticSearch:
         except Exception:  # tablica koordynacji nie może zatrzymać indeksu
             tickets = {}
         cutoff = self.clock() - MAX_AGE
-        out = {}
+        out, docs = {}, {}
         for entry in sorted(self.index.entries(), key=lambda e: -(e.get("lastActivity") or 0)):
             ts = entry.get("lastActivity") or 0
             if ts < cutoff or not entry.get("id"):
                 continue
-            text = document(entry, tickets.get(entry["id"]) or (), self.home)
+            sid = entry["id"]
+            own = tuple(tickets.get(sid) or ())
+            # Dokument zależy tylko od tych pól (document()); bez ich zmiany tekst i skrót z poprzedniego przebiegu.
+            source = (entry.get("title"), entry.get("prompt"), entry.get("project"), entry.get("branch"), own)
+            known = self._docs.get(sid)
+            if known is not None and known[0] == source:
+                hash_, text = known[1], known[2]
+            else:
+                text = document(entry, own, self.home)
+                self.counters["documents"] += 1
+                hash_ = ""
+                if text:
+                    hash_ = digest(text)
+                    self.counters["digests"] += 1
+            docs[sid] = (source, hash_, text)
             if text:
-                out[entry["id"]] = (digest(text), float(ts), text)
+                out[sid] = (hash_, float(ts), text)
             if len(out) >= MAX_ITEMS:
                 break
+        self._docs = docs
         return out
 
     # --- zapytania (wątki wtyczki KRunnera) --------------------------------------------------------

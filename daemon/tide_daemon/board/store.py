@@ -27,7 +27,9 @@ import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+import threading
 from threading import RLock
+from types import SimpleNamespace
 
 from ..agents.timeutil import parse_ts
 from ..coordination.youtrack import issue_key
@@ -120,6 +122,10 @@ class Change:
     high_water: int = 0      # następny wolny numer karty po tym zapisie (0 — bez zmiany)
 
 
+class BoardBusy(RuntimeError):
+    """Transakcję Tablicy trzyma inny wątek albo proces, a wołający (`BoardStore.without_waiting`) nie czeka."""
+
+
 class BoardStore:
     def __init__(self, root: str, git: Git | None = None, clock=time.time, colors: dict | None = None,
                  approvals_path: str | None = None):
@@ -135,8 +141,13 @@ class BoardStore:
         self._transaction_depth = 0
         self._transaction_stack: contextlib.ExitStack | None = None
         self._board_locked = False
+        self._transaction_waits = True     # bieżąca zewnętrzna transakcja czeka na flock (False — `without_waiting`)
+        self._wait_local = threading.local()   # znacznik `without_waiting` bieżącego wątku (K-98 #2)
         # nazwa pastelu → kolor (#rrggbb) z palety; bez palety same nazwy bez kolorów
         self.colors = dict(colors) if colors else {name: "" for name in PASTELS}
+        # K-98 #3: licznik zapisów plików Tablicy w tym procesie; kontekst odczytu (`BoardRead`) po jego zmianie
+        # wczytuje Tablicę ponownie (zapis w ticku unieważnia kontekst ticku).
+        self.generation = 0
 
     # --- odczyt --------------------------------------------------------------------------------
 
@@ -144,9 +155,42 @@ class BoardStore:
         return is_board_repo(self.root)
 
     @contextlib.contextmanager
+    def without_waiting(self, wait_s: float = 0.0):
+        """K-98 #2: w tym bloku transakcje Tablicy z bieżącego wątku nie czekają na blokadę trzymaną przez inny wątek
+        (worker mutacji: StartCard, scalenie, tick) ani inny proces — rzucają `BoardBusy` od razu albo, z `wait_s`,
+        najpóźniej po tylu sekundach liczonych od wejścia w blok (jeden termin na cały blok, nie na transakcję).
+        Publikacja migawki w wątku głównym używa go, żeby nigdy nie stanąć na długiej mutacji; jawny Snapshot() czeka
+        krótko, żeby krótka transakcja ticku nie zostawiła mu starej wersji. Zwraca znacznik: `busy` jest prawdą, gdy
+        którakolwiek próba w bloku trafiła na zajętą blokadę (także gdy wołający złapał wyjątek i podał zastępczą
+        treść) — wtedy wynik bloku trzeba odrzucić. Blok zagnieżdżony korzysta ze znacznika i terminu zewnętrznego."""
+        outer = getattr(self._wait_local, "probe", None)
+        probe = outer if outer is not None else SimpleNamespace(
+            busy=False, deadline=time.monotonic() + wait_s if wait_s > 0 else None)
+        self._wait_local.probe = probe
+        try:
+            yield probe
+        finally:
+            self._wait_local.probe = outer
+
+    def read_was_busy(self) -> bool:
+        """Czy w bieżącym bloku `without_waiting` tego wątku któraś transakcja trafiła na zajętą blokadę."""
+        probe = getattr(self._wait_local, "probe", None)
+        return bool(probe is not None and probe.busy)
+
+    @contextlib.contextmanager
     def transaction(self):
-        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart."""
-        with self._transaction_lock:
+        """Wspólna granica odczytów i zapisów; odtworzenie wyprzedza widoczność kart. W bloku `without_waiting`
+        zajęta blokada daje `BoardBusy` zamiast czekania."""
+        probe = getattr(self._wait_local, "probe", None)
+        if probe is None:
+            self._transaction_lock.acquire()
+        else:
+            left = probe.deadline - time.monotonic() if probe.deadline is not None else 0.0
+            if not (self._transaction_lock.acquire(timeout=left) if left > 0
+                    else self._transaction_lock.acquire(blocking=False)):
+                probe.busy = True
+                raise BoardBusy("Tablica: transakcję trzyma inny wątek")
+        try:
             if self._transaction_depth:
                 yield
                 return
@@ -154,6 +198,7 @@ class BoardStore:
                 try:
                     self._transaction_depth += 1
                     self._transaction_stack = stack
+                    self._transaction_waits = probe is None
                     # Ta sama blokada co zapis profilu pudełka K-38 (`box/profile.save_project`, PT-321) — także
                     # na Tablicy bez `.git`, którą `ensure()` dopiero zainicjalizuje. Bez katalogu Tablicy blokadę
                     # bierze dopiero `ensure()` (`_hold_board_lock`) i trzyma do końca tej transakcji: świeży
@@ -168,17 +213,28 @@ class BoardStore:
                     self._transaction_depth = 0
                     self._transaction_stack = None
                     self._board_locked = False
+                    self._transaction_waits = True
+        finally:
+            self._transaction_lock.release()
 
     def _hold_board_lock(self) -> None:
         """Wspólna blokada Tablicy do końca bieżącej (zewnętrznej) transakcji; brakujący katalog zakłada
         (tak samo robi `box/profile.board_lock`). Ścieżka, która nie jest katalogiem — bez blokady
-        (`ensure()` i tak ją odrzuci)."""
+        (`ensure()` i tak ją odrzuci). Transakcja z `without_waiting`: blokada innego procesu → `BoardBusy`."""
         if self._board_locked or self._transaction_stack is None:
             return
         if not os.path.lexists(self.root):
             os.makedirs(self.root, exist_ok=True)
         if os.path.isdir(self.root):
-            self._transaction_stack.enter_context(lockfile.exclusive(self.root))
+            probe = getattr(self._wait_local, "probe", None)
+            deadline = probe.deadline if probe is not None and not self._transaction_waits else None
+            try:
+                self._transaction_stack.enter_context(
+                    lockfile.exclusive(self.root, blocking=self._transaction_waits, deadline=deadline))
+            except BlockingIOError:
+                if probe is not None:
+                    probe.busy = True
+                raise BoardBusy("Tablica: blokadę trzyma inny proces") from None
             self._board_locked = True
 
     def load(self) -> Board:
@@ -213,11 +269,13 @@ class BoardStore:
                                          "message": f"{card.id}: nieznany dodatkowy projekt „{slug}”"})
         return board
 
-    def snapshot(self, repos=None, derive=None) -> dict:
+    def snapshot(self, repos=None, derive=None, board: Board | None = None) -> dict:
         """Migawka dla D-Bus i --print-board. repos: ścieżki repozytoriów z katalogu projektów
         (do listy „dodaj jako projekt”); derive(card) → dict|None: stan z pracy agentów (PT-5,
-        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu."""
-        board = self.load()
+        board/derive.py) — karta dostaje na wejściu także `repo` swojego projektu. `board`: Tablica już wczytana
+        w tym odświeżeniu (kontekst `BoardRead`, K-98 #1); bez niej — świeży odczyt. Migawka jej nie zmienia."""
+        board = self.load() if board is None else board
+        errors = list(board.errors)
         tags = dict(board.tags)
         projects = sorted(board.projects.values(), key=lambda p: p.name.casefold())
         counts: dict[str, int] = {}
@@ -236,7 +294,7 @@ class BoardStore:
                                       "repo": project.repo if project else "",
                                       "extraRepos": [p.repo for p in extra if p.repo]})
                 except Exception as exc:  # stan z koordynatora to dodatek — nie może zepsuć tablicy
-                    board.errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
+                    errors.append({"path": card.path, "message": f"{card.id}: stan koordynatora: {exc}"})
             card_data = _card_json(card, project, resolved, derived, extra)
             if project and project.repo:
                 from .plan_candidates import candidates
@@ -266,12 +324,12 @@ class BoardStore:
         busy = self.repo.busy() if exists else ""
         git_state = {"busy": busy, "pending": len(self.repo.pending), "error": self.repo.last_error}
         if exists:
-            board.errors.extend(self._flow_warnings(board))
+            errors.extend(self._flow_warnings(board))
         if busy:
-            board.errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
+            errors.insert(0, {"path": self.root, "message": self.repo.busy_message(busy)})
         if self.repo.pending:
-            board.errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
-                                                                  f"commit ({self.repo.last_error})"})
+            errors.insert(0, {"path": self.root, "message": "zmiany są zapisane w plikach, ale czekają na "
+                                                            f"commit ({self.repo.last_error})"})
         last = self.repo.last_commit() if exists else None
         return {
             "assignmentRules": assignment.rules(board),
@@ -292,7 +350,7 @@ class BoardStore:
             "projects": [_project_json(p, self.docs_dir(p), project_cards.get(p.slug, 0)) for p in projects],
             "cards": cards_out,
             "repos": available,
-            "errors": board.errors,
+            "errors": errors,
         }
 
     def _flow_warnings(self, board: Board) -> list[dict]:
@@ -514,21 +572,31 @@ class BoardStore:
         num = card_num(card_id)
         return self._execute(lambda board: self._plan_update(board, num, values))
 
-    def project_card_base(self, card_id: str, base: dict) -> dict:
-        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard."""
+    def project_card_base(self, card_id: str, base: dict, board: Board | None = None) -> dict:
+        """Wyłącznie projekcja dziennika; pola bazy nie należą do publicznego UpdateCard.
+
+        `board`: Tablica z kontekstu odczytu ticku (K-98 #3). Gdy według niej pola bazy już są zapisane, nie ma
+        zapisu ani wczytania; inaczej zwykła transakcja zapisu ze świeżym odczytem (`_execute`)."""
+        fields = (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit"))
+
         def plan(board):
             card = self._card(board, card_num(card_id))
             change = Change(result={"ok": True, "id": card.id})
             if card.column in ("done", "archived"):
                 return change
             changed = []
-            for key, public in (("base-ref", "baseRef"), ("base-branch", "baseBranch"), ("base-commit", "baseCommit")):
+            for key, public in fields:
                 value = base.get(public) or ""
                 if value or card.doc.has(key):
                     changed += _doc_set(card.doc, key, value)
             if changed:
                 change.commits.append((f"{card.id}: project card base", [(_rel(self.root, card.path), card.doc.text())]))
             return change
+        card = board.cards.get(card_num(card_id)) if board is not None else None
+        if card is not None and (card.column in ("done", "archived") or all(
+                _doc_same(card.doc, key, base.get(public) or "")
+                for key, public in fields if (base.get(public) or "") or card.doc.has(key))):
+            return {"ok": True, "id": card.id, "commitError": ""}     # bez zmiany: bez transakcji i wczytania
         return self._execute(plan)
 
     def move_card(self, card_id: str, column: str, index: int = -1, from_column: str = "") -> dict:
@@ -1247,6 +1315,7 @@ class BoardStore:
         tmp = os.path.join(folder, TMP_PREFIX + secrets.token_hex(6))
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
+        self.generation += 1        # przed podmianą: kontekst wczytany w trakcie zapisu też jest nieaktualny
         os.replace(tmp, path)
         return os.path.relpath(path, self.root)
 
@@ -1680,8 +1749,12 @@ def _new_project_doc(name: str, repo: str) -> Document:
     return doc
 
 
+def _doc_same(doc: Document, key: str, value) -> bool:
+    return doc.get(key) == ("" if value is None else str(value)) and doc.has(key)
+
+
 def _doc_set(doc: Document, key: str, value) -> list[str]:
-    if doc.get(key) == ("" if value is None else str(value)) and doc.has(key):
+    if _doc_same(doc, key, value):
         return []
     doc.set(key, value)
     return [key]
