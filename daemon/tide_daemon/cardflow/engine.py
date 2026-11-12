@@ -57,6 +57,7 @@ from . import testrerun
 from . import testpolicy
 from . import mergecheck
 from . import heavyqueue
+from . import queueview
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -556,6 +557,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.watch: dict[str, tuple] = {}          # krok → (odcisk postępu, od kiedy bez zmian, ostatnie sprawdzenie)
         self._warnings: dict[str, str] = {}
         self._hidden: tuple = (frozenset(), ())
+        self._queue: dict | None = None   # `queue` migawki Tablicy (K-39 #4): liczone raz na tick, tylko do odczytu
         self._busy: tuple = ()
         self._notices: list[dict] = []
         self._local_claims: dict[str, object] = {}
@@ -964,6 +966,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         if out:
             ticketentry.enrich(st, out)
             fullcard.heavy_queued(st, out, self._heavy_view(card.get("id") or ""))
+            self._decision_queue(card.get("id") or "", st, out)
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
@@ -1009,6 +1012,38 @@ class FlowEngine(CaretakerChat, PlanEditing):
                             'linkedTs': stamp(result),
                             'activityTs': max([stamp(e) for e in related] or [stamp(result)])})
         return {'tickets': tickets}
+
+    def queue_view(self) -> dict | None:
+        """Pole `queue` migawki Tablicy policzone w ostatnim ticku (K-39 #4); None — jeszcze nie było ticku.
+        Zwraca gotowy słownik bez odczytów: `snapshot_json` tylko go dołącza."""
+        return self._queue
+
+    def _queue_view(self) -> dict | None:
+        """`queueview.build` ze stanów kart tej samej fazy ticku (`journal.state`, bez odczytu dziennika) i ustawień.
+        Błąd widoku nie zatrzymuje ticku: zostaje poprzednia wartość."""
+        try:
+            states = {}
+            for card in self.journal.cards():
+                st = self.journal.state(card)
+                if st.started is not None:
+                    states[card] = st
+            return queueview.build(
+                states, self._settings_data(),
+                heavy_of=self._heavy_of,
+                outside_limits=(OUTSIDE_PER_PROJECT, OUTSIDE_TOTAL), provider_slots_default=DEFAULT_PROVIDER_SLOTS)
+        except Exception as exc:
+            print(f"tide-daemon: przepływ karty: stan kolejki: {exc!r}", flush=True)
+            return self._queue
+
+    def _decision_queue(self, card: str, st: FlowState, out: dict) -> None:
+        """Część techniczna decyzji zgody na polecenie poza piaskownicą dostaje `queue`: `heavy` albo `outside`
+        (ta sama klasyfikacja co start polecenia, `_outside_heavy_of`; próba testów po scaleniu jest zawsze ciężka).
+        Okno liczy z tego prognozę na polach `queue` migawki."""
+        queueview.mark_decisions(card, st, (out.get("flow") or {}).get("decisions") or [], self._heavy_of)
+
+    def _heavy_of(self, card: str, name: str, step: dict, command: str) -> bool:
+        """`heavy_of` dla `queueview`: klasa polecenia kroku (`_outside_heavy_of`, pamiętana do końca uruchomienia)."""
+        return self._outside_heavy_of(card, {**step, "step": name}, command)
 
     def warnings(self) -> list[dict]:
         return [{"path": self.journal.path(card), "message": text} for card, text in sorted(self._warnings.items())]
@@ -3453,6 +3488,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 busy.add(ticket_of(st)["cardWorktree"])
         self._hidden = (frozenset(hidden_ids - {""}), tuple(sorted(hidden_places)))
         self._busy = tuple(sorted(busy))
+        self._queue = self._queue_view()
         boxstep.lifecycle.tick(self)
 
     def _tick_card(self, card: str, st: FlowState, read=None, history=None) -> None:

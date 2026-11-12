@@ -864,6 +864,10 @@ class BoardMonitor(QObject):
                 snapshot["errors"].extend(self.flow.warnings())   # dziennik karty odtworzony z kopii usługi
             except Exception as exc:
                 print(f"tide-daemon: tablica: przepływ karty: {exc!r}", flush=True)
+            # K-39 #4: stan kolejki policzony przez silnik w ticku (bez odczytów); stara usługa nie ma pola.
+            queue = getattr(self.flow, "queue_view", lambda: None)()
+            if isinstance(queue, dict):
+                snapshot["queue"] = queue
         repos = {p.get("slug"): p.get("repo") or "" for p in base.get("projects") or [] if isinstance(p, dict)}
         cards = []
         links = []
