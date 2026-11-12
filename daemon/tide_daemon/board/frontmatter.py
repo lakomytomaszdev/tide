@@ -94,6 +94,17 @@ class Document:
             end += 1
         del self.lines[index + 1:end]
 
+    def remove(self, key: str) -> bool:
+        """Usuwa klucz razem z liniami kontynuacji; False — klucza nie było."""
+        index = self._index(key)
+        if index is None:
+            return False
+        end = index + 1
+        while end < len(self.lines) and _continuation(self.lines[end]) and not _key_of(self.lines[end]):
+            end += 1
+        del self.lines[index:end]
+        return True
+
     def text(self) -> str:
         body = self.body
         return "---\n" + "".join(line + "\n" for line in self.lines) + "---\n" + body

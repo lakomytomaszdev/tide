@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
 import io
 import json
 import os
@@ -34,6 +35,8 @@ CARD_DIR_RE = re.compile(r"^K-[1-9][0-9]{0,8}$")
 # K-105 #2: najdłuższy czas, przez który pamięć ścisłego odczytu karty (trafienie, przyrost) zastępuje pełny odczyt
 # pliku. Ta sama stała i zegar (`Journal.monotonic`) co okres kontroli pełnej kart w spoczynku (K-105 #3).
 FULL_READ_PERIOD = 600.0
+# Numery luźnych wersji (`Journal._loose_version`): każda jest różna od każdej innej wersji w procesie.
+_LOOSE_VERSIONS = itertools.count(1)
 
 
 class JournalVersion(NamedTuple):
@@ -133,6 +136,10 @@ class Journal:
     def _presenting(self) -> bool:
         return getattr(self._view, "on", False)
 
+    def presenting(self) -> bool:
+        """Czy bieżący wątek czyta w trybie prezentacji (`presentation()`)."""
+        return self._presenting()
+
     def _guard(self):
         return contextlib.nullcontext() if self._presenting() else self.lock
 
@@ -226,6 +233,12 @@ class Journal:
                 if isinstance(value, (dict, list, set)):
                     setattr(state, name, value.copy())
             return state
+
+    def view_version(self, card: str) -> tuple:
+        """Wersja dziennika karty do porównań (ten sam klucz, który unieważnia pamięć prezentacji lub workera,
+        zależnie od trybu bieżącego wątku). Zmienia się przy każdej zmianie pliku dziennika, także spoza procesu."""
+        with self._guard():
+            return self._read_version(card)[0]
 
     def _read_version(self, card: str) -> tuple:
         cache = self._view_cache if self._presenting() else self._cache
@@ -371,9 +384,11 @@ class Journal:
         return entry.version, list(entry.events)
 
     def _loose_version(self, card, events) -> JournalVersion:
-        """Wersja wyniku czytanego w trakcie zmiany pliku: nie pasuje do żadnego stanu pliku (rozmiar -1)."""
+        """Wersja wyniku czytanego w trakcie zmiany pliku: nie pasuje do żadnego stanu pliku (rozmiar -1) ani do
+        żadnej innej wersji — każda luźna wersja ma własny numer (`ctime_ns` ujemny, niepowtarzalny w procesie),
+        bo dwa takie odczyty mogą mieć ten sam `seq` i `generation` przy różnej treści."""
         seq = events[-1]["seq"] if events else 0
-        return JournalVersion("", 0, 0, -1, 0, 0, self.generation(card), seq)
+        return JournalVersion("", 0, 0, -1, 0, -next(_LOOSE_VERSIONS), self.generation(card), seq)
 
     # --- zapis -----------------------------------------------------------------------------------
 

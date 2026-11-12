@@ -37,6 +37,15 @@ Użycie (z katalogu repozytorium):
     /usr/bin/python3 daemon/tests/perf_idle_cpu.py --out wynik.json --box on|off [--src <katalog z daemon/>]
         [--sha <SHA>] [--sessions 200] [--warmup 45] [--window 60]
 
+Tryb skali produkcji dzienników (`--scale prod`, K-105 PT-410; opis w `perf_idle_scale.py`): `--cards` (domyślnie 46)
+kart i `--journal-mb` (domyślnie 60) łącznego rozmiaru dzienników w kopii usługi i w Tablicy; większość kart zakończona,
+kilka aktywnych bez kroku w toku (2–3 z czekającą decyzją „uruchom poza piaskownicą”). Dzienniki przechodzą ścisły odczyt
+i kontrolę tożsamości procesów. W oknie próbnika seria 60 wywołań `Snapshot` (co 0,5 s, p95 nearest-rank). Wynik dodatkowo:
+`flowThread` (wątek workera przepływu z `threads`), `tick` (udział i próbki `engine.tick`/s), `snapshot`, `memory`
+(`VmRSS` na początku i końcu okna CPU, `VmHWM`), `scale` (liczba kart i rozmiar zmierzone na dysku), `boxEnabled`.
+Ocena „przed”/„po”: `perf_idle_scale.py evaluate`. Pomiar jest wskaźnikiem — rozstrzyga pomiar produkcji. Bez `--scale`
+tryb PT-346 działa bez zmian.
+
 Skrypt niczego nie zapisuje poza katalogiem tymczasowym (usuwany na końcu) i plikiem `--out`.
 Testy jednostkowe nie mierzą czasu; ten skrypt jest wyłącznie narzędziem pomiaru.
 """
@@ -54,6 +63,11 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from . import perf_idle_scale as scale_mode          # import z testów (pakiet)
+except ImportError:
+    import perf_idle_scale as scale_mode                  # uruchomienie jako skrypt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = os.path.dirname(os.path.dirname(HERE))
@@ -131,19 +145,34 @@ def isolated_env(base, address=""):
     return env
 
 
-def prepare_board(base, src, box, cards):
-    """Tablica reproduktora PT-342 w osobnym procesie (kod usługi z `src`)."""
-    code = ("import sys, os\n"
+def prepare_board(base, src, box, cards, journal_mb=None):
+    """Tablica reproduktora PT-342 w osobnym procesie (kod usługi z `src`).
+
+    `journal_mb` (tryb skali produkcji, PT-410): dzienniki kart zastąpione dziennikami o skali produkcji
+    (`perf_idle_scale.populate`); zwraca opis danych. Bez niego dane jak dotąd (zwraca None)."""
+    populate = ""
+    if journal_mb is not None:
+        populate = ("    import perf_idle_scale as pis\n"
+                    f"    stats = pis.populate(service, base, {float(journal_mb)!r})\n"
+                    "    print('SCALE-JSON ' + json.dumps(stats), flush=True)\n")
+    code = ("import sys, os, json\n"
             f"sys.path.insert(0, {os.path.join(src, 'daemon')!r})\n"
             f"sys.path.insert(0, {HERE!r})\n"
             "import perf_board_refresh as pbr\n"
             f"base = {base!r}\n"
             "with pbr.isolated_env(base):\n"
             f"    service = pbr.Service(base, {cards}, box_file={bool(box)!r})\n"
+            f"{populate}"
             "    service.close()\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("XDG_", "TIDE_", "DBUS_"))}
     env["QT_QPA_PLATFORM"] = "offscreen"
-    subprocess.run([sys.executable, "-c", code], check=True, env=env, cwd=base)
+    if journal_mb is None:
+        subprocess.run([sys.executable, "-c", code], check=True, env=env, cwd=base)
+        return None
+    done = subprocess.run([sys.executable, "-c", code], check=True, env=env, cwd=base, stdout=subprocess.PIPE,
+                          text=True)
+    line = next((l for l in done.stdout.splitlines() if l.startswith("SCALE-JSON ")), "")
+    return json.loads(line[len("SCALE-JSON "):]) if line else {}
 
 
 def write_sessions(base, count, now):
@@ -263,14 +292,18 @@ def thread_cpu(pid):
     return out
 
 
-def cpu_window(pid, seconds):
-    """Surowe próbki CPU procesu co sekundę (procent jednego rdzenia) i czas CPU wątków."""
+def cpu_window(pid, seconds, on_step=None, step=1.0):
+    """Surowe próbki CPU procesu co sekundę (procent jednego rdzenia) i czas CPU wątków.
+
+    `on_step` (tryb skali: seria `Snapshot` w oknie próbnika) jest wołane w każdej iteracji co `step` s."""
     threads_before = thread_cpu(pid)
     own0, child0 = process_cpu(pid)
     wall0 = time.monotonic()
     samples, last_own, last_wall = [], own0, wall0
     while time.monotonic() - wall0 < seconds:
-        time.sleep(1.0)
+        time.sleep(step)
+        if on_step is not None:
+            on_step()
         own, _child = process_cpu(pid)
         now = time.monotonic()
         samples.append(round(100.0 * (own - last_own) / (now - last_wall), 2))
@@ -308,13 +341,17 @@ def parse_profile(text):
             "frames": {frame: total.get(frame, 0) for _key, frame in CATEGORIES}}
 
 
-def profile_window(base, pid, seconds):
+def profile_window(base, pid, seconds, series=None):
+    """Okno próbnika; `series` (SnapshotSeries) wywołuje `Snapshot` co 0,5 s w pętli okna (tryb skali)."""
     state = os.path.join(base, "state", "tide")
     before = set(glob.glob(os.path.join(state, "profile-*.txt")))
     request = os.path.join(base, "run", "tide-daemon-profile")
     with open(request, "w", encoding="utf-8") as fh:
         fh.write(f"{int(seconds)}\n")
-    cpu = cpu_window(pid, seconds + 4)      # próbnik sprawdza żądanie co 3 s
+    if series is None:
+        cpu = cpu_window(pid, seconds + 4)      # próbnik sprawdza żądanie co 3 s
+    else:
+        cpu = cpu_window(pid, seconds + 4, on_step=series.step, step=scale_mode.SNAPSHOT_INTERVAL_S / 2)
     deadline = time.monotonic() + seconds + 30
     report = ""
     while time.monotonic() < deadline:
@@ -377,20 +414,56 @@ print(json.dumps(out))
 
 # --- przebieg ---------------------------------------------------------------------------------------
 
-def measure(src, sha, box, sessions, warmup, window, cards=30):
+def mirror_dir(base):
+    """Kopia dzienników usługi (`Journal.mirror_root`) dla Tablicy `<base>/board` i `XDG_STATE_HOME=<base>/state`."""
+    key = hashlib.sha1(os.path.realpath(os.path.join(base, "board")).encode("utf-8")).hexdigest()[:12]
+    return os.path.join(base, "state", "tide", "cardflow", key)
+
+
+def snapshot_caller(bus):
+    """Wywołanie `Snapshot` na `/Board` usługi przez magistralę; ms do odpowiedzi albo None przy błędzie."""
+    from PyQt6.QtDBus import QDBus, QDBusMessage
+
+    def call():
+        message = QDBusMessage.createMethodCall(SERVICE, "/Board", "org.tide.Daemon.Board", "Snapshot")
+        start = time.perf_counter()
+        reply = bus.call(message, QDBus.CallMode.Block, 30000)
+        elapsed = (time.perf_counter() - start) * 1000.0
+        return elapsed if reply.type() == QDBusMessage.MessageType.ReplyMessage else None
+    return call
+
+
+def scale_result(result, series, window, memory):
+    """Pola trybu skali: wątek przepływu, `engine.tick`, `Snapshot`, pamięć, `box.enabled`."""
+    cpu = result.get("cpuWindow") or {}
+    split = (result.get("profileWindow") or {}).get("split")
+    result["boxEnabled"] = result["params"]["box"]
+    result["memory"] = memory
+    result["flowThread"] = scale_mode.select_flow_thread(cpu.get("threads"), result.get("daemonPid"),
+                                                         cpu.get("wallS"))
+    result["tick"] = scale_mode.tick_stats(split, window)
+    result["snapshot"] = series.result()
+
+
+def measure(src, sha, box, sessions, warmup, window, cards=30, journal_mb=None):
     from PyQt6.QtCore import QCoreApplication
     from PyQt6.QtDBus import QDBusConnection
     QCoreApplication.instance() or QCoreApplication([])
     base = os.path.realpath(tempfile.mkdtemp(prefix="tide-perf-idle-"))
+    scaled = journal_mb is not None
     result = {"tool": "daemon/tests/perf_idle_cpu.py", "sha": sha or git_sha(src), "src": src,
               "params": {"box": box, "sessions": sessions, "cards": cards, "warmupS": warmup, "windowS": window,
-                         "processes": True, "krunner": True},
+                         "processes": True, "krunner": True,
+                         **({"scale": "prod", "journalMbTarget": journal_mb} if scaled else {})},
               "cpuCount": os.cpu_count(), "loadavgBefore": loadavg(), "procCount": proc_count()}
+    series = memory = None
     bus_proc = daemon = embed = None
     try:
         with open(os.path.join(base, "gitconfig"), "w", encoding="utf-8") as fh:
             fh.write("[user]\n\tname = Perf\n\temail = perf@example.invalid\n[init]\n\tdefaultBranch = master\n")
-        prepare_board(base, src, box, cards)
+        data = prepare_board(base, src, box, cards, journal_mb)
+        if scaled:
+            result["scale"] = data
         write_incus(base)
         now = time.time()
         claude = write_sessions(base, sessions, now)
@@ -425,11 +498,22 @@ def measure(src, sha, box, sessions, warmup, window, cards=30):
         result["indexFileAfterWarmup"] = os.path.getsize(index_file) if os.path.exists(index_file) else None
         result["embedAfterWarmup"] = {"calls": embed.calls, "texts": embed.texts}
         result["loadavgWindowStart"] = loadavg()
+        rss_start = scale_mode.read_memory(daemon.pid)["VmRSS"] if scaled else None
         result["cpuWindow"] = cpu_window(daemon.pid, window)
         result["loadavgWindowEnd"] = loadavg()
+        if scaled:
+            end = scale_mode.read_memory(daemon.pid)
+            memory = {"vmRssStartMb": rss_start, "vmRssEndMb": end["VmRSS"], "vmHwmMb": end["VmHWM"]}
+            result["daemonPid"] = daemon.pid
+            series = scale_mode.SnapshotSeries(snapshot_caller(bus))
         result["embedAfterCpuWindow"] = {"calls": embed.calls, "texts": embed.texts}
-        result["profileWindow"] = profile_window(base, daemon.pid, window)
+        result["profileWindow"] = profile_window(base, daemon.pid, window, series)
         result["daemonAlive"] = daemon.poll() is None
+        if scaled:
+            scale_result(result, series, window, memory)
+            start_data = result.get("scale") or {}
+            result["scale"] = {**start_data, "diskAtStart": start_data.get("disk"),
+                               "disk": scale_mode.disk_stats(os.path.join(base, "board"), mirror_dir(base))}
     finally:
         if daemon is not None and daemon.poll() is None:
             daemon.terminate()
@@ -451,7 +535,7 @@ def measure(src, sha, box, sessions, warmup, window, cards=30):
         except OSError:
             result["daemonLogTail"] = []
     try:
-        if embed is not None:
+        if embed is not None and not scaled:
             result["micro"] = micro(base, src, os.path.join(base, "claude"), embed.port)
     finally:
         if embed is not None:
@@ -476,7 +560,21 @@ def summary(result):
             f"loadavg {result['loadavgBefore']} → {result['loadavgAfter']}")
 
 
-def main(argv=None):
+def scale_summary(result):
+    flow = result.get("flowThread") or {}
+    tick = result.get("tick") or {}
+    snap = result.get("snapshot") or {}
+    memory = result.get("memory") or {}
+    disk = (result.get("scale") or {}).get("disk") or {}
+    return (f"SHA {result['sha']} box={result['params']['box']} skala produkcji: {disk.get('cards')} kart, "
+            f"{disk.get('totalMb')} MB dzienników; wątek przepływu {flow.get('name')} ({flow.get('source')}) "
+            f"{flow.get('cpuPercent')} % rdzenia; CPU procesu {(result.get('cpuWindow') or {}).get('cpuPercent')} %; "
+            f"engine.tick {tick.get('share')} próbek ({tick.get('perSecond')}/s); Snapshot p95 {snap.get('p95Ms')} ms; "
+            f"VmRSS {memory.get('vmRssStartMb')} → {memory.get('vmRssEndMb')} MB, VmHWM {memory.get('vmHwmMb')} MB; "
+            f"loadavg {result['loadavgBefore']} → {result['loadavgAfter']}")
+
+
+def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True)
     parser.add_argument("--box", choices=("on", "off"), required=True)
@@ -485,12 +583,24 @@ def main(argv=None):
     parser.add_argument("--sessions", type=int, default=200)
     parser.add_argument("--warmup", type=float, default=45.0)
     parser.add_argument("--window", type=float, default=60.0)
-    args = parser.parse_args(argv)
-    result = measure(os.path.realpath(args.src), args.sha, args.box == "on", args.sessions, args.warmup, args.window)
+    parser.add_argument("--scale", choices=("default", "prod"), default="default",
+                        help="prod: skala produkcji dzienników (PT-410) — karty `--cards`, dzienniki `--journal-mb`")
+    parser.add_argument("--cards", type=int, default=None, help="liczba kart (domyślnie 30, w skali prod 46)")
+    parser.add_argument("--journal-mb", type=float, default=60.0,
+                        help="skala prod: docelowy łączny rozmiar dzienników (kopia usługi + Tablica) w MB")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    scaled = args.scale == "prod"
+    cards = args.cards if args.cards is not None else (46 if scaled else 30)
+    result = measure(os.path.realpath(args.src), args.sha, args.box == "on", args.sessions, args.warmup, args.window,
+                     cards=cards, journal_mb=args.journal_mb if scaled else None)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
         fh.write("\n")
-    print(summary(result), flush=True)
+    print(scale_summary(result) if scaled else summary(result), flush=True)
     return 0 if result.get("daemonAlive") else 1
 
 

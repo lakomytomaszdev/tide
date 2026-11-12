@@ -317,5 +317,17 @@ class ForgetTest(JournalMemoryCase):
         self.assertEqual(set(self.journal._strict_memory), {"K-2"})
 
 
+class LooseVersionTest(JournalMemoryCase):
+    def test_loose_versions_never_compare_equal(self):
+        """Odczyt w trakcie zmiany pliku: dwie luźne wersje z tym samym `seq` i `generation` są różne (inna treść
+        wcześniejszych wierszy jest możliwa) i żadna nie równa się wersji stanu pliku."""
+        events = self.warm()
+        first = self.journal._loose_version("K-1", events)
+        second = self.journal._loose_version("K-1", events)
+        self.assertEqual((first.seq, first.generation), (second.seq, second.generation))
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, self.journal.version("K-1"))
+
+
 if __name__ == "__main__":
     unittest.main()

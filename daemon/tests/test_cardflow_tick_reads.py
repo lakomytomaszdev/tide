@@ -313,6 +313,62 @@ class BoardTickContextTest(TickFixture):
         self.assertTrue(flowfakes.alive(self.pid))
 
 
+class QueueSnapshotReadsTest(TickFixture):
+    """K-39 #4 (PT-374): pole `queue` migawki liczy tick z `FlowState` tej samej fazy odczytu; `Snapshot` tylko je
+    dołącza, więc nie dokłada odczytów dziennika (jedna faza odczytu na tick, zero odczytów w ścieżce migawki)."""
+
+    HEAVY = "make test-changed BASE=1"
+
+    def queue_events(self):
+        """Trwające ciężkie polecenie, czekająca zgoda i próba testów po scaleniu (trwająca) w dzienniku karty."""
+        from tide_daemon.cardflow import mergecheck
+        card, append, sha = self.card_id, self.journal.append, "b" * 40
+        check = "PT-7:1"
+        self.merge_step = mergecheck.step_name(check)
+        for name, ticket in (("queue-run", "PT-8"), ("queue-wait", "PT-9")):
+            append(card, "step.started", step=name, ticket=ticket, kind="ticket", executor="Sonnet",
+                   provider="anthropic", model="sonnet", attempt=0, parentStep="", stepDir=f"/wt/{ticket}.step",
+                   worktree=f"/wt/{ticket}", branch=f"ticket/{ticket.lower()}")
+            append(card, "step.finished", step=name, ticket=ticket, result="denied", outside=True,
+                   command=self.HEAVY, canAllow=True)
+            append(card, "step.decision", step=name, ticket=ticket, choice="run")
+        append(card, "outside.started", step="queue-run", ticket="PT-8", command=self.HEAVY, unit="u",
+               log="/nonexistent/outside.log", exitFile="/nonexistent/in/exit-code", worktree="/wt/PT-8", head="")
+        append(card, mergecheck.ARMED)
+        append(card, mergecheck.REQUESTED, ticket="PT-7", check=check, command=self.HEAVY, after=sha, start=sha,
+               before=sha)
+        append(card, mergecheck.STEP, step=self.merge_step, ticket="PT-7", kind=mergecheck.KIND, check=check,
+               command=self.HEAVY, after=sha, worktree="/wt/card", stepDir="/wt/card.step")
+        append(card, "step.decision", step=self.merge_step, ticket="PT-7", choice="run")
+        append(card, "outside.started", step=self.merge_step, ticket="PT-7", command=self.HEAVY, unit="u2",
+               log="/nonexistent/merge.log", exitFile="/nonexistent/in/merge-exit", worktree="/wt/card", head=sha)
+
+    def test_queue_field_is_computed_by_the_tick_and_snapshot_adds_no_journal_reads(self):
+        self.queue_events()
+        self.engine._outside_heavy_state().update({"queue-run": True, "queue-wait": True})
+        with mock.patch.object(self.engine, "_start_outside"), mock.patch.object(self.engine, "_merge_check_start"):
+            self.engine.tick()                       # rozgrzany stan
+            with Counting(self.engine)() as count:
+                self.engine.tick()
+                tick_reads, tick_calls = list(count.reads), list(count.calls)
+                self.assertIsNotNone(count.phase_end, f"tick nie doszedł do recover_network: {self.engine._warnings}")
+                self.board.publish()
+                snapshot = json.loads(self.board.snapshot_json())
+                self.board.publish()
+        # K-105 #2: `phase_calls` liczy wywołania `read_complete` (jedno na kartę), `reads` pełne ścisłe odczyty —
+        # rozgrzany tick bez zmian w dziennikach nie ma żadnego.
+        self.assertEqual(dict(count.phase_calls), {card: 1 for card in self.journal.cards_complete()},
+                         "faza odczytu ticku czyta komplet historii karty więcej niż raz")
+        self.assertEqual(tick_reads, [], "pełny odczyt historii przy niezmienionym dzienniku")
+        self.assertEqual(count.reads, tick_reads, "migawka dołożyła pełny odczyt dziennika")
+        self.assertEqual(count.calls, tick_calls, "migawka dołożyła odczyt dziennika")
+        heavy = snapshot["queue"]["heavy"]
+        self.assertEqual([(e["kind"], e["step"]) for e in heavy["running"]],
+                         [("outside", "queue-run"), ("merge-check", self.merge_step)])
+        self.assertEqual([e["step"] for e in heavy["waiting"]], ["queue-wait"])
+        self.assertIn("ciężkie polecenia 2 z 2 zajęte", heavy["waiting"][0]["reason"])
+
+
 class BoxNetworkPhaseTest(BoxFlow):
     PROFILE = {"tide-box": 1, "ports": {"pool": [49123, 49132], "env": ["APP_PORT"]}}
 

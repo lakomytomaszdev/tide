@@ -66,6 +66,11 @@ SERVICE, PATH, IFACE = "org.tide.Daemon", "/Board", "org.tide.Daemon.Board"
 PREVIEW_REPLY = {"ok": False, "error": "preview", "message": "Podgląd z pliku — zmiany są wyłączone."}
 NO_SERVICE_REPLY = {"ok": False, "error": "no-service",
                     "message": "Usługa tide-daemon nie odpowiada — nic nie zapisano. Spróbuj za chwilę."}
+# PT-408: brak odpowiedzi na zatwierdzenie nie dowodzi, że nic się nie zapisało (usługa mogła zdążyć) — inny komunikat.
+APPROVALS = ("ApproveCardPlan", "ApproveCardEnvironment")
+APPROVAL_NO_ANSWER_REPLY = {"ok": False, "error": "no-answer",
+                            "message": "Usługa tide-daemon nie odpowiedziała — zatwierdzanie mogło ruszyć. "
+                                       "Sprawdź stan planu za chwilę."}
 WRITES = ("CreateCard", "UpdateCard", "MoveCard", "UpsertProject", "UpsertTag", "ImportYouTrack", "ResolveYouTrack",
           "StartCard", "ListCardBranches", "SuggestCardBase", "ResolveCardReview", "EnterStep", "TalkToCaretaker", "AbandonStep", "ResolveCardStep", "RevokeTicketConsent", "ResolveCardCaretaker", "ApproveCardPlan", "SetCardPaused",
           "ApproveCardEnvironment", "EditCardPlan", "MergeCardToMain", "MergeCard", "SetCardFlowSettings", "ReportStepFault", "RequestCardBaseChange", "AddCardStepNote")
@@ -81,6 +86,10 @@ NO_LAUNCHERS = '{"terminal": false, "rider": false, "window": false}'
 MODELS_VIEW = "models"
 PENDING_MODELS = '{"pending": true}'   # przed pierwszą odpowiedzią Status() — jak w oknie „Nowe zadanie”
 START_TIMEOUT_MS = 10 * 60 * 1000  # jak w oknie „Nowe zadanie”: worktree dużego repozytorium zakłada się długo
+# Wywołania z długim limitem jak START_TIMEOUT_MS. PT-408: zatwierdzenie planu (rezerwacja numerów, commit planu)
+# i środowiska może trwać dłużej niż 15 s; fałszywe „usługa nie odpowiada” po 15 s nie ma prawa się pojawić.
+LONG_WRITES = ("PreviewCardMerge", "MergeCard", "PreviewCardBaseChange", "RequestCardBaseChange", "ResolveCardStep",
+               "ApproveCardPlan", "ApproveCardEnvironment")
 DOCS_TIMEOUT_MS = 20_000    # CardDocs odpowiada po odczycie plików w wątku roboczym usługi
 FM_SERVICE, FM_PATH, FM_IFACE = "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1", \
     "org.freedesktop.FileManager1"
@@ -833,7 +842,8 @@ class Backend(QObject):
 
         def done(ok: bool, value) -> None:
             if not ok or not isinstance(value, str):
-                self.replied.emit(tag, json.dumps(NO_SERVICE_REPLY, ensure_ascii=False))
+                self.replied.emit(tag, json.dumps(APPROVAL_NO_ANSWER_REPLY if member in APPROVALS else NO_SERVICE_REPLY,
+                                                  ensure_ascii=False))
                 return
             self.replied.emit(tag, value)
             if member in WRITES:
@@ -849,7 +859,7 @@ class Backend(QObject):
             self._call(member, args, done, timeout=START_TIMEOUT_MS, path=GIT_PATH, iface=GIT_IFACE)
         elif member == "YouTrackIssues":
             self._call(member, args, done, timeout=YOUTRACK_TIMEOUT_MS)
-        elif member in ("PreviewCardMerge", "MergeCard", "PreviewCardBaseChange", "RequestCardBaseChange", "ResolveCardStep"):
+        elif member in LONG_WRITES:
             self._call(member, args, done, timeout=START_TIMEOUT_MS)
         else:
             self._call(member, args, done)

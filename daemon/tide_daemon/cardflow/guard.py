@@ -31,13 +31,35 @@ podążania za dowiązaniami, `HEAD` — plik w katalogu gita ustalonym przez us
 
 Zdarzenie dziennika `caretaker.guard` — `{step, repo, worktrees, branches, refs, cause, wrote}`:
 stan bazowy kroku (`cause: start` przed startem programu albo nazwa działania Tide, po którym stan wziął się na
-nowo), `wrote` — powody zmian przypisanych krokowi (pusta lista — bez zmian).
+nowo), `wrote` — powody zmian przypisanych krokowi (pusta lista — bez zmian). Opcjonalne `skipped` (PT-372, niżej)
+— zmiany drzewa pominięte przez polecenie Tide w worktree; stare dzienniki bez tego pola czytają się jak dotąd.
 
 Działanie Tide w trakcie kroku opiekuna (scalenie, start innego kroku z przywracaniem zależności…) może zmienić
 stan pod strażą. Żeby nie przypisać krokowi zapisu Tide, a zarazem nie przykryć zapisu kroku, Tide na czas działania
 zamraża jednostkę kroku (`systemctl --user freeze`, cgroup freezer — cały proces z potomkami stoi): zmiany sprzed
 działania należą do kroku, zmiany w trakcie — do Tide. Gdy zamrożenie się nie uda, a proces kroku żyje, zmiany
 z okna działania też idą na konto kroku (strażnik odrzuca zamiast przepuszczać).
+
+Wyjątek: polecenie Tide w worktree pod strażą (K-39, PT-372). W worktree może w tym czasie biec uruchomienie poza
+piaskownicą na zgodę kroku ticketu (`make test-changed`, skrypt pomiaru) albo próba testów po scaleniu
+(pseudokrok `merge-check-*` w worktree gałęzi karty, K-88). Jego `build/`, `__pycache__` i wyniki testów to zapisy
+Tide, nie opiekuna. Opiekun nie ma kontraktu `outside`, więc sam takiego polecenia nie uruchomi. Zasada:
+- uruchomienie (`runs`) to para `outside.started` → `outside.finished` tego samego kroku z dziennika karty; jego
+  worktree pochodzi z pola `worktree` startu, dla próby testów po scaleniu — z pseudokroku (`merge.check-step`).
+  Start bez `worktree` niczego nie wyłącza;
+- uruchomienie liczy się (`active`), gdy jego start jest w dzienniku przed sprawdzeniem (dziennik czytany przed
+  migawką), a koniec jest po stanie bazowym (`seq` zdarzenia `caretaker.guard`) albo go nie ma (polecenie trwa).
+  Obejmuje to też polecenie, które ruszyło i skończyło się w trakcie kroku opiekuna;
+- worktree pasuje po ścieżkach znormalizowanych (`os.path.normpath(os.path.abspath(…))`, bez podążania za
+  dowiązaniami): końcowy `/` i `./` nie przeszkadzają, dowiązanie do worktree to inna ścieżka;
+- wyłączone są wyłącznie zmiany drzewa (`tree`) tego worktree (`skipped`, `excuse`): nie dają `wrote`, Tide zapisuje
+  `caretaker.guard` z `cause: outside` i `skipped` (`run` — nazwa uruchomienia, `worktree`, `entries` — zmienione
+  wpisy najwyższego poziomu), a drzewo tego worktree bierze na nowo. Zniknięcie albo pojawienie się worktree nie jest
+  wyłączone. `HEAD` worktree, refy gałęzi i drzewa innych worktree pod strażą pozostają pod pełną strażą;
+- ta sama reguła działa w sprawdzeniu przed działaniem Tide, w przeliczeniu stanu po nim (krok niezamrożony)
+  i w werdykcie, żeby zmiana pominięta w jednym miejscu nie wróciła jako `wrote` w drugim.
+Granica: zapis opiekuna w drzewie worktree z trwającym poleceniem jest w tym oknie nieodróżnialny od zapisu polecenia
+i przechodzi. Uruchomienie bez `outside.finished` (np. utracone po awarii) wyłącza drzewo do końca kroku opiekuna.
 """
 from __future__ import annotations
 
@@ -51,6 +73,11 @@ EVENT = "caretaker.guard"
 FIELDS = ("repo", "worktrees", "branches", "refs")
 # Ścieżka zapisywana przez Claude Code, nie przez model (PT-317) — jedyny wyjątek strażnika, względem worktree.
 CLAUDE_DIR, CC_WRITES = ".claude", ".claude/.cc-writes"
+MISSING = {"": "brak"}                                  # drzewo worktree, którego nie ma
+# Wyjątek dla polecenia Tide w worktree (PT-372): `cause` zdarzenia i zdarzenia dziennika, z których się bierze.
+OUTSIDE = "outside"
+OUTSIDE_STARTED, OUTSIDE_FINISHED = "outside.started", "outside.finished"
+MERGE_CHECK_STEP = "merge.check-step"                   # mergecheck.STEP — pseudokrok próby testów po scaleniu
 
 
 def tree(worktree: str) -> dict:
@@ -157,3 +184,79 @@ def _tree_changes(before: dict, after: dict) -> list[str]:
 
 def reason(found: list[str]) -> str:
     return "krok opiekuna pisał poza swoim katalogiem wyjściowym: " + "; ".join(dict.fromkeys(found))
+
+
+# --- wyjątek: polecenie Tide w worktree pod strażą (PT-372) -------------------------------------
+
+def where(path) -> str:
+    """Ścieżka do porównań worktree: bezwzględna i znormalizowana, bez rozwijania dowiązań; pusta — brak."""
+    return os.path.normpath(os.path.abspath(path)) if isinstance(path, str) and path else ""
+
+
+def runs(events) -> list[dict]:
+    """Uruchomienia poza piaskownicą z dziennika karty: `{step, worktree, started, finished}` (`seq` startu i końca,
+    `finished` None — bez końca). Worktree próby testów po scaleniu z jej pseudokroku."""
+    pseudo = {e.get("step"): e.get("worktree") for e in events if e.get("type") == MERGE_CHECK_STEP}
+    found, running = [], {}
+    for e in events:
+        kind, name = e.get("type"), e.get("step") or ""
+        if kind == OUTSIDE_STARTED:
+            run = {"step": name, "worktree": where(pseudo[name] if name in pseudo else e.get("worktree")),
+                   "started": e.get("seq"), "finished": None}
+            found.append(run)
+            running[name] = run
+        elif kind == OUTSIDE_FINISHED and name in running:
+            running.pop(name)["finished"] = e.get("seq")
+    return found
+
+
+def active(base: dict, found: list[dict], step: str = "") -> dict:
+    """Worktree (`where`) → nazwy uruchomień działających od stanu bazowego `base` (zdarzenie `caretaker.guard`).
+    Bez `seq` stanu bazowego — nic (strażnik woli odrzucić). Krok pod strażą sam nie jest uruchomieniem."""
+    since = base.get("seq")
+    if type(since) is not int:
+        return {}
+    busy: dict = {}
+    for run in found:
+        end = run.get("finished")
+        if not run.get("worktree") or run.get("step") == step or type(end) is int and end <= since:
+            continue
+        busy.setdefault(run["worktree"], [])
+        if run["step"] not in busy[run["worktree"]]:
+            busy[run["worktree"]].append(run["step"])
+    return busy
+
+
+def _excused(base: dict, fresh: dict, busy: dict) -> list:
+    """Pary (stan worktree bazowy, migawka, nazwy uruchomień) — nazwy puste, gdy drzewo tego worktree zostaje pod
+    strażą. Inny zestaw worktree niż w stanie bazowym niczego nie wyłącza."""
+    olds, news = base.get("worktrees") or [], fresh.get("worktrees") or []
+    if not busy or len(olds) != len(news):
+        return [(was, was, []) for was in olds]
+    found = []
+    for was, now in zip(olds, news):
+        names = busy.get(where(was.get("worktree"))) or []
+        old, new = was.get("tree") or {}, now.get("tree") or {}
+        ok = old != new and MISSING not in (old, new) and where(was.get("worktree")) == where(now.get("worktree"))
+        found.append((was, now, names if ok else []))
+    return found
+
+
+def skipped(base: dict, fresh: dict, busy: dict) -> list[dict]:
+    """Zmiany drzewa pominięte przez działające uruchomienie: `{run, worktree, entries}` na worktree."""
+    found = []
+    for was, now, names in _excused(base, fresh, busy):
+        if names:
+            old, new = was.get("tree") or {}, now.get("tree") or {}
+            found.append({"run": ", ".join(names), "worktree": was.get("worktree") or "",
+                          "entries": sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))})
+    return found
+
+
+def excuse(base: dict, fresh: dict, busy: dict) -> dict:
+    """Stan bazowy (pola `FIELDS`) z drzewem worktree z działającym uruchomieniem wziętym z `fresh`. `HEAD`, refy
+    i pozostałe worktree bez zmian — `changes(excuse(…), fresh)` to zmiany nadal przypisane krokowi."""
+    rebased = {k: base.get(k) for k in FIELDS}
+    rebased["worktrees"] = [{**was, "tree": now.get("tree")} if names else was
+                            for was, now, names in _excused(base, fresh, busy)]
+    return rebased

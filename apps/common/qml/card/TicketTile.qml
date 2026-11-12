@@ -28,7 +28,7 @@ Rectangle {
     function statusTone(state) {
         return state === "merged" ? Tide.Tokens.mint : state === "running" || state === "fix" ? Tide.Tokens.teal
              : state === "review" || state === "merging" ? Tide.Tokens.lavender : state === "you" ? Tide.Tokens.peach
-             : state === "limit" ? Tide.Tokens.butter : state === "rejected" ? Tide.Tokens.rose : Tide.Tokens.textMuted
+             : state === "limit" || state === "card-limit" ? Tide.Tokens.butter : state === "rejected" ? Tide.Tokens.rose : Tide.Tokens.textMuted
     }
 
     objectName: "fullTicket"
