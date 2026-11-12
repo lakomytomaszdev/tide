@@ -59,6 +59,7 @@ from . import mergecheck
 from . import caretaker
 from . import decisions
 from . import caretakerctx
+from .riskview import RiskMemo
 from . import handoff
 from . import boxstep
 from . import trialhold
@@ -512,6 +513,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.store = store
         self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
+        self._risk_view = RiskMemo()    # K-105 #4: pamięć oceny ryzyka outside tylko dla widoku (nie dla workera)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
         self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
         self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
@@ -943,7 +945,16 @@ class FlowEngine(CaretakerChat, PlanEditing):
         st = self.journal.state(card.get("id") or "")
         if st.started is not None:
             st.caretaker_setup = self._caretaker_setup(st)
-        out = derived(st, card)
+        cid = card.get("id") or ""
+        # K-105 #4: ocena ryzyka outside w opisie decyzji z pamięci widoku — tylko w odczycie prezentacji.
+        presenting = getattr(self.journal, "presenting", None)    # dzienniki zastępcze w testach nie mają trybu widoku
+        if presenting is not None and presenting():
+            memo = self.__dict__.setdefault("_risk_view", RiskMemo())   # też dla silnika zbudowanego bez __init__
+            scope = memo.scope(cid, self.journal.view_version(cid))
+        else:
+            scope = contextlib.nullcontext()
+        with scope:
+            out = derived(st, card)
         if out:
             ticketentry.enrich(st, out)
             self._limit_view(st, out)

@@ -98,6 +98,10 @@ class Journal:
     def _presenting(self) -> bool:
         return getattr(self._view, "on", False)
 
+    def presenting(self) -> bool:
+        """Czy bieżący wątek czyta w trybie prezentacji (`presentation()`)."""
+        return self._presenting()
+
     def _guard(self):
         return contextlib.nullcontext() if self._presenting() else self.lock
 
@@ -191,6 +195,12 @@ class Journal:
                 if isinstance(value, (dict, list, set)):
                     setattr(state, name, value.copy())
             return state
+
+    def view_version(self, card: str) -> tuple:
+        """Wersja dziennika karty do porównań (ten sam klucz, który unieważnia pamięć prezentacji lub workera,
+        zależnie od trybu bieżącego wątku). Zmienia się przy każdej zmianie pliku dziennika, także spoza procesu."""
+        with self._guard():
+            return self._read_version(card)[0]
 
     def _read_version(self, card: str) -> tuple:
         cache = self._view_cache if self._presenting() else self._cache
