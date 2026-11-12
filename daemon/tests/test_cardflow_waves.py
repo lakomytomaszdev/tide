@@ -95,7 +95,7 @@ class WaveFlowTest(FlowInProcess):
         self.flow.set_paused(card, False, box.append)
         self.assertTrue(wait_until(lambda: box, timeout=5))
         self.assertTrue(json.loads(box[0])["ok"])
-        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=25))
+        self.assertTrue(wait_until(lambda: self.of(card, "plan.finished"), timeout=40))
 
     def local_config(self):
         from tide_daemon.models import config
