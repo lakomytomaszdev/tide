@@ -56,6 +56,7 @@ from ..worktrees.naming import slug_from_prompt
 from . import testrerun
 from . import testpolicy
 from . import mergecheck
+from . import heavyqueue
 from . import caretaker
 from . import decisions
 from . import caretakerctx
@@ -128,7 +129,15 @@ ESCALATE_FIX_ROUND = 3          # od tej rundy poprawki robi mocny wykonawca spo
 BOX_STEP_KINDS = ("ticket", "fix", "review", "close")
 OUTSIDE_PER_PROJECT = 6         # polecenia poza piaskownicą naraz w projekcie (06.11 19:00, decyzja użytkownika: stałe 6; zmiana tylko przy wyraźnym wzroście porażek testów pod obciążeniem, nie przy samym load average)
 OUTSIDE_TOTAL = 7               # … i łącznie (testy i budowanie obciążają całą maszynę)
+# Ciężkie polecenia (kontrakt testów projektu, testy po scaleniu) mają osobny limit na maszynę `heavyLimit`
+# (K-39 #3, PT-373: cardflow/heavyqueue.py) i liczą się także do łącznego, więc łączny nie może być mniejszy.
+assert OUTSIDE_TOTAL >= heavyqueue.MAX_LIMIT
 OLD_RUNNER_JOBS = 4             # procesy testów dla gałęzi bez wspólnej puli maszyny (tools/test_runner.py bez MachineSlots)
+
+
+def _queue_heavy(entry) -> bool:
+    """Pole `heavy` wpisu kolejki outside (PT-373); wpis bez pola (starszy kształt) — lekki."""
+    return len(entry) > 4 and bool(entry[4])
 
 
 def test_pool_available(worktree: str) -> bool:
@@ -513,7 +522,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         self.runner = runner or HostRunner(systemd_run)   # PT-180: jedyna droga uruchomienia i zatrzymania kroku
         self.journal = journal or Journal(store.root)
         self._outside_active = None     # krok → (karta, jednostka); budowane z dzienników przy pierwszym użyciu
-        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie): kolejka FIFO
+        self._outside_waiting = {}      # krok → (karta, projekt, czas zgody, ostatnie sprawdzenie, ciężkie): kolejka FIFO
+        self._outside_heavy = {}        # krok → ciężkie (bool): klasa polecenia czekającego albo trwającego (PT-373)
+        self._heavy_held = {}           # krok → (zajęte, limit): ciężkie wstrzymane limitem przy ostatniej decyzji
         self._merge_check_ff: set = set()  # (karta, ticket, seq wyniku) scaleń „fast-forward” — bez ponownego gita
         self._worktree_heads: dict = {}  # katalog administracyjny worktree → (HEAD, gitdir) z ostatniego zdrowego odczytu
         self._main_branches: dict[str, str] = {}  # odczyt w ticku; projekcja migawki nie uruchamia gita
@@ -708,6 +719,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         return {"ok": True, "limitTransfer": {"mode": mode, "executor": executor},
                 "limitThresholdPercent": threshold, "providerSlots": slots,
                 "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
+                "heavyLimit": heavyqueue.limit_of(data.get("heavyLimit")),
                 **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
                 "version": version, "readState": "ready"}
 
@@ -736,7 +748,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def set_flow_settings(self, request: dict) -> dict:
         allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
-                   *caretaker.SETTINGS_DEFAULTS}
+                   "heavyLimit", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -769,12 +781,17 @@ class FlowEngine(CaretakerChat, PlanEditing):
         rounds = request.get("reviewRoundsBeforeQuestion", current["reviewRoundsBeforeQuestion"])
         if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 20:
             raise FlowError("bad-settings", "liczba rund review przed pytaniem musi być od 1 do 20")
+        # Ciężkie polecenia naraz na maszynę (PT-373). Zmniejszenie nie przerywa trwających — działa przy kolejnym starcie.
+        if "heavyLimit" in request and heavyqueue.limit_problem(request["heavyLimit"]):
+            raise FlowError("bad-settings", heavyqueue.limit_problem(request["heavyLimit"]))
         data = self._settings_data()
         box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
                     limitThresholdPercent=threshold, providerSlots=dict(slots), **care)
         if "reviewRoundsBeforeQuestion" in request:
             data["reviewRoundsBeforeQuestion"] = rounds
+        if "heavyLimit" in request:
+            data["heavyLimit"] = request["heavyLimit"]
         if box is not None:
             data["box"] = box
         self._write_settings(data)
@@ -946,6 +963,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         out = derived(st, card)
         if out:
             ticketentry.enrich(st, out)
+            fullcard.heavy_queued(st, out, self._heavy_view(card.get("id") or ""))
             self._limit_view(st, out)
             self._environment_view(card.get("id") or "", st, out, read)
             trialhold.view(self, card.get("id") or "", out)
@@ -6921,13 +6939,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return
             if not consent.before_start(self, card, step, {"command": step["command"]}, decision):
                 return
+            # Próba testów po scaleniu jest zawsze ciężka (PT-373).
+            self._outside_heavy_state()[name] = True
             if self._outside_busy(card):
-                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_behind(card, name, decision, quiet=True, heavy=True)
                 self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return
-            if self._outside_behind(card, name, decision):
+            if self._outside_behind(card, name, decision, heavy=True):
+                return
+            if not self._heavy_admitted(card, name):
                 return
             self._outside_waiting.pop(name, None)
+            self._heavy_held_state().pop(name, None)
             self._outside_log(name, "start")
             self._merge_check_start(card, step, entry)
             return
@@ -7352,15 +7375,19 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 return None
             if not consent.before_start(self, card, step, done, decision):
                 return None
+            heavy = self._outside_heavy_of(card, step, done.get("command") or "")
             if self._outside_busy(card):
                 # Zgłoszenie w kolejce także przy zajętym miejscu (05.11: bez tego kolejka była pusta właśnie wtedy,
                 # gdy miejsce się zwalniało, i wskakiwała karta sprawdzana jako pierwsza).
-                self._outside_behind(card, name, decision, quiet=True)
+                self._outside_behind(card, name, decision, quiet=True, heavy=heavy)
                 self._outside_log(name, "miejsce zajęte: " + ", ".join(sorted(self._outside_active or {})))
                 return None     # kolejka: stan karty mówi „czeka na wolne miejsce poza piaskownicą”
-            if self._outside_behind(card, name, decision):
+            if self._outside_behind(card, name, decision, heavy=heavy):
                 return None
+            if heavy and not self._heavy_admitted(card, name):
+                return None     # kolejka ciężkich poleceń na maszynę (PT-373)
             self._outside_waiting.pop(name, None)
+            self._heavy_held_state().pop(name, None)
             self._outside_log(name, "start")
             self._start_outside(card, step, done.get("command") or "")
             return None
@@ -7399,6 +7426,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
         except OSError:
             tail = "(brak wyniku)"
         self._outside_active.pop(name, None)
+        self._outside_heavy_state().pop(name, None)
         # Procesy zostawione przez polecenie (np. atrapy z testów, serwery w tle) nie trzymają jednostki w nieskończoność.
         stepstop._systemctl("stop", started["unit"] + ".scope")
         return code, tail
@@ -7743,10 +7771,111 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slug = self._project(card)[1].slug
         return sum(1 for other, _ in alive.values() if self._project(other)[1].slug == slug) >= OUTSIDE_PER_PROJECT
 
-    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False) -> bool:
+    # --- kolejka ciężkich poleceń na maszynę (K-39 #3, PT-373; zasada: heavyqueue.py) ---------------
+
+    def _outside_heavy_state(self) -> dict:
+        return self.__dict__.setdefault("_outside_heavy", {})
+
+    def _heavy_held_state(self) -> dict:
+        return self.__dict__.setdefault("_heavy_held", {})
+
+    def _heavy_limit(self) -> int:
+        return heavyqueue.limit_of(self._settings_data().get("heavyLimit"))
+
+    def _heavy_contract(self, card: str, worktree: str):
+        """Efektywny kontrakt testów projektu karty dla klasyfikacji (z `{base}` nierozwiniętym): zatwierdzony
+        kontrakt z profilu, inaczej cele `make` worktree (testpolicy.effective_tests)."""
+        _, project = self._project(card)
+        tests = getattr(project, "tests", None)
+        error = getattr(project, "tests_error", "") or ""
+        approved = False
+        if isinstance(tests, dict) and not error:
+            try:
+                from ..board import contract_approval
+                approved = contract_approval.approved(self.store.root, project.slug, tests,
+                                                      getattr(self.store, "approvals_path", None)) is True
+            except Exception:
+                approved = False
+        return testpolicy.effective_tests(tests, worktree, approved, "", error=error)
+
+    def _outside_heavy_of(self, card: str, step: dict, command: str) -> bool:
+        """Klasa polecenia procesu `step` (raz na proces, pamiętana do końca uruchomienia). Błąd odczytu kontraktu
+        albo projektu — lekkie (dotychczasowe limity)."""
+        name = step.get("step") or ""
+        known = self._outside_heavy_state()
+        if name in known:
+            return known[name]
+        if mergecheck.is_step(name):
+            heavy = True
+        else:
+            try:
+                _, project = self._project(card)
+                worktree = step.get("worktree") or ""
+                roots = (worktree, project.repo, step.get("stepDir") or "")
+                heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree), ()).heavy
+            except Exception:
+                heavy = False
+        known[name] = heavy
+        return heavy
+
+    def _heavy_running(self) -> set:
+        """Trwające ciężkie z żywego `_outside_active` (po `_outside_busy` i po każdym starcie w tym ticku, także
+        próby po scaleniu) — nie z migawki stanu kart. Po restarcie klasa z dziennika: polecenie prośby kroku,
+        ponowienie padniętych modułów (`rerunOf`) jest ciężkie jak jego pełny przebieg, próba po scaleniu zawsze."""
+        known = self._outside_heavy_state()
+        found = set()
+        for name, (card, _unit) in list((getattr(self, "_outside_active", None) or {}).items()):
+            if name not in known:
+                known[name] = self._started_heavy(card, name)
+            if known[name]:
+                found.add(name)
+        return found
+
+    def _started_heavy(self, card: str, name: str) -> bool:
+        if mergecheck.is_step(name):
+            return True
+        try:
+            events = self.journal.read(card)
+            started = processidentity.outside_runs(events).get(name) or \
+                processidentity.outside_run(events, name)[1] or {}
+            if started.get("rerunOf"):
+                return True
+            current = fold(events)
+            step = current.steps.get(name) or {}
+            command = (current.finished.get(name) or {}).get("command") or started.get("command") or ""
+        except Exception:
+            return False
+        return self._outside_heavy_of(card, {**step, "step": name}, command)
+
+    def _heavy_admitted(self, card: str, name: str) -> bool:
+        """Decyzja startu ciężkiego polecenia `name` (już zgłoszonego w kolejce): `heavyqueue.admit` z czekającymi
+        ciężkimi, które mogą ruszyć (ich karta nie ma zajętego miejsca projektu ani łącznego), i żywym zbiorem
+        trwających. Wstrzymane zapamiętuje (zajęte, limit) do statusu ticketu."""
+        running = self._heavy_running()
+        waiting = [heavyqueue.Waiting(other, entry[2]) for other, entry in list(self._outside_waiting.items())
+                   if _queue_heavy(entry) and (other == name or not self._outside_busy(entry[0]))]
+        decision = heavyqueue.admit(waiting, running, self._heavy_limit())
+        held = self._heavy_held_state()
+        if name in decision.admitted:
+            held.pop(name, None)
+            return True
+        held[name] = (decision.busy, decision.limit)
+        self._outside_log(name, f"ciężkie polecenia: {decision.busy} z {decision.limit} zajęte"
+                                + (f" ({', '.join(sorted(running))})" if running else ""))
+        return False
+
+    def _heavy_view(self, card: str) -> dict:
+        """Ciężkie polecenia tej karty wstrzymane limitem: krok → (zajęte, limit) — tylko wpisy nadal w kolejce."""
+        waiting = dict(getattr(self, "_outside_waiting", None) or {})
+        return {name: value for name, value in dict(self._heavy_held_state()).items()
+                if (waiting.get(name) or ("",))[0] == card and _queue_heavy(waiting[name])}
+
+    def _outside_behind(self, card: str, name: str, decision: dict, *, quiet: bool = False,
+                        heavy: bool = False) -> bool:
         """Kolejka według czasu zgody (05.11: polecenie K-38 czekało ponad godzinę, bo każde zwolnione miejsce
         projektu brała karta sprawdzana wcześniej). Zgoda zgłasza się przy każdym sprawdzeniu; wpis bez sprawdzenia
-        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki."""
+        przez OUTSIDE_QUEUE_STALE (karta zatrzymana, krok odrzucony) wypada z kolejki. Wpis ma pole `heavy`
+        (PT-373): starsze ciężkie polecenie, które nie ruszy, bo limit ciężkich jest zajęty, nie blokuje innych."""
         now = time.time()
         if not getattr(self, "_outside_seeded", False):
             self._outside_seeded = True
@@ -7754,11 +7883,18 @@ class FlowEngine(CaretakerChat, PlanEditing):
         slug = self._project(card)[1].slug
         previous = self._outside_waiting.get(name)
         queued = previous[2] if previous else (_epoch(decision.get("ts")) if decision.get("ts") else now)
-        self._outside_waiting[name] = (card, slug, queued, now)
+        self._outside_waiting[name] = (card, slug, queued, now, heavy)
         self._outside_waiting = {k: v for k, v in self._outside_waiting.items() if now - v[3] < OUTSIDE_QUEUE_STALE}
-        for other, (other_card, other_slug, other_queued, _) in self._outside_waiting.items():
+        heavy_load = None
+        for other, entry in self._outside_waiting.items():
+            other_card, other_slug, other_queued = entry[:3]
             if other == name or (other_queued, other) >= (queued, name):
                 continue
+            if _queue_heavy(entry):
+                if heavy_load is None:
+                    heavy_load = (len(self._heavy_running()), self._heavy_limit())
+                if not heavyqueue.holds_queue(True, *heavy_load):
+                    continue    # czeka na miejsce ciężkich — ruszy dopiero po zwolnieniu, nie trzyma innych
             if other_slug == slug or not self._outside_busy(other_card):
                 if not quiet:
                     self._outside_log(name, f"czeka za starszą zgodą {other}")
@@ -7803,7 +7939,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
                         name in outside and name not in started and name not in resumed and \
                         name not in current.superseded and now - queued < 86400:
-                    self._outside_waiting.setdefault(name, (other, slug, queued, now))
+                    # Pole `heavy` z tej samej klasyfikacji co przy zgłoszeniu (PT-373): kolejność czekających
+                    # ciężkich po restarcie to dalej czas zgody.
+                    heavy = self._outside_heavy_of(other, {**(current.steps.get(name) or {}), "step": name},
+                                                   (current.finished.get(name) or {}).get("command") or "")
+                    self._outside_waiting.setdefault(name, (other, slug, queued, now, heavy))
 
     def _outside_exit(self, card: str, name: str) -> str:
         """Plik kodu wyjścia uruchomienia outside procesu ze wspólnego wyniku redukcji (PT-288 review 2, M7):
