@@ -5,7 +5,8 @@ Liczy dla każdego dnia: porażki pełnych przebiegów testów poza piaskownicą
 „padło → przeszło bez zmian kodu”, nieudane scalenia, p75 czasu ticketu (gałąź → scalenie), scalenia na godzinę
 kroków agentów oraz liczbę jednocześnie trwających ciężkich przebiegów (maksimum). Do tego (K-100, PT-422):
 udział czerwonych (kod ≠ 0) wśród WSZYSTKICH przebiegów `outside` (HEAVY, także celowo czerwonych — definicja danych
-Fable) i liczbę decyzji „odstępstwo/ponowienie” na dobę z dziennika interwencji (`--log`). Tylko odczyt.
+Fable) i liczbę decyzji „odstępstwo/ponowienie” na dobę z dziennika interwencji (`--log` albo `--log-rev REV` z gita; domyślnie plik
+z checkoutu narzędzia, który w worktree ticketu bywa starszy — stopka podaje źródło). Tylko odczyt.
 Tempo limitu Claude nie jest w dziennikach — podaje je koordynator z /usage.
 """
 import argparse
@@ -15,6 +16,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 
 STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tide", "cardflow")
 RED = re.compile(r"czerwon|\bred\b|przed zmian|przed poprawk|na bazie|bez poprawki|odtw[oó]rz|reprodu|dowód porażki", re.I)
@@ -25,36 +27,50 @@ HEAVY = re.compile(r"make test\b|test-changed|dotnet test|test_runner|pytest|npm
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "docs", "agents", "interwencje", "dziennik.tsv")
 # Decyzja „odstępstwo/ponowienie” (K-100): wpis rodzaju zgoda/decyzja, którego treść dotyczy testów (TESTS) i jednocześnie
 # odstępstwa od ich wyniku albo ponowienia przebiegu (DEVIATION). Zwykła zgoda na polecenie bez testów nie pasuje.
+# Rodzaje złożone (`zgoda/decyzja`, `błąd+decyzja`) rozbijamy po `/` i `+`. `odpowiedź`/`odmowa` (nawet z „odstępstwo
+# przyjęte”) są poza regułą: to odpowiedzi na pytania agenta, nie decyzje koordynatora o wyniku testów.
 DECISION_KINDS = ("zgoda", "decyzja")
 TESTS = re.compile(r"test|przebieg|porażk|niestabiln|\bexit\b", re.I)
-DEVIATION = re.compile(r"odstępstw|ponowien|ponown|retry|osobno \d+\s*[x/×]|znany niestabiln|przechodzi osobno|"
+DEVIATION = re.compile(r"odstępstw|ponowien|ponown|retry|osobno \d+\s*[x/×]|znan(y|a|e|ych) niestabiln|przechodzi osobno|"
                        r"bez związku|zaakceptowan", re.I)
 
 
 def is_deviation_decision(kind, text):
-    """Reguła jawna: rodzaj ∈ {zgoda, decyzja} ∧ treść mówi o testach ∧ mówi o odstępstwie albo ponowieniu."""
-    return kind in DECISION_KINDS and bool(TESTS.search(text)) and bool(DEVIATION.search(text))
+    """Reguła jawna: rodzaj (po rozbiciu na `/`, `+`) ∋ {zgoda, decyzja} ∧ treść mówi o testach ∧ o odstępstwie/ponowieniu."""
+    parts = re.split(r"[/+]", kind)
+    return any(k.strip() in DECISION_KINDS for k in parts) and bool(TESTS.search(text)) and bool(DEVIATION.search(text))
 
 
-def deviation_decisions(path, since):
-    """Liczba decyzji odstępstwo/ponowienie na dobę (RRRR-MM-DD) z pliku TSV; brak pliku = pusty wynik."""
-    counts = collections.Counter()
+def log_lines(path, rev=None):
+    """Wiersze dziennika interwencji: z pliku `path` albo (`rev`) z `git show REV:docs/agents/interwencje/dziennik.tsv`."""
+    if rev:
+        repo = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        done = subprocess.run(["git", "-C", repo, "show", f"{rev}:docs/agents/interwencje/dziennik.tsv"],
+                              capture_output=True, text=True, encoding="utf-8")
+        return done.stdout.splitlines(True) if done.returncode == 0 else []
     try:
         with open(path, encoding="utf-8") as fh:
-            header = fh.readline().rstrip("\n").split("\t")
-            if not {"czas", "rodzaj", "co"} <= set(header):
-                return counts
-            at, kind, what = header.index("czas"), header.index("rodzaj"), header.index("co")
-            why = header.index("przyczyna") if "przyczyna" in header else None
-            for line in fh:
-                cols = line.rstrip("\n").split("\t")
-                if len(cols) <= max(at, kind, what) or cols[at][:10] < since:
-                    continue
-                text = cols[what] + (" " + cols[why] if why is not None and len(cols) > why else "")
-                if is_deviation_decision(cols[kind], text):
-                    counts[cols[at][:10]] += 1
+            return fh.readlines()
     except OSError:
-        pass
+        return []
+
+
+def deviation_decisions(lines, since):
+    """Liczba decyzji odstępstwo/ponowienie na dobę (RRRR-MM-DD) z wierszy TSV; brak wierszy = pusty wynik."""
+    counts = collections.Counter()
+    lines = iter(lines)
+    header = next(lines, "").rstrip("\n").split("\t")
+    if not {"czas", "rodzaj", "co"} <= set(header):
+        return counts
+    at, kind, what = header.index("czas"), header.index("rodzaj"), header.index("co")
+    why = header.index("przyczyna") if "przyczyna" in header else None
+    for line in lines:
+        cols = line.rstrip("\n").split("\t")
+        if len(cols) <= max(at, kind, what) or cols[at][:10] < since:
+            continue
+        text = cols[what] + (" " + cols[why] if why is not None and len(cols) > why else "")
+        if is_deviation_decision(cols[kind], text):
+            counts[cols[at][:10]] += 1
     return counts
 
 
@@ -89,6 +105,8 @@ def main():
     parser.add_argument("--since")
     parser.add_argument("--days", type=int, default=3)
     parser.add_argument("--log", default=LOG, help="dziennik interwencji (TSV) do decyzji odstępstwo/ponowienie")
+    parser.add_argument("--log-rev", help="zamiast --log: dziennik interwencji z tej rewizji gita (np. gałęzi koordynacji;"
+                                          " dziennik w checkoucie ticketu bywa starszy)")
     args = parser.parse_args()
     since = args.since or (dt.date.today() - dt.timedelta(days=args.days - 1)).isoformat()
     day = collections.defaultdict(lambda: collections.Counter())
@@ -139,7 +157,7 @@ def main():
                 nxt = next((r for r in runs[i + 1:] if r["ticket"] == run["ticket"] and r["cmd"] == run["cmd"]), None)
                 if nxt and nxt["ok"] and RERUN.search(reasons.get(nxt["step"], "")):
                     day[run["d"]]["flaky"] += 1
-    decisions = deviation_decisions(args.log, since)
+    decisions = deviation_decisions(log_lines(args.log, args.log_rev), since)
     for d in decisions:
         day[d]  # dzień bez przebiegów też dostaje wiersz
     print("dzień       | pełne testy (bez czerwonych) | porażki | padło→przeszło | maks. naraz | scalenia | nieudane"
@@ -162,7 +180,8 @@ def main():
     print("\nProgi: zwiększ — porażki <35%, nieudane scalenia ≤2, p75 <2 h, ≥1,0 scalenia/h (2 dni z rzędu);"
           " zmniejsz — porażki >60% albo ≥3 padło→przeszło, nieudane scalenia ≥5, p75 >4 h, <0,7 scalenia/h."
           " Limit ciężkich przebiegów naraz: 2.\nCel K-100: czerwone poza piaskownicą <35% (wszystkie i bez celowo"
-          " czerwonych; przed kartą ~69%) oraz <10 decyzji odstępstwo/ponowienie na dobę (przed kartą ~37).")
+          " czerwonych; przed kartą ~69%) oraz <10 decyzji odstępstwo/ponowienie na dobę (przed kartą ~37).\n"
+          f"Decyzje liczono z: {('git ' + args.log_rev) if args.log_rev else os.path.normpath(args.log)}")
 
 
 if __name__ == "__main__":

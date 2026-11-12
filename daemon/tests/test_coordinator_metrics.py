@@ -88,6 +88,18 @@ class MetricsTest(unittest.TestCase):
         rows, _ = self.run_tool()
         self.assertEqual(rows["2026-11-11"][-1], "2")
 
+    def test_compound_kinds_and_plural_unstable_wording(self):
+        self.write_card([])
+        self.write_log([
+            ("2026-11-11T09:00", "zgoda/decyzja", "ponowienie padniętych modułów testów"),                   # tak
+            ("2026-11-11T09:10", "błąd+decyzja", "porażka testu, odstępstwo przyjęte"),                      # tak
+            ("2026-11-11T09:20", "decyzja", "znane niestabilne testy: upoważnienie z wyprzedzeniem"),        # tak
+            ("2026-11-11T09:30", "odpowiedź", "odstępstwo przyjęte: test pada pod obciążeniem"),             # poza regułą
+            ("2026-11-11T09:40", "odmowa", "odstępstwo testów odrzucone, ponowienie"),                       # poza regułą
+        ])
+        rows, _ = self.run_tool()
+        self.assertEqual(rows["2026-11-11"][-1], "3")
+
     def test_missing_log_is_read_only_and_not_fatal(self):
         self.write_card(outside("PT-1-1", "2026-11-11T10:00:00", 0))
         before = os.listdir(self.board)
