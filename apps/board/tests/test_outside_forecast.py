@@ -13,6 +13,7 @@ porównania z lustrem — biblioteka nie ma lustra (okno liczy tylko arytmetykę
 - okno decyzji i pełna karta: napis prognozy w pozycji grupy, te same odpowiedzi co bez prognozy.
 """
 import json
+from datetime import datetime
 import os
 import shutil
 import unittest
@@ -29,6 +30,7 @@ OTHER_PROJECT = "inny-projekt"
 LIGHT_COMMAND = "make build-docs"
 CONTRACT = {"changed": "make test-changed BASE={base}", "full": "make test"}
 SHA = "c" * 40
+NOW = datetime.fromisoformat("2026-11-10T13:00:00+01:00").timestamp()
 
 
 def heavy_of(card, name, step, command):
@@ -84,8 +86,9 @@ def tickets_of(first, count):
 def service_queue(journals, heavy_limit=2):
     """Pole `queue` migawki z dzienników kart (`{id karty: zdarzenia}`) — kod usługi, bez katalogu dzienników."""
     states = {card: fold(events) for card, events in journals.items()}
+    # Stały zegar tuż po znacznikach dziennika: zgody starsze niż doba nie czekają w kolejce (`approval_live`).
     return json.loads(json.dumps(queueview.build(states, {"heavyLimit": heavy_limit}, heavy_of=heavy_of,
-                                                 outside_limits=(6, 7))))
+                                                 outside_limits=(6, 7), now=NOW)))
 
 
 def service_decisions(events):
