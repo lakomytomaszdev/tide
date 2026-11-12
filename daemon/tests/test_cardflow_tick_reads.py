@@ -5,8 +5,10 @@
   unieważnia odczyt karty, a każda mutacja z fazy robi osobny świeży pełny odczyt i odmawia przy zmianie,
 - jeden kontekst odczytu Tablicy (`BoardRead` z #1) na tick; zapis Tablicy go unieważnia, a ścieżka zapisu czyta świeżo.
 
-Testy liczą odczyty na granicy dziennika (`Journal.read_complete`) i magazynu Tablicy (`BoardStore.load`); czasu nie
-mierzą. Procesy kroków są prawdziwe (atrapy z flowfakes.py), tak jak w RestartInProcessTest."""
+Testy liczą odczyty na granicy dziennika i magazynu Tablicy (`BoardStore.load`); czasu nie mierzą. Granica dziennika
+(K-105 #2): każdy pełny ścisły odczyt historii karty (`Journal._read_strict` — pełne przeczytanie i parsowanie pliku
+przez `read_complete` albo `read_fresh`); trafienie i przyrost pamięci ścisłego odczytu nie są pełnym odczytem,
+a `Journal.check` nie jest liczony. Procesy kroków są prawdziwe (atrapy z flowfakes.py), tak jak w RestartInProcessTest."""
 import collections
 import contextlib
 import json
@@ -41,22 +43,28 @@ def _external_event(events, card):
 
 
 class Counting:
-    """Liczniki jednego ticku: pełne odczyty historii (karta, faza) i wczytania Tablicy (kontekst / zapis)."""
+    """Liczniki jednego ticku: pełne ścisłe odczyty historii (karta, faza), wywołania `read_complete` i wczytania
+    Tablicy (kontekst / zapis)."""
 
     def __init__(self, engine):
         self.engine = engine
-        self.reads, self.loads = [], []
-        self.phase_end = None
+        self.reads, self.calls, self.loads = [], [], []
+        self.phase_end = self.calls_end = None
         self.in_write = 0
 
     @contextlib.contextmanager
     def __call__(self):
         journal, store = self.engine.journal, self.engine.store
-        real_read, real_load, real_execute = journal.read_complete, store.load, store._execute
+        real_full, real_read = journal._read_strict, journal.read_complete
+        real_load, real_execute = store.load, store._execute
         real_network = boxstep.recover_network
 
-        def read(card):
+        def full(card):
             self.reads.append(card)
+            return real_full(card)
+
+        def read(card):
+            self.calls.append(card)
             return real_read(card)
 
         def load(*args, **kwargs):
@@ -75,8 +83,9 @@ class Counting:
                 return real_network(*args, **kwargs)
             finally:
                 if self.phase_end is None:
-                    self.phase_end = len(self.reads)
-        with mock.patch.object(journal, "read_complete", side_effect=read), \
+                    self.phase_end, self.calls_end = len(self.reads), len(self.calls)
+        with mock.patch.object(journal, "_read_strict", side_effect=full), \
+                mock.patch.object(journal, "read_complete", side_effect=read), \
                 mock.patch.object(store, "load", side_effect=load), \
                 mock.patch.object(store, "_execute", side_effect=execute), \
                 mock.patch.object(boxstep, "recover_network", side_effect=network):
@@ -84,7 +93,13 @@ class Counting:
 
     @property
     def phase(self):
+        """Pełne ścisłe odczyty fazy odzyskiwania (od początku ticku do końca `recover_network`)."""
         return collections.Counter(self.reads[:self.phase_end])
+
+    @property
+    def phase_calls(self):
+        """Wywołania `read_complete` w fazie odzyskiwania (trafienia pamięci też)."""
+        return collections.Counter(self.calls[:self.calls_end])
 
 
 class TickFixture(FlowInProcess):
@@ -137,8 +152,23 @@ class HistoryPhaseTickTest(TickFixture):
             self.engine.tick()
         self.assertIsNotNone(count.phase_end, "tick nie doszedł do recover_network")
         cards = self.journal.cards_complete()
-        self.assertEqual(dict(count.phase), {card: 1 for card in cards},
+        self.assertEqual(dict(count.phase_calls), {card: 1 for card in cards},
                          "faza odzyskiwania czyta komplet historii karty więcej niż raz")
+        # K-105 #2: drugi tick bez zmian w dziennikach — bez pełnego ścisłego odczytu żadnej karty (cały tick).
+        self.assertEqual(count.reads, [], "pełny odczyt historii przy niezmienionym dzienniku")
+
+    def test_card_removed_from_the_board_leaves_the_strict_memory_at_the_next_tick(self):
+        import shutil
+        self.engine.tick()
+        gone = "K-900"
+        self.journal.append(gone, "card.started", project="proj")
+        self.journal.read_complete(gone)
+        self.assertIn(gone, self.journal._strict_memory)
+        os.unlink(self.journal.mirror_path(gone))
+        shutil.rmtree(os.path.join(self.journal.root, self.journal.rel_dir(gone)))
+        self.engine.tick()
+        self.assertNotIn(gone, self.journal._strict_memory)
+        self.assertIn(self.card_id, self.journal._strict_memory, "karta z rejestru zostaje w pamięci")
 
     def test_every_recover_started_steps_call_of_a_tick_shares_the_phase_read(self):
         self.engine.tick()
@@ -320,14 +350,18 @@ class QueueSnapshotReadsTest(TickFixture):
             self.engine.tick()                       # rozgrzany stan
             with Counting(self.engine)() as count:
                 self.engine.tick()
-                tick_reads = list(count.reads)
+                tick_reads, tick_calls = list(count.reads), list(count.calls)
                 self.assertIsNotNone(count.phase_end, f"tick nie doszedł do recover_network: {self.engine._warnings}")
                 self.board.publish()
                 snapshot = json.loads(self.board.snapshot_json())
                 self.board.publish()
-        self.assertEqual(dict(count.phase), {card: 1 for card in self.journal.cards_complete()},
+        # K-105 #2: `phase_calls` liczy wywołania `read_complete` (jedno na kartę), `reads` pełne ścisłe odczyty —
+        # rozgrzany tick bez zmian w dziennikach nie ma żadnego.
+        self.assertEqual(dict(count.phase_calls), {card: 1 for card in self.journal.cards_complete()},
                          "faza odczytu ticku czyta komplet historii karty więcej niż raz")
-        self.assertEqual(count.reads, tick_reads, "migawka dołożyła odczyt dziennika")
+        self.assertEqual(tick_reads, [], "pełny odczyt historii przy niezmienionym dzienniku")
+        self.assertEqual(count.reads, tick_reads, "migawka dołożyła pełny odczyt dziennika")
+        self.assertEqual(count.calls, tick_calls, "migawka dołożyła odczyt dziennika")
         heavy = snapshot["queue"]["heavy"]
         self.assertEqual([(e["kind"], e["step"]) for e in heavy["running"]],
                          [("outside", "queue-run"), ("merge-check", self.merge_step)])
@@ -371,8 +405,8 @@ class BoxNetworkPhaseTest(BoxFlow):
         phase = trialhold.HistoryPhase(journal)
         trialhold.read_process_history(journal, self.card_id, phase)
         reads = []
-        real = journal.read_complete
-        with mock.patch.object(journal, "read_complete", side_effect=lambda card: reads.append(card) or real(card)), \
+        real = journal._read_strict      # granica pełnego ścisłego odczytu (K-105 #2)
+        with mock.patch.object(journal, "_read_strict", side_effect=lambda card: reads.append(card) or real(card)), \
                 mock.patch.object(boxstep, "proxy_of", return_value=None):
             boxstep.recover_network(self.engine, history=phase)
         # Bez osobnego odczytu fazy; jedyny odczyt to świeży odczyt przed zwolnieniem rezerwacji.
@@ -387,9 +421,9 @@ class HistoryPhaseUnitTest(unittest.TestCase):
         os.makedirs(os.path.join(temp.name, "board"))
         self.journal = Journal(os.path.join(temp.name, "board"), mirror=os.path.join(temp.name, "mirror"))
         self.journal.append("K-1", "card.started", project="proj")
-        self.reads = []
-        real = self.journal.read_complete
-        patcher = mock.patch.object(self.journal, "read_complete",
+        self.reads = []                  # pełne ścisłe odczyty (granica `_read_strict`, K-105 #2)
+        real = self.journal._read_strict
+        patcher = mock.patch.object(self.journal, "_read_strict",
                                     side_effect=lambda card: self.reads.append(card) or real(card))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -446,17 +480,22 @@ class HistoryPhaseUnitTest(unittest.TestCase):
             self.journal.append_complete("K-1", "card.resumed")
         self.assertEqual([e["type"] for e in self.journal.read_complete("K-1")], ["card.started", "card.resumed"])
 
-    def test_read_complete_stays_a_fresh_strict_read(self):
+    def test_read_complete_outside_the_phase_uses_the_journal_memory_and_stays_strict(self):
+        """K-105 #2: poza fazą `read_complete` korzysta z pamięci ścisłego odczytu dziennika (bez pełnego odczytu przy
+        niezmienionym pliku), ale dopisanie z luką w numeracji nadal daje błąd; świeży odczyt bramek jest osobny."""
         phase = trialhold.HistoryPhase(self.journal)
         trialhold.read_process_history(self.journal, "K-1", phase)
         self.reads.clear()
         self.journal.read_complete("K-1")
         self.journal.read_complete("K-1")
-        self.assertEqual(self.reads, ["K-1", "K-1"])
+        self.assertEqual(self.reads, [])
+        self.journal.read_fresh("K-1")
+        self.assertEqual(self.reads, ["K-1"])
         with open(self.journal.mirror_path("K-1"), "a", encoding="utf-8") as fh:
             fh.write('{"v": 1, "seq": 9, "card": "K-1", "type": "card.paused"}\n')     # luka w numeracji
-        with self.assertRaises(ValueError):
-            self.journal.read_complete("K-1")
+        for _ in range(2):
+            with self.assertRaises(ValueError):
+                self.journal.read_complete("K-1")
 
 
 class BoardReadInvalidationTest(unittest.TestCase):

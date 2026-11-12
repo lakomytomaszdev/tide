@@ -1129,7 +1129,8 @@ def consumers() -> list:
 
 # Producenci wspólnego wyniku: liczą lub ściśle walidują historię, ale nie decydują o skutku.
 # Ich wywołanie nie jest delegacją (odczyt wyniku wykrywa `identity_reads` u wywołującego).
-PRODUCERS = frozenset({("cardflow/state.py", "fold"), ("cardflow/journal.py", "Journal.read_complete"),
+# K-105 #2: ścisła reguła odczytu (pełny odczyt i przyrost, `read_complete` i `read_fresh`) jest w `_parse_strict`.
+PRODUCERS = frozenset({("cardflow/state.py", "fold"), ("cardflow/journal.py", "_parse_strict"),
                        ("cardflow/journal.py", "_validate_process_identity")})
 
 

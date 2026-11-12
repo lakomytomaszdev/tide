@@ -2558,6 +2558,27 @@ Dziennik karty (`cardflow/journal.py`): `flow/<K-12>/journal.jsonl` w repozytori
 z zewnątrz wraca z kopii z ostrzeżeniem w `errors` migawki. Zmiany z jednej chwili to jeden commit „K-12: card flow”;
 `BoardMonitor.sync()` commituje je przed „sync external changes”.
 
+**Pamięć ścisłego odczytu (K-105 #2, PT-411).** Ścisły odczyt historii karty (`Journal.read_complete`: pełne wiersze,
+schemat, kolejny `seq`, ta sama karta, znana tożsamość startu procesu; błąd = unknown) pamięta zdarzenia dla wersji
+dziennika (`Journal.version`, `JournalVersion`): źródło (kopia usługi albo plik w Tablicy), `st_dev`, `st_ino`,
+`st_size`, `st_mtime_ns`, `st_ctime_ns` z `fstat` otwartego deskryptora, licznik zapisów tego procesu (`generation`)
+i ostatni `seq`. Niezmieniony dziennik kosztuje `open` i `fstat`; trafienie zwraca nową listę tych samych obiektów
+zdarzeń (zdarzenia są tylko do odczytu, także w `HistoryPhase.cached`). Przy tym samym i-węźle, większym rozmiarze
+i niezmienionym ostatnim zapamiętanym wierszu (porównany skrót bajtów w tym samym miejscu; pamięć nie trzyma tekstu)
+odczyt doczytuje tylko nowe bajty i sprawdza je tą samą regułą. Każda inna zmiana — ucięcie, podmiana pliku (nowy
+i-węzeł), zmiana treści bez zmiany rozmiaru, także z przywróconym mtime (`st_ctime_ns`), zapis tego procesu — daje
+pełny odczyt. Błąd (pełny albo przyrostu) usuwa wpis, więc unknown zostaje przy każdym kolejnym odczycie, dopóki plik
+jest uszkodzony. Tick na początku usuwa wpisy kart spoza rejestru (`cards_complete`).
+
+*Ograniczenie przyrostu.* Przyrost sprawdza tylko stan pliku i ostatni wiersz: edycja wcześniejszych wierszy w miejscu
+połączona z dopisaniem (ten sam i-węzeł, większy rozmiar, zachowany ostatni wiersz) nie jest nim wykrywana. Dlatego
+wpis pamięta chwilę ostatniego pełnego odczytu, a po `FULL_READ_PERIOD` (10 min, zegar `Journal.monotonic`) odczyt
+czyta plik w całości zamiast trafienia albo przyrostu; przyrost nie przesuwa tej chwili. Do tego czasu ograniczenie
+dotyczy tylko odczytów bez skutku: porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`), zapisy
+(`append`, `append_complete`) i kontrole wycofania (`rollback`) czytają świeżo (`Journal.read_fresh` — pełny ścisły
+odczyt z pominięciem pamięci), więc zapis oparty na takiej historii jest odmówiony (`HistoryChanged`). Pełne odczyty
+liczy granica `Journal._read_strict` (pełny odczyt `read_complete` i `read_fresh`); `Journal.check` jej nie używa.
+
 Stan karty (`cardflow/state.py`): karta z dziennikiem dostaje `derived` tylko z dziennika (z polem `flow`: ticket,
 krok, wykonawca, wynik, gałąź karty), karta bez dziennika — jak dotąd z `board/derive.py`. Ręczne kolumny wygrywają:
 Gotowe i Archiwum bez stanu, Backlog — „wstrzymana”. W Do zrobienia: krok trwa albo scalanie czeka → W toku; pytanie,
@@ -4401,8 +4422,11 @@ czyta ponownie. Faza nie zastępuje odczytu przed skutkiem: zapis odtworzonego s
 pierwszą mutacją karty w `recover_network` (zwolnienie portów, refguard i zasoby kroku, polityka sieci) świeży
 odczyt porównuje `HistoryPhase.unchanged`; przy zmianie mutacje tej karty są odmówione, stan sieci nie jest
 zapamiętany i kolejny tick uzgadnia go od nowa. Faza trwa cały tick: `_recover_started_steps` wołane z `_tick_card`
-też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię świeżo
-jak dotąd; `Journal.read_complete` pozostaje pełnym ścisłym odczytem bez pamięci. Tablica:
+też z niej korzysta. Pozostałe bariery karty (inwentaryzacja, kontrola procesu, outside) czytają historię poza fazą
+(`read_process_history` bez fazy → `Journal.read_complete`), więc od K-105 #2 także one korzystają z pamięci
+ścisłego odczytu według wersji dziennika (sekcja dziennika karty); skierowanie ich do świeżego odczytu
+(`Journal.read_fresh`) należy do K-105 #6. Porównania przed zapisem (`Journal.unchanged`, `HistoryPhase.unchanged`)
+i zapisy bramek (`append`, `append_complete`) czytają świeżo (`Journal.read_fresh`). Tablica:
 tick tworzy jeden `BoardRead` (kontekst z #1) i przekazuje go jawnie do `_project_base` (bez zmiany pól bazy — bez
 transakcji i wczytania), `_tick_card` (wykrycie ruchu karty, `_project`, `_tracker_notes`), `_queue_notices`,
 `_caretake` i `_guard_card` (kolumna karty). Zapis pliku Tablicy w tym procesie (`BoardStore.generation`) unieważnia
