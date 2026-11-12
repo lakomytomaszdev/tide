@@ -95,6 +95,7 @@ Item {
         animationsActive: view.active && view.windowShown && view.visible
         snapshot: view.snapshot
         available: view.available
+        diffBackend: view.backend
         preview: view.backend ? view.backend.preview : false
         homeDir: view.backend ? view.backend.homeDir : ""
         markdownRenderer: view.backend ? function (markdown, link) { return view.backend ? view.backend.renderMarkdown(markdown, link) : "" } : null
@@ -126,7 +127,6 @@ Item {
         onPlanEditRequested: (tag, id, request) => view.backend.editCardPlan(tag, id, request)
         onPlanApproveRequested: (tag, id) => view.backend.approveCardPlan(tag, id)
         onEnvironmentApproveRequested: (tag, id, yaml, onlyPlan) => view.backend.approveCardEnvironment(tag, id, yaml, onlyPlan)
-        onBranchDiffRequested: (tag, id) => view.backend.cardBranchDiff(tag, id)
         onMergeMainRequested: (tag, id) => view.backend.mergeCardToMain(tag, id)
         onPreviewMergeRequested: (tag, id, request) => view.backend.previewCardMerge(tag, id, request)
         onMergeRequested: (tag, id, request) => view.backend.mergeCard(tag, id, request)

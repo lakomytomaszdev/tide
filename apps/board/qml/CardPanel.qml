@@ -36,7 +36,6 @@ Rectangle {
     property string notice: ""
     property bool busy: false
     property var modelsStatus: null
-    property string branchDiff: ""
     property var tagTone: null
     // Formularz.
     property string projectKind: ""
@@ -92,6 +91,8 @@ Rectangle {
         || (card && card.derived && card.derived.flow && card.derived.flow.environment) || null
     signal planManagerRequested()                                   // szeroki widok planu karty
     signal branchDiffRequested(string cardId)
+    readonly property string cardBranch: card && card.derived && card.derived.flow && card.derived.flow.cardBranch
+                                         ? card.derived.flow.cardBranch : ""
     signal mergeMainRequested(string cardId)
     signal previewMergeRequested(string cardId, string target)
     signal chooseMergeRequested(string cardId)
@@ -144,7 +145,6 @@ Rectangle {
     function load() {
         error = ""
         notice = ""
-        branchDiff = ""
         closingFeedback.text = ""
         environmentError = ""
         environmentReply = null
@@ -569,6 +569,15 @@ Rectangle {
             }
         }
 
+        // „Zmiany gałęzi” (K-36, #17): dla karty z gałęzią w każdym stanie; widok diffa otwiera BoardPage.
+        PillButton {
+            objectName: "cardBranchDiff"
+            visible: panel.editing && !panel.descriptionOnly && !panel.reading && panel.cardBranch !== ""
+            text: "Zmiany gałęzi"
+            toolTip: "Pokaż zmiany gałęzi karty względem bazy"
+            onClicked: panel.branchDiffRequested(panel.card.id)
+        }
+
         ColumnLayout {
             objectName: "cardFlowClosing"
             Layout.fillWidth: true
@@ -609,12 +618,6 @@ Rectangle {
                 Layout.fillWidth: true
                 spacing: 7
                 PillButton {
-                    objectName: "cardBranchDiff"
-                    text: "Diff gałęzi"
-                    enabled: !panel.busy
-                    onClicked: panel.branchDiffRequested(panel.card.id)
-                }
-                PillButton {
                     objectName: "cardPreviewMerge"
                     Layout.fillWidth: true
                     wrapText: true
@@ -642,15 +645,6 @@ Rectangle {
                     visible: panel.defaultMergeTarget !== ""
                     onClicked: panel.chooseMergeRequested(panel.card.id)
                 }
-            }
-            QQC2.TextArea {
-                objectName: "cardBranchDiffText"
-                Layout.fillWidth: true
-                Layout.preferredHeight: 180
-                visible: panel.branchDiff !== ""
-                readOnly: true
-                text: panel.branchDiff
-                wrapMode: TextEdit.NoWrap
             }
             QQC2.TextArea {
                 id: closingFeedback

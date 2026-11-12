@@ -2655,7 +2655,7 @@ out["column"] = js("page.cardPanel.card.boardColumn")
             if card["id"] == "K-6":
                 card["derived"] = {"column": "review", "flow": {
                     "closed": True, "summary": "Zrobiono eksport. Co przetestować ręcznie i jak: otwórz plik.",
-                    "mainBranch": "develop",
+                    "mainBranch": "develop", "cardBranch": "card/k-6-eksport",
                     "base": {"status": "known", "baseRef": "refs/heads/develop"},
                     "mainMerged": False, "plan": {"status": "done", "rows": [], "waves": [], "revision": {}}}}
                 card["boardColumn"] = "review"
@@ -2665,6 +2665,9 @@ out["shown"] = obj("cardFlowClosing").property("visible")
 out["summary"] = js("page.cardPanel.card.derived.flow.summary")
 click(at(FIND + "(page.cardPanel, 'cardBranchDiff')"))
 out["diffCall"] = calls()[-1]
+key(Qt.Key.Key_Escape)
+out["diffClosed"] = not js("page.diffOpen")
+out["panelStays"] = js("page.panelOpen")
 obj("cardClosingFeedback").setProperty("text", "Dopisz błąd eksportu")
 click(at(FIND + "(page.cardPanel, 'cardReturnForChanges')"))
 out["returnCall"] = calls()[-1]
@@ -2673,7 +2676,11 @@ out["mergeCall"] = calls()[-1]
 """, data=data)
         self.assertTrue(out["shown"])
         self.assertIn("Zrobiono eksport", out["summary"])
-        self.assertEqual(out["diffCall"], ["CardBranchDiff", "K-6"])
+        # K-36 #17: „Diff gałęzi” (usługowe CardBranchDiff + pole tekstowe) → „Zmiany gałęzi” (Git.Diff, widok diffa).
+        self.assertEqual(out["diffCall"][0], "Diff")
+        self.assertEqual(json.loads(out["diffCall"][1]), {"source": "card", "card": "K-6"})
+        self.assertTrue(out["diffClosed"])
+        self.assertTrue(out["panelStays"])
         self.assertEqual(out["mergeCall"][:2], ["PreviewCardMerge", "K-6"])
         self.assertEqual(json.loads(out["mergeCall"][2]), {"targetRef": "refs/heads/develop"})
         self.assertEqual(out["returnCall"][:2], ["EditCardPlan", "K-6"])

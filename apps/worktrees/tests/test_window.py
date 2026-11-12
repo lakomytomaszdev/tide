@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from . import APP_DIR, REPO
 from daemon.tests import gitrepos
@@ -156,6 +157,52 @@ Item {
 }
 """ % {"card": json.dumps(card, ensure_ascii=False)})
         self.assertEqual(warned(log, "CARD_ACTIVITY"), "zajęty przez kartę")
+        self.assertEqual([line for line in log.splitlines() if re.search(QML_PROBLEMS, line)], [])
+
+    def test_row_shows_upstream_main_remotes_and_last_fetch_labels(self):
+        cases = {
+            "synced": item("/w/a/synced", "a", "active", upstream="origin/master", upstreamAhead=3, upstreamBehind=2,
+                           mainAhead=5, mainBehind=1, remotes=["origin"],
+                           lastFetch=datetime.fromtimestamp(NOW - 7300, timezone.utc).isoformat()),
+            "local": item("/w/a/local", "a", "active", upstream="", upstreamAhead=None, upstreamBehind=None,
+                          mainAhead=0, mainBehind=0, remotes=["origin"], lastFetch=""),
+            "solo": item("/w/b/solo", "b", "active", upstream="", upstreamAhead=None, upstreamBehind=None,
+                         mainAhead=1, mainBehind=0, remotes=[], lastFetch=""),
+        }
+        rows = "\n".join(f"""    WorktreeItem {{
+        id: row_{name}
+        y: {i * 90}; width: 760; height: 90
+        nowTs: {NOW}
+        worktree: {json.dumps(data, ensure_ascii=False)}
+    }}""" for i, (name, data) in enumerate(cases.items()))
+        log = self.harness("SyncSmoke.qml", """import QtQuick
+import "worktrees.js" as Logic
+Item {
+    width: 760; height: 300
+%(rows)s
+    function find(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children) {
+            const hit = find(child, name)
+            if (hit) return hit
+        }
+        return null
+    }
+    Component.onCompleted: {
+        for (const [tag, row] of [["SYNCED", row_synced], ["LOCAL", row_local], ["SOLO", row_solo]]) {
+            console.warn(tag + " " + find(row, "worktreeSync").text + "|" + find(row, "worktreeRepoRemotes").text)
+        }
+        console.warn("AGO " + Logic.repoLine({ remotes: ["origin", "backup"], lastFetch: new Date((%(now)d - 7300) * 1000).toISOString() },
+                                              %(now)d))
+        Qt.quit()
+    }
+}
+""" % {"rows": rows, "now": NOW})
+        self.assertEqual(warned(log, "SYNCED"),
+                         "↑3 ↓2 · origin/master · ↑5 ↓1 względem master|origin · pobrano 2 h temu")
+        self.assertEqual(warned(log, "LOCAL"), "tylko lokalnie · ↑0 ↓0 względem master|origin · nigdy nie pobrano")
+        self.assertEqual(warned(log, "SOLO"), "tylko lokalnie · ↑1 ↓0 względem master|bez zdalnego")
+        self.assertEqual(warned(log, "AGO"), "origin, backup · pobrano 2 h temu")
         self.assertEqual([line for line in log.splitlines() if re.search(QML_PROBLEMS, line)], [])
 
     def test_page_groups_filters_selection_and_removal(self):
@@ -404,7 +451,11 @@ Item {
         property var removed: []
         signal removeFinished(string text)
         signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         property var forced: []
+        property var fetched: []
+        function fetch(repo) { fetched.push(repo) }
         function remove(paths) { removed = paths; removeFinished('[{"path": "/w/alpha/vin", "removed": true, "freed": 5}]') }
         function removeForced(paths, deleteBranches, confirmed) { forced = [paths.join(","), deleteBranches] }
         function open(path, app) {}
@@ -435,6 +486,179 @@ Item {
         self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
 
 
+    def test_fetch_button_state_and_result_per_repository(self):
+        """„Pobierz” tylko przy repozytorium ze zdalnym; w trakcie „Pobieram…” i wyłączony; wynik albo
+        błąd (jedno zdanie) przy repozytorium; po wyniku przycisk wraca (atrapa backendu)."""
+        data = [
+            item("/r/alpha", "alpha", "main", isMain=True, branch="master", tag="", blocker="main",
+                 remotes=["origin"], lastFetch=datetime.fromtimestamp(NOW - 7300, timezone.utc).isoformat()),
+            item("/w/alpha/vin", "alpha", "clean", remotes=["origin"], lastFetch=""),
+            item("/r/solo", "solo", "main", isMain=True, branch="master", tag="", blocker="main", remotes=[]),
+            item("/r/beta", "beta", "main", isMain=True, branch="master", tag="", blocker="main",
+                 remotes=["origin", "backup"]),
+        ]
+        log = self.harness("FetchSmoke.qml", """import QtQuick
+Item {
+    width: 1180; height: 820
+    QtObject {
+        id: stub
+        property string listJson: %(json)s
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property var fetched: []
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() {}
+        function prune(repo) {}
+        function fetch(repo) { fetched.push(repo) }
+    }
+    WorktreesView { id: win; anchors.fill: parent; backend: stub }
+    function all(item, name, out) {
+        if (item.objectName === name) out.push(item)
+        for (const child of item.children) all(child, name, out)
+        return out
+    }
+    function state() {
+        const buttons = all(win, "fetchButton", [])
+        const notes = all(win, "fetchNote", []).filter(n => n.visible).map(n => n.text)
+        return buttons.filter(b => b.visible).map(b => b.text + ":" + b.enabled).join(",") + "#" + notes.join("/")
+    }
+    Component.onCompleted: {
+        const rows = all(win, "repoRemotes", []).map(r => r.text)
+        console.warn("ROWS " + rows.join(" | "))
+        console.warn("BEFORE " + state())
+        win.page.startFetch("/r/alpha")
+        console.warn("BUSY " + state() + "#" + stub.fetched.join(","))
+        win.page.startFetch("/r/alpha")
+        console.warn("TWICE " + stub.fetched.length)
+        stub.fetchFinished("/r/alpha", '{"ok": true, "message": "pobrano: origin — 3 nowe commity na master"}')
+        console.warn("DONE " + state())
+        win.page.startFetch("/r/beta")
+        stub.fetchFinished("/r/beta", '{"ok": false, "reason": "network", "message": "origin: nie można połączyć się ze zdalnym"}')
+        console.warn("FAIL " + state())
+        win.page.startFetch("/r/beta")
+        stub.fetchFinished("/r/beta", "null")
+        console.warn("NULL " + state())
+        Qt.quit()
+    }
+}
+""" % {"json": json.dumps(json.dumps(data))})
+        rows = warned(log, "ROWS").split(" | ")
+        self.assertEqual(len(rows), 3)
+        self.assertIn("bez zdalnego", rows)
+        self.assertEqual(warned(log, "BEFORE"), "Pobierz:true,Pobierz:true#", "bez przycisku przy „bez zdalnego”")
+        self.assertEqual(warned(log, "BUSY"), "Pobieram…:false,Pobierz:true##/r/alpha")
+        self.assertEqual(warned(log, "TWICE"), "1", "drugie kliknięcie w trakcie nic nie wysyła")
+        self.assertEqual(warned(log, "DONE"), "Pobierz:true,Pobierz:true#pobrano: origin — 3 nowe commity na master")
+        self.assertEqual(warned(log, "FAIL"), "Pobierz:true,Pobierz:true#pobrano: origin — 3 nowe commity na master/"
+                         "Nie udało się pobrać — origin: nie można połączyć się ze zdalnym")
+        self.assertTrue(warned(log, "NULL").endswith("Nie udało się pobrać: brak odpowiedzi usługi"))
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
+    def test_pull_button_reasons_and_result(self):
+        """„Zaciągnij” (PT-353): przycisk przy worktree z upstreamem (główny katalog — w pasku repozytoriów);
+        wyłączony z widocznym powodem dla każdej odmowy dostępnej z danych listy; w trakcie „Zaciągam…” bez
+        drugiego żądania; wynik albo odmowa (jedno zdanie) pod wierszem (atrapa backendu)."""
+        def up(path, behind, ahead=0, **extra):
+            return item(path, "alpha", "decide", branch="feat/" + os.path.basename(path),
+                        upstream="origin/feat/" + os.path.basename(path), upstreamAhead=ahead, upstreamBehind=behind,
+                        lastActivityTs=NOW - DAY - len(path), **extra)
+        data = [
+            item("/r/alpha", "alpha", "main", isMain=True, branch="master", tag="", blocker="main", remotes=["origin"],
+                 upstream="origin/master", upstreamAhead=0, upstreamBehind=3),
+            up("/w/alpha/ok", 2),
+            up("/w/alpha/dirty", 1, dirty=2, blocker="dirty"),
+            up("/w/alpha/agent", 1, hasAgent=True, blocker="agent"),
+            up("/w/alpha/card", 1, hasAgent=True, hasCard=True, blocker="agent"),
+            up("/w/alpha/flow", 1, flowBranch=True),
+            up("/w/alpha/div", 1, ahead=1),
+            up("/w/alpha/same", 0),
+            up("/w/alpha/gone", None, ahead=None),
+            item("/w/alpha/local", "alpha", "decide", branch="feat/local", upstream=""),
+        ]
+        log = self.harness("PullSmoke.qml", """import QtQuick
+import "worktrees.js" as Logic
+Item {
+    width: 1180; height: 1400
+    QtObject {
+        id: stub
+        property string listJson: %(json)s
+        property bool available: true
+        property string launchersJson: '{"terminal": true, "rider": false}'
+        property string homeDir: "/w"
+        property var pulled: []
+        signal removeFinished(string text)
+        signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
+        function remove(paths) {}
+        function removeForced(paths, deleteBranches, confirmed) {}
+        function open(path, app) {}
+        function refresh() {}
+        function prune(repo) {}
+        function fetch(repo) {}
+        function pull(path) { pulled.push(path) }
+    }
+    WorktreesView { id: win; anchors.fill: parent; backend: stub }
+    function all(item, name, out) {
+        if (item.objectName === name) out.push(item)
+        for (const child of item.children) all(child, name, out)
+        return out
+    }
+    function shown(name, f) { return all(win, name, []).filter(n => n.visible).map(f).sort().join("|") }
+    function state() {
+        return shown("pullButton", b => b.text + ":" + b.enabled) + "#" + shown("pullReason", t => t.text)
+               + "#" + shown("repoPullButton", b => b.text + ":" + b.enabled) + "#" + shown("pullNote", t => t.text)
+               + "#" + shown("repoPullNote", t => t.text)
+    }
+    Component.onCompleted: {
+        win.page.showAllDecide = true
+        const data = JSON.parse(stub.listJson)
+        console.warn("CODES " + data.map(w => { const b = Logic.pullBlocker(w); return b ? b.code : "ok" }).join(","))
+        console.warn("BEFORE " + state())
+        win.page.startPull("/w/alpha/ok")
+        win.page.startPull("/w/alpha/ok")
+        win.page.startPull("/w/alpha/dirty")
+        console.warn("BUSY " + state() + "#" + stub.pulled.join(","))
+        stub.pullFinished("/w/alpha/ok", '{"ok": true, "message": "zaciągnięto 2 commity z origin/feat/ok (fast-forward)"}')
+        win.page.startPull("/r/alpha")
+        stub.pullFinished("/r/alpha", '{"ok": false, "reason": "locked", "message": "repozytorium jest zajęte"}')
+        console.warn("DONE " + state() + "#" + stub.pulled.join(","))
+        win.page.startPull("/r/alpha")
+        stub.pullFinished("/r/alpha", "null")
+        console.warn("NULL " + shown("repoPullNote", t => t.text))
+        Qt.quit()
+    }
+}
+""" % {"json": json.dumps(json.dumps(data))})
+        self.assertEqual(warned(log, "CODES"), "ok,ok,dirty,agent,agent,card-step,diverged,up-to-date,no-upstream,"
+                                               "no-upstream")
+        buttons, reasons, repo, notes, repo_notes = warned(log, "BEFORE").split("#")
+        self.assertEqual(sorted(buttons.split("|")), sorted(
+            ["Zaciągnij ↓2:true"] + ["Zaciągnij ↓1:false"] * 5 + ["Zaciągnij:false"] * 2),
+            "bez przycisku przy gałęzi bez upstreamu")
+        self.assertEqual(sorted(reasons.split("|")), sorted([
+            "zmiany w katalogu", "pracuje agent", "trwa krok karty", "tą gałęzią zarządza Tide",
+            "rozjechana z origin/feat/div — scal albo zrób rebase sam", "gałąź aktualna", "brak upstreamu"]))
+        self.assertEqual(repo, "Zaciągnij ↓3 master:true")
+        self.assertEqual((notes, repo_notes), ("", ""))
+        busy = warned(log, "BUSY")
+        self.assertIn("Zaciągam…:false", busy)
+        self.assertTrue(busy.endswith("#/w/alpha/ok"), "jedno żądanie; wyłączony z powodem nic nie wysyła")
+        done = warned(log, "DONE").split("#")
+        self.assertNotIn("Zaciągam…", done[0])
+        self.assertEqual(done[3], "zaciągnięto 2 commity z origin/feat/ok (fast-forward)")
+        self.assertEqual(done[4], "Nie zaciągnięto — repozytorium jest zajęte")
+        self.assertEqual(done[5], "/w/alpha/ok,/r/alpha")
+        self.assertEqual(warned(log, "NULL"), "Nie udało się zaciągnąć: brak odpowiedzi usługi")
+        self.assertEqual([l for l in log.splitlines() if re.search(QML_PROBLEMS, l)], [])
+
     def test_show_item_pending_search_field_and_first_refresh(self):
         """showItem: czeka tylko na pierwszą niepustą listę, przepada po zmianie szukania przez
         użytkownika, nigdy nie zaznacza; pole szukania pokazuje zapytanie także po wyczyszczeniu;
@@ -450,11 +674,15 @@ Item {
         property int refreshes: 0
         signal removeFinished(string text)
         signal pruneFinished(string text)
+        signal fetchFinished(string repoPath, string text)
+        signal pullFinished(string path, string text)
         function remove(paths) {}
         function removeForced(paths, deleteBranches, confirmed) {}
         function open(path, app) {}
         function refresh() { refreshes++ }
         function prune(repo) {}
+        function fetch(repo) {}
+        function pull(path) {}
     }
     Stub { id: a }
     Stub { id: b }

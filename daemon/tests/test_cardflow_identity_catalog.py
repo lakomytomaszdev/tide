@@ -555,6 +555,8 @@ OUT_OF_SCOPE = {
         "zadania użytkownika; zadania kart otwiera silnik po _process_check, a console_allowed (PT-261) je wstrzymuje",
     ("tasks/launch.py", "run_flow", "Popen"): "opakowanie programu wewnątrz już uruchomionej jednostki kroku",
     ("worktrees/cancellation.py", "Cancellation.run", "Popen"): "anulowanie sesji worktree",
+    ("worktrees/cancellation.py", "Cancellation.run_capped", "Popen"):
+        "odczyt gita z limitem wyjścia (PT-355), ta sama anulowana sesja worktree co Cancellation.run",
     ("worktrees/launchers.py", "Launchers.spawn", "Popen"): "aplikacje uruchamiane przez użytkownika",
 }
 
@@ -747,6 +749,7 @@ AMBIGUOUS_RULES = (
     (r"^self\._(debounce|import_timer|live_timer|login|note_timer|poll|rederive|rescan|retry|retry_timer|soon|start"
      r"|thread|throttle|tick|timer|work_later)\.(start|stop)$", "QTimer/wątek monitora usługi"),
     (r"^(match|mark|cut|section|headers\[index \+ 1\])\.start$", "re.Match.start — pozycja dopasowania"),
+    (r"^thread\.start$", "wątek czytający wyjście gita w Cancellation.run_capped (threading.Thread), nie konsument kroków"),
     (r"^self\._procedure\.(start|snapshot)$",
      "procedura bramki prób PT-273; skutek ma własną barierę (EFFECT_SCOPE TrialGate.start_registered)"),
     (r"^bb\.admission\.start$", "admission.start obrazu bazowego Tide (box/base.py, bez kroków kart)"),

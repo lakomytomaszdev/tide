@@ -190,10 +190,12 @@ Prompt Tide (`make install-terminal`) pokazuje chip „claude pracuje” dla kat
 | `Remove(as paths)` | `→ s` | Sprzątanie wskazanych worktrees; JSON z wynikiem dla każdej ścieżki, w kolejności wejścia. Odpowiedź przychodzi po zakończeniu (praca w tle) |
 | `RemoveForced(as paths, b deleteUnmergedBranches, s confirmed)` | `→ s` | Usuwanie po potwierdzeniu „Usuń mimo to” w oknie: także worktrees ze zmianami, niescalone i bez gałęzi głównej (`git worktree remove --force`). Gałąź znika przez `-d` tylko scalona; niescalona zostaje, chyba że `deleteUnmergedBranches` (wtedy `-D`). Twarde blokady (niżej) obowiązują bez wyjątku. `confirmed`: JSON `{ścieżka: {dirty, unmerged, unpushed, branch}}` ze stanem, który widział użytkownik — gdy świeży stan jest gorszy, odmowa `changed`; pusty napis = bez porównania; niepoprawny JSON = odmowa `bad-request` dla wszystkich ścieżek. Wynik jak przy `Remove` |
 | `Refresh()` | `→` | Odświeżenie na żądanie; wynik przychodzi sygnałem `Changed` |
-| `Open(s path, s app)` | `→ b` | Otwiera worktree: `app` = `terminal` (`konsole --workdir`) albo `rider`. Tylko ścieżki z listy |
+| `Open(s path, s app)` | `→ b` | Otwiera worktree: `app` = `terminal` (`konsole --workdir`) albo `rider`. Tylko ścieżki z listy; dla `rider` przyjmowany jest też istniejący zwykły plik wewnątrz wylistowanego worktree (po `realpath`; PT-361, „Otwórz w edytorze” z widoku diffa), `terminal` nadal tylko katalog |
 | `Launchers()` | `→ s` | JSON `{"terminal": bool, "rider": bool, "window": bool}` — które przyciski pokazać; `window`: czy okno Worktrees jest zainstalowane |
 | `ShowWindow()` | `→ b` | Otwiera okno „Tide Worktrees” (drugie uruchomienie tylko je pokazuje). `false`, gdy okno nie jest zainstalowane |
 | `Prune(s repoPath)` | `→ s` | `git worktree prune` w znanym repozytorium, które ma worktrees bez katalogu. JSON: `repoPath`, `ok`, `pruned` (ścieżki), `message`. Odpowiedź po zakończeniu |
+| `Fetch(s repoPath)` | `→ s` | „Pobierz” przy repozytorium: `git fetch <zdalny>` dla każdego zdalnego z konfiguracji. JSON `{ok, repoPath, remotes, newCommits, message}` albo `{ok: false, reason, message, …}` (opis i błędy niżej). Odpowiedź po zakończeniu (do 120 s), potem usługa odświeża listę (nowe liczby ahead/behind, `lastFetch`) |
+| `PullFastForward(s path)` | `→ s` | „Zaciągnij” przy worktree: przesunięcie jego gałęzi do upstreamu **wyłącznie fast-forward** (`merge --ff-only`), pod blokadą repozytorium scalania karty. JSON `{ok, path, branch, upstream, from, to, commits, message}` albo `{ok: false, reason, message, path, …}` (opis i kody odmów niżej). Odpowiedź po zakończeniu (do 10 s czekania na blokadę i 60 s gita), potem usługa odświeża listę |
 | `Changed` | sygnał | Lista się zmieniła — pobierz `List()` ponownie |
 
 Kolejność listy: według nazwy repozytorium, w repozytorium najpierw główny katalog, potem od ostatnio zmienianych.
@@ -209,11 +211,17 @@ Pola worktree:
 | `detached`, `head` | bool, string | odłączony HEAD i skrót commita |
 | `isMain` | bool | główny katalog repozytorium — nigdy nie jest usuwany |
 | `hasAgent` | bool | pracuje w nim agent (katalog roboczy żywej sesji z obszaru Agents albo procesu `claude`/`codex`; przy zagnieżdżonych worktrees liczy się najgłębszy) |
+| `flowBranch` | bool | gałąź worktree jest gałęzią karty albo ticketu karty w przepływie (dziennik kart: zamiar albo wynik `card-branch`, `ticket-branch`, `review-branch`, `step-reopen` i gałęzie generacji zmiany bazy; karta po starcie, przed `card.finished` i scaleniem do głównej). Liczone przy odświeżeniu listy; błąd odczytu dziennika → `false` (podpowiedź dla okna — `PullFastForward` czyta dziennik na nowo i wtedy odmawia) |
 | `dirty` | int | liczba pozycji w `git status --porcelain` (nieśledzony katalog to jedna pozycja); `-1`, gdy statusu nie dało się odczytać (traktowane jak zmiany) |
 | `mainBranch` | string | lokalna gałąź główna: `master`, `main` albo `develop` (ta, na której stoi główny katalog, inaczej pierwsza istniejąca w tej kolejności); pusty, gdy żadnej nie ma |
 | `merged` | bool | czubek worktree jest przodkiem lokalnej gałęzi głównej (`unmerged == 0`) |
 | `unmerged` | int / null | `git rev-list --count <główna>..HEAD`; `null` bez gałęzi głównej |
 | `unpushed` | int | commity tylko w tym worktree: osiągalne z HEAD, a z żadnej innej lokalnej gałęzi ani gałęzi zdalnej (`rev-list --count HEAD --not --exclude=<gałąź> --branches --remotes`, stan z ostatniego fetch, bez sieci). To one przepadają po `branch -D` albo z odłączonym HEAD. Liczone tylko dla niescalonych (inaczej `0`); `-1`, gdy nie dało się policzyć |
+| `upstream` | string | skrót upstreamu gałęzi (`origin/master`, z `for-each-ref`, jedno wywołanie na repozytorium); pusty: gałąź bez upstreamu („tylko lokalnie”) albo odłączony HEAD |
+| `upstreamAhead`, `upstreamBehind` | int / null | `git rev-list --left-right --count HEAD...<upstream>` (jedno wywołanie na gałąź): commity gałęzi poza upstreamem i upstreamu poza gałęzią, stan z ostatniego fetch (bez sieci). `null` bez upstreamu albo gdy jego ref zniknął (upstream skasowany lokalnie) |
+| `mainAhead`, `mainBehind` | int / null | to samo względem lokalnej gałęzi głównej (`mainBranch`, wybranej jak dotąd); `null` bez gałęzi głównej. Liczone też dla odłączonego HEAD i brakującego katalogu (z czubka wpisu worktree); `mainAhead` równa się `unmerged` |
+| `remotes` | string[] | pola repozytorium (powtórzone w każdym worktree tego repozytorium): nazwy zdalnych z lokalnej konfiguracji (`config --local --list --name-only`, nie `git remote`); pusta lista: repozytorium bez zdalnego |
+| `lastFetch` | ISO 8601 / pusty | pole repozytorium: mtime `FETCH_HEAD` we wspólnym katalogu gita; pusty napis, gdy nigdy nie pobrano (albo repozytorium nie ma własnego katalogu `.git`) |
 | `lastChange`, `lastChangeTs` | ISO 8601 / sekundy epoki | najnowsze z: czas ostatniego commita HEAD, mtime plików wskazanych przez `git status` |
 | `size` | int | bajty na dysku jak `du -s` (bez zagnieżdżonych worktrees); `-1`, póki nie policzone |
 | `locked`, `missing` | bool | `git worktree lock` / katalogu już nie ma (`prunable`) |
@@ -244,9 +252,61 @@ Wynik `Remove` i `RemoveForced` dla każdej ścieżki: `path`, `removed`, `statu
 
 Powody pominięcia (w tej kolejności): `main`, `protected`, `missing`, `locked`, `agent`, `nested` (w katalogu leżą inne worktrees, np. ignorowane `.claude/worktrees/` — `git worktree remove` bez `--force` skasowałby je razem z ich niezacommitowanymi plikami), `dirty`, `no-main` (brak lokalnej gałęzi głównej), `unmerged`, a przy samym usuwaniu także `unknown` (ścieżka spoza listy), `git` (git odmówił — komunikat w `message`), `error` (wyjątek w usłudze), przy `RemoveForced` także `changed` (stan gorszy niż w potwierdzeniu) i `bad-request` (niepoprawne `confirmed`). `RemoveForced` pomija tylko twarde blokady: `main`, `protected`, `missing`, `locked`, `agent`, `nested`.
 
+**Pobieranie (`Fetch`, PT-358).** Jedyna metoda obszaru, która używa sieci i jedyne polecenie zapisujące tego obszaru poza sprzątaniem: zwykły `git fetch --no-prune --no-recurse-submodules -- <zdalny>` dla każdego zdalnego z lokalnej konfiguracji (`remotes`, kolejno). Zapisuje `refs/remotes/…` i `FETCH_HEAD` (z niego `lastFetch`); nie ma `--prune` (zdalnie usunięta gałąź zostaje w `refs/remotes`; także gdy użytkownik ma `fetch.prune=true`), `--force`, `--tags` ani refspeca od Tide, nie rusza HEAD, indeksu, gałęzi lokalnych ani worktrees, żadnego push, rebase, reset, stash. Inne reguły:
+
+- **Tylko repozytorium z listy.** `repoPath` porównujemy po ścieżce kanonicznej (`realpath`: dowiązania i `..`) z repozytoriami z `List()`; inna ścieżka, pusty napis, ścieżka względna → `bad-request` bez uruchomienia gita. Do gita idzie ścieżka z listy, nie ta z żądania. Repozytorium bez zdalnego → `no-remote` (okno nie pokazuje wtedy przycisku).
+- **Bez blokady silnika (review K-36, M1).** Fetch zapisuje wyłącznie `refs/remotes/*` i `FETCH_HEAD`, które silnik przepływu karty tylko czyta, więc nie bierze blokady repozytorium scalania karty (`cardflow.gitops.lock_for`). Silnik bierze ją blokująco w wątku głównym (`StartCard`, `MergeCardToMain`, podgląd zmiany bazy) — trzymanie jej przez transfer sieciowy (do 120 s) zatrzymywałoby całą usługę. Zostaje blokada „jedno pobieranie na repozytorium” (`fetch.fetch_lock`, klucz: ścieżka kanoniczna, bez czekania): dwa żądania dla tego samego repozytorium naraz (także podanego przez dowiązanie) — drugie dostaje `busy`. Praca idzie w osobnym wątku, więc odświeżanie listy i sprzątanie nie czekają na sieć.
+- **Bez pytań.** `GIT_TERMINAL_PROMPT=0`, a `GIT_ASKPASS` i `SSH_ASKPASS` ustawione na pusty napis (samo `GIT_TERMINAL_PROMPT=0` nie powstrzymałoby gita przed uruchomieniem programu z otoczenia użytkownika), SSH w trybie wsadowym (`GIT_SSH_COMMAND` = dotychczasowe polecenie SSH — z otoczenia, `core.sshCommand` albo `ssh` — plus `-o BatchMode=yes`). Brak klucza albo hasła kończy się błędem `auth`, nie pytaniem. Poświadczenia są użytkownika (agent SSH, pomocnik poświadczeń gita z jego konfiguracji — usługa działa poza piaskownicą). Bez powłoki z naszej strony, hooki i `fsmonitor` wyłączone jak przy innych wywołaniach gita, `protocol.ext.allow=never`, bez sprzątania w tle (`maintenance.auto=false`, `gc.auto=0`). Repozytorium objęte granicą Gita (`gitcommand.boundary_active`: tryb pudełek włączony albo repozytorium oznaczone/wystawione pudełku) nie jest pobierane: git rusza tam w piaskownicy bez sieci i kluczy, a `.git/config` jest zapisywalny z pudełka (`core.sshCommand`, `credential.helper`, `uploadpack`), więc fetch z poświadczeniami użytkownika wykonałby cudzą konfigurację. Wynik to `boundary` bez uruchomienia `git fetch`; pobieranie w takich repozytoriach wymaga osobnej decyzji właściciela i utwardzenia.
+- **Limit 120 s** na całe pobieranie (`FETCH_TIMEOUT`); po nim proces gita jest zabijany, a wynik to `timeout`.
+- **Poświadczenia z adresów nie wychodzą.** Komunikaty, wynik i log usługi przechodzą przez `mask_credentials`: `https://user:token@host/…` → `https://***@host/…`. Komunikat błędu to jedno zdanie po polsku z nazwą zdalnego i pierwszą (zamaskowaną) linią gita.
+
+Wynik: `ok`, `repoPath`, `remotes` (po jednym na zdalny: `name`, `ok`, `reason` przy błędzie, `newCommits`, `branches`: `{branch, ref, new, commits}` — zmienione gałęzie zdalne; `commits` to commity osiągalne z nowego czubka, których nie było w żadnej gałęzi ani gałęzi zdalnej przed pobraniem, `null`, gdy nie dało się policzyć), `newCommits` (suma), `message` (np. `pobrano: origin — 3 nowe commity na master`, `pobrano: origin — brak nowych commitów`). Przy błędzie któregokolwiek zdalnego `ok: false`, `reason` pierwszego błędu i `message` z jego opisem (reszta zdalnych jest mimo to pobierana, a ich nazwy dopisane w nawiasie).
+
+| `reason` | Znaczenie |
+| --- | --- |
+| `bad-request` | ścieżka spoza listy Worktrees (dowiązanie, `..`, pusta, względna) — git nie został uruchomiony |
+| `no-remote` | repozytorium nie ma zdalnego |
+| `boundary` | repozytorium objęte granicą Gita (tryb pudełek albo repozytorium wystawione pudełku) — git nie został uruchomiony |
+| `busy` | pobieranie tego repozytorium już trwa |
+| `auth` | uwierzytelnienie, klucz SSH, host key — bez pytania o hasło |
+| `network` | nie można połączyć się ze zdalnym (adres, DNS, połączenie) |
+| `timeout` | przekroczono 120 s |
+| `git` | inny błąd gita (np. zdalny wskazuje nieistniejące repozytorium) |
+| `unavailable`, `error` | usługa się zamyka / wyjątek w usłudze |
+
+W oknie Worktrees pasek repozytoriów na górze listy ma wiersz na repozytorium (zdalne i „pobrano …”) z przyciskiem „Pobierz” — tylko przy repozytorium ze zdalnym; w trakcie „Pobieram…” (wyłączony), wynik albo błąd (jedno zdanie) zostaje pod wierszem do następnego pobrania.
+
+**Zaciąganie (`PullFastForward`, PT-353).** Jedyny zapis HEAD w obszarze: `git merge --ff-only --no-autostash --no-stat <SHA>` w danym worktree, gdzie `<SHA>` to `@{upstream}` bieżącej gałęzi odczytany pod blokadą tuż przed scaleniem (stan sprawdzony = stan scalony, nawet gdy równoległe „Pobierz” przesunie `refs/remotes/…` w międzyczasie). Tide nigdy nie scala historii ani nie robi rebase za użytkownika (historie 27–29): gdy fast-forward nie jest możliwy, odpowiada odmową z kodem i jednym zdaniem, a żadna odmowa nie zmienia HEAD ani drzewa. Brak `--force`, `reset`, `rebase`, `pull`, `push`, `stash`, `prune`, `checkout`; `merge.autoStash=false`, `submodule.recurse=false`, bez sprzątania w tle. Sieci nie ma (zaciąga się stan z ostatniego „Pobierz”). Inne reguły:
+
+- **Tylko worktree z listy.** `path` porównujemy po ścieżce kanonicznej (`realpath`: dowiązania i `..`) z worktrees z `List()` (bez brakujących katalogów); inna ścieżka, pusta, względna, nie-napis → `bad-request` bez uruchomienia gita. Do gita idzie ścieżka z listy. Gałąź główna w głównym katalogu jest dozwolona, jeśli jest czysta.
+- **Wspólna blokada ze scalaniem karty.** Ta sama blokada repozytorium co scalanie karty (`cardflow.gitops.lock_for`, import bez zmian): czekanie krótkie (`pull.LOCK_WAIT` = 10 s, potem `locked`) i wyłącznie w wątku roboczym obszaru („Zaciągnij” ma własny wątek — nie stoi za pobieraniem ani odświeżaniem listy; wątek główny usługi niczego nie czeka). Blokada jest trzymana tylko na lokalne odczyty i `merge` (bez sieci), zwalniana w `finally` także po wyjątku i po limicie czasu gita (`pull.PULL_TIMEOUT` = 60 s na `merge` z checkoutem plików). Fetch nie bierze tej blokady, więc nie ma zagnieżdżania ani zakleszczenia z „Pobierz”. Drugie żądanie dla worktree, który właśnie zaciągamy, dostaje `locked` bez czekania.
+- **Świeży stan pod blokadą, tuż przed `merge`.** Gałąź (`symbolic-ref`), trwająca operacja gita, upstream i jego SHA, HEAD, `git status` (także pliki nieśledzone), ahead/behind (`rev-list --left-right --count`) i filtry plików są czytane po wzięciu blokady — dane listy służą tylko oknu.
+- **Dziennik kart przed blokadą.** Gałąź karty albo ticketu karty w przepływie (`flowBranch`, te same reguły) rozpoznajemy istniejącymi odczytami dziennika (`Journal.cards`, `Journal.state`) **przed** wzięciem blokady repozytorium: silnik bierze `journal.lock` także wtedy, gdy potem czeka na `lock_for` w wątku głównym, więc odczyt dziennika pod `lock_for` w wątku roboczym odwracałby kolejność blokad. Rozpoznanie jest zachowawcze: gałęzie kart po domknięciu (do scalenia do głównej), scalonych ticketów i zamiarów bez wyniku też się liczą, wpis bez repozytorium pasuje do każdego, a błąd odczytu dziennika to odmowa `card-step`. Żadnych zdarzeń w dzienniku karty.
+- **Filtry plików (checkout).** Fast-forward wykonuje checkout zmienionych plików; sterownik `filter.<nazwa>.smudge` albo `.process` (np. git-lfs, który sięga do sieci, albo dowolny program z konfiguracji) uruchomiłby się wtedy pod blokadą. Gdy repozytorium ma taki sterownik w konfiguracji, a któryś zmieniany plik ma ten `filter` (`check-attr` w worktree) albo zmienia się `.gitattributes`, odmowa `git-operation` z nazwą sterownika — zaciągnięcie zostaje użytkownikowi. Przerwany `merge` (limit czasu, błąd) nie jest naprawiany: wynik `timeout` albo `git` opisuje stan po nim (HEAD, liczba zmian w katalogu — spójność po przerwaniu) i radzi `git status`.
+- **Środowisko jak przy „Pobierz”.** Bez pytań (`GIT_TERMINAL_PROMPT=0`, puste `GIT_ASKPASS`/`SSH_ASKPASS`, SSH wsadowo), hooki i `fsmonitor` wyłączone jak w każdym wywołaniu gita, `GIT_NO_LAZY_FETCH=1` (częściowy klon nie dociąga obiektów z sieci). Repozytorium objęte granicą Gita → `boundary` bez gita.
+
+Wynik udany: `ok: true`, `path`, `branch`, `upstream` (skrót, np. `origin/master`), `from`, `to` (SHA przed i po), `commits` (ile commitów zaciągnięto), `message` (np. `zaciągnięto 3 commity z origin/master (fast-forward)`). Odmowa: `ok: false`, `reason`, `message`, `path`, a gdy już wiadomo — `branch`, `upstream`, `ahead`, `behind`; po przerwanym `merge` także `head` i `dirty`.
+
+| `reason` | Znaczenie (HEAD i drzewo bez zmian, chyba że niżej inaczej) |
+| --- | --- |
+| `bad-request` | ścieżka spoza listy Worktrees (dowiązanie, `..`, pusta, względna) — git nie został uruchomiony |
+| `agent` | w worktree pracuje agent albo trwa krok/praca karty (migawka z chwili żądania) |
+| `card-step` | gałąź karty albo ticketu karty w przepływie („tą gałęzią zarządza Tide”) albo nieczytelny dziennik kart |
+| `git-operation` | trwa operacja gita (`MERGE_HEAD`, `rebase-merge`/`rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `sequencer`, `BISECT_LOG`, `index.lock`, `HEAD.lock`, blokada refu gałęzi) albo zmiany przechodzą przez filtr plików |
+| `no-upstream` | odłączony HEAD, gałąź bez upstreamu albo jego ref zniknął |
+| `dirty` | zmiany w katalogu (także pliki nieśledzone) albo statusu nie da się odczytać |
+| `diverged` | gałąź ma commity poza upstreamem i upstream poza gałęzią (ahead i behind) — Tide nie scala ani nie robi rebase |
+| `up-to-date` | nic do zaciągnięcia (behind 0, także gdy gałąź jest tylko przed upstreamem) |
+| `locked` | blokada repozytorium zajęta dłużej niż 10 s (scalanie karty) albo zaciąganie tego worktree już trwa |
+| `boundary` | repozytorium objęte granicą Gita — git nie został uruchomiony |
+| `timeout`, `git` | `merge` przekroczył 60 s albo git odmówił; komunikat opisuje stan po nim (HEAD, zmiany) |
+| `unavailable`, `error` | usługa się zamyka / wyjątek w usłudze |
+
+W oknie Worktrees wiersz worktree z upstreamem ma „Zaciągnij ↓N” (gałąź główna głównego katalogu — w pasku repozytoriów, „Zaciągnij ↓N master”). Gdy z danych listy wynika odmowa, przycisk jest wyłączony, a obok stoi powód: „pracuje agent”, „trwa krok karty”, „tą gałęzią zarządza Tide”, „brak upstreamu”, „zmiany w katalogu”, „rozjechana z … — scal albo zrób rebase sam”, „gałąź aktualna”. W trakcie „Zaciągam…” (wyłączony, bez drugiego żądania); wynik albo odmowa (jedno zdanie) zostaje pod wierszem, a lista odświeża się po odpowiedzi.
+
 Zasady sprzątania (`Remove`):
 
-- **Bez sieci.** Żadnego `fetch`/`pull` — „scalony” znaczy scalony z *lokalną* gałęzią główną. Gałąź wypchnięta i scalona tylko na serwerze liczy się jako niescalona.
+- **Bez sieci.** Żadnego `fetch`/`pull` (`Fetch` wyżej to osobna, wywoływana przez użytkownika akcja) — „scalony” znaczy scalony z *lokalną* gałęzią główną. Gałąź wypchnięta i scalona tylko na serwerze liczy się jako niescalona.
 - **Bez wymuszania.** Tylko `git worktree remove <ścieżka>` bez `--force`; git sam odmówi usunięcia worktree ze zmianami albo plikami nieśledzonymi (pliki ignorowane, np. `node_modules`, znikają razem z katalogiem).
 - **Świeży stan.** Przed usunięciem repozytorium jest czytane na nowo (status, scalenie, agenci z chwili wywołania), więc decyzja nie opiera się na liście sprzed minuty.
 - **Gałąź tylko bezpiecznie.** Po usunięciu worktree gałąź znika wyłącznie przez `git branch -d` (nigdy `-D`). Git porównuje wtedy z HEAD głównego katalogu albo z gałęzią śledzoną; gdy odmówi, gałąź zostaje, a wynik mówi dlaczego.
@@ -272,6 +332,203 @@ Widok „Worktrees” okna Tide (`apps/worktrees`, okno `apps/tide`): `ShowWindo
 Odświeżanie: co **60 s** w tle (jeden wątek roboczy: odczyt, potem rozmiary), na żądanie przez `Refresh()` (okno woła je przy starcie i przyciskiem „Odśwież”) i po sprzątaniu. Rozmiary są w pamięci podręcznej i przeliczane najwyżej co **30 min**. Zmiana sesji agentów przelicza tylko flagę `hasAgent`, bez gita. Wątek główny (D-Bus) nigdy nie czeka na gita ani na dysk.
 
 Otwieranie: Konsole przez `konsole --workdir`, Rider przez skrypt z JetBrains Toolbox (`~/.local/share/JetBrains/Toolbox/scripts/rider`), `rider` z `PATH` albo `$TIDE_RIDER`; bez Ridera przycisk znika. Programy startują przez `systemd-run --user --scope`, żeby restart usługi nie zamykał otwartych okien.
+
+## Interfejs Git
+
+Odczyty gita jako dane (K-36): „co zmieniła ta karta” bez UI. Obiekt `/Git` obok `/Worktrees`
+(`dbus_service.GitAdaptor`, `git_monitor.py`, moduł `daemon/tide_daemon/gitread/`).
+
+| Element | Wartość |
+| --- | --- |
+| Obiekt | `/Git` |
+| Interfejs | `org.tide.Daemon.Git` |
+
+| Składnik | Sygnatura | Opis |
+| --- | --- | --- |
+| `Diff(s request)` | `→ s` | Diff jako dane. `request` to obiekt JSON ze źródłem (niżej). Odpowiedź `{ok: true, …DiffData}` albo `{ok: false, error, message}`; opóźniona — git działa w puli wątków runnera odczytu (`GitReader.submit`), pętla usługi w tym czasie obsługuje inne wywołania |
+
+**Źródło `card`** (PT-357): `{"source": "card", "card": "K-N", "targetRef": "refs/heads/master"}` (`targetRef`
+opcjonalny; pusty napis = brak). Działa w każdym stanie karty, która ma gałąź (także po domknięciu i scaleniu,
+dopóki gałąź karty istnieje).
+
+- Bez `targetRef` zakres zaczyna się od przypiętego `baseCommit` z dziennika karty i kończy na gałęzi karty
+  („zmiany od startu”). Ruch gałęzi startowej po starcie (np. nowe commity na `master`) nie zmienia początku zakresu.
+- Z `targetRef` zakres zaczyna się od merge-base celu i gałęzi karty. Ref może być pełny (`refs/heads/main`) albo
+  krótki (`main`); waliduje go runner odczytu (ref zaczynający się od `-` to `bad-request`, git nie rusza).
+- Repozytorium karty pochodzi wyłącznie z dziennika (`card.started.repo`, zapis przy starcie zlecenia; karta z grupy
+  kart — repozytorium jej projektu). Żądanie nie podaje ścieżek. Stan karty czytają istniejące funkcje odczytu
+  (`Journal.has`, `Journal.state`, `state.base_of`, `state.ticket_of`); odczyt nie dopisuje zdarzeń do dziennika
+  i nie zmienia refów.
+- Wszystkie polecenia gita (`rev-parse`, `merge-base`, `diff`, `log`) idą przez utwardzony runner odczytu
+  (`gitread/runner.py`: bez haków, filtrów, textconv, zewnętrznego diffu, pagera i gpg z konfiguracji repozytorium,
+  bez sieci); diff liczony jest między dwoma SHA (`--no-renames`, kontekst 3 linie), tekst parsuje
+  `gitread/diffparse.py`.
+- `CardBranchDiff` na `/Board` zostaje bez zmian (tekst diffu do oceny domknięcia).
+
+**Źródło `ticket`** (PT-349): `{"source": "ticket", "card": "K-N", "ticket": "PT-N"}`. Zmiany jednego ticketu karty.
+
+- Zakres: od merge-base gałęzi karty i gałęzi ticketu do gałęzi ticketu (`from.ref` — gałąź karty, `to.ref` —
+  `refs/heads/<gałąź ticketu>`), więc drugi ticket nie zawiera plików pierwszego. Tytuł: `PT-12 · zmiany ticketu
+  względem gałęzi karty`; odpowiedź ma dodatkowe pole `ticket`.
+- Repozytorium pochodzi wyłącznie z dziennika karty (jak w źródle `card`); `repo` w żądaniu jest ignorowane.
+  Ticket musi być znany dziennikowi karty (rezerwacja, gałąź, krok, przydział albo scalenie), inaczej `bad-request`.
+- **Ticket scalony, gałąź usunięta.** Gdy gałęzi ticketu nie ma — albo jest, ale ticket jest już w gałęzi karty
+  (zakres byłby pusty) — zakres bierze się z pary zamiar/wynik akcji `merge` w dzienniku, czytanej istniejącymi
+  funkcjami odczytu stanu: `intent` z `expectedTip` (zatwierdzony czubek ticketu) i `cardTip` (czubek gałęzi karty
+  przed scaleniem) oraz `result` z `ok: true`. Zakres: merge-base(`cardTip`, `expectedTip`) → `expectedTip`
+  (`from.ref`/`to.ref` to wtedy SHA). Bez takiego zapisu (ticket niescalony bez gałęzi, ticket przejęty z planu,
+  stary dziennik), z nieudanym scaleniem albo z SHA, którego nie ma w repozytorium, odpowiedź to
+  `{ok: false, error: "no-ticket-range", message}` z jednym zdaniem, co dalej („Gałąź ticketu PT-12 nie istnieje,
+  a dziennik karty nie zapisał zakresu jego scalenia.”).
+
+**Źródło `commit`** (PT-349): `{"source": "commit", "repo": "/ścieżka", "sha": "58a3f26…"}`. Zakres: pierwszy rodzic →
+commit (commit scalający względem pierwszego rodzica, commit początkowy względem pustego drzewa: `from.ref` to
+`empty-tree`, `from.sha` — SHA pustego drzewa, `from.date` pusta). Tytuł: `commit 58a3f26 — temat`. `sha` to SHA albo
+dowolny ref rozwiązujący się do commita.
+
+**Źródło `range`** (PT-349): `{"source": "range", "repo": "/ścieżka", "from": "master", "to": "feat/x"}`. Zakres od
+merge-base(`from`, `to`) do `to`, jak `git diff from...to` (zmiany na `from` po rozejściu nie wchodzą do wyniku);
+`from`/`to` to pełne refy, krótkie nazwy albo SHA. `from.sha` w odpowiedzi to merge-base. Tytuł: `<to> względem
+<from>` (np. `feat/x względem master`). Brak wspólnej historii to `bad-request`. Używa go „Zmiany względem głównej”
+w Worktrees (PT-360): `repo` to repozytorium projektu, `from` — `refs/heads/<lokalna główna projektu>`, `to` —
+`refs/heads/<gałąź worktree>`.
+
+**Źródło `worktree`** (PT-360): `{"source": "worktree", "path": "/ścieżka/worktree"}` — niezacommitowana praca katalogu,
+bez terminala. `path` trafia do tej samej funkcji walidacji co `repo` (niżej): musi być worktree z listy Worktrees
+(albo repozytorium projektu Tablicy), po ścieżce kanonicznej, bez dowiązań i `..`; inaczej `bad-request` bez
+uruchamiania gita na tej ścieżce. Odpowiedź to `DiffData` z dwiema grupami plików i listą nieśledzonych:
+
+- `groups[]` — `{id, name, totals}` w stałej kolejności: `staged` („W indeksie”, `git diff --cached`: indeks względem
+  HEAD) i `unstaged` („Poza indeksem”, `git diff`: drzewo robocze względem indeksu); `totals` to `{files, additions,
+  deletions}` grupy. Każdy wpis `files[]` ma pole `group` (`staged` albo `unstaged`); pliki są ułożone grupami
+  (najpierw `staged`), a ten sam plik zmieniony w obu miejscach występuje dwa razy — raz w każdej grupie, z różnymi
+  hunkami. Zamiast kopiować pliki do `groups[].files` (podwoiłoby to odpowiedź), grupa wskazuje swoje pliki przez
+  `group`.
+- `untracked[]` — ścieżki nieśledzonych plików (po jednej na plik, także w nieśledzonych katalogach; `status
+  --porcelain=v1 -z --untracked-files=all`), **bez treści**. Lista ma limit 2000 plików i 1 MB wyniku gita; po
+  przekroczeniu w `warnings[]` pojawia się ostrzeżenie. Pliki z `.gitignore` nie są wymieniane.
+- `title` — `Niezacommitowane zmiany: <ścieżka kanoniczna>`; `repo` — ta ścieżka; `from` — `{ref: "HEAD", sha, date}`
+  (`sha` i `date` puste dla gałęzi bez commitów, wtedy grupa `staged` jest liczona względem pustego drzewa), `to` —
+  `{ref: "worktree", sha: "", date: ""}`. `totals` to suma plików obu grup (plik w obu grupach liczy się dwa razy).
+- Limity „Duże diffy” działają osobno dla każdej grupy; ostrzeżenia mają przedrostek nazwy grupy (`W indeksie: …`),
+  a `truncated` jest prawdą, gdy przycięto którąkolwiek. Rozmiary plików binarnych (`oldSize`/`newSize`) nie są
+  liczone dla tego źródła — widok pokazuje wtedy komunikat bez liczb.
+- `options.path` z opcjonalnym `options.group` (`staged`/`unstaged`) zwraca treść jednego pliku jednej grupy (bez
+  `group` — pierwszej grupy, w której plik ma zmiany: najpierw `staged`); odpowiedź ma pole `group`, a wpis pliku
+  ma `group`. Zły `options.group` to `bad-request`. Pozostałe źródła ignorują `group`.
+- Odczyt **nie zmienia** worktree: runner uruchamia gita z `GIT_OPTIONAL_LOCKS=0` i `diff.autoRefreshIndex=false`,
+  więc `status` i `diff` nie odświeżają ani nie zapisują indeksu, refy i pliki zostają bez zmian, a do dziennika karty
+  nic nie trafia. Źródło nie czyta stanu karty ani dziennika — wystarcza `path` z listy Worktrees.
+- Katalog worktree, którego już nie ma (usunięty po odczycie listy — historia 17), to błąd `no-worktree` z komunikatem
+  „Katalog worktree nie istnieje (został usunięty?): <ścieżka>”, bez uruchamiania gita.
+
+Odbiorcy bez obsługi grup (źródła `card`, `ticket`, `commit` i `range`) nie dostają pól `groups[]` i `untracked[]`
+i działają bez zmian; widok diffa traktuje brak `groups[]` jak dotąd (sama lista plików).
+
+**Walidacja wejścia `commit`, `range` i `worktree`** (granica uprawnień; jedna funkcja modułu, `gitread/validate.py`
+— `known_repo` — którą `path` źródła `worktree` (PT-360) wywołuje tak samo jak `repo`, bez drugiej kopii; użyje jej
+też K-99 dla `Git.Commits` i `Git.BranchMap`):
+
+- `repo` (dla `worktree` — `path`) musi być ścieżką bezwzględną bez składników `..` i znaków sterujących, a po rozwiązaniu do ścieżki
+  kanonicznej (`realpath`, bez dowiązań) równą repozytorium projektu Tablicy (`repo` z projektu) albo worktree
+  z listy Worktrees (porównywane także po rozwiązaniu). Git działa potem na ścieżce kanonicznej. Dowiązanie
+  wskazujące poza listę, ścieżka z `..` i dowolny inny katalog dają `bad-request` — bez uruchamiania gita.
+  Lista powstaje przy każdym żądaniu (`GitMonitor.repos_source`); gdy jej nie da się ustalić, żadne `repo` nie jest znane.
+- `sha`, `from`, `to` muszą być niepustymi napisami bez znaków sterujących, nie mogą zaczynać się od `-` (nie są
+  przekazywane gitowi jako opcje) i muszą rozwiązać się do commita
+  (`rev-parse --verify --end-of-options <x>^{commit}`). Inaczej `bad-request`.
+- Wszystkie trzy źródła przyjmują `options.path` i `options.context` (jak `card`), mają te same limity i pola
+  `DiffData`; `source`, `title`, `repo`, `from`, `to` mają znaczenie jak wyżej, a pole `ticket` pojawia się tylko
+  w źródle `ticket` (zmiana addytywna).
+
+**`DiffData`** (kontrakt wspólny dla kolejnych źródeł i widoku diffa; zmiany tylko addytywne):
+
+| Pole | Typ | Opis |
+| --- | --- | --- |
+| `source` | string | źródło żądania (`card`, `ticket`, `commit`, `range`, `worktree`) |
+| `card` | string | `K-N` (znormalizowany identyfikator karty); tylko źródła `card` i `ticket` |
+| `ticket` | string | `PT-N`; tylko źródło `ticket` (PT-349) |
+| `repo` | string | ścieżka repozytorium: z dziennika karty (`card`, `ticket`) albo kanoniczna zwalidowana (`commit`, `range`, `worktree`) |
+| `title` | string | krótki opis zakresu, np. `K-36: zmiany gałęzi card/k-36-… od startu` |
+| `from`, `to` | object | `{ref, sha, date}`: `ref` — `baseRef` z dziennika albo `targetRef` (dla `to` — `refs/heads/<gałąź karty>`), `sha` — pełny SHA początku/końca zakresu, `date` — data commitera w ISO 8601 UTC (`2026-11-11T10:00:00Z`). Surowe dane: etykietę „Start od…” formatuje UI (`startLabel`) |
+| `files` | array | pliki z parsera diffu: `path`, `oldPath`, `status` (`A`, `D`, `R`, `C`, `T`, `M`), `additions`, `deletions`, `binary`, `oldMode`, `newMode`, `warnings`, `hunks` (`oldStart`, `oldLines`, `newStart`, `newLines`, `header`, `lines` — `kind` ` `/`-`/`+`, `oldNo`, `newNo`, `text`); pola z „Duże diffy” niżej pojawiają się tylko przy plikach, których dotyczą |
+| `totals` | object | `{files, additions, deletions}` — dla całego zakresu także po przycięciu (liczone z pełnej listy plików) |
+| `truncated` | bool | `true`, gdy całość przekroczyła limit i treść części plików jest pominięta (niżej); inaczej `false` |
+| `warnings` | array | ostrzeżenia: parsera (tekst przed pierwszym nagłówkiem) i limitów (przycięcie) |
+| `groups` | array | tylko źródło `worktree` (PT-360): grupy plików `{id, name, totals}` (`staged` „W indeksie”, `unstaged` „Poza indeksem”); wpis `files[]` wskazuje grupę polem `group` |
+| `untracked` | array | tylko źródło `worktree` (PT-360): ścieżki nieśledzonych plików, bez treści |
+
+**Duże diffy** (PT-355; pola tylko dodane do `DiffData`):
+
+- **Limit całości:** 2 MB tekstu diffu albo 20 000 linii — co pierwsze. Limit jest liczony przy czytaniu wyjścia
+  gita (strumieniowo, `GitReader.run(max_bytes, max_lines)`): po przekroczeniu proces gita jest przerywany, a nadmiar
+  nigdy nie trafia do pamięci. Wynik to `truncated: true` i ostrzeżenie w `warnings[]` („Diff przekracza limit …:
+  pokazano część zmian (N z M plików z treścią). Wybierz plik, żeby doczytać jego zmiany.”). **Lista wszystkich plików
+  jest zawsze pełna** — po przycięciu usługa dokłada ją z `git diff --raw` i `--numstat` (bez treści), więc
+  `files[]` i `totals` obejmują cały zakres. Plik, którego treść nie zmieściła się w limicie w całości, ma
+  `truncated: true` i `hunks: []`; pliki przeczytane w całości zachowują hunki.
+- **Plik `large`:** plik z ponad 3 000 zmienionych linii (`additions + deletions`) ma `large: true`, `lines` (liczba
+  zmienionych linii) i `hunks: []` — także gdy diff mieści się w limicie całości. `large` wypiera `truncated`.
+- **Plik binarny:** `binary: true` (bez hunków) oraz `oldSize` i `newSize` — rozmiary w bajtach z drzew obu commitów
+  (`git ls-tree -l`); `null` po stronie, której nie ma (plik dodany: `oldSize: null`, usunięty: `newSize: null`).
+- **`options.path`** (ścieżka pliku względem repozytorium): odpowiedź ma ten sam kształt `DiffData` (to samo
+  `from`/`to`), `files` zawiera dokładnie jeden plik **z hunkami** — także `large` i przycięty — a `totals` dotyczą
+  tego pliku; dodatkowe pole `path` to echo żądania. Plik bez zmian w zakresie to błąd `unknown-path`. Pojedynczy plik
+  ma własny, luźniejszy limit 10 MB albo 100 000 linii; po jego przekroczeniu plik ma `truncated: true`, odpowiedź
+  `truncated: true` i ostrzeżenie, a hunki to początek zmian. Widok (#13) wstawia taki plik w miejsce wpisu z listy.
+- **`options.context`** (liczba całkowita 0–100000, domyślnie 3): liczba linii kontekstu hunków pliku z `options.path`
+  (`git diff --unified=N`), np. 20 do rozwinięcia kontekstu. Wymaga `options.path` (bez niego `bad-request`), bo dotyczy
+  jednego pliku. Nieznane klucze `options` są ignorowane.
+- Żądanie z `options` ma ten sam wybór źródła (`source` i jego pola) co lista; kontrakt jest identyczny dla źródeł
+  `card`, `ticket`, `commit`, `range` (PT-349) i `worktree` (PT-360; tu `options.group` wskazuje grupę pliku).
+
+**Podświetlanie składni w widoku diffa** (K-36, PT-351): linie kodu `.py`, `.qml`, `.js`, `.cs`, `.md`, `.yml`/`.yaml`, `.json`
+i `.sh` (język z rozszerzenia, `Diff.languageFor`) dostają kolory składni, jeśli w systemie jest moduł QML
+`org.kde.syntaxhighlighting`. Delegat linii ma `SyntaxText.qml`: Loader z lekkim, tylko do odczytu `TextEdit`, tworzonym
+wyłącznie dla widocznych linii znanego języka (nie dla pliku `large` ani binarnego, nie dla nagłówków hunków). Podświetlacz
+to `Component` wstrzykiwany jednym punktem (`DiffView.highlighter`, w testach atrapa); domyślnie widok ładuje
+`ModuleHighlighter.qml` dynamicznie przez `Qt.createComponent` i przy braku modułu zostaje przy zwykłym `Text`, a ściągawka
+(`?`) mówi „Podświetlanie składni niedostępne (brak modułu KSyntaxHighlighting)”. Motyw: „Tide”, generowany z palety
+(`theme/syntax/generate.py`, instalowany przez `make install-appearance` do `$XDG_DATA_HOME/org.kde.syntax-highlighting/themes/`);
+każdy kolor tekstu ma kontrast >= 4,5:1 (WCAG 2.x) na tle okna i na tłach linii dodanej i usuniętej, style nie mają tła
+formatu. Bez zainstalowanego motywu `ModuleHighlighter` używa ciemnego motywu modułu. Tła linii dodanej, usuniętej i
+kontekstowej się nie zmieniają; `DiffView.readableColor` zastępuje kolor formatu tekstem z palety dla podświetlaczy, które go
+używają (atrapa w testach). Ograniczenia: każda linia to osobny dokument, więc wieloliniowe konstrukcje (komentarze blokowe,
+napisy wielowierszowe) nie są rozpoznawane; kolorów formatów modułu nie da się podmienić z QML, stąd osobny motyw; motyw
+powstaje z Mist (warianty palety nie mają własnego).
+
+**Widok diffa** (`apps/common/qml/git/DiffView.qml`, `diff.js`): plik `large` jest zwinięty z przyciskiem „duży plik —
+N linii, pokaż” (klik wysyła `Git.Diff` z `options.path` i wstawia treść); plik binarny pokazuje „plik binarny (rozmiar
+przed → po)” bez treści i niczego nie doczytuje; przy `truncated: true` nad treścią jest pasek „Pokazano część zmian;
+wybierz plik, żeby doczytać”, a wybór pliku bez treści (`truncated`) sam doczytuje go przez `options.path`. Błąd
+doczytania pokazuje komunikat i „Spróbuj ponownie”; „Odśwież” (`r`) czyta całość od nowa i odrzuca spóźnione
+odpowiedzi doczytywania.
+
+**Grupy plików i nieśledzone w widoku** (PT-360): przy odpowiedzi z `groups[]` lista plików ma nagłówek każdej
+niepustej grupy z liczbą plików i sumą (`W indeksie · 2 pliki · +3 −1`), a pod plikami — nagłówek „Nieśledzone · N plików
+(bez treści)” i same ścieżki (zwykły tekst, bez wyboru i bez podglądu). Plik w obu grupach to dwa wiersze; `]`/`[`
+chodzą po plikach w kolejności wyświetlania, a doczytanie pliku (`options.path`) wysyła też `options.group`. Sama lista
+nieśledzonych (bez plików w grupach) nie jest „brakiem zmian”; czysty worktree pokazuje „Brak niezacommitowanych
+zmian.”. Odpowiedź bez `groups[]` wygląda jak dotąd.
+
+**Worktrees** (PT-360): przy worktree z niezacommitowanymi zmianami (`dirty` ≠ 0) okno ma „Zmiany w katalogu” (źródło
+`worktree`, `path` worktree), a przy worktree z gałęzią inną niż lokalna główna projektu — „Zmiany względem głównej”
+(źródło `range`). Widok otwiera się na całe okno nad listą; Esc albo „Zamknij” wracają do listy. Backend okna wywołuje
+`Git.Diff` (`/Git`) metodą `gitDiff(tag, żądanie)` i oddaje odpowiedź sygnałem `replied(tag, json)`.
+
+**Kody błędów** (`{ok: false, error, message}`, `message` po polsku):
+
+| `error` | Kiedy |
+| --- | --- |
+| `bad-request` | żądanie nie jest obiektem JSON, nieznane `source`, brak albo zły identyfikator karty, `options` nie jest obiektem, zły `options.path`/`options.context` (także `context` bez `path`), `targetRef` nie jest napisem, nie istnieje albo nie ma wspólnej historii z gałęzią karty; źródło `ticket`: zły albo nieznany karcie ticket; `commit`/`range`: `repo` spoza projektów Tablicy i listy Worktrees (także przez dowiązanie i `..`), ref zaczynający się od `-` albo niebędący commitem, `from` i `to` bez wspólnej historii (PT-349); `worktree`: `path` spoza listy Worktrees (te same reguły co `repo`) albo zły `options.group` (PT-360) |
+| `unknown-card` | karta nie ma dziennika przepływu albo nie była zlecona (brak `card.started`) |
+| `no-branch` | karta nie ma gałęzi (brak wyniku `card-branch`, brak repozytorium w dzienniku, katalog repozytorium albo gałąź karty nie istnieje) |
+| `unknown-base` | bez `targetRef`, gdy baza startu w dzienniku jest nieznana albo jej commita nie ma w repozytorium; komunikat prosi o jawny ref porównania (`targetRef`) |
+| `unknown-path` | `options.path` wskazuje plik bez zmian w zakresie diffu (PT-355) |
+| `no-ticket-range` | źródło `ticket`: gałęzi ticketu nie ma, a dziennik karty nie zapisał zakresu jego scalenia (albo zapisane SHA nie istnieje w repozytorium); `message` mówi jednym zdaniem, co dalej (PT-349) |
+| `no-worktree` | źródło `worktree`: `path` jest na liście Worktrees, ale katalogu już nie ma (usunięty po odczycie listy); `message`: „Katalog worktree nie istnieje (został usunięty?): <ścieżka>” (PT-360) |
+| `unavailable` | przepływ karty jest wyłączony w usłudze (brak dziennika kart) albo nie da się uruchomić gita |
+| `timeout`, `cancelled`, `unsafe-config`, `failed` | błędy runnera odczytu: limit czasu (30 s), zamykanie usługi, sterownik `filter.*` o nazwie, której runner nie umie wyłączyć, inny błąd gita |
 
 ## Nowe zadanie
 
@@ -5373,7 +5630,13 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_tasks_core.py` — nowe zadanie bez D-Bus na prawdziwych, tymczasowych repozytoriach: argv obu narzędzi (cudzysłowy, `$(…)`, nowe linie, emoji, myślnik na początku, zrzuty) sprawdzone tak, jak dociera do atrapy agenta przez `launch.py`, nazwa gałęzi z polecenia, worktree od gałęzi głównej (master nietknięty, wpis w `info/exclude`), katalog `<repo>-worktrees`, odmowy bez żadnych zmian (gałąź główna, istniejąca, zła nazwa, zmiany na master, brak gałęzi głównej, brak programu, repozytorium spoza katalogu projektów, zrzut spoza katalogu zadań, jedno słowo, `addDirs` spoza `<tablica>/docs/` i repozytoriów projektów tablicy), `--add-dir` obu narzędzi, wycofanie (gałąź z nowymi commitami zostaje), przejęcie i anulowanie pliku zadania, wybór okna Konsoli i tryb karta/okno na atrapach, znacznik `newTask`,
 - `daemon/tests/test_tasks_local.py` — nowe zadanie na modelu lokalnym bez prawdziwego serwera i agentów: argv i środowisko Codexa i Claude Code dla Ollamy na tym komputerze, na innym komputerze i serwera `openai`, z tokenem i bez (token nigdy w argv ani w pliku zadania), kontekst (z roli, z załadowanego modelu, za mały dla Claude Code), `launch.py` z atrapą agenta zapisującą środowisko (token z pliku tylko w środowisku Codexa, u Claude Code przez apiKeyHelper — nigdy w środowisku, powłoka po agencie z pierwotnymi wartościami użytkownika, nieczytelny token — agent nie startuje), model z „-” w jednym argumencie, Planner z rolą `agent` i atrapą odczytu serwera (odmowy `local-unset`, `local-unavailable`, `bad-model`, tytuł „· lokalnie”, zapamiętany model), wykrywanie sesji na modelu lokalnym z listy dopuszczonych (Codex `model_provider`: ollama, lmstudio, oss, `tide-`; Claude Code `message.model`: znany z `/Models` albo `nazwa:tag`; Azure, Bedrock, bramki — nie) i dopisek w tytule karty,
 - `daemon/tests/test_tasks_dbus.py` — `/Tasks` przez prywatną magistralę z prawdziwą usługą i atrapami `konsole` (uruchamia polecenie z `-e`), `systemd-run`, `claude` i `codex` (zapisują argv): `Repos`, `Defaults`, `SuggestBranch`, `Start` z dokładnym poleceniem w agencie, wycofanie, gdy Konsola nie uruchomi zadania, odmowy i praca w głównym katalogu, `addDirs` z tablicy dla Codeksa (worktree) i Claude Code (katalog projektu) oraz odmowa `bad-add-dir`,
-- `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()` i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
+- `daemon/tests/test_worktrees_dbus.py` — `List()`, `Remove()`, `Refresh()`, `Prune()`, `Fetch()` (odmowy `bad-request` i `no-remote`), `PullFastForward()` (introspekcja, `bad-request`, `no-upstream` bez zmiany HEAD, pole `flowBranch`) i `ShowWindow()` przez prywatną magistralę; agent symulowany sesją Claude Code w worktree,
+- `daemon/tests/test_worktrees_pull.py` (K-36, PT-353) — `Worktrees.PullFastForward` na prawdziwych repozytoriach z lokalnym gołym „zdalnym”: fast-forward gałęzi głównej w głównym katalogu i gałęzi dołączonego worktree, tylko odczyty i jedno `merge --ff-only` (bez `reset`, `rebase`, `stash`, `push`, `prune`, `--force`); każda odmowa (`no-upstream` z odłączonym HEAD, `dirty` z plikiem nieśledzonym, `agent` z katalogiem agenta i miejscem karty, `card-step` z prawdziwego dziennika kart — zamiar, wynik, karta zakończona, inne repozytorium, nieczytelny dziennik, `diverged`, `up-to-date`, `git-operation` ze śladami operacji i filtrem `smudge`, `locked`, `boundary`) z niezmienionym HEAD i `git status`; ścieżki spoza listy (dowiązanie, `..`, nie-napis) bez gita; stan czytany pod blokadą (worktree brudny po odczycie listy i po wzięciu blokady); limit czasu i wyjątek zwalniają blokadę; dwa wątki z przeplotem wymuszonym zdarzeniami: pull czeka na scalanie karty i nie widzi jego stanu pośredniego, scalanie karty czeka na pull i widzi HEAD po nim; M1: blokada silnika wolna w trakcie fetch, drugie pobieranie `busy`; `WorktreeMonitor.pull` wraca od razu (wątek główny nie czeka), drugie żądanie `locked`,
+- `daemon/tests/test_worktrees_fetch.py` — `Worktrees.Fetch` na prawdziwych repozytoriach z lokalnym gołym „zdalnym”: `refs/remotes`, `lastFetch` i liczby nowych commitów, nowa gałąź zdalna, wiele zdalnych, brak `--prune` (usunięta zdalnie gałąź zostaje) i nietknięte HEAD/worktree, dokładne argv (bez `--force`, `--tags`, `+refspec`), zdalny wskazujący na nieistniejący katalog i zdalny HTTP 401 z atrapą `GIT_ASKPASS` niewywołaną, maskowanie `user:token@` w komunikacie i logach, otoczenie (`BatchMode`), limit czasu na zawieszonym gicie, ścieżki spoza listy (dowiązanie, `..`) bez uruchomienia gita, pobieranie mimo blokady repozytorium trzymanej przez scalanie karty (bez `lock_for`, M1) i `busy` dla drugiego pobierania tego samego repozytorium,
+- `daemon/tests/test_worktree_open.py` — bramka `Open` (katalog z listy, plik tylko dla Ridera, `..`, dowiązania, rodzeństwo o wspólnym prefiksie) i `WorktreeMonitor.open` z atrapą `Popen` (argv `[rider, plik]`, `cwd` = katalog pliku, terminal odmawia),
+- `daemon/tests/test_gitread_diffdata.py` — `Git.Diff` źródła `card` na tymczasowych repozytoriach i dzienniku karty: pliki, hunki i sumy zgodne z `git diff` i `git diff --numstat` od przypiętej bazy, zakres po ruchu gałęzi startowej, `targetRef` (merge-base, ref bez wspólnej historii, ref z `-`), kody `unknown-base`, `unknown-card`, `no-branch`, `bad-request`, gałąź główna `main` i `develop` bez `origin`, karta z grupy kart (repozytorium z `card.started`), brak zapisu do dziennika i refów, pułapka konfiguracji z PT-348 nieuruchomiona; duże diffy (PT-355): limit linii i bajtów z pełną listą plików i `truncated`, plik `large` bez hunków, binarne z `oldSize`/`newSize`, `options.path` (także `large` i przycięty) i `options.context`, walidacja `options`, odczyt strumieniowy `Cancellation.run_capped` (nieskończone wyjście ucięte bez czytania całości, dokładnie limit to nie ucięcie); `GitMonitor` — odpowiedź z puli wątków po pracy w tle, pętla wolna,
+- `daemon/tests/test_gitread_diffsources.py` (K-36, PT-349) — `Git.Diff` źródła `ticket` (merge-base z gałęzią karty, drugi ticket bez plików pierwszego, ticket scalony z usuniętą gałęzią: zakres z pary `intent`/`result` akcji `merge` równy diffowi sprzed usunięcia, `no-ticket-range` bez zapisu, z nieudanym scaleniem, z SHA spoza repozytorium i z wartością zaczynającą się od `-`, nieznany ticket i karta), `commit` (pierwszy rodzic, commit scalający, commit początkowy względem pustego drzewa, worktree z listy, `options.path`) i `range` (merge-base, zmiany na `from` poza wynikiem, pełne refy i SHA, brak wspólnej historii); walidacja `repo`/refów (`validate.py`): repozytorium spoza listy, przez dowiązanie i `..` oraz ref z `-` odrzucone `bad-request` bez wywołania runnera, dowiązanie do znanego repozytorium rozwiązane do ścieżki kanonicznej, brak zapisu do dziennika i zmian refów oraz indeksu; `GitMonitor` przekazuje źródło znanych repozytoriów,
+- `daemon/tests/test_git_dbus.py` — `/Git` `Diff()` przez prywatną magistralę na karcie „Od razu” z atrapą agenta: introspekcja, diff od przypiętej bazy jak `git diff`, `targetRef`, odmowy, bez nowych zdarzeń i zmian refów,
 - `daemon/tests/test_krunner_index.py` — indeks historii na syntetycznych dziennikach (`history.py`, `fixtures/history`): tytuły obu narzędzi (także z bazy stanu Codexa zbudowanej w teście), pierwsza wiadomość z początku dużego pliku, odcięcie po 30 dniach, odczyt tylko zmienionych plików,
 - `daemon/tests/test_codex_homes.py` — kilka katalogów danych Codexa na świecie w katalogu tymczasowym (`~/.codex`, `~/snap/codex/33`, `34`, `current` → `34`; nigdy prawdziwe katalogi — `tests/__init__.py` ustawia też nieistniejący `$CODEX_HOME` dla usług uruchamianych bez `--codex-dir`): domyślna lista i `$CODEX_HOME`, `--codex-dir` powtarzane, rozwiązywanie `current` (także po odświeżeniu snapa), starsza rewizja pomijana, kopia tego samego pliku w dwóch katalogach liczona raz (Agents, KRunner, worktrees, raport, koordynacja), segmenty wątku jako jedna pozycja w Agents i KRunnerze, a osobno w raporcie i worktrees, przepięcie obserwacji na nową rewizję po odświeżeniu snapa, „Wznów” w raporcie dla sesji ze snapa, `is_snap` tylko pod `~/snap/codex`, przypisanie procesu ze ścieżką z numerem rewizji i Meta+A do karty Konsole, nowe pliki w obu katalogach zauważone przez obserwację katalogów (bez przeglądu co 30 s), nazwy wątków i baza stanu ze snapa w KRunnerze, wznowienie Codexem ze snapa albo spoza niego,
 - `daemon/tests/test_codex_desktop.py` — Codex Desktop: odnośnik tylko z UUID, linia `Exec` (kody pól, cudzysłowy, brak programu), szukanie pliku `.desktop` i `$TIDE_CODEX_DESKTOP`, polecenie jako lista argumentów w `systemd-run --scope`, zmienne ekranu z `systemctl --user show-environment`; uruchomienie z atrapą `chatgpt` (`fakebin.py`) — nigdy prawdziwej aplikacji; wątek główny podagenta (kilka poziomów, nieznany rodzic, pętla), zwijanie podagentów i stan najpilniejszy, podagent bez rodzica, `AgentMonitor.activate` i Meta+A (otwarcie wątku głównego, podniesienie okna `ChatGPT`) z atrapą aplikacji,
@@ -5382,6 +5645,7 @@ Pliki instalacji: `$XDG_DATA_HOME/tide/daemon/` (z kopią palety `palette.json`,
 - `daemon/tests/test_krunner_semantic.py` — wyszukiwanie po znaczeniu (PT-19) z atrapą modelu („pojęcia” zamiast bge-m3): tekst sesji (metadane, tickety, `strip_secrets`, przycięcie), plik indeksu (0600/0700, bez tekstów, zepsuty albo obcy — od nowa), indeksowanie przyrostowe, okno 30 dni i limit pozycji, przebudowa po zmianie modelu i wymiarów, wyłączenie (plik znika od razu, czekająca partia przerwana), błędy jako stan, `queue.IDLE` i cisza po innym modelu przed każdą partią, ranking, zapytanie (bez poleceń, adresów, ścieżek i sekretów, `HIGH`, pamięć, nowsze unieważnia starsze, serwer nie odpowiada, budżet czasu), łączenie w `KRunnerCore` (słowa pierwsze, bez powtórzeń, dopisek) oraz `models.embed` na atrapie serwera HTTP (Ollama, OpenAI, złe odpowiedzi, chmura, rola za `default`); w `test_krunner_dbus.py` — usługa z atrapą Ollamy (`--search-delay 0`): indeks na dysku, wynik znaczeniowy w `Match`, a po wyłączeniu serwera same słowa w mniej niż 3 s.
 - `apps/newtask/tests/` — okno nowego zadania: logika formularza w `qml6`, zrzuty okna z `--data --grab`, zrzuty ekranu (przeciągnięte, ze schowka, atrapa Spectacle, sprzątanie), backend na prywatnej magistrali z prawdziwą usługą, drugie uruchomienie, instalacja z profilem Konsoli; `kwin/tests/test_new_task_shortcut.py` — skrót Meta+Alt+A,
 - `apps/board/tests/test_view.py` (PT-43) — okno uruchomienia z karty z tym, co okno nowego zadania: zrzuty ekranu (przeciąganie, Ctrl+V, „Zrób zrzut” z atrapą Spectacle, usuwanie, sprzątanie po Anuluj, katalog zostaje po starcie) w `images` prośby `Start`, model chmura/lokalny z `/Models` (wyłączony z powodem, linia agenta, gałąź i `tool` za programem agenta lokalnego, blokady), `imagesDir` i stan modeli z prawdziwej usługi,
+- `apps/board/tests/test_diff_view.py` (K-36, PT-354) — wspólny widok diffa `apps/common/qml/git/DiffView.qml` na atrapie backendu (sonda `diffprobe.py`, offscreen): lista plików z liczbami i sumą, hunki wybranego pliku, `]`/`[`, Alt+↓/↑, `n`/`p`, Esc, `r` i „Odśwież”, „Czytam…”, błąd jednym zdaniem, otwarcie na pliku z parametru, `unknown-base` z wyborem refu i `Git.Diff` z `targetRef`, nazwy z `<b>` i unicode jako zwykły tekst; `startLabel` (`start.js`: baza lokalna, zdalna, nieznana, nazwa z „/” i znakami specjalnymi, brak daty); duże diffy (PT-355): plik `large` zwinięty z „pokaż” i `Git.Diff` z `options.path`, binarny z rozmiarami, pasek przyciętego diffu i samoczynne doczytanie wybranego pliku bez treści, błąd z ponowieniem, spóźniona odpowiedź po odświeżeniu; kolory tylko z palety (`semantic.added`/`removed`), pakiet i slot `gitDiff` backendu Tablicy,
 - `apps/worktrees/tests/` — okno: QML na przykładowych danych (`qml6`, offscreen), launcher z `--data --grab`, backend okna na prywatnej magistrali z prawdziwą usługą (Remove tylko dla zaznaczonych), drugie uruchomienie, instalacja z atrapami `update-desktop-database` i `kbuildsycoca6`,
 - `daemon/tests/test_idle.py` — bezczynność na atrapie kompozytora Wayland (`fake_wayland.py`: prawdziwe gniazdo i format wiadomości, zamrożony zegar): próg, wejście liczy czas od nowa, wybór protokołu (v2, v1, `org_kde_kwin_idle`), brak protokołu, błąd protokołu, zerwane połączenie i ponowne połączenie; `IdleState` na zamrożonym zegarze; obiekt `/Idle` usługi na prywatnej magistrali (właściwości, `IsIdle`, sygnał `IdleChanged`, próg z palety, brak kompozytora, `--no-idle`). Usługi w testach dostają nieistniejące gniazdo Wayland, więc nigdy nie łączą się z kompozytorem pulpitu,
 - `daemon/tests/test_report_schedule.py` — termin raportu (pierwsze logowanie w dobie, 07:00, praca po północy, zmiana czasu, wyłączenie), okres (pierwszy, od kotwicy poprzedniego — godzina z terminu albo wcześniejszy koniec, wieczorne `Generate()` o 23:54 nie przesuwa następnej doby, weekend, inna godzina `at`, najwyżej 7 dni, ponowne wygenerowanie, naprawa stanu sprzed tej zasady), jedno powiadomienie na dobę, ustawienia z pliku i opcji, stan, retencja 30 dni (tylko katalogi raportów, bez dowiązań),
@@ -5575,7 +5839,7 @@ do podsumowania w `card.closed` podsekcję „Do sprawdzenia na pulpicie (z note
 ze wszystkimi odwołaniami. Bez takich sekcji podsumowanie jest bez zmian. Mechanizm nie zależy od projektu ani
 pudełka. Prompty ticketu i review mówią agentowi, by test wymagający prawdziwego pulpitu oznaczył w tej sekcji,
 a nie prosił o niego użytkownika w trakcie. Zdarzenie `card.closed` pokazuje podsumowanie w „Do sprawdzenia”.
-`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Diff gałęzi”, „Do poprawy…” oraz
+`check: auto` nie scala do gałęzi głównej. Panel daje jawne „Zmiany gałęzi” (widok diffa `Git.Diff`, także w trakcie pracy; `CardBranchDiff` zostaje w usłudze dla zgodności), „Do poprawy…” oraz
 „Scal do gałęzi głównej”. Odesłanie z uwagami uruchamia poprawę planu na tej samej gałęzi karty;
 dla wejścia „Od razu” usługa tworzy bazę jednoticketowego planu dopiero przy tym żądaniu.
 Scalenie do głównej działa w piaskownicy gita, sprawdza lokalne kolizje checkoutu i zapisuje

@@ -1,7 +1,8 @@
 """Konfiguracja okna Tide: $XDG_CONFIG_HOME/tide/window.json (zwykły JSON, jeden obiekt).
 
 Jedno miejsce na ustawienia okna, wspólne dla widoków — dziś `cardOpen` (PT-133): co otwiera kafelek karty
-z „Czeka na mnie” i powiadomienie o niej, „decision” (okno decyzji, domyślnie) albo „full” (pełna karta).
+z „Czeka na mnie” i powiadomienie o niej, „decision” (okno decyzji, domyślnie) albo „full” (pełna karta),
+oraz `diffMode` (PT-350): tryb widoku diffa, „unified” (domyślnie) albo „split” (obok siebie).
 Plik czytamy za każdym razem od nowa; nieznane klucze zostają przy zapisie, uszkodzony plik
 albo nieznana wartość dają domyślne ustawienie (nic nie rzuca wyjątku przy odczycie).
 """
@@ -12,6 +13,10 @@ import tempfile
 CARD_OPEN_DECISION, CARD_OPEN_FULL = "decision", "full"
 CARD_OPEN_VALUES = (CARD_OPEN_DECISION, CARD_OPEN_FULL)
 CARD_OPEN_DEFAULT = CARD_OPEN_DECISION
+
+# Tryb widoku diffa (PT-350, `diffMode`): jednolity albo obok siebie; wspólny dla Tablicy i Worktrees.
+DIFF_MODE_VALUES = ("unified", "split")
+DIFF_MODE_DEFAULT = "unified"
 
 
 def config_path(env=None) -> str:
@@ -38,9 +43,26 @@ def set_card_open(value: str, path: str | None = None) -> None:
     """Zapisuje wybór atomowo (plik tymczasowy + rename). ValueError — nieznana wartość, OSError — zapis."""
     if value not in CARD_OPEN_VALUES:
         raise ValueError(f"nieznane ustawienie otwierania karty: {value!r}")
+    _save("cardOpen", value, path)
+
+
+def diff_mode(path: str | None = None) -> str:
+    """Tryb widoku diffa (PT-350): „unified” (domyślnie) albo „split”; uszkodzony plik daje domyślny."""
+    value = load(path).get("diffMode")
+    return value if value in DIFF_MODE_VALUES else DIFF_MODE_DEFAULT
+
+
+def set_diff_mode(value: str, path: str | None = None) -> None:
+    """Zapisuje tryb diffa jak `set_card_open`. ValueError — nieznana wartość, OSError — zapis."""
+    if value not in DIFF_MODE_VALUES:
+        raise ValueError(f"nieznany tryb diffa: {value!r}")
+    _save("diffMode", value, path)
+
+
+def _save(key: str, value: str, path: str | None) -> None:
     path = path or config_path()
     data = load(path)
-    data["cardOpen"] = value
+    data[key] = value
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".window-", suffix=".json", dir=os.path.dirname(path))
     try:

@@ -31,7 +31,9 @@
     "waiting": "peach",
     "working": "teal",
     "done": "sky",
-    "runout": "peach"
+    "runout": "peach",
+    "added": "mint",
+    "removed": "rose"
   },
   "windowButtons": {
     "minimize": "butter",

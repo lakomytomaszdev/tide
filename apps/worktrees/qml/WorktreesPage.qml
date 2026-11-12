@@ -11,6 +11,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as QQC2
 import "tide" as Tide
+import "git" as Git
 import "worktrees.js" as Logic
 
 Rectangle {
@@ -28,8 +29,30 @@ Rectangle {
     signal openRequested(string path, string app)
     signal refreshRequested()
     signal pruneRequested(string repoPath)
+    signal fetchRequested(string repoPath)   // „Pobierz”: git fetch ze wszystkich zdalnych repozytorium
+    signal pullRequested(string path)        // „Zaciągnij”: merge --ff-only do upstreamu w worktree (PT-353)
+
+    // Widok diffa (PT-360): żądanie `Git.Diff` otwartego widoku (null — lista) i backend z gitDiff/replied.
+    property var diffRequest: null
+    property var diffBackend: null
+    readonly property bool diffOpen: diffRequest !== null
+
+    function openDiff(path, kind) {
+        const w = worktrees.find(x => x.path === path)
+        const request = w ? Logic.diffRequest(w, kind) : null
+        if (request !== null) diffRequest = request
+    }
+
+    function closeDiff() {
+        diffRequest = null
+        page.forceActiveFocus()
+    }
 
     // Stan widoku.
+    property var fetching: ({})        // repoPath → true, gdy trwa pobieranie
+    property var fetchNotes: ({})        // repoPath → {ok, text}: wynik ostatniego pobierania
+    property var pulling: ({})           // ścieżka worktree → true, gdy trwa zaciąganie
+    property var pullNotes: ({})         // ścieżka worktree → {ok, text}: wynik ostatniego zaciągania
     property string query: ""
     property string repo: "all"
     property var selected: ({})          // ścieżka → true
@@ -51,6 +74,7 @@ Rectangle {
     // Worktrees na gałęzi głównej; same główne katalogi repozytoriów nie są tu pokazywane.
     readonly property var mains: Logic.inGroup(shown, "main").filter(w => !w.isMain)
     readonly property var missing: Logic.missingByRepo(shown)
+    readonly property var repoRows: Logic.repoRows(worktrees, repo, chips)
     readonly property var picked: Logic.selection(worktrees, selected)
     readonly property bool forcing: picked.risky.length > 0
     readonly property var unmergedInfo: Logic.unmergedBranches(picked.items)
@@ -119,6 +143,51 @@ Rectangle {
         const next = Object.assign({}, selected)
         for (const r of items) if (r.removed) delete next[r.path]
         selected = next
+    }
+
+    function startFetch(repoPath) {
+        if (fetching[repoPath] === true) return
+        const busy = Object.assign({}, fetching)
+        busy[repoPath] = true
+        fetching = busy
+        const notes = Object.assign({}, fetchNotes)
+        delete notes[repoPath]
+        fetchNotes = notes
+        fetchRequested(repoPath)
+    }
+
+    // Wynik Fetch() dla repozytorium (result: obiekt z usługi albo null przy braku odpowiedzi).
+    function finishFetch(repoPath, result) {
+        const busy = Object.assign({}, fetching)
+        delete busy[repoPath]
+        fetching = busy
+        const notes = Object.assign({}, fetchNotes)
+        notes[repoPath] = Logic.fetchNote(result)
+        fetchNotes = notes
+    }
+
+    function startPull(path) {
+        if (pulling[path] === true) return
+        const w = worktrees.find(x => x.path === path)
+        if (!w || Logic.pullBlocker(w) !== null) return   // przycisk i tak jest wtedy wyłączony
+        const busy = Object.assign({}, pulling)
+        busy[path] = true
+        pulling = busy
+        const notes = Object.assign({}, pullNotes)
+        delete notes[path]
+        pullNotes = notes
+        pullRequested(path)
+    }
+
+    // Wynik PullFastForward() dla worktree (result: obiekt z usługi albo null przy braku odpowiedzi).
+    // Lista odświeża się sama (usługa po zaciągnięciu przegląda repozytoria i wysyła Changed).
+    function finishPull(path, result) {
+        const busy = Object.assign({}, pulling)
+        delete busy[path]
+        pulling = busy
+        const notes = Object.assign({}, pullNotes)
+        notes[path] = Logic.pullNote(result)
+        pullNotes = notes
     }
 
     function finishPrune(result) {
@@ -315,6 +384,108 @@ Rectangle {
                 width: flick.width - 48
                 spacing: 18
 
+                // Repozytoria: zdalne, czas ostatniego pobrania i „Pobierz” (tylko ze zdalnym).
+                ColumnLayout {
+                    objectName: "repoStrip"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 10
+                    visible: page.repoRows.length > 0
+                    spacing: 6
+                    Repeater {
+                        model: page.repoRows
+                        ColumnLayout {
+                            id: repoRow
+                            required property var modelData
+                            readonly property bool busy: page.fetching[modelData.repoPath] === true
+                            readonly property var note: page.fetchNotes[modelData.repoPath] || null
+                            // „Zaciągnij” gałęzi głównego katalogu (PT-353) — jego wiersza nie ma na liście.
+                            readonly property var main: modelData.main
+                            readonly property bool pullBusy: main !== null && page.pulling[main.path] === true
+                            readonly property var pullBlocker: main !== null ? Logic.pullBlocker(main) : null
+                            readonly property var pullNote: main !== null ? (page.pullNotes[main.path] || null) : null
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                Text {
+                                    Layout.preferredWidth: 150
+                                    leftPadding: 14
+                                    text: repoRow.modelData.repo
+                                    color: Tide.Tokens.textPrimary
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    objectName: "repoRemotes"
+                                    Layout.fillWidth: true
+                                    text: Logic.repoLine(repoRow.modelData.sample, page.nowTs)
+                                    color: Tide.Tokens.textMuted
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                PillButton {
+                                    objectName: "fetchButton"
+                                    visible: repoRow.modelData.canFetch
+                                    implicitHeight: 28
+                                    text: Logic.fetchButtonText(repoRow.busy)
+                                    pixelSize: 12
+                                    enabled: !repoRow.busy && page.available
+                                    toolTip: "Pobiera zmiany ze wszystkich zdalnych (git fetch). Nie zmienia gałęzi ani plików."
+                                    onClicked: page.startFetch(repoRow.modelData.repoPath)
+                                }
+                                Text {
+                                    objectName: "repoPullReason"
+                                    visible: repoPull.visible && !repoRow.pullBusy && repoRow.pullBlocker !== null
+                                    text: repoRow.pullBlocker !== null ? repoRow.pullBlocker.text : ""
+                                    color: Tide.Tokens.textMuted
+                                    font.family: Tide.Theme.uiFamily
+                                    font.pixelSize: 11
+                                }
+                                PillButton {
+                                    id: repoPull
+                                    objectName: "repoPullButton"
+                                    visible: Logic.canOfferPull(repoRow.main)
+                                    implicitHeight: 28
+                                    text: Logic.pullButtonText(repoRow.pullBusy, repoRow.main)
+                                         + (repoRow.main ? " " + repoRow.main.branch : "")
+                                    pixelSize: 12
+                                    enabled: !repoRow.pullBusy && repoRow.pullBlocker === null && page.available
+                                    toolTip: repoRow.pullBlocker !== null
+                                             ? "Nie można zaciągnąć: " + repoRow.pullBlocker.text
+                                             : "Przesuwa gałąź głównego katalogu do upstreamu wyłącznie fast-forward."
+                                    onClicked: page.startPull(repoRow.main.path)
+                                }
+                            }
+                            Text {
+                                objectName: "repoPullNote"
+                                Layout.fillWidth: true
+                                visible: repoRow.pullNote !== null
+                                leftPadding: 14
+                                text: repoRow.pullNote ? repoRow.pullNote.text : ""
+                                color: repoRow.pullNote && repoRow.pullNote.ok ? Tide.Tokens.positive : Tide.Tokens.neutral
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                            }
+                            Text {
+                                objectName: "fetchNote"
+                                Layout.fillWidth: true
+                                visible: repoRow.note !== null
+                                leftPadding: 14
+                                text: repoRow.note ? repoRow.note.text : ""
+                                color: repoRow.note && repoRow.note.ok ? Tide.Tokens.positive : Tide.Tokens.neutral
+                                font.family: Tide.Theme.uiFamily
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                }
+
                 // Wynik ostatniego sprzątania.
                 Rectangle {
                     Layout.fillWidth: true
@@ -408,6 +579,10 @@ Rectangle {
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
+                            pullBusy: page.pulling[modelData.path] === true
+                            pullNote: page.pullNotes[modelData.path] || null
+                            onPullRequested: path => page.startPull(path)
                         }
                     }
                 }
@@ -448,6 +623,10 @@ Rectangle {
                             checked: page.selected[modelData.path] === true
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
+                            pullBusy: page.pulling[modelData.path] === true
+                            pullNote: page.pullNotes[modelData.path] || null
+                            onPullRequested: path => page.startPull(path)
                         }
                     }
                 }
@@ -479,6 +658,10 @@ Rectangle {
                             enabled: !page.removing
                             onToggled: page.toggle(modelData.path)
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
+                            pullBusy: page.pulling[modelData.path] === true
+                            pullNote: page.pullNotes[modelData.path] || null
+                            onPullRequested: path => page.startPull(path)
                         }
                     }
                     Text {
@@ -568,6 +751,10 @@ Rectangle {
                             canTerminal: page.canTerminal
                             canRider: page.canRider
                             onOpenRequested: (path, app) => page.openRequested(path, app)
+                            onDiffRequested: (path, kind) => page.openDiff(path, kind)
+                            pullBusy: page.pulling[modelData.path] === true
+                            pullNote: page.pullNotes[modelData.path] || null
+                            onPullRequested: path => page.startPull(path)
                         }
                     }
                 }
@@ -863,6 +1050,24 @@ Rectangle {
                         onClicked: page.confirmRemove()
                     }
                 }
+            }
+        }
+    }
+
+    // Zmiany worktree w widoku diffa (K-36, PT-360): nakładka na całe okno; Esc i „Zamknij” wracają do listy.
+    Loader {
+        id: diffLoader
+        objectName: "worktreeDiffOverlay"
+        anchors.fill: parent
+        z: 100
+        active: page.diffRequest !== null
+        sourceComponent: Component {
+            Git.DiffView {
+                objectName: "worktreeDiffView"
+                request: page.diffRequest
+                backend: page.diffBackend
+                onCloseRequested: page.closeDiff()
+                Component.onCompleted: forceActiveFocus()
             }
         }
     }

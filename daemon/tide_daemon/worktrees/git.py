@@ -1,4 +1,5 @@
-"""Wywołania gita dla obszaru worktrees — wyłącznie lokalne, bez żadnej operacji sieciowej.
+"""Wywołania gita dla obszaru worktrees — wyłącznie lokalne, bez żadnej operacji sieciowej
+(wyjątek: `fetch.py` używa kopii tej klasy do `git fetch`, tylko poza granicą Gita).
 
 Zasady:
 - GIT_OPTIONAL_LOCKS=0: `git status` nie odświeża indeksu i nie bierze index.lock, więc nasze
@@ -12,6 +13,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from ..gitcommand import boundary_active, git_command
+from .cancellation import Cancellation
 
 GIT_ENV = {
     "GIT_OPTIONAL_LOCKS": "0",
@@ -29,6 +31,8 @@ class Result:
     code: int
     out: str
     err: str
+    timed_out: bool = False  # polecenie przerwane po limicie czasu (code == -1)
+    truncated: bool = False  # wyjście ucięte limitem bajtów/linii (`max_bytes`/`max_lines`), kod 0
 
     @property
     def ok(self) -> bool:
@@ -49,12 +53,19 @@ class Git:
         self.index = None
 
     def run(self, cwd: str, *args: str, timeout: float | None = None, input_text: str | None = None,
-            checkout=None, checkout_ignored=False) -> Result:
+            checkout=None, checkout_ignored=False, max_bytes: int | None = None,
+            max_lines: int | None = None) -> Result:
+        """`max_bytes`/`max_lines`: wyjście czytane strumieniowo, po przekroczeniu proces jest przerywany,
+        a `Result.out` to pełne linie sprzed limitu (`truncated=True`)."""
         try:
             argv, env = git_command("-C", cwd, *args, executable=self.executable, env=self.env,
                                     identity=any(a in ("commit", "commit-tree", "var") for a in args),
                                     read_roots=self.read_roots, write_roots=self.write_roots, private=self.private,
                                     index=self.index, checkout=checkout, checkout_ignored=checkout_ignored)
+            if max_bytes is not None or max_lines is not None:
+                proc, cut = (self.cancel or Cancellation()).run_capped(
+                    argv, env=env, timeout=timeout or self.timeout, max_bytes=max_bytes, max_lines=max_lines)
+                return Result(proc.returncode, proc.stdout, proc.stderr.strip(), truncated=cut)
             if self.cancel is not None:
                 proc = self.cancel.run(argv, env=env, timeout=timeout or self.timeout, input_text=input_text)
             else:
@@ -62,7 +73,7 @@ class Git:
                                       errors="replace", env=env, timeout=timeout or self.timeout,
                                       **({"input": input_text} if input_text is not None else {"stdin": subprocess.DEVNULL}))
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return Result(-1, "", str(exc))
+            return Result(-1, "", str(exc), timed_out=isinstance(exc, subprocess.TimeoutExpired))
         return Result(proc.returncode, proc.stdout, proc.stderr.strip())
 
     def read_checkout(self, cwd, *options, untracked_files="all", include_ignored=False):
