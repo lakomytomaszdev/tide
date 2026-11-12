@@ -361,6 +361,34 @@ def ticket_status(st: FlowState, ticket: dict) -> dict:
     return status("waiting")
 
 
+def heavy_queued(st: FlowState, out: dict, held: dict) -> dict:
+    """Status ciężkiego polecenia w kolejce (PT-373): `held` — krok → (zajęte, limit) z żywej kolejki silnika
+    (`_heavy_view`). Ticket, którego ostatni krok czeka na miejsce ciężkich, dostaje
+    „w kolejce: <polecenie> (ciężkie polecenia: <zajęte> z <limit> zajęte)”; kafelek karty dostaje ten sam dopisek.
+    Lekkie polecenia i ciężkie bez wstrzymania limitem zachowują dotychczasowy napis."""
+    if not held or not out:
+        return out
+    from . import mergecheck
+    from .heavyqueue import queued_label
+    from .state import NOTE_MAX, _clip
+    for ticket in out.get("tickets") or []:
+        latest = next((s for s in reversed(list(st.steps.values())) if s.get("ticket") == ticket.get("id")), {})
+        found = held.get(latest.get("step"))
+        label = str(ticket.get("statusLabel") or "")
+        if found and ticket.get("status") == "queued" and label.startswith(QUEUED_PREFIX):
+            ticket["statusLabel"] = queued_label(label, *found)
+    note = str(out.get("note") or "")
+    found = held.get(st.last_step) if "w kolejce poza piaskownicą: " in note else None
+    if found is None and "testy po scaleniu w kolejce" in note:
+        found = next((value for name, value in held.items() if mergecheck.is_step(name)), None)
+    if found is not None:
+        out["note"] = _clip(queued_label(note, *found), NOTE_MAX)
+    return out
+
+
+QUEUED_PREFIX = "w kolejce: "   # decision.js (OUTSIDE_QUEUED_PREFIX) liczy po nim czekające zgody
+
+
 def _command(done: dict) -> str:
     """Krótka nazwa polecenia poza piaskownicą na kartkę ticketu (05.11: „polecenie w kolejce” nic nie mówiło)."""
     text = " ".join(str(done.get("command") or "polecenie poza piaskownicą").split())

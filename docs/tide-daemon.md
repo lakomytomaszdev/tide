@@ -2557,6 +2557,39 @@ zapisaną odpowiedzią (`already-decided`) i działa także po wcześniejszej od
 startem, uruchomienie i zapis `outside.started` są pod tą samą blokadą dziennika co zapis odmowy.
 Automatyczna odmowa Tide i odmowa opiekuna nie blokują późniejszych zgód.
 
+**Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń (K-39 #3, PT-373).** Zgoda (ręczna albo
+automatyczna: zapamiętana rodzina projektu, „dla ticketu”, `outsideAuto`) trafia do kolejki według czasu zgody.
+Polecenia dzielą się na dwie klasy (`cardflow/heavyqueue.py`, czyste `classify` i `admit`):
+
+- **ciężkie** — polecenie z rodziny `tests.changed` albo `tests.full` efektywnego kontraktu testów projektu
+  (zatwierdzony kontrakt, inaczej cele `make` worktree: `make test-changed BASE={base}`, `make test`) oraz każda
+  próba testów po scaleniu (K-88). Rodzina to argumenty polecenia kontraktu do pierwszego `{base}`, porównywane
+  słowo po słowie z początkiem polecenia bez początkowych przypisań: `make test-changed BASE=<dowolny SHA> JOBS=4`
+  jest ciężkie, `make lint`, `make test-cardflow`, `ss -ltnp` — nie. Projekt z innym kontraktem (np. `dotnet test`)
+  ma za ciężkie swoje polecenia. Ponowienie samych padniętych modułów (`rerunOf`) liczy się jak pełny przebieg.
+  Wzorce `heavyCommands`, normalizacja poleceń i skrypty dochodzą w #12;
+- **lekkie** — pozostałe polecenia.
+
+Ciężkich biegnie naraz najwyżej `heavyLimit` na maszynę (ustawienie przepływu, 1..6, domyślnie 2), niezależnie od
+projektu, karty i rodzaju zgody. Lekkie i ciężkie razem podlegają dotychczasowym limitom: `OUTSIDE_PER_PROJECT = 6`
+w projekcie i `OUTSIDE_TOTAL = 7` łącznie (łączny nie jest mniejszy niż największy `heavyLimit`), więc lekkie
+polecenie rusza mimo zajętych miejsc ciężkich, a starsza zgoda ciężka, która czeka na miejsce ciężkich, nie trzyma
+w kolejce lekkich. Limit działa przy każdej decyzji startu: zmniejszenie `heavyLimit` nie przerywa trwających,
+a nowe ruszają dopiero, gdy trwających jest mniej niż nowy limit. Kolejność wśród ciężkich to czas zgody.
+
+Zbiór trwających to żywy `_outside_active` silnika (po sprawdzeniu kodów wyjścia i po każdym starcie w tym samym
+ticku, także próby po scaleniu), a nie migawka stanu kart z fazy odczytu ticku: dwie karty sprawdzane w jednym ticku
+nie ruszą obie przy jednym wolnym miejscu. Sam start zostaje pod blokadą dziennika z kontrolą decyzji tuż przed
+`Popen` (PT-311). Wstrzymana karta nie trzyma miejsca w kolejce; po wznowieniu zgoda wraca do niej. Po restarcie
+usługi trwające polecenia (także procesy wstrzymane z jakimkolwiek startem) zajmują miejsca, z klasą liczoną
+z dziennika, a czekające wracają do kolejki z czasem zgody; wpis kolejki ma pole `heavy`.
+
+Ticket, którego ciężkie polecenie czeka na miejsce, ma w pełnej karcie (`tickets[].statusLabel`) i na kafelku napis
+`w kolejce: <polecenie> (ciężkie polecenia: <zajęte> z <limit> zajęte)`, np. „w kolejce: make test-changed
+(ciężkie polecenia: 2 z 2 zajęte)” — pochodna żywej kolejki silnika, dokładana przy budowie stanu karty. Lekkie
+polecenie zachowuje napis `w kolejce: <polecenie>`; prefiks `w kolejce: ` czyta okno (`decision.js`).
+Dziennik usługi zapisuje powód czekania raz na zmianę („ciężkie polecenia: 2 z 2 zajęte (…)”).
+
 Decyzje przekazuje metoda D-Bus `/Board ResolveCardStep(id, request_json)` z `choice` równym `answer`, `allow`,
 `deny`, `retry` lub `change-executor`; odpowiednio podaje się `answer` albo `executor`, a przy łańcuchu `allow`
 (z `choice=allow`) albo `instead` (z `choice=deny`). Ponowione kroki dostają
@@ -3421,6 +3454,11 @@ i `SetCardFlowSettings` (sygnatury bez zmian; zapis zmienia tylko podane klucze,
 zły typ albo zakres (np. `caretakerActionLimit` 0, 11 albo `"3"`, `caretakerDecisionMinutes` 0 albo 1441, `true`
 zamiast liczby) → `bad-request`; wykonawca spoza katalogu → `bad-executor`; nieznany klucz → `bad-settings` (jak
 dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają bez zmian.
+
+`heavyLimit` (PT-373) — liczba całkowita 1–6, ile ciężkich poleceń poza piaskownicą biegnie naraz na maszynie
+(sekcja „Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń”); domyślnie 2. `GetCardFlowSettings` zwraca
+je zawsze (zła wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true`
+(`bad-settings`), a zapis zmienia tylko ten klucz i zachowuje nieznane klucze pliku. Pole w oknie dochodzi w #5.
 
 **Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
 `caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,
@@ -5318,7 +5356,7 @@ dziennik muszą wskazywać tę samą domenę; odmowa połączenia innej karty ni
 karty `box.risk` (`risk: "K1"`, `box`, `step`, `program`, `text`: „poświadczenia agenta czytelne dla kodu w pudełku
 (grupa docker); pełna ochrona: K3”) — raz na kartę.
 
-**Ograniczenia.** `OUTSIDE_PER_PROJECT` dotyczy wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
+**Ograniczenia.** `OUTSIDE_PER_PROJECT` i `heavyLimit` dotyczą wyłącznie poleceń poza piaskownicą na hoście; kroki w pudełku liczy
 tylko limit kroków dostawcy, więc dwa kroki projektu startują równolegle. Wynik `outside` kroku pudełkowego
 nie dostaje zgody na wykonanie na hoście: blokada obejmuje nowe wyniki, ponowne sprawdzanie zgód, decyzje
 oraz sam start polecenia. Dotychczasowe `outside*` kroków hostowych działają jak wcześniej.
