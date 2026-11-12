@@ -13,8 +13,12 @@ projektu, czekające wpisy kolejki i żywy zbiór trwających (`_outside_active`
   (parser zgód `outside_argv`, bez początkowych przypisań): `make test-changed BASE=<dowolny SHA> JOBS=4` pasuje do
   `make test-changed BASE={base}`, `make test` do `make test`, a `make test-cardflow` ani `make lint` nie pasują.
 
-Pozostałe polecenia są w tym tickecie lekkie. `roots` i `patterns` (wzorce `heavyCommands`, tu zawsze puste) są
-w interfejsie już teraz, żeby #12 rozszerzył dopasowanie bez zmiany wywołań w silniku.
+- pasuje do wzorca `heavyCommands` (#12, PT-382; domyślnie `DEFAULT_PATTERNS`): budowy, testy innych technologii
+  i pomiary. Dopasowanie jest jedną funkcją, `pattern_matches` (użyje jej też `quietCommands`, #6).
+
+Argumenty biorą się z `outside_argv(command, roots)`, a `normalize` (tylko do klasyfikacji, polecenie uruchamia się bez
+zmian) sprowadza interpreter podany ścieżką do `python3`, a `bash`/`sh <skrypt z roots>` do `bash <ścieżka względna>`.
+Pozostałe polecenia są lekkie; skrypt spoza `roots` nie pasuje do żadnego wzorca.
 
 `admit(waiting, running, limit, order=…)` — które czekające ciężkie polecenia mogą ruszyć: tyle, ile wolnych miejsc
 (`limit` minus trwające), w kolejności klucza porządku (dziś czas zgody, potem nazwa). Zmniejszony limit nie przerywa
@@ -23,6 +27,8 @@ dojdą przez klucz `order` i powód wstrzymania.
 """
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
@@ -30,11 +36,20 @@ DEFAULT_LIMIT = 2
 MIN_LIMIT, MAX_LIMIT = 1, 6
 BASE_PARAM = "{base}"
 
+# Domyślne `heavyCommands` (rodziny z końcowym ` *`; `make test *` dopasowuje cel `test`, a nie `test-cardflow`,
+# dlatego cele są wyliczone).
+DEFAULT_PATTERNS = tuple(f"{family} *" for family in (
+    "make test", "make test-changed", "make test-cardflow", "make test-daemon", "make test-board", "make mist-golden",
+    "npm test", "npm run build", "npm run e2e", "npx playwright test", "dotnet test", "dotnet build", "go test",
+    "cargo test", "pytest", "python3 -m pytest", "python3 -m unittest", "python3 tools/test_runner.py",
+    "docker build", "docker run", "docker compose up", "docker compose build"))
+
 # Powody (napisy stałe do dziennika usługi i testów).
 LIGHT = ""
 MERGE_CHECK = "merge-check"
 TESTS_CHANGED = "tests.changed"
 TESTS_FULL = "tests.full"
+PATTERN = "pattern"
 HELD_LIMIT = "limit"
 
 
@@ -83,10 +98,43 @@ def _contract_commands(contract) -> list[tuple[str, str]]:
     return [(reason, str(get(key) or "").strip()) for reason, key in ((TESTS_CHANGED, "changed"), (TESTS_FULL, "full"))]
 
 
-def _family(command: str, roots) -> list[str]:
-    """Rodzina polecenia kontraktu: jego argumenty do pierwszego parametru `{base}` (bez niego). Puste — brak."""
+PYTHON_NAME = re.compile(r"python(3(\.\d+)?)?")
+
+
+def _relative_script(path: str, roots) -> str:
+    """Ścieżka skryptu względem worktree albo repozytorium projektu (`normpath`, bez `./`)."""
+    base = path if path.startswith("/") else os.path.join(roots[0] or "", path)
+    real = os.path.realpath(base)
+    for root in roots:
+        if root and (real == os.path.realpath(root) or real.startswith(os.path.realpath(root) + os.sep)):
+            return os.path.relpath(real, os.path.realpath(root))
+    return os.path.normpath(path)
+
+
+def normalize(argv: list[str] | None, roots=()) -> list[str]:
+    """Postać polecenia do klasyfikacji (nie do uruchomienia): interpreter podany ścieżką (`/usr/bin/python3`,
+    `.venv/bin/python`, `python3.12`) to `python3`, a `sh`/`bash <skrypt z roots>` to `bash <ścieżka względna>`.
+    Początkowe przypisania i `env NAZWA=…` zdejmuje już `outside_argv`."""
+    from ..board.commands import script_in_roots
+    if not argv:
+        return []
+    if script_in_roots(argv, roots):
+        return ["bash", _relative_script(argv[1], roots), *argv[2:]]
+    if PYTHON_NAME.fullmatch(os.path.basename(argv[0])):
+        return ["python3", *argv[1:]]
+    return list(argv)
+
+
+def command_argv(command: str, roots=()) -> list[str]:
+    """Znormalizowane argumenty polecenia (jak zgoda przy starcie: `outside_argv` z `roots`); puste dla łańcucha,
+    podpowłoki, zakazanej zmiennej albo `bash`/`sh` ze skryptem spoza `roots`."""
     from ..board.commands import outside_argv
-    argv = outside_argv(command, roots) or []
+    return normalize(outside_argv(command, roots), roots)
+
+
+def _family(command: str, roots) -> list[str]:
+    """Rodzina polecenia kontraktu: jego znormalizowane argumenty do pierwszego parametru `{base}` (bez niego)."""
+    argv = command_argv(command, roots)
     head = []
     for token in argv:
         if BASE_PARAM in token:
@@ -99,33 +147,60 @@ def _matches(argv: list[str], family: list[str]) -> bool:
     return bool(family) and argv[:len(family)] == family
 
 
-def _pattern_matches(argv: list[str], patterns: Iterable[str]) -> bool:
-    """Wzorce `heavyCommands` (#12). W tym tickecie lista jest zawsze pusta; tu tylko miejsce na regułę."""
+def pattern_matches(argv: list[str], patterns: Iterable[str], roots=()) -> bool:
+    """Jedyna funkcja dopasowania wzorców poleceń (`heavyCommands`, w #6 także `quietCommands`). `argv` — wynik
+    `command_argv`. Wzorzec ma format zgód „zawsze w projekcie”: rodzina z końcowym ` *` (prefiks argumentów) albo
+    dokładne polecenie (całe argumenty). Wzorzec jest parsowany tak jak polecenie (z `roots`, z normalizacją), więc
+    `bash daemon/tests/x.sh *` pasuje do `sh ./daemon/tests/x.sh a` i do ścieżki bezwzględnej w worktree."""
+    if not argv:
+        return False
     for pattern in patterns or ():
-        words = str(pattern or "").split()
-        if words and words[-1] == "*":
-            words = words[:-1]
-        if words and argv[:len(words)] == words:
+        text = str(pattern or "").strip()
+        family = text.endswith(" *")
+        words = command_argv(text[:-2] if family else text, roots)
+        if not words:
+            continue
+        if (argv[:len(words)] == words) if family else (argv == words):
             return True
     return False
+
+
+def default_patterns() -> list[str]:
+    return list(DEFAULT_PATTERNS)
+
+
+def patterns_problem(value) -> str:
+    """Opis błędu `heavyCommands` do `bad-settings`; pusty — poprawna lista (może być pusta)."""
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return "wzorce ciężkich poleceń muszą być listą napisów"
+    if any(not item.strip() or item.strip() == "*" for item in value):
+        return "wzorzec ciężkiego polecenia nie może być pusty"
+    return ""
+
+
+def patterns_of(value) -> list[str]:
+    """`heavyCommands` z ustawień przepływu; brak klucza albo niepoprawna wartość — lista domyślna."""
+    if value is None or patterns_problem(value):
+        return default_patterns()
+    return [item.strip() for item in value]
 
 
 def classify(command: str, roots=(), contract=None, patterns: Iterable[str] = (), *,
              merge_check: bool = False) -> Verdict:
     """Czy polecenie jest ciężkie. `contract` — efektywny kontrakt testów projektu (`{"changed", "full"}` albo
-    `testpolicy.TestPolicy` z nierozwiniętym `{base}`), `roots` — worktree, repozytorium projektu i katalog kroku,
-    `patterns` — wzorce `heavyCommands` (#12; dziś puste), `merge_check` — próba testów po scaleniu (zawsze ciężka)."""
+    `testpolicy.TestPolicy` z nierozwiniętym `{base}`), `roots` — worktree ticketu, repozytorium projektu (i katalog
+    kroku), `patterns` — wzorce `heavyCommands` (`patterns_of`), `merge_check` — próba testów po scaleniu (zawsze
+    ciężka). Argumenty jak przy zgodzie na start (`outside_argv` z `roots`), potem `normalize`."""
     if merge_check:
         return Verdict(True, MERGE_CHECK)
-    from ..board.commands import outside_argv
-    argv = outside_argv(command, roots)
+    argv = command_argv(command, roots)
     if not argv:
         return Verdict(False)
     for reason, declared in _contract_commands(contract):
         if declared and _matches(argv, _family(declared, roots)):
             return Verdict(True, reason)
-    if _pattern_matches(argv, patterns):
-        return Verdict(True, "pattern")
+    if pattern_matches(argv, patterns, roots):
+        return Verdict(True, PATTERN)
     return Verdict(False)
 
 

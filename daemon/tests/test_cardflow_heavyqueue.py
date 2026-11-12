@@ -365,6 +365,37 @@ class HeavyQueueEngineTest(unittest.TestCase):
         self.assertTrue(self.eng._outside_waiting[step["step"]][4])
         self.assertFalse(self.eng._outside_waiting[light["step"]][4])
 
+    # --- wzorce `heavyCommands` (K-39 #12, PT-382) ---
+
+    def test_always_consent_outside_the_contract_waits_in_the_same_queue(self):
+        a, b, c = self.card("K-1"), self.card("K-2"), self.card("K-3")
+        self.tick((a, self.request(a, "PT-1", minutes=30)), (b, self.request(b, "PT-2", minutes=20)))
+        waiting = self.request(c, "PT-3", "make test-cardflow", choice="run-always", minutes=10)
+        light = self.request(c, "PT-4", "docker ps", minutes=5)
+        self.tick((c, waiting), (c, light))
+        self.assertNotIn(waiting["step"], self.started)
+        self.assertIn(light["step"], self.started)
+        self.assertEqual(self.status(c)["PT-3"], "w kolejce: make test-cardflow (ciężkie polecenia: 2 z 2 zajęte)")
+
+    def test_owner_pattern_for_a_script_queues_and_the_command_is_not_rewritten(self):
+        self.settings["heavyLimit"] = 1
+        self.settings["heavyCommands"] = ["bash daemon/tests/perf_gate_k98.sh *"]
+        a, b = self.card("K-1"), self.card("K-2")
+        command = "bash ./daemon/tests/perf_gate_k98.sh build/x"
+        first, second = self.request(a, "PT-1", command, minutes=10), self.request(b, "PT-2", command, minutes=5)
+        self.tick((a, first), (b, second))
+        self.assertEqual(self.started, [first["step"]])
+        started = [e for e in self.journal.events["K-1"] if e["type"] == "outside.started"]
+        self.assertEqual(started[0]["command"], command)      # normalizacja tylko do klasyfikacji
+
+    def test_emptied_list_makes_only_contract_commands_heavy(self):
+        self.settings["heavyCommands"] = []
+        a, b, c = self.card("K-1"), self.card("K-2"), self.card("K-3")
+        self.tick((a, self.request(a, "PT-1", minutes=30)), (b, self.request(b, "PT-2", minutes=20)))
+        other = self.request(c, "PT-3", "make test-cardflow", minutes=10)
+        self.tick((c, other))
+        self.assertIn(other["step"], self.started)
+
 
 class HeavySettingsTest(unittest.TestCase):
     def engine(self):
@@ -386,6 +417,90 @@ class HeavySettingsTest(unittest.TestCase):
         self.assertEqual(eng.set_flow_settings({"heavyLimit": 1})["heavyLimit"], 1)
         self.assertEqual(eng._settings_data()["nieznany"], {"a": 1})
         self.assertEqual(eng.set_flow_settings({"reviewRoundsBeforeQuestion": 4})["heavyLimit"], 1)
+
+    def test_heavy_commands_default_validation_and_unknown_keys(self):
+        eng = self.engine()
+        self.assertEqual(eng.get_flow_settings()["heavyCommands"], heavyqueue.default_patterns())
+        for bad in ("make test", [1], ["make test", ""], ["  "], ["*"], {"a": 1}, None, True):
+            with self.assertRaises(flow_engine.FlowError, msg=repr(bad)) as raised:
+                eng.set_flow_settings({"heavyCommands": bad})
+            self.assertEqual(raised.exception.code, "bad-settings")
+        self.assertNotIn("heavyCommands", eng._settings_data())      # odmowa przed zapisem
+        saved = eng.set_flow_settings({"heavyCommands": [" bash daemon/tests/perf_gate_k98.sh * "]})
+        self.assertEqual(saved["heavyCommands"], ["bash daemon/tests/perf_gate_k98.sh *"])
+        self.assertEqual(eng._settings_data()["nieznany"], {"a": 1})
+        self.assertEqual(eng.set_flow_settings({"heavyLimit": 3})["heavyCommands"], saved["heavyCommands"])
+        self.assertEqual(eng.set_flow_settings({"heavyCommands": []})["heavyCommands"], [])
+
+
+DEFAULTS = heavyqueue.default_patterns()
+WORKTREE, REPO = "/w/pt-1", "/r/proj"
+ROOTS = (WORKTREE, REPO, "/w/pt-1.step")
+PERF = "bash daemon/tests/perf_gate_k98.sh *"
+
+
+class PatternClassifyTest(unittest.TestCase):
+    def heavy(self, command, patterns=DEFAULTS, contract=PLASMA, roots=ROOTS):
+        return heavyqueue.classify(command, roots, contract, patterns).heavy
+
+    def test_default_list_heavy_and_light(self):
+        for command in ("make test-cardflow", "make test-daemon -j2", "make test-board", "npm run e2e -- x",
+                        "npx playwright test x", "docker compose up -d", "docker build .", "make mist-golden",
+                        "dotnet build", "go test ./...", "cargo test", "pytest -q", "npm test"):
+            self.assertEqual(self.heavy(command, contract=None), True, command)
+        for command in ("docker ps", "ss -ltnp", "cat /proc/loadavg", "make lint", "npm install", "docker compose ps"):
+            self.assertFalse(self.heavy(command, contract=None), command)
+
+    def test_make_test_family_does_not_leak_to_other_targets(self):
+        self.assertFalse(self.heavy("make testy", ["make test *"], None))
+        self.assertTrue(self.heavy("make test", ["make test *"], None))
+        self.assertTrue(self.heavy("make test X=1", ["make test *"], None))
+
+    def test_normalization_of_interpreters_and_assignments(self):
+        for command in ("/usr/bin/python3 -m unittest discover -s daemon/tests",
+                        f"env PYTHONPATH={WORKTREE}/src .venv/bin/python -m pytest -q tests",
+                        f"JOBS=4 make test-changed BASE={SHA}",
+                        "/usr/bin/python3 tools/test_runner.py --modules a/b.py",
+                        "python3.12 -m pytest", "PYTHONUNBUFFERED=1 python -m unittest"):
+            self.assertTrue(self.heavy(command, contract=None), command)
+        self.assertFalse(self.heavy("/usr/bin/python3 -m http.server", contract=None))
+
+    def test_contract_family_is_normalized_too(self):
+        self.assertTrue(self.heavy(f"JOBS=4 make test-changed BASE={SHA}", [], PLASMA))
+        python = {"changed": "/usr/bin/python3 -m pytest {base}", "full": "python3 -m pytest"}
+        self.assertTrue(self.heavy(f"{REPO}/.venv/bin/python -m pytest -q", [], python))
+
+    def test_script_patterns_match_every_spelling_inside_roots(self):
+        for command in ("bash daemon/tests/perf_gate_k98.sh build/x", "bash ./daemon/tests/perf_gate_k98.sh build/x",
+                        "sh daemon/tests/perf_gate_k98.sh build/x", f"bash {WORKTREE}/daemon/tests/perf_gate_k98.sh build/x",
+                        f"bash {REPO}/daemon/tests/perf_gate_k98.sh build/x", "bash daemon/../daemon/tests/perf_gate_k98.sh x"):
+            self.assertFalse(self.heavy(command, [], None), command)
+            self.assertEqual(self.heavy(command, [PERF], None), "../" not in command, command)
+
+    def test_script_pattern_written_with_dot_or_absolute_path_matches_too(self):
+        for pattern in ("bash ./daemon/tests/perf_gate_k98.sh *", f"sh {WORKTREE}/daemon/tests/perf_gate_k98.sh *"):
+            self.assertTrue(self.heavy("bash daemon/tests/perf_gate_k98.sh x", [pattern], None), pattern)
+
+    def test_script_outside_roots_is_never_heavy_for_a_pattern(self):
+        for command in ("bash /etc/daemon/tests/perf_gate_k98.sh x", "bash ../daemon/tests/perf_gate_k98.sh x",
+                        "bash /tmp/daemon/tests/perf_gate_k98.sh x"):
+            self.assertFalse(self.heavy(command, [PERF, "bash *"], None), command)
+        self.assertFalse(self.heavy("bash daemon/tests/perf_gate_k98.sh x", [PERF], None, roots=()))
+
+    def test_exact_rule_needs_the_whole_command(self):
+        self.assertTrue(self.heavy("make lint", ["make lint"], None))
+        self.assertFalse(self.heavy("make lint V=1", ["make lint"], None))
+        self.assertTrue(self.heavy("make lint V=1", ["make lint *"], None))
+
+    def test_compound_commands_and_bad_patterns_do_not_match(self):
+        self.assertFalse(self.heavy("make test && rm -rf x", ["make test *"], None))
+        self.assertFalse(self.heavy("make lint", ["", "   ", "*", "make lint; rm x"], None))
+
+    def test_pattern_matches_is_one_shared_function(self):
+        argv = heavyqueue.command_argv("sh ./daemon/tests/perf_gate_k98.sh a", ROOTS)
+        self.assertEqual(argv, ["bash", "daemon/tests/perf_gate_k98.sh", "a"])
+        self.assertTrue(heavyqueue.pattern_matches(argv, [PERF], ROOTS))
+        self.assertFalse(heavyqueue.pattern_matches([], [PERF], ROOTS))
 
 
 if __name__ == "__main__":

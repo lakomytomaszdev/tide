@@ -2567,8 +2567,31 @@ Polecenia dzielą się na dwie klasy (`cardflow/heavyqueue.py`, czyste `classify
   słowo po słowie z początkiem polecenia bez początkowych przypisań: `make test-changed BASE=<dowolny SHA> JOBS=4`
   jest ciężkie, `make lint`, `make test-cardflow`, `ss -ltnp` — nie. Projekt z innym kontraktem (np. `dotnet test`)
   ma za ciężkie swoje polecenia. Ponowienie samych padniętych modułów (`rerunOf`) liczy się jak pełny przebieg.
-  Wzorce `heavyCommands`, normalizacja poleceń i skrypty dochodzą w #12;
+  także polecenie pasujące do wzorca `heavyCommands` (niżej);
 - **lekkie** — pozostałe polecenia.
+
+**Wzorce `heavyCommands` (PT-382).** Budowy, testy innych technologii i pomiary wpisuje właściciel w ustawieniach
+przepływu (np. `bash daemon/tests/perf_gate_k98.sh *`); takie polecenie czeka w tej samej kolejce, z tym samym limitem.
+
+- *Argumenty* `classify` bierze przez `outside_argv(command, roots)` z `roots` = (worktree ticketu, repozytorium
+  projektu, katalog kroku), tak jak zgoda przy starcie; bez `roots` `bash`/`sh` i `env` nie dałyby argumentów.
+- *Dopasowanie* jest jedną funkcją `heavyqueue.pattern_matches` (użyje jej też `quietCommands`, #6), a nie
+  `outside_matches`. Reguła ma format zgód „zawsze w projekcie”: dokładne polecenie albo rodzina z końcowym ` *`,
+  a rodzina działa prefiksowo po argumentach. Reguła jest parsowana jak polecenie (z `roots`, z normalizacją).
+- *Normalizacja* (wyłącznie klasyfikacja; polecenie uruchamia się bez zmian, a `outside_allowed`/`outside_risky`
+  działają jak dotąd): początkowe przypisania i `env NAZWA=…` są pomijane, interpreter podany ścieżką
+  (`/usr/bin/python3`, `.venv/bin/python`, `python3.12`) to `python3`. `env PYTHONPATH=… .venv/bin/python -m pytest …`
+  pasuje więc do `python3 -m pytest *`, a `JOBS=4 make test-changed BASE=…` do rodziny kontraktu. Dotyczy też rodzin
+  kontraktu.
+- *Skrypty*: dla `bash`/`sh <skrypt> …` ze skryptem w `roots` (`script_in_roots`) ścieżka w poleceniu i we wzorcu jest
+  sprowadzana do postaci względnej wobec worktree albo repozytorium (`./`, ścieżka bezwzględna w worktree i `sh` zamiast
+  `bash` dają to samo). Skrypt spoza `roots` (także `../`) nie pasuje do żadnego wzorca.
+- *Lista domyślna* (`heavyqueue.DEFAULT_PATTERNS`, rodziny z końcowym ` *`): `make test`, `make test-changed`,
+  `make test-cardflow`, `make test-daemon`, `make test-board`, `make mist-golden`, `npm test`, `npm run build`,
+  `npm run e2e`, `npx playwright test`, `dotnet test`, `dotnet build`, `go test`, `cargo test`, `pytest`,
+  `python3 -m pytest`, `python3 -m unittest`, `python3 tools/test_runner.py`, `docker build`, `docker run`,
+  `docker compose up`, `docker compose build`. `make test*` nie jest składnią dopasowania (`make test *` dopasowuje
+  cel `test`, nie `test-cardflow`), dlatego cele są wyliczone.
 
 Ciężkich biegnie naraz najwyżej `heavyLimit` na maszynę (ustawienie przepływu, 1..6, domyślnie 2), niezależnie od
 projektu, karty i rodzaju zgody. Lekkie i ciężkie razem podlegają dotychczasowym limitom: `OUTSIDE_PER_PROJECT = 6`
@@ -3459,6 +3482,12 @@ dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają b
 (sekcja „Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń”); domyślnie 2. `GetCardFlowSettings` zwraca
 je zawsze (zła wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true`
 (`bad-settings`), a zapis zmienia tylko ten klucz i zachowuje nieznane klucze pliku. Pole w oknie dochodzi w #5.
+
+`heavyCommands` (PT-382) — lista napisów-wzorców ciężkich poleceń (składnia i lista domyślna: sekcja „Kolejka
+poleceń poza piaskownicą i kolejka ciężkich poleceń”). `GetCardFlowSettings` zwraca ją zawsze: brak klucza (albo
+niepoprawna wartość w pliku) — lista domyślna; zapisana pusta lista `[]` oznacza brak wzorców (ciężkie zostają
+polecenia kontraktu i próby po scaleniu). `SetCardFlowSettings` odrzuca wartość, która nie jest listą napisów,
+oraz pusty wzorzec (`""`, same spacje, `*`) kodem `bad-settings` przed zapisem; zapis zachowuje nieznane klucze.
 
 **Wybór wykonawcy — jedno miejsce** (`caretaker.executor_name(catalog, st, preferred)`, wołane wyłącznie przez
 `caretaker.setup` i `FlowEngine._caretaker_setup`; z niego korzystają start kroku opiekuna, rezerwacja slotu,

@@ -720,6 +720,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 "limitThresholdPercent": threshold, "providerSlots": slots,
                 "providerSlotsDefault": DEFAULT_PROVIDER_SLOTS, "reviewRoundsBeforeQuestion": self._review_rounds(data),
                 "heavyLimit": heavyqueue.limit_of(data.get("heavyLimit")),
+                "heavyCommands": heavyqueue.patterns_of(data.get("heavyCommands")),
                 **caretaker.settings_of(data), "box": bsettings.view(box), "boxWarnings": list(box.warnings),
                 "version": version, "readState": "ready"}
 
@@ -748,7 +749,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
 
     def set_flow_settings(self, request: dict) -> dict:
         allowed = {"limitTransfer", "limitThresholdPercent", "providerSlots", "reviewRoundsBeforeQuestion", "box",
-                   "heavyLimit", *caretaker.SETTINGS_DEFAULTS}
+                   "heavyLimit", "heavyCommands", *caretaker.SETTINGS_DEFAULTS}
         if not isinstance(request, dict) or set(request) - allowed:
             raise FlowError("bad-settings", "niepoprawne ustawienia przepływu karty")
         # Ustawienia opiekuna (PT-151): walidacja w usłudze, zanim cokolwiek trafi do pliku.
@@ -784,6 +785,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
         # Ciężkie polecenia naraz na maszynę (PT-373). Zmniejszenie nie przerywa trwających — działa przy kolejnym starcie.
         if "heavyLimit" in request and heavyqueue.limit_problem(request["heavyLimit"]):
             raise FlowError("bad-settings", heavyqueue.limit_problem(request["heavyLimit"]))
+        # Wzorce ciężkich poleceń (PT-382): niepoprawna lista nie trafia do pliku.
+        if "heavyCommands" in request and heavyqueue.patterns_problem(request["heavyCommands"]):
+            raise FlowError("bad-settings", heavyqueue.patterns_problem(request["heavyCommands"]))
         data = self._settings_data()
         box = self._box_patch(request, data)   # odmowa przed zapisem: plik zostaje bez zmian
         data.update(limitTransfer={"mode": mode, "executor": executor.strip()},
@@ -792,6 +796,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
             data["reviewRoundsBeforeQuestion"] = rounds
         if "heavyLimit" in request:
             data["heavyLimit"] = request["heavyLimit"]
+        if "heavyCommands" in request:
+            data["heavyCommands"] = heavyqueue.patterns_of(request["heavyCommands"])
         if box is not None:
             data["box"] = box
         self._write_settings(data)
@@ -7782,6 +7788,9 @@ class FlowEngine(CaretakerChat, PlanEditing):
     def _heavy_limit(self) -> int:
         return heavyqueue.limit_of(self._settings_data().get("heavyLimit"))
 
+    def _heavy_patterns(self) -> list:
+        return heavyqueue.patterns_of(self._settings_data().get("heavyCommands"))
+
     def _heavy_contract(self, card: str, worktree: str):
         """Efektywny kontrakt testów projektu karty dla klasyfikacji (z `{base}` nierozwiniętym): zatwierdzony
         kontrakt z profilu, inaczej cele `make` worktree (testpolicy.effective_tests)."""
@@ -7812,7 +7821,8 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 _, project = self._project(card)
                 worktree = step.get("worktree") or ""
                 roots = (worktree, project.repo, step.get("stepDir") or "")
-                heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree), ()).heavy
+                heavy = heavyqueue.classify(command, roots, self._heavy_contract(card, worktree),
+                                           self._heavy_patterns()).heavy
             except Exception:
                 heavy = False
         known[name] = heavy
