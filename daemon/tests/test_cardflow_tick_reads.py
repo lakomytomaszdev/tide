@@ -170,6 +170,31 @@ class HistoryPhaseTickTest(TickFixture):
         self.assertNotIn(gone, self.journal._strict_memory)
         self.assertIn(self.card_id, self.journal._strict_memory, "karta z rejestru zostaje w pamięci")
 
+    def test_second_tick_does_not_read_journal_content_in_the_consistency_check(self):
+        """PT-416: drugi tick bez zmian w plikach — `Journal.check` nie czyta treści dziennika żadnej karty."""
+        self.journal.append("K-901", "card.started", project="proj")
+        self.engine.tick()
+        reads = []
+        real = self.journal._check_read
+        with mock.patch.object(self.journal, "_check_read", side_effect=lambda path: reads.append(path) or real(path)):
+            self.engine.tick()
+        self.assertEqual(reads, [], "kontrola zgodności czyta treść przy niezmienionych plikach")
+        self.assertTrue({self.card_id, "K-901"} <= set(self.journal._check_memory))
+
+    def test_card_removed_from_the_board_leaves_the_check_memory_at_the_next_tick(self):
+        import shutil
+        gone = "K-900"
+        self.journal.append(gone, "card.started", project="proj")
+        self.engine.tick()
+        self.assertIn(gone, self.journal._check_memory)
+        os.unlink(self.journal.mirror_path(gone))
+        shutil.rmtree(os.path.join(self.journal.root, self.journal.rel_dir(gone)))
+        # Bez kontroli w tym ticku: wpis znika na początku ticku (`forget_except`), nie przez samą kontrolę.
+        with mock.patch.object(self.journal, "check", return_value=""):
+            self.engine.tick()
+        self.assertNotIn(gone, self.journal._check_memory)
+        self.assertIn(self.card_id, self.journal._check_memory, "karta z rejestru zostaje w pamięci")
+
     def test_every_recover_started_steps_call_of_a_tick_shares_the_phase_read(self):
         self.engine.tick()
         calls, reads_inside = [], []
