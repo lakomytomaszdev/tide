@@ -91,7 +91,7 @@ from .journal import HistoryChanged, Journal
 from .stepnotes import close_console
 from .labels import step_name
 from .state import (REASON_LABELS, FlowState, derived, fold, base_of, ticket_of, graph_waves, attention_step, decision_step,
-                    guard_reason, ticket_waits, _epoch, _bookkeeping)
+                    guard_reason, ticket_waits, _epoch, _bookkeeping, approval_live)
 from .tracker import TrackerOutbox
 
 GUARD_MINUTES = 15.0
@@ -7974,7 +7974,7 @@ class FlowEngine(CaretakerChat, PlanEditing):
                 # Stara zgoda (karta porzucona) nie blokuje kolejki nawet przez OUTSIDE_QUEUE_STALE.
                 if e.get("type") == "step.decision" and e.get("choice") in ("run", "run-always", "run-ticket") and \
                         name in outside and name not in started and name not in resumed and \
-                        name not in current.superseded and now - queued < 86400:
+                        approval_live(current, name, now):
                     # Pole `heavy` z tej samej klasyfikacji co przy zgłoszeniu (PT-373): kolejność czekających
                     # ciężkich po restarcie to dalej czas zgody.
                     heavy = self._outside_heavy_of(other, {**(current.steps.get(name) or {}), "step": name},

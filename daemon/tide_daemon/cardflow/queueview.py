@@ -26,10 +26,11 @@ z `step_decisions`) oraz próby testów po scaleniu w etapie `queued` (`mergeche
 """
 from __future__ import annotations
 
+import time
 from typing import Callable, Mapping
 
 from . import heavyqueue, mergecheck
-from .state import FlowState, _epoch, outside_queued
+from .state import FlowState, _epoch, approval_live, outside_queued
 
 KIND_OUTSIDE = "outside"
 KIND_MERGE_CHECK = mergecheck.KIND
@@ -57,11 +58,13 @@ def _running(card: str, st: FlowState, project: str, heavy_of) -> list[tuple[boo
     return out
 
 
-def _waiting(card: str, st: FlowState, project: str, heavy_of) -> list[tuple[bool, dict]]:
+def _waiting(card: str, st: FlowState, project: str, heavy_of, now: float) -> list[tuple[bool, dict]]:
     if st.paused or st.card_finished:
         return []        # wstrzymana albo zakończona karta nie zajmuje miejsca w kolejce
     out = []
     for name in outside_queued(st):
+        if not approval_live(st, name, now):
+            continue     # zgoda sprzed ponownego startu karty albo starsza niż doba: silnik jej nie uruchomi
         step = st.steps.get(name) or {}
         command = (st.finished.get(name) or {}).get("command") or ""
         since = (st.step_decisions.get(name) or {}).get("ts") or ""
@@ -104,12 +107,13 @@ def _slots(settings: Mapping) -> dict:
 
 
 def build(states: Mapping[str, FlowState], settings: Mapping | None, *, heavy_of: Callable,
-          outside_limits: tuple[int, int], provider_slots_default: int = 3) -> dict:
+          outside_limits: tuple[int, int], provider_slots_default: int = 3, now: float | None = None) -> dict:
     """`states` — karta → `FlowState`; `settings` — ustawienia przepływu (`heavyLimit`, `providerSlots`);
     `heavy_of(card, krok, wpis_kroku, polecenie)` — klasa polecenia z silnika (`True` — ciężkie; próby testów po
     scaleniu i ponowienia modułów są ciężkie bez pytania);
     `outside_limits` — (na projekt, łącznie)."""
     settings = settings if isinstance(settings, Mapping) else {}
+    now = time.time() if now is None else now
     limit = heavyqueue.limit_of(settings.get("heavyLimit"))
     heavy_running, light_running, heavy_waiting, light_waiting = [], [], [], []
     for card in sorted(states):
@@ -117,7 +121,7 @@ def build(states: Mapping[str, FlowState], settings: Mapping | None, *, heavy_of
         project = str((st.started or {}).get("project") or "")
         for heavy, entry in _running(card, st, project, heavy_of):
             (heavy_running if heavy else light_running).append(entry)
-        for heavy, entry in _waiting(card, st, project, heavy_of):
+        for heavy, entry in _waiting(card, st, project, heavy_of, now):
             (heavy_waiting if heavy else light_waiting).append(entry)
     queued = {e["step"]: heavyqueue.Waiting(e["step"], _epoch(e["since"])) for e in heavy_waiting}
     admission = heavyqueue.admit(queued.values(), [e["step"] for e in heavy_running], limit)

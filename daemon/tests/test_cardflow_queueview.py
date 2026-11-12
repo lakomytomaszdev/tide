@@ -7,7 +7,7 @@ kroków, więc zero odczytów w ścieżce migawki wynika z jego wejścia.
 import unittest
 
 from tide_daemon.cardflow import heavyqueue, mergecheck, queueview
-from tide_daemon.cardflow.state import fold
+from tide_daemon.cardflow.state import _epoch, fold
 
 TS_RUN = "2026-11-12T10:00:00+01:00"
 TS_MERGE = "2026-11-12T10:02:00+01:00"
@@ -66,10 +66,13 @@ def merge_check_events(ticket, *, run=False, since=TS_RUN, ask_ts=TS_ASK):
     return step, events + ([launched(step, ticket, HEAVY, since)] if run else [])
 
 
-def build(states, settings=None, limits=(6, 7)):
+NOW = _epoch(TS_LATER) + 60     # stały zegar: testy nie zależą od daty uruchomienia
+
+
+def build(states, settings=None, limits=(6, 7), now=NOW):
     return queueview.build(states, settings or {},
                            heavy_of=lambda card, name, step, command: command.startswith("make test"),
-                           outside_limits=limits)
+                           outside_limits=limits, now=now)
 
 
 def two_cards():
@@ -130,6 +133,19 @@ class QueueViewTest(unittest.TestCase):
         early = journal("K-2", outside_events("K-2-PT-8", "PT-8", HEAVY, ask_ts=TS_ASK))
         queue = build({"K-1": fold(late), "K-2": fold(early)}, {"heavyLimit": 1})
         self.assertEqual([e["step"] for e in queue["heavy"]["waiting"]], ["K-2-PT-8", "K-1-PT-9"])
+
+    def test_approval_before_a_restart_of_the_card_is_not_waiting(self):
+        restart = {"type": "card.started", "entry": "now", "executor": "Sonnet", "program": "claude",
+                   "provider": "anthropic", "project": "tide", "ts": TS_LATER}
+        events = journal("K-1", [*outside_events("K-1-PT-9", "PT-9", HEAVY), restart])
+        queue = build({"K-1": fold(events)}, {"heavyLimit": 1})
+        self.assertEqual(queue["heavy"]["waiting"], [])
+        self.assertEqual(queue["outside"]["waiting"], [])
+
+    def test_approval_older_than_a_day_is_not_waiting(self):
+        states = {"K-1": fold(journal("K-1", outside_events("K-1-PT-9", "PT-9", HEAVY)))}
+        self.assertEqual(len(build(states, now=NOW)["heavy"]["waiting"]), 1)
+        self.assertEqual(build(states, now=_epoch(TS_ASK) + 86401)["heavy"]["waiting"], [])
 
     def test_merge_check_waiting_for_a_place_is_a_heavy_waiting_entry(self):
         step, events = merge_check_events("PT-6")
