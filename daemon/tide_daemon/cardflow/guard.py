@@ -52,7 +52,7 @@ Tide, nie opiekuna. Opiekun nie ma kontraktu `outside`, więc sam takiego polece
   Obejmuje to też polecenie, które ruszyło i skończyło się w trakcie kroku opiekuna;
 - worktree pasuje po ścieżkach znormalizowanych (`os.path.normpath(os.path.abspath(…))`, bez podążania za
   dowiązaniami): końcowy `/` i `./` nie przeszkadzają, dowiązanie do worktree to inna ścieżka;
-- wyłączone są wyłącznie zmiany drzewa (`tree`) tego worktree (`excuse`): nie dają `wrote`, Tide zapisuje
+- wyłączone są wyłącznie zmiany drzewa (`tree`) tego worktree (`skipped`, `excuse`): nie dają `wrote`, Tide zapisuje
   `caretaker.guard` z `cause: outside` i `skipped` (`run` — nazwa uruchomienia, `worktree`, `entries` — zmienione
   wpisy najwyższego poziomu), a drzewo tego worktree bierze na nowo. Zniknięcie albo pojawienie się worktree nie jest
   wyłączone. `HEAD` worktree, refy gałęzi i drzewa innych worktree pod strażą pozostają pod pełną strażą;
@@ -227,22 +227,36 @@ def active(base: dict, found: list[dict], step: str = "") -> dict:
     return busy
 
 
-def excuse(base: dict, fresh: dict, busy: dict) -> tuple[dict, list[dict]]:
-    """Stan bazowy (pola `FIELDS`) z drzewem worktree z działającym uruchomieniem wziętym z `fresh` i lista `skipped`.
-    `HEAD`, refy i pozostałe worktree bez zmian — `changes(rebased, fresh)` to zmiany nadal przypisane krokowi."""
-    rebased = {k: base.get(k) for k in FIELDS}
+def _excused(base: dict, fresh: dict, busy: dict) -> list:
+    """Pary (stan worktree bazowy, migawka, nazwy uruchomień) — nazwy puste, gdy drzewo tego worktree zostaje pod
+    strażą. Inny zestaw worktree niż w stanie bazowym niczego nie wyłącza."""
     olds, news = base.get("worktrees") or [], fresh.get("worktrees") or []
     if not busy or len(olds) != len(news):
-        return rebased, []
-    trees, skipped = [], []
+        return [(was, was, []) for was in olds]
+    found = []
     for was, now in zip(olds, news):
-        names = busy.get(where(was.get("worktree")))
+        names = busy.get(where(was.get("worktree"))) or []
         old, new = was.get("tree") or {}, now.get("tree") or {}
-        if names and old != new and MISSING not in (old, new) and \
-                where(was.get("worktree")) == where(now.get("worktree")):
-            skipped.append({"run": ", ".join(names), "worktree": was.get("worktree") or "",
-                            "entries": sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))})
-            was = {**was, "tree": new}
-        trees.append(was)
-    rebased["worktrees"] = trees
-    return rebased, skipped
+        ok = old != new and MISSING not in (old, new) and where(was.get("worktree")) == where(now.get("worktree"))
+        found.append((was, now, names if ok else []))
+    return found
+
+
+def skipped(base: dict, fresh: dict, busy: dict) -> list[dict]:
+    """Zmiany drzewa pominięte przez działające uruchomienie: `{run, worktree, entries}` na worktree."""
+    found = []
+    for was, now, names in _excused(base, fresh, busy):
+        if names:
+            old, new = was.get("tree") or {}, now.get("tree") or {}
+            found.append({"run": ", ".join(names), "worktree": was.get("worktree") or "",
+                          "entries": sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))})
+    return found
+
+
+def excuse(base: dict, fresh: dict, busy: dict) -> dict:
+    """Stan bazowy (pola `FIELDS`) z drzewem worktree z działającym uruchomieniem wziętym z `fresh`. `HEAD`, refy
+    i pozostałe worktree bez zmian — `changes(excuse(…), fresh)` to zmiany nadal przypisane krokowi."""
+    rebased = {k: base.get(k) for k in FIELDS}
+    rebased["worktrees"] = [{**was, "tree": now.get("tree")} if names else was
+                            for was, now, names in _excused(base, fresh, busy)]
+    return rebased

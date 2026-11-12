@@ -3238,9 +3238,11 @@ class FlowEngine(CaretakerChat, PlanEditing):
         poza piaskownicą albo próba testów po scaleniu, nie należą do kroku. Zapisuje `caretaker.guard` z `cause:
         outside` i `skipped` (stan bazowy z drzewem tego worktree wziętym na nowo) i zwraca stan do dalszego
         porównania. `runs` — z dziennika przeczytanego przed migawką `fresh`."""
-        rebased, skipped = guard.excuse(base, fresh, guard.active(base, runs, name))
+        busy = guard.active(base, runs, name)
+        skipped = guard.skipped(base, fresh, busy)
         if not skipped:
             return base
+        rebased = guard.excuse(base, fresh, busy)
         self.journal.append(card, guard.EVENT, step=name, cause=guard.OUTSIDE, wrote=[], skipped=skipped, **rebased)
         return rebased
 

@@ -596,13 +596,16 @@ class OutsideRunsTest(unittest.TestCase):
         fresh = {"repo": "/r", "branches": ["b"], "refs": {"b": "2"},
                  "worktrees": [{"worktree": "/w/", "gitDir": "/g", "tree": {"a": "1", "build": "2"}, "head": "x"},
                                {"worktree": "/v", "gitDir": "/h", "tree": {"a": "3"}, "head": "ref: c"}]}
-        rebased, skipped = guard.excuse(base, fresh, {"/w": ["K-1-PT-1-1"]})
-        self.assertEqual(skipped, [{"run": "K-1-PT-1-1", "worktree": "/w/", "entries": ["build"]}])
+        busy = {"/w": ["K-1-PT-1-1"]}
+        rebased = guard.excuse(base, fresh, busy)
+        self.assertEqual(guard.skipped(base, fresh, busy),
+                         [{"run": "K-1-PT-1-1", "worktree": "/w/", "entries": ["build"]}])
         self.assertEqual(set(rebased), set(guard.FIELDS))
         self.assertEqual(guard.changes(rebased, fresh), [
             "przesunięty HEAD worktree /w/", "zmienione pliki w worktree /v: a", "przesunięta gałąź b"])
         gone = {**fresh, "worktrees": [{**fresh["worktrees"][0], "tree": guard.MISSING}, fresh["worktrees"][1]]}
-        self.assertEqual(guard.excuse(base, gone, {"/w": ["K-1-PT-1-1"]})[1], [], "zniknięcie worktree nie jest wyłączone")
+        self.assertEqual(guard.skipped(base, gone, busy), [], "zniknięcie worktree nie jest wyłączone")
+        self.assertEqual(guard.changes(guard.excuse(base, gone, busy), gone)[0], "worktree /w/ zniknął")
 
 
 class OutsideGuardTest(EngineGuardRepo):

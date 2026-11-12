@@ -3548,7 +3548,7 @@ zmienił. Piaskownice i listy poleceń zwykłych kroków są bez zmian.
   uruchomienie poza piaskownicą na zgodę kroku ticketu (`make test-changed`, skrypt pomiaru) albo próba testów po
   scaleniu (`merge-check-*` w worktree gałęzi karty, K-88). Jego `build/`, `__pycache__` i wyniki testów nie są
   zapisem opiekuna (wcześniej fałszywe `caretaker-wrote`, np. K-98-care-10 i K-98-care-13 z 11.11). Logika jest
-  czysta w `cardflow/guard` (`runs`, `active`, `excuse`); silnik podaje tylko zdarzenia dziennika
+  czysta w `cardflow/guard` (`runs`, `active`, `skipped`, `excuse`); silnik podaje tylko zdarzenia dziennika
   (`_guard_outside`):
   - uruchomienie to `outside.started` → `outside.finished` tego samego kroku; worktree z pola `worktree` startu,
     dla próby testów po scaleniu z jej pseudokroku `merge.check-step`. Start bez `worktree` niczego nie wyłącza;

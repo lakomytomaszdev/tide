@@ -738,6 +738,9 @@ RAW_READS = {
     ("cardflow/testrerun.py", "substitute"):
         "wybór modułów do ponowienia testów z wyniku outside; woła go wyłącznie _start_outside po "
         "_outside_history (pełna historia ok) — zmienia tekst polecenia, nie dopuszcza skutku",
+    ("cardflow/guard.py", "runs"):
+        "PT-372: przedziały outside.started/outside.finished do wyjątku strażnika opiekuna; wynik tylko pomija "
+        "zmiany drzewa worktree z poleceniem Tide w porównaniu migawek, nigdy nie uruchamia ani nie wznawia procesu",
 }
 
 # Wywołania o nierozstrzygniętym celu, których możliwym celem jest konsument lub delegacja
