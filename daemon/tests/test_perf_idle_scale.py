@@ -191,7 +191,7 @@ class RolesTest(unittest.TestCase):
 
     def test_small_scale_still_has_every_kind(self):
         roles = scale.assign_roles(8)
-        self.assertEqual({r for r in roles}, {"outside", "question", "plan", "done", "archived"} & set(roles))
+        self.assertEqual(set(roles), {"outside", "question", "plan", "done"})       # archiwum dopiero w większej skali
         self.assertIn("outside", roles)
         with self.assertRaises(ValueError):
             scale.assign_roles(3)
@@ -229,6 +229,25 @@ class PopulateTest(unittest.TestCase):
         self.assertEqual(disk["mirrorBytes"], disk["boardBytes"])
         self.assertGreaterEqual(disk["totalBytes"], 0.95 * 1048576)
         self.assertLessEqual(disk["totalBytes"], 1.05 * 1048576)
+
+    def test_ticks_on_generated_journals_are_quiet_after_warm_up(self):
+        """Postój to postój: po rozgrzewce tick niczego nie dopisuje i żaden przebieg karty nie kończy się wyjątkiem.
+
+        Pierwszy tick wolno dopisać jednorazowe zdarzenia (card-branch, plan-commit, merge.check-armed, flow.notice)."""
+        with pbr.isolated_env(self.base):
+            service = pbr.Service(self.base, 10, box_file=False)
+            self.addCleanup(service.close)
+            scale.populate(service, self.base, 0.5)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                service.engine.tick()                                   # rozgrzewka
+                before = {c: len(service.engine.journal.read(c)) for c in service.cards}
+                for _ in range(3):
+                    service.engine.tick()
+                after = {c: len(service.engine.journal.read(c)) for c in service.cards}
+        self.assertEqual(before, after, "kolejne ticki nie dopisują zdarzeń")
+        self.assertNotIn("przepływ karty", out.getvalue(), out.getvalue())
+        self.assertNotIn("Error(", out.getvalue())
 
     def test_broken_journal_is_reported_by_the_strict_check(self):
         with pbr.isolated_env(self.base):

@@ -409,10 +409,21 @@ def build_card(card, number, role, project, repo, base, target_bytes, now, seed)
         _finish(log, close, "", notes="Podsumowanie karty.")
         log.add("card.closed", step=close, summary=_text(rng, 20), check="make test", baseCommit="0123abc",
                 baseVersion=0)
-        log.add("intent", action="main-merge", key=f"main-{card}", repo=repo, requestSeq=1, baseVersion=0)
-        log.add("result", action="main-merge", key=f"main-{card}", ok=True, commit="fed9876")
-        log.add("card.merged", branch=f"card/{card.lower()}", commit="fed9876")
+        # Kształt zdarzeń jak po udanej operacji usługi (_resume_main_merge): zamiar z polami operacji i checkpoint
+        # `projected` — inaczej każdy tick wchodzi w odzyskiwanie scalenia zamiast być postojem.
+        key = f"main-{card}"
+        merge = {"resultCommit": "fed9876", "resultTree": "0123abc", "sourceCommit": "0123abc"}
+        log.add("intent", action="main-merge", key=key, operationId=key, repo=repo, requestSeq=1, baseVersion=0,
+                sourceWorktree=f"{repo}/{card.lower()}", sourceRef=f"refs/heads/card/{card.lower()}",
+                targetRef="refs/heads/main", targetBranch="main", targetWorktree=repo,
+                targetCommitBefore="0123abc", **merge)
+        for stage in ("prepared", "materialized", "ref-moved"):
+            log.add("main-merge.checkpoint", key=key, stage=stage)
+        log.add("result", action="main-merge", key=key, ok=True, commit="fed9876", **merge)
+        log.add("main-merge.checkpoint", key=key, stage="result-saved")
+        log.add("card.merged", branch=f"card/{card.lower()}", commit="fed9876", operationId=key, **merge)
         log.add("card.finished", column="done")
+        log.add("main-merge.checkpoint", key=key, stage="projected")
     base_bytes = sum(len(json.dumps(e, ensure_ascii=False)) + 1 for e in log.events)
     sample = len(json.dumps({"v": 1, "seq": 99999, "ts": "2026-11-12T12:00:00.000000+01:00", "card": card,
                              "type": "step.activity", **_activity("x" * 30, "PT-1", rng)}, ensure_ascii=False)) + 1
