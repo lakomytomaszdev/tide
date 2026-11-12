@@ -18,6 +18,16 @@ function issueKey(text) {
     return /^[A-Z][A-Z0-9_]{0,19}-[1-9][0-9]{0,8}$/.test(value) ? value : null
 }
 
+// „Tickety naraz” (PT-375): "" — puste pole (ustawienie domyślne), 1..6 — liczba, null — błędny zapis.
+// Zakres sprawdza też usługa (UpdateCard `maxTickets`); tu tylko podpowiedź przed wysłaniem.
+function maxTickets(text) {
+    var value = String(text || "").trim()
+    if (!value) return ""
+    if (!/^[0-9]+$/.test(value)) return null
+    var number = parseInt(value, 10)
+    return number >= 1 && number <= 6 ? number : null
+}
+
 // Akcje karty: {id, label, effect, danger, input}. `label` nazywa skutek, `effect` to zdanie pod przyciskiem;
 // `input` — akcja z polem (YouTrack, gałąź), `danger` — archiwizacja. Reguły przenoszenia podaje Tablica:
 // `targets` — kolumny, do których wolno przenieść kartę (Logic.settingTargets), `canArchive` — czy wolno ją

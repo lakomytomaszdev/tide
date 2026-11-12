@@ -1195,6 +1195,7 @@ Wyszukiwanie zwraca tę samą frazę kilka razy…
 | `branch` | gałąź pracy w repozytorium projektu; zastępuje propozycję gałęzi w `RenderFlow`, łączy kartę z pracą na tej gałęzi i jest gałęzią do scalenia |
 | `check` | sprawdzenie po skończonej pracy agenta: `auto` (domyślnie — wystarczą testy i review AI) albo `manual` (test ręczny użytkownika: karta czeka w Do sprawdzenia, aż przeniesiesz ją do Gotowe). Zła wartość w pliku — błąd i `auto`; brak klucza — `auto`. Ustawia go m.in. przełącznik „Test ręczny po zakończeniu” przy uruchomieniu agenta (PT-4) |
 | `entry`, `mode`, `tool`, `worktree`, `launched` | ostatnie uruchomienie agenta z karty: wejście (`planning`, `spec`), tryb (`full`, `light`; przy `spec` pusty), narzędzie, katalog worktree (bezwzględny albo pusty — praca w katalogu projektu) i chwila (ISO 8601); w pliku tylko po uruchomieniu. Karta ze starym `mode: spec` to wejście `spec` (czytane, plik nietknięty); żądanie z `mode: spec` zapisuje `entry: spec` |
+| `max-tickets` | limit ticketów w toku na kartę (PT-375): liczba 1–6; brak klucza — ustawienie przepływu `ticketsPerCard`. Zapis: `UpdateCard {maxTickets}` (pusta wartość usuwa klucz), migawka: `maxTickets`. Zła wartość w pliku — limit domyślny i wpis w `errors` |
 | `projects` | dodatkowe projekty karty (PT-28) — slugi po przecinku, główny zostaje w `project`; zadanie zmienia kilka repozytoriów naraz. W pliku tylko, gdy ustawione. `CreateCard`/`UpdateCard` przyjmują listę (albo napis „a, b”) slugów istniejących projektów albo bezwzględnych ścieżek repozytoriów — repozytorium bez projektu dostaje projekt osobnym commitem (jak `repo`); główny projekt i powtórzenia wypadają, najwyżej 5, nieznany slug — `not-found`. Zmiana `project` na jeden z dodatkowych usuwa go z `projects`. Nieznany slug w pliku — wpis w `errors`, karta działa |
 
 Projekt — `projects/mobileapp.md`, treść to opcjonalny opis:
@@ -3493,7 +3494,14 @@ dotąd). `limitTransfer`, `limitThresholdPercent` i `providerSlots` działają b
 `heavyLimit` (PT-373) — liczba całkowita 1–6, ile ciężkich poleceń poza piaskownicą biegnie naraz na maszynie
 (sekcja „Kolejka poleceń poza piaskownicą i kolejka ciężkich poleceń”); domyślnie 2. `GetCardFlowSettings` zwraca
 je zawsze (zła wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true`
-(`bad-settings`), a zapis zmienia tylko ten klucz i zachowuje nieznane klucze pliku. Pole w oknie dochodzi w #5.
+(`bad-settings`), a zapis zmienia tylko ten klucz i zachowuje nieznane klucze pliku. Pole w oknie: „Ciężkie polecenia
+naraz” na stronie „Zarządzaj” (PT-375, sekcja „PRZEPŁYW KARTY · RÓWNOLEGŁOŚĆ”).
+
+`ticketsPerCard` (PT-375) — liczba całkowita 1–6, ile ticketów jednej karty jest w toku naraz (sekcja „Limit
+ticketów w toku na kartę”); domyślnie 2. Te same zasady co `heavyLimit`: `GetCardFlowSettings` zwraca je zawsze (zła
+wartość w pliku — 2), `SetCardFlowSettings` odrzuca wartość spoza zakresu, ułamek, napis i `true` kodem
+`bad-settings`, a zapis zachowuje pozostałe klucze pliku. Pole w oknie: „Tickety naraz na kartę” obok „Ciężkie
+polecenia naraz” (jeden zapis `SetCardFlowSettings {heavyLimit, ticketsPerCard}`).
 
 `heavyCommands` (PT-382) — lista napisów-wzorców ciężkich poleceń (składnia i lista domyślna: sekcja „Kolejka
 poleceń poza piaskownicą i kolejka ciężkich poleceń”). `GetCardFlowSettings` zwraca ją zawsze: brak klucza (albo
@@ -3528,6 +3536,38 @@ wybór wykonawcy („Domyślny — najmocniejszy u dostawcy karty” i cały kat
 
 Piaskownica — „Piaskownica i strażnik” niżej. Opiekun czekający na slot dostawcy (`step.waiting` rodzaju
 `caretaker`) nie daje powiadomienia o limicie — problem nadal należy do opiekuna, powiadamia dopiero eskalacja.
+
+### Limit ticketów w toku na kartę (PT-375)
+
+Karta nie uruchamia więcej ticketów naraz, niż pozwala limit (`cardflow/ticketlimit.py`). Masterplan dopuszcza 2
+tickety na kartę, a K-36 uruchomiła 3: dotąd jedynym limitem była liczba kroków u dostawcy.
+
+- **Ticket w toku** to ticket zatwierdzonego planu z co najmniej jednym krokiem, niescalony (`merge` bez `ok`, poza
+  `imported_done`) i nieodrzucony. Liczy się także ticket czekający na decyzję użytkownika (pytanie, błąd), na review,
+  poprawki i scalenie.
+- **Limit efektywny:** `max-tickets` w pliku karty (1–6), a bez niego ustawienie przepływu `ticketsPerCard` (domyślnie
+  2). Zła wartość w pliku karty (`max-tickets: 9`, napis) daje limit domyślny i wpis w `errors` Tablicy
+  („niepoprawny limit ticketów”), bez błędu odczytu karty. `UpdateCard {maxTickets}` przyjmuje liczbę 1–6 (także napis
+  z cyframi), a wartość pustą (`""`, `null`) usuwa klucz z pliku; inna (0, 7, ułamek, `true`, napis) → `{ok: false}` bez
+  zmian. `CreateCard` przyjmuje `maxTickets` tak samo. Migawka karty niesie `maxTickets` (liczba albo `null`), a
+  `derived.flow.ticketLimit` — `{limit, running, override}` (limit efektywny, liczba ticketów w toku, nadpisanie karty).
+- **Egzekwowanie.** `_plan_next` przed startem każdego ticketu liczy tickety w toku (po każdym starcie z odświeżonego
+  stanu). Przy `w toku >= limit` ticket nie startuje (nie powstaje gałąź ani worktree), a silnik zapisuje
+  `step.waiting` z `kind: ticket`, `cause: card-limit` i powodem „czeka na miejsce w karcie (<n> z <limit>)” — **raz na
+  zmianę powodu** (kolejne ticki z tym samym powodem niczego nie dopisują) — i przechodzi do następnego ticketu.
+  Zwolnione miejsce (scalenie albo odrzucenie innego ticketu) uruchamia czekający ticket przy najbliższym ticku;
+  `step.started` zdejmuje wpis czekania.
+- **Zakres.** Limit dotyczy wyłącznie startu nowego ticketu w `_plan_next`. Kolejne kroki ticketu w toku (review,
+  poprawki, scalenie, konflikt, opiekun) nie przechodzą przez tę bramkę, więc ticket w toku nie blokuje własnych
+  kroków. Zmniejszenie limitu niczego nie zatrzymuje: nowy ticket rusza dopiero, gdy liczba w toku spadnie poniżej
+  limitu. Karta „Od razu” (jeden ticket, bez `_plan_next`) działa bez zmian także przy limicie 1. Limit nie zmienia
+  kolejności startu między kartami, kolejki ciężkich poleceń ani bramki testów po scaleniu.
+- **Status.** `derived.tickets[]` dla ticketu czekającego na miejsce ma `status: card-limit` i
+  `statusLabel: „czeka na miejsce w karcie (<n> z <limit>)”` z bieżącą liczbą i limitem (zmiana limitu odświeża napis bez
+  nowego zdarzenia; `fullcard.card_limit`). Kafelek karty bez trwających kroków pokazuje ten sam powód z `step.waiting`.
+- **Okno.** Strona „Zarządzaj”: „Ciężkie polecenia naraz” i „Tickety naraz na kartę” (1–6, jeden zapis
+  `SetCardFlowSettings`, błąd usługi pod sekcją). Ustawienia pełnej karty: „Tickety naraz” (puste pole — ustawienie
+  domyślne; zapis `UpdateCard {maxTickets}`).
 
 ### Piaskownica i strażnik (PT-158)
 

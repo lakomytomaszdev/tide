@@ -42,7 +42,7 @@ from .repo import BoardRepo
 from .model import (AI_DOCS, CARD_FILE_RE, CARD_KEYS, CARD_PREFIX, CHECKS, COLUMNS, DEFAULT_CHECK, DEFAULT_COLUMN,
                     DEFAULT_ENTRY, DEFAULT_MODE, DEFAULT_TOOL, DESCRIPTION_MAX, ENTRIES, FIELD_MAX, FILE_MAX, LAUNCH_KEYS, LEGACY_SPEC_MODE, MANUAL_COLUMNS,
                     MODES, MOVED_FROM_KEY, COLUMN_MOVED_KEY, NAME_MAX, NOTE_MAX, PASTELS, PATH_MAX, PROJECT_SYNC_KEY,
-                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
+                    PROJECT_YOUTRACK_KEY, PROJECTS_KEY, PROJECTS_MAX, MAX_TICKETS_KEY, RESERVED_CARD_KEYS, YOUTRACK_PROJECT_RE,
                     REVIEW_CLASSES, REVIEW_CLASSES_KEY, REVIEW_POLICIES, REVIEW_POLICY_KEY,
                     SEED_TAGS, SLUG_RE, TAG_MAX, TITLE_MAX,
                     TOOLS, BoardError, Card, Project, Tag, card_num, default_ai_docs, fallback_color, merge_tags,
@@ -78,7 +78,7 @@ commitem „sync external changes”. Bez remote: nic stąd nie wychodzi.
 - `docs/<projekt>/` — plany i specyfikacje agentów projektów z `ai-docs: tide`.
 """
 CARD_FIELDS = ("title", "description", "project", "repo", "projects", "tags", "note", "planPath", *RESERVED_CARD_KEYS, "check",
-               *LAUNCH_KEYS)
+               *LAUNCH_KEYS, "maxTickets")
 CREATE_FIELDS = CARD_FIELDS + ("column",)
 PROJECT_FIELDS = ("slug", "name", "repo", "tags", "aiDocs", "tool", "mode", "entry", "description", "youtrack",
                   "youtrackSync", "allowedCommands", "deniedCommands", "assignmentRules", "globalAssignmentRules", "readDirs",
@@ -784,6 +784,8 @@ class BoardStore:
         for key in LAUNCH_KEYS:  # tylko ustawione — karta bez uruchomienia ich nie ma
             if v.get(key):
                 doc.set(key, v[key])
+        if v.get("maxTickets"):
+            doc.set(MAX_TICKETS_KEY, v["maxTickets"])
         if v.get("planPath"):
             doc.set("plan", self._checked_plan_path(v["planPath"], board.projects.get(slug), f"K-{num}"))
         if extra:
@@ -815,6 +817,12 @@ class BoardStore:
         for key in ("title", "tags", "note", *RESERVED_CARD_KEYS, "check", *LAUNCH_KEYS):
             if key in v and (v[key] or card.doc.has(key) or key not in LAUNCH_KEYS):
                 changed += _doc_set(card.doc, key, ", ".join(v[key]) if key == "tags" else v[key])
+        if "maxTickets" in v:      # PT-375: pusta wartość usuwa klucz (limit z ustawienia przepływu)
+            if v["maxTickets"] is None:
+                if card.doc.remove(MAX_TICKETS_KEY):
+                    changed.append(MAX_TICKETS_KEY)
+            else:
+                changed += _doc_set(card.doc, MAX_TICKETS_KEY, v["maxTickets"])
         if "planPath" in v:
             project = board.projects.get(primary)
             checked = self._checked_plan_path(v["planPath"], project, card.id) if v["planPath"] else ""
@@ -1400,6 +1408,9 @@ def _card_json(card: Card, project: Project | None, resolved: list, derived, ext
         "launchedTs": parse_ts(card.launched), "branchSlug": branch_slug(card),
         # Dodatkowe projekty (PT-28): slugi z pliku i rozwiązane projekty (nieznane slugi pomijamy — błąd w errors).
         "projects": list(card.projects),
+        # Limit ticketów w toku (PT-375): nadpisanie karty (None — ustawienie domyślne); limit efektywny dokłada
+        # usługa przepływu (`derived.flow.ticketLimit`), a bez niej — ustawienie domyślne.
+        "maxTickets": card.max_tickets,
         "extraProjects": [{"slug": p.slug, "name": p.name, "repo": p.repo, "repoMissing": p.repo_missing}
                           for p in extra],
         "description": card.description,
@@ -1597,6 +1608,8 @@ def _card_values(data: dict, create: bool = False) -> dict:
         out["planPath"] = path
     if "check" in data:
         out["check"] = _enum(data["check"], CHECKS, "sprawdzenie")
+    if "maxTickets" in data:
+        out["maxTickets"] = _max_tickets(data["maxTickets"])
     out.update(_entry_mode_values(data, allow_empty=True))
     if "tool" in data:
         out["tool"] = _enum(data["tool"], ("", *TOOLS), "tool") if _text(data["tool"], "tool").strip() else ""
@@ -1622,6 +1635,17 @@ def _card_values(data: dict, create: bool = False) -> dict:
     if "projects" in data:
         out["projects"] = _projects(data["projects"])
     return out
+
+
+def _max_tickets(value) -> int | None:
+    """`maxTickets` (PT-375): liczba 1..6 (także napis z cyframi); pusta wartość (None, "") — brak nadpisania."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str) and value.strip().isdecimal():
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 6:
+        raise BoardError("maxTickets musi być liczbą całkowitą od 1 do 6 (pusta wartość — ustawienie domyślne)")
+    return value
 
 
 def _projects(value) -> list[str]:
