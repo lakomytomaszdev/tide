@@ -12,6 +12,8 @@ import contextlib
 import contextvars
 import threading
 
+MAX_CARDS = 256
+
 _ACTIVE: contextvars.ContextVar = contextvars.ContextVar("tide_outside_risk_scope", default=None)
 
 
@@ -31,7 +33,10 @@ class RiskMemo:
         with self._lock:
             hit = self._cards.get(card)
             if hit is None or hit[0] != version:
+                self._cards.pop(card, None)
                 self._cards[card] = (version, {})
+                while len(self._cards) > MAX_CARDS:     # karty już niepublikowane nie rosną bez końca
+                    self._cards.pop(next(iter(self._cards)))
         state = {"card": card, "version": version, "used": False}
         outer = _ACTIVE.get()
         _ACTIVE.set((self, state))
