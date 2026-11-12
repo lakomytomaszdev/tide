@@ -257,6 +257,36 @@ class CardTest(BoardCase):
         self.assertEqual(self.log()[-1], "K-1: update title, tags")
         self.assertEqual(self.store.update_card("K-1", {"title": "Nowy tytuł"})["changed"], False)
 
+    def test_start_ref_create_update_clear_and_snapshot(self):
+        self.store.create_card({"title": "a"})
+        self.assertNotIn("start-ref", self.card_text("K-1"))          # zgodność wstecz: karta bez pola
+        self.assertEqual(self.cards()["K-1"]["startRef"], "")
+        self.store.create_card({"title": "b", "startRef": "refs/heads/feature/x"})
+        self.assertIn("start-ref: refs/heads/feature/x\n", self.card_text("K-2"))
+        self.assertEqual(self.cards()["K-2"]["startRef"], "refs/heads/feature/x")
+        self.assertEqual(self.store.update_card("K-1", {"startRef": ""})["changed"], False)   # puste bez klucza
+        self.assertNotIn("start-ref", self.card_text("K-1"))
+        self.assertTrue(self.store.update_card("K-1", {"startRef": "refs/remotes/origin/dev"})["changed"])
+        self.assertEqual(self.cards()["K-1"]["startRef"], "refs/remotes/origin/dev")
+        self.assertEqual(self.store.update_card("K-1", {"startRef": "refs/remotes/origin/dev"})["changed"], False)
+        self.assertTrue(self.store.update_card("K-1", {"startRef": ""})["changed"])
+        self.assertEqual(self.cards()["K-1"]["startRef"], "")
+        self.assertNotIn("refs/", self.card_text("K-1"))
+        self.assertEqual(self.cards()["K-1"]["baseRef"], "")          # pole nie jest projekcją bazy
+
+    def test_start_ref_invalid_is_rejected_without_writing(self):
+        self.store.create_card({"title": "a"})
+        before, log = self.card_text("K-1"), self.log()
+        for bad in ("feature/x", "master", "refs/heads/a..b", "refs/heads/a b", "-x", "refs/tags/v1",
+                    "refs/heads/", "refs/heads/x.lock", "refs/heads/a\nb", 7):
+            with self.assertRaises(BoardError, msg=bad):
+                self.store.update_card("K-1", {"startRef": bad})
+            with self.assertRaises(BoardError, msg=bad):
+                self.store.create_card({"title": "z", "startRef": bad})
+        self.assertEqual(self.card_text("K-1"), before)
+        self.assertEqual(self.log(), log)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "cards", "K-2.md")))
+
     def test_update_validation(self):
         self.store.create_card({"title": "a"})
         bad = [{"column": "todo"}, {"order": 1}, {"nieznane": 1}, {"title": ""}, {"title": "x" * 201},

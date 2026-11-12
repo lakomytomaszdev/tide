@@ -257,17 +257,28 @@ class FlowGit:
                     "recentBases": [], "recentTargets": [], "hasMore": len(branches) > limit,
                     "warnings": [] if main_ref else ["Brak nazwanej gałęzi głównej — wybierz lokalną bazę."]}
 
+    def ref_syntax_error(self, repo: str, ref) -> str:
+        """Składnia pełnego refu bazy: `refs/heads/…` albo `refs/remotes/…` i `git check-ref-format`.
+
+        Pusty napis — składnia poprawna. Jedna funkcja dla bazy karty (`resolve_base`) i pola karty `startRef`;
+        nie czyta refów repozytorium (nie sprawdza istnienia gałęzi)."""
+        if not isinstance(ref, str) or not ref.startswith(("refs/heads/", "refs/remotes/")):
+            return "baza musi być pełnym refem refs/heads/… albo refs/remotes/…"
+        if not self.run(repo, "check-ref-format", ref).ok:
+            return "niepoprawny ref bazy"
+        return ""
+
     def resolve_base(self, repo: str, ref=None, expected=None) -> dict:
         """Baza startu znana lokalnemu gitowi; wywołujący trzyma lock_for do zapisu card.started."""
-        if ref is not None and (not isinstance(ref, str) or not ref.startswith(("refs/heads/", "refs/remotes/"))):
-            raise FlowGitError("baza musi być pełnym refem refs/heads/… albo refs/remotes/…")
+        if ref is not None and (error := self.ref_syntax_error(repo, ref)):
+            raise FlowGitError(error)
         if ref is None:
             branch = self.main_branch(repo)
             if not branch:
                 raise FlowGitError("nie ma gałęzi głównej — wybierz lokalną bazę")
             ref = f"refs/heads/{branch}"
-        if not self.run(repo, "check-ref-format", ref).ok:
-            raise FlowGitError("niepoprawny ref bazy")
+            if error := self.ref_syntax_error(repo, ref):
+                raise FlowGitError(error)
         if self.run(repo, "symbolic-ref", "--quiet", ref).ok:
             raise FlowGitError("symboliczny ref nie może być bazą — wybierz konkretną gałąź")
         remote = ref.startswith("refs/remotes/")
